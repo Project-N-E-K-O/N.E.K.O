@@ -9,6 +9,161 @@ describe('App', () => {
     expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
   });
 
+  it('exposes explicit surface mode state on the rendered shell', () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    const appShell = container.querySelector('.app-shell');
+    const chatWindow = container.querySelector('.chat-window');
+    const compactStage = container.querySelector('.compact-chat-stage');
+
+    expect(appShell).toHaveAttribute('data-chat-surface-mode', 'compact');
+    expect(appShell).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(chatWindow).toHaveClass('chat-surface-mode-compact');
+    expect(compactStage).toHaveAttribute('data-compact-chat-state', 'input');
+  });
+
+  it('elevates compact state to options when choices are visible', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="default"
+        choicePrompt={{
+          source: 'mini_game_invite',
+          options: [
+            { choice: 'accept', label: 'Accept' },
+            { choice: 'later', label: 'Later' },
+          ],
+        }}
+      />,
+    );
+
+    expect(container.querySelector('.compact-chat-stage-options')).not.toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
+  });
+
+  it('keeps compact-only state derivation out of the full surface', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        compactChatState="default"
+        choicePrompt={{
+          source: 'mini_game_invite',
+          options: [
+            { choice: 'accept', label: 'Accept' },
+            { choice: 'later', label: 'Later' },
+          ],
+        }}
+      />,
+    );
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(container.querySelector('.composer-choice-layer')).not.toHaveClass('compact-chat-choice-anchor');
+  });
+
+  it('renders compact default as a single search-like entry without history or extra controls', () => {
+    const message = parseChatMessage({
+      id: 'assistant-compact-1',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '今天想让我陪你做什么呢？' }],
+    });
+    const { container } = render(<App chatSurfaceMode="compact" messages={[message]} />);
+
+    expect(container.querySelector('.compact-chat-stage-body-slot')).toHaveAttribute('data-compact-stage-fallback', 'message-list');
+    expect(container.querySelector('.message-list')).toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-inline-input')).toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('今天想让我陪你做什么呢？');
+    expect(container.querySelector('.compact-chat-entry-button')).toBeNull();
+    expect(container.querySelector('.compact-chat-tool-btn')).toBeNull();
+  });
+
+  it('requests compact input when the single compact entry is clicked', () => {
+    const onCompactChatStateChange = vi.fn();
+    const message = parseChatMessage({
+      id: 'assistant-compact-2',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '可以先说一句你今天想做什么' }],
+    });
+
+    render(
+      <App
+        chatSurfaceMode="compact"
+        messages={[message]}
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '可以先说一句你今天想做什么' }));
+
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('input');
+  });
+
+  it('renders compact input as the same surface with an inline send button only', () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    expect(container.querySelector('.compact-chat-inline-input')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).toBeNull();
+    expect(container.querySelector('.composer-bottom-bar')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument();
+  });
+
+  it('collapses compact input back to display state when it loses focus with no content', async () => {
+    const onCompactChatStateChange = vi.fn();
+    const outsideButton = document.createElement('button');
+    document.body.appendChild(outsideButton);
+
+    try {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    input.focus();
+    outsideButton.focus();
+    fireEvent.blur(input, { relatedTarget: outsideButton });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+    } finally {
+      outsideButton.remove();
+    }
+  });
+
+  it('keeps compact input open when blurred with unsent text', async () => {
+    const onCompactChatStateChange = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'draft' } });
+    input.focus();
+    fireEvent.blur(input);
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+  });
+
   it('renders grouped assistant messages with a single visible avatar', () => {
     const firstMessage = parseChatMessage({
       id: 'assistant-1',

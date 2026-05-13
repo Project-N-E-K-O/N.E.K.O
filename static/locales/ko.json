@@ -708,6 +708,8 @@
         "reactWindowClose": "채팅 창 닫기",
         "reactWindowMinimize": "채팅 창 최소화",
         "reactWindowMinimizeShort": "최소화",
+        "reactWindowCompact": "컴팩트 채팅으로 전환",
+        "reactWindowCompactShort": "컴팩트",
         "reactWindowRestore": "채팅 창 복원",
         "reactWindowRestoreShort": "복원",
         "reactWindowMountFailed": "채팅 창 마운트에 실패했습니다",

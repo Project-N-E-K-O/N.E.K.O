@@ -708,6 +708,8 @@
         "reactWindowClose": "Закрыть окно чата",
         "reactWindowMinimize": "Свернуть окно чата",
         "reactWindowMinimizeShort": "Свернуть",
+        "reactWindowCompact": "Переключить на компактный чат",
+        "reactWindowCompactShort": "Компактный",
         "reactWindowRestore": "Восстановить окно чата",
         "reactWindowRestoreShort": "Восстановить",
         "reactWindowMountFailed": "Не удалось встроить окно чата",

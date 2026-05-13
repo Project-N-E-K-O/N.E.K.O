@@ -708,6 +708,8 @@
         "reactWindowClose": "Fechar janela de bate-papo",
         "reactWindowMinimize": "Minimize a janela de bate-papo",
         "reactWindowMinimizeShort": "Minimizar",
+        "reactWindowCompact": "Alternar para o chat compacto",
+        "reactWindowCompactShort": "Compacto",
         "reactWindowRestore": "Restaurar janela de bate-papo",
         "reactWindowRestoreShort": "Restaurar",
         "reactWindowMountFailed": "Falha ao montar a janela de bate-papo",

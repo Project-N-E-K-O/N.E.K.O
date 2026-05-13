@@ -31,6 +31,16 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('accepts chat surface mode props', () => {
+    const props = parseChatWindowProps({
+      chatSurfaceMode: 'compact',
+      compactChatState: 'input',
+    });
+
+    expect(props.chatSurfaceMode).toBe('compact');
+    expect(props.compactChatState).toBe('input');
+  });
+
   it('accepts an avatar interaction callback in window props', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });

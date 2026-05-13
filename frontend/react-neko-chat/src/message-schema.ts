@@ -48,6 +48,9 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
+const compactChatStateSchema = z.enum(['default', 'options', 'input']);
+
 const galgameOptionSchema = z.object({
   label: z.string().min(1),
   text: z.string().min(1),
@@ -198,6 +201,12 @@ export const chatWindowPropsSchema = z.object({
   avatarGeneratorButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
+  chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  compactChatState: compactChatStateSchema.optional(),
+  onCompactChatStateChange: z.function()
+    .args(compactChatStateSchema)
+    .returns(z.void())
+    .optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),
@@ -273,6 +282,8 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
+export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;

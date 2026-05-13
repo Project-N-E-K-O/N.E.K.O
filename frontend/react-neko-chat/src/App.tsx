@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react';
+﻿import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
 import {
@@ -9,9 +9,9 @@ import {
   type ComposerAttachment,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
+  type CompactChatState,
   type GalgameOption,
   type ChoiceOption,
-  type ChoicePrompt,
   type ChoicePromptSource,
 } from './message-schema';
 
@@ -27,15 +27,77 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onTranslateToggle?: () => void;
   onGalgameModeToggle?: () => void;
   onGalgameOptionSelect?: (option: GalgameOption) => void;
-  // Generic ChoicePrompt（mini-game invite 等通用三选项框架）。
-  // galgame mode 现有路径继续走 galgameOptions / onGalgameOptionSelect（BC）；
-  // 本框架先只承载 mini_game_invite，未来可把 galgame 也迁过来。
-  choicePrompt?: ChoicePrompt | null;
+  // ChoicePrompt remains part of ChatWindowSchemaProps. Keep the legacy galgame
+  // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
+  onCompactChatStateChange?: (state: CompactChatState) => void;
 };
 
 const defaultMessages: ChatMessage[] = [];
 type AvatarToolId = AvatarInteractionPayload['toolId'];
+
+function getEffectiveCompactChatState(
+  requestedState: CompactChatState,
+  hasVisibleChoices: boolean,
+): CompactChatState {
+  if (requestedState === 'input') {
+    return 'input';
+  }
+  if (hasVisibleChoices) {
+    return 'options';
+  }
+  return requestedState;
+}
+
+const COMPACT_PREVIEW_MAX_LENGTH = 84;
+
+function normalizeCompactPreviewText(text: string): string {
+  return text
+    .replace(/\[play_music:[^\]]*(\]|$)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateCompactPreview(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function getMessageBlockPreviewText(message: ChatMessage): string {
+  if (!Array.isArray(message.blocks)) {
+    return '';
+  }
+
+  const text = message.blocks.flatMap((block) => {
+    switch (block.type) {
+      case 'text':
+      case 'status':
+        return [block.text];
+      case 'link':
+        return [block.title || block.description || block.url];
+      default:
+        return [];
+    }
+  }).join(' ');
+
+  return normalizeCompactPreviewText(text);
+}
+
+function getCompactMessagePreview(messages: ChatMessage[]): { author: string; text: string } | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+    const text = getMessageBlockPreviewText(message);
+    if (!text) continue;
+    return {
+      author: message.author,
+      text: truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
+    };
+  }
+  return null;
+}
 
 type ToolIconItem = {
   id: AvatarToolId;
@@ -578,6 +640,8 @@ export default function App({
   composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
   composerHidden = false,
   composerDisabled = false,
+  chatSurfaceMode = 'full',
+  compactChatState = 'default',
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -596,7 +660,7 @@ export default function App({
   galgameOptionsLoading = false,
   galgameToggleButtonLabel = i18n('chat.galgameToggle', 'GalGame Mode'),
   galgameToggleButtonAriaLabel,
-  galgameLoadingLabel = i18n('chat.galgameLoading', '生成回复选项中…'),
+  galgameLoadingLabel = i18n('chat.galgameLoading', 'Generating options...'),
   onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
@@ -610,22 +674,18 @@ export default function App({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  onCompactChatStateChange,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  // 当 composer-bottom-bar 宽度 < 阈值时，把右侧 4 个工具按钮折叠成 ··· 菜单。
-  // 用四态机让进出过渡都跑完动画再切稳态：
-  //   expanded   → collapsing (右→左级联收起) → compact   (··· 入场)
-  //   compact    → expanding  (··· 退场)       → expanded  (左→右级联展开)
-  // 中途 resize 反向：collapsing↔expanded、expanding↔compact 直接跳回稳态。
+  // Collapse the right-side tools into an overflow menu when the composer gets
+  // narrow, while preserving the exit and re-entry animations for the tool row.
   type ComposerLayout = 'expanded' | 'collapsing' | 'compact' | 'expanding';
   const [composerLayout, setComposerLayout] = useState<ComposerLayout>('expanded');
   const showRightTools = composerLayout === 'expanded' || composerLayout === 'collapsing';
-  // 折叠瞬间记录右 4 按钮组的实际宽度，喂给 CSS keyframe 做 width 动画。
-  // 没这个 layout 不会跟着动画收缩，发送按钮就被"顶住"直到 scaleX 跑完。
   const [collapseFromWidth, setCollapseFromWidth] = useState<number | null>(null);
   const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
@@ -639,7 +699,7 @@ export default function App({
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
   const composerToolsRightRef = useRef<HTMLDivElement | null>(null);
-  // 镜像 composerLayout 到 ref，让 ResizeObserver 闭包能读到最新稳态
+  const compactInputShellRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
@@ -668,6 +728,7 @@ export default function App({
   }), []);
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
+  const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -728,7 +789,7 @@ export default function App({
   }, []);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
-  // Use _rollbackKey for dedup — it changes on every rollbackLastDraft() call
+  // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
   // and stays the same across intermediate renderWindow() calls, so the rollback
   // is applied exactly once regardless of how many times renderWindow fires.
   useEffect(() => {
@@ -791,17 +852,25 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
-  // ChoicePrompt（mini-game invite 等）和 galgame options 共用 composer 底部
-  // 同一块 slot 视觉位。两者同时活跃会渲染出 6 个按钮挤一起；invite 是少见
-  // 且需要用户即时响应的 transient event，galgame options 是常驻 mode →
-  // invite 优先，galgame slot 临时让位。invite resolve 后下一轮 assistant
-  // turn-end 会重新触发 galgame fetch，自然回归。
+  // ChoicePrompt and galgame options share the same composer-anchored slot.
+  // The transient invite should win when both are present so we do not stack
+  // two button groups in the same compact surface.
   const choicePromptHasOptions = !!(choicePrompt && choicePrompt.options.length > 0);
-  // 模式开启 ≠ 选项实际占位。光开开关、还没收到 AI 新一轮时 slot 不撑开；
-  // 选项到位（loading 占位也算）才让 slot 长出来，输入壳跟着自然变高。
   const galgameOptionsVisible =
     galgameModeEnabled && !choicePromptHasOptions
     && (galgameOptionsLoading || galgameOptions.length > 0);
+  const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
+  const isCompactSurface = chatSurfaceMode === 'compact';
+  const effectiveCompactChatState = isCompactSurface
+    ? getEffectiveCompactChatState(compactChatState, compactSurfaceChoicesVisible)
+    : compactChatState;
+  const compactChoiceLayerOpen = !isCompactSurface
+    ? compactSurfaceChoicesVisible
+    : effectiveCompactChatState === 'options';
+  const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
+  const compactMessagePreview = useMemo(() => getCompactMessagePreview(messages), [messages]);
+  const compactPreviewText = compactMessagePreview?.text
+    || i18n('chat.emptyState', 'Chat content will appear here.');
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
@@ -870,6 +939,67 @@ export default function App({
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  const requestCompactChatState = useCallback((nextState: CompactChatState) => {
+    if (!isCompactSurface) return;
+    onCompactChatStateChange?.(nextState);
+  }, [isCompactSurface, onCompactChatStateChange]);
+
+  const scheduleCompactInputCollapse = useCallback(() => {
+    if (!isCompactSurface) return;
+    if (effectiveCompactChatState !== 'input') return;
+    window.setTimeout(() => {
+      if (draftRef.current.trim().length > 0) return;
+      if (composerAttachments.length > 0) return;
+      const activeElement = document.activeElement;
+      if (compactInputShellRef.current && activeElement instanceof Node && compactInputShellRef.current.contains(activeElement)) {
+        return;
+      }
+      requestCompactChatState('default');
+    }, 0);
+  }, [composerAttachments.length, effectiveCompactChatState, isCompactSurface, requestCompactChatState]);
+
+  useEffect(() => {
+    if (!isCompactSurface) {
+      setCompactPreviewTextVisible(compactPreviewText);
+      return;
+    }
+
+    if (!compactPreviewText) {
+      setCompactPreviewTextVisible('');
+      return;
+    }
+
+    let active = true;
+    let timeoutId: number | null = null;
+    setCompactPreviewTextVisible('');
+
+    const run = (index: number) => {
+      if (!active) return;
+      const nextIndex = Math.min(compactPreviewText.length, index + Math.max(1, Math.ceil(compactPreviewText.length / 28)));
+      setCompactPreviewTextVisible(compactPreviewText.slice(0, nextIndex));
+      if (nextIndex >= compactPreviewText.length) {
+        return;
+      }
+      timeoutId = window.setTimeout(() => run(nextIndex), 24);
+    };
+
+    timeoutId = window.setTimeout(() => run(0), 18);
+
+    return () => {
+      active = false;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [compactPreviewText, isCompactSurface]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    if (composerAttachments.length === 0) return;
+    if (effectiveCompactChatState === 'input') return;
+    requestCompactChatState('input');
+  }, [composerAttachments.length, effectiveCompactChatState, isCompactSurface, requestCompactChatState]);
 
   useEffect(() => {
     avatarInteractionCallbackRef.current = onAvatarInteraction;
@@ -1083,13 +1213,10 @@ export default function App({
     };
   }, [toolMenuOpen]);
 
-  // 镜像 composerLayout 到 ref，给 ResizeObserver 闭包读
   useEffect(() => {
     composerLayoutRef.current = composerLayout;
   }, [composerLayout]);
 
-  // 监听 composer-bottom-bar 宽度，决定是否进入 compact 折叠模式。
-  // 阈值：低于此宽度时把右侧 4 个工具按钮折叠成 ··· 菜单。
   useEffect(() => {
     const target = composerBottomBarRef.current;
     if (!target || typeof ResizeObserver === 'undefined') return;
@@ -1097,13 +1224,8 @@ export default function App({
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const wantCompact = entry.contentRect.width < COMPACT_THRESHOLD;
-        // 在 expanded → collapsing 这一刻抓一下右 4 按钮组的当前像素宽度，
-        // 同一批 setState 会和 layout 切换一起 commit，render 出来时
-        // .is-leaving 类和 --collapse-from-width 变量同时生效，
-        // CSS keyframe 就能从这个固定宽度插值到 0。
-        // 用 offsetWidth 而非 getBoundingClientRect().width：前者基于布局盒，
-        // 不受入场 scaleX 动画影响；如果 expand 动画还没跑完就又被压窄，
-        // bounding rect 会拿到被 scaleX 缩小后的视觉宽度导致 layout 抖动。
+        // 鍦?expanded 鈫?collapsing 杩欎竴鍒绘姄涓€涓嬪彸 4 鎸夐挳缁勭殑褰撳墠鍍忕礌瀹藉害锛?        // 鍚屼竴鎵?setState 浼氬拰 layout 鍒囨崲涓€璧?commit锛宺ender 鍑烘潵鏃?        // .is-leaving 绫诲拰 --collapse-from-width 鍙橀噺鍚屾椂鐢熸晥锛?        // CSS keyframe 灏辫兘浠庤繖涓浐瀹氬搴︽彃鍊煎埌 0銆?        // 鐢?offsetWidth 鑰岄潪 getBoundingClientRect().width锛氬墠鑰呭熀浜庡竷灞€鐩掞紝
+        // 涓嶅彈鍏ュ満 scaleX 鍔ㄧ敾褰卞搷锛涘鏋?expand 鍔ㄧ敾杩樻病璺戝畬灏卞張琚帇绐勶紝
         if (wantCompact && composerLayoutRef.current === 'expanded' && composerToolsRightRef.current) {
           const node = composerToolsRightRef.current;
           const w = Math.max(node.offsetWidth, node.scrollWidth);
@@ -1112,12 +1234,10 @@ export default function App({
         setComposerLayout(prev => {
           if (wantCompact) {
             if (prev === 'expanded') return 'collapsing';
-            // 展开过程中又被压窄：退场动画来不及跑完就反转，直接回到 compact 稳态。
             if (prev === 'expanding') return 'compact';
             return prev;
           } else {
             if (prev === 'compact') return 'expanding';
-            // 收起过程中又被拉宽：跳回 expanded 稳态。
             if (prev === 'collapsing') return 'expanded';
             return prev;
           }
@@ -1128,10 +1248,8 @@ export default function App({
     return () => observer.disconnect();
   }, []);
 
-  // 收起/展开动画跑完后切到稳态。时长需与 styles.css 中的 keyframes 对齐。
-  // prefers-reduced-motion 下 styles.css 把动画设成 none，这时还等 270/220ms
-  // 会让工具区滞留在过渡态（控件视觉上提前到位但 layout state 没切），
-  // 直接 0ms 立刻切稳态。
+  // 鏀惰捣/灞曞紑鍔ㄧ敾璺戝畬鍚庡垏鍒扮ǔ鎬併€傛椂闀块渶涓?styles.css 涓殑 keyframes 瀵归綈銆?  // prefers-reduced-motion 涓?styles.css 鎶婂姩鐢昏鎴?none锛岃繖鏃惰繕绛?270/220ms
+  // 浼氳宸ュ叿鍖烘粸鐣欏湪杩囨浮鎬侊紙鎺т欢瑙嗚涓婃彁鍓嶅埌浣嶄絾 layout state 娌″垏锛夛紝
   useEffect(() => {
     const prefersReducedMotion =
       typeof window !== 'undefined'
@@ -1152,12 +1270,11 @@ export default function App({
     return undefined;
   }, [composerLayout]);
 
-  // 离开 compact 稳态时关闭 ··· 弹窗（包括反向中断和 expanding 阶段）
   useEffect(() => {
     if (composerLayout !== 'compact') setOverflowMenuOpen(false);
   }, [composerLayout]);
 
-  // ··· 菜单的外部点击 / Esc 关闭
+  // 路路路 鑿滃崟鐨勫閮ㄧ偣鍑?/ Esc 鍏抽棴
   useEffect(() => {
     if (!overflowMenuOpen) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -1540,13 +1657,12 @@ export default function App({
     try {
       onComposerSubmit?.({ text });
       setDraft('');
+      requestCompactChatState('default');
     } finally {
       requestAnimationFrame(() => { submittingRef.current = false; });
     }
   }
 
-  // 右侧 3 个工具按钮：在 compact 与 normal 两种布局中复用同一份 JSX，
-  // 既避免重复，也保证 ref/事件绑定在两种模式下行为一致。
   const translateButtonNode = (
     <button
       className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
@@ -1629,7 +1745,7 @@ export default function App({
             setToolMenuOpen(false);
           }}
         >
-          <span aria-hidden="true">×</span>
+          <span aria-hidden="true">脳</span>
         </button>
       ) : null}
       {toolMenuOpen ? (
@@ -1694,8 +1810,144 @@ export default function App({
     </div>
   );
 
+  const choiceLayerNode = (
+    <div
+      className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
+      data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
+      data-chat-surface-mode={chatSurfaceMode}
+    >
+      {galgameModeEnabled && !choicePromptHasOptions ? (
+        <div
+          className={`composer-galgame-slot${compactChoiceLayerOpen && galgameOptionsVisible ? ' is-open' : ''}`}
+          aria-hidden={!(compactChoiceLayerOpen && galgameOptionsVisible)}
+        >
+          <div
+            className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
+            role="group"
+            aria-label={galgameToggleButtonLabel}
+          >
+            {galgameOptions.length > 0
+              ? galgameOptions.slice(0, 3).map((option, index) => (
+                  <button
+                    key={`${index}-${option.label}`}
+                    type="button"
+                    className="composer-galgame-option"
+                    title={option.text}
+                    disabled={composerDisabled || galgameOptionsLoading}
+                    tabIndex={compactChoiceLayerOpen && galgameOptionsVisible ? 0 : -1}
+                    onClick={() => {
+                      if (submittingRef.current) return;
+                      submittingRef.current = true;
+                      try {
+                        onGalgameOptionSelect?.(option);
+                        requestCompactChatState('default');
+                      } finally {
+                        requestAnimationFrame(() => { submittingRef.current = false; });
+                      }
+                    }}
+                  >
+                    <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
+                    <span className="composer-galgame-option-text">{option.text}</span>
+                  </button>
+                ))
+              : galgameOptionsLoading
+                ? ['A', 'B', 'C'].map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="composer-galgame-option is-placeholder"
+                      disabled
+                      tabIndex={-1}
+                    >
+                      <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
+                      <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
+                    </button>
+                  ))
+                : null}
+          </div>
+        </div>
+      ) : null}
+      {choicePrompt && choicePrompt.options.length > 0 ? (
+        <div
+          className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
+          aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
+          data-choice-source={choicePrompt.source}
+        >
+          <div
+            className="composer-galgame-options composer-choice-options"
+            role="group"
+            aria-label={choicePrompt.source === 'mini_game_invite'
+              ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
+              : galgameToggleButtonLabel}
+          >
+            {choicePrompt.options.slice(0, 3).map((option, index) => (
+              <button
+                key={`${index}-${option.choice}`}
+                type="button"
+                className="composer-galgame-option composer-choice-option"
+                title={option.label}
+                disabled={composerDisabled}
+                onClick={() => {
+                  if (submittingRef.current) return;
+                  submittingRef.current = true;
+                  try {
+                    onChoiceSelect?.(option, choicePrompt.source);
+                    requestCompactChatState('default');
+                  } finally {
+                    requestAnimationFrame(() => { submittingRef.current = false; });
+                  }
+                }}
+              >
+                <span className="composer-galgame-option-text composer-choice-option-text">
+                  {option.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const messageListNode = (
+    <MessageList
+      messages={messages}
+      ariaLabel={messageListAriaLabel}
+      failedStatusLabel={failedStatusLabel}
+      onAction={onMessageAction}
+    />
+  );
+
+  const chatBodyNode = isCompactSurface ? (
+    <section
+      className="chat-body chat-body-compact-surface"
+      data-compact-chat-state={effectiveCompactChatState}
+      data-compact-has-visible-choices={compactSurfaceChoicesVisible ? 'true' : 'false'}
+    >
+      <div
+        className={`compact-chat-stage compact-chat-stage-${effectiveCompactChatState}`}
+        data-compact-chat-state={effectiveCompactChatState}
+        data-compact-stage-layout="stage2"
+      >
+        <div
+          className="compact-chat-stage-body-slot"
+          data-compact-stage-slot="body"
+          data-compact-stage-fallback="message-list"
+        />
+      </div>
+    </section>
+  ) : (
+    <section className="chat-body">
+      {messageListNode}
+    </section>
+  );
+
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${surfaceModeClassName}`}
+      data-chat-surface-mode={chatSurfaceMode}
+      data-compact-chat-state={effectiveCompactChatState}
+    >
       {floatingFistDrops.map(drop => (
         <span
           key={drop.id}
@@ -1733,7 +1985,7 @@ export default function App({
             '--heart-delay': `${heart.delayMs}ms`,
           } as CSSProperties}
         >
-          <span className="lollipop-floating-heart-glyph">♥</span>
+          <span className="lollipop-floating-heart-glyph">*</span>
         </span>
       ))}
       {activeToolItem && activeCursorToolId !== 'hammer' && avatarCursorOverlayActive ? (
@@ -1796,7 +2048,12 @@ export default function App({
           </div>
         </div>
       ) : null}
-      <section className="chat-window" aria-label={chatWindowAriaLabel}>
+      <section
+        className={`chat-window ${surfaceModeClassName}`}
+        aria-label={chatWindowAriaLabel}
+        data-chat-surface-mode={chatSurfaceMode}
+        data-compact-chat-state={effectiveCompactChatState}
+      >
         <header className="window-topbar">
           <div className="window-title-group">
             <div className="window-avatar window-avatar-image-shell">
@@ -1807,18 +2064,13 @@ export default function App({
           {/* Avatar button moved to #react-chat-window-header-actions in host template */}
         </header>
 
-        <section className="chat-body">
-          <MessageList
-            messages={messages}
-            ariaLabel={messageListAriaLabel}
-            failedStatusLabel={failedStatusLabel}
-            onAction={onMessageAction}
-          />
-        </section>
+        {chatBodyNode}
 
         <footer
-          className={`composer-panel${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
+          className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
           style={composerHidden ? { display: 'none' } : undefined}
+          data-chat-surface-mode={chatSurfaceMode}
+          data-compact-chat-state={effectiveCompactChatState}
         >
           <div id="music-player-mount" />
           {composerAttachments.length > 0 ? (
@@ -1843,7 +2095,7 @@ export default function App({
                       }
                     }}
                   >
-                    ×
+                    脳
                   </button>
                 </figure>
               ))}
@@ -1853,7 +2105,66 @@ export default function App({
             event.preventDefault();
             submitDraft();
           }}>
-            <div className="composer-input-shell">
+            {isCompactSurface && effectiveCompactChatState !== 'input' ? (
+              <div
+                className="compact-chat-capsule-shell"
+                data-compact-chat-state={effectiveCompactChatState}
+              >
+                {choiceLayerNode}
+                <button
+                  className="compact-chat-capsule compact-chat-capsule-button"
+                  type="button"
+                  disabled={composerDisabled}
+                  onClick={() => requestCompactChatState('input')}
+                >
+                  <span className="compact-chat-capsule-text">
+                    {compactPreviewTextVisible || compactPreviewText}
+                  </span>
+                </button>
+              </div>
+            ) : isCompactSurface ? (
+              <div
+                className="composer-input-shell compact-chat-input-shell"
+                ref={compactInputShellRef}
+                data-compact-chat-state={effectiveCompactChatState}
+                onBlurCapture={scheduleCompactInputCollapse}
+              >
+                {choiceLayerNode}
+                <div className="compact-chat-inline-input">
+                  <textarea
+                    className="composer-input"
+                    placeholder={inputPlaceholder}
+                    aria-label={inputPlaceholder}
+                    rows={1}
+                    value={draft}
+                    readOnly={composerDisabled}
+                    disabled={composerDisabled}
+                    onChange={(event) => { setDraft(event.target.value); }}
+                    onBlur={scheduleCompactInputCollapse}
+                    onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing) return;
+                      if (event.key === 'Enter' && !event.shiftKey) {
+                        event.preventDefault();
+                        submitDraft();
+                      }
+                    }}
+                  />
+                  <button
+                    className="send-button-circle"
+                    type="submit"
+                    aria-label={sendButtonLabel}
+                    disabled={!canSubmit}
+                    onBlur={scheduleCompactInputCollapse}
+                  >
+                    <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="composer-input-shell"
+                data-compact-chat-state={effectiveCompactChatState}
+              >
               <textarea
                 className="composer-input"
                 placeholder={inputPlaceholder}
@@ -1871,15 +2182,15 @@ export default function App({
                   }
                 }}
               />
+              <div
+                className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
+                data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
+                data-chat-surface-mode={chatSurfaceMode}
+              >
               {galgameModeEnabled && !choicePromptHasOptions ? (
-                // Slot 始终挂在树上，开/关靠 is-open（max-height + opacity 过渡）。
-                // 这样选项进/出时输入壳跟着自然长/缩，bottom-bar 锚在 panel 底
-                // 不动，textarea 顶端跟着 shell-top 上抬，视觉上是从下往上展开。
-                // mini-game invite 等 ChoicePrompt 占位时整块 slot 不挂树，避免
-                // 与下面 composer-choice-slot 视觉撞车（参见 choicePromptHasOptions）。
                 <div
-                  className={`composer-galgame-slot${galgameOptionsVisible ? ' is-open' : ''}`}
-                  aria-hidden={!galgameOptionsVisible}
+                  className={`composer-galgame-slot${compactChoiceLayerOpen && galgameOptionsVisible ? ' is-open' : ''}`}
+                  aria-hidden={!(compactChoiceLayerOpen && galgameOptionsVisible)}
                 >
                   <div
                     className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
@@ -1894,12 +2205,13 @@ export default function App({
                             className="composer-galgame-option"
                             title={option.text}
                             disabled={composerDisabled || galgameOptionsLoading}
-                            tabIndex={galgameOptionsVisible ? 0 : -1}
+                            tabIndex={compactChoiceLayerOpen && galgameOptionsVisible ? 0 : -1}
                             onClick={() => {
                               if (submittingRef.current) return;
                               submittingRef.current = true;
                               try {
                                 onGalgameOptionSelect?.(option);
+                                requestCompactChatState('default');
                               } finally {
                                 requestAnimationFrame(() => { submittingRef.current = false; });
                               }
@@ -1927,15 +2239,15 @@ export default function App({
                 </div>
               ) : null}
               {/*
-                Generic ChoicePrompt slot —— mini-game invite 等通用三选项
-                抽象。复用 .composer-galgame-* CSS 让 visual / animation 与
-                galgame mode 统一；本框架与 galgame slot 互不重叠（galgame
-                走自己的 galgameOptions 路径，BC），未来可统一迁移。
+                Generic ChoicePrompt slot for mini-game invites and future
+                composer-anchored choices. Reuse the galgame option visuals so
+                spacing and animation stay aligned without reviving the large
+                galgame panel treatment.
               */}
               {choicePrompt && choicePrompt.options.length > 0 ? (
                 <div
-                  className={`composer-galgame-slot composer-choice-slot is-open is-${choicePrompt.source}`}
-                  aria-hidden="false"
+                  className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
+                  aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
                   data-choice-source={choicePrompt.source}
                 >
                   <div
@@ -1957,6 +2269,7 @@ export default function App({
                           submittingRef.current = true;
                           try {
                             onChoiceSelect?.(option, choicePrompt.source);
+                            requestCompactChatState('default');
                           } finally {
                             requestAnimationFrame(() => { submittingRef.current = false; });
                           }
@@ -1970,6 +2283,7 @@ export default function App({
                   </div>
                 </div>
               ) : null}
+              </div>
               <div className="composer-bottom-bar" ref={composerBottomBarRef}>
                 <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
@@ -1993,8 +2307,7 @@ export default function App({
                   >
                     <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
                   </button>
-                  {/* 这条分隔符在 expanded / compact 两态下都常驻同一位置，
-                      避免切换时分隔符闪烁，让动画过渡更顺滑 */}
+                  {/* 杩欐潯鍒嗛殧绗﹀湪 expanded / compact 涓ゆ€佷笅閮藉父椹诲悓涓€浣嶇疆锛?                      閬垮厤鍒囨崲鏃跺垎闅旂闂儊锛岃鍔ㄧ敾杩囨浮鏇撮『婊?*/}
                   <span className="composer-tool-divider" aria-hidden="true">|</span>
                   {showRightTools ? (
                     <div
@@ -2064,6 +2377,7 @@ export default function App({
                 </button>
               </div>
             </div>
+            )}
           </form>
         </footer>
       </section>

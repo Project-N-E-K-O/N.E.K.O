@@ -708,6 +708,8 @@
         "reactWindowClose": "Cerrar ventana de chat",
         "reactWindowMinimize": "Minimizar ventana de chat",
         "reactWindowMinimizeShort": "Minimizar",
+        "reactWindowCompact": "Cambiar al chat compacto",
+        "reactWindowCompactShort": "Compacto",
         "reactWindowRestore": "Restaurar ventana de chat",
         "reactWindowRestoreShort": "Restaurar",
         "reactWindowMountFailed": "No se pudo montar la ventana de chat",

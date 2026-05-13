@@ -708,6 +708,8 @@
         "reactWindowClose": "チャットウィンドウを閉じる",
         "reactWindowMinimize": "チャットウィンドウを最小化",
         "reactWindowMinimizeShort": "最小化",
+        "reactWindowCompact": "コンパクトチャットに切り替え",
+        "reactWindowCompactShort": "コンパクト",
         "reactWindowRestore": "チャットウィンドウを復元",
         "reactWindowRestoreShort": "復元",
         "reactWindowMountFailed": "チャットウィンドウのマウントに失敗しました",

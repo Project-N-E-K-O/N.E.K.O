@@ -708,6 +708,8 @@
         "reactWindowClose": "關閉聊天框",
         "reactWindowMinimize": "最小化聊天框",
         "reactWindowMinimizeShort": "最小化",
+        "reactWindowCompact": "切換到緊湊聊天框",
+        "reactWindowCompactShort": "緊湊",
         "reactWindowRestore": "恢復聊天框",
         "reactWindowRestoreShort": "恢復",
         "reactWindowMountFailed": "聊天框掛載失敗",

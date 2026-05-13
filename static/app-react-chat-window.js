@@ -26,6 +26,8 @@
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
+    var CHAT_SURFACE_MODE_SEQUENCE = ['full', 'compact', 'minimized'];
+    var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
 
     var state = {
         viewProps: null,
@@ -42,6 +44,8 @@
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
+        chatSurfaceMode: 'full',
+        compactChatState: 'default',
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
         // galgame-mode-change event, which is the only signal chat.html's
@@ -62,6 +66,35 @@
         // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
         _launchedMiniGameSessionIds: Object.create(null)
     };
+
+    function normalizeChatSurfaceMode(mode) {
+        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'full';
+    }
+
+    function normalizeCompactChatState(mode) {
+        return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';
+    }
+
+    function getCurrentChatSurfaceMode() {
+        return normalizeChatSurfaceMode(state.chatSurfaceMode);
+    }
+
+    function getCurrentCompactChatState() {
+        return normalizeCompactChatState(state.compactChatState);
+    }
+
+    function getNextChatSurfaceMode(mode) {
+        var normalized = normalizeChatSurfaceMode(mode);
+        var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
+        var nextIndex = currentIndex >= 0
+            ? (currentIndex + 1) % CHAT_SURFACE_MODE_SEQUENCE.length
+            : 0;
+        return CHAT_SURFACE_MODE_SEQUENCE[nextIndex];
+    }
+
+    function resetCompactChatState() {
+        state.compactChatState = 'default';
+    }
 
     function readGalgameModePreference() {
         try {
@@ -432,6 +465,8 @@
             jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
             avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
             avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像'),
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
             translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
@@ -547,6 +582,8 @@
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
@@ -563,7 +600,8 @@
             onTranslateToggle: handleTranslateToggle,
             onGalgameModeToggle: handleGalgameModeToggle,
             onGalgameOptionSelect: handleGalgameOptionSelect,
-            onChoiceSelect: handleChoiceSelect
+            onChoiceSelect: handleChoiceSelect,
+            onCompactChatStateChange: handleCompactChatStateChange
         });
     }
 
@@ -1425,6 +1463,10 @@
         }
     }
 
+    function handleCompactChatStateChange(nextCompactChatState) {
+        setCompactChatState(nextCompactChatState);
+    }
+
     function handleMiniGameInviteChoice(option) {
         if (isHomeTutorialInteractionLocked()) return;
         var prompt = state.choicePrompt;
@@ -1666,7 +1708,21 @@
     }
 
     function setViewProps(nextViewProps) {
-        state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
+        var nextProps = nextViewProps || {};
+        if (Object.prototype.hasOwnProperty.call(nextProps, 'chatSurfaceMode')) {
+            if (normalizeChatSurfaceMode(nextProps.chatSurfaceMode) !== getCurrentChatSurfaceMode()
+                && !Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
+                resetCompactChatState();
+            }
+            state.chatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
+        }
+        if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
+            state.compactChatState = normalizeCompactChatState(nextProps.compactChatState);
+        }
+        state.viewProps = Object.assign({}, ensureViewProps(), nextProps, {
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState()
+        });
         renderWindow();
         return state.viewProps;
     }
@@ -1839,6 +1895,8 @@
         return {
             mounted: mounted,
             minimized: minimized,
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
             composerAttachments: state.composerAttachments.slice(),
@@ -1892,6 +1950,47 @@
             }
         }
         return icon;
+    }
+
+    function setCompactChatState(nextCompactChatState) {
+        var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (state.compactChatState === normalized) {
+            return normalized;
+        }
+        state.compactChatState = normalized;
+        renderWindow();
+        return normalized;
+    }
+
+    function setChatSurfaceMode(nextMode) {
+        var normalized = normalizeChatSurfaceMode(nextMode);
+        var previousMode = getCurrentChatSurfaceMode();
+        var nextMinimized = normalized === 'minimized';
+        var previousMinimized = previousMode === 'minimized';
+        if (previousMode === normalized) {
+            syncChatSurfaceModeUI();
+            return normalized;
+        }
+
+        resetCompactChatState();
+        state.chatSurfaceMode = normalized;
+        renderWindow();
+
+        if (nextMinimized !== previousMinimized) {
+            setMinimized(nextMinimized);
+        } else {
+            syncChatSurfaceModeUI();
+        }
+
+        dispatchHostEvent('chat-surface-mode-change', {
+            mode: normalized,
+            previousMode: previousMode
+        });
+        return normalized;
+    }
+
+    function cycleChatSurfaceMode() {
+        return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
     }
 
     function setMinimized(nextMinimized) {
@@ -2121,7 +2220,7 @@
         }
 
         // 更新按钮图标和 aria
-        syncMinimizeUI();
+        syncChatSurfaceModeUI();
     }
 
     function syncMinimizeUI() {
@@ -2142,8 +2241,41 @@
         }
     }
 
+    function syncChatSurfaceModeUI() {
+        var shell = getShell();
+        var button = getMinimizeButton();
+        var btnIcon = getMinimizeIcon();
+        var ballIcon = ensureMinimizedBallIcon();
+        var surfaceMode = getCurrentChatSurfaceMode();
+        var ariaLabel = surfaceMode === 'compact'
+            ? getI18nText('chat.reactWindowMinimize', '最小化聊天框')
+            : surfaceMode === 'minimized'
+                ? getI18nText('chat.reactWindowRestore', '恢复聊天框')
+                : getI18nText('chat.reactWindowCompact', '切换到紧凑聊天框');
+        var shortLabel = surfaceMode === 'compact'
+            ? getI18nText('chat.reactWindowMinimizeShort', '最小化')
+            : surfaceMode === 'minimized'
+                ? getI18nText('chat.reactWindowRestoreShort', '恢复')
+                : getI18nText('chat.reactWindowCompactShort', '紧凑');
+        if (button) {
+            button.setAttribute('aria-label', ariaLabel);
+            button.title = shortLabel;
+        }
+        if (btnIcon) {
+            btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
+            btnIcon.alt = ariaLabel;
+        }
+        if (ballIcon) {
+            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+        }
+        if (shell) {
+            shell.setAttribute('data-chat-surface-mode', surfaceMode);
+            shell.setAttribute('data-compact-chat-state', getCurrentCompactChatState());
+        }
+    }
+
     function toggleMinimized() {
-        setMinimized(!minimized);
+        cycleChatSurfaceMode();
     }
 
     function prewarmUserDisplayName() {
@@ -2233,12 +2365,15 @@
                 shell.style.transform = 'none';
             }
             minimized = false;
+            state.chatSurfaceMode = 'full';
+            resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;
-            syncMinimizeUI();
+            syncChatSurfaceModeUI();
         }
 
         overlay.hidden = true;
+        resetCompactChatState();
         document.body.classList.remove('react-chat-window-open');
         clearMobileContentCap();
         handleAvatarToolStateChange({
@@ -2866,10 +3001,14 @@
         },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,
+        setChatSurfaceMode: setChatSurfaceMode,
+        cycleChatSurfaceMode: cycleChatSurfaceMode,
+        setCompactChatState: setCompactChatState,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
+        getChatSurfaceMode: function () { return getCurrentChatSurfaceMode(); },
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
