@@ -182,9 +182,12 @@ class TelemetryStorage:
                         bucket.get("total_tokens", 0), bucket.get("cached_tokens", 0),
                         bucket.get("call_count", 0), 0,
                     )
-            # branch 在客户端首次启动后落盘并保持稳定，所以理论上同一 device 只
-            # 该看到一个非 unknown 值；这里仍允许覆写 —— 万一用户清盘后客户端重新
-            # 抽签，新值就是当前真值。locale / timezone 每次取最新值同样覆写。
+            # branch 在客户端首次启动后落盘并保持稳定，理论上同一 device 只该
+            # 看到一个非 unknown 值；非 unknown 时直接覆写（清盘重抽时也只会是
+            # 新真值）。locale / timezone / distribution 每次取实时值，同样仅当
+            # 非 unknown 才覆写 —— 老客户端没带这些字段时 Pydantic 默认 'unknown'，
+            # 或新客户端临时检测失败（例如 tzlocal 抛错）时，都不应该把上一次
+            # 已知的好值抹成 'unknown'。
             conn.execute("""
                 INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution,
                                      first_seen, last_seen, event_count)
@@ -193,10 +196,10 @@ class TelemetryStorage:
                         strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
                 ON CONFLICT(device_id) DO UPDATE SET
                     app_version  = excluded.app_version,
-                    branch       = excluded.branch,
-                    locale       = excluded.locale,
-                    timezone     = excluded.timezone,
-                    distribution = excluded.distribution,
+                    branch       = CASE WHEN excluded.branch       = 'unknown' THEN devices.branch       ELSE excluded.branch       END,
+                    locale       = CASE WHEN excluded.locale       = 'unknown' THEN devices.locale       ELSE excluded.locale       END,
+                    timezone     = CASE WHEN excluded.timezone     = 'unknown' THEN devices.timezone     ELSE excluded.timezone     END,
+                    distribution = CASE WHEN excluded.distribution = 'unknown' THEN devices.distribution ELSE excluded.distribution END,
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
             """, (device_id, app_version, branch, locale, timezone, distribution))
