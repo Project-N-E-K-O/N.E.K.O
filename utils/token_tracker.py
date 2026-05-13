@@ -517,22 +517,26 @@ def _get_telemetry_timezone() -> str:
     except Exception:
         pass
     try:
-        local_tz = datetime.now().astimezone().tzinfo
+        now_local = datetime.now().astimezone()
+        local_tz = now_local.tzinfo
         if local_tz is not None:
             name = str(local_tz)
             # Windows 上 astimezone 可能给出 "China Standard Time" 这类非 IANA 字串，
             # 没有 '/' 时退到 offset 表示，避免污染按 IANA 切片的分析。
             if name and "/" in name:
                 return name[:64]
+        # 取实际 UTC 偏移（aware datetime 反映当前 DST 状态）。time.altzone /
+        # time.daylight 不行：time.daylight 只表示"locale 有没有 DST 制度"，
+        # 不是"现在是不是 DST"，在有 DST 的时区会全年报 DST 偏移。
+        offset = now_local.utcoffset()
+        if offset is not None:
+            total_sec = int(offset.total_seconds())
+            sign = "+" if total_sec >= 0 else "-"
+            abs_sec = abs(total_sec)
+            return f"{sign}{abs_sec // 3600:02d}:{(abs_sec % 3600) // 60:02d}"
     except Exception:
         pass
-    try:
-        offset_sec = time.altzone if time.daylight else time.timezone
-        sign = "-" if offset_sec > 0 else "+"
-        abs_sec = abs(int(offset_sec))
-        return f"{sign}{abs_sec // 3600:02d}:{(abs_sec % 3600) // 60:02d}"
-    except Exception:
-        return "unknown"
+    return "unknown"
 
 
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
