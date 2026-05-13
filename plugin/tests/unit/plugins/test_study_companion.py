@@ -47,7 +47,7 @@ from plugin.plugins.study_companion import service as study_service
 from plugin.plugins.study_companion.screen_classifier import ScreenClassification, classify_screen_from_ocr
 from plugin.plugins.study_companion.service import _available_tesseract_languages
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
-from plugin.plugins.study_companion.ui_api import build_open_ui_payload
+from plugin.plugins.study_companion.ui_api import build_knowledge_map_payload, build_open_ui_payload
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
 from plugin.sdk.plugin import Ok
 
@@ -391,6 +391,26 @@ def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> No
         store.close()
 
 
+def test_knowledge_map_related_object_edges_use_topic_ids() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {
+                "id": "quadratic_vertex_form",
+                "name": "Quadratic vertex form",
+                "related": [{"id": "linear_function_kb", "relation": "compare"}],
+            },
+            {"id": "linear_function_kb", "name": "Linear function"},
+        ]
+    )
+
+    assert {
+        "from": "quadratic_vertex_form",
+        "to": "linear_function_kb",
+        "relation": "compare",
+    } in payload["edges"]
+    assert not any(str(edge["to"]).startswith("{") for edge in payload["edges"])
+
+
 def test_build_tutor_payload_preserves_structured_summary() -> None:
     reply = TutorReply(
         operation="summarize_session",
@@ -622,6 +642,25 @@ def test_study_open_ui_payload_returns_message_key() -> None:
     assert payload["path"] == "/plugin/study_companion/ui/"
     assert payload["message_key"] == "ui.open.available"
     assert "message" not in payload
+
+
+def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {
+                "id": "number_axis",
+                "name": "Number Axis",
+                "prerequisites": [{"id": "real_number_concept", "required_mastery": 0.55}],
+                "related": [{"id": "absolute_value", "relation": "next"}],
+            },
+            {"id": "real_number_concept", "name": "Real Numbers"},
+            {"id": "absolute_value", "name": "Absolute Value"},
+        ]
+    )
+
+    assert {"from": "real_number_concept", "to": "number_axis", "relation": "prerequisite", "required_mastery": 0.55} in payload["edges"]
+    assert {"from": "number_axis", "to": "absolute_value", "relation": "next"} in payload["edges"]
+    assert all(not edge["from"].startswith("{") for edge in payload["edges"])
 
 
 def test_study_companion_i18n_bundles_are_present() -> None:
@@ -2057,9 +2096,13 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries
     assert "study_detect_mode_intent" in entries
-    assert "study_export_notes" not in entries
+    assert "study_export_notes" in entries
     assert "study_knowledge_map" in entries
     assert "study_set_knowledge_contribution_opt_in" in entries
+    preview = await entries["study_export_notes"].handler(fmt="markdown", preview_only=True, title="Default Notes")
+    assert isinstance(preview, Ok)
+    assert preview.value["filename"] == "default-notes.md"
+    assert preview.value["markdown"]
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"

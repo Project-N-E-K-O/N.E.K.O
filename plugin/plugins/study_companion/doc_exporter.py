@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 import json
+import logging
 import re
 import textwrap
 from pathlib import Path
@@ -13,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from .models import DocExportConfig, STUDY_EXPORT_FORMATS, STUDY_EXPORT_STYLES
 
 
+_LOGGER = logging.getLogger(__name__)
 _MARKDOWN_ESCAPE_RE = re.compile(r"([\\`*_{}\[\]()#+\-.!|])")
 _MAX_TEXT_CHARS = 2000
 _MAX_MARKDOWN_CHARS = 120_000
@@ -113,6 +115,7 @@ class DocExporter:
         style_payload = self.load_style(export_style)
         limit = max(1, min(200, int(recent_limit or 30)))
         topics_limit = max(1, min(5000, int(style_payload.get("topics_limit") or 500)))
+        tone = str(style_payload.get("tone") or "").strip()
         requested_topic_ids = {str(item).strip() for item in (topic_ids or []) if str(item).strip()}
 
         interactions = self._store.list_interactions(limit=limit)
@@ -130,6 +133,8 @@ class DocExporter:
             f"- Exported at: `{now}`",
             f"- Style: `{export_style}`",
         ]
+        if tone:
+            lines.append(f"- Tone: `{escape_markdown(tone, limit=40)}`")
         if range:
             lines.append(f"- Range: {escape_markdown(range, limit=120)}")
         lines.extend(["", "## Overview", ""])
@@ -230,7 +235,8 @@ class DocExporter:
 
             pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
             font_name = "STSong-Light"
-        except Exception:
+        except Exception as exc:
+            _LOGGER.warning("PDF Unicode font registration failed; Chinese text may render incorrectly: %s", exc)
             font_name = "Helvetica"
         width, height = A4
         x = 48
@@ -244,7 +250,7 @@ class DocExporter:
                     pdf.showPage()
                     pdf.setFont(font_name, 10)
                     y = height - 48
-                pdf.drawString(x, y, part[:120])
+                pdf.drawString(x, y, _safe_utf8_truncate(part, 120))
                 y -= 14
         pdf.save()
         return output.getvalue()
@@ -334,6 +340,15 @@ def _pdf_safe_text(value: object) -> str:
     return str(value or "").replace("\t", "    ")
 
 
+def _safe_utf8_truncate(text: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    payload = str(text or "").encode("utf-8")
+    if len(payload) <= max_bytes:
+        return str(text or "")
+    return payload[:max_bytes].decode("utf-8", errors="ignore")
+
+
 __all__ = [
     "DocExporter",
     "ExportDocument",
@@ -341,5 +356,6 @@ __all__ = [
     "escape_markdown",
     "extension_for_format",
     "normalize_format",
+    "_safe_utf8_truncate",
     "slugify",
 ]

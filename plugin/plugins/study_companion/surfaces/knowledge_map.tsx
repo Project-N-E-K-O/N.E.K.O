@@ -110,7 +110,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
       <div className="study-panel__actions">
         {nodes.slice(0, 60).map((node) => (
           <button key={node.id} type="button" className={node.weak ? 'is-active' : ''}>
-            {node.label} {node.mastery ? `${Math.round(node.mastery * 100)}%` : ''}
+            {node.label} {node.mastery !== undefined && node.mastery !== null ? `${Math.round(node.mastery * 100)}%` : ''}
           </button>
         ))}
       </div>

@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 
+def _topic_ref_id(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("id") or value.get("topic_id") or "").strip()
+    return str(value or "").strip()
+
+
 def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
     path = f"/plugin/{plugin_id}/ui/" if available else ""
     message_key = "ui.open.available" if available else "ui.open.unavailable"
@@ -45,13 +51,17 @@ def build_knowledge_map_payload(
             }
         )
         for prereq in topic.get("prerequisites") or []:
-            prereq_id = str(prereq or "").strip()
+            prereq_id = _topic_ref_id(prereq)
             if prereq_id:
-                edges.append({"from": prereq_id, "to": topic_id, "relation": "prerequisite"})
+                edge = {"from": prereq_id, "to": topic_id, "relation": "prerequisite"}
+                if isinstance(prereq, dict) and prereq.get("required_mastery") is not None:
+                    edge["required_mastery"] = prereq.get("required_mastery")
+                edges.append(edge)
         for related in topic.get("related") or []:
-            related_id = str(related or "").strip()
+            related_id = _topic_ref_id(related)
             if related_id:
-                edges.append({"from": topic_id, "to": related_id, "relation": "related"})
+                relation = str(related.get("relation") or "related") if isinstance(related, dict) else "related"
+                edges.append({"from": topic_id, "to": related_id, "relation": relation})
     return {
         "nodes": nodes,
         "edges": edges,

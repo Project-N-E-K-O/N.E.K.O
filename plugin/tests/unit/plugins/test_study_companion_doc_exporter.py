@@ -5,7 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from plugin.plugins.study_companion.doc_exporter import DocExporter, _pdf_safe_text, escape_markdown
+from plugin.plugins.study_companion.doc_exporter import DocExporter, _pdf_safe_text, _safe_utf8_truncate, escape_markdown
 from plugin.plugins.study_companion.models import DocExportConfig, STUDY_EXPORT_FORMATS, STUDY_EXPORT_STYLES
 from plugin.plugins.study_companion.store import StudyStore
 
@@ -51,6 +51,7 @@ def test_markdown_build_escapes_and_truncates_user_text(tmp_path: Path) -> None:
         assert "\\*\\*raw\\*\\*" in markdown
         assert "\\[link\\]" in markdown
         assert "truncated" in markdown
+        assert "- Tone: `friendly`" in markdown
         assert "Photosynthesis" in markdown
         assert exporter.normalize_style("unknown") == "neko"
     finally:
@@ -125,3 +126,8 @@ def test_xmind_export_requires_explicit_enable(tmp_path: Path) -> None:
 def test_escape_markdown_handles_emoji_and_none() -> None:
     assert escape_markdown(None) == ""
     assert "😀" in escape_markdown("emoji 😀")
+
+
+def test_safe_utf8_truncate_does_not_split_multibyte_characters() -> None:
+    assert _safe_utf8_truncate("\u4e2d\u6587abc", 5) == "\u4e2d"
+    assert _safe_utf8_truncate("abc", 120) == "abc"

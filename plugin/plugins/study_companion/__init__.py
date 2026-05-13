@@ -243,8 +243,6 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     def _sync_doc_export_entry(self) -> None:
         self.unregister_dynamic_entry("study_export_notes")
-        if not bool(self._cfg.doc_export.enabled):
-            return
         self.register_dynamic_entry(
             "study_export_notes",
             self._study_export_notes_entry,

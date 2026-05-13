@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from plugin.plugins.study_companion.fsrs_bridge import StudyFsrsRating
 from plugin.plugins.study_companion.knowledge_tracker import (
     KnowledgeTracker,
     MasteryTracker,
@@ -121,6 +122,26 @@ def test_status_summary_due_review_count_is_not_limited(tmp_path: Path) -> None:
         store.close()
 
 
+def test_knowledge_tracker_persists_runtime_topic_before_tracking(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        result = tracker.on_answer(
+            topic_id="Runtime Algebra",
+            question={"question": "runtime check", "answer": "x", "topic": "Runtime Algebra", "difficulty": 2},
+            user_answer="x",
+            eval_result={"verdict": "correct", "score": "92/100", "error_type": "none"},
+            mode="interactive",
+        )
+
+        assert store.get_topic("runtime_algebra") is not None
+        assert result["mastery"]["topic_id"] == "runtime_algebra"
+        assert store.get_latest_mastery("runtime_algebra") is not None
+        assert store.get_fsrs_card("runtime_algebra") is not None
+    finally:
+        store.close()
+
+
 def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -153,6 +174,13 @@ def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: 
         assert queue[0]["topic"]["name"] == "Due Beyond 1000"
     finally:
         store.close()
+
+
+def test_rating_from_eval_handles_dirty_score_strings() -> None:
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92/100"}) == StudyFsrsRating.Easy
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92%"}) == StudyFsrsRating.Easy
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "A"}) == StudyFsrsRating.Easy
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "n/a"}) == StudyFsrsRating.Good
 
 
 def test_append_only_knowledge_tables_trim_per_key(tmp_path: Path) -> None:
