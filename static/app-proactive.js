@@ -1023,12 +1023,16 @@
 
             // 同步下一轮调度模式：后端在 propensity=restricted_screen_only
             // 时会把这个字段置 true，前端 scheduleProactiveChat 据此跳过
-            // tier backoff、按 baseInterval 等间隔触发。字段缺席时保守
-            // 走常规退避（与 200 之前的旧行为一致）。
+            // tier backoff、按 baseInterval 等间隔触发。
+            //
+            // 字段缺席 ≠ 模式应该回退。短路响应路径（409 try_start_proactive
+            // 冲突、voice fast path、game-route active 早退）都不走 _end_proactive，
+            // 也就拿不到这个字段——但用户的活动状态没变，把模式硬重置成 false
+            // 会让一次并发冲突就把客户端踢出 fixed 模式、被 tier backoff 吞几轮。
+            // 改为：只有显式收到 boolean 才同步，缺席时保留旧状态。
+            // Codex P2 review: PR #1327。
             if (typeof result.next_schedule_fixed_mode === 'boolean') {
                 S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
-            } else {
-                S.proactiveFixedScheduleMode = false;
             }
 
             if (result.success) {
