@@ -125,6 +125,13 @@ async def submit_telemetry(request: Request):
     if storage.is_duplicate_batch(batch_id):
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
+    # steam_user_id 边界校验：Steam64 是 u64，十进制最多 20 位。HMAC secret
+    # 在开源客户端里可读，被泄露后伪造请求是有概率事件；空值或非纯数字 / 超
+    # 长串都视作无效，落库前归零，防止异常值污染下游 join 维度。
+    steam_user_id = submission.payload.steam_user_id
+    if steam_user_id and (not steam_user_id.isdigit() or len(steam_user_id) > 20):
+        steam_user_id = ""
+
     # 存储
     try:
         daily_stats_dict = {k: model_to_dict(v) for k, v in submission.payload.daily_stats.items()}
@@ -138,7 +145,7 @@ async def submit_telemetry(request: Request):
             locale=submission.payload.locale,
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
-            steam_user_id=submission.payload.steam_user_id,
+            steam_user_id=steam_user_id,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
