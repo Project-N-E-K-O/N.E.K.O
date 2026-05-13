@@ -388,6 +388,35 @@ class TestDispatchRouting:
         assert "prod" in resp.message
         assert "reload boom" in resp.message
 
+    async def test_profile_activation_preserves_domain_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import plugin.config.service as config_service_mod
+
+        def _raise_missing_profile(*_args: object, **_kwargs: object) -> None:
+            raise ServerDomainError(
+                code="PLUGIN_PROFILE_NOT_FOUND",
+                message="Profile 'missing' not found",
+                status_code=404,
+                details={"plugin_id": "demo", "profile_name": "missing"},
+            )
+
+        monkeypatch.setattr(
+            config_service_mod,
+            "set_plugin_active_profile",
+            _raise_missing_profile,
+            raising=False,
+        )
+
+        lifecycle = _FakeLifecycleService()
+        svc = _build_service(lifecycle=lifecycle)
+        with pytest.raises(ServerDomainError) as exc_info:
+            await svc.execute("system:demo:profile", value="missing")
+
+        assert exc_info.value.code == "PLUGIN_PROFILE_NOT_FOUND"
+        assert exc_info.value.status_code == 404
+        assert lifecycle.calls == []
+
 
 # ── _plugin_id_from_action_id reverse lookup ────────────────────────
 

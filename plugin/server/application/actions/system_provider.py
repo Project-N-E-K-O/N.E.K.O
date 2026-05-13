@@ -54,6 +54,13 @@ def _resolve_plugin_i18n(value: object, plugin_meta: Mapping[str, object], *, lo
     )
 
 
+def _coerce_quick_action_priority(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _get_entries_for_plugin(
     plugin_id: str,
     handlers_snapshot: dict[str, Any],
@@ -190,7 +197,7 @@ def _collect_system_actions_sync(
                     icon=str(qa_icon) if qa_icon else "⚡",
                     keywords=[pid, plugin_name, str(entry_name)],
                     quick_action=bool(is_quick),
-                    priority=int(qa_priority) if is_quick else 0,
+                    priority=_coerce_quick_action_priority(qa_priority) if is_quick else 0,
                 ))
 
         # ── Static UI navigation ──

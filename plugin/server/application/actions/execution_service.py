@@ -278,6 +278,8 @@ class _SystemActionHandler:
             from plugin.config.service import set_plugin_active_profile
 
             await asyncio.to_thread(set_plugin_active_profile, plugin_id, profile_name)
+        except ServerDomainError:
+            raise
         except Exception as exc:
             raise ServerDomainError(
                 code="PLUGIN_PROFILE_ACTIVATE_FAILED",

@@ -30,6 +30,8 @@ def _make_handler(
     enabled: bool = True,
     description: object = "",
     input_schema: dict[str, object] | None = None,
+    quick_action: bool = False,
+    quick_action_priority: object = 0,
 ) -> Any:
     """Create a fake event handler with meta attributes."""
     from types import SimpleNamespace
@@ -41,6 +43,11 @@ def _make_handler(
         description=description,
         metadata={"enabled": enabled},
         input_schema=input_schema,
+        quick_action=quick_action,
+        quick_action_config=SimpleNamespace(
+            icon=None,
+            priority=quick_action_priority,
+        ),
     )
     return SimpleNamespace(meta=meta)
 
@@ -147,6 +154,24 @@ class TestCollectSystemActions:
         entry_actions = [a for a in actions if "entry:" in a.action_id]
         assert len(entry_actions) == 1
         assert entry_actions[0].control == "button"
+
+    def test_invalid_quick_action_priority_falls_back_to_zero(self) -> None:
+        state = _FakeState(
+            plugins={"demo": _make_plugin_meta()},
+            hosts={"demo": object()},
+            handlers={
+                "demo.do_thing": _make_handler(
+                    "do_thing",
+                    kind="action",
+                    quick_action=True,
+                    quick_action_priority="not-a-number",
+                ),
+            },
+        )
+        actions = self._collect(state)
+        entry = [a for a in actions if "entry:" in a.action_id][0]
+        assert entry.quick_action is True
+        assert entry.priority == 0
 
     def test_entry_has_keywords_and_icon(self) -> None:
         state = _FakeState(
