@@ -33,9 +33,9 @@
     "step": {
       "key": "step",
       "name": "Step-2（阶跃星辰）",
-      "description": "目前完全免费，内置联网搜索功能",
+      "description": "目前完全免费",
       "core_url": "wss://api.stepfun.com/v1/realtime",
-      "core_model": "step-audio-2"
+      "core_model": "stepaudio-2.5-realtime"
     },
     "gemini": {
       "key": "gemini",
@@ -373,7 +373,7 @@
   "native_tts_voice_providers": {
     "step": {
       "catalog_prefix": "StepFun",
-      "default_voice": "qingchunshaonv",
+      "default_voice": "linjiameimei",
       "default_male_voice": "cixingnansheng",
       "catalog_value_is_display_name": true,
       "voices": {
@@ -410,13 +410,13 @@
         "huolinvsheng": "活力女声"
       },
       "aliases": {
-        "default": "qingchunshaonv",
-        "默认": "qingchunshaonv",
-        "female": "qingchunshaonv",
-        "woman": "qingchunshaonv",
-        "女": "qingchunshaonv",
-        "女声": "qingchunshaonv",
-        "中文女": "qingchunshaonv",
+        "default": "linjiameimei",
+        "默认": "linjiameimei",
+        "female": "linjiameimei",
+        "woman": "linjiameimei",
+        "女": "linjiameimei",
+        "女声": "linjiameimei",
+        "中文女": "linjiameimei",
         "male": "cixingnansheng",
         "man": "cixingnansheng",
         "男": "cixingnansheng",

@@ -478,13 +478,10 @@ class OmniRealtimeClient:
             return
         api = self._api_type.lower()
         if api == 'step' or api == 'free':
-            # StepFun / 自由路 keep the built-in web_search tool alongside
-            # any custom tools — server expects the full list each update.
-            tools_payload: List[Dict[str, Any]] = [
-                {"type": "web_search",
-                 "function": {"description": "这个web_search用来搜索互联网的信息"}}
-            ]
-            tools_payload.extend(self._tools_for_step())
+            # stepaudio-2.5-realtime 不再支持内置 web_search，与
+            # update_session 初始化路径保持一致：只发 caller 注册的
+            # function tools。
+            tools_payload: List[Dict[str, Any]] = self._tools_for_step()
             await self.update_session({"tools": tools_payload})
         elif api == 'gpt':
             payload: Dict[str, Any] = {"tools": self._tools_for_openai_realtime()}
@@ -795,17 +792,7 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
-            # Always keep the built-in web_search; append custom tools
-            # (StepFun supports both type:"web_search" and type:"function"
-            # in the same array — see official docs).
-            step_tools: List[Dict[str, Any]] = [
-                {
-                    "type": "web_search",
-                    "function": {
-                        "description": "这个web_search用来搜索互联网的信息"
-                    }
-                }
-            ]
+            step_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 step_tools.extend(self._tools_for_step())
             step_session["tools"] = step_tools
@@ -840,14 +827,7 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
-            free_tools: List[Dict[str, Any]] = [
-                {
-                    "type": "web_search",
-                    "function": {
-                        "description": "这个web_search用来搜索互联网的信息"
-                    }
-                }
-            ]
+            free_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 free_tools.extend(self._tools_for_step())
             free_session["tools"] = free_tools

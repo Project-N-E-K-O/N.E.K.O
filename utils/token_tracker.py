@@ -27,6 +27,7 @@ import hmac
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 import urllib.request
@@ -360,6 +361,216 @@ def _get_anonymous_device_id() -> str:
     return _get_legacy_device_id()
 
 
+# ---------------------------------------------------------------------------
+# A/B test 分支 / 用户 locale / 时区
+#
+# 三者都是描述「这台机器/这个用户当前是谁」的副字段：
+#   - branch：首次启动时随机抽签后落盘，后续启动只读不改，保证同一设备稳定。
+#             当前 _TELEMETRY_BRANCHES 只有一个值，将来扩展元组即可触发 split；
+#             已经落盘的老用户继续读到旧分支，新用户随机进新池。
+#   - locale / timezone：每次上报时取当下值；同一设备换语言/换时区都视为同
+#             一个 device_id，server 端按 "latest seen" 覆写即可。
+# ---------------------------------------------------------------------------
+
+_TELEMETRY_BRANCH_FILE = ".telemetry_branch"
+_TELEMETRY_BRANCHES: tuple = ("main",)
+
+
+def _get_telemetry_branch(config_dir: Path) -> str:
+    """读取或抽签生成 A/B test 分支标识，持久化在 config_dir 下。
+
+    多进程冷启动安全：用 ``O_CREAT | O_EXCL`` 原子创建保证只有一个进程能写入；
+    其它并发进程拿到 FileExistsError 后回读同一文件，确保 device-stable
+    cohorting（同 device 不同 worker 不会落到不同 branch）。同款模式见
+    _file_lock 的实现。
+    """
+    p = config_dir / _TELEMETRY_BRANCH_FILE
+
+    def _read() -> Optional[str]:
+        try:
+            if p.exists():
+                value = p.read_text(encoding="utf-8").strip()
+                if value and len(value) <= 64:
+                    return value
+        except Exception:
+            pass
+        return None
+
+    # Fast path：文件已存在直接读
+    cached = _read()
+    if cached is not None:
+        return cached
+
+    branch = secrets.choice(_TELEMETRY_BRANCHES) if _TELEMETRY_BRANCHES else "main"
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.debug(f"Token tracker: failed to create config dir for branch file: {e}")
+
+    # Slow path：原子创建。两个进程同时走到这里只有一个成功，另一个回读拿到
+    # 同一 branch，保证 device-stable。
+    try:
+        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, branch.encode("utf-8"))
+        finally:
+            os.close(fd)
+        return branch
+    except FileExistsError:
+        # 另一个进程抢先写了 —— 回读它写的值，确保两个进程返回同一 branch
+        peer = _read()
+        if peer is not None:
+            return peer
+        # 回读失败兜底：返回本进程抽到的值。短期不一致总比拒绝上报好；下次
+        # 启动 fast path 会读到磁盘上的固化值，最终收敛。
+        return branch
+    except Exception as e:
+        # 写盘失败不致命：单次进程内继续用抽到的分支上报，下次启动会再抽。
+        # 当前 _TELEMETRY_BRANCHES 只有一项，写失败不会有可观偏差；扩展后若
+        # 写盘长期失败，server 看到的将是分布噪声而非错误数据。
+        logger.debug(f"Token tracker: failed to persist telemetry branch: {e}")
+        return branch
+
+
+def _get_telemetry_locale() -> str:
+    """获取用户 UI locale (zh-CN / en-US / ja-JP …)。
+
+    优先用 language_utils.get_global_language_full —— 它先看 Steam 设置再 fallback
+    到系统语言，是 codebase 里 "用户真正在用的 UI 语言" 的真值。失败回退到
+    stdlib locale。
+    """
+    try:
+        from utils.language_utils import get_global_language_full
+        loc = get_global_language_full()
+        if loc:
+            return str(loc)[:32]
+    except Exception:
+        pass
+    try:
+        import locale as _locale
+        sys_locale = _locale.getlocale()[0]
+        if sys_locale:
+            return str(sys_locale)[:32]
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _is_release_build() -> bool:
+    """是否打包过 —— PyInstaller (``sys.frozen``) 或 Nuitka (``__compiled__`` /
+    ``__nuitka_binary_dir``)。两种打包器都要识别：PyInstaller 走 spec 链路，
+    Nuitka 走 build_nuitka.bat 链路。"""
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return True
+    # Nuitka 在每个编译模块的 globals 里注入 __compiled__；主模块还有
+    # __nuitka_binary_dir。先看当前模块 globals，再兜底主模块属性，确保 standalone
+    # 和 onefile 两种 Nuitka 模式都能识别。
+    if "__compiled__" in globals() or "__nuitka_binary_dir" in globals():
+        return True
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and (
+        hasattr(main_mod, "__nuitka_binary_dir") or hasattr(main_mod, "__compiled__")
+    ):
+        return True
+    return False
+
+
+def _is_steam_sdk_engaged() -> bool:
+    """Steam SDK 是否拿到/缓存过 user id 或 工坊订阅。
+
+    任一信号为真即认为是 Steam 版：
+    1. 当前进程 Steamworks SDK 实例的 ``Users.GetSteamID()`` 返回非零 —— 真
+       的从 Steam 客户端拿到了登录用户。
+    2. ``Workshop.GetNumSubscribedItems()`` 大于 0 —— 用户订阅过工坊内容。
+    3. ``config_dir/workshop_config.json`` 存在 —— 之前任何一次会话写过工坊
+       配置，足以证明这台机器跑过 Steam 版（cloudsave 会把它打包带走，所以
+       即使本次会话 Steam 客户端没开，文件仍在就算）。
+
+    1/2 是实时探测，覆盖正常 Steam session；3 是磁盘兜底，覆盖"上次跑过 Steam
+    本次断网/客户端没开"的场景。
+    """
+    try:
+        from utils.steam_state import get_steamworks
+        sw = get_steamworks()
+        if sw is not None:
+            try:
+                if int(sw.Users.GetSteamID() or 0) > 0:
+                    return True
+            except Exception:
+                pass
+            try:
+                if int(sw.Workshop.GetNumSubscribedItems() or 0) > 0:
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        from utils.config_manager import get_config_manager
+        cm = get_config_manager()
+        if (cm.config_dir / "workshop_config.json").exists():
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _get_telemetry_distribution() -> str:
+    """识别发行渠道：steam / release / source。
+
+    判定顺序：
+    1. 先看是否 release build（PyInstaller ``sys.frozen`` 或 Nuitka
+       ``__compiled__`` / ``__nuitka_binary_dir``）。**只有 release 才可能是
+       Steam 版** —— 源码运行哪怕开着 Steam 客户端也算 source。
+    2. release + Steam SDK 拿到/缓存过 user id 或工坊订阅 → ``steam``。
+    3. release 但 SDK 没动 → ``release``（独立发行版）。
+    4. 非 release → ``source``（开源/开发模式）。
+    """
+    if not _is_release_build():
+        return "source"
+    if _is_steam_sdk_engaged():
+        return "steam"
+    return "release"
+
+
+def _get_telemetry_timezone() -> str:
+    """获取本地时区。优先 IANA (Asia/Shanghai)，回退到 UTC 偏移 (+08:00)。"""
+    try:
+        import tzlocal
+        tz = tzlocal.get_localzone()
+        if tz is not None:
+            name = str(tz)
+            if name:
+                return name[:64]
+    except Exception:
+        pass
+    try:
+        now_local = datetime.now().astimezone()
+        local_tz = now_local.tzinfo
+        if local_tz is not None:
+            name = str(local_tz)
+            # Windows 上 astimezone 可能给出 "China Standard Time" 这类非 IANA 字串，
+            # 没有 '/' 时退到 offset 表示，避免污染按 IANA 切片的分析。
+            if name and "/" in name:
+                return name[:64]
+        # 取实际 UTC 偏移（aware datetime 反映当前 DST 状态）。time.altzone /
+        # time.daylight 不行：time.daylight 只表示"locale 有没有 DST 制度"，
+        # 不是"现在是不是 DST"，在有 DST 的时区会全年报 DST 偏移。
+        offset = now_local.utcoffset()
+        if offset is not None:
+            total_sec = int(offset.total_seconds())
+            sign = "+" if total_sec >= 0 else "-"
+            abs_sec = abs(total_sec)
+            return f"{sign}{abs_sec // 3600:02d}:{(abs_sec % 3600) // 60:02d}"
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
     """计算遥测上报的 HMAC-SHA256 签名。"""
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
@@ -411,6 +622,7 @@ class TokenTracker:
 
         # 远程遥测上报
         self._device_id: str = ""  # 延迟生成
+        self._branch: str = ""  # 延迟生成（首次上报时读盘/抽签）
         self._last_report_time: float = 0.0
         self._report_interval = _TELEMETRY_REPORT_INTERVAL
         self._unsent_daily: dict = {}  # 尚未成功上报到服务器的增量
@@ -852,8 +1064,13 @@ class TokenTracker:
         try:
             if not self._device_id:
                 self._device_id = _get_anonymous_device_id()
+            if not self._branch:
+                self._branch = _get_telemetry_branch(self._config_manager.config_dir)
 
             app_version = _get_app_version_from_changelog()
+            telemetry_locale = _get_telemetry_locale()
+            telemetry_timezone = _get_telemetry_timezone()
+            telemetry_distribution = _get_telemetry_distribution()
 
             payload = {
                 "device_id": self._device_id,
@@ -864,6 +1081,10 @@ class TokenTracker:
                 # server 端验签会自动覆盖到，不需要任何调整。
                 "device_id_legacy": _get_legacy_device_id(),
                 "app_version": app_version,
+                "branch": self._branch,
+                "locale": telemetry_locale,
+                "timezone": telemetry_timezone,
+                "distribution": telemetry_distribution,
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }

@@ -175,11 +175,11 @@ def test_step_native_preview_provider_respects_custom_voice_collision():
     colliding_mgr = _FakeCharactersRouterConfigManager(
         "free",
         "wss://lanlan.tech/realtime",
-        stored_voice_ids={"qingchunshaonv"},
+        stored_voice_ids={"linjiameimei"},
     )
 
     assert characters_router._get_active_native_preview_provider(native_mgr, "中文女") == "free"
-    assert characters_router._get_active_native_preview_provider(colliding_mgr, "qingchunshaonv") is None
+    assert characters_router._get_active_native_preview_provider(colliding_mgr, "linjiameimei") is None
     assert characters_router._get_active_native_preview_provider(colliding_mgr, "中文女") is None
 
 

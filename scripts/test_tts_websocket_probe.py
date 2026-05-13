@@ -343,7 +343,7 @@ def main() -> None:
     p.add_argument("--wait-connection", type=float, default=8.0, help="Wait for tts.connection.done")
     p.add_argument("--wait-session", type=float, default=5.0, help="Wait for tts.response.created")
     p.add_argument("--protocol-roundtrip", action="store_true", help="After handshake, send tts.create (+ optional text)")
-    p.add_argument("--voice-id", default="qingchunshaonv", help="voice_id only if --url is not lanlan.app")
+    p.add_argument("--voice-id", default="linjiameimei", help="voice_id only if --url is not lanlan.app")
     p.add_argument("--language-code", default="cmn-CN", help="language_code for lanlan.app (matches app default map)")
     p.add_argument("--text", default="", help="If set with --protocol-roundtrip, send this as tts.text.delta")
     p.add_argument(

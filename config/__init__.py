@@ -669,7 +669,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'step': {
         'CORE_URL': "wss://api.stepfun.com/v1/realtime",
-        'CORE_MODEL': "step-audio-2",
+        'CORE_MODEL': "stepaudio-2.5-realtime",
     },
     'gemini': {
         # Gemini 使用 google-genai SDK，而非原生 WebSocket

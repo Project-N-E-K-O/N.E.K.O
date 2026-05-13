@@ -2401,6 +2401,8 @@
         "sourceLabel": "教程来源",
         "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
         "languageLabel": "语言",
+        "tocTitle": "目录",
+        "tocEmpty": "暂无目录",
         "guideUnavailable": "教程内容为空。"
     },
     "subtitle": {

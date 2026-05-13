@@ -2401,6 +2401,8 @@
         "sourceLabel": "가이드 출처",
         "contentLanguageNotice": "언어 전환은 페이지 컨트롤 문구와 본문 모두에 적용됩니다.",
         "languageLabel": "언어",
+        "tocTitle": "목차",
+        "tocEmpty": "목차가 없습니다",
         "guideUnavailable": "가이드 내용이 비어 있습니다."
     },
     "subtitle": {
