@@ -2426,7 +2426,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     )
                     return
 
-                _record_tts_telemetry("cogtts", len(text))
+                # CogTTS payload 实际只发了 text[:1024]（行 2407 的硬截断，上游
+                # API 限制 1024 字符）。telemetry 记 min 而不是 len(text)，否则超
+                # 长输入会高估实际计费/上行的字符数。
+                _record_tts_telemetry("cogtts", min(len(text), 1024))
                 buffer = ""
                 first_audio_received = False
 

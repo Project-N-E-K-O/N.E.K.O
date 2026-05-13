@@ -112,14 +112,24 @@ class TelemetryStorage:
             # 老库 devices 表上线时还没有 branch/locale/timezone/distribution 列。
             # CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式补列；
             # ALTER ADD COLUMN 在 SQLite 上是 O(1)，已有行的列值用 DEFAULT 填。
+            # try/except 是必要的：多进程部署（gunicorn workers / 多副本）首次
+            # 启动时会同时跑迁移，PRAGMA + ALTER 不是原子的，一个 worker ALTER
+            # 成功后第二个 worker 仍按陈旧的 PRAGMA 结果尝试 ALTER，会撞
+            # "duplicate column name"。捕获并忽略让迁移在并发下幂等。
             existing_cols = {
                 r[1] for r in conn.execute("PRAGMA table_info(devices)").fetchall()
             }
             for col_name in ("branch", "locale", "timezone", "distribution"):
-                if col_name not in existing_cols:
+                if col_name in existing_cols:
+                    continue
+                try:
                     conn.execute(
                         f"ALTER TABLE devices ADD COLUMN {col_name} TEXT NOT NULL DEFAULT 'unknown'"
                     )
+                except sqlite3.OperationalError as e:
+                    # 只吞 "duplicate column name"，其它 schema 错误照常往上抛。
+                    if "duplicate column name" not in str(e).lower():
+                        raise
             conn.commit()
             self._initialized = True
 
