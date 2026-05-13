@@ -125,11 +125,17 @@ async def submit_telemetry(request: Request):
     if storage.is_duplicate_batch(batch_id):
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
-    # steam_user_id 边界校验：Steam64 是 u64，十进制最多 20 位。HMAC secret
-    # 在开源客户端里可读，被泄露后伪造请求是有概率事件；空值或非纯数字 / 超
-    # 长串都视作无效，落库前归零，防止异常值污染下游 join 维度。
+    # steam_user_id 边界校验：Steam64 是 u64，十进制最多 20 位且非零。HMAC
+    # secret 在开源客户端里可读，被泄露后伪造请求是有概率事件；空值 / 非纯
+    # 数字 / 超长串 / 数值零（"0" / "00" 等 Steamworks "无用户" sentinel）都
+    # 视作无效，落库前归零。否则伪造请求可用 "0" 把已存在的合法 steam_user_id
+    # 覆盖（UPSERT preserve-known 只挡空 string）。
     steam_user_id = submission.payload.steam_user_id
-    if steam_user_id and (not steam_user_id.isdigit() or len(steam_user_id) > 20):
+    if steam_user_id and not (
+        steam_user_id.isdigit()
+        and len(steam_user_id) <= 20
+        and int(steam_user_id) > 0
+    ):
         steam_user_id = ""
 
     # 存储
