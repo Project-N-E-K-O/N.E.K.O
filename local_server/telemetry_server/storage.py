@@ -95,6 +95,10 @@ class TelemetryStorage:
                 CREATE TABLE IF NOT EXISTS devices (
                     device_id    TEXT PRIMARY KEY,
                     app_version  TEXT    NOT NULL DEFAULT 'unknown',
+                    branch       TEXT    NOT NULL DEFAULT 'unknown',
+                    locale       TEXT    NOT NULL DEFAULT 'unknown',
+                    timezone     TEXT    NOT NULL DEFAULT 'unknown',
+                    distribution TEXT    NOT NULL DEFAULT 'unknown',
                     first_seen   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     last_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     event_count  INTEGER NOT NULL DEFAULT 0
@@ -105,6 +109,17 @@ class TelemetryStorage:
                     received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
                 );
             """)
+            # 老库 devices 表上线时还没有 branch/locale/timezone/distribution 列。
+            # CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式补列；
+            # ALTER ADD COLUMN 在 SQLite 上是 O(1)，已有行的列值用 DEFAULT 填。
+            existing_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(devices)").fetchall()
+            }
+            for col_name in ("branch", "locale", "timezone", "distribution"):
+                if col_name not in existing_cols:
+                    conn.execute(
+                        f"ALTER TABLE devices ADD COLUMN {col_name} TEXT NOT NULL DEFAULT 'unknown'"
+                    )
             conn.commit()
             self._initialized = True
 
@@ -119,7 +134,9 @@ class TelemetryStorage:
         return row is not None
 
     def store_event(self, device_id: str, app_version: str, payload_json: str,
-                    daily_stats: dict, batch_id: str | None = None):
+                    daily_stats: dict, batch_id: str | None = None,
+                    branch: str = "unknown", locale: str = "unknown",
+                    timezone: str = "unknown", distribution: str = "unknown"):
         today = date.today().isoformat()
         with self._transaction() as conn:
             if batch_id:
@@ -155,14 +172,24 @@ class TelemetryStorage:
                         bucket.get("total_tokens", 0), bucket.get("cached_tokens", 0),
                         bucket.get("call_count", 0), 0,
                     )
+            # branch 在客户端首次启动后落盘并保持稳定，所以理论上同一 device 只
+            # 该看到一个非 unknown 值；这里仍允许覆写 —— 万一用户清盘后客户端重新
+            # 抽签，新值就是当前真值。locale / timezone 每次取最新值同样覆写。
             conn.execute("""
-                INSERT INTO devices (device_id, app_version, first_seen, last_seen, event_count)
-                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
+                INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution,
+                                     first_seen, last_seen, event_count)
+                VALUES (?, ?, ?, ?, ?, ?,
+                        strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
+                        strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
                 ON CONFLICT(device_id) DO UPDATE SET
-                    app_version = excluded.app_version,
+                    app_version  = excluded.app_version,
+                    branch       = excluded.branch,
+                    locale       = excluded.locale,
+                    timezone     = excluded.timezone,
+                    distribution = excluded.distribution,
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
-            """, (device_id, app_version))
+            """, (device_id, app_version, branch, locale, timezone, distribution))
 
     @staticmethod
     def _upsert_aggregate(conn, device_id, stat_date, model, call_type,
