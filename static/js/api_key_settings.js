@@ -25,10 +25,20 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
-
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
+}
+
+function setInputValue(elementId, value, placeholder) {
+    const element = document.getElementById(elementId);
+    if (value != null && element) {
+        const stringValue = String(value);
+        element.value = stringValue;
+        if (placeholder !== undefined) {
+            element.placeholder = stringValue || placeholder;
+        }
+    }
 }
 
 function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelApiKey = '') {
@@ -600,10 +610,14 @@ function syncKeyFromBook(providerKey) {
 /**
  * 向 Key Book 写入某个 provider 的 key
  */
-function syncKeyToBook(providerKey, keyValue) {
+function syncKeyToBook(providerKey, keyValue, sourceInput = null) {
     const input = document.getElementById(`keyBookInput_${providerKey}`);
     if (input) {
-        setMaskedInput(input, keyValue || '');
+        if (input !== sourceInput) {
+            setMaskedInput(input, keyValue || '');
+        } else {
+            input.dataset.realKey = (keyValue || '').trim();
+        }
         attachMaskBehavior(input);
     }
 }
@@ -990,7 +1004,7 @@ async function loadCurrentApiKey() {
             }
 
             // 辅助函数：设置输入框的值和占位符
-            function setInputValue(elementId, value, placeholder) {
+            function setInputValueLocal(elementId, value, placeholder) {
                 const element = document.getElementById(elementId);
                 if (typeof value === 'string' && element) {
                     element.value = value;
@@ -1576,7 +1590,6 @@ function confirmClearCustomApi() {
     _loadedGptSovitsState = 'none';
     _ttsConfigDirty = true;
 
-    // 取消勾选自定义API开关（skipAutoFill=true 避免覆盖未保存的核心/辅助API输入）
     const enableCustomApi = document.getElementById('enableCustomApi');
     if (enableCustomApi && enableCustomApi.checked) {
         enableCustomApi.checked = false;
@@ -1598,7 +1611,6 @@ document.addEventListener('DOMContentLoaded', function () {
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
-
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -1621,6 +1633,8 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     });
+
+
 });
 
 
@@ -1679,16 +1693,17 @@ async function save_button_down(e) {
         }
     });
 
-    // 用输入框中的值覆盖管理簿中对应服务商的Key（不直接修改管理簿DOM，
-    // 避免二次确认取消时管理簿已被污染）
-    if (coreApi && coreApi !== 'free' && apiKey) {
-        allBookKeys[coreApi] = apiKey;
+    // 【修复】将上方主输入框的修改强制覆盖到保存 payload 中
+    // 否则直接点保存时，后台的 assistApiKey[Provider] 会保留 Key Book 中的旧值
+    if (coreApi && coreApi !== 'free' && _apiKeyRegistry[coreApi]) {
+        if (!isFreeVersionText(apiKey)) {
+            allBookKeys[coreApi] = apiKey;
+        }
     }
-    if (assistApi && assistApi !== 'free' && assistKeyVal) {
+    if (assistApi && assistApi !== 'free' && _apiKeyRegistry[assistApi]) {
         allBookKeys[assistApi] = assistKeyVal;
     }
 
-    // 获取用户自定义API配置
     const getVal = (id) => {
         const el = document.getElementById(id);
         return el ? el.value.trim() : '';
@@ -1772,6 +1787,7 @@ async function save_button_down(e) {
             modelProviders[`${mt}ModelProvider`] = sel.value;
         }
     });
+    const selectedTtsProvider = (modelProviders.ttsModelProvider || '').trim();
 
     // Build payload — map book keys to config field names via registry.
     // Only include providers present in allBookKeys (skips restricted/hidden ones).
@@ -1797,6 +1813,13 @@ async function save_button_down(e) {
         mcpToken, enableCustomApi, gptsovitsEnabled,
         ...modelProviders
     };
+    if (gptsovitsEnabled) {
+        payload.ttsProvider = 'gptsovits';
+    } else if (_loadedGptSovitsState !== 'none') {
+        payload.ttsProvider = '';
+    } else if (selectedTtsProvider) {
+        payload.ttsProvider = '';
+    }
 
     const disableTtsEl = document.getElementById('disableTts');
     if (disableTtsEl) {

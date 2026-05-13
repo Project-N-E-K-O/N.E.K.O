@@ -17,6 +17,13 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
+    // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）
+    const _PRIVACY_OFF_BRANCH = 'privacy_default_off_v1';
+    // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
+    // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
+    // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
+    // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
+    const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
 
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
@@ -60,9 +67,14 @@
             });
             if (!response.ok) return null;
             const data = await response.json();
-            if (data.success && data.settings && Object.keys(data.settings).length > 0) {
-                return data.settings;
-            }
+            if (!data.success) return null;
+            const hasSettings = data.settings && Object.keys(data.settings).length > 0;
+            const telemetryBranch = (typeof data.telemetryBranch === 'string' && data.telemetryBranch) || null;
+            if (!hasSettings && !telemetryBranch) return null;
+            return {
+                settings: hasSettings ? data.settings : null,
+                telemetryBranch
+            };
         } catch (e) {
             console.warn('[app-settings] 从服务器加载设置失败:', e);
         }
@@ -105,10 +117,20 @@
 
     /**
      * 启动定期同步到服务器
+     *
+     * branch 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic POST：
+     * 否则会把首启控制组默认值推到服务器，下次 GET 拿到 branch 后读到自家 echo
+     * 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 清掉。用户主动改
+     * 设置走的 saveSettings 不受影响（那条路径就是要持久化用户显式选择）。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
         _syncTimerId = setInterval(() => {
+            try {
+                if (localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1') {
+                    return;
+                }
+            } catch (_) { /* localStorage 不可用就当 pending 没 set，照常 sync */ }
             syncSettingsToServer();
         }, SYNC_INTERVAL_MS);
         console.log('[app-settings] 已启动定期同步到服务器，间隔', SYNC_INTERVAL_MS / 1000, '秒');
@@ -144,8 +166,14 @@
     /**
      * 将当前设置保存到 localStorage
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
+     *
+     * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
+     *   首启分支用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前
+     *   就把控制组默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」从而
+     *   永远跳过 A/B 实验组覆写
      */
-    function saveSettings() {
+    function saveSettings(options) {
+        const skipServerSync = !!(options && options.skipServerSync);
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -280,8 +308,10 @@
             });
         }
 
-        // 同步到服务器（异步，不阻塞）
-        syncSettingsToServer();
+        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST
+        if (!skipServerSync) {
+            syncSettingsToServer();
+        }
     }
 
     // ======================== loadSettings ========================
@@ -417,10 +447,12 @@
                     focusModeDesc: S.focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
             } else {
-                // 首次启动：检查用户地区，中国用户自动开启自主视觉
+                // 首次启动：默认按 A/B 控制组行为——隐私模式按用户地区分流（仅中国
+                // 地区默认关闭）。实验组（privacy_default_off_v1）的「一律默认关闭」
+                // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
+                // 异步合并块。
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
-                    console.log('首次启动：检测到中国地区用户，已自动开启自主视觉');
                 }
 
                 // 首次启动默认开启音乐/meme搭话 + mini-game 邀请
@@ -438,8 +470,14 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
 
-                // 持久化首次启动设置，避免每次重新检测
-                saveSettings();
+                // 首启专属 marker：告诉下方异步合并块「这次需要等 branch 决议后套 A/B
+                // 覆写」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误覆写
+                try { localStorage.setItem(_FIRST_LAUNCH_PENDING_KEY, '1'); } catch (_) {}
+                // 持久化首次启动设置到 localStorage，避免每次重新检测。注意：故意跳过
+                // 服务器 POST——loadSettingsFromServer GET 还没拿到 telemetryBranch，
+                // 这时把控制组默认值上行会被自家 GET 当作「云端已有偏好」回读，让 A/B
+                // 实验组覆写永远跳过。等 branch 解析后再做一次完整 saveSettings 推送
+                saveSettings({ skipServerSync: true });
             }
 
         } catch (error) {
@@ -465,11 +503,58 @@
         S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
+        // 捕获 fetch 发起时的 vision 值：若用户在 fetch 返回前手动切了 toggle，
+        // 后续 A/B 覆写就跳过，避免把用户的显式选择刷掉
+        const _visionAtFetchStart = S.proactiveVisionEnabled;
+        const _firstLaunchPending = (() => {
+            try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
+        })();
         try {
-            loadSettingsFromServer().then(serverSettings => {
+            loadSettingsFromServer().then(serverResult => {
+                if (!serverResult) return;
+                const serverSettings = serverResult.settings;
+                const telemetryBranch = serverResult.telemetryBranch;
+                let hasUpdate = false;
+
+                // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
+                // 分支 = 实验组 + 服务器没有云端 vision 偏好 + 用户没在 fetch 间隙
+                // 手动切 toggle + 本地 vision 值仍等于控制组默认（即用户也没在之前的
+                // offline session 里改过），才把隐私模式默认关掉。升级用户没有 pending
+                // marker 不会被误覆写；offline 首启把 marker 留在 localStorage，下次
+                // 在线启动再补；offline 期间用户改过 toggle 时本地值跟控制组默认会拉
+                // 开差距，保留用户选择
+                const noServerVisionPref = !serverSettings ||
+                    serverSettings.proactiveVisionEnabled === undefined;
+                const userToggledDuringFetch = S.proactiveVisionEnabled !== _visionAtFetchStart;
+                const controlGroupDefaultVision = _isUserRegionChina();
+                const localVisionMatchesControlDefault =
+                    S.proactiveVisionEnabled === controlGroupDefaultVision;
+                if (_firstLaunchPending
+                        && telemetryBranch === _PRIVACY_OFF_BRANCH
+                        && noServerVisionPref
+                        && !userToggledDuringFetch
+                        && localVisionMatchesControlDefault) {
+                    if (S.proactiveVisionEnabled !== true) {
+                        S.proactiveVisionEnabled = true;
+                        hasUpdate = true;
+                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认关闭');
+                    }
+                }
+                // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、
+                // 不管是否实际触发覆写），清掉 pending marker；下次启动不再尝试。
+                // GET 失败则 marker 留着，下次在线启动重新决议
+                const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
+                if (branchResolutionFinalized) {
+                    try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
+                    // 首启 branch 决议完后强制 POST 一次：控制组没有 server merge、也没
+                    // 触发 A/B 覆写时 hasUpdate 仍是 false，若用户在 60s periodic 之前关掉
+                    // app，首启的本地默认值就永远到不了服务器。这里 hasUpdate=true 让下方
+                    // saveSettings 走完整路径推一次
+                    hasUpdate = true;
+                }
+
                 if (serverSettings) {
                     // 用服务器设置覆盖本地设置
-                    let hasUpdate = false;
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
@@ -483,40 +568,47 @@
                     if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
-                    if (hasUpdate) {
-                        console.log('[app-settings] 已从服务器合并对话设置');
-                        // 同步 window 镜像变量，防止 saveSettings() 回滚
-                        window.proactiveChatEnabled = S.proactiveChatEnabled;
-                        window.proactiveVisionEnabled = S.proactiveVisionEnabled;
-                        window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
-                        window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
-                        window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
-                        window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
-                        window.proactiveMusicEnabled = S.proactiveMusicEnabled;
-                        window.proactiveMemeEnabled = S.proactiveMemeEnabled;
-                        window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
-                        window.mergeMessagesEnabled = S.mergeMessagesEnabled;
-                        window.focusModeEnabled = S.focusModeEnabled;
-                        window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
-                        window.proactiveChatInterval = S.proactiveChatInterval;
-                        window.proactiveVisionInterval = S.proactiveVisionInterval;
-                        window.textGuardMaxLength = S.textGuardMaxLength;
-                        // 同步回 localStorage
-                        saveSettings();
-                        // 重新初始化主动搭话调度器（使用最新标志）
-                        if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
-                            window.appProactive.scheduleProactiveChat();
-                        } else if (typeof window.scheduleProactiveChat === 'function') {
-                            window.scheduleProactiveChat();
-                        }
+                }
+
+                if (hasUpdate) {
+                    console.log('[app-settings] 已从服务器合并对话设置');
+                    // 同步 window 镜像变量，防止 saveSettings() 回滚
+                    window.proactiveChatEnabled = S.proactiveChatEnabled;
+                    window.proactiveVisionEnabled = S.proactiveVisionEnabled;
+                    window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
+                    window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
+                    window.proactiveVideoChatEnabled = S.proactiveVideoChatEnabled;
+                    window.proactivePersonalChatEnabled = S.proactivePersonalChatEnabled;
+                    window.proactiveMusicEnabled = S.proactiveMusicEnabled;
+                    window.proactiveMemeEnabled = S.proactiveMemeEnabled;
+                    window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
+                    window.mergeMessagesEnabled = S.mergeMessagesEnabled;
+                    window.focusModeEnabled = S.focusModeEnabled;
+                    window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
+                    window.proactiveChatInterval = S.proactiveChatInterval;
+                    window.proactiveVisionInterval = S.proactiveVisionInterval;
+                    window.textGuardMaxLength = S.textGuardMaxLength;
+                    // 同步回 localStorage
+                    saveSettings();
+                    // 重新初始化主动搭话调度器（使用最新标志）
+                    if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
+                        window.appProactive.scheduleProactiveChat();
+                    } else if (typeof window.scheduleProactiveChat === 'function') {
+                        window.scheduleProactiveChat();
                     }
                 }
+            }).finally(() => {
+                // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能
+                // 比 GET 先到，把首启控制组默认值写到服务器；GET 回来读到自家 echo
+                // 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 还落上，
+                // cohort 直接污染。GET 走 finally 后周期同步才安全
+                startPeriodicSync();
             });
-
-            // 启动定期同步到服务器
-            startPeriodicSync();
         } catch (error) {
             console.error('服务器设置同步启动失败:', error);
+            // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
+            // 避免用户的本地修改永远上不了服务器
+            startPeriodicSync();
         }
     }
 
