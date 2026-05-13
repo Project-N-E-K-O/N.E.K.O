@@ -93,15 +93,16 @@ class TelemetryStorage:
                 CREATE INDEX IF NOT EXISTS idx_agg_date   ON daily_aggregates(stat_date);
 
                 CREATE TABLE IF NOT EXISTS devices (
-                    device_id    TEXT PRIMARY KEY,
-                    app_version  TEXT    NOT NULL DEFAULT 'unknown',
-                    branch       TEXT    NOT NULL DEFAULT 'unknown',
-                    locale       TEXT    NOT NULL DEFAULT 'unknown',
-                    timezone     TEXT    NOT NULL DEFAULT 'unknown',
-                    distribution TEXT    NOT NULL DEFAULT 'unknown',
-                    first_seen   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
-                    last_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
-                    event_count  INTEGER NOT NULL DEFAULT 0
+                    device_id     TEXT PRIMARY KEY,
+                    app_version   TEXT    NOT NULL DEFAULT 'unknown',
+                    branch        TEXT    NOT NULL DEFAULT 'unknown',
+                    locale        TEXT    NOT NULL DEFAULT 'unknown',
+                    timezone      TEXT    NOT NULL DEFAULT 'unknown',
+                    distribution  TEXT    NOT NULL DEFAULT 'unknown',
+                    steam_user_id TEXT    NOT NULL DEFAULT '',
+                    first_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+                    last_seen     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+                    event_count   INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS seen_batches (
@@ -109,9 +110,9 @@ class TelemetryStorage:
                     received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
                 );
             """)
-            # 老库 devices 表上线时还没有 branch/locale/timezone/distribution 列。
-            # CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式补列；
-            # ALTER ADD COLUMN 在 SQLite 上是 O(1)，已有行的列值用 DEFAULT 填。
+            # 老库 devices 表上线时还没有 branch/locale/timezone/distribution/steam_user_id
+            # 列。CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式
+            # 补列；ALTER ADD COLUMN 在 SQLite 上是 O(1)，已有行的列值用 DEFAULT 填。
             # try/except 是必要的：多进程部署（gunicorn workers / 多副本）首次
             # 启动时会同时跑迁移，PRAGMA + ALTER 不是原子的，一个 worker ALTER
             # 成功后第二个 worker 仍按陈旧的 PRAGMA 结果尝试 ALTER，会撞
@@ -119,12 +120,22 @@ class TelemetryStorage:
             existing_cols = {
                 r[1] for r in conn.execute("PRAGMA table_info(devices)").fetchall()
             }
-            for col_name in ("branch", "locale", "timezone", "distribution"):
+            # (列名, 默认 sentinel) —— 分类字段缺失为 'unknown'，
+            # steam_user_id 是 ID 字段缺失为空 string，server 端 UPSERT 用对应
+            # sentinel 做 preserve-known 判断。
+            _new_cols = (
+                ("branch", "unknown"),
+                ("locale", "unknown"),
+                ("timezone", "unknown"),
+                ("distribution", "unknown"),
+                ("steam_user_id", ""),
+            )
+            for col_name, default in _new_cols:
                 if col_name in existing_cols:
                     continue
                 try:
                     conn.execute(
-                        f"ALTER TABLE devices ADD COLUMN {col_name} TEXT NOT NULL DEFAULT 'unknown'"
+                        f"ALTER TABLE devices ADD COLUMN {col_name} TEXT NOT NULL DEFAULT '{default}'"
                     )
                 except sqlite3.OperationalError as e:
                     # 只吞 "duplicate column name"，其它 schema 错误照常往上抛。
@@ -146,7 +157,8 @@ class TelemetryStorage:
     def store_event(self, device_id: str, app_version: str, payload_json: str,
                     daily_stats: dict, batch_id: str | None = None,
                     branch: str = "unknown", locale: str = "unknown",
-                    timezone: str = "unknown", distribution: str = "unknown"):
+                    timezone: str = "unknown", distribution: str = "unknown",
+                    steam_user_id: str = ""):
         today = date.today().isoformat()
         with self._transaction() as conn:
             if batch_id:
@@ -188,21 +200,26 @@ class TelemetryStorage:
             # 非 unknown 才覆写 —— 老客户端没带这些字段时 Pydantic 默认 'unknown'，
             # 或新客户端临时检测失败（例如 tzlocal 抛错）时，都不应该把上一次
             # 已知的好值抹成 'unknown'。
+            # branch/locale/timezone/distribution 缺失 sentinel 是 'unknown'，
+            # steam_user_id 是空 string（ID 字段不该用 'unknown' 占位 —— 它会
+            # 被下游 join 当成合法 ID）。两种 sentinel 都走 preserve-known：
+            # incoming 是 sentinel 时不覆写历史。
             conn.execute("""
-                INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution,
+                INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution, steam_user_id,
                                      first_seen, last_seen, event_count)
-                VALUES (?, ?, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?,
                         strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                         strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
                 ON CONFLICT(device_id) DO UPDATE SET
-                    app_version  = excluded.app_version,
-                    branch       = CASE WHEN excluded.branch       = 'unknown' THEN devices.branch       ELSE excluded.branch       END,
-                    locale       = CASE WHEN excluded.locale       = 'unknown' THEN devices.locale       ELSE excluded.locale       END,
-                    timezone     = CASE WHEN excluded.timezone     = 'unknown' THEN devices.timezone     ELSE excluded.timezone     END,
-                    distribution = CASE WHEN excluded.distribution = 'unknown' THEN devices.distribution ELSE excluded.distribution END,
+                    app_version   = excluded.app_version,
+                    branch        = CASE WHEN excluded.branch        = 'unknown' THEN devices.branch        ELSE excluded.branch        END,
+                    locale        = CASE WHEN excluded.locale        = 'unknown' THEN devices.locale        ELSE excluded.locale        END,
+                    timezone      = CASE WHEN excluded.timezone      = 'unknown' THEN devices.timezone      ELSE excluded.timezone      END,
+                    distribution  = CASE WHEN excluded.distribution  = 'unknown' THEN devices.distribution  ELSE excluded.distribution  END,
+                    steam_user_id = CASE WHEN excluded.steam_user_id = ''        THEN devices.steam_user_id ELSE excluded.steam_user_id END,
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
-            """, (device_id, app_version, branch, locale, timezone, distribution))
+            """, (device_id, app_version, branch, locale, timezone, distribution, steam_user_id))
 
     @staticmethod
     def _upsert_aggregate(conn, device_id, stat_date, model, call_type,

@@ -64,6 +64,109 @@ _ugc_sync_lock = asyncio.Lock()
 # 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
 # 避免并发调用 override_callback=True 导致回调覆盖竞态
 _ugc_query_lock = asyncio.Lock()
+
+# ─── 创意工坊下载触发 ─────────────────────────────────────────────────
+# SteamworksPy 包装库未导出 Workshop_DownloadItem，仅订阅不会触发 Steam
+# 实际下载文件。我们通过 steamworks._native_ugc 桥到 libsteam_api 的
+# SteamAPI_ISteamUGC_DownloadItem。这里只记录"已请求过下载"的物品集合，
+# 避免每次列表刷新都重复打 INFO 日志；Steam 自己会去重。
+_workshop_download_requested: set[int] = set()
+# EItemState 位标志（与 steamworks/enums.py 的 EItemState 一致）
+_ITEM_STATE_SUBSCRIBED = 1
+_ITEM_STATE_INSTALLED = 4
+_ITEM_STATE_NEEDS_UPDATE = 8
+_ITEM_STATE_DOWNLOADING = 16
+_ITEM_STATE_DOWNLOAD_PENDING = 32
+
+
+def _safe_get_workshop_install_folder(steamworks, item_id_int: int) -> str:
+    """安全读取订阅物品的安装目录路径。
+
+    与订阅列表流程（``get_subscribed_workshop_items``）保持一致：在物品
+    刚刚取消订阅 / 安装目录被 Steam 清理的窗口期，``GetItemInstallInfo``
+    可能抛 ``FileNotFoundError`` / ``OSError``；这种情况按"未安装"降级
+    处理而不是 500，否则前端在轮询下载状态时会随机炸。
+    """
+    if steamworks is None:
+        return ''
+    try:
+        install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int) or {}
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug(f"GetItemInstallInfo({item_id_int}) 目录已不存在（可能刚取消订阅）: {exc}")
+        return ''
+    except Exception as exc:
+        logger.warning(f"GetItemInstallInfo({item_id_int}) 失败: {exc}")
+        return ''
+    folder = install_info.get('folder') if isinstance(install_info, dict) else ''
+    return folder if isinstance(folder, str) else ''
+
+
+def _is_workshop_item_install_complete(item_state: int, installed_folder: str | None) -> bool:
+    """判断订阅物品是否已在本地完成安装且无待更新。
+
+    GetItemState 的 INSTALLED 位与磁盘上的 installedFolder 都必须存在；
+    Steam 在取消订阅后短窗内仍可能短暂报告 installed，因此以磁盘为准。
+    """
+    if not installed_folder:
+        return False
+    try:
+        if not os.path.isdir(installed_folder):
+            return False
+    except OSError:
+        return False
+    return bool(item_state & _ITEM_STATE_INSTALLED) and not bool(item_state & _ITEM_STATE_NEEDS_UPDATE)
+
+
+def _request_workshop_item_download(
+    steamworks,
+    item_id: int,
+    item_state: int,
+    installed_folder: str | None = None,
+    *,
+    high_priority: bool = False,
+) -> bool:
+    """按需触发 Steam 下载尚未安装/需要更新的订阅物品。
+
+    Steam 客户端会自行去重并管理下载队列，所以重复调用是安全的。
+    返回 True 表示本次确实向 Steam 提交了一次 DownloadItem 请求。
+    """
+    if steamworks is None or item_id <= 0:
+        return False
+    # 仅订阅状态才允许下载；未订阅时 Steam 会拒绝。
+    if not (item_state & _ITEM_STATE_SUBSCRIBED):
+        return False
+    if _is_workshop_item_install_complete(item_state, installed_folder):
+        return False
+    # 已经在下载或排队 → 不重复请求（除非显式 high_priority 提升优先级）。
+    already_active = bool(item_state & (_ITEM_STATE_DOWNLOADING | _ITEM_STATE_DOWNLOAD_PENDING))
+    if already_active and not high_priority:
+        return False
+    try:
+        accepted = bool(steamworks.Workshop.DownloadItem(item_id, high_priority))
+    except Exception as exc:
+        logger.warning(
+            f"触发创意工坊物品 {item_id} 下载失败: {exc}",
+            exc_info=True,
+        )
+        return False
+    if accepted:
+        if item_id not in _workshop_download_requested:
+            logger.info(
+                "已向 Steam 请求下载创意工坊物品 %s (state=0x%x, high_priority=%s)",
+                item_id, item_state, high_priority,
+            )
+            _workshop_download_requested.add(item_id)
+        # 立即泵一次回调，让 Steam 尽快开始处理。
+        try:
+            steamworks.run_callbacks()
+        except Exception:
+            pass
+    else:
+        logger.warning(
+            "Steam 拒绝了创意工坊物品 %s 的下载请求 (state=0x%x)",
+            item_id, item_state,
+        )
+    return accepted
 WORKSHOP_VOICE_MANIFEST_NAME = 'voice_manifest.json'
 WORKSHOP_REFERENCE_AUDIO_EXTENSIONS = {'.mp3', '.wav'}
 WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
@@ -1714,6 +1817,21 @@ async def get_subscribed_workshop_items():
                 if preview_url:
                     item_info['previewUrl'] = preview_url
 
+                # 若该订阅物品尚未安装（或需要更新），主动触发 Steam 下载。
+                # 这是修复"订阅后模型列表显示但点击无法切换"的关键：
+                # SteamworksPy 未导出 DownloadItem，仅订阅不会让 Steam 下载文件。
+                try:
+                    _request_workshop_item_download(
+                        steamworks,
+                        int(item_id),
+                        int(item_state),
+                        item_info.get("installedFolder"),
+                    )
+                except Exception as kick_err:
+                    logger.debug(
+                        f"物品 {item_id} 自动触发下载时出错（忽略）: {kick_err}"
+                    )
+
                 voice_reference_summary = None
                 if install_folder and os.path.isdir(install_folder):
                     try:
@@ -1771,6 +1889,220 @@ async def get_subscribed_workshop_items():
             "success": False,
             "error": f"获取订阅物品失败: {str(e)}"
         }, status_code=500)
+
+
+@router.post('/item/{item_id}/download')
+async def trigger_workshop_item_download(item_id: str, request: Request):
+    """主动触发 Steam 下载指定的订阅物品。
+
+    Body（可选 JSON）::
+        {
+            "high_priority": false,  # 是否提升下载优先级
+            "wait": false,           # 是否等待下载完成（同步）
+            "timeout": 60            # wait=True 时的等待秒数（默认 60，上限 600）
+        }
+
+    若 ``wait=True``，端点会轮询 ``GetItemState`` / ``GetItemInstallInfo``
+    直到物品安装完成或超时；前端可在跳转到工坊模型前调用一次，确保磁盘
+    上确实存在文件。``wait=False`` 时立即返回，由前端自行轮询。
+    """
+    steamworks = get_steamworks()
+    if steamworks is None:
+        return JSONResponse({
+            "success": False,
+            "error": "Steamworks未初始化",
+            "message": "请确保Steam客户端已运行且已登录"
+        }, status_code=503)
+
+    try:
+        item_id_int = int(item_id)
+    except (TypeError, ValueError):
+        return JSONResponse({
+            "success": False,
+            "error": "无效的物品ID",
+            "message": "物品ID必须是有效的数字"
+        }, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    high_priority = bool(body.get('high_priority') or body.get('highPriority') or False)
+    should_wait = bool(body.get('wait', False))
+    try:
+        timeout_seconds = float(body.get('timeout', 60))
+    except (TypeError, ValueError):
+        timeout_seconds = 60.0
+    timeout_seconds = max(1.0, min(timeout_seconds, 600.0))
+
+    try:
+        item_state = int(steamworks.Workshop.GetItemState(item_id_int))
+    except Exception as exc:
+        logger.warning(f"获取物品 {item_id_int} 状态失败: {exc}")
+        item_state = 0
+
+    if not (item_state & _ITEM_STATE_SUBSCRIBED):
+        return JSONResponse({
+            "success": False,
+            "error": "未订阅",
+            "message": f"物品 {item_id} 当前未被订阅，无法触发下载",
+            "state": item_state,
+        }, status_code=409)
+
+    # 已安装且不需要更新 → 直接返回成功，避免误导前端"正在下载"。
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
+    if _is_workshop_item_install_complete(item_state, folder):
+        return {
+            "success": True,
+            "item_id": str(item_id_int),
+            "already_installed": True,
+            "installed": True,
+            "installedFolder": folder or None,
+            "state": item_state,
+        }
+
+    accepted = await asyncio.to_thread(
+        _request_workshop_item_download,
+        steamworks,
+        item_id_int,
+        item_state,
+        folder or None,
+        high_priority=high_priority,
+    )
+
+    if not accepted and not (item_state & (_ITEM_STATE_DOWNLOADING | _ITEM_STATE_DOWNLOAD_PENDING)):
+        # 重新读一次状态，可能在 _is_workshop_item_install_complete 之后被
+        # 其他流程拉起来了。仅当确实既没被接受也没在排队时才报错。
+        try:
+            item_state = int(steamworks.Workshop.GetItemState(item_id_int))
+        except Exception:
+            pass
+        if not (item_state & (_ITEM_STATE_DOWNLOADING | _ITEM_STATE_DOWNLOAD_PENDING | _ITEM_STATE_INSTALLED)):
+            return JSONResponse({
+                "success": False,
+                "error": "Steam 拒绝下载请求",
+                "message": "Steam 客户端未接受 DownloadItem，请检查 Steam 是否在线、是否已正确订阅",
+                "state": item_state,
+            }, status_code=502)
+
+    if not should_wait:
+        # 立即返回最新进度
+        try:
+            download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+        except Exception:
+            download_info = {}
+        downloaded = int(download_info.get('downloaded', 0) or 0) if isinstance(download_info, dict) else 0
+        total = int(download_info.get('total', 0) or 0) if isinstance(download_info, dict) else 0
+        return {
+            "success": True,
+            "item_id": str(item_id_int),
+            "requested": True,
+            "installed": False,
+            "state": item_state,
+            "bytesDownloaded": downloaded,
+            "bytesTotal": total,
+        }
+
+    # wait=True：轮询直到安装完成或超时。
+    start_time = time.monotonic()
+    poll_interval = 0.5
+    last_state = item_state
+    last_folder: str | None = None
+    while time.monotonic() - start_time < timeout_seconds:
+        try:
+            steamworks.run_callbacks()
+        except Exception:
+            pass
+        try:
+            last_state = int(steamworks.Workshop.GetItemState(item_id_int))
+        except Exception:
+            pass
+        folder_now = _safe_get_workshop_install_folder(steamworks, item_id_int)
+        if folder_now:
+            last_folder = folder_now
+        if _is_workshop_item_install_complete(last_state, last_folder):
+            return {
+                "success": True,
+                "item_id": str(item_id_int),
+                "installed": True,
+                "installedFolder": last_folder,
+                "state": last_state,
+            }
+        await asyncio.sleep(poll_interval)
+
+    # 超时：返回 202 + 当前进度，让前端继续轮询。
+    try:
+        dinfo = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception:
+        dinfo = {}
+    downloaded = int(dinfo.get('downloaded', 0) or 0) if isinstance(dinfo, dict) else 0
+    total = int(dinfo.get('total', 0) or 0) if isinstance(dinfo, dict) else 0
+    return JSONResponse({
+        "success": False,
+        "item_id": str(item_id_int),
+        "installed": False,
+        "timeout": True,
+        "state": last_state,
+        "bytesDownloaded": downloaded,
+        "bytesTotal": total,
+        "message": f"下载未在 {int(timeout_seconds)} 秒内完成，请稍后重试或继续轮询。",
+    }, status_code=202)
+
+
+@router.get('/item/{item_id}/download-status')
+def get_workshop_item_download_status(item_id: str):
+    """轮询单个订阅物品的下载/安装状态，前端在等待下载时调用。"""
+    steamworks = get_steamworks()
+    if steamworks is None:
+        return JSONResponse({
+            "success": False,
+            "error": "Steamworks未初始化",
+        }, status_code=503)
+
+    try:
+        item_id_int = int(item_id)
+    except (TypeError, ValueError):
+        return JSONResponse({
+            "success": False,
+            "error": "无效的物品ID",
+        }, status_code=400)
+
+    try:
+        item_state = int(steamworks.Workshop.GetItemState(item_id_int))
+    except Exception as exc:
+        logger.debug(f"GetItemState({item_id_int}) 失败: {exc}")
+        item_state = 0
+
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
+    installed = _is_workshop_item_install_complete(item_state, folder)
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) 失败: {exc}")
+        download_info = {}
+    if isinstance(download_info, dict):
+        downloaded = int(download_info.get('downloaded', 0) or 0)
+        total = int(download_info.get('total', 0) or 0)
+    else:
+        downloaded = total = 0
+
+    return {
+        "success": True,
+        "item_id": str(item_id_int),
+        "state": item_state,
+        "subscribed": bool(item_state & _ITEM_STATE_SUBSCRIBED),
+        "installed": installed,
+        "installedFolder": folder if installed else None,
+        "downloading": bool(item_state & _ITEM_STATE_DOWNLOADING) or (total > 0 and downloaded < total),
+        "downloadPending": bool(item_state & _ITEM_STATE_DOWNLOAD_PENDING),
+        "needsUpdate": bool(item_state & _ITEM_STATE_NEEDS_UPDATE),
+        "bytesDownloaded": downloaded,
+        "bytesTotal": total,
+        "progress": (downloaded / total) if total > 0 else (1.0 if installed else 0.0),
+    }
 
 
 @router.get('/item/{item_id}/path')

@@ -125,6 +125,26 @@ async def submit_telemetry(request: Request):
     if storage.is_duplicate_batch(batch_id):
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
+    # steam_user_id 边界校验 + 归一化：
+    # - Steam64 是 u64，合法范围 1..2^64-1。HMAC secret 在开源客户端里可读，
+    #   被泄露后伪造请求是有概率事件。
+    # - 空值 / 非纯数字 / 超长串 / 数值零（"0" / "00" 等 Steamworks "无用户"
+    #   sentinel）/ 超 u64 上限（"99999999999999999999" 等）都视作无效，归零。
+    # - 通过校验后用 ``str(int(...))`` 归一化为 canonical 十进制，否则伪造
+    #   请求可送 "00076561198000000000" 把同账号 string-based join 拆成两个
+    #   不同的 device↔account 维度。
+    # len<=20 是 cheap pre-check 避免对超长 isdigit 串做大整数转换（DoS guard）。
+    steam_user_id = submission.payload.steam_user_id
+    if steam_user_id:
+        if (
+            steam_user_id.isdigit()
+            and len(steam_user_id) <= 20
+            and 0 < int(steam_user_id) < (1 << 64)
+        ):
+            steam_user_id = str(int(steam_user_id))
+        else:
+            steam_user_id = ""
+
     # 存储
     try:
         daily_stats_dict = {k: model_to_dict(v) for k, v in submission.payload.daily_stats.items()}
@@ -138,6 +158,7 @@ async def submit_telemetry(request: Request):
             locale=submission.payload.locale,
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
+            steam_user_id=steam_user_id,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
