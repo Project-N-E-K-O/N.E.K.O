@@ -283,6 +283,7 @@
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "elevenlabs": "ASSIST_API_KEY_ELEVENLABS",
     "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK",
     "openrouter": "ASSIST_API_KEY_OPENROUTER"
@@ -335,6 +336,10 @@
     "minimax_intl": {
       "config_field": "assistApiKeyMinimaxIntl",
       "restricted": false
+    },
+    "elevenlabs": {
+      "config_field": "assistApiKeyElevenlabs",
+      "restricted": true
     },
     "claude": {
       "config_field": "assistApiKeyClaude",

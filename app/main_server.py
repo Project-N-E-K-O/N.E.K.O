@@ -1466,6 +1466,7 @@ from main_routers.agent_router import router as agent_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
+from main_routers.proactive_router import router as proactive_router # noqa
 from main_routers.galgame_router import router as galgame_router # noqa
 from main_routers.jukebox_router import router as jukebox_router # noqa
 from main_routers.live2d_router import router as live2d_router # noqa
@@ -1512,6 +1513,7 @@ async def beacon_shutdown():
 
 # 挂载全部路由
 app.include_router(config_router)
+app.include_router(proactive_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)

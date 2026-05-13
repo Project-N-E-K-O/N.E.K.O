@@ -59,6 +59,9 @@ temperature_agent_reply = 0.2
 temperature_default = 0.0
 max_tokens_agent_reply = 900
 max_tokens_default = 1200
+context_max_tokens = 6000
+context_counting_mode = "char"
+context_metrics_enabled = false
 
 [memory_reader]
 textractor_path = ""

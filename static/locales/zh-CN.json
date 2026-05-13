@@ -1418,7 +1418,8 @@
         "provider": {
             "cosyvoice": "阿里云 CosyVoice",
             "minimax": "MiniMax（国服）",
-            "minimax_intl": "MiniMax（国际服）"
+            "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
@@ -1874,6 +1875,7 @@
         "nativePresetVoicesGeneric": "原生预设音色",
         "savedVoiceFallback": "当前已保存音色",
         "gptsovitsVoices": "GPT-SoVITS 声音",
+        "elevenlabsVoices": "ElevenLabs 声音",
         "gsvDiagNotEnabled": "GPT-SoVITS 未启用 (请在 API 设置勾选)",
         "gsvDiagUrlMissing": "GPT-SoVITS URL 未配置 (请在 API 设置填写)",
         "gsvDiagUrlInvalid": "GPT-SoVITS URL 未配置或不是 http(s)",
