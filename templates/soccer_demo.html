@@ -2097,10 +2097,22 @@
     setAiAvatar,
     getPlayerAvatar: () => ({ type: 'vrm', path: window.vrmManager?.currentModel?.url }),
     getAiAvatar:    () => {
-      if (window.__SoccerAiAvatar?.type === 'vrm') {
-        return { type: 'vrm', path: window.aiVrmManager?.currentModel?.url || window.__SoccerAiAvatar.path };
+      const state = window.__SoccerAiAvatar || { type: 'none', path: '', ready: false };
+      if (state.type === 'vrm') {
+        return {
+          type: 'vrm',
+          path: window.aiVrmManager?.currentModel?.url || state.path || '',
+          ready: !!state.ready,
+        };
       }
-      return { type: 'live2d', path: window.live2dManager?.currentModel?.internalModel?.settings?.url };
+      if (state.type === 'live2d') {
+        return {
+          type: 'live2d',
+          path: window.live2dManager?.currentModel?.internalModel?.settings?.url || state.path || '',
+          ready: !!state.ready,
+        };
+      }
+      return { type: 'none', path: state.path || '', ready: false };
     },
     // speech
     say,
