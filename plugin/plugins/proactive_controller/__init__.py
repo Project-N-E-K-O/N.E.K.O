@@ -37,9 +37,15 @@ from plugin.sdk.plugin import (
 
 _VALID_MODES = ("off", "normal", "focus", "frequent")
 
+# 用户绝对控制权字段：服务端 ``main_routers/proactive_router._USER_OWNED_FIELDS``
+# 的 client-side 镜像。``proactiveVisionEnabled`` 是前端"隐私模式"开关，
+# 必须由用户自己在 UI 决定，插件不能越权写入。
+_USER_OWNED_FIELDS = frozenset({
+    "proactiveVisionEnabled",
+})
+
 _PROACTIVE_BOOL_FIELDS = frozenset({
     "proactiveChatEnabled",
-    "proactiveVisionEnabled",
     "proactiveVisionChatEnabled",
     "proactiveNewsChatEnabled",
     "proactiveVideoChatEnabled",
@@ -52,6 +58,7 @@ _PROACTIVE_INT_FIELDS = frozenset({
     "proactiveChatInterval",
     "proactiveVisionInterval",
 })
+# 写路径白名单：不含 ``_USER_OWNED_FIELDS``，让 set_settings 提前拒绝。
 _PROACTIVE_FIELDS = _PROACTIVE_BOOL_FIELDS | _PROACTIVE_INT_FIELDS
 
 
@@ -120,6 +127,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
             "套用一组主动搭话预设。可选模式：'off'（全关，默认首次启动值）、"
             "'normal'（推荐配置，所有源开启，间隔 15s/10s）、'focus'（低打扰，"
             "仅留搭话和个人动态，间隔 60s）、'frequent'（高频，全开，间隔 5s）。"
+            " 注意：预设不会改变 proactiveVisionEnabled（隐私模式）—— 那是用户绝对控制权。"
         ),
         input_schema={
             "type": "object",
@@ -149,13 +157,14 @@ class ProactiveControllerPlugin(NekoPluginBase):
         description=(
             "对主动搭话字段做部分更新。仅接受白名单内字段，未识别字段会被忽略。"
             "字段：proactive*Enabled（布尔），proactiveChatInterval/proactiveVisionInterval（秒，1~3600）。"
+            " 注意：proactiveVisionEnabled（隐私模式）是用户绝对控制权，插件不能调整；试图传入会被拒绝。"
         ),
         input_schema={
             "type": "object",
             "properties": {
                 "settings": {
                     "type": "object",
-                    "description": "要更新的字段映射；键名必须命中白名单。",
+                    "description": "要更新的字段映射；键名必须命中白名单（不含 proactiveVisionEnabled 隐私模式）。",
                 },
             },
             "required": ["settings"],
@@ -165,14 +174,27 @@ class ProactiveControllerPlugin(NekoPluginBase):
         if not isinstance(settings, Mapping) or not settings:
             return Err(SdkError("settings 必须为非空对象"))
 
+        rejected_user_owned = sorted(set(settings.keys()) & _USER_OWNED_FIELDS)
         payload = {k: v for k, v in settings.items() if k in _PROACTIVE_FIELDS}
         if not payload:
-            return Err(SdkError("settings 中没有可识别的主动搭话字段"))
+            msg = "settings 中没有可识别的主动搭话字段"
+            if rejected_user_owned:
+                msg += f"（拒绝用户专有字段: {rejected_user_owned}，请引导用户在 UI 自行设置）"
+            return Err(SdkError(msg))
 
         result = await self._post_json("/api/proactive/settings", payload)
         if not result.get("success"):
             return Err(SdkError(str(result.get("error", "set_settings failed"))))
-        return Ok({"applied": result.get("applied", {})})
+
+        out: dict[str, Any] = {"applied": result.get("applied", {})}
+        if rejected_user_owned:
+            out["rejected_user_owned"] = rejected_user_owned
+        # 服务端可能也独立报告类型/范围被丢弃的字段，原样透传。
+        if "rejected" in result:
+            out["rejected"] = result["rejected"]
+        if "rejected_user_owned" in result:
+            out["rejected_user_owned"] = result["rejected_user_owned"]
+        return Ok(out)
 
     @plugin_entry(
         id="get_state",

@@ -37,8 +37,18 @@ router = APIRouter(prefix="/api/proactive", tags=["proactive"])
 logger = get_module_logger(__name__, "Main")
 
 
+# 用户绝对控制权 —— 插件和预设禁止越权修改的字段。
+# ``proactiveVisionEnabled`` 是前端"隐私模式"开关的反面
+# (``is_privacy_mode_enabled() == not proactiveVisionEnabled``)，
+# 涉及屏幕内容采集，必须由用户本人在 UI 决定，任何 API 写入路径都要拒绝。
+_USER_OWNED_FIELDS = frozenset({
+    "proactiveVisionEnabled",
+})
+
 # 主动搭话所有可调字段（白名单子集；与 utils/preferences 的
 # _ALLOWED_CONVERSATION_SETTINGS 保持同步，但只暴露搭话相关字段）。
+# 注：``_PROACTIVE_FIELDS`` 仅用于**读路径**和模式反推，写路径会额外
+# 过滤掉 ``_USER_OWNED_FIELDS``。
 _PROACTIVE_BOOL_FIELDS = (
     "proactiveChatEnabled",
     "proactiveVisionEnabled",
@@ -55,14 +65,17 @@ _PROACTIVE_INT_FIELDS = (
     "proactiveVisionInterval",
 )
 _PROACTIVE_FIELDS = _PROACTIVE_BOOL_FIELDS + _PROACTIVE_INT_FIELDS
+# 写路径允许的字段：从全集里剔除用户专有字段。
+_PROACTIVE_WRITABLE_FIELDS = frozenset(_PROACTIVE_FIELDS) - _USER_OWNED_FIELDS
 
 
 # 预设模式：服务器端定义，避免每个调用方自己维护一份。
 # interval 单位与前端 ``app-state.js`` 一致 —— 秒。
+# 注：预设故意不包含 ``proactiveVisionEnabled``（隐私模式）；切换 mode
+# 不会改变用户的隐私选择。
 PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
     "off": {
         "proactiveChatEnabled": False,
-        "proactiveVisionEnabled": False,
         "proactiveVisionChatEnabled": False,
         "proactiveNewsChatEnabled": False,
         "proactiveVideoChatEnabled": False,
@@ -73,7 +86,6 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "normal": {
         "proactiveChatEnabled": True,
-        "proactiveVisionEnabled": True,
         "proactiveVisionChatEnabled": True,
         "proactiveNewsChatEnabled": True,
         "proactiveVideoChatEnabled": True,
@@ -85,9 +97,9 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveVisionInterval": 10,
     },
     # 低打扰：保留搭话与个人动态，关掉新闻/视频/音乐等噪声源，间隔放长。
+    # 不动 vision/隐私开关——是否允许看屏幕由用户自己决定。
     "focus": {
         "proactiveChatEnabled": True,
-        "proactiveVisionEnabled": False,
         "proactiveVisionChatEnabled": False,
         "proactiveNewsChatEnabled": False,
         "proactiveVideoChatEnabled": False,
@@ -101,7 +113,6 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
     # 高频：全开，间隔最短。
     "frequent": {
         "proactiveChatEnabled": True,
-        "proactiveVisionEnabled": True,
         "proactiveVisionChatEnabled": True,
         "proactiveNewsChatEnabled": True,
         "proactiveVideoChatEnabled": True,
@@ -113,6 +124,15 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveVisionInterval": 5,
     },
 }
+
+# Self-check：预设里不应混入用户绝对控制权字段。每次模块加载时校验，
+# 把"加预设时忘了筛"这种回归挡在导入阶段，而不是用户调 set_mode 才暴露。
+for _mode_name, _preset in PROACTIVE_PRESETS.items():
+    _leaked = set(_preset.keys()) & _USER_OWNED_FIELDS
+    if _leaked:
+        raise RuntimeError(
+            f"PROACTIVE_PRESETS[{_mode_name!r}] 不应包含用户专有字段: {sorted(_leaked)}"
+        )
 
 
 def _filter_proactive_subset(settings: dict[str, Any]) -> dict[str, Any]:
@@ -203,17 +223,22 @@ async def get_proactive_settings():
 
 @router.post("/settings")
 async def update_proactive_settings(request: Request):
-    """部分更新主动搭话字段。请求体仅接受 ``_PROACTIVE_FIELDS`` 内字段；
-    其他字段静默忽略。底层 ``save_global_conversation_settings`` 还会再
-    做一次类型 + 范围校验。"""
+    """部分更新主动搭话字段。请求体仅接受 ``_PROACTIVE_WRITABLE_FIELDS``
+    内字段；用户专有字段（``proactiveVisionEnabled`` 隐私模式）会被
+    显式拒绝并通过 ``rejected_user_owned`` 报告，其他未识别字段静默忽略。
+    底层 ``save_global_conversation_settings`` 还会再做一次类型 + 范围校验。"""
     try:
         data = await request.json()
         if not isinstance(data, dict):
             return {"success": False, "error": "请求体必须为对象"}
 
-        payload = {k: v for k, v in data.items() if k in _PROACTIVE_FIELDS}
+        rejected_user_owned = sorted(set(data.keys()) & _USER_OWNED_FIELDS)
+        payload = {k: v for k, v in data.items() if k in _PROACTIVE_WRITABLE_FIELDS}
         if not payload:
-            return {"success": False, "error": "没有可识别的主动搭话字段"}
+            err: dict[str, Any] = {"success": False, "error": "没有可识别的主动搭话字段"}
+            if rejected_user_owned:
+                err["rejected_user_owned"] = rejected_user_owned
+            return err
 
         if not await asyncio.to_thread(save_global_conversation_settings, payload):
             return {"success": False, "error": "保存失败"}
@@ -224,6 +249,9 @@ async def update_proactive_settings(request: Request):
         if rejected:
             # 字段类型/范围不合法时静默被底层丢弃；明确告知调用方避免误判。
             result["rejected"] = rejected
+        if rejected_user_owned:
+            # 用户绝对控制权字段被拒：调用方应通过 UI 引导用户自行设置。
+            result["rejected_user_owned"] = rejected_user_owned
         return result
     except MaintenanceModeError:
         raise
