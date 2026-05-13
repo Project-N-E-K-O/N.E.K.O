@@ -6,7 +6,7 @@ import inspect
 import re
 from typing import Any, Awaitable, Callable
 
-from config.prompts.prompts_study_companion import (
+from .prompt_templates import (
     STUDY_EMPTY_INPUT_DEFAULT,
     STUDY_FALLBACK_EXPLANATION_DEFAULT,
     STUDY_FALLBACK_FEEDBACK,

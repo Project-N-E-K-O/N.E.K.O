@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from config.prompts.prompts_study_companion import (
+from .prompt_templates import (
     STUDY_ANSWER_EVALUATE_EXAMPLE,
     STUDY_ANSWER_EVALUATE_REQUIREMENTS,
     STUDY_ANSWER_EVALUATE_SYSTEM_PROMPT,
