@@ -299,6 +299,54 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     store.close()
 
 
+def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.upsert_topic(
+            {
+                "id": "seed_topic",
+                "name": "Seed Topic",
+                "subject": "math",
+                "chapter": "Seed Chapter",
+                "depth": 2,
+                "difficulty": 0.7,
+                "prerequisites": [{"id": "pre_seed", "required_mastery": 0.5}],
+                "related": [{"id": "related_seed", "relation": "next"}],
+                "typical_misconceptions": ["seed misconception"],
+                "source": "seed",
+            }
+        )
+        store.upsert_topic(
+            {
+                "id": "seed_topic",
+                "name": "Runtime Topic",
+                "subject": "science",
+                "chapter": "Runtime Chapter",
+                "depth": 5,
+                "difficulty": 0.2,
+                "prerequisites": [{"id": "pre_runtime", "required_mastery": 0.9}],
+                "related": [{"id": "related_runtime", "relation": "runtime"}],
+                "typical_misconceptions": ["runtime misconception"],
+                "source": "runtime",
+            }
+        )
+
+        topic = store.get_topic("seed_topic")
+        assert topic is not None
+        assert topic["name"] == "Seed Topic"
+        assert topic["subject"] == "math"
+        assert topic["chapter"] == "Seed Chapter"
+        assert topic["depth"] == 2
+        assert topic["difficulty"] == 0.7
+        assert topic["prerequisites"] == [{"id": "pre_seed", "required_mastery": 0.5}]
+        assert topic["related"] == [{"id": "related_seed", "relation": "next"}]
+        assert topic["typical_misconceptions"] == ["seed misconception"]
+        assert topic["source"] == "seed"
+    finally:
+        store.close()
+
+
 def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -1681,7 +1729,7 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
                 "difficulty": 3,
             }
 
-        evaluated = await plugin.study_evaluate_answer(answer="(-h,k)")
+        evaluated = await plugin.study_evaluate_answer(answer="(-h,k)", _ctx={"run_id": "answer-run-1"})
         assert isinstance(evaluated, Ok)
         assert evaluated.value["verdict"] == "wrong"
 
@@ -1690,6 +1738,9 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
         assert mastery["level"] in {"薄弱", "进行中", "未接触"}
         assert plugin._store.get_fsrs_card("quadratic_vertex_form") is not None
         assert plugin._store.list_wrong_questions(topic_id="quadratic_vertex_form")
+        session = next(item for item in plugin._store.list_sessions() if item["id"] == "answer-run-1")
+        assert session["question_count"] == 1
+        assert session["topics_touched"] == ["quadratic_vertex_form"]
 
         status = await plugin.study_status()
         assert isinstance(status, Ok)

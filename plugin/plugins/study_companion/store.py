@@ -637,14 +637,14 @@ class StudyStore:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
-                    name = excluded.name,
-                    subject = excluded.subject,
-                    chapter = excluded.chapter,
-                    depth = excluded.depth,
-                    difficulty = excluded.difficulty,
-                    prerequisites = excluded.prerequisites,
-                    related = excluded.related,
-                    typical_misconceptions = excluded.typical_misconceptions,
+                    name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
+                    subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
+                    chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
+                    depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
+                    difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
+                    prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
+                    related = CASE WHEN topics.source = 'seed' THEN topics.related ELSE excluded.related END,
+                    typical_misconceptions = CASE WHEN topics.source = 'seed' THEN topics.typical_misconceptions ELSE excluded.typical_misconceptions END,
                     source = CASE WHEN topics.source = 'seed' THEN topics.source ELSE excluded.source END,
                     updated_at = datetime('now')
                 """,

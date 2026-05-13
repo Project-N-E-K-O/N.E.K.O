@@ -474,6 +474,13 @@ class StudyCompanionPlugin(NekoPluginBase):
             "topic": topic,
             "track": track_payload,
         }
+        session_id = str(
+            context.get("session_id")
+            or context.get("run_id")
+            or getattr(self._state, "run_id", "")
+            or getattr(self.ctx, "run_id", "")
+            or "default"
+        ).strip() or "default"
         try:
             await asyncio.to_thread(
                 self._knowledge_tracker.on_answer,
@@ -482,7 +489,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 user_answer=str(context.get("answer") or eval_reply.input_text or ""),
                 eval_result=eval_result,
                 mode=str(context.get("mode") or self._state.active_mode),
-                session_id="default",
+                session_id=session_id,
             )
         except Exception as exc:
             self.logger.warning("study knowledge tracker persistence failed: {}", exc)
@@ -498,6 +505,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         return first_line[:48] or "general"
 
     def _resolve_current_run_id(self, extra_args: dict[str, Any] | None = None) -> str:
+        if isinstance(extra_args, dict):
+            direct = str(extra_args.get("run_id") or "").strip()
+            if direct:
+                return direct
         current = str(getattr(self.ctx, "run_id", "") or "").strip()
         if current:
             return current
@@ -807,7 +818,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         timeout=60.0,
         llm_result_fields=["summary", "verdict", "score", "error_type", "feedback", "next_action"],
     )
-    async def study_evaluate_answer(self, answer: str = "", question: str = "", expected_answer: str = "", **_):
+    async def study_evaluate_answer(self, answer: str = "", question: str = "", expected_answer: str = "", **kwargs):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         with self._lock:
@@ -832,6 +843,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "answer": resolved_expected,
             }
         )
+        run_id = self._resolve_current_run_id(kwargs)
+        session_id = str(kwargs.get("session_id") or "").strip()
         tutor_context = await self._build_learning_context(
             LLM_OPERATION_ANSWER_EVALUATE,
             input_text=answer_text,
@@ -842,6 +855,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "current_question": current_question if using_current_question else {},
                 "question_payload": question_payload,
                 "question_source": "current_question" if using_current_question else "supplied",
+                "run_id": run_id,
+                "session_id": session_id,
                 "mode": active_mode,
             },
         )
