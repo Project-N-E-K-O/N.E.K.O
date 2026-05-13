@@ -95,6 +95,10 @@ class TelemetryStorage:
                 CREATE TABLE IF NOT EXISTS devices (
                     device_id    TEXT PRIMARY KEY,
                     app_version  TEXT    NOT NULL DEFAULT 'unknown',
+                    branch       TEXT    NOT NULL DEFAULT 'unknown',
+                    locale       TEXT    NOT NULL DEFAULT 'unknown',
+                    timezone     TEXT    NOT NULL DEFAULT 'unknown',
+                    distribution TEXT    NOT NULL DEFAULT 'unknown',
                     first_seen   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     last_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     event_count  INTEGER NOT NULL DEFAULT 0
@@ -105,6 +109,27 @@ class TelemetryStorage:
                     received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
                 );
             """)
+            # 老库 devices 表上线时还没有 branch/locale/timezone/distribution 列。
+            # CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式补列；
+            # ALTER ADD COLUMN 在 SQLite 上是 O(1)，已有行的列值用 DEFAULT 填。
+            # try/except 是必要的：多进程部署（gunicorn workers / 多副本）首次
+            # 启动时会同时跑迁移，PRAGMA + ALTER 不是原子的，一个 worker ALTER
+            # 成功后第二个 worker 仍按陈旧的 PRAGMA 结果尝试 ALTER，会撞
+            # "duplicate column name"。捕获并忽略让迁移在并发下幂等。
+            existing_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(devices)").fetchall()
+            }
+            for col_name in ("branch", "locale", "timezone", "distribution"):
+                if col_name in existing_cols:
+                    continue
+                try:
+                    conn.execute(
+                        f"ALTER TABLE devices ADD COLUMN {col_name} TEXT NOT NULL DEFAULT 'unknown'"
+                    )
+                except sqlite3.OperationalError as e:
+                    # 只吞 "duplicate column name"，其它 schema 错误照常往上抛。
+                    if "duplicate column name" not in str(e).lower():
+                        raise
             conn.commit()
             self._initialized = True
 
@@ -119,7 +144,9 @@ class TelemetryStorage:
         return row is not None
 
     def store_event(self, device_id: str, app_version: str, payload_json: str,
-                    daily_stats: dict, batch_id: str | None = None):
+                    daily_stats: dict, batch_id: str | None = None,
+                    branch: str = "unknown", locale: str = "unknown",
+                    timezone: str = "unknown", distribution: str = "unknown"):
         today = date.today().isoformat()
         with self._transaction() as conn:
             if batch_id:
@@ -155,14 +182,27 @@ class TelemetryStorage:
                         bucket.get("total_tokens", 0), bucket.get("cached_tokens", 0),
                         bucket.get("call_count", 0), 0,
                     )
+            # branch 在客户端首次启动后落盘并保持稳定，理论上同一 device 只该
+            # 看到一个非 unknown 值；非 unknown 时直接覆写（清盘重抽时也只会是
+            # 新真值）。locale / timezone / distribution 每次取实时值，同样仅当
+            # 非 unknown 才覆写 —— 老客户端没带这些字段时 Pydantic 默认 'unknown'，
+            # 或新客户端临时检测失败（例如 tzlocal 抛错）时，都不应该把上一次
+            # 已知的好值抹成 'unknown'。
             conn.execute("""
-                INSERT INTO devices (device_id, app_version, first_seen, last_seen, event_count)
-                VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
+                INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution,
+                                     first_seen, last_seen, event_count)
+                VALUES (?, ?, ?, ?, ?, ?,
+                        strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
+                        strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
                 ON CONFLICT(device_id) DO UPDATE SET
-                    app_version = excluded.app_version,
+                    app_version  = excluded.app_version,
+                    branch       = CASE WHEN excluded.branch       = 'unknown' THEN devices.branch       ELSE excluded.branch       END,
+                    locale       = CASE WHEN excluded.locale       = 'unknown' THEN devices.locale       ELSE excluded.locale       END,
+                    timezone     = CASE WHEN excluded.timezone     = 'unknown' THEN devices.timezone     ELSE excluded.timezone     END,
+                    distribution = CASE WHEN excluded.distribution = 'unknown' THEN devices.distribution ELSE excluded.distribution END,
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
-            """, (device_id, app_version))
+            """, (device_id, app_version, branch, locale, timezone, distribution))
 
     @staticmethod
     def _upsert_aggregate(conn, device_id, stat_date, model, call_type,
