@@ -19,9 +19,11 @@
     const SYNC_INTERVAL_MS = 60000;
     // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）
     const _PRIVACY_OFF_BRANCH = 'privacy_default_off_v1';
-    // localStorage marker：记下「上次成功观察到的 telemetryBranch」。让 offline 首启
-    // 错过 branch 后续启动时还能补回覆写，否则实验组用户会被永远锁在控制组默认值上
-    const _BRANCH_OBSERVED_KEY = '_neko_telemetry_branch_observed';
+    // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
+    // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
+    // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
+    // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
+    const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
 
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
@@ -456,6 +458,9 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
 
+                // 首启专属 marker：告诉下方异步合并块「这次需要等 branch 决议后套 A/B
+                // 覆写」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误覆写
+                try { localStorage.setItem(_FIRST_LAUNCH_PENDING_KEY, '1'); } catch (_) {}
                 // 持久化首次启动设置到 localStorage，避免每次重新检测。注意：故意跳过
                 // 服务器 POST——loadSettingsFromServer GET 还没拿到 telemetryBranch，
                 // 这时把控制组默认值上行会被自家 GET 当作「云端已有偏好」回读，让 A/B
@@ -489,8 +494,8 @@
         // 捕获 fetch 发起时的 vision 值：若用户在 fetch 返回前手动切了 toggle，
         // 后续 A/B 覆写就跳过，避免把用户的显式选择刷掉
         const _visionAtFetchStart = S.proactiveVisionEnabled;
-        const _branchAlreadyObserved = (() => {
-            try { return localStorage.getItem(_BRANCH_OBSERVED_KEY); } catch (_) { return null; }
+        const _firstLaunchPending = (() => {
+            try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
         try {
             loadSettingsFromServer().then(serverResult => {
@@ -499,16 +504,15 @@
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
 
-                // A/B test 覆写：分支 = 实验组 + 本机还没观察并落定过这个分支 +
-                // 服务器没有用户既有 vision 偏好 + 用户没在 fetch 间隙手动切 toggle，
-                // 才把隐私模式默认关掉。用 localStorage marker 跨启动幂等：offline
-                // 首启错过覆写时，下次在线再补；marker 写入后不再重复覆写。
+                // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
+                // 分支 = 实验组 + 服务器没有云端 vision 偏好 + 用户没在 fetch 间隙
+                // 手动切 toggle，才把隐私模式默认关掉。升级用户没有 pending marker
+                // 不会被误覆写；offline 首启把 marker 留在 localStorage，下次在线启动再补
                 const noServerVisionPref = !serverSettings ||
                     serverSettings.proactiveVisionEnabled === undefined;
                 const userToggledDuringFetch = S.proactiveVisionEnabled !== _visionAtFetchStart;
-                const branchAlreadyApplied = _branchAlreadyObserved === telemetryBranch;
-                if (telemetryBranch === _PRIVACY_OFF_BRANCH
-                        && !branchAlreadyApplied
+                if (_firstLaunchPending
+                        && telemetryBranch === _PRIVACY_OFF_BRANCH
                         && noServerVisionPref
                         && !userToggledDuringFetch) {
                     if (S.proactiveVisionEnabled !== true) {
@@ -517,10 +521,11 @@
                         console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认关闭');
                     }
                 }
-                // 不论是否触发覆写，只要 server 给了 branch 就落 marker，保证
-                // 下次启动不再尝试，控制组用户也只查一次
-                if (telemetryBranch && !branchAlreadyApplied) {
-                    try { localStorage.setItem(_BRANCH_OBSERVED_KEY, telemetryBranch); } catch (_) {}
+                // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、
+                // 不管是否实际触发覆写），清掉 pending marker；下次启动不再尝试。
+                // GET 失败则 marker 留着，下次在线启动重新决议
+                if (telemetryBranch && _firstLaunchPending) {
+                    try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
                 }
 
                 if (serverSettings) {
