@@ -3266,6 +3266,20 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self._memory_error_retry_after = 0
 
+    def shutdown(self) -> None:
+        """Manager 级别的关闭——取消 idle reset 后台任务。调用方：main_server 的
+        ``_init_character_resources`` 在用新 manager 替换旧 manager 之前调用。
+
+        必要性：``_idle_session_reset_task`` 是 bound method coroutine，对 ``self``
+        持强引用——配置热重载创建新 LLMSessionManager 替换旧的之后，旧 manager
+        本应被 GC，但残留的 task 每 60s 醒一次（虽然只走 ``is_active==False`` 早
+        退分支），无限延长旧 manager 的生命周期，多次 reload 后会积累 N 份。
+        """
+        task = self._idle_session_reset_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._idle_session_reset_task = None
+
     def _ensure_idle_session_reset_loop(self) -> None:
         """Lazily 启动 idle reset 后台任务。idempotent，重复调用安全。"""
         if self._idle_session_reset_task is not None and not self._idle_session_reset_task.done():
@@ -3354,6 +3368,12 @@ class LLMSessionManager:
         self._starting_input_mode = input_mode
         # 首次 start_session 起算，让 idle reset loop 永久存活
         self._ensure_idle_session_reset_loop()
+        # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
+        # idle-reset 触发 end_session 后用户再开新 session 时，如不重置就会继承超过
+        # 阈值的旧时间戳，下一轮 sweep 立刻把新 session 当成 30 min idle 再关一次。
+        # 同步刷新 proactive 路径 10s 抑制窗口（prepare_proactive_delivery），避免
+        # session 刚起来就被立刻触发主动搭话。
+        self.last_user_activity_time = time.time()
         # CAS 落败早退标志：True 时禁止 finally 递减 guard，
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
