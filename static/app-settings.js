@@ -116,10 +116,20 @@
 
     /**
      * 启动定期同步到服务器
+     *
+     * branch 决议未完成（_FIRST_LAUNCH_PENDING_KEY 还在）时跳过 periodic POST：
+     * 否则会把首启控制组默认值推到服务器，下次 GET 拿到 branch 后读到自家 echo
+     * 误判「云端已有偏好」，让 A/B 实验组覆写永久跳过 + marker 清掉。用户主动改
+     * 设置走的 saveSettings 不受影响（那条路径就是要持久化用户显式选择）。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
         _syncTimerId = setInterval(() => {
+            try {
+                if (localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1') {
+                    return;
+                }
+            } catch (_) { /* localStorage 不可用就当 pending 没 set，照常 sync */ }
             syncSettingsToServer();
         }, SYNC_INTERVAL_MS);
         console.log('[app-settings] 已启动定期同步到服务器，间隔', SYNC_INTERVAL_MS / 1000, '秒');
