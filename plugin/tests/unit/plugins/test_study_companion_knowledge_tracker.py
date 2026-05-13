@@ -5,7 +5,12 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker, MasteryTracker, _difficulty_to_float
+from plugin.plugins.study_companion.knowledge_tracker import (
+    KnowledgeTracker,
+    MasteryTracker,
+    _difficulty_to_float,
+    _difficulty_to_level,
+)
 from plugin.plugins.study_companion.store import StudyStore
 
 
@@ -62,6 +67,11 @@ def test_difficulty_integer_levels_are_scaled_from_one_to_five() -> None:
     assert _difficulty_to_float(5) == 1.0
     assert _difficulty_to_float(5.0) == 1.0
     assert _difficulty_to_float(0.5) == 0.5
+    assert _difficulty_to_level(None) == 3
+    assert _difficulty_to_level(0.5) == 3
+    assert _difficulty_to_level(2.5) == 3
+    assert _difficulty_to_level(3) == 3
+    assert _difficulty_to_level(5) == 5
 
 
 def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(tmp_path: Path) -> None:
@@ -283,6 +293,39 @@ def test_wrong_question_resolves_after_three_delayed_correct_variants(tmp_path: 
         resolved = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",))
         assert resolved and resolved[0]["id"] == wrong_id
         assert resolved[0]["consecutive_correct"] >= 3
+    finally:
+        store.close()
+
+
+def test_wrong_question_resolves_with_default_medium_difficulty(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        wrong_id = tracker.on_answer(
+            topic_id="linear_function_kb",
+            question={"question": "k 表示什么？", "answer": "斜率"},
+            user_answer="截距",
+            eval_result={"verdict": "wrong", "score": 10, "error_type": "misunderstanding"},
+            mode="interactive",
+        )["wrong_question_id"]
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "UPDATE wrong_questions SET last_error_at = datetime('now', '-2 days') WHERE id = ?",
+                (wrong_id,),
+            )
+
+        for _ in range(3):
+            tracker.on_answer(
+                topic_id="linear_function_kb",
+                question={"question": "k 的几何意义是什么？", "answer": "斜率"},
+                user_answer="斜率",
+                eval_result={"verdict": "correct", "score": 90, "error_type": "none"},
+                mode="interactive",
+            )
+
+        resolved = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",))
+        assert resolved and resolved[0]["id"] == wrong_id
+        assert resolved[0]["max_correct_difficulty"] == 3
     finally:
         store.close()
 

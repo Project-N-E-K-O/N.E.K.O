@@ -318,6 +318,7 @@ class StudyStore:
         group_column: str,
         group_value: str | None,
         history_limit: int,
+        order_by: str = "id DESC",
     ) -> None:
         limit = max(1, int(history_limit))
         if group_value is None:
@@ -329,7 +330,7 @@ class StudyStore:
                       SELECT id
                       FROM {table}
                       WHERE {group_column} IS NULL
-                      ORDER BY id DESC
+                      ORDER BY {order_by}
                       LIMIT ?
                   )
                 """,
@@ -344,7 +345,7 @@ class StudyStore:
                   SELECT id
                   FROM {table}
                   WHERE {group_column} = ?
-                  ORDER BY id DESC
+                  ORDER BY {order_by}
                   LIMIT ?
               )
             """,
@@ -483,9 +484,11 @@ class StudyStore:
                         "related": item.get("related") if isinstance(item.get("related"), list) else [],
                         "typical_misconceptions": item.get("typical_misconceptions") if isinstance(item.get("typical_misconceptions"), list) else [],
                         "source": "seed",
-                    }
+                    },
+                    commit=False,
                 )
                 count += 1
+            self._require_conn().commit()
         return count
 
     def _log_warning(self, message: str, *args: Any) -> None:
@@ -620,7 +623,7 @@ class StudyStore:
             )
         return result
 
-    def upsert_topic(self, topic: dict[str, Any]) -> None:
+    def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
         topic_id = str(topic.get("id") or "").strip()
         name = str(topic.get("name") or topic_id).strip()
         if not topic_id or not name:
@@ -662,7 +665,8 @@ class StudyStore:
                     str(topic.get("source") or "runtime"),
                 ),
             )
-            self._require_conn().commit()
+            if commit:
+                self._require_conn().commit()
 
     def ensure_topic(
         self,
@@ -912,24 +916,24 @@ class StudyStore:
                     """
                     SELECT *
                     FROM knowledge_evidence
-                    ORDER BY id ASC
+                    ORDER BY id DESC
                     LIMIT ?
                     """,
                     (max(1, int(limit)),),
                 ).fetchall()
-            return [item for item in (self._evidence_from_row(row) for row in rows) if item is not None]
+            return [item for item in (self._evidence_from_row(row) for row in reversed(rows)) if item is not None]
         with self._lock:
             rows = self._require_conn().execute(
                 """
                 SELECT *
                 FROM knowledge_evidence
                 WHERE item_id = ?
-                ORDER BY id ASC
+                ORDER BY id DESC
                 LIMIT ?
                 """,
                 (item_key, max(1, int(limit))),
             ).fetchall()
-        return [item for item in (self._evidence_from_row(row) for row in rows) if item is not None]
+        return [item for item in (self._evidence_from_row(row) for row in reversed(rows)) if item is not None]
 
     def list_recent_knowledge_evidence(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
@@ -1097,8 +1101,15 @@ class StudyStore:
             "queue_count": int(queue_row["count"] if queue_row is not None else 0),
         }
 
-    def enqueue_knowledge_contribution_snapshot(self, *, stats: list[dict[str, Any]], status: str) -> dict[str, Any]:
+    def enqueue_knowledge_contribution_snapshot(
+        self,
+        *,
+        stats: list[dict[str, Any]],
+        status: str,
+        history_limit: int = _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+    ) -> dict[str, Any]:
         queue_id = str(uuid.uuid4())
+        status_value = str(status or "preview")
         with self._lock:
             conn = self._require_conn()
             conn.execute(
@@ -1106,7 +1117,15 @@ class StudyStore:
                 INSERT INTO knowledge_contribution_queue (id, stats_json, status, created_at, updated_at)
                 VALUES (?, ?, ?, datetime('now'), datetime('now'))
                 """,
-                (queue_id, self._json_dumps(stats or []), str(status or "preview")),
+                (queue_id, self._json_dumps(stats or []), status_value),
+            )
+            self._trim_append_only_rows(
+                conn,
+                table="knowledge_contribution_queue",
+                group_column="status",
+                group_value=status_value,
+                history_limit=history_limit,
+                order_by="rowid DESC",
             )
             conn.commit()
             row = conn.execute("SELECT * FROM knowledge_contribution_queue WHERE id = ?", (queue_id,)).fetchone()
@@ -1340,12 +1359,12 @@ class StudyStore:
                 """
                 SELECT *
                 FROM qa_records
-                ORDER BY id ASC
+                ORDER BY id DESC
                 LIMIT ?
                 """,
                 (max(1, int(limit)),),
             ).fetchall()
-        return [item for item in (self._qa_record_from_row(row) for row in rows) if item is not None]
+        return [item for item in (self._qa_record_from_row(row) for row in reversed(rows)) if item is not None]
 
     def list_qa_records_for_topic(self, topic_id: str, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
@@ -1643,7 +1662,7 @@ class StudyStore:
                 """
                 SELECT *
                 FROM review_log
-                ORDER BY id ASC
+                ORDER BY id DESC
                 LIMIT ?
                 """,
                 (max(1, int(limit)),),
@@ -1658,7 +1677,7 @@ class StudyStore:
                 "actual_days": int(row["actual_days"] or 0),
                 "created_at": str(row["created_at"] or ""),
             }
-            for row in rows
+            for row in reversed(rows)
         ]
 
     def export_json(self) -> dict[str, Any]:

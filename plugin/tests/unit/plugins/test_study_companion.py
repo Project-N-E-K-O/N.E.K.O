@@ -261,6 +261,28 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
         weight=0.2,
         context={"source": "unit"},
     )
+    for index in range(2):
+        store.add_qa_record(
+            session_id="session-1",
+            topic_id="photosynthesis_topic",
+            question={"question": f"Recent QA {index}"},
+            user_answer="answer",
+            eval_result={"verdict": "correct"},
+            mode="interactive",
+        )
+        store.append_review_log(
+            topic_id="photosynthesis_topic",
+            card_id=None,
+            rating=index + 1,
+            scheduled_days=index + 1,
+            actual_days=0,
+        )
+        store.add_knowledge_evidence(
+            item_id=candidate["id"],
+            event_type="mentioned",
+            weight=0.3 + index,
+            context={"index": index},
+        )
 
     assert store.load_config(StudyConfig()).language == "en"
     assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
@@ -268,7 +290,10 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     exported = store.export_json()
     assert exported["config"]["language"] == "en"
     assert exported["sessions"][0]["id"] == "session-1"
-    assert exported["qa_records"][0]["question"]["question"] == "What is photosynthesis?"
+    assert [item["question"]["question"] for item in store.list_qa_records(limit=2)] == ["Recent QA 0", "Recent QA 1"]
+    assert [item["rating"] for item in store.list_review_log(limit=2)] == [1, 2]
+    assert [item["context"].get("index") for item in store.list_knowledge_evidence(limit=2)] == [0, 1]
+    assert exported["qa_records"][-1]["question"]["question"] == "Recent QA 1"
     assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
     assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
     store.close()

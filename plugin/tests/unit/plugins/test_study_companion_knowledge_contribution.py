@@ -165,6 +165,32 @@ def test_opt_in_enqueue_and_clear_queue(tmp_path: Path) -> None:
         store.close()
 
 
+def test_contribution_queue_trims_per_status(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        for index in range(3):
+            store.enqueue_knowledge_contribution_snapshot(
+                stats=[{"stat_type": "topic", "stat_key": f"topic:{index}"}],
+                status="queued",
+                history_limit=2,
+            )
+        store.enqueue_knowledge_contribution_snapshot(
+            stats=[{"stat_type": "topic", "stat_key": "topic:preview"}],
+            status="preview",
+            history_limit=2,
+        )
+
+        queue = store.list_knowledge_contribution_queue(limit=10)
+        queued = [item for item in queue if item["status"] == "queued"]
+        preview = [item for item in queue if item["status"] == "preview"]
+
+        assert len(queued) == 2
+        assert len(preview) == 1
+        assert {item["stats"][0]["stat_key"] for item in queued} == {"topic:1", "topic:2"}
+    finally:
+        store.close()
+
+
 def test_preview_builds_local_stats_summary_without_upload_queue(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

@@ -55,6 +55,11 @@ def _difficulty_to_float(value: object, default: float = 0.5) -> float:
     return _clamp(number, 0.1, 1.0)
 
 
+def _difficulty_to_level(value: object, default: float = 0.5) -> int:
+    normalized = _difficulty_to_float(value, default)
+    return max(1, min(5, int(math.floor(normalized * 5.0 + 0.5))))
+
+
 def _verdict_score(verdict: str, score: object = None) -> float:
     normalized = str(verdict or "").strip().lower()
     if normalized == "correct":
@@ -363,7 +368,7 @@ class KnowledgeTracker:
             self.store.record_wrong_question_correct(
                 topic_id=topic_id,
                 error_type=error_type,
-                difficulty=int(round(difficulty * 5)),
+                difficulty=_difficulty_to_level(difficulty),
             )
             self._record_positive_question_type(topic_id=topic_id, question=question_payload)
 
@@ -587,7 +592,7 @@ class KnowledgeTracker:
             return _slug(explicit)
         difficulty = question.get("difficulty")
         if difficulty not in (None, ""):
-            return f"difficulty_{int(_difficulty_to_float(difficulty) * 5)}"
+            return f"difficulty_{_difficulty_to_level(difficulty)}"
         return "general"
 
     def _log_quality_warning(self, message: str, *args: Any) -> None:
