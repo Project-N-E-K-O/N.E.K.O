@@ -49,7 +49,7 @@ from plugin.plugins.study_companion.service import _available_tesseract_language
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
 from plugin.plugins.study_companion.ui_api import build_knowledge_map_payload, build_open_ui_payload
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
-from plugin.sdk.plugin import Ok
+from plugin.sdk.plugin import Err, Ok
 
 
 class _Logger:
@@ -2096,13 +2096,11 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries
     assert "study_detect_mode_intent" in entries
-    assert "study_export_notes" in entries
+    assert "study_export_notes" not in entries
     assert "study_knowledge_map" in entries
     assert "study_set_knowledge_contribution_opt_in" in entries
-    preview = await entries["study_export_notes"].handler(fmt="markdown", preview_only=True, title="Default Notes")
-    assert isinstance(preview, Ok)
-    assert preview.value["filename"] == "default-notes.md"
-    assert preview.value["markdown"]
+    disabled_export = await plugin._study_export_notes_entry(fmt="markdown", preview_only=True, title="Default Notes")
+    assert isinstance(disabled_export, Err)
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"
