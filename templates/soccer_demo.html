@@ -2694,7 +2694,7 @@
     GAME_EVENTS.length = 0;
 
     difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
-    __setMoodBase('calm');
+    __setMoodBase('calm', { force: true });
     if (moodDebugMode) SoccerDemo.disableMoodRotation({ force: true });
     else if (_llm.keepMoodRotationDisabled) SoccerDemo.disableMoodRotation();
     else SoccerDemo.enableMoodRotation(20);
@@ -3162,7 +3162,7 @@
     }
 
     if (ctx?.initialMood && _isValidSoccerMood(ctx.initialMood)) {
-      SoccerDemo.setMood(ctx.initialMood, { source: 'pregame' });
+      SoccerDemo.setMood(ctx.initialMood, { source: 'pregame', force: true });
     }
     if (ctx?.initialDifficulty && _isValidSoccerDifficulty(ctx.initialDifficulty)) {
       SoccerDemo.setDifficulty(ctx.initialDifficulty, { source: 'pregame' });
