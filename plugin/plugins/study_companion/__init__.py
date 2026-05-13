@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 import threading
 import time
@@ -18,6 +19,7 @@ from .constants import (
     MODE_INTERACTIVE,
     MODE_TEACHING,
 )
+from .doc_exporter import DocExporter, normalize_format
 from .screen_classifier import classify_screen_from_ocr
 from .models import (
     MODE_CONCEPT_EXPLAIN,
@@ -46,6 +48,7 @@ from .study_ocr_pipeline import StudyOcrPipeline
 from .tutor_llm_agent import TutorLLMAgent
 from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
+from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 
 
 @neko_plugin
@@ -120,6 +123,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     }
                 ]
             )
+            self._sync_doc_export_entry()
             await self._persist_state()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
@@ -142,6 +146,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         except Exception as exc:
             self.logger.warning("study startup cleanup clear actions failed: {}", exc)
         try:
+            self.unregister_dynamic_entry("study_export_notes")
+        except Exception as exc:
+            self.logger.warning("study startup cleanup dynamic entry failed: {}", exc)
+        try:
             self._static_ui_config = None
         except Exception as exc:
             self.logger.warning("study startup cleanup static UI failed: {}", exc)
@@ -157,6 +165,7 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        self.unregister_dynamic_entry("study_export_notes")
         if self._agent is not None:
             await self._agent.shutdown()
         with self._lock:
@@ -215,6 +224,7 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
+        is_first_run = not bool(self._store.list_interactions(limit=1))
         knowledge = {
             "knowledge_summary": self._knowledge_tracker.get_status_summary(limit=8),
             "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(limit=8),
@@ -223,7 +233,75 @@ class StudyCompanionPlugin(NekoPluginBase):
             "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
             "mastery_overview": self._store.list_mastery_overview(limit=8),
         }
-        return build_status_payload(config=self._cfg, state=self._state, history=history, knowledge=knowledge)
+        return build_status_payload(
+            config=self._cfg,
+            state=self._state,
+            history=history,
+            knowledge=knowledge,
+            is_first_run=is_first_run,
+        )
+
+    def _sync_doc_export_entry(self) -> None:
+        self.unregister_dynamic_entry("study_export_notes")
+        if not bool(self._cfg.doc_export.enabled):
+            return
+        self.register_dynamic_entry(
+            "study_export_notes",
+            self._study_export_notes_entry,
+            name="Export Study Notes",
+            description="Export recent study notes as Markdown, PDF, DOCX, or XMind.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "fmt": {"type": "string", "enum": ["markdown", "pdf", "docx", "xmind"], "default": "markdown"},
+                    "style": {"type": "string", "enum": ["neko", "academic", "compact"], "default": "neko"},
+                    "title": {"type": "string", "default": "Study Notes"},
+                    "preview_only": {"type": "boolean", "default": False},
+                    "range": {"type": "string", "default": "recent"},
+                    "recent_limit": {"type": "integer", "default": 30},
+                    "topic_ids": {"type": "array", "items": {"type": "string"}, "default": []},
+                },
+            },
+            timeout=75.0,
+            llm_result_fields=["filename", "content_type", "format", "style", "markdown"],
+        )
+
+    async def _study_export_notes_entry(
+        self,
+        fmt: str = "markdown",
+        style: str | None = None,
+        title: str | None = None,
+        preview_only: bool = False,
+        range: str | None = None,
+        recent_limit: int | None = None,
+        topic_ids: list[str] | None = None,
+        **_,
+    ):
+        try:
+            normalize_format(fmt)
+            exporter = DocExporter(self._store, config=self._cfg.doc_export)
+            exported = await asyncio.to_thread(
+                exporter.export,
+                fmt=fmt,
+                style=style,
+                title=title,
+                preview_only=bool(preview_only),
+                range=range,
+                recent_limit=recent_limit,
+                topic_ids=topic_ids if isinstance(topic_ids, list) else [],
+            )
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+        return Ok(
+            {
+                "content_base64": base64.b64encode(exported.content).decode("ascii"),
+                "filename": exported.filename,
+                "content_type": exported.content_type,
+                "markdown": exported.markdown,
+                "format": exported.format,
+                "style": exported.style,
+            }
+        )
 
     def _state_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -582,9 +660,60 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["summary", "stats", "opt_in"],
     )
     async def study_anonymous_knowledge_preview(self, limit: int = 100, **_):
-        builder = PublicGraphContributionBuilder(self._store, self._cfg)
-        payload = await asyncio.to_thread(builder.preview, limit=max(1, int(limit or 100)))
-        return Ok(payload)
+        try:
+            builder = PublicGraphContributionBuilder(self._store, self._cfg)
+            payload = await asyncio.to_thread(builder.preview, limit=max(1, int(limit or 100)))
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_knowledge_map",
+        name=tr("entries.knowledge_map.name", default="Study Knowledge Map"),
+        description=tr("entries.knowledge_map.description", default="Return topics, relationships, mastery, weak topics, and wrong-question summaries for the study knowledge map."),
+        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 200}}},
+        llm_result_fields=["summary", "nodes", "edges"],
+    )
+    async def study_knowledge_map(self, limit: int = 200, **_):
+        try:
+            safe_limit = max(1, min(1000, int(limit or 200)))
+            topics, mastery, weak_topics, wrong_questions = await asyncio.gather(
+                asyncio.to_thread(self._store.list_topics, safe_limit),
+                asyncio.to_thread(self._store.list_mastery_overview, safe_limit),
+                asyncio.to_thread(self._knowledge_tracker.get_weak_topics, limit=min(50, safe_limit)),
+                asyncio.to_thread(self._store.list_wrong_questions, limit=min(50, safe_limit)),
+            )
+            return Ok(
+                build_knowledge_map_payload(
+                    topics=topics,
+                    mastery_overview=mastery,
+                    weak_topics=weak_topics,
+                    wrong_questions=wrong_questions,
+                )
+            )
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_set_knowledge_contribution_opt_in",
+        name=tr("entries.set_knowledge_contribution_opt_in.name", default="Set Study Knowledge Contribution Opt-In"),
+        description=tr("entries.set_knowledge_contribution_opt_in.description", default="Enable or disable local opt-in for anonymous study knowledge contribution queueing."),
+        input_schema={
+            "type": "object",
+            "properties": {"opt_in": {"type": "boolean", "default": False}},
+            "required": ["opt_in"],
+        },
+        llm_result_fields=["opt_in", "summary", "queue"],
+    )
+    async def study_set_knowledge_contribution_opt_in(self, opt_in: bool = False, **_):
+        try:
+            self._cfg.knowledge_contribution_opt_in = bool(opt_in)
+            await self._persist_state()
+            builder = PublicGraphContributionBuilder(self._store, self._cfg)
+            preview = await asyncio.to_thread(builder.preview, limit=100)
+            return Ok(build_contribution_settings_payload(opt_in=self._cfg.knowledge_contribution_opt_in, preview=preview))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
 
     @plugin_entry(
         id="study_clear_knowledge_contribution_queue",
@@ -594,9 +723,12 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["cleared_count"],
     )
     async def study_clear_knowledge_contribution_queue(self, **_):
-        builder = PublicGraphContributionBuilder(self._store, self._cfg)
-        cleared = await asyncio.to_thread(builder.clear_queue)
-        return Ok({"cleared_count": cleared})
+        try:
+            builder = PublicGraphContributionBuilder(self._store, self._cfg)
+            cleared = await asyncio.to_thread(builder.clear_queue)
+            return Ok({"cleared_count": cleared})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
 
     @plugin_entry(
         id="study_detect_mode_intent",

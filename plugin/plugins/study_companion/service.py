@@ -21,10 +21,12 @@ def build_status_payload(
     state: StudyState,
     history: list[dict[str, Any]] | None = None,
     knowledge: dict[str, Any] | None = None,
+    is_first_run: bool = False,
 ) -> dict[str, Any]:
     knowledge_payload = json_copy(knowledge or {})
     return {
         "status": state.status,
+        "is_first_run": bool(is_first_run),
         "mode": config.mode,
         "default_mode": config.default_mode,
         "active_mode": state.active_mode,

@@ -648,6 +648,11 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "ui.status.screen.summary",
         "ui.error.missing_question",
         "ui.error.missing_answer",
+        "ui.surface.knowledge_map",
+        "ui.surface.knowledge_contribution_settings",
+        "ui.surface.note_exporter",
+        "ui.surface.quickstart",
+        "ui.button.export",
     ]
     bundles: dict[str, dict[str, str]] = {}
     for locale in locales:
@@ -664,6 +669,9 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "status.mode.teaching" in bundle
         assert "ui.status.mode_switching" in bundle
         assert "ui.error.mode_switch_failed" in bundle
+        assert "entries.knowledge_map.name" in bundle
+        assert "entries.set_knowledge_contribution_opt_in.name" in bundle
+        assert "entries.export_notes.name" in bundle
 
     en_bundle = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
     for locale in locales:
@@ -687,6 +695,10 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     surfaces, warnings = _build_surfaces_sync("study_companion", meta)
     assert warnings == []
     assert any(surface["id"] == "study-panel" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "knowledge-map" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "knowledge-contribution-settings" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "note-exporter" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "quickstart" and surface["available"] is True for surface in surfaces)
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
@@ -2045,9 +2057,13 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries
     assert "study_detect_mode_intent" in entries
+    assert "study_export_notes" not in entries
+    assert "study_knowledge_map" in entries
+    assert "study_set_knowledge_contribution_opt_in" in entries
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"
+    assert status.value["is_first_run"] is True
     assert status.value["active_mode"] == MODE_COMPANION
     assert "mode_started_at" in status.value
     assert "recent_mode_switches" in status.value
@@ -2057,6 +2073,60 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "mastery_overview" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+            "doc_export": {"enabled": True, "default_style": "compact", "xmind_enabled": False},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        entries = plugin.collect_entries()
+        assert "study_export_notes" in entries
+        plugin._store.append_interaction(
+            kind="concept_explain",
+            input_text="derivative",
+            output_text="A derivative is a rate of change.",
+            history_limit=10,
+        )
+
+        exported = await entries["study_export_notes"].handler(fmt="markdown", preview_only=False, title="Unit Notes")
+        assert isinstance(exported, Ok)
+        assert exported.value["filename"] == "unit-notes.md"
+        assert exported.value["format"] == "markdown"
+        assert exported.value["style"] == "compact"
+        assert exported.value["content_base64"]
+        assert "derivative" in exported.value["markdown"]
+
+        knowledge_map = await plugin.study_knowledge_map(limit=10)
+        assert isinstance(knowledge_map, Ok)
+        assert knowledge_map.value["summary"]["topic_count"] >= 0
+        assert isinstance(knowledge_map.value["nodes"], list)
+
+        opt_in = await plugin.study_set_knowledge_contribution_opt_in(opt_in=True)
+        assert isinstance(opt_in, Ok)
+        assert opt_in.value["opt_in"] is True
+        preview = await plugin.study_anonymous_knowledge_preview(limit=10)
+        assert isinstance(preview, Ok)
+        assert preview.value["opt_in"] is True
+        assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is True
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
