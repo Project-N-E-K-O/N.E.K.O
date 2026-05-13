@@ -120,6 +120,18 @@ def _filter_proactive_subset(settings: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in settings.items() if k in _PROACTIVE_FIELDS}
 
 
+async def _readback_subset(payload_keys) -> dict[str, Any]:
+    """保存后回读 ``aload_global_conversation_settings``，仅返回
+    payload 涉及且**真实落盘**的字段。
+
+    ``save_global_conversation_settings`` 会对字段做第二轮类型 + 范围
+    过滤（bool 必须是 bool、interval 必须是 1<=int<=3600 等），被丢弃
+    的字段不应在 ``applied`` 中出现，否则调用方会误判为生效。
+    """
+    latest = await aload_global_conversation_settings()
+    return {k: latest[k] for k in payload_keys if k in latest}
+
+
 def _infer_mode(settings: dict[str, Any]) -> str:
     """根据当前持久化的字段反推所属预设；不匹配任何预设则返回 ``custom``。
 
@@ -169,7 +181,8 @@ async def set_proactive_mode(request: Request):
         if not await asyncio.to_thread(save_global_conversation_settings, dict(preset)):
             return {"success": False, "error": "保存失败"}
 
-        return {"success": True, "mode": mode, "applied": preset}
+        applied = await _readback_subset(preset.keys())
+        return {"success": True, "mode": mode, "applied": applied}
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -205,7 +218,13 @@ async def update_proactive_settings(request: Request):
         if not await asyncio.to_thread(save_global_conversation_settings, payload):
             return {"success": False, "error": "保存失败"}
 
-        return {"success": True, "applied": payload}
+        applied = await _readback_subset(payload.keys())
+        rejected = [k for k in payload.keys() if k not in applied]
+        result: dict[str, Any] = {"success": True, "applied": applied}
+        if rejected:
+            # 字段类型/范围不合法时静默被底层丢弃；明确告知调用方避免误判。
+            result["rejected"] = rejected
+        return result
     except MaintenanceModeError:
         raise
     except Exception as e:

@@ -81,10 +81,14 @@ class ProactiveControllerPlugin(NekoPluginBase):
             self.logger.warning("Falling back to default MAIN_SERVER_PORT (48911): {}", exc)
 
         self._api_base = str(section.get("api_base", self._api_base)).rstrip("/")
+        raw_timeout = section.get("api_timeout_seconds", self._api_timeout)
         try:
-            self._api_timeout = float(section.get("api_timeout_seconds", self._api_timeout))
+            self._api_timeout = float(raw_timeout)
         except (TypeError, ValueError):
-            pass
+            self.logger.warning(
+                "invalid api_timeout_seconds={!r} in plugin.toml; falling back to {}s",
+                raw_timeout, self._api_timeout,
+            )
 
         default_mode = str(section.get("default_mode_on_first_run", "off")).strip()
         if default_mode not in _VALID_MODES:
