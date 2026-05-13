@@ -587,7 +587,7 @@ class ComputerUseAdapter:
     def check_connectivity(
         self,
         *,
-        timeout_s: float = 4.0,
+        timeout_s: float = 6.0,
         _retries: int = 0,
     ) -> Tuple[bool, str]:
         """Synchronous LLM ping using the same ChatOpenAI client that real

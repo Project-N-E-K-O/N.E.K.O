@@ -4915,12 +4915,15 @@ async def agent_command(payload: Dict[str, Any]):
 _intent_restore_done = False
 _intent_restore_lock: Optional[asyncio.Lock] = None
 
-# Restore probe budget. Hard ceiling 15s = 3 attempts × (4s timeout + 1s gap)
-# minus the trailing gap. Tuned so the user sees toggles flip back within a
-# typical greeting wait (~5-15s); longer windows risk users thinking the
-# system is hung. Anything longer should be a manual retry by the user.
-_RESTORE_PING_TIMEOUT_S = 4.0
-_RESTORE_PING_INTERVAL_S = 5.0
+# Restore probe budget. Worst-case wall time when probes keep timing out:
+#   3 attempts × 6s timeout + 2 inter-attempt sleeps × 7s = ~32s.
+# In practice the ping resolves in <1s on a healthy connection so users
+# typically see toggles flip back within the first attempt. Tuning rationale:
+# 6s per-call timeout gives cold-start DNS / TLS handshake comfortable room
+# without dragging out the failure path; 7s gap lets a transient burst
+# throttle window expire between attempts.
+_RESTORE_PING_TIMEOUT_S = 6.0
+_RESTORE_PING_INTERVAL_S = 7.0
 _RESTORE_PING_MAX_ATTEMPTS = 3
 
 
