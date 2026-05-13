@@ -134,6 +134,10 @@ async def submit_telemetry(request: Request):
             payload_json=payload_json,
             daily_stats=daily_stats_dict,
             batch_id=batch_id,
+            branch=submission.payload.branch,
+            locale=submission.payload.locale,
+            timezone=submission.payload.timezone,
+            distribution=submission.payload.distribution,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")

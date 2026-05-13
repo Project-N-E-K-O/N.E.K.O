@@ -8427,16 +8427,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                             await new Promise(resolve => requestAnimationFrame(resolve));
                         }
 
-                        // 检测并修正朝向（会自动保存到preferences）
+                        // 保存加载管线处理后的朝向到 preferences
                         if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
                             const vrm = window.vrmManager.currentModel.vrm;
 
-                            // 检测朝向
-                            const needsRotation = window.VRMOrientationDetector.detectNeedsRotation(vrm);
+                            // loadModel 已经完成 VRM0.x 版本兼容和启发式朝向处理。
+                            // 这里保存最终旋转，避免上传流程再次用旧启发式覆盖加载结果。
                             const detectedRotation = {
-                                x: 0,
-                                y: needsRotation ? Math.PI : 0,
-                                z: 0
+                                x: vrm.scene.rotation.x,
+                                y: vrm.scene.rotation.y,
+                                z: vrm.scene.rotation.z
                             };
 
                             // 应用旋转

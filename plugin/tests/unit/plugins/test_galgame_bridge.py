@@ -180,6 +180,54 @@ class _Ctx:
         return None
 
 
+@pytest.mark.asyncio
+async def test_install_progress_callback_uses_supported_run_update_fields() -> None:
+    class _ProgressPlugin:
+        logger = _Logger()
+
+        def __init__(self) -> None:
+            self.run_updates: list[dict[str, object]] = []
+
+        async def run_update(self, **kwargs):
+            if "status" in kwargs:
+                raise TypeError("unexpected status")
+            self.run_updates.append(dict(kwargs))
+            return {"ok": True}
+
+    plugin = _ProgressPlugin()
+    callback = GalgameBridgePlugin._resolve_install_progress_callback(plugin, "run-1")
+
+    await callback(
+        {
+            "phase": "downloading",
+            "message": "Downloading Textractor",
+            "progress": 0.25,
+            "downloaded_bytes": 10,
+            "total_bytes": 20,
+            "resume_from": 0,
+            "asset_name": "Textractor.zip",
+            "release_name": "v1",
+        }
+    )
+
+    assert plugin.run_updates == [
+        {
+            "run_id": "run-1",
+            "progress": 0.25,
+            "stage": "downloading",
+            "message": "Downloading Textractor",
+            "metrics": {
+                "phase": "downloading",
+                "downloaded_bytes": 10,
+                "total_bytes": 20,
+                "resume_from": 0,
+                "asset_name": "Textractor.zip",
+                "release_name": "v1",
+            },
+        }
+    ]
+
+
 def _session_state(
     *,
     speaker: str = "",
@@ -3433,14 +3481,16 @@ async def test_install_textractor_entry_returns_install_result_and_refreshed_sta
             memory_reader={
                 "enabled": True,
                 "install_target_dir": str(install_root),
+                "textractor_proxy": "http://127.0.0.1:7890",
             },
         ),
     )
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
+    captured_install_kwargs: dict[str, object] = {}
 
     async def _fake_install_textractor(**kwargs):
-        del kwargs
+        captured_install_kwargs.update(kwargs)
         install_root.mkdir(parents=True, exist_ok=True)
         (install_root / "TextractorCLI.exe").write_text("", encoding="utf-8")
         return {
@@ -3471,6 +3521,57 @@ async def test_install_textractor_entry_returns_install_result_and_refreshed_sta
     assert result.value["status"]["textractor"]["detected_path"] == str(
         install_root / "TextractorCLI.exe"
     )
+    assert captured_install_kwargs["textractor_proxy"] == "http://127.0.0.1:7890"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_install_textractor_entry_uses_ctx_run_id_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    install_root = tmp_path / "TextractorInstalled"
+    ctx = _Ctx(
+        plugin_dir,
+        _make_effective_config(
+            bridge_root,
+            memory_reader={
+                "enabled": True,
+                "install_target_dir": str(install_root),
+            },
+        ),
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    await plugin.startup()
+
+    observed: dict[str, object] = {}
+
+    async def _fake_install_textractor(**kwargs):
+        observed.update(kwargs)
+        return {
+            "installed": True,
+            "already_installed": False,
+            "detected_path": str(install_root / "TextractorCLI.exe"),
+            "target_dir": str(install_root),
+            "expected_executable_path": str(install_root / "TextractorCLI.exe"),
+            "install_supported": True,
+            "can_install": False,
+            "detail": "installed",
+            "summary": "Textractor install ok",
+            "release_name": "v1.0.0",
+            "asset_name": "Textractor-x64.zip",
+        }
+
+    monkeypatch.setattr(
+        "plugin.plugins.galgame_plugin.install_textractor",
+        _fake_install_textractor,
+    )
+
+    result = await plugin.galgame_install_textractor(_ctx={"run_id": "run-123"})
+
+    assert isinstance(result, Ok)
+    assert observed["task_id"] == "run-123"
 
 
 @pytest.mark.asyncio
@@ -4399,6 +4500,53 @@ def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_return
     assert payload["capture_profile"]["top_ratio"] == pytest.approx(0.50)
     assert payload["capture_profile"]["bottom_inset_ratio"] == pytest.approx(0.12)
     assert payload["sample_text"] == "这是自动校准命中的对白文本。"
+
+
+@pytest.mark.plugin_unit
+def test_auto_recalibrate_ocr_dialogue_profile_excludes_title_bar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_target_client_rect",
+        lambda target: (0, 50, target.width, target.height),
+    )
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=build_config(
+            _make_effective_config(
+                bridge_root,
+                ocr_reader={
+                    "enabled": True,
+                    "top_ratio": 0.02,
+                    "bottom_inset_ratio": 0.58,
+                },
+            )
+        ),
+        platform_fn=lambda: True,
+        window_scanner=lambda: [],
+        capture_backend=_FakeImageCaptureBackend(size=(1000, 500)),
+        ocr_backend=_CropAwareOcrBackend(
+            lambda image: "这是排除标题栏后的对白文本。"
+            if getattr(image, "crop_box", (0, 0, 0, 0))[1] >= 60
+            else "the lamenting geese"
+        ),
+    )
+    manager._attached_window = DetectedGameWindow(
+        hwnd=503,
+        title="Demo Window",
+        process_name="DemoGame.exe",
+        pid=7103,
+        width=1000,
+        height=500,
+    )
+
+    payload = manager.auto_recalibrate_dialogue_profile()
+
+    assert payload["capture_profile"]["top_ratio"] >= 0.12
+    assert payload["sample_text"] == "这是排除标题栏后的对白文本。"
 
 
 @pytest.mark.plugin_unit

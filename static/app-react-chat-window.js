@@ -45,7 +45,7 @@
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
         // galgame-mode-change event, which is the only signal chat.html's
-        // syncWindowToGalgameMin uses to bump Electron window height.
+        // syncWindowToMinH uses to bump Electron window height.
         // Defaulting to true here would leave saved-OFF users permanently
         // bumped: chat.html's listener only ever grows the window.
         galgameModeEnabled: false,
@@ -79,9 +79,26 @@
         } catch (_) {}
     }
 
-    function applyGalgameBodyClass(enabled) {
+    // composer 隐藏（请她离开）时强制视为 OFF：保留 state.galgameModeEnabled，
+    // 但摘掉 body class，让 chat.html / preload-chat-react 里依赖该 class 的
+    // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
+    // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
+    function getEffectiveGalgameEnabled() {
+        return !!state.galgameModeEnabled && !state.composerHidden;
+    }
+
+    function applyGalgameBodyClass() {
         if (typeof document === 'undefined' || !document.body) return;
-        document.body.classList.toggle('galgame-mode-enabled', !!enabled);
+        document.body.classList.toggle('galgame-mode-enabled', getEffectiveGalgameEnabled());
+    }
+
+    // 镜像 galgame 的 body class 策略：附件区（截图 / 导入图片）出现时贴
+    // body 上 composer-has-attachments，让 chat.html 的 min-height 兜底和
+    // preload-chat-react.js 的 Electron resize 下限同时感知。否则附件直接
+    // 把 .composer-input 顶出可视区域 —— galgame 的 385px 兜底不覆盖它。
+    function applyAttachmentsBodyClass(hasAttachments) {
+        if (typeof document === 'undefined' || !document.body) return;
+        document.body.classList.toggle('composer-has-attachments', !!hasAttachments);
     }
     // No module-eval apply: state defaults to off here; init() resolves the
     // persisted preference and calls setGalgameModeEnabled(...) which flips
@@ -1157,13 +1174,16 @@
             // the 30s timeout (or finishes and is silently discarded).
             abortPendingGalgameFetch();
         }
-        applyGalgameBodyClass(next);
+        applyGalgameBodyClass();
         if ((!requestOptions || requestOptions.persist !== false) && !isGalgameModeTemporarilyDisabled()) {
             persistGalgameModePreference(next);
         }
         renderWindow();
         if (changed) {
-            dispatchHostEvent('galgame-mode-change', { enabled: next });
+            // 派发 effective 值（与 body class 一致）：composer 隐藏期间即使
+            // setGalgameModeEnabled(true) 也广播 enabled=false，避免监听器
+            // (chat.html syncWindowToGalgameMin 等) 与 body class 状态分歧。
+            dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
             // OFF→ON: if the chat overlay is currently visible, refetch the
             // latest turn's options so the user sees A/B/C immediately rather
             // than waiting for the next turn-end. Gating on overlay visibility
@@ -1697,7 +1717,19 @@
     }
 
     function setComposerHidden(hidden) {
-        state.composerHidden = !!hidden;
+        var next = !!hidden;
+        var changed = state.composerHidden !== next;
+        state.composerHidden = next;
+        if (changed) {
+            // composer 隐藏/显示切换会改变 effective galgame body class（参见
+            // applyGalgameBodyClass），同步刷新一次；否则在 galgame ON 期间
+            // 触发请她离开，body 仍带 galgame-mode-enabled，min-height:385px 撑住
+            // 窗口底部一片空白，被用户感知为"输入框没隐藏"。
+            applyGalgameBodyClass();
+            // 复用现有 change 事件通知 chat.html 的 syncWindowToGalgameMin 等监听器
+            // 重新评估窗口最小高度；effective OFF 时它会跳过撑高（b.height >= minH 兜底）。
+            dispatchHostEvent('galgame-mode-change', { enabled: getEffectiveGalgameEnabled() });
+        }
         renderWindow();
     }
 
@@ -1719,6 +1751,7 @@
     }
 
     function setComposerAttachments(attachments) {
+        var prevHas = state.composerAttachments && state.composerAttachments.length > 0;
         state.composerAttachments = Array.isArray(attachments)
             ? attachments.map(function (attachment, index) {
                 if (!attachment || typeof attachment !== 'object' || !attachment.url) return null;
@@ -1729,7 +1762,15 @@
                 };
             }).filter(Boolean)
             : [];
+        var nextHas = state.composerAttachments.length > 0;
+        applyAttachmentsBodyClass(nextHas);
         renderWindow();
+        if (prevHas !== nextHas) {
+            // chat.html 的 syncWindowToAttachmentsMin 监听这条事件，0→N 时
+            // 主动 setBounds 把 Electron 窗口撑高到能容纳附件 + 输入框，避免
+            // 附件刚贴上来就把输入区顶出可视区。和 galgame-mode-change 对称。
+            dispatchHostEvent('composer-attachments-change', { hasAttachments: nextHas });
+        }
         return state.composerAttachments;
     }
 
@@ -2285,6 +2326,7 @@
         if (!header) return;
 
         header.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
             var closeButton = $('reactChatWindowCloseButton');
             if (closeButton && closeButton.contains(event.target)) return;
             var minimizeButton = $('reactChatWindowMinimizeButton');
@@ -2331,7 +2373,14 @@
 
     var MIN_WIDTH = 320;
     var MIN_HEIGHT = 280;
+    var GALGAME_MIN_HEIGHT = 420;
     var RESIZE_DIRECTIONS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+
+    function getDesktopMinHeight() {
+        if (!state.galgameModeEnabled) return MIN_HEIGHT;
+        // 与 CSS 的 galgame min-height 对齐，避免拖拽时 JS 先把高度压到 280px。
+        return Math.min(GALGAME_MIN_HEIGHT, Math.max(MIN_HEIGHT, window.innerHeight - 22));
+    }
 
     function createResizeEdges() {
         var shell = getShell();
@@ -2404,11 +2453,13 @@
                 newLeft = resizeState.origLeft + resizeState.origWidth - MIN_WIDTH;
             }
         }
+        var desktopMinHeight = getDesktopMinHeight();
+
         if (!mobile && dir.indexOf('s') !== -1) {
-            newHeight = Math.max(MIN_HEIGHT, resizeState.origHeight + dy);
+            newHeight = Math.max(desktopMinHeight, resizeState.origHeight + dy);
         }
         if (dir.indexOf('n') !== -1) {
-            var minH = mobile ? MOBILE_MIN_HEIGHT : MIN_HEIGHT;
+            var minH = mobile ? MOBILE_MIN_HEIGHT : desktopMinHeight;
             var proposedHeight = resizeState.origHeight - dy;
             if (proposedHeight >= minH) {
                 newHeight = proposedHeight;
@@ -2475,6 +2526,7 @@
         if (!shell) return;
 
         shell.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
             var target = event.target;
             if (!target || !target.dataset || !target.dataset.resizeDir) return;
             startResize(event.clientX, event.clientY, target.dataset.resizeDir);

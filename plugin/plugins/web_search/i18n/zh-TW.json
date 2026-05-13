@@ -1,0 +1,4 @@
+{
+  "plugin.name": "網路搜尋",
+  "plugin.description": "聯網搜尋。自動依使用者 IP 選擇搜尋引擎（中國大陸 Baidu／海外 DuckDuckGo），無需 API Key"
+}

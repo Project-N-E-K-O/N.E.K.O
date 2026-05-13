@@ -1,0 +1,85 @@
+[plugin]
+id = "study_companion"
+name = "Study Companion"
+description = "An adaptive study companion that can classify the screen, generate questions, evaluate answers, explain concepts, and summarize sessions."
+short_description = "OCR, tutoring, and session summaries for study sessions."
+keywords = ["study", "ocr", "tutor", "concept", "learning"]
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.study_companion:StudyCompanionPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = true
+
+[plugin.database]
+enabled = false
+
+[plugin_state]
+backend = "memory"
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[study]
+default_mode = "companion"
+language = "zh-CN"
+history_limit = 50
+
+[llm]
+llm_call_timeout_seconds = 30
+# Generic fallback used only when an operation-specific limit is omitted.
+temperature = 0.2
+max_tokens = 900
+temperature_concept_explain = 0.2
+max_tokens_concept_explain = 900
+temperature_question_generate = 0.35
+max_tokens_question_generate = 720
+temperature_answer_evaluate = 0.12
+max_tokens_answer_evaluate = 720
+temperature_knowledge_track = 0.08
+max_tokens_knowledge_track = 480
+temperature_summarize_session = 0.18
+max_tokens_summarize_session = 1200
+
+[ocr_reader]
+enabled = true
+backend_selection = "rapidocr"
+capture_backend = "auto"
+tesseract_path = ""
+install_manifest_url = ""
+install_target_dir = ""
+install_timeout_seconds = 300
+languages = "chi_sim+jpn+eng"
+left_inset_ratio = 0.03
+right_inset_ratio = 0.03
+top_ratio = 0.0
+bottom_inset_ratio = 0.0
+
+[rapidocr]
+enabled = true
+install_target_dir = ""
+engine_type = "onnxruntime"
+lang_type = "ch"
+model_type = "mobile"
+ocr_version = "PP-OCRv4"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.guide]]
+id = "study-panel"
+title = "Study Panel"
+entry = "surfaces/study_panel.tsx"
+permissions = ["state:read"]
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"

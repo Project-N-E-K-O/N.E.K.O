@@ -16,12 +16,12 @@ INLINE_PROMPT_NON_EN
 I18N_NOT_IN_CONFIG
    Any dict literal whose keys form a multi-language map — at least two of
    ``{'zh', 'en', 'ja', 'ko', 'ru', 'zh-CN', 'zh-TW', 'es', 'pt'}`` AND
-   including ``'en'`` — belongs in ``config/prompts_*.py``. Such dicts
+   including ``'en'`` — belongs in ``config/prompts/prompts_*.py``. Such dicts
    anywhere else are flagged.
 
 The project's i18n convention:
    - Inline prompts at the call site MUST be English-only.
-   - Multi-language prompts MUST live in ``config/prompts_*.py``, served
+   - Multi-language prompts MUST live in ``config/prompts/prompts_*.py``, served
      via ``_loc(MULTILANG_DICT, language_code)`` or
      ``get_xxx_prompt(lang)``.
 
@@ -81,7 +81,7 @@ EXCLUDE_FILES = {
 CJK_THRESHOLD = 0.30
 
 # Language codes recognised as i18n keys. Union of codes used by
-# config/prompts_*.py (zh / zh-CN / zh-TW / en / ja / ko / ru) plus es/pt
+# config/prompts/prompts_*.py (zh / zh-CN / zh-TW / en / ja / ko / ru) plus es/pt
 # (used by static/locales).
 LANG_CODES = {"zh", "zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
 REQUIRED_LANG_KEY = "en"
@@ -316,7 +316,7 @@ class PromptHygieneChecker(ast.NodeVisitor):
         msg = (
             f"inline prompt at {source} has {ratio:.0%} CJK characters "
             f"(threshold {int(CJK_THRESHOLD * 100)}%); rewrite the body in English "
-            f"or move the multi-language version into config/prompts_*.py."
+            f"or move the multi-language version into config/prompts/prompts_*.py."
         )
         self.violations.append((lineno, col, CODE_INLINE, msg))
 
@@ -327,8 +327,8 @@ class PromptHygieneChecker(ast.NodeVisitor):
         col = (getattr(node, "col_offset", 0) or 0) + 1
         msg = (
             f"multi-language dict (keys: {', '.join(lang_keys)}) belongs in "
-            f"config/prompts_*.py, not in regular code. Convention: import the "
-            f"dict from config.prompts_xxx and resolve via _loc(DICT, lang)."
+            f"config/prompts/prompts_*.py, not in regular code. Convention: import the "
+            f"dict from config.prompts.prompts_xxx and resolve via _loc(DICT, lang)."
         )
         self.violations.append((lineno, col, CODE_I18N, msg))
 
@@ -389,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Enforce prompt-i18n conventions: inline prompts must be English; "
-            "multi-language dicts must live in config/prompts_*.py."
+            "multi-language dicts must live in config/prompts/prompts_*.py."
         )
     )
     parser.add_argument(
@@ -421,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\n{total} prompt-hygiene violation(s) found.\n"
             "Inline LLM prompts MUST be English-only. Multi-language prompts MUST "
-            "live in config/prompts_*.py. To override a single line, append "
+            "live in config/prompts/prompts_*.py. To override a single line, append "
             "`# noqa: INLINE_PROMPT_NON_EN` or `# noqa: I18N_NOT_IN_CONFIG`.",
             file=sys.stderr,
         )

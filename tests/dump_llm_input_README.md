@@ -14,8 +14,8 @@
 
 | # | 区块 | 数据来源 |
 |---|------|----------|
-| 1 | 会话开场指令 | `config/prompts_sys.py` → `SESSION_INIT_PROMPT` |
-| 2 | 角色核心人设 | `characters.json` 的自定义 `system_prompt`，或 `config/prompts_chara.py` 的默认模板 |
+| 1 | 会话开场指令 | `config/prompts/prompts_sys.py` → `SESSION_INIT_PROMPT` |
+| 2 | 角色核心人设 | `characters.json` 的自定义 `system_prompt`，或 `config/prompts/prompts_chara.py` 的默认模板 |
 | 3 | 长期记忆 (Persona) | `Documents/N.E.K.O/memory/{角色名}/persona.json` |
 | 4 | 反思印象 | `ReflectionEngine` 提供的 pending / confirmed reflections |
 | 5 | 近期对话回顾 | `Documents/N.E.K.O/memory/{角色名}/recent.json` |

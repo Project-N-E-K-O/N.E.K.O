@@ -22,7 +22,7 @@ static/
 ├── theme-manager.js          # Dark/light mode toggle
 ├── css/                      # Stylesheets
 ├── js/                       # Feature-specific JS modules
-├── locales/                  # i18n JSON files (en, zh-CN, zh-TW, ja, ko)
+├── locales/                  # i18n JSON files (en, zh-CN, zh-TW, ja, ko, ru, es, pt)
 ├── live2d-ui-*.js            # Live2D UI components
 ├── vrm-ui-*.js               # VRM UI components
 └── react/neko-chat/          # React chat window build output

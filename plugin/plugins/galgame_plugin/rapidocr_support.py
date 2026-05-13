@@ -22,11 +22,9 @@ from .memory_reader import is_windows_platform
 
 RAPIDOCR_PACKAGE_NAME = "rapidocr_onnxruntime"
 DEFAULT_RAPIDOCR_ENGINE_TYPE = "onnxruntime"
-# galgame_plugin's primary use case is Japanese visual novels — `japan` rec
-# is the right product default. The bundled wheel ships only ch+v4 models, so
-# the first run with `japan` will land on the `missing_model_files` flow and
-# offer the user an explicit, opt-in download (see download_rapidocr_models).
-DEFAULT_RAPIDOCR_LANG_TYPE = "japan"
+# Default to the bundled Chinese PP-OCRv4 model so minimal/older configs take
+# the no-download path. Japanese games can still opt into `japan` explicitly.
+DEFAULT_RAPIDOCR_LANG_TYPE = "ch"
 DEFAULT_RAPIDOCR_MODEL_TYPE = "mobile"
 # PP-OCRv4 keeps the bundled-no-download path working for ch+v4. v5 has
 # better quality but requires a download for everything (no bundled v5).
@@ -737,7 +735,7 @@ def inspect_rapidocr_installation(
             detail = "installed"
             # Same missing-models check as the bundled branch above. Without
             # this, an upgrade user on a legacy plugin-isolated install with
-            # `lang_type=japan` (default) would land on `installed` even when
+            # explicit `lang_type=japan` would land on `installed` even when
             # `japan_PP-OCRv4_rec_mobile.onnx` is absent — `can_download_models`
             # would stay False and OCR would silently fall back to the
             # bundled ch model with no UI affordance to fix it.
@@ -777,11 +775,11 @@ def inspect_rapidocr_installation(
         "runtime_dir": str(runtime_dir) if runtime_dir else "",
         "site_packages_dir": str(site_packages_dir) if site_packages_dir else "",
         "model_cache_dir": str(model_cache_dir) if model_cache_dir else "",
-        "selected_model": str(install_state.get("selected_model") or selected_model),
-        "engine_type": str(install_state.get("engine_type") or engine_type),
-        "lang_type": str(install_state.get("lang_type") or lang_type),
-        "model_type": str(install_state.get("model_type") or model_type),
-        "ocr_version": str(install_state.get("ocr_version") or ocr_version),
+        "selected_model": selected_model,
+        "engine_type": engine_type,
+        "lang_type": lang_type,
+        "model_type": model_type,
+        "ocr_version": ocr_version,
         "detail": detail,
         "runtime_error": runtime_error,
         "missing_model_files": missing_files,
@@ -831,6 +829,7 @@ async def download_rapidocr_models(
     timeout_seconds: float = 180.0,
     force: bool = False,
     task_id: str | None = None,
+    plugin_id: str = "galgame_plugin",
     progress_callback: ProgressCallback | None = None,
     before_completed_callback: Callable[[], Awaitable[None] | None] | None = None,
 ) -> dict[str, Any]:
@@ -874,6 +873,7 @@ async def download_rapidocr_models(
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message="No download needed for bundled ch + PP-OCRv4 models",
@@ -907,6 +907,7 @@ async def download_rapidocr_models(
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message=already_present_message,
@@ -947,6 +948,7 @@ async def download_rapidocr_models(
                 update_install_task_state(
                     task_id,
                     kind="rapidocr_models",
+                    plugin_id=plugin_id,
                     status="running",
                     phase="downloading",
                     message=running_message,
@@ -999,6 +1001,7 @@ async def download_rapidocr_models(
                                     update_install_task_state(
                                         task_id,
                                         kind="rapidocr_models",
+                                        plugin_id=plugin_id,
                                         status="running",
                                         phase="downloading",
                                         message=running_message,
@@ -1051,6 +1054,7 @@ async def download_rapidocr_models(
                         update_install_task_state(
                             task_id,
                             kind="rapidocr_models",
+                            plugin_id=plugin_id,
                             status="failed",
                             phase="failed",
                             message=err_message,
@@ -1090,6 +1094,7 @@ async def download_rapidocr_models(
         update_install_task_state(
             task_id,
             kind="rapidocr_models",
+            plugin_id=plugin_id,
             status="completed",
             phase="completed",
             message=f"Downloaded {len(downloaded)} model file(s)",

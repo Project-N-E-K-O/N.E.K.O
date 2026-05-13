@@ -142,7 +142,7 @@ class MemoryRecallReranker:
         # judgment. Below the budget, every candidate makes the cut
         # anyway, so the LLM call would be wasted tokens.
         try:
-            from config.prompts_memory import get_memory_recall_rerank_prompt
+            from config.prompts.prompts_memory import get_memory_recall_rerank_prompt
             from utils.language_utils import get_global_language
         except ImportError:
             # Prompt not available yet — degrade to coarse rank.

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from config.prompts_game import (
+from config.prompts.prompts_game import (
     get_soccer_pregame_context_prompt,
     get_soccer_quick_lines_prompt,
     get_soccer_quick_lines_user_prompt,

@@ -10,6 +10,8 @@ from typing import Any, Callable, Mapping
 
 from plugin.sdk.shared.models import Err
 
+from .context_metrics import ContextMetric, ContextMetricsCollector
+from .context_tokens import count_tokens_heuristic
 from .llm_backend import GalgameLLMBackend
 from .models import json_copy
 from .service import (
@@ -79,14 +81,34 @@ class LLMGateway:
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
         self._lock: asyncio.Lock | None = None
         self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
-        self._cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._cache: OrderedDict[str, tuple[float, dict[str, Any], dict[str, Any]]] = OrderedDict()
         self._provider_backoff: dict[tuple[str, str], tuple[float, str]] = {}
         self._active_calls = 0
+        self._context_metrics: ContextMetricsCollector | None = None
 
     def update_config(self, config) -> None:
+        old_cache_config_fingerprint = self._cache_config_fingerprint()
         self._config = config
+        if not self._metrics_enabled():
+            self._context_metrics = None
         if hasattr(self._backend, "_config"):
             self._backend._config = config
+        if self._cache_config_fingerprint() != old_cache_config_fingerprint:
+            self._cache.clear()
+
+    @property
+    def context_metrics(self) -> ContextMetricsCollector | None:
+        return getattr(self, "_context_metrics", None)
+
+    def _metrics_enabled(self) -> bool:
+        return bool(getattr(self._config, "context_metrics_enabled", False))
+
+    def _metrics_collector(self) -> ContextMetricsCollector | None:
+        if not self._metrics_enabled():
+            return None
+        if getattr(self, "_context_metrics", None) is None:
+            self._context_metrics = ContextMetricsCollector()
+        return self._context_metrics
 
     def _ensure_loop_affinity(self) -> None:
         loop = asyncio.get_running_loop()
@@ -190,52 +212,95 @@ class LLMGateway:
         degraded: Callable[[str], dict[str, Any]],
     ) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        fingerprint = self._cache_fingerprint(operation, context)
+        fingerprint = self._cache_fingerprint(
+            operation,
+            context,
+            self._cache_config_fingerprint(),
+        )
         provider_key = self._provider_backoff_key()
         now = time.monotonic()
+        start_time = now
         wait_task: asyncio.Task[dict[str, Any]] | None = None
+        cached_payload: dict[str, Any] | None = None
+        cached_prompt_metadata: dict[str, Any] | None = None
 
         async with self._lock:
             cached = self._cache.get(fingerprint)
             if cached is not None and cached[0] > now:
                 self._cache.move_to_end(fingerprint)
-                return _json_payload_copy(cached[1])
-            if cached is not None:
+                cached_payload = cached[1]
+                cached_prompt_metadata = cached[2]
+            elif cached is not None:
                 self._cache.pop(fingerprint, None)
 
-            backoff = self._active_provider_backoff_locked(provider_key, now=now)
-            if backoff is not None:
-                _category, diagnostic = backoff
-                return degraded(diagnostic)
+            if cached_payload is None:
+                backoff = self._active_provider_backoff_locked(provider_key, now=now)
+                if backoff is not None:
+                    _category, diagnostic = backoff
+                    return degraded(diagnostic)
 
-            in_flight = self._inflight.get(fingerprint)
-            if in_flight is not None:
-                wait_task = in_flight
-            else:
-                if self._active_calls >= int(self._config.llm_max_in_flight):
-                    return degraded("busy: throttled by llm_max_in_flight")
+                in_flight = self._inflight.get(fingerprint)
+                if in_flight is not None:
+                    wait_task = in_flight
+                else:
+                    if self._active_calls >= int(self._config.llm_max_in_flight):
+                        return degraded("busy: throttled by llm_max_in_flight")
 
-                self._active_calls += 1
-                wait_task = asyncio.create_task(
-                    self._perform_call(
-                        fingerprint=fingerprint,
-                        provider_key=provider_key,
-                        operation=operation,
-                        context=context,
-                        validate=validate,
-                        degraded=degraded,
+                    self._active_calls += 1
+                    wait_task = asyncio.create_task(
+                        self._perform_call(
+                            fingerprint=fingerprint,
+                            provider_key=provider_key,
+                            operation=operation,
+                            context=context,
+                            validate=validate,
+                            degraded=degraded,
+                        )
                     )
-                )
-                self._inflight[fingerprint] = wait_task
+                    self._inflight[fingerprint] = wait_task
+
+        if cached_payload is not None:
+            self._record_context_metric(
+                operation=operation,
+                context=context,
+                prompt_metadata=cached_prompt_metadata or {},
+                cache_hit=True,
+                total_time_ms=(time.monotonic() - start_time) * 1000.0,
+            )
+            return _json_payload_copy(cached_payload)
 
         try:
             return _json_payload_copy(await wait_task)
         except asyncio.CancelledError:
             return degraded("cancelled: llm request was cancelled")
 
+    def _cache_config_fingerprint(self) -> str:
+        mode = str(
+            getattr(self._config, "context_counting_mode", "char") or "char"
+        ).strip().lower()
+        if mode != "token":
+            return _stable_json_fingerprint({"context_counting_mode": "char"})
+        try:
+            budget = int(getattr(self._config, "context_max_tokens", 6000))
+        except (TypeError, ValueError):
+            budget = 6000
+        return _stable_json_fingerprint(
+            {
+                "context_counting_mode": "token",
+                "context_max_tokens": max(1, budget),
+            }
+        )
+
     @staticmethod
-    def _cache_fingerprint(operation: str, context: dict[str, Any]) -> str:
-        return f"{operation}:{_stable_json_fingerprint(context)}"
+    def _cache_fingerprint(
+        operation: str,
+        context: dict[str, Any],
+        config_fingerprint: str = "",
+    ) -> str:
+        return (
+            f"{operation}:{config_fingerprint}:"
+            f"{_stable_json_fingerprint(context)}"
+        )
 
     async def _perform_call(
         self,
@@ -247,6 +312,8 @@ class LLMGateway:
         validate: Callable[[dict[str, Any]], dict[str, Any]],
         degraded: Callable[[str], dict[str, Any]],
     ) -> dict[str, Any]:
+        start_time = time.monotonic()
+        prompt_metadata: dict[str, Any] = {}
         try:
             result = await self._call_target(
                 operation=operation,
@@ -254,6 +321,8 @@ class LLMGateway:
                 validate=validate,
                 degraded=degraded,
             )
+            prompt_metadata = self._consume_backend_prompt_metadata()
+            total_time_ms = (time.monotonic() - start_time) * 1000.0
             if operation in {"scene_summary", "summarize_scene"}:
                 ttl = max(
                     0.0,
@@ -274,15 +343,122 @@ class LLMGateway:
                     now=time.monotonic(),
                 )
                 if ttl > 0 and not result.get("degraded"):
-                    self._cache[fingerprint] = (time.monotonic() + ttl, _json_payload_copy(result))
+                    self._cache[fingerprint] = (
+                        time.monotonic() + ttl,
+                        _json_payload_copy(result),
+                        dict(prompt_metadata),
+                    )
                     self._cache.move_to_end(fingerprint)
                     while len(self._cache) > _LLM_RESPONSE_CACHE_MAX_ITEMS:
                         self._cache.popitem(last=False)
+            self._record_context_metric(
+                operation=operation,
+                context=context,
+                prompt_metadata=prompt_metadata,
+                cache_hit=False,
+                total_time_ms=total_time_ms,
+            )
             return result
         finally:
             async with self._lock:
                 self._inflight.pop(fingerprint, None)
                 self._active_calls = max(0, self._active_calls - 1)
+
+    def _consume_backend_prompt_metadata(self) -> dict[str, Any]:
+        consume = getattr(self._backend, "consume_prompt_metadata", None)
+        if not callable(consume):
+            return {}
+        try:
+            metadata = consume()
+        except Exception as exc:
+            self._log_warning("galgame prompt metadata consume failed: {}", exc)
+            return {}
+        return dict(metadata) if isinstance(metadata, dict) else {}
+
+    def _log_warning(self, message: str, *args: Any) -> None:
+        logger = getattr(self, "_logger", None)
+        warning = getattr(logger, "warning", None)
+        if not callable(warning):
+            return
+        try:
+            warning(message, *args)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "galgame logger.warning failed",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _metadata_int(
+        metadata: dict[str, Any],
+        key: str,
+        fallback: int | Callable[[], int],
+    ) -> int:
+        def fallback_value() -> int:
+            return fallback() if callable(fallback) else fallback
+
+        value = metadata.get(key)
+        if value is None:
+            return fallback_value()
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback_value()
+
+    def _record_context_metric(
+        self,
+        *,
+        operation: str,
+        context: dict[str, Any],
+        prompt_metadata: dict[str, Any],
+        cache_hit: bool,
+        total_time_ms: float,
+    ) -> None:
+        collector = self._metrics_collector()
+        if collector is None:
+            return
+
+        raw_text: str | None = None
+
+        def rendered_context() -> str:
+            nonlocal raw_text
+            if raw_text is None:
+                raw_text = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+            return raw_text
+
+        raw_tokens = self._metadata_int(
+            prompt_metadata,
+            "raw_tokens",
+            lambda: count_tokens_heuristic(rendered_context()),
+        )
+        raw_chars = self._metadata_int(
+            prompt_metadata,
+            "raw_chars",
+            lambda: len(rendered_context()),
+        )
+        compacted_tokens = self._metadata_int(
+            prompt_metadata,
+            "compacted_tokens",
+            raw_tokens,
+        )
+        compacted_chars = self._metadata_int(
+            prompt_metadata,
+            "compacted_chars",
+            raw_chars,
+        )
+        compression_level = self._metadata_int(prompt_metadata, "compression_level", 0)
+        collector.record(
+            ContextMetric(
+                operation=operation,
+                raw_tokens=raw_tokens,
+                compacted_tokens=compacted_tokens,
+                raw_chars=raw_chars,
+                compacted_chars=compacted_chars,
+                compression_level=compression_level,
+                cache_hit=cache_hit,
+                total_time_ms=max(0.0, float(total_time_ms)),
+            )
+        )
 
     def _provider_backoff_key(self) -> str:
         target_entry_ref = str(self._config.llm_target_entry_ref or "").strip()

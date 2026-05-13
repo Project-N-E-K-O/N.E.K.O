@@ -34,6 +34,8 @@ const PIPELINE_ZOOM_STEP = 1;
 const PIPELINE_ZOOM_DEFAULT = 13;
 const PIPELINE_COLLAPSED_KEY = 'galgame_pipeline_collapsed';
 const OCR_WINDOW_COLLAPSED_KEY = 'galgame_ocr_window_collapsed';
+const PLUGIN_WINDOW_COLLAPSED_KEY = 'galgame_plugin_window_collapsed';
+const PLUGIN_SETTINGS_COLLAPSED_KEY = 'galgame_plugin_settings_collapsed';
 
 function uiT(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -171,6 +173,8 @@ const installRuntime = {
   textractor: createInstallRuntimeState(),
   rapidocr_models: createInstallRuntimeState(),
 };
+let rapidOcrLangRequestPending = false;
+let rapidOcrLangQueuedPayload = null;
 
 function readCurrentLineZoom() {
   const raw = parseInt(storageGet(CL_ZOOM_KEY), 10);
@@ -332,6 +336,98 @@ function initOcrWindowCollapse() {
 
   document.getElementById('ocrWindowCollapseToggle')?.addEventListener('click', () => {
     applyOcrWindowCollapsed(!readOcrWindowCollapsed());
+  });
+}
+
+function readPluginWindowCollapsed() {
+  return storageGet(PLUGIN_WINDOW_COLLAPSED_KEY) === '1';
+}
+
+function applyPluginWindowCollapsed(on) {
+  const collapsed = Boolean(on);
+  const hub = document.getElementById('pluginWindowHub');
+  const body = document.getElementById('pluginWindowHubBody');
+  if (hub) {
+    hub.classList.toggle('collapsed', collapsed);
+  }
+  if (body) {
+    body.hidden = collapsed;
+    body.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+  }
+
+  const button = document.getElementById('pluginWindowCollapseToggle');
+  if (button) {
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.title = collapsed
+      ? uiT('ui.plugin_window.expand_title', '展开插件窗口')
+      : uiT('ui.plugin_window.collapse_title', '隐藏插件窗口');
+    button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+  storageSet(PLUGIN_WINDOW_COLLAPSED_KEY, collapsed ? '1' : '0');
+}
+
+function initPluginWindowCollapse() {
+  applyPluginWindowCollapsed(readPluginWindowCollapsed());
+
+  document.getElementById('pluginWindowCollapseToggle')?.addEventListener('click', () => {
+    applyPluginWindowCollapsed(!readPluginWindowCollapsed());
+  });
+}
+
+function readPluginSettingsCollapsed() {
+  return storageGet(PLUGIN_SETTINGS_COLLAPSED_KEY) === '1';
+}
+
+function activePluginSettingsTabName() {
+  const panel = document.getElementById('pluginSettingsPanel');
+  const activeTab = panel?.querySelector('[data-settings-tab].active');
+  return activeTab ? activeTab.getAttribute('data-settings-tab') || 'recognition' : 'recognition';
+}
+
+function applyPluginSettingsCollapsed(on) {
+  const collapsed = Boolean(on);
+  const panel = document.getElementById('pluginSettingsPanel');
+  const body = document.getElementById('pluginSettingsBody');
+  const tabs = document.getElementById('pluginSettingsTabs');
+  const activeName = activePluginSettingsTabName();
+  if (panel) {
+    panel.classList.toggle('collapsed', collapsed);
+  }
+  if (body) {
+    body.hidden = collapsed;
+    body.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+  }
+  if (tabs) {
+    tabs.hidden = collapsed;
+    tabs.setAttribute('aria-hidden', collapsed ? 'true' : 'false');
+  }
+  if (collapsed) {
+    const tabPanels = panel?.querySelectorAll('[data-settings-tab-panel]') || [];
+    tabPanels.forEach((tabPanel) => {
+      tabPanel.hidden = true;
+      tabPanel.setAttribute('aria-hidden', 'true');
+    });
+  } else {
+    setPluginSettingsTab(activeName);
+  }
+
+  const button = document.getElementById('pluginSettingsCollapseToggle');
+  if (button) {
+    button.textContent = collapsed
+      ? uiT('ui.button.expand', '展开')
+      : uiT('ui.button.collapse', '隐藏');
+    button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+  storageSet(PLUGIN_SETTINGS_COLLAPSED_KEY, collapsed ? '1' : '0');
+}
+
+function initPluginSettingsCollapse() {
+  applyPluginSettingsCollapsed(readPluginSettingsCollapsed());
+
+  document.getElementById('pluginSettingsCollapseToggle')?.addEventListener('click', () => {
+    applyPluginSettingsCollapsed(!readPluginSettingsCollapsed());
   });
 }
 
@@ -1824,7 +1920,7 @@ function buildFirstRunSteps(status = {}) {
         'ui.first_run.install_ocr.pending_models',
         '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从 ModelScope 拉取约 {size} MB 的模型文件。',
         {
-          lang: rapidocr.lang_type || 'japan',
+          lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
           size: sizeMb,
         },
@@ -1837,7 +1933,7 @@ function buildFirstRunSteps(status = {}) {
         'ui.first_run.install_ocr.pending_models_manual',
         '所选语言模型 ({lang} + {version}) 未下载。当前环境不能自动下载，请按下方 RapidOCR 横幅说明手动放置模型后再刷新状态。',
         {
-          lang: rapidocr.lang_type || 'japan',
+          lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
         },
       );
@@ -2517,10 +2613,23 @@ function dependencySummaryItem(kind, status = {}) {
       && taskState?.state === 'installed'
       && hasMissingRapidOcrModelFiles(rapidocr);
     if (taskState && rapidocrModelsStillMissing && !taskCompletedButModelsMissing) {
+      const displayTaskState = kind === 'rapidocr' && taskState.state === 'running'
+        ? {
+            ...taskState,
+            labelText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
+            needsAttention: false,
+          }
+        : kind === 'rapidocr' && taskState.state === 'failed' && shouldOfferRapidOcrModelsDownload(rapidocr)
+          ? {
+              ...taskState,
+              labelText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
+              needsAttention: true,
+            }
+          : taskState;
       return {
         kind,
         label: kind === 'rapidocr' ? 'RapidOCR' : getInstallConfig(taskKind).label,
-        ...taskState,
+        ...displayTaskState,
       };
     }
   }
@@ -4282,6 +4391,7 @@ function renderStatus(status) {
   renderStatusGrid(userStatusRows, debugStatusRows);
 
   renderOcrRuntime(status);
+  renderSnapshotGridFromLatestData();
   renderAgentUserNotice(status);
   syncAgentResumeButton(status);
   syncAutoRefreshIntervalForStatus(status);
@@ -4748,6 +4858,24 @@ function renderOcrRuntime(status) {
     { label: 'candidate_count', value: String(fromWindow('candidate_count') || 0) },
     { label: 'excluded_candidate_count', value: String(fromWindow('excluded_candidate_count') || 0) },
     { label: 'last_exclude_reason', value: fromWindow('last_exclude_reason') || '' },
+  ]);
+}
+
+function renderSnapshotGridFromLatestData() {
+  const snapshot = latestSnapshotData || {};
+  const state = snapshot.snapshot || {};
+  renderGrid('snapshotGrid', [
+    { label: 'game_id', value: snapshot.game_id || '' },
+    { label: 'session_id', value: snapshot.session_id || '' },
+    { label: 'speaker', value: state.speaker || '' },
+    { label: 'text', value: state.text || '' },
+    { label: 'stability', value: state.stability || '' },
+    { label: 'scene_id', value: state.scene_id || '' },
+    { label: 'line_id', value: state.line_id || '' },
+    { label: 'route_id', value: state.route_id || '' },
+    { label: 'is_menu_open', value: String(Boolean(state.is_menu_open)) },
+    { label: 'snapshot_ts', value: snapshot.snapshot_ts || '' },
+    { label: 'stale', value: String(Boolean(snapshot.stale)) },
   ]);
 }
 
@@ -5228,9 +5356,113 @@ function renderRapidOcr(status) {
   syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
   applyRapidOcrModelsGate(rapidocr);
+  renderRapidOcrLangBar(rapidocr);
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
   rebindCardButton('rapidocrModelsDownloadBtn', () => startInstall('rapidocr_models', false, { navigate: false }));
+  bindRapidOcrLangButtons();
+}
+
+function renderRapidOcrLangBar(rapidocr) {
+  const bar = document.getElementById('rapidocrLangBar');
+  if (!bar) {
+    return;
+  }
+  const usable = isRapidOcrUsable(rapidocr) || hasMissingRapidOcrModelFiles(rapidocr);
+  bar.hidden = !usable;
+  if (!usable) {
+    setRapidOcrLangControlsDisabled(true);
+    return;
+  }
+
+  const langType = rapidocr.lang_type || 'ch';
+  const autoDetect = rapidocr.auto_detect_lang !== false;
+  const idMap = { ch: 'Ch', japan: 'Japan', korean: 'Korean', en: 'En' };
+  Object.entries(idMap).forEach(([lang, suffix]) => {
+    const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
+    if (!btn) {
+      return;
+    }
+    btn.classList.toggle('active', langType === lang);
+    btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
+    btn.setAttribute('tabindex', langType === lang ? '0' : '-1');
+    btn.disabled = rapidOcrLangRequestPending;
+  });
+
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox) {
+    checkbox.checked = autoDetect;
+    checkbox.disabled = rapidOcrLangRequestPending;
+  }
+}
+
+function setRapidOcrLangControlsDisabled(disabled) {
+  ['Ch', 'Japan', 'Korean', 'En'].forEach((suffix) => {
+    const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
+    if (btn) {
+      btn.disabled = Boolean(disabled);
+    }
+  });
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox) {
+    checkbox.disabled = Boolean(disabled);
+  }
+}
+
+function bindRapidOcrLangButtons() {
+  const idMap = { Ch: 'ch', Japan: 'japan', Korean: 'korean', En: 'en' };
+  Object.entries(idMap).forEach(([suffix, lang]) => {
+    rebindCardButton('rapidocrLang' + suffix + 'Btn', () => setRapidOcrLang({ lang_type: lang }));
+  });
+
+  const group = document.querySelector('.rapidocr-lang-buttons');
+  if (group && !group.__galgameRapidOcrKeysBound) {
+    group.__galgameRapidOcrKeysBound = true;
+    group.addEventListener('keydown', (event) => {
+      const buttons = Array.from(group.querySelectorAll('.rapidocr-lang-btn'));
+      const enabledButtons = buttons.filter((button) => !button.disabled);
+      if (!enabledButtons.length) {
+        return;
+      }
+      const currentIndex = Math.max(0, enabledButtons.indexOf(document.activeElement));
+      let nextIndex = -1;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        nextIndex = (currentIndex - 1 + enabledButtons.length) % enabledButtons.length;
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        nextIndex = (currentIndex + 1) % enabledButtons.length;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = enabledButtons.length - 1;
+      } else if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.click();
+        }
+        return;
+      } else {
+        return;
+      }
+      event.preventDefault();
+      const nextButton = enabledButtons[nextIndex];
+      buttons.forEach((button) => {
+        const selected = button === nextButton;
+        button.setAttribute('tabindex', selected ? '0' : '-1');
+        button.setAttribute('aria-checked', selected ? 'true' : 'false');
+        button.classList.toggle('active', selected);
+      });
+      nextButton.focus();
+      nextButton.click();
+    });
+  }
+
+  const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+  if (checkbox && !checkbox.__galgameRapidOcrAutoBound) {
+    checkbox.__galgameRapidOcrAutoBound = true;
+    checkbox.addEventListener('change', () => {
+      setRapidOcrLang({ auto_detect_lang: checkbox.checked });
+    });
+  }
 }
 
 function renderDxcam(status) {
@@ -5415,7 +5647,23 @@ function renderTextractor(status) {
   } else if (installState && installState.status === 'failed') {
     cardStatus = 'error';
     chipText = uiT('ui.install.status.failed', '安装失败');
-    descText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
+    const errorText = installState.error || installState.message || uiT('ui.install.task_failed_retry', '后台安装任务失败，你可以再次点击按钮重试。');
+    const failedPhase = installState.failed_phase || '';
+    let phaseHint = '';
+    if (failedPhase === 'fetch_release') {
+      phaseHint = uiT('ui.install.textractor.failed_fetch_release_hint', '无法连接 GitHub 服务。请检查网络/GitHub 可达性，或在 plugin.toml 的 [memory_reader] 中配置 textractor_proxy 代理地址。这通常不是插件安装逻辑损坏。');
+    } else if (failedPhase === 'downloading') {
+      phaseHint = uiT('ui.install.textractor.failed_downloading_hint', 'Textractor 下载中断、HTTP 请求失败或文件校验失败。请确认网络稳定后重试。');
+    } else if (failedPhase === 'extracting') {
+      phaseHint = uiT('ui.install.textractor.failed_extracting_hint', 'Textractor 安装包解压或安装后验证失败。建议按下面的路径手动安装。');
+    }
+    const expectedPath = textractor.expected_executable_path || 'TextractorCLI.exe';
+    const manualGuide = uiTf(
+      'ui.install.textractor.manual_install_guide',
+      '手动安装：从 https://github.com/Artikash/Textractor/releases 下载最新 zip，解压后确保 TextractorCLI.exe 位于 {path}，然后刷新状态。',
+      { path: expectedPath },
+    );
+    descText = [errorText, phaseHint, manualGuide].filter(Boolean).join('\n');
   } else if (installState && installState.status === 'completed' && !installed) {
     cardStatus = 'neutral';
     chipText = uiT('ui.install.status.completed', '已完成');
@@ -5578,23 +5826,6 @@ function renderOcrProfile(status) {
   }
 }
 
-function renderSnapshot(snapshot) {
-  const state = snapshot.snapshot || {};
-  renderGrid('snapshotGrid', [
-    { label: 'game_id', value: snapshot.game_id || '' },
-    { label: 'session_id', value: snapshot.session_id || '' },
-    { label: 'speaker', value: state.speaker || '' },
-    { label: 'text', value: state.text || '' },
-    { label: 'stability', value: state.stability || '' },
-    { label: 'scene_id', value: state.scene_id || '' },
-    { label: 'line_id', value: state.line_id || '' },
-    { label: 'route_id', value: state.route_id || '' },
-    { label: 'is_menu_open', value: String(Boolean(state.is_menu_open)) },
-    { label: 'snapshot_ts', value: snapshot.snapshot_ts || '' },
-    { label: 'stale', value: String(Boolean(snapshot.stale)) },
-  ]);
-}
-
 function renderHistory(history) {
   const mergedLines = mergedHistoryLines(history);
   const runtime = latestStatus?.ocr_reader_runtime || {};
@@ -5728,7 +5959,7 @@ function renderAgentStatus(payload) {
   const panelSummary = document.getElementById('agentPanelSummary');
   if (panelSummary) {
     const mode = latestStatus?.mode || 'companion';
-    const modeText = uiT(`ui.mode.${mode}`, mode);
+    const modeText = modeLabel(mode, mode);
     const inbound = payload.inbound_queue_size || 0;
     const outbound = payload.outbound_queue_size || 0;
     panelSummary.textContent = `${modeText} | in=${inbound} out=${outbound}`;
@@ -6087,7 +6318,6 @@ async function refreshAll(options = {}) {
       const agentStatus = status.agent || buildAgentStatusFromStatus(status);
       latestSnapshotData = snapshot;
       renderStatus(status);
-      renderSnapshot(snapshot);
       renderHistory(history);
       renderAgentStatus(agentStatus);
       restoreRefreshScrollState(scrollState);
@@ -6201,7 +6431,7 @@ async function startInstall(kind, force = false, { navigate = true } = {}) {
   // Caller may already have positioned the viewport on a specific card
   // (e.g. handleDiagnosisAction routes to rapidocrCard before kicking off
   // the download); the unconditional `navigateToInstallPanel(kind)` would
-  // re-snap the viewport to installSection top on the next frame and undo
+  // re-snap the viewport to plugin settings on the next frame and undo
   // that careful scroll. The opt-out lets such callers reuse the existing
   // positioning. The default `navigate: true` preserves the original
   // tesseract/textractor install flow behavior.
@@ -6307,6 +6537,41 @@ async function setOcrBackendSelection({ backendSelection = null, captureBackend 
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
+  }
+}
+
+async function setRapidOcrLang(payload = {}) {
+  if (rapidOcrLangRequestPending) {
+    rapidOcrLangQueuedPayload = { ...payload };
+    setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
+    return;
+  }
+  rapidOcrLangRequestPending = true;
+  setRapidOcrLangControlsDisabled(true);
+  let saved = false;
+  try {
+    setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
+    const result = await callPlugin('galgame_set_rapidocr_lang', payload);
+    saved = true;
+    if (!rapidOcrLangQueuedPayload) {
+      setFlash(result.summary || uiT('ui.flash.rapidocr_lang_saved', 'RapidOCR 识别语言已保存'), 'success');
+    }
+  } catch (error) {
+    if (!rapidOcrLangQueuedPayload) {
+      setFlash(error instanceof Error ? error.message : String(error), 'error');
+    }
+  } finally {
+    rapidOcrLangRequestPending = false;
+    const nextPayload = rapidOcrLangQueuedPayload;
+    rapidOcrLangQueuedPayload = null;
+    if (nextPayload) {
+      setRapidOcrLang(nextPayload);
+    } else {
+      setRapidOcrLangControlsDisabled(false);
+    }
+    if (saved && !nextPayload) {
+      await refreshAll({ preserveFlash: true, forceInsights: true });
+    }
   }
 }
 
@@ -6976,11 +7241,76 @@ function handleFirstRunActionClick(button, action) {
   });
 }
 
+function setPluginSettingsTab(name = 'recognition') {
+  const panel = document.getElementById('pluginSettingsPanel');
+  const tabs = Array.from(panel?.querySelectorAll('[data-settings-tab]') || []);
+  const requestedName = name || 'recognition';
+  const activeName = tabs.some((tab) => tab.getAttribute('data-settings-tab') === requestedName)
+    ? requestedName
+    : 'recognition';
+  tabs.forEach((tab) => {
+    const active = tab.getAttribute('data-settings-tab') === activeName;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const tabPanels = panel?.querySelectorAll('[data-settings-tab-panel]') || [];
+  tabPanels.forEach((tabPanel) => {
+    const active = tabPanel.getAttribute('data-settings-tab-panel') === activeName;
+    tabPanel.hidden = !active;
+    tabPanel.setAttribute('aria-hidden', active ? 'false' : 'true');
+  });
+}
+
+function syncPluginStatusSectionLabels() {
+  const collapseLabel = uiT('ui.button.collapse', '隐藏');
+  const expandLabel = uiT('ui.button.expand', '展开');
+  document.querySelectorAll('.plugin-status-section').forEach((section) => {
+    const summary = section.querySelector('.plugin-status-section-head');
+    if (!summary) {
+      return;
+    }
+    summary.setAttribute('data-label-collapse', collapseLabel);
+    summary.setAttribute('data-label-expand', expandLabel);
+    summary.setAttribute('aria-expanded', section.hasAttribute('open') ? 'true' : 'false');
+  });
+}
+
+function syncPluginStatusHubSummaryLabels() {
+  const hub = document.querySelector('.plugin-status-hub');
+  const summary = hub?.querySelector('.plugin-status-hub-summary');
+  if (!hub || !summary) {
+    return;
+  }
+  const collapseLabel = uiT('ui.button.collapse', '隐藏');
+  const expandLabel = uiT('ui.button.expand', '展开');
+  const titleLabel = uiT('ui.plugin_status.title', '插件状态');
+  const isOpen = hub.hasAttribute('open');
+  summary.setAttribute('data-label-collapse', collapseLabel);
+  summary.setAttribute('data-label-expand', expandLabel);
+  summary.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  summary.setAttribute('aria-label', `${titleLabel} ${isOpen ? collapseLabel : expandLabel}`);
+}
+
+function initPluginStatusHubSummaryLabels() {
+  const hub = document.querySelector('.plugin-status-hub');
+  if (hub && hub.getAttribute('data-summary-labels-ready') !== 'true') {
+    hub.setAttribute('data-summary-labels-ready', 'true');
+    hub.addEventListener('toggle', syncPluginStatusHubSummaryLabels);
+  }
+  document.querySelectorAll('.plugin-status-section').forEach((section) => {
+    if (section.getAttribute('data-summary-labels-ready') !== 'true') {
+      section.setAttribute('data-summary-labels-ready', 'true');
+      section.addEventListener('toggle', syncPluginStatusSectionLabels);
+    }
+  });
+  syncPluginStatusSectionLabels();
+  syncPluginStatusHubSummaryLabels();
+}
+
 function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
   const advancedSettings = document.getElementById('advancedSettings');
   const advancedToggleBtn = document.getElementById('advancedToggleBtn');
-  const dependencyModule = document.getElementById('dependencyModule');
-  const installSection = document.getElementById('installSection');
+  const pluginSettingsPanel = document.getElementById('pluginSettingsPanel');
 
   if (advancedSettings && !advancedSettings.classList.contains('open')) {
     advancedSettings.classList.add('open');
@@ -6993,13 +7323,12 @@ function navigateToInstallPanel(kind, { scrollToSection = true } = {}) {
     }
   }
 
-  if (dependencyModule && !dependencyModule.open) {
-    dependencyModule.open = true;
-  }
+  applyPluginSettingsCollapsed(false);
+  setPluginSettingsTab('dependency');
 
-  if (scrollToSection && installSection) {
+  if (scrollToSection && pluginSettingsPanel) {
     requestAnimationFrame(() => {
-      installSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      pluginSettingsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
 }
@@ -7010,6 +7339,9 @@ async function initialize() {
   initPipelineZoom();
   initPipelineCollapse();
   initOcrWindowCollapse();
+  initPluginWindowCollapse();
+  initPluginSettingsCollapse();
+  initPluginStatusHubSummaryLabels();
   updateSettingsDirtyHint();
 
   const progress = await fetchTutorialProgress();
@@ -7175,6 +7507,14 @@ document.querySelector('.agent-panel-tabs')?.addEventListener('click', (event) =
     panel.hidden = !active;
     panel.setAttribute('aria-hidden', active ? 'false' : 'true');
   });
+});
+document.querySelector('.plugin-settings-tabs')?.addEventListener('click', (event) => {
+  const target = eventElement(event.target);
+  const tab = target ? target.closest('[data-settings-tab]') : null;
+  if (!tab) {
+    return;
+  }
+  setPluginSettingsTab(tab.getAttribute('data-settings-tab') || 'recognition');
 });
 document.getElementById('queryContextBtn')?.addEventListener('click', () => {
   withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
@@ -7368,9 +7708,16 @@ window.addEventListener('focus', () => {
 });
 
 window.addEventListener('i18n-ready', () => {
+  syncPluginStatusSectionLabels();
+  syncPluginStatusHubSummaryLabels();
   if (window.I18n && typeof window.I18n.lang === 'function' && window.I18n.lang() !== 'zh-CN') {
     refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
   }
+});
+
+window.addEventListener('i18n-lang-changed', () => {
+  syncPluginStatusSectionLabels();
+  syncPluginStatusHubSummaryLabels();
 });
 
 initialize();

@@ -295,7 +295,7 @@ def check_pp2_avatar_event(client, mock_ext) -> list[str]:
 
         # Payload shape mirrors production UI: target="avatar" is required,
         # reward_drop is only meaningful for tool_id="fist" (normalized as
-        # bool in config/prompts_avatar_interaction.py). We want both the
+        # bool in config/prompts/prompts_avatar_interaction.py). We want both the
         # "reward" line AND the "text_context" line to appear in the
         # synthesized instruction so PP2.tail_is_instruction can assert that
         # last_llm_wire.tail contains the raw synthesized instruction, NOT

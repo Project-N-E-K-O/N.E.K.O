@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Помощник для Galgame",
+  "plugin.description": "Компаньон-нэкомими помогает играть в Galgame.",
   "entries.galgame_get_status.name": "Статус плагина Galgame",
   "entries.galgame_get_status.description": "Вернуть текущий статус подключения моста, привязанную игру, последнюю ошибку и режим.",
   "entries.galgame_install_textractor.name": "Установить Textractor",

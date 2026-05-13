@@ -173,25 +173,59 @@ class MijiaPlugin(NekoPluginBase):
         provider = CredentialProvider(config)
         self.auth_service = AuthService(provider, store)
 
-    async def _build_room_map(self) -> dict[str, str]:
-        """构建 room_id → room_name 映射，用于区域+设备名匹配"""
+    async def _build_room_maps(self) -> tuple[dict[str, str], dict[str, str]]:
+        """构建 room_id→room_name 和 device_did→room_name 两种映射
+
+        device_did→room_name 映射从 gethome_merged 的 roomlist 中提取，
+        用于设备列表 API 不返回 room_id 时的降级方案。
+        """
         if not self.api:
-            return {}
+            self.logger.info("构建房间映射跳过：API 未就绪")
+            return {}, {}
         try:
             homes = await self.api.get_homes()
             room_map: dict[str, str] = {}
+            device_room_map: dict[str, str] = {}
+            device_field_candidates = ("dids", "devices", "device_list", "child_devices")
             for home in homes:
                 if not home.rooms:
+                    self.logger.info(f"家庭 {home.name}({home.id}) 无房间数据")
                     continue
                 for room in home.rooms:
                     rid = str(room.get("id", ""))
                     rname = room.get("name", "")
-                    if rid and rname:
-                        room_map[rid] = rname
-            return room_map
+                    if not rid or not rname:
+                        continue
+                    room_map[rid] = rname
+
+                    # 每个房间独立检测设备列表字段，不同 room API 返回可能使用不同 key
+                    room_field = next(
+                        (f for f in device_field_candidates if f in room),
+                        None,
+                    )
+                    dids = room.get(room_field) if room_field else None
+                    if room_field is None:
+                        self.logger.debug(f"房间 '{rname}'({rid}) 的 key 不在候选列表中: {list(room.keys())}")
+                    if dids and isinstance(dids, list):
+                        for did in dids:
+                            did_str = str(did)
+                            if did_str and did_str not in device_room_map:
+                                device_room_map[did_str] = rname
+
+            total_rooms = len(room_map)
+            room_names = list(room_map.values())
+            from_device = len(device_room_map)
+            if from_device:
+                self.logger.info(
+                    f"房间映射构建完成: {total_rooms} 个房间 {room_names}, "
+                    f"设备→房间映射 {from_device} 条"
+                )
+            else:
+                self.logger.info(f"房间映射构建完成: {total_rooms} 个房间 {room_names}, 无设备→房间映射")
+            return room_map, device_room_map
         except Exception as e:
-            self.logger.debug(f"构建房间映射失败: {e}")
-            return {}
+            self.logger.warning(f"构建房间映射失败: {e}")
+            return {}, {}
 
     # ========== 设备匹配与命令解析 ==========
 
@@ -205,15 +239,19 @@ class MijiaPlugin(NekoPluginBase):
                 current_user_id = self.api.credential.user_id if self.api.credential else None
                 if not current_user_id or cache_user_id == current_user_id:
                     devices = cached.get('devices', [])
-                    # 新逻辑依赖 room_name 字段，旧缓存缺少时自动刷新
-                    if devices and 'room_name' in devices[0]:
+                    if devices:
+                        self.logger.info(f"设备缓存有效: {len(devices)} 个设备")
                         return devices
-                    self.logger.info("设备缓存缺少 room_name 字段，自动刷新")
+                    self.logger.info("设备缓存为空，自动刷新")
             except Exception:
                 pass
-        result = await self.list_devices()
+        self.logger.info("从 API 刷新设备缓存")
+        result = await self.list_devices(refresh=True)
         if result.is_ok():
-            return result.value.get('devices', [])
+            fresh_devices = result.value.get('devices', [])
+            self.logger.info(f"API 刷新完成: {len(fresh_devices)} 个设备")
+            return fresh_devices
+        self.logger.info("API 刷新设备列表失败")
         return []
 
     async def _match_devices(self, name: str) -> dict:
@@ -224,6 +262,7 @@ class MijiaPlugin(NekoPluginBase):
         """
         devices = await self._load_devices_cache()
         if not devices:
+            self.logger.info(f"设备匹配 '{name}' 失败：设备列表为空")
             return {"devices": [], "status": "not_found", "message": "设备列表为空，请先获取设备列表"}
 
         name_lower = name.lower().strip().replace("的", "")
@@ -241,8 +280,13 @@ class MijiaPlugin(NekoPluginBase):
                 exact.append(d)
 
         if len(exact) == 1:
+            device = exact[0]
+            dname = device.get('name', '')
+            dalias = device.get('alias', '')
+            self.logger.info(f"精确匹配成功: '{name}' → {dname} (别名: {dalias})")
             return {"devices": exact, "status": "ok"}
         if len(exact) > 1:
+            self.logger.info(f"精确匹配歧义: '{name}' → {len(exact)} 个设备")
             return {
                 "devices": exact,
                 "status": "ambiguous",
@@ -256,22 +300,36 @@ class MijiaPlugin(NekoPluginBase):
             if rn:
                 room_map[rn.lower()] = rn
 
+        # 降级：设备无房间数据时，直接从 API gethome_merged 的房间名做拆分
+        if not room_map:
+            try:
+                api_room_map, device_room_map = await self._build_room_maps()
+                for rn_original in api_room_map.values():
+                    rn_lower = rn_original.lower().strip()
+                    if rn_lower:
+                        room_map[rn_lower] = rn_original
+                # 同时将 DID→房间映射注入到设备数据中
+                for d in devices:
+                    did = d.get('did', '')
+                    if did in device_room_map and not d.get('room_name'):
+                        d['room_name'] = device_room_map[did]
+            except Exception:
+                pass
+
+        self.logger.info(f"房间匹配阶段: query='{name}', room_map={set(room_map.keys())}")
         room_matched = []
+        # 检查是否有设备有房间数据；如果全空则进行降级匹配
+        has_room_data = any(d.get('room_name') for d in devices)
         for rn_lower, rn_original in room_map.items():
+            device_part = None
             if name_lower.startswith(rn_lower):
                 device_part = name_lower[len(rn_lower):].strip()
-                if device_part:
-                    for d in devices:
-                        if d.get('room_name', '').lower() != rn_lower:
-                            continue
-                        dname = d.get('name', '').lower()
-                        dalias = d.get('alias', '').lower()
-                        if device_part in dname or device_part in dalias:
-                            room_matched.append(d)
-                    break
             elif name_lower.endswith(rn_lower):
                 device_part = name_lower[:-len(rn_lower)].strip()
-                if device_part:
+
+            if device_part:
+                if has_room_data:
+                    # 正常：按房间过滤
                     for d in devices:
                         if d.get('room_name', '').lower() != rn_lower:
                             continue
@@ -279,39 +337,52 @@ class MijiaPlugin(NekoPluginBase):
                         dalias = d.get('alias', '').lower()
                         if device_part in dname or device_part in dalias:
                             room_matched.append(d)
+                else:
+                    self.logger.info(f"房间前缀/后缀被解析但无房间数据, 丢掉房间限定, 进入模糊匹配: '{name}'")
+                    # 无房间数据时不能确认设备归属房间，丢掉房间限定走模糊匹配
                     break
 
         if len(room_matched) == 1:
+            device = room_matched[0]
+            rn = device.get('room_name', '')
+            dn = device.get('name', '')
+            self.logger.info(f"房间匹配成功: '{name}' → 房间='{rn}', 设备='{dn}'")
             return {"devices": room_matched, "status": "ok"}
         if len(room_matched) > 1:
+            self.logger.info(f"房间匹配歧义: '{name}' → {len(room_matched)} 个设备")
             return {
                 "devices": room_matched,
                 "status": "ambiguous",
                 "message": self._format_ambiguous_message(name, room_matched),
             }
 
-        # === 模糊匹配（子串） ===
+        self.logger.info(f"房间匹配未命中, 进入模糊匹配: '{name}'")
+        # === 模糊匹配（子串，双向） ===
         fuzzy = []
         for d in devices:
             dname = d.get('name', '').lower()
             dalias = d.get('alias', '')
-            if name_lower in dname:
+            if dname and (name_lower in dname or dname in name_lower):
                 fuzzy.append(d)
                 continue
             if dalias:
                 alias_list = [a.strip().lower() for a in dalias.split(',') if a.strip()]
-                if any(name_lower in a for a in alias_list):
+                if any(name_lower in a or a in name_lower for a in alias_list):
                     fuzzy.append(d)
 
         if len(fuzzy) == 1:
+            device = fuzzy[0]
+            self.logger.info(f"模糊匹配成功: '{name}' → {device.get('name', '')}")
             return {"devices": fuzzy, "status": "ok"}
         if len(fuzzy) > 1:
+            self.logger.info(f"模糊匹配歧义: '{name}' → {len(fuzzy)} 个设备")
             return {
                 "devices": fuzzy,
                 "status": "ambiguous",
                 "message": self._format_ambiguous_message(name, fuzzy),
             }
 
+        self.logger.info(f"完全无匹配: '{name}'，列出所有设备供用户参考")
         # === 完全无匹配，列出所有设备 ===
         all_names = []
         for d in devices:
@@ -345,8 +416,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="open_ui",
-        name="打开配置页面",
-        description="在浏览器中打开米家插件的 Web UI 配置页面",
+        name=tr("entries.open_ui.name", default="打开配置页面"),
+        description=tr("entries.open_ui.description", default="在浏览器中打开米家插件的 Web UI 配置页面"),
         kind="action"
     )
     async def open_ui(self, **_):
@@ -391,8 +462,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="reload_credential",
-        name="重新加载凭据",
-        description="重新从文件加载米家凭据并初始化API，防止插件重载后凭据未及时加载导致显示未登录",
+        name=tr("entries.reload_credential.name", default="重新加载凭据"),
+        description=tr("entries.reload_credential.description", default="重新从文件加载米家凭据并初始化API，防止插件重载后凭据未及时加载导致显示未登录"),
         kind="action"
     )
     async def reload_credential(self, **_):
@@ -502,8 +573,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.login.label", default="扫码登录"), tone="primary", group="auth", order=10, refresh_context=True)
     @plugin_entry(
         id="start_qrcode_login",
-        name="开始二维码登录",
-        description="获取二维码图片并开始登录流程",
+        name=tr("entries.start_qrcode_login.name", default="开始二维码登录"),
+        description=tr("entries.start_qrcode_login.description", default="获取二维码图片并开始登录流程"),
         kind="action"
     )
     async def start_qrcode_login(self, **_):
@@ -525,8 +596,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="check_login_status",
-        name="检查登录状态",
-        description="轮询检查二维码登录是否成功",
+        name=tr("entries.check_login_status.name", default="检查登录状态"),
+        description=tr("entries.check_login_status.description", default="轮询检查二维码登录是否成功"),
         kind="action"
     )
     async def check_login_status(self, login_url: str, **_):
@@ -615,8 +686,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.logout.label", default="登出"), tone="danger", group="auth", order=20, refresh_context=True)
     @plugin_entry(
         id="logout",
-        name="登出",
-        description="清除保存的凭据并清空本地数据",
+        name=tr("entries.logout.name", default="登出"),
+        description=tr("entries.logout.description", default="清除保存的凭据并清空本地数据"),
         kind="action"
     )
     async def logout(self, **_):
@@ -661,8 +732,8 @@ class MijiaPlugin(NekoPluginBase):
     # ========== 核心功能入口 ==========
     @plugin_entry(
         id="list_homes",
-        name="获取家庭列表",
-        description="列出当前账号下所有米家家庭及其 ID",
+        name=tr("entries.list_homes.name", default="获取家庭列表"),
+        description=tr("entries.list_homes.description", default="列出当前账号下所有米家家庭及其 ID"),
         llm_result_fields=["message"]
     )
     async def list_homes(self, **_):
@@ -692,8 +763,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.refreshDevices.label", default="刷新设备"), tone="secondary", group="device", order=10, refresh_context=True)
     @plugin_entry(
         id="list_devices",
-        name="获取设备列表",
-        description="获取设备列表，home_id留空自动使用第一个家庭，支持缓存",
+        name=tr("entries.list_devices.name", default="获取设备列表"),
+        description=tr("entries.list_devices.description", default="获取设备列表，home_id留空自动使用第一个家庭，支持缓存"),
         input_schema={
             "type": "object",
             "properties": {
@@ -751,10 +822,21 @@ class MijiaPlugin(NekoPluginBase):
         try:
             devices = await self.api.get_devices(home_id)
             # 构建房间映射，注入 room_name 到每个设备
-            room_map = await self._build_room_map()
+            room_map, device_room_map = await self._build_room_maps()
             result = []
+            room_filled = 0
+            room_empty = 0
             for d in devices:
-                room_name = room_map.get(str(d.room_id), "") if d.room_id else ""
+                room_name = ""
+                if d.room_id:
+                    room_name = room_map.get(str(d.room_id), "")
+                if not room_name:
+                    # 降级：通过设备 DID 在房间数据结构中查找
+                    room_name = device_room_map.get(d.did, "")
+                if room_name:
+                    room_filled += 1
+                else:
+                    room_empty += 1
                 device_info = {
                     "did": d.did,
                     "name": d.name,
@@ -805,7 +887,9 @@ class MijiaPlugin(NekoPluginBase):
                         self.logger.debug(f"获取设备 {d.name}({d.model}) 规格失败: {e}")
                 
                 result.append(device_info)
-            
+
+            self.logger.info(f"设备房间注入: {room_filled} 个有房间, {room_empty} 个无房间")
+
             # 保存到缓存（使用异步写入避免阻塞）
             try:
                 user_id = self.api.credential.user_id if self.api and self.api.credential else None
@@ -835,8 +919,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_cached_devices",
-        name="获取缓存的设备列表",
-        description="读取本地缓存的设备列表，缓存不存在时自动拉取",
+        name=tr("entries.get_cached_devices.name", default="获取缓存的设备列表"),
+        description=tr("entries.get_cached_devices.description", default="读取本地缓存的设备列表，缓存不存在时自动拉取"),
         input_schema={
             "type": "object",
             "properties": {
@@ -879,8 +963,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="list_scenes",
-        name="获取智能场景列表",
-        description="列出当前账号下所有米家智能场景，支持缓存",
+        name=tr("entries.list_scenes.name", default="获取智能场景列表"),
+        description=tr("entries.list_scenes.description", default="列出当前账号下所有米家智能场景，支持缓存"),
         input_schema={
             "type": "object",
             "properties": {
@@ -963,8 +1047,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="set_device_alias",
-        name="设置设备别名",
-        description="为指定设备设置自定义别名，方便用别名控制设备",
+        name=tr("entries.set_device_alias.name", default="设置设备别名"),
+        description=tr("entries.set_device_alias.description", default="为指定设备设置自定义别名，方便用别名控制设备"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1007,8 +1091,8 @@ class MijiaPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="get_device_aliases",
-        name="获取设备别名列表",
-        description="返回所有设备的别名映射（did -> alias）",
+        name=tr("entries.get_device_aliases.name", default="获取设备别名列表"),
+        description=tr("entries.get_device_aliases.description", default="返回所有设备的别名映射（did -> alias）"),
         llm_result_fields=["message"]
     )
     async def get_device_aliases(self, **_):
@@ -1032,13 +1116,8 @@ class MijiaPlugin(NekoPluginBase):
     @ui.action(label=tr("actions.smartControl.label", default="智能控制"), tone="success", group="control", order=10, refresh_context=True)
     @plugin_entry(
         id="smart_control",
-        name="智能控制",
-        description=(
-            "统一设备控制入口，用一句话控制设备或执行场景。"
-            "支持：开关（'打开卧室灯'）、亮度（'灯调到50%'）、温度（'空调调26度'）、"
-            "模式（'空调调制冷'）、场景（'执行回家场景'）。"
-            "支持设备名、别名、房间名+设备名（如'卧室灯'）。"
-        ),
+        name=tr("entries.smart_control.name", default="智能控制"),
+        description=tr("entries.smart_control.description", default="用一句话控制设备"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1848,8 +1927,8 @@ class MijiaPlugin(NekoPluginBase):
     # ========== 辅助功能：获取设备规格（可选） ==========
     @plugin_entry(
         id="query_device_state",
-        name="查询设备状态",
-        description="按名称查询设备所有可读属性的当前值，支持设备名、别名、房间名+设备名（如'卧室灯'）",
+        name=tr("entries.query_device_state.name", default="查询设备状态"),
+        description=tr("entries.query_device_state.description", default="按名称查询设备所有可读属性的当前值，支持设备名、别名、房间名+设备名"),
         input_schema={
             "type": "object",
             "properties": {
@@ -2038,8 +2117,7 @@ class MijiaPlugin(NekoPluginBase):
                 "fan-level": "风量档位",
                 "stepless_fan_level": "无级风速",
                 "Swing Mode": "摆风模式",
-                "vertical_swing": "上下摆风",
-                "vertical_swing": "上下扫风",
+                "vertical_swing": "上下摆风/上下扫风",
                 "Vertical Swing": "上下摆风",
                 "horizontal_swing": "左右摆风",
                 "Horizontal Swing": "左右摆风",
@@ -2048,7 +2126,7 @@ class MijiaPlugin(NekoPluginBase):
                 "Eco Mode": "节能模式",
                 "eco": "节能模式",
                 "Dry Mode": "除湿模式",
-                "dryer": "干燥模式",
+                "dryer": "干燥/烘干",
                 "Heat Mode": "制热模式",
                 "heater": "辅热模式",
                 "Cool Mode": "制冷模式",
@@ -2072,7 +2150,6 @@ class MijiaPlugin(NekoPluginBase):
                 "target_position": "目标位置",
                 "Target Position": "目标位置",
                 "Run Time": "运行时间",
-                "dryer": "烘干/风干",
 
                 # ── 安防/报警类 ──
                 "alarm": "提示音",

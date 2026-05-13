@@ -126,14 +126,6 @@
             width: 100%;
             text-align: left;
         }
-        .master-profile-header .arrow {
-            transition: transform 0.2s ease;
-            width: 20px;
-            height: 20px;
-        }
-        .master-profile-header.open .arrow {
-            transform: rotate(90deg);
-        }
         .master-profile-content {
             position: absolute;
             left: 0;
@@ -455,7 +447,9 @@
 <p data-i18n="steam.pageDescription">通过此页面，您可以浏览、修改、上传、导入导出角色卡和管理Steam创意工坊中的Live2D模型和声音</p>
 </div>
 <button type="button" class="btn sm sidebar-cloudsave-btn" id="open-cloudsave-manager-btn" data-i18n-title="character.openCloudsaveManager" title="云存档管理">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/><path d="M8 16l4 4 4-4"/><path d="M12 12v8"/></svg>
+    <span class="sidebar-cloudsave-icon" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 17.5A4.5 4.5 0 0 0 18 8.8h-1.2A7 7 0 1 0 4.5 16.6"/><path d="M12 12.5v6"/><path d="m9.5 16 2.5 2.5 2.5-2.5"/></svg>
+    </span>
     <span data-i18n="character.openCloudsaveManager">云存档管理</span>
 </button>
 </div>
@@ -463,7 +457,9 @@
 <!-- 主人档案区域 -->
 <div class="menu-section master-profile-section" id="master-profile-section">
     <button type="button" class="master-profile-header" id="master-profile-header" onclick="toggleMasterSection()" aria-expanded="false">
-        <img src="/static/icons/dropdown_arrow.png" class="arrow" alt="" style="width:20px;height:20px;">
+        <span class="master-profile-arrow-bubble" aria-hidden="true">
+            <span class="master-profile-arrow-symbol"></span>
+        </span>
         <span data-i18n="character.masterProfileTitle">主人档案</span>
     </button>
     <div class="master-profile-content" id="master-profile-content" style="display:none;">

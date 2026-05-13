@@ -8,9 +8,10 @@ import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
 
-from config.prompts_memory import (
+from config.prompts.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
     get_further_summarize_prompt, get_history_review_prompt,
+    get_summary_stale_hint,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
@@ -20,7 +21,9 @@ from config import (
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
     RECENT_PER_MESSAGE_MAX_TOKENS,
+    RECENT_SUMMARY_STALE_HOURS,
 )
+from datetime import datetime
 
 # Backward-compat alias (Stage-1 → Stage-2 trigger threshold).
 # Two-stage flow: Stage 1 (`compress_history`) summarises raw messages with no
@@ -324,6 +327,68 @@ class CompressedRecentHistoryManager:
             logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
 
 
+    # ── Past block 更新 meta（防止"几天前的事还在 summary 里被反复带出来"
+    #    ——见 config.RECENT_SUMMARY_STALE_HOURS 注释）。
+    # 锚点不是"上次 summary 时间"——summary 每轮压缩都会跑，跟着锚点会让
+    # stale hint 永远跟在最后一次压缩后 1 小时，无法形成"每隔 N 小时
+    # 刷一次 past block"的稳定节奏。这里改记"上次 hint 真正注入的时刻"，
+    # 即"上次 LLM 实际更新 past block 的时刻"——只有那种 turn 才推进锚点。
+    def _summary_meta_path(self, lanlan_name: str) -> str:
+        """Side meta file per character, co-located with recent.json
+        ({"last_past_block_update_at": ISO}).
+
+        优先沿用 ``self.log_file_path[lanlan_name]`` 的目录——这是该类所有
+        recent.json 读写的实际路径来源（character_data 第 9 元组项）。如果
+        用户配置把某个角色的 recent.json 移到了 memory_dir 之外，meta 文件
+        仍跟它在同一目录，不会跑去无关位置（CodeRabbit review on PR #1316
+        catch）。在 update_history 跑过之前 log_file_path 可能为空——这种
+        情况下 fall back 到 memory_dir-based 推导。
+        """
+        recent_path = (self.log_file_path or {}).get(lanlan_name)
+        if recent_path:
+            return os.path.join(os.path.dirname(recent_path), 'recent_meta.json')
+        from memory import ensure_character_dir
+        return os.path.join(
+            ensure_character_dir(self._config_manager.memory_dir, lanlan_name),
+            'recent_meta.json',
+        )
+
+    async def _aread_last_past_block_update_at(self, lanlan_name: str) -> datetime | None:
+        path = self._summary_meta_path(lanlan_name)
+        if not await asyncio.to_thread(os.path.exists, path):
+            return None
+        try:
+            def _read():
+                with open(path, encoding='utf-8') as f:
+                    return f.read()
+            raw = await asyncio.to_thread(_read)
+            data = robust_json_loads(raw)
+            if not isinstance(data, dict):
+                return None
+            # 兼容 PR #1316 早期 in-progress 版本的旧 key（last_summary_at）。
+            # 用 OR 兜底——已合并版本不会写 last_summary_at，本兼容仅服务
+            # 在我本机跑过该 PR 中间 commit 的开发者，下次写 meta 会用新 key
+            # 覆盖旧文件。
+            ts = data.get('last_past_block_update_at') or data.get('last_summary_at')
+            if not ts:
+                return None
+            return datetime.fromisoformat(ts)
+        except Exception:
+            return None
+
+    async def _awrite_last_past_block_update_at(self, lanlan_name: str) -> None:
+        path = self._summary_meta_path(lanlan_name)
+        try:
+            await asyncio.to_thread(os.makedirs, os.path.dirname(path), exist_ok=True)
+            await atomic_write_json_async(
+                path,
+                {'last_past_block_update_at': datetime.now().isoformat()},
+                indent=2,
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.debug(f"[RecentHistory] {lanlan_name}: 写 recent_meta 失败: {e}")
+
     # detailed: 保留尽可能多的细节
     async def compress_history(self, messages, lanlan_name, detailed=False):
         from utils.tokenize import truncate_head_tail_tokens
@@ -356,10 +421,51 @@ class CompressedRecentHistoryManager:
                 line = f"{role} | {joined}"
             lines.append(line)
         messages_text = "\n".join(lines)
+        lang = get_global_language()
+        # ``{MASTER_NAME}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
+        # 占位符（与同 prompt 里既有的 ``%s`` 共存：``%s`` 走 Python 格式化，
+        # ``{MASTER_NAME}`` 走显式 ``.replace``，互不干扰）。统一称呼，避免 LLM
+        # 看到 "%s 和 ai 的对话"+"用户的负面反馈" 时困惑（feedback_no_dehumanizing_terms）。
+        # ⚠️ master_name 替换**最后**做：它是 user-controlled，含 ``%`` 会让先前
+        # 的 ``%`` formatting 把它当格式符崩溃；含 ``%s`` 会被先前的
+        # ``.replace("%s", ...)`` 二次替换。先做模板自身的 ``%s`` 替换 / ``%``
+        # formatting，再注入实名（codex P2）。
+        master_name = self.name_mapping['human']
         if not detailed:
-            prompt = get_recent_history_manager_prompt(get_global_language()).replace("%s", messages_text)
+            prompt = (
+                get_recent_history_manager_prompt(lang)
+                .replace("%s", messages_text)
+                .replace("{MASTER_NAME}", master_name)
+            )
         else:
-            prompt = get_detailed_recent_history_manager_prompt(get_global_language()) % messages_text
+            prompt = (
+                (get_detailed_recent_history_manager_prompt(lang) % messages_text)
+                .replace("{MASTER_NAME}", master_name)
+            )
+
+        # Past block 时间衰减：距上次"实际更新 past block"超过
+        # RECENT_SUMMARY_STALE_HOURS 小时时，在 prompt 头部加一段提醒让 LLM 把
+        # 明显过时的内容挪到 summary 末尾的"较久前"段落。锚点只在 hint 真正
+        # 注入时推进（见下方 stale_hint_injected）——这样 hint 形成"每 N 小时
+        # 触发一次"的节奏，而不是"每次 compress 都看一眼"。
+        # 仅影响本次 summary 文本，不持久化到 reflection / persona。
+        stale_hint_injected = False
+        first_time_baseline = False
+        try:
+            last_past_update = await self._aread_last_past_block_update_at(lanlan_name)
+            if last_past_update is None:
+                # 第一次为该角色 compress——先建立 baseline 锚点，本轮不注入
+                # hint（首次会话还没有什么"过时"内容值得拎走）。
+                first_time_baseline = True
+            else:
+                gap_hours = (datetime.now() - last_past_update).total_seconds() / 3600.0
+                if gap_hours >= RECENT_SUMMARY_STALE_HOURS:
+                    hint = get_summary_stale_hint(lang, gap_hours)
+                    prompt = hint + "\n\n" + prompt
+                    stale_hint_injected = True
+        except Exception as e:
+            # 时间衰减提醒是 best-effort；失败不能挡 summary 主流程
+            logger.debug(f"[RecentHistory] {lanlan_name}: stale hint 注入失败: {e}")
 
         retries = 0
         max_retries = 3
@@ -393,8 +499,15 @@ class CompressedRecentHistoryManager:
                             continue
                         if not isinstance(summary, str):
                             summary = json.dumps(summary, ensure_ascii=False)
-                    from config.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
+                    from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
                     memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
+                    # 推进 past-block 更新锚点（best-effort）：
+                    # - 第一次 compress：建立 baseline，让后续按 gap 触发
+                    # - 注入过 stale hint：表示 LLM 本轮真的更新了 past block
+                    # 中间没有 hint 注入的常规压缩不动锚点——这样 hint 形成稳定
+                    # 的"每 N 小时一次"节奏，而不是被频繁压缩冲掉。
+                    if first_time_baseline or stale_hint_injected:
+                        await self._awrite_last_past_block_update_at(lanlan_name)
                     # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持
                     # 一致——之前用 raw 摘要会出现"用户看到的 memo 用了 stage-2
                     # 摘要、缓存却存了 stage-1 原文"的诡异不一致。
@@ -417,7 +530,7 @@ class CompressedRecentHistoryManager:
                 # 如果解析失败，重试
                 retries += 1
         # 如果所有重试都失败，返回None
-        from config.prompts_sys import _loc, MEMORY_MEMO_EMPTY
+        from config.prompts.prompts_sys import _loc, MEMORY_MEMO_EMPTY
         return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
 
     async def further_compress(self, initial_summary):
@@ -436,7 +549,9 @@ class CompressedRecentHistoryManager:
                 llm = self._get_llm()
                 try:
                     response_content = (await llm.ainvoke(
-                        get_further_summarize_prompt(get_global_language()) % initial_summary,
+                        # codex P2：先 % 再 .replace，否则 master_name 含 % 会崩
+                        (get_further_summarize_prompt(get_global_language()) % initial_summary)
+                        .replace("{MASTER_NAME}", self.name_mapping['human']),
                         max_completion_tokens=stage2_cap,
                     )).content
                 finally:
@@ -599,7 +714,15 @@ class CompressedRecentHistoryManager:
             try:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")
-                prompt = get_history_review_prompt(get_global_language()) % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                prompt = (
+                    # codex P2：先 % formatting 再 .replace，否则 master_name 含 %
+                    # 会让 5-arg `% (...)` 把它当格式符崩溃
+                    (
+                        get_history_review_prompt(get_global_language())
+                        % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
+                    )
+                    .replace("{MASTER_NAME}", self.name_mapping['human'])
+                )
                 review_llm = self._get_review_llm()
                 try:
                     response_content = (await review_llm.ainvoke(prompt)).content

@@ -33,7 +33,7 @@ from typing import TypedDict
 
 import httpx
 
-from config.prompts_proactive import (
+from config.prompts.prompts_proactive import (
     HOLIDAY_HINT_TODAY,
     HOLIDAY_HINT_SOON,
     HOLIDAY_HINT_WEEK,
@@ -551,7 +551,7 @@ except Exception:
 # =====================================================================
 
 # Templates HOLIDAY_HINT_{TODAY,SOON,WEEK} and WEEKEND_HINT are imported
-# from config.prompts_proactive — see top of file.
+# from config.prompts.prompts_proactive — see top of file.
 
 
 async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:

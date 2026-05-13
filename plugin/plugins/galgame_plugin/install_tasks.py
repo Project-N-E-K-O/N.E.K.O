@@ -10,6 +10,7 @@ from utils.config_manager import get_config_manager
 
 INSTALL_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled"})
 INSTALL_KINDS = frozenset({"textractor", "tesseract", "rapidocr", "dxcam", "rapidocr_models"})
+DEFAULT_INSTALL_PLUGIN_ID = "galgame_plugin"
 
 
 def _runtime_root() -> Path:
@@ -23,9 +24,27 @@ def _normalize_kind(kind: str) -> str:
     return normalized
 
 
-def _tasks_dir(kind: str = "textractor") -> Path:
+def _normalize_plugin_id(plugin_id: str) -> str:
+    normalized = str(plugin_id or DEFAULT_INSTALL_PLUGIN_ID).strip()
+    if not normalized:
+        return DEFAULT_INSTALL_PLUGIN_ID
+    if ".." in normalized or "/" in normalized or "\\" in normalized:
+        raise ValueError("invalid plugin_id")
+    if not all(char.isalnum() or char in {"_", "-"} for char in normalized):
+        raise ValueError("invalid plugin_id")
+    return normalized
+
+
+def _plugin_runtime_root(plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID) -> Path:
+    normalized_plugin_id = _normalize_plugin_id(plugin_id)
+    if normalized_plugin_id == DEFAULT_INSTALL_PLUGIN_ID:
+        return _runtime_root()
+    return _runtime_root() / normalized_plugin_id
+
+
+def _tasks_dir(kind: str = "textractor", *, plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID) -> Path:
     normalized_kind = _normalize_kind(kind)
-    path = _runtime_root() / f"{normalized_kind}-installs"
+    path = _plugin_runtime_root(plugin_id) / f"{normalized_kind}-installs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -39,12 +58,21 @@ def _normalize_task_id(task_id: str) -> str:
     return normalized
 
 
-def install_task_state_path(task_id: str, *, kind: str = "textractor") -> Path:
-    return _tasks_dir(kind) / f"{_normalize_task_id(task_id)}.json"
+def install_task_state_path(
+    task_id: str,
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> Path:
+    return _tasks_dir(kind, plugin_id=plugin_id) / f"{_normalize_task_id(task_id)}.json"
 
 
-def latest_install_task_path(*, kind: str = "textractor") -> Path:
-    return _tasks_dir(kind) / "latest.json"
+def latest_install_task_path(
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> Path:
+    return _tasks_dir(kind, plugin_id=plugin_id) / "latest.json"
 
 
 def build_install_task_state(
@@ -52,7 +80,7 @@ def build_install_task_state(
     task_id: str,
     kind: str = "textractor",
     run_id: str | None = None,
-    plugin_id: str = "galgame_plugin",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
     status: str = "queued",
     phase: str = "queued",
     message: str = "",
@@ -72,7 +100,7 @@ def build_install_task_state(
         "task_id": _normalize_task_id(task_id),
         "kind": _normalize_kind(kind),
         "run_id": str(run_id or task_id or ""),
-        "plugin_id": plugin_id,
+        "plugin_id": _normalize_plugin_id(plugin_id),
         "status": status,
         "phase": phase,
         "message": message,
@@ -109,12 +137,13 @@ def write_install_task_state(
     payload: dict[str, Any],
     *,
     kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
 ) -> dict[str, Any]:
     normalized = dict(payload)
     normalized["task_id"] = _normalize_task_id(task_id)
     normalized["kind"] = _normalize_kind(str(normalized.get("kind") or kind))
     normalized["run_id"] = str(normalized.get("run_id") or normalized["task_id"])
-    normalized["plugin_id"] = str(normalized.get("plugin_id") or "galgame_plugin")
+    normalized["plugin_id"] = _normalize_plugin_id(str(normalized.get("plugin_id") or plugin_id))
     normalized["status"] = str(normalized.get("status") or "queued")
     normalized["phase"] = str(normalized.get("phase") or normalized["status"])
     normalized["message"] = str(normalized.get("message") or "")
@@ -140,11 +169,11 @@ def write_install_task_state(
     else:
         normalized["completed_at"] = None
     _atomic_write_json(
-        install_task_state_path(task_id, kind=normalized["kind"]),
+        install_task_state_path(task_id, kind=normalized["kind"], plugin_id=normalized["plugin_id"]),
         normalized,
     )
     _atomic_write_json(
-        latest_install_task_path(kind=normalized["kind"]),
+        latest_install_task_path(kind=normalized["kind"], plugin_id=normalized["plugin_id"]),
         {
             "task_id": normalized["task_id"],
             "kind": normalized["kind"],
@@ -156,8 +185,13 @@ def write_install_task_state(
     return normalized
 
 
-def load_install_task_state(task_id: str, *, kind: str = "textractor") -> dict[str, Any] | None:
-    path = install_task_state_path(task_id, kind=kind)
+def load_install_task_state(
+    task_id: str,
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> dict[str, Any] | None:
+    path = install_task_state_path(task_id, kind=kind, plugin_id=plugin_id)
     if not path.is_file():
         return None
     try:
@@ -171,20 +205,37 @@ def update_install_task_state(
     task_id: str,
     *,
     kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
     **changes: Any,
 ) -> dict[str, Any]:
     normalized_kind = _normalize_kind(kind)
-    current = load_install_task_state(task_id, kind=normalized_kind) or build_install_task_state(
+    normalized_plugin_id = _normalize_plugin_id(plugin_id)
+    current = load_install_task_state(
+        task_id,
+        kind=normalized_kind,
+        plugin_id=normalized_plugin_id,
+    ) or build_install_task_state(
         task_id=task_id,
         kind=normalized_kind,
+        plugin_id=normalized_plugin_id,
     )
     current.update(changes)
     current["kind"] = str(current.get("kind") or normalized_kind)
-    return write_install_task_state(task_id, current, kind=normalized_kind)
+    current["plugin_id"] = str(current.get("plugin_id") or normalized_plugin_id)
+    return write_install_task_state(
+        task_id,
+        current,
+        kind=normalized_kind,
+        plugin_id=normalized_plugin_id,
+    )
 
 
-def load_latest_install_task_ref(*, kind: str = "textractor") -> dict[str, Any] | None:
-    path = latest_install_task_path(kind=kind)
+def load_latest_install_task_ref(
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> dict[str, Any] | None:
+    path = latest_install_task_path(kind=kind, plugin_id=plugin_id)
     if not path.is_file():
         return None
     try:
@@ -194,11 +245,20 @@ def load_latest_install_task_ref(*, kind: str = "textractor") -> dict[str, Any] 
     return payload if isinstance(payload, dict) else None
 
 
-def load_latest_install_task_state(*, kind: str = "textractor") -> dict[str, Any] | None:
-    latest = load_latest_install_task_ref(kind=kind)
+def load_latest_install_task_state(
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> dict[str, Any] | None:
+    normalized_plugin_id = _normalize_plugin_id(plugin_id)
+    latest = load_latest_install_task_ref(kind=kind, plugin_id=normalized_plugin_id)
     if not isinstance(latest, dict):
         return None
     task_id = str(latest.get("task_id") or "").strip()
     if not task_id:
         return None
-    return load_install_task_state(task_id, kind=str(latest.get("kind") or kind))
+    return load_install_task_state(
+        task_id,
+        kind=str(latest.get("kind") or kind),
+        plugin_id=str(latest.get("plugin_id") or normalized_plugin_id),
+    )

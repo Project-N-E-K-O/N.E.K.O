@@ -55,7 +55,7 @@ import { emit, on, store } from '../../core/state.js';
 import { el } from '../_dom.js';
 
 // ─────────────────────────────────────────────────────────────
-// Payload 白名单 (和 config/prompts_avatar_interaction.py 对齐)
+// Payload 白名单 (和 config/prompts/prompts_avatar_interaction.py 对齐)
 // ─────────────────────────────────────────────────────────────
 //
 // L30: 这是 pure helper 的 "表单白名单" 拷贝, 不是逻辑拷贝. 主程序常量
@@ -219,7 +219,7 @@ export function mountExternalEventsPanel(host) {
     const a = state.avatar;
 
     // 开头一行 hint — 2026-04-23 r3 polish: tester 反馈 "text_context /
-    // reward_drop / easter_egg 看起来像没作用". 实际 config/prompts_avatar_
+    // reward_drop / easter_egg 看起来像没作用". 实际 config/prompts/prompts_avatar_
     // interaction.py::_build_avatar_interaction_instruction 已把这些字段拼进
     // instruction (运行时已验证), 但 UI 默认折叠 "Instruction preview", tester
     // 可能没展开 → 直觉认为字段被吞. 加一行显式 hint 指向结果区的 instruction

@@ -127,6 +127,9 @@ STORE_LLM_VISION_ENABLED = "llm_vision_enabled"
 STORE_LLM_VISION_MAX_IMAGE_PX = "llm_vision_max_image_px"
 STORE_OCR_SCREEN_TEMPLATES = "ocr_screen_templates"
 STORE_OCR_FAST_LOOP_ENABLED = "ocr_fast_loop_enabled"
+STORE_RAPIDOCR_LANG_TYPE = "rapidocr.lang_type"
+STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
+STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
 STORE_TUTORIAL_PROGRESS = "tutorial_progress"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
@@ -151,6 +154,9 @@ STORE_KEYS = (
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_SCREEN_TEMPLATES,
     STORE_OCR_FAST_LOOP_ENABLED,
+    STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_AUTO_DETECT_LANG,
+    STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_TUTORIAL_PROGRESS,
 )
 
@@ -514,6 +520,9 @@ class GalgameLLMConfig:
     llm_temperature_default: float = 0.0
     llm_max_tokens_agent_reply: int = 900
     llm_max_tokens_default: int = 1200
+    context_max_tokens: int = 6000
+    context_metrics_enabled: bool = False
+    context_counting_mode: str = "char"
 
 
 @dataclass(slots=True)
@@ -525,9 +534,10 @@ class GalgameReaderConfig:
 class GalgameMemoryReaderConfig:
     memory_reader_enabled: bool = False
     memory_reader_textractor_path: str = ""
+    memory_reader_textractor_proxy: str = ""
     memory_reader_install_release_api_url: str = ""
     memory_reader_install_target_dir: str = ""
-    memory_reader_install_timeout_seconds: float = 180.0
+    memory_reader_install_timeout_seconds: float = 600.0
     memory_reader_auto_detect: bool = True
     memory_reader_hook_codes: list[str] = field(default_factory=list)
     memory_reader_engine_hook_codes: dict[str, list[str]] = field(default_factory=dict)
@@ -586,14 +596,14 @@ class GalgameRapidOcrConfig:
     # deleted runtime install machinery.
     rapidocr_install_target_dir: str = ""
     rapidocr_engine_type: str = "onnxruntime"
-    # Default lang `japan` and version `PP-OCRv4` reflect galgame_plugin's
-    # primary use case (Japanese visual novels) and bundled-no-download
-    # constraint (v4 + japan rec is downloadable; v5 + japan has no upstream
-    # rec model). Existing configs that explicitly set other values are
-    # preserved by the loader; only unset values fall through to defaults.
-    rapidocr_lang_type: str = "japan"
+    # Default to the bundled Chinese PP-OCRv4 model. Japanese games can opt
+    # back into `japan`; existing configs that explicitly set other values are
+    # preserved by the loader.
+    rapidocr_lang_type: str = "ch"
     rapidocr_model_type: str = "mobile"
     rapidocr_ocr_version: str = "PP-OCRv4"
+    rapidocr_auto_detect_lang: bool = True
+    rapidocr_auto_detect_last_lang: str = ""
 
 
 @dataclass(slots=True, init=False)
@@ -635,9 +645,16 @@ class GalgameConfig:
         "llm_temperature_default": ("llm", "llm_temperature_default"),
         "llm_max_tokens_agent_reply": ("llm", "llm_max_tokens_agent_reply"),
         "llm_max_tokens_default": ("llm", "llm_max_tokens_default"),
+        "context_max_tokens": ("llm", "context_max_tokens"),
+        "context_metrics_enabled": ("llm", "context_metrics_enabled"),
+        "context_counting_mode": ("llm", "context_counting_mode"),
         "reader_mode": ("reader", "reader_mode"),
         "memory_reader_enabled": ("memory_reader", "memory_reader_enabled"),
         "memory_reader_textractor_path": ("memory_reader", "memory_reader_textractor_path"),
+        "memory_reader_textractor_proxy": (
+            "memory_reader",
+            "memory_reader_textractor_proxy",
+        ),
         "memory_reader_install_release_api_url": (
             "memory_reader",
             "memory_reader_install_release_api_url",
@@ -756,6 +773,8 @@ class GalgameConfig:
         "rapidocr_lang_type": ("rapidocr", "rapidocr_lang_type"),
         "rapidocr_model_type": ("rapidocr", "rapidocr_model_type"),
         "rapidocr_ocr_version": ("rapidocr", "rapidocr_ocr_version"),
+        "rapidocr_auto_detect_lang": ("rapidocr", "rapidocr_auto_detect_lang"),
+        "rapidocr_auto_detect_last_lang": ("rapidocr", "rapidocr_auto_detect_last_lang"),
     }
 
     def __init__(

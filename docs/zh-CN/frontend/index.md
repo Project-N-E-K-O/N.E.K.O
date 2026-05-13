@@ -22,7 +22,7 @@ static/
 ├── theme-manager.js          # 深色/浅色模式切换
 ├── css/                      # 样式表
 ├── js/                       # 功能模块 JS
-├── locales/                  # 国际化 JSON 文件（en, zh-CN, zh-TW, ja, ko）
+├── locales/                  # 国际化 JSON 文件（en, zh-CN, zh-TW, ja, ko, ru, es, pt）
 ├── live2d-ui-*.js            # Live2D UI 组件
 ├── vrm-ui-*.js               # VRM UI 组件
 └── react/neko-chat/          # React 聊天窗口构建产物

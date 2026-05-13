@@ -123,6 +123,16 @@ def test_rapidocr_kwargs_omits_model_paths_when_configured_model_is_missing(tmp_
     assert kwargs == {"engine_type": "onnxruntime"}
 
 
+def test_required_rapidocr_model_files_defaults_to_bundled_ch(tmp_path: Path) -> None:
+    files = rapidocr_support.required_rapidocr_model_files(
+        install_target_dir_raw=str(tmp_path / "RapidOCR"),
+        lang_type="",
+        ocr_version="",
+    )
+
+    assert files == []
+
+
 def test_load_rapidocr_runtime_uses_imported_package_models_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

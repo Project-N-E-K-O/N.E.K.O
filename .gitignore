@@ -5,6 +5,9 @@ mcp_server/servers.json
 tests/api_keys.json
 tests/test_inputs/
 
+# scripts/check_i18n.py 偶尔会被人 redirect 到这里，别再次入库
+/i18n_check_output.txt
+
 # 忽略日志文件
 *.log
 /logs/
@@ -32,7 +35,6 @@ utils/cache/
 config/api.py
 config/*.json
 !config/api_providers.json
-!config/characters.*.json
 env/*
 lanlan_frd.exe
 
@@ -124,9 +126,9 @@ metadata.package.json
 version_info.txt
 
 # 复原Steam
-!steam_api64.dll
-!steam_api64.lib
-!SteamworksPy64.dll
+!steamworks/steam_api64.dll
+!steamworks/steam_api64.lib
+!steamworks/SteamworksPy64.dll
 
 start_servers.bat
 start.sh
@@ -168,6 +170,10 @@ plugin/plugins/web_radio/
 
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
+
+# QQ 自动回复 测试数据
+plugin/plugins/qq_auto_reply/static/cache/
+plugin/plugins/qq_auto_reply/data/
 
 # bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
 plugin/plugins/bilibili_danmaku/data/bili_credential.*
