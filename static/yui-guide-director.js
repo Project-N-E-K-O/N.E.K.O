@@ -239,10 +239,10 @@
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
-    const RETURN_PETAL_ASSET_URLS = Object.freeze([
-        '/static/assets/tutorial/petals/yui-guide-petal-1.png',
-        '/static/assets/tutorial/petals/yui-guide-petal-2.png'
-    ]);
+    const RETURN_PETAL_SEQUENCE_URL = '/static/assets/tutorial/petals/yui-guide-petal-transition.webp';
+    const RETURN_PETAL_ANIMATION_EXTRA_MS = 1000;
+    const RETURN_PETAL_SEQUENCE_DURATION_MS = 6200;
+    const RETURN_PETAL_FINAL_OPACITY = 0.7;
     const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
@@ -662,7 +662,7 @@
         takeover_return_control: Object.freeze({
             fallbackDurationMs: 11938,
             cues: Object.freeze({
-                returnPetalTransition: Object.freeze({ at: 0.6 })
+                returnPetalTransition: Object.freeze({ at: 0.7 })
             })
         })
     });
@@ -2747,31 +2747,30 @@
             });
         }
 
-        loadReturnPetalSprites() {
-            if (this.returnPetalSpritePromise) {
-                return this.returnPetalSpritePromise;
+        loadReturnPetalSequence() {
+            if (this.returnPetalSequencePromise) {
+                return this.returnPetalSequencePromise;
             }
 
-            this.returnPetalSpritePromise = Promise.all(RETURN_PETAL_ASSET_URLS.map((url) => {
-                return new Promise((resolve) => {
-                    const image = new Image();
-                    image.decoding = 'async';
-                    image.onload = () => {
-                        resolve({
-                            image: image,
-                            width: image.naturalWidth || image.width || 1,
-                            height: image.naturalHeight || image.height || 1
-                        });
-                    };
-                    image.onerror = () => {
-                        console.warn('[YuiGuide] 花瓣贴图加载失败:', url);
-                        resolve(null);
-                    };
-                    image.src = url;
-                });
-            })).then((sprites) => sprites.filter(Boolean));
+            this.returnPetalSequencePromise = new Promise((resolve) => {
+                const image = new Image();
+                image.decoding = 'async';
+                image.onload = () => {
+                    resolve({
+                        url: RETURN_PETAL_SEQUENCE_URL,
+                        image: image,
+                        width: image.naturalWidth || image.width || 0,
+                        height: image.naturalHeight || image.height || 0
+                    });
+                };
+                image.onerror = () => {
+                    console.warn('[YuiGuide] 花瓣 animated WebP 加载失败:', RETURN_PETAL_SEQUENCE_URL);
+                    resolve(null);
+                };
+                image.src = RETURN_PETAL_SEQUENCE_URL;
+            });
 
-            return this.returnPetalSpritePromise;
+            return this.returnPetalSequencePromise;
         }
 
         getReturnPetalTransitionRemainingMs(voiceKey, fallbackText) {
@@ -2857,189 +2856,63 @@
             const start = origin || this.getViewportCenter();
             const reducedMotion = this.shouldReduceTutorialMotion();
             const normalizedOptions = options || {};
+            const sequence = normalizedOptions.sequence || null;
+            if (!sequence || !sequence.url) {
+                return null;
+            }
+
             const transitionMs = reducedMotion
                 ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
-                : clamp(Math.round(Number(normalizedOptions.durationMs) || 1600), 900, 2600);
-            const canvas = document.createElement('canvas');
-            canvas.className = 'yui-guide-petal-canvas';
-            const pixelRatio = 1;
-            canvas.width = Math.round(width * pixelRatio);
-            canvas.height = Math.round(height * pixelRatio);
-            canvas.style.width = width + 'px';
-            canvas.style.height = height + 'px';
-            layer.appendChild(canvas);
+                : clamp(Math.round(Number(normalizedOptions.durationMs) || 1600), 900, 8600);
+            const finalPetalOpacity = Number.isFinite(Number(normalizedOptions.finalOpacity))
+                ? clamp(Number(normalizedOptions.finalOpacity), 0, 1)
+                : RETURN_PETAL_FINAL_OPACITY;
+            const playback = document.createElement('img');
+            playback.className = 'yui-guide-petal-sequence';
+            playback.alt = '';
+            playback.decoding = 'async';
+            playback.draggable = false;
+            playback.src = sequence.url;
+            playback.style.animationDuration = transitionMs + 'ms';
+            playback.style.setProperty('--yui-guide-petal-origin-x', clamp(start.x, -width, width * 2) + 'px');
+            playback.style.setProperty('--yui-guide-petal-origin-y', clamp(start.y, -height, height * 2) + 'px');
+            playback.style.setProperty('--yui-guide-petal-final-opacity', String(finalPetalOpacity));
+            layer.appendChild(playback);
 
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-                return null;
-            }
-            ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-
-            const cellSize = reducedMotion ? 150 : (width <= 768 ? 104 : 118);
-            const columns = Math.max(7, Math.ceil(width / cellSize) + 2);
-            const rows = Math.max(5, Math.ceil(height / cellSize) + 2);
-            const count = columns * rows;
-            const cellWidth = width / Math.max(1, columns - 2);
-            const cellHeight = height / Math.max(1, rows - 2);
-            const emitterRadiusX = reducedMotion ? 12 : Math.max(18, Math.min(width, height) * 0.035);
-            const emitterRadiusY = reducedMotion ? 18 : Math.max(28, Math.min(width, height) * 0.055);
-            const rightArcX = Math.min(width + 220, start.x + Math.max(width * 0.38, 320));
-            const arcLiftBase = reducedMotion ? 56 : Math.max(150, height * 0.23);
-            const perspectiveStrength = reducedMotion ? 0.26 : 0.52;
-            const petals = [];
-            const petalSprites = Array.isArray(normalizedOptions.sprites)
-                ? normalizedOptions.sprites
-                : [];
-            if (petalSprites.length <= 0) {
-                return null;
-            }
-
-            for (let index = 0; index < count; index += 1) {
-                const col = index % columns;
-                const row = Math.floor(index / columns);
-                const gridEndX = clamp((col - 0.5) * cellWidth + (Math.random() - 0.5) * cellWidth * 0.82, -76, width + 76);
-                const gridEndY = clamp((row - 0.5) * cellHeight + (Math.random() - 0.5) * cellHeight * 0.82, -76, height + 76);
-                const emitterAngle = Math.random() * Math.PI * 2;
-                const emitterDistance = Math.sqrt(Math.random());
-                const startX = start.x + Math.cos(emitterAngle) * emitterRadiusX * emitterDistance;
-                const startY = start.y + Math.sin(emitterAngle) * emitterRadiusY * emitterDistance;
-                const rightControlX = clamp(
-                    rightArcX + (Math.random() - 0.5) * Math.max(120, width * 0.12),
-                    -80,
-                    width + 240
-                );
-                const rightControlY = clamp(
-                    start.y - arcLiftBase * (0.7 + Math.random() * 0.65),
-                    -120,
-                    height + 120
-                );
-                const finalX = gridEndX - Math.max(width * 0.08, 80) * (0.25 + Math.random() * 0.8);
-                const finalY = gridEndY + (Math.random() - 0.5) * Math.max(80, height * 0.1);
-                const sprite = petalSprites[Math.floor(Math.random() * petalSprites.length)];
-                const aspect = sprite.width / Math.max(1, sprite.height);
-                const baseLongSide = (reducedMotion ? 20 : 24) + Math.random() * (reducedMotion ? 12 : 20);
-                const baseHeight = aspect >= 1 ? baseLongSide / aspect : baseLongSide;
-                const baseWidth = aspect >= 1 ? baseLongSide : baseLongSide * aspect;
-                const maxScale = (reducedMotion ? 1.35 : 1.85) + Math.random() * (reducedMotion ? 0.55 : 0.85);
-                petals.push({
-                    x0: startX,
-                    y0: startY,
-                    controlX: rightControlX,
-                    controlY: rightControlY,
-                    x1: finalX,
-                    y1: finalY,
-                    rotationX: Math.random() * Math.PI * 2,
-                    rotationY: Math.random() * Math.PI * 2,
-                    rotationZ: Math.random() * Math.PI * 2,
-                    angularVelocityX: (Math.random() * 2 - 1) * Math.PI * (reducedMotion ? 0.8 : 2.5),
-                    angularVelocityY: (Math.random() * 2 - 1) * Math.PI * (reducedMotion ? 0.8 : 2.2),
-                    angularVelocityZ: (Math.random() * 2 - 1) * Math.PI * (reducedMotion ? 0.5 : 1.6),
-                    baseWidth: baseWidth,
-                    baseHeight: baseHeight,
-                    scaleMin: reducedMotion ? 0.04 : 0.025,
-                    scaleMax: maxScale,
-                    noisePhaseX: Math.random() * Math.PI * 2,
-                    noisePhaseY: Math.random() * Math.PI * 2,
-                    noiseAmpX: (reducedMotion ? 18 : Math.max(34, width * 0.035)) * (0.45 + Math.random()),
-                    noiseAmpY: (reducedMotion ? 14 : Math.max(28, height * 0.034)) * (0.45 + Math.random()),
-                    zStart: 0,
-                    zEnd: 1,
-                    delay: (index / count) * transitionMs * 0.025 + Math.random() * transitionMs * 0.018,
-                    duration: transitionMs * (1.28 + Math.random() * 0.16),
-                    sprite: sprite,
-                    alpha: 0.86 + Math.random() * 0.14
-                });
-            }
-
-            let animationFrame = 0;
-            let finishedCover = false;
-            const startedAt = performance.now();
-            const fadeDurationMs = transitionMs;
-            const smoothstep = (value) => value * value * (3 - (2 * value));
-            const mix = (from, to, amount) => from + ((to - from) * amount);
-            const bezier = (from, control, to, amount) => {
-                const inv = 1 - amount;
-                return (inv * inv * from) + (2 * inv * amount * control) + (amount * amount * to);
-            };
-            const drawPetal = (petal, x, y, rotationX, rotationY, rotationZ, scale, alpha) => {
-                const flipX = Math.max(0.18, Math.abs(Math.cos(rotationY)));
-                const flipY = Math.max(0.28, Math.abs(Math.cos(rotationX)));
-                ctx.save();
-                ctx.globalAlpha = alpha;
-                ctx.translate(x, y);
-                ctx.rotate(rotationZ);
-                ctx.scale(scale * flipX, scale * flipY);
-                ctx.drawImage(
-                    petal.sprite.image,
-                    -petal.baseWidth / 2,
-                    -petal.baseHeight / 2,
-                    petal.baseWidth,
-                    petal.baseHeight
-                );
-                ctx.restore();
-            };
-            const drawFrame = (now) => {
-                ctx.clearRect(0, 0, width, height);
-                let allSettled = true;
-                const globalProgress = clamp((now - startedAt) / fadeDurationMs, 0, 1);
-                const globalFade = 1 - globalProgress;
-                petals.forEach((petal) => {
-                    const local = clamp((now - startedAt - petal.delay) / petal.duration, 0, 1);
-                    if (local <= 0) {
-                        allSettled = false;
-                        return;
-                    }
-                    if (local < 1) {
-                        allSettled = false;
-                    }
-                    const flow = smoothstep(local);
-                    const z = mix(petal.zStart, petal.zEnd, flow);
-                    const spread = local * local;
-                    const x = bezier(petal.x0, petal.controlX, petal.x1, flow)
-                        + Math.sin((local * Math.PI * 2.2) + petal.noisePhaseX) * petal.noiseAmpX * spread;
-                    const y = bezier(petal.y0, petal.controlY, petal.y1, flow)
-                        - Math.sin(local * Math.PI) * arcLiftBase * 0.18
-                        + Math.cos((local * Math.PI * 1.9) + petal.noisePhaseY) * petal.noiseAmpY * spread;
-                    const endBoost = smoothstep(clamp((local - 0.8) / 0.2, 0, 1));
-                    const perspectiveScale = 1 + (z * perspectiveStrength) + (endBoost * (reducedMotion ? 0.3 : 0.62));
-                    const lifetimeScale = petal.scaleMin + ((petal.scaleMax - petal.scaleMin) * Math.pow(local, 2));
-                    const scale = lifetimeScale * perspectiveScale;
-                    const elapsedSeconds = Math.max(0, now - startedAt - petal.delay) / 1000;
-                    const rotationX = petal.rotationX + petal.angularVelocityX * elapsedSeconds;
-                    const rotationY = petal.rotationY + petal.angularVelocityY * elapsedSeconds;
-                    const rotationZ = petal.rotationZ + petal.angularVelocityZ * elapsedSeconds;
-                    const alpha = petal.alpha * Math.min(1, local * 8) * globalFade;
-                    drawPetal(petal, x, y, rotationX, rotationY, rotationZ, scale, alpha);
-                });
-
-                if (!allSettled && !this.destroyed && layer.parentNode) {
-                    animationFrame = window.requestAnimationFrame(drawFrame);
-                } else {
-                    finishedCover = true;
+            let doneTimer = 0;
+            let doneResolved = false;
+            let resolveDone = null;
+            const donePromise = new Promise((resolve) => {
+                resolveDone = resolve;
+                doneTimer = window.setTimeout(() => {
+                    doneResolved = true;
+                    doneTimer = 0;
+                    resolve();
+                }, transitionMs);
+            });
+            const settleDone = () => {
+                if (doneResolved) {
+                    return;
+                }
+                doneResolved = true;
+                if (doneTimer) {
+                    window.clearTimeout(doneTimer);
+                    doneTimer = 0;
+                }
+                if (typeof resolveDone === 'function') {
+                    resolveDone();
                 }
             };
 
             stage.appendChild(layer);
             window.requestAnimationFrame(() => {
                 layer.classList.add('is-active');
-                animationFrame = window.requestAnimationFrame(drawFrame);
             });
 
-            const coverDelayMs = Math.round(transitionMs * (reducedMotion ? 1.12 : 1.36));
             return {
-                cover: () => new Promise((resolve) => {
-                    window.setTimeout(() => {
-                        if (!finishedCover) {
-                            finishedCover = true;
-                        }
-                        resolve();
-                    }, coverDelayMs);
-                }),
+                done: () => donePromise,
                 finish: () => new Promise((resolve) => {
-                    if (animationFrame) {
-                        window.cancelAnimationFrame(animationFrame);
-                        animationFrame = 0;
-                    }
+                    settleDone();
                     layer.classList.add('is-exiting');
                     window.setTimeout(() => {
                         if (layer.parentNode) {
@@ -3075,23 +2948,41 @@
 
             this.returnPetalTransitionActive = true;
             const normalizedOptions = options || {};
-            const loadedPetalSprites = await this.loadReturnPetalSprites();
+            const loadedPetalSequence = await this.loadReturnPetalSequence();
             if (this.destroyed) {
                 this.returnPetalTransitionActive = false;
                 return;
             }
-            const transitionDurationMs = this.shouldReduceTutorialMotion()
-                ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
-                : clamp(Math.round(Number(normalizedOptions.durationMs) || 4800), 2600, 7600);
+            const reducedMotion = this.shouldReduceTutorialMotion();
+            const explicitDurationMs = Number(normalizedOptions.durationMs);
+            const hasExplicitDuration = Number.isFinite(explicitDurationMs) && explicitDurationMs >= 0;
+            const baseTransitionDurationMs = hasExplicitDuration
+                ? Math.round(explicitDurationMs)
+                : (reducedMotion
+                    ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
+                    : clamp(Math.round(Number(normalizedOptions.durationMs) || 4800), 2600, 7600));
+            const transitionDurationMs = reducedMotion
+                ? baseTransitionDurationMs
+                : Math.max(
+                    baseTransitionDurationMs + RETURN_PETAL_ANIMATION_EXTRA_MS,
+                    RETURN_PETAL_SEQUENCE_DURATION_MS
+                );
+            const waitForNarrationEnd = () => new Promise((resolve) => {
+                window.setTimeout(resolve, Math.max(0, baseTransitionDurationMs));
+            });
             const transition = this.createReturnPetalTransition(
                 this.getReturnPetalTransitionOrigin(),
                 {
                     durationMs: transitionDurationMs,
-                    sprites: loadedPetalSprites
+                    finalOpacity: RETURN_PETAL_FINAL_OPACITY,
+                    sequence: loadedPetalSequence
                 }
             );
             if (!transition) {
-                await this.fadeReturnPetalTransitionModelOut(transitionDurationMs);
+                await Promise.all([
+                    waitForNarrationEnd(),
+                    this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
+                ]);
                 await this.restoreTutorialAvatarForReturnPetalTransition();
                 this.restoreReturnPetalTransitionOpacityTargets();
                 this.returnPetalTransitionActive = false;
@@ -3100,8 +2991,8 @@
 
             try {
                 await Promise.all([
-                    transition.cover(),
-                    this.fadeReturnPetalTransitionModelOut(transitionDurationMs)
+                    waitForNarrationEnd(),
+                    this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
                 ]);
                 if (this.destroyed) {
                     return;
@@ -3111,6 +3002,9 @@
                     return;
                 }
                 this.restoreReturnPetalTransitionOpacityTargets();
+                if (transition && typeof transition.done === 'function') {
+                    await transition.done();
+                }
                 await transition.finish();
             } finally {
                 this.restoreReturnPetalTransitionOpacityTargets();
@@ -8414,6 +8308,18 @@
             });
         }
 
+        async runReturnControlCueWavePerformance() {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playReturnControlCueWave !== 'function') {
+                return null;
+            }
+            return api.playReturnControlCueWave({
+                durationMs: 4200,
+                reducedMotion: this.shouldReduceTutorialMotion(),
+                isCancelled: () => this.isStopping()
+            });
+        }
+
         async startIntroVoiceCursorLookAtPerformance() {
             const api = window.YuiGuideAvatarStage;
             if (!api || typeof api.startIntroVoiceCursorLookAt !== 'function') {
@@ -9127,6 +9033,9 @@
                         if (runId !== this.sceneRunId || this.destroyed || this.isStopping()) {
                             return;
                         }
+                        this.runReturnControlCueWavePerformance().catch((error) => {
+                            console.warn('[YuiGuide] 归还控制权挥手动作播放失败:', error);
+                        });
                         this.cursor.hide();
                         this.overlay.clearPersistentSpotlight();
                         this.overlay.clearActionSpotlight();

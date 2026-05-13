@@ -268,7 +268,7 @@ ghost cursor 流程二：
 1. `tutorial.yuiGuide.lines.takeoverReturnControl`
    - 中文：“好啦好啦，不霸占你的电脑啦！控制权还给你了喵！……”
 2. 文本进入聊天窗口，语音 key 为 `takeover_return_control`。
-3. 语音播放到 60% 时触发 `returnPetalTransition` cue。
+3. 语音播放到 70% 时触发 `returnPetalTransition` cue。
 
 高亮流程：
 
@@ -276,13 +276,13 @@ ghost cursor 流程二：
 2. cursor 目标是 `#${p}-container`，通常是当前模型/主容器。
 3. 旁白完成后关闭所有 managed panels。
 4. 清掉 persistent spotlight 和 action spotlight。
-5. 语音 60% cue 触发花瓣转场：只加载 `static/assets/tutorial/petals/yui-guide-petal-1.png` 和 `static/assets/tutorial/petals/yui-guide-petal-2.png` 两张透明花瓣贴图；如果贴图加载失败，不使用程序图形 fallback。
-6. 花瓣粒子以当前模型屏幕中心为窄发射源，随机选用贴图 1 或贴图 2，并给每个粒子随机初始三维旋转角和持续角速度，形成翻滚效果。
-7. 粒子运动使用归一化生命周期 `t`：X/Y 位置由二次贝塞尔曲线完成“从人物出发，先大幅向右、再向左”的弧线流动，Y 轴叠加 `sin(t * PI)` 弧形偏移，Z 轴推进用透视缩放模拟向镜头飞近。
-8. 粒子尺寸从极小值开始，按 `scale = min + (max - min) * t^2` 非线性放大，并在最后 20% 使用 `smoothstep` 额外放大。
-9. 从 60% cue 到语音播放完成期间，当前教程模型 DOM 层、底层模型 `alpha` 和花瓣整体透明度使用同一个线性进度从 100% 渐变到 0%，不使用顶点破碎或解体效果。
-10. 语音完成且花瓣铺满后调用教程头像恢复流程，按新手教程开启前保存的模型快照重新加载用户原模型。
-11. 原模型恢复后淡出花瓣转场层，再关闭 taking-over 状态。
+5. 语音 70% cue 触发花瓣转场：先启动一次持续约 4.2 秒的右手挥手 `playReturnControlCueWave()`，该动作复用开场 `computeWakeupPose()` 的右手挥手曲线，只写 `Param75/90/92/95`，不带入苏醒时的眼睛和身体姿态。
+6. 同一 cue 加载预渲染 animated WebP `static/assets/tutorial/petals/yui-guide-petal-transition.webp`，运行时直接用 `<img>` 播放，不再用 canvas requestAnimationFrame 或大背景 sprite sheet 逐帧切换。
+7. animated WebP 由 `yui-guide-petal-1.png` 和 `yui-guide-petal-2.png` 预生成：花瓣从模型中心出发，先大幅向右形成弧线，再向左铺开并从页面左边消失，同时保留噪声摆动、翻滚旋转和透视放大；花瓣数量、下方轨迹长度和上下边缘分布加密，避免页面边缘出现明显空白。
+8. 播放层覆盖到视口外侧，并按当前模型屏幕中心做轻量偏移；为抵消预渲染动画观感偏左，播放层额外向右校准约 `6vw`，避免模型切换期间依赖 JS 粒子循环或 CSS 大图重绘。
+9. 从 70% cue 到语音播放完成期间，当前教程模型 DOM 层和底层模型 `alpha` 使用线性进度从 100% 渐变到 0%；花瓣整体透明度与模型淡出分离，不跟随模型归零，播放层最终通过 CSS 透明度保持约 70% 覆盖继续流动，不使用顶点破碎或解体效果。
+10. 花瓣动画的整体时间轴比“70% cue 到语音结束”的剩余时长多延长约 1 秒，且非 reduced-motion 下最短播放约 6.2 秒；模型淡出只跟随该句语音剩余时长，最后一句语音播放完成后立即调用教程头像恢复流程，按新手教程开启前保存的模型快照重新加载用户原模型。
+11. 模型快照恢复期间不暂停花瓣动画；恢复完成后先等待约 6.2 秒 animated WebP 剩余时间播完，再淡出花瓣转场层并关闭 taking-over 状态。
 
 ghost cursor 流程：
 
@@ -290,7 +290,7 @@ ghost cursor 流程：
 2. 台词播放后 cursor wobble。
 3. 关闭面板并清掉 spotlight 后，cursor 移动到视口中心。
 4. cursor 再 wobble 一次，然后隐藏。
-5. 第 6 段语音 60% cue 触发时隐藏 cursor 并清掉高亮，避免转场期间 ghost cursor 残留在全屏花瓣层上。
+5. 第 6 段语音 70% cue 触发时隐藏 cursor 并清掉高亮，避免转场期间 ghost cursor 残留在全屏花瓣层上。
 
 注意：
 

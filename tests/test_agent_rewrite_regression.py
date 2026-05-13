@@ -383,6 +383,76 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
         assert expected in style_source
 
 
+def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    doc_source = Path("docs/design/home-yui-guide-text-highlight-cursor-flow.md").read_text(encoding="utf-8")
+    petal_animation = Path("static/assets/tutorial/petals/yui-guide-petal-transition.webp")
+
+    for expected in (
+        "const RETURN_PETAL_SEQUENCE_URL = '/static/assets/tutorial/petals/yui-guide-petal-transition.webp';",
+        "const RETURN_PETAL_ANIMATION_EXTRA_MS = 1000;",
+        "const RETURN_PETAL_SEQUENCE_DURATION_MS = 6200;",
+        "const RETURN_PETAL_FINAL_OPACITY = 0.7;",
+        "returnPetalTransition: Object.freeze({ at: 0.7 })",
+        "this.runReturnControlCueWavePerformance().catch((error) => {",
+        "async runReturnControlCueWavePerformance()",
+        "api.playReturnControlCueWave({",
+        "loadReturnPetalSequence()",
+        "image.src = RETURN_PETAL_SEQUENCE_URL;",
+        "const playback = document.createElement('img');",
+        "playback.className = 'yui-guide-petal-sequence';",
+        "playback.src = sequence.url;",
+        "playback.style.animationDuration = transitionMs + 'ms';",
+        "playback.style.setProperty('--yui-guide-petal-origin-x'",
+        "playback.style.setProperty('--yui-guide-petal-origin-y'",
+        "playback.style.setProperty('--yui-guide-petal-final-opacity', String(finalPetalOpacity));",
+        "done: () => donePromise,",
+        "const hasExplicitDuration = Number.isFinite(explicitDurationMs) && explicitDurationMs >= 0;",
+        "const baseTransitionDurationMs = hasExplicitDuration",
+        "baseTransitionDurationMs + RETURN_PETAL_ANIMATION_EXTRA_MS",
+        "RETURN_PETAL_SEQUENCE_DURATION_MS",
+        "const waitForNarrationEnd = () => new Promise((resolve) => {",
+        "const loadedPetalSequence = await this.loadReturnPetalSequence();",
+        "sequence: loadedPetalSequence",
+        "await transition.done();",
+        "durationMs: transitionDurationMs",
+        "finalOpacity: RETURN_PETAL_FINAL_OPACITY",
+        "this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)",
+    ):
+        assert expected in director_source
+
+    assert "transition.cover()" not in director_source
+    assert "coverDelayMs" not in director_source
+    assert "globalFade = 1 - globalProgress" not in director_source
+    assert "transition.suspend()" not in director_source
+    assert "transition.resume()" not in director_source
+    assert "suspendedDurationMs" not in director_source
+    assert ".yui-guide-petal-sequence" in style_source
+    assert "object-fit: cover;" in style_source
+    assert " + 6vw)" in style_source
+    assert "animation-name: yui-guide-petal-sequence-opacity;" in style_source
+    assert "@keyframes yui-guide-petal-sequence-play" not in style_source
+    assert "@keyframes yui-guide-petal-sequence-opacity" in style_source
+    assert "opacity: var(--yui-guide-petal-final-opacity, 0.7);" in style_source
+    assert petal_animation.exists()
+    assert petal_animation.stat().st_size > 0
+    assert "花瓣整体透明度与模型淡出分离" in doc_source
+    assert "预渲染 animated WebP" in doc_source
+    assert "运行时直接用 `<img>` 播放" in doc_source
+    assert "花瓣数量、下方轨迹长度和上下边缘分布加密" in doc_source
+    assert "持续约 4.2 秒的右手挥手 `playReturnControlCueWave()`" in doc_source
+    assert "复用开场 `computeWakeupPose()` 的右手挥手曲线" in doc_source
+    assert "只写 `Param75/90/92/95`" in doc_source
+    assert "额外向右校准约 `6vw`" in doc_source
+    assert "播放层最终通过 CSS 透明度保持约 70% 覆盖继续流动" in doc_source
+    assert "最短播放约 6.2 秒" in doc_source
+    assert "等待约 6.2 秒 animated WebP 剩余时间播完" in doc_source
+    assert "先大幅向右形成弧线，再向左铺开并从页面左边消失" in doc_source
+    assert "最后一句语音播放完成后立即调用教程头像恢复流程" in doc_source
+    assert "模型快照恢复期间不暂停花瓣动画" in doc_source
+
+
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
@@ -512,6 +582,12 @@ def test_yui_avatar_stage_exposes_extracted_wakeup_action():
     assert "class Live2DWakeupSession" in source
     assert "createWakeupSession" in source
     assert "computeWakeupPose" in source
+    assert "computeWakeupRightHandWavePose" in source
+    assert "class Live2DReturnControlCueWaveSession extends Live2DWakeupSession" in source
+    assert "playReturnControlCueWave" in source
+    assert "RETURN_CONTROL_CUE_WAVE_DURATION_MS = 4200" in source
+    assert "RETURN_CONTROL_CUE_WAVE_READY_WAIT_MS = 260" in source
+    assert "YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES = Object.freeze(['params'])" in source
     assert "YUI_WAKEUP_PARAMS" in source
     assert "class Live2DIntroGreetingHugSession" in source
     assert "playIntroGreetingHug" in source
@@ -607,6 +683,9 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     assert "Live2D 苏醒动作失败" in source
 
     assert "class Live2DWakeupSession" in avatar_source
+    assert "class Live2DReturnControlCueWaveSession extends Live2DWakeupSession" in avatar_source
+    assert "playReturnControlCueWave: playReturnControlCueWave" in avatar_source
+    assert "computeWakeupRightHandWavePose: computeWakeupRightHandWavePose" in avatar_source
     assert "DEFAULT_DURATION_MS = 4000" in avatar_source
     assert "LIVE2D_HANDOFF_MS = 620" in avatar_source
     assert "_suspendEyeBlinkOverride" in avatar_source
@@ -762,6 +841,14 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
     assert "playSettingsPeekPanic: playSettingsPeekPanic" in avatar_source
     assert "computeSettingsPeekPanicPose" in avatar_source
     assert "home-yui-guide-settings-panic" in avatar_source
+    assert "const YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES = Object.freeze(['lookAt']);" in avatar_source
+    assert "const YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES = Object.freeze(['frame', 'params', 'expression']);" in avatar_source
+    assert "this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)" in avatar_source
+    assert ": YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES.slice();" in avatar_source
+    assert "preserveCursorLookAt: normalizedOptions.preserveCursorLookAt !== false" in avatar_source
+    assert "this.preserveCursorLookAt = normalizedOptions.preserveCursorLookAt !== false;" in avatar_source
+    assert "window.nekoYuiGuideIntroVoiceLookAtActive === true" in avatar_source
+    assert "YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES.slice()" in avatar_source
     assert "Param72" in avatar_source
     assert "Param73" in avatar_source
     assert "Param69" in avatar_source
@@ -779,6 +866,10 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
     assert "runId: runId," in director_source
     assert "targetRect: settingsPeekPanicMotionTargetRect" in director_source
     assert "settingsPeekPanicMotionTargetRect = motionRect || null;" in director_source
+    assert "const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance" in director_source
+    assert "await this.stopIntroVoiceCursorLookAtPerformance(\n                    ghostCursorLookAtHandle,\n                    'settings_peek_complete'" in director_source
+    assert "async runTakeoverKeyboardControlSequence(step, performance, runId)" in director_source
+    assert "await this.stopIntroVoiceCursorLookAtPerformance(\n                    ghostCursorLookAtHandle,\n                    'takeover_keyboard_control_complete'" in director_source
 
     assert "SettingsPeekPanic" not in performance_source
     assert "settings-panic" not in performance_source

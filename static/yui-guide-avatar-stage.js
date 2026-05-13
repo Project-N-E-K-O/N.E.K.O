@@ -17,6 +17,8 @@
     const INTRO_GREETING_HUG_APPROACH_MS = 2200;
     const INTRO_GREETING_HUG_RELEASE_MS = 620;
     const INTRO_GREETING_HUG_SETTLE_MS = 1250;
+    const RETURN_CONTROL_CUE_WAVE_DURATION_MS = 4200;
+    const RETURN_CONTROL_CUE_WAVE_READY_WAIT_MS = 260;
     const INTRO_GREETING_HUG_CLOSE_SCALE = 1.38;
     const INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.58;
     const INTRO_GREETING_HUG_MIN_SHIFT_PX = 360;
@@ -65,6 +67,9 @@
     const YUI_GUIDE_PERFORMANCE_PRIORITY = 80;
     const YUI_WAKEUP_PERFORMANCE_CAPABILITIES = Object.freeze(['params', 'motion', 'lookAt', 'expression']);
     const YUI_INTRO_PERFORMANCE_CAPABILITIES = Object.freeze(['frame', 'params', 'lookAt', 'expression']);
+    const YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES = Object.freeze(['lookAt']);
+    const YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES = Object.freeze(['frame', 'params', 'expression']);
+    const YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES = Object.freeze(['params']);
     const YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame']);
     const YUI_WAKEUP_PARAMS = Object.freeze({
         eyeLeft: 'ParamEyeLOpen',
@@ -515,6 +520,7 @@
     let activeAngryExitSession = null;
     let activeIntroVoiceLookAtSession = null;
     let activePluginDashboardCornerSession = null;
+    let activeReturnControlCueWaveSession = null;
 
     function clamp(value, min, max) {
         const number = Number(value);
@@ -946,6 +952,21 @@
             yuiRightForearmAnim: reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight,
             yuiRightHandAnim: reducedMotion ? 0 : clamp(0.56 + waveCycle * 0.44, 0, 1) * waveWeight,
             yuiRightHandWave: reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight
+        };
+    }
+
+    function computeWakeupRightHandWavePose(progress, context) {
+        const reducedMotion = !!(context && context.reducedMotion);
+        const normalizedProgress = clamp(progress, 0, 1);
+        const wakeupWaveProgress = 0.68 + normalizedProgress * 0.32;
+        const pose = computeWakeupPose(wakeupWaveProgress, {
+            reducedMotion: reducedMotion
+        });
+        return {
+            yuiRightWaveSwitch: pose.yuiRightWaveSwitch,
+            yuiRightForearmAnim: pose.yuiRightForearmAnim,
+            yuiRightHandAnim: pose.yuiRightHandAnim,
+            yuiRightHandWave: pose.yuiRightHandWave
         };
     }
 
@@ -1838,6 +1859,63 @@
             this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightForearmAnim || 1));
             this.writeWeighted('yuiRightHandAnim', pose.yuiRightHandAnim, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightHandAnim || 1));
             this.writeWeighted('yuiRightHandWave', pose.yuiRightHandWave, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightHandWave || 1));
+        }
+    }
+
+    class Live2DReturnControlCueWaveSession extends Live2DWakeupSession {
+        constructor(context, options) {
+            const normalizedOptions = options || {};
+            super(context, Object.assign({}, normalizedOptions, {
+                durationMs: normalizeDuration(normalizedOptions.durationMs, RETURN_CONTROL_CUE_WAVE_DURATION_MS),
+                performanceLockKey: normalizedOptions.performanceLockKey || 'home-yui-guide-return-control-wave',
+                performanceLockCapabilities: YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES.slice()
+            }));
+            this.poseOverrideSource = 'yui_guide_return_control_wave_' + this.token;
+            const wakeupParams = this.params || {};
+            this.params = {};
+            [
+                'yuiRightWaveSwitch',
+                'yuiRightForearmAnim',
+                'yuiRightHandAnim',
+                'yuiRightHandWave'
+            ].forEach((key) => {
+                if (wakeupParams[key]) {
+                    this.params[key] = wakeupParams[key];
+                }
+            });
+        }
+
+        isUsable() {
+            return !!(
+                this.params
+                && (
+                    this.params.yuiRightWaveSwitch
+                    || this.params.yuiRightForearmAnim
+                    || this.params.yuiRightHandAnim
+                    || this.params.yuiRightHandWave
+                )
+            );
+        }
+
+        computePose(progress) {
+            return computeWakeupRightHandWavePose(progress, {
+                reducedMotion: this.reducedMotion
+            });
+        }
+
+        applyPose(pose, weight) {
+            const w = clamp(weight, 0, 1);
+            this.writeWeighted('yuiRightWaveSwitch', pose.yuiRightWaveSwitch, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightWaveSwitch || 1));
+            this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightForearmAnim || 1));
+            this.writeWeighted('yuiRightHandAnim', pose.yuiRightHandAnim, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightHandAnim || 1));
+            this.writeWeighted('yuiRightHandWave', pose.yuiRightHandWave, w * (YUI_WAKEUP_POSE_BLEND_FACTORS.yuiRightHandWave || 1));
+        }
+
+        stop(reason, options) {
+            super.stop(reason, options);
+            if (activeReturnControlCueWaveSession === this) {
+                activeReturnControlCueWaveSession = null;
+            }
         }
     }
 
@@ -2917,6 +2995,7 @@
             this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
                 ? normalizedOptions.performanceLockCapabilities.slice()
                 : YUI_INTRO_PERFORMANCE_CAPABILITIES.slice();
+            this.preserveCursorLookAt = normalizedOptions.preserveCursorLookAt !== false;
             this.frozenOverlayAnchors = null;
             this.direction = -1;
             this.shiftX = -SETTINGS_PEEK_PANIC_MIN_SHIFT_PX;
@@ -3168,8 +3247,23 @@
         applyPose(pose, weight) {
             const w = clamp(weight, 0, 1);
             const cheekBase = this.params.cheek ? this.params.cheek.initial : 0;
+            const skipLookAtPose = this.preserveCursorLookAt
+                && window.nekoYuiGuideIntroVoiceLookAtActive === true;
             Object.keys(YUI_SETTINGS_PEEK_PANIC_PARAMS).forEach((key) => {
                 if (!Object.prototype.hasOwnProperty.call(pose, key)) {
+                    return;
+                }
+                if (
+                    skipLookAtPose
+                    && (
+                        key === 'angleX'
+                        || key === 'angleY'
+                        || key === 'angleZ'
+                        || key === 'bodyAngleX'
+                        || key === 'bodyAngleY'
+                        || key === 'bodyAngleZ'
+                    )
+                ) {
                     return;
                 }
                 const targetValue = key === 'cheek'
@@ -4303,6 +4397,48 @@
         });
     }
 
+    async function playReturnControlCueWave(options) {
+        const normalizedOptions = options || {};
+        const reducedMotion = !!normalizedOptions.reducedMotion;
+        const waitMs = reducedMotion
+            ? 0
+            : normalizeDuration(normalizedOptions.readyWaitMs, RETURN_CONTROL_CUE_WAVE_READY_WAIT_MS);
+        const context = await waitForLive2DContext(waitMs);
+        if (!context) {
+            return { result: 'fallback', reason: 'live2d_unavailable' };
+        }
+        if (activeReturnControlCueWaveSession && activeReturnControlCueWaveSession.active) {
+            activeReturnControlCueWaveSession.cancel('replaced');
+        }
+        const session = new Live2DReturnControlCueWaveSession(context, {
+            reducedMotion: reducedMotion,
+            token: normalizedOptions.token || Date.now(),
+            durationMs: reducedMotion ? 0 : normalizeDuration(normalizedOptions.durationMs, RETURN_CONTROL_CUE_WAVE_DURATION_MS)
+        });
+        if (!session.isUsable()) {
+            return { result: 'fallback', reason: 'return_control_wave_unavailable' };
+        }
+        if (!session.start()) {
+            return { result: 'fallback', reason: 'return_control_wave_start_failed' };
+        }
+        activeReturnControlCueWaveSession = session;
+
+        return new Promise((resolve) => {
+            const poll = () => {
+                if (session.finished) {
+                    resolve({
+                        result: session.result || 'played',
+                        reason: session.result && session.result !== 'played' ? session.result : '',
+                        paramCount: Object.keys(session.params || {}).length
+                    });
+                    return;
+                }
+                window.requestAnimationFrame(poll);
+            };
+            window.requestAnimationFrame(poll);
+        });
+    }
+
     async function playIntroGiftHeart(options) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, INTRO_GIFT_HEART_READY_WAIT_MS);
@@ -4440,6 +4576,10 @@
             reducedMotion: !!normalizedOptions.reducedMotion,
             token: normalizedOptions.token || Date.now(),
             isCancelled: normalizedOptions.isCancelled,
+            preserveCursorLookAt: normalizedOptions.preserveCursorLookAt !== false,
+            performanceLockCapabilities: Array.isArray(normalizedOptions.performanceLockCapabilities)
+                ? normalizedOptions.performanceLockCapabilities.slice()
+                : YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES.slice(),
             targetRect: normalizedOptions.targetRect || null,
             totalDurationMs: normalizedOptions.totalDurationMs,
             reactMs: normalizedOptions.reactMs,
@@ -4558,6 +4698,7 @@
             return new Live2DWakeupSession(context, options);
         },
         playIntroGreetingHug: playIntroGreetingHug,
+        playReturnControlCueWave: playReturnControlCueWave,
         playIntroGiftHeart: playIntroGiftHeart,
         startIntroVoiceCursorLookAt: startIntroVoiceCursorLookAt,
         playSettingsPeekPanic: playSettingsPeekPanic,
@@ -4566,6 +4707,7 @@
         startPluginDashboardCornerPeek: startPluginDashboardCornerPeek,
         applyIntroGreetingHugFinalPlacement: applyIntroGreetingHugFinalPlacement,
         Live2DWakeupSession: Live2DWakeupSession,
+        Live2DReturnControlCueWaveSession: Live2DReturnControlCueWaveSession,
         Live2DIntroGreetingHugSession: Live2DIntroGreetingHugSession,
         Live2DIntroGiftHeartSession: Live2DIntroGiftHeartSession,
         Live2DIntroVoiceLookAtSession: Live2DIntroVoiceLookAtSession,
@@ -4574,6 +4716,7 @@
         Live2DAngryExitSession: Live2DAngryExitSession,
         Live2DPluginDashboardCornerSession: Live2DPluginDashboardCornerSession,
         computeWakeupPose: computeWakeupPose,
+        computeWakeupRightHandWavePose: computeWakeupRightHandWavePose,
         computeIntroGreetingHugPose: computeIntroGreetingHugPose,
         computeIntroGiftHeartPose: computeIntroGiftHeartPose,
         computeSettingsPeekPanicPose: computeSettingsPeekPanicPose,

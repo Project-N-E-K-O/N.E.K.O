@@ -78,10 +78,29 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   opacity: 0;
 }
 
-.yui-guide-petal-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
+.yui-guide-petal-sequence {
+  position: absolute;
+  left: -18vw;
+  top: -18vh;
+  width: 136vw;
+  height: 136vh;
+  object-fit: cover;
+  transform: translate3d(
+    calc(((var(--yui-guide-petal-origin-x, 50vw) - 50vw) * 0.16) + 6vw),
+    calc((var(--yui-guide-petal-origin-y, 50vh) - 50vh) * 0.14),
+    0
+  );
+  opacity: 1;
+  will-change: opacity, transform;
+  animation-name: yui-guide-petal-sequence-opacity;
+  animation-duration: 5200ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-fill-mode: forwards;
+}
+
+@keyframes yui-guide-petal-sequence-opacity {
+  from { opacity: 1; }
+  to { opacity: var(--yui-guide-petal-final-opacity, 0.7); }
 }
 
 .yui-guide-backdrop {
