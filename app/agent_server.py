@@ -5178,14 +5178,26 @@ async def computer_use_availability():
 async def notify_config_changed():
     """Called by the main server after API-key / model config is saved.
     Rebuilds the CUA adapter with fresh config and kicks off a non-blocking
-    LLM connectivity check — but only when the user actually has Agent on
-    or has a CU/BU flag enabled.  Otherwise a routine voice/chat-model save
-    fires a probe whose transient failure pops a "猫爪预检失败" toast for a
-    feature the user isn't even using."""
+    LLM connectivity check — but only when the user actually has the master
+    switch on AND at least one LLM-dependent sub flag enabled.
+
+    The master gate is required because with the new master-OFF semantics
+    (sub flags carry user intent and survive master cycling),
+    ``computer_use_enabled``/``browser_use_enabled`` can legitimately stay
+    True while the master is off. The old ``or`` condition would otherwise
+    fire a probe on every voice/chat config save and pop a transient
+    "猫爪预检失败" toast for a feature the user has explicitly disabled at
+    the master.
+
+    Sub-flag check still gates probes when the master is on but the user
+    isn't using CU/BU — same rationale as the original docstring: routine
+    config saves shouldn't probe for a feature nobody's using."""
     _try_refresh_computer_use_adapter(force=True)
     _rewire_computer_use_dependents()
     flags = Modules.agent_flags or {}
-    if Modules.analyzer_enabled or flags.get("computer_use_enabled") or flags.get("browser_use_enabled"):
+    if Modules.analyzer_enabled and (
+        flags.get("computer_use_enabled") or flags.get("browser_use_enabled")
+    ):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
         return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
     return {"success": True, "message": "CUA adapter refreshed; probe skipped (agent idle)"}
