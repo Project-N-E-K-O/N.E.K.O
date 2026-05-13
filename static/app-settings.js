@@ -153,8 +153,14 @@
     /**
      * 将当前设置保存到 localStorage
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
+     *
+     * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
+     *   首启分支用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前
+     *   就把控制组默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」从而
+     *   永远跳过 A/B 实验组覆写
      */
-    function saveSettings() {
+    function saveSettings(options) {
+        const skipServerSync = !!(options && options.skipServerSync);
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -289,8 +295,10 @@
             });
         }
 
-        // 同步到服务器（异步，不阻塞）
-        syncSettingsToServer();
+        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST
+        if (!skipServerSync) {
+            syncSettingsToServer();
+        }
     }
 
     // ======================== loadSettings ========================
@@ -448,8 +456,11 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
 
-                // 持久化首次启动设置，避免每次重新检测
-                saveSettings();
+                // 持久化首次启动设置到 localStorage，避免每次重新检测。注意：故意跳过
+                // 服务器 POST——loadSettingsFromServer GET 还没拿到 telemetryBranch，
+                // 这时把控制组默认值上行会被自家 GET 当作「云端已有偏好」回读，让 A/B
+                // 实验组覆写永远跳过。等 branch 解析后再做一次完整 saveSettings 推送
+                saveSettings({ skipServerSync: true });
             }
 
         } catch (error) {
