@@ -50,9 +50,12 @@ except Exception:
 # ─── Connectivity probe error classification ────────────────────────────
 #
 # Maps raw exception/text patterns from the chat completion client into the
-# stable ``AGENT_*`` reason codes that ``check_connectivity()`` returns and the
-# restore path uses to decide whether a failure is transient (worth a 15s
-# retry window) or permanent (give up immediately and ask the user to fix).
+# stable ``AGENT_*`` reason codes that ``check_connectivity()`` returns and
+# the restore path (see ``_restore_llm_dependent_flags`` in
+# ``app/agent_server.py``) uses to decide whether a failure is transient
+# (worth retrying within the bounded restore window of ~32s wall-clock,
+# 3 attempts × 6s timeout + 2 × 7s gap) or permanent (give up immediately
+# and surface ``AGENT_AUTO_DISABLED_*`` to the user).
 # Keep the classifier here (not in agent_server) so any caller of
 # ``check_connectivity`` gets the same reason vocabulary.
 _PERMANENT_AUTH_TOKENS = (
@@ -604,12 +607,14 @@ class ComputerUseAdapter:
             ``AGENT_DNS_NXDOMAIN``             — host does not resolve
             ``AGENT_LLM_UNREACHABLE``          — generic transient (timeout / 5xx / refused)
 
-        ``timeout_s=4.0, _retries=0`` is the fast/restore default. Callers that
-        explicitly want cold-start TLS handshake forgiveness (very slow links)
-        can pass larger values, but the previous 20s+3×retry default was
-        over-defensive — TLS resumption + warmed DNS cache settle <2s in normal
-        environments, and 4s preserves the ability to bail out within a 15s
-        retry window.
+        ``timeout_s=6.0, _retries=0`` is the current fast/restore default.
+        Callers that need extra cold-start TLS / DNS tolerance on slow links
+        can pass a larger ``timeout_s``. The previous 20s + 3×retry default
+        was over-defensive — TLS resumption + warmed DNS cache settle <2s in
+        normal environments — but the 6s budget here leaves room for one
+        cold handshake while keeping a single probe well under the
+        ``_RESTORE_PING_INTERVAL_S=7s`` gap used by the restore loop, so
+        attempts don't overlap.
         """
         cfg = self._config_manager.get_model_api_config("agent")
         api_key = cfg.get("api_key") or "EMPTY"
