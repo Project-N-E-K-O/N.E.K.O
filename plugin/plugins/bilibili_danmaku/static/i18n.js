@@ -2,19 +2,34 @@ const I18n = {
   _bundle: {},
   _lang: 'zh-CN',
 
+  _ready: false,
+  _whenReadyQueue: [],
+  _initPromise: null,
+
+  whenReady(callback) {
+    if (this._ready) {
+      callback(this._lang);
+    } else {
+      this._whenReadyQueue.push(callback);
+    }
+  },
   lang() {
     return this._lang;
   },
 
   _localeCandidates(locale) {
     const raw = String(locale || '').trim() || 'zh-CN';
-    const lower = raw.toLowerCase().replace('_', '-');
+    const lower = raw.toLowerCase().replace(/[ _]/g, '-');
     const candidates = [];
     const add = (value) => {
       if (value && !candidates.includes(value)) {
         candidates.push(value);
       }
     };
+
+    // 精确匹配优先
+    add(raw);
+
     if (lower === 'zh' || lower.startsWith('zh-')) {
       add('zh-CN');
       add('zh-TW');
@@ -27,12 +42,21 @@ const I18n = {
     } else if (lower.startsWith('ru')) {
       add('ru');
     }
-    add(raw);
+
+    // 兜底
     add('zh-CN');
     return candidates;
   },
 
   async init(pluginId) {
+    if (this._initPromise) {
+      return this._initPromise;
+    }
+    this._initPromise = this._init(pluginId);
+    return this._initPromise;
+  },
+
+  async _init(pluginId) {
     const encodedPluginId = encodeURIComponent(pluginId || 'bilibili_danmaku');
 
     // 1. 优先检查 URL 参数 ?locale=
@@ -43,7 +67,7 @@ const I18n = {
     // 2. 其次检查 localStorage（插件管理器写入了 'locale'）
     let localeFromStorage = '';
     try {
-      localeFromStorage = String(localStorage.getItem('locale') || '').trim();
+      localeFromStorage = String(localStorage.getItem('neko:locale') || '').trim();
     } catch {
       // 存储可能受限
     }
@@ -67,19 +91,27 @@ const I18n = {
     }
     this._lang = resolved || 'zh-CN';
 
-    for (const locale of this._localeCandidates(this._lang)) {
-      try {
-        const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/${encodeURIComponent(locale)}.json`, { cache: 'no-store' });
-        if (resp.ok) {
-          this._bundle = await resp.json();
-          this._lang = locale;
-          return;
+    try {
+      for (const locale of this._localeCandidates(this._lang)) {
+        try {
+          const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/i18n/${encodeURIComponent(locale)}.json`, { cache: 'no-store' });
+          if (resp.ok) {
+            this._bundle = await resp.json();
+            this._lang = locale;
+            return;
+          }
+        } catch {
+          // fallback keeps page usable
         }
-      } catch {
-        // fallback keeps page usable
       }
+      this._bundle = {};
+    } finally {
+      this._ready = true;
+      for (const cb of this._whenReadyQueue) {
+        cb(this._lang);
+      }
+      this._whenReadyQueue = [];
     }
-    this._bundle = {};
   },
 
   t(key, fallback) {
