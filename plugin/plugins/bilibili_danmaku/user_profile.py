@@ -509,7 +509,17 @@ class UserRecordManager:
             return
         path = self._data_dir / "user_records.json"
         if not path.exists():
-            return
+            # 迁移旧版 user_profiles.json
+            legacy = self._data_dir / "user_profiles.json"
+            if legacy.exists():
+                try:
+                    import shutil
+                    shutil.copy2(legacy, path)
+                    logger.info(f"已从 {legacy.name} 迁移到 {path.name}")
+                except Exception as exc:
+                    logger.warning(f"迁移旧版用户记录失败: {exc}")
+            else:
+                return
         try:
             import asyncio
             raw = await asyncio.to_thread(

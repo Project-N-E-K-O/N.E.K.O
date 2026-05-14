@@ -40,7 +40,7 @@ def _is_safe_url(url: str) -> bool:
         return False
 
 _I18N_DIR = Path(__file__).resolve().parent / "i18n"
-_ALLOWED_LOCALES = {"zh-CN", "en", "ja", "ko", "zh-TW", "ru"}
+_ALLOWED_LOCALES = {"zh-CN", "en", "ja", "ko", "zh-TW", "ru", "es", "pt"}
 
 
 class BgLlmTestRequest(BaseModel):

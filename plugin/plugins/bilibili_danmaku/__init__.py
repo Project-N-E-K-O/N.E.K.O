@@ -1397,7 +1397,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if self._background_llm_enabled and self._aggregator:
             try:
                 await self._aggregator.add(
-                    uid=event.get("uid", 0),
+                    uid=event.get("user_id", 0),
                     uname=event.get("user_name", "未知用户"),
                     level=event.get("user_level", 0),
                     text=content,
@@ -1408,7 +1408,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 # 更新用户画像
                 if self._tracker:
                     self._tracker.record(
-                        uid=event.get("uid", 0),
+                        uid=event.get("user_id", 0),
                         uname=event.get("user_name", "未知用户"),
                         text=content,
                     )
