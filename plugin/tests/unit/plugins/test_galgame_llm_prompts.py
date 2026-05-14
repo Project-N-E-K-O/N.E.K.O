@@ -80,6 +80,42 @@ def test_token_mode_hard_fallback_reports_level_four() -> None:
     assert json.loads(_rendered_context(result))["_prompt_truncated"] is True
 
 
+def test_prompt_truncation_notice_only_when_compacted() -> None:
+    compacted = build_prompt_messages_with_metadata(
+        "agent_reply",
+        {"text": "x" * 13000},
+    )
+    uncompressed = build_prompt_messages_with_metadata(
+        "agent_reply",
+        {"text": "short"},
+    )
+
+    assert "Context truncation notice" in compacted.messages[0]["content"]
+    assert "Context truncation notice" not in uncompressed.messages[0]["content"]
+
+
+def test_prompt_truncation_notice_is_stronger_for_hard_fallback() -> None:
+    result = build_prompt_messages_with_metadata(
+        "agent_reply",
+        {"items": [{"text": "日" * 1000, "extra": list(range(100))} for _ in range(50)]},
+        _cfg(context_counting_mode="token", context_max_tokens=1),
+    )
+
+    assert result.metadata["compression_level"] == 4
+    assert "heavily compacted" in result.messages[0]["content"]
+    assert "uncertainty" in result.messages[0]["content"]
+
+
+def test_prompt_rendering_strips_line_importance_metadata() -> None:
+    result = build_prompt_messages_with_metadata(
+        "agent_reply",
+        {"recent_lines": [{"text": "important", "_importance_score": 9.0}]},
+    )
+    rendered = json.loads(_rendered_context(result))
+
+    assert "_importance_score" not in rendered["recent_lines"][0]
+
+
 def test_token_mode_hard_fallback_trims_excerpt_to_token_budget() -> None:
     context = {"items": [{"text": "日" * 5000, "extra": list(range(100))} for _ in range(50)]}
 

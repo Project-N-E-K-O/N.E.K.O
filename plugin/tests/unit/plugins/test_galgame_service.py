@@ -172,11 +172,25 @@ def test_build_config_reads_context_optimization_fields() -> None:
                 "context_explain_min_lines": 3,
                 "context_explain_max_lines": 9,
                 "context_window_target_tokens": 512,
+                "context_scene_summary_mode": "cumulative_light",
+                "context_cumulative_llm_trigger_lines": 12,
+                "context_line_importance_enabled": True,
+                "llm_repeat_detection_enabled": True,
+                "llm_repeat_similarity_threshold": 0.9,
             }
         }
     )
     invalid = galgame_service.build_config(
-        {"llm": {"context_counting_mode": "words"}}
+        {
+            "llm": {
+                "context_counting_mode": "words",
+                "context_scene_summary_mode": "invalid",
+                "llm_repeat_similarity_threshold": 3,
+            }
+        }
+    )
+    low_threshold = galgame_service.build_config(
+        {"llm": {"llm_repeat_similarity_threshold": -1}}
     )
 
     assert cfg.context_max_tokens == 4096
@@ -186,7 +200,15 @@ def test_build_config_reads_context_optimization_fields() -> None:
     assert cfg.context_explain_min_lines == 3
     assert cfg.context_explain_max_lines == 9
     assert cfg.context_window_target_tokens == 512
+    assert cfg.context_scene_summary_mode == "cumulative_light"
+    assert cfg.context_cumulative_llm_trigger_lines == 12
+    assert cfg.context_line_importance_enabled is True
+    assert cfg.llm_repeat_detection_enabled is True
+    assert cfg.llm_repeat_similarity_threshold == 0.9
     assert invalid.context_counting_mode == "char"
+    assert invalid.context_scene_summary_mode == "rolling"
+    assert invalid.llm_repeat_similarity_threshold == 1.0
+    assert low_threshold.llm_repeat_similarity_threshold == 0.0
 
 
 def test_build_config_defaults_phase2_context_fields() -> None:
@@ -196,6 +218,11 @@ def test_build_config_defaults_phase2_context_fields() -> None:
     assert cfg.context_explain_min_lines == 4
     assert cfg.context_explain_max_lines == 16
     assert cfg.context_window_target_tokens == 800
+    assert cfg.context_scene_summary_mode == "rolling"
+    assert cfg.context_cumulative_llm_trigger_lines == 30
+    assert cfg.context_line_importance_enabled is False
+    assert cfg.llm_repeat_detection_enabled is False
+    assert cfg.llm_repeat_similarity_threshold == 0.85
 
 
 def test_build_config_normalizes_invalid_phase2_context_fields() -> None:

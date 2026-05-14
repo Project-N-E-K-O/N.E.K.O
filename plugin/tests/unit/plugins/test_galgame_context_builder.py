@@ -540,3 +540,151 @@ def test_explain_context_applies_line_limit_across_all_dialogue_streams() -> Non
 
     assert len(result["recent_lines"]) == 4
     assert len(result["stable_lines"]) + len(result["observed_lines"]) == 4
+
+
+def test_line_importance_score_rewards_plot_and_route_signals() -> None:
+    filler = {"text": "ok", "line_id": "filler"}
+    important = {
+        "speaker": "A",
+        "text": "但是我终于想起那个秘密约定了！",
+        "route_id": "route-a",
+        "line_id": "important",
+    }
+
+    assert context_builder._line_importance_score(important) > (
+        context_builder._line_importance_score(filler) + 5
+    )
+
+
+def test_importance_compaction_keeps_high_score_older_line() -> None:
+    lines = [
+        {
+            "speaker": "A",
+            "text": "但是我终于想起那个秘密约定了！",
+            "route_id": "route-a",
+            "line_id": "old-important",
+            "scene_id": "scene-a",
+        },
+        {"speaker": "B", "text": "ok", "line_id": "new-filler", "scene_id": "scene-a"},
+    ]
+
+    result = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": lines,
+            "history_observed_lines": [],
+            "history_choices": [],
+        },
+        scene_id="scene-a",
+        config=GalgameLLMConfig(
+            context_explain_min_lines=1,
+            context_explain_max_lines=1,
+            context_line_importance_enabled=True,
+        ),
+    )
+
+    assert [item["line_id"] for item in result["recent_lines"]] == ["old-important"]
+    assert "_importance_score" not in result["recent_lines"][0]
+
+
+def test_disabled_importance_keeps_recency_behavior() -> None:
+    lines = [
+        {
+            "speaker": "A",
+            "text": "但是我终于想起那个秘密约定了！",
+            "route_id": "route-a",
+            "line_id": "old-important",
+            "scene_id": "scene-a",
+        },
+        {"speaker": "B", "text": "ok", "line_id": "new-filler", "scene_id": "scene-a"},
+    ]
+
+    result = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": lines,
+            "history_observed_lines": [],
+            "history_choices": [],
+        },
+        scene_id="scene-a",
+        config=GalgameLLMConfig(context_explain_min_lines=1, context_explain_max_lines=1),
+    )
+
+    assert [item["line_id"] for item in result["recent_lines"]] == ["new-filler"]
+
+
+def test_cumulative_light_summary_preserves_previous_summary() -> None:
+    result = context_builder._cumulative_scene_summary(
+        scene_id="scene-a",
+        route_id="route-a",
+        lines=[{"speaker": "A", "text": "新的台词。"}],
+        selected_choices=[],
+        snapshot={},
+        previous_summary="之前两人约好放学后见面。",
+        mode="cumulative_light",
+    )
+
+    assert "之前两人约好放学后见面" in result
+    assert "新的台词" in result
+
+
+def test_cumulative_llm_uses_refined_summary_after_trigger() -> None:
+    result = context_builder._cumulative_scene_summary(
+        scene_id="scene-a",
+        route_id="",
+        lines=[{"speaker": "A", "text": f"line {index}"} for index in range(3)],
+        selected_choices=[],
+        snapshot={},
+        previous_summary="previous",
+        mode="cumulative_llm",
+        llm_refined_summary="refined summary",
+        llm_trigger_lines=3,
+    )
+
+    assert result == "refined summary"
+
+
+def test_cumulative_summary_is_bounded_for_large_inputs() -> None:
+    result = context_builder._cumulative_scene_summary(
+        scene_id="scene-a",
+        route_id="",
+        lines=[{"speaker": "A", "text": "x" * 100} for _ in range(120)],
+        selected_choices=[],
+        snapshot={},
+        previous_summary="p" * 3000,
+        mode="cumulative_light",
+    )
+
+    assert len(result) <= 1600
+
+
+def test_scene_context_hint_new_scene_no_history() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-b"},
+            "previous_scene_id": "scene-a",
+            "history_lines": [{"scene_id": "scene-a", "speaker": "A", "text": "old."}],
+            "history_observed_lines": [],
+            "history_choices": [],
+        },
+        scene_id="scene-b",
+    )
+
+    assert result["scene_context"] == "new_scene_no_history"
+
+
+def test_scene_context_hint_cold_start_only_without_history() -> None:
+    cold = context_builder.build_summarize_context(
+        {"latest_snapshot": {"scene_id": "scene-a"}},
+        scene_id="scene-a",
+    )
+    warm = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": [{"scene_id": "scene-a", "speaker": "A", "text": "line."}],
+        },
+        scene_id="scene-a",
+    )
+
+    assert cold["scene_context"] == "cold_start"
+    assert "scene_context" not in warm

@@ -527,6 +527,11 @@ class GalgameLLMConfig:
     context_explain_min_lines: int = 4
     context_explain_max_lines: int = 16
     context_window_target_tokens: int = 800
+    context_scene_summary_mode: str = "rolling"
+    context_cumulative_llm_trigger_lines: int = 30
+    context_line_importance_enabled: bool = False
+    llm_repeat_detection_enabled: bool = False
+    llm_repeat_similarity_threshold: float = 0.85
 
 
 @dataclass(slots=True)
@@ -656,6 +661,14 @@ class GalgameConfig:
         "context_explain_min_lines": ("llm", "context_explain_min_lines"),
         "context_explain_max_lines": ("llm", "context_explain_max_lines"),
         "context_window_target_tokens": ("llm", "context_window_target_tokens"),
+        "context_scene_summary_mode": ("llm", "context_scene_summary_mode"),
+        "context_cumulative_llm_trigger_lines": (
+            "llm",
+            "context_cumulative_llm_trigger_lines",
+        ),
+        "context_line_importance_enabled": ("llm", "context_line_importance_enabled"),
+        "llm_repeat_detection_enabled": ("llm", "llm_repeat_detection_enabled"),
+        "llm_repeat_similarity_threshold": ("llm", "llm_repeat_similarity_threshold"),
         "reader_mode": ("reader", "reader_mode"),
         "memory_reader_enabled": ("memory_reader", "memory_reader_enabled"),
         "memory_reader_textractor_path": ("memory_reader", "memory_reader_textractor_path"),

@@ -81,6 +81,67 @@ _CONDENSE_SHORT_LINE_MAX_CHARS = 30
 _DYNAMIC_WINDOW_DEFAULT_MIN_LINES = 4
 _DYNAMIC_WINDOW_DEFAULT_MAX_LINES = 16
 _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS = 800
+_IMPORTANCE_EMOTIONAL_PUNCTUATION_RE = re.compile(r"[!?\uFF01\uFF1F\u2026]")
+_IMPORTANCE_TURN_WORDS = (
+    "but",
+    "however",
+    "therefore",
+    "because",
+    "choose",
+    "choice",
+    "decide",
+    "suddenly",
+    "actually",
+    "可是",
+    "但是",
+    "然而",
+    "所以",
+    "因为",
+    "选择",
+    "决定",
+    "突然",
+    "其实",
+    "不过",
+    "でも",
+    "しかし",
+    "だから",
+    "なぜ",
+    "選ぶ",
+    "決め",
+    "突然",
+    "実は",
+)
+_IMPORTANCE_PLOT_WORDS = (
+    "truth",
+    "secret",
+    "promise",
+    "remember",
+    "forgot",
+    "confess",
+    "route",
+    "mission",
+    "objective",
+    "秘密",
+    "真相",
+    "约定",
+    "約定",
+    "记得",
+    "記得",
+    "忘记",
+    "忘れ",
+    "告白",
+    "路线",
+    "路線",
+    "目的",
+    "任务",
+    "使命",
+    "秘密",
+    "真実",
+    "約束",
+    "覚え",
+    "ルート",
+)
+_SUMMARY_MAX_CHARS = 1600
 
 
 def _looks_like_ocr_overlay_text(text: object) -> bool:
@@ -302,6 +363,84 @@ def _dialogue_line_dedupe_key(item: dict[str, Any]) -> str:
     return str(item.get("line_id") or "").strip()
 
 
+def _line_importance_score(line: dict[str, Any]) -> float:
+    """Score a line for lossy context windows without using model calls."""
+    if not isinstance(line, dict):
+        return 0.0
+    text = normalize_text(str(line.get("text") or "")).strip()
+    if not text:
+        return 0.0
+    score = 1.0
+    significant_chars = _significant_char_count(text)
+    if _IMPORTANCE_EMOTIONAL_PUNCTUATION_RE.search(text):
+        score += 2.0
+    lowered = text.lower()
+    if any(word in lowered or word in text for word in _IMPORTANCE_TURN_WORDS):
+        score += 1.5
+    if any(word in lowered or word in text for word in _IMPORTANCE_PLOT_WORDS):
+        score += 2.0
+    if significant_chars >= 36:
+        score += 1.0
+    if significant_chars >= 80:
+        score += 0.75
+    if str(line.get("route_id") or "").strip():
+        score += 1.0
+    if str(line.get("speaker") or "").strip():
+        score += 0.25
+    if str(line.get("stability") or "").strip().lower() == "stable":
+        score += 0.25
+    return score
+
+
+def _strip_importance_score(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: item for key, item in value.items() if key != "_importance_score"}
+    return value
+
+
+def _compact_lines_by_importance(
+    lines: list[dict[str, Any]],
+    *,
+    limit: int,
+    keep_score: bool = False,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    scored: list[tuple[int, float, dict[str, Any]]] = []
+    for index, item in enumerate(lines):
+        if not isinstance(item, dict):
+            continue
+        line = dict(item)
+        try:
+            score = float(line.get("_importance_score"))
+        except (TypeError, ValueError):
+            score = _line_importance_score(line)
+        line["_importance_score"] = score
+        scored.append((index, score, line))
+    if len(scored) <= limit:
+        selected = scored
+    else:
+        ranked = sorted(scored, key=lambda item: (item[1], item[0]), reverse=True)[:limit]
+        selected = sorted(ranked, key=lambda item: item[0])
+    lines_out = [dict(item[2]) for item in selected]
+    if keep_score:
+        return lines_out
+    return [_strip_importance_score(item) for item in lines_out]
+
+
+def _append_limited_with_importance(
+    lines: list[dict[str, Any]],
+    line: dict[str, Any] | None,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if line:
+        merged = _append_unique_line(lines, line, limit=max(limit, len(lines) + 1))
+    else:
+        merged = list(lines)
+    return _compact_lines_by_importance(merged, limit=limit)
+
+
 def _append_unique_line(
     lines: list[dict[str, Any]],
     line: dict[str, Any] | None,
@@ -344,6 +483,7 @@ def _global_scene_context_window(
     extra_scene_ids: list[str] | None = None,
     dialogue_only: bool = False,
     target_line: dict[str, Any] | None = None,
+    line_importance_enabled: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     match_ids: set[str] = set()
     if scene_id:
@@ -365,14 +505,26 @@ def _global_scene_context_window(
         if isinstance(item, dict) and _matches(item)
     ]
     if dialogue_only:
-        stable_candidates = _dialogue_context_lines(stable_candidates, limit=line_limit)
-        observed_candidates = _dialogue_context_lines(observed_candidates, limit=line_limit)
+        stable_candidates = _dialogue_context_lines(
+            stable_candidates,
+            limit=max(line_limit, len(stable_candidates)) if line_importance_enabled else line_limit,
+        )
+        observed_candidates = _dialogue_context_lines(
+            observed_candidates,
+            limit=max(line_limit, len(observed_candidates)) if line_importance_enabled else line_limit,
+        )
 
-    recent_lines = _recency_ordered_context_lines(stable_candidates, observed_candidates)[
-        -line_limit:
-    ]
+    ordered_lines = _recency_ordered_context_lines(stable_candidates, observed_candidates)
     if target_line is not None:
-        recent_lines = _append_unique_line(recent_lines, target_line, limit=line_limit)
+        ordered_lines = _append_unique_line(
+            ordered_lines,
+            target_line,
+            limit=max(line_limit, len(ordered_lines) + 1),
+        )
+    if line_importance_enabled:
+        recent_lines = _compact_lines_by_importance(ordered_lines, limit=line_limit)
+    else:
+        recent_lines = ordered_lines[-line_limit:]
 
     stable_lines = [
         {key: value for key, value in item.items() if key != "_context_source"}
@@ -581,6 +733,103 @@ def build_local_scene_summary(
     return summary
 
 
+def _summary_mode(config: GalgameLLMConfig | None) -> str:
+    mode = str(getattr(config, "context_scene_summary_mode", "rolling") or "rolling").strip()
+    if mode in {"rolling", "cumulative_light", "cumulative_llm"}:
+        return mode
+    return "rolling"
+
+
+def _bounded_summary_text(text: str, *, max_chars: int = _SUMMARY_MAX_CHARS) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max(0, max_chars - 18)].rstrip() + "...[truncated]"
+
+
+def _cumulative_scene_summary(
+    *,
+    scene_id: str,
+    route_id: str,
+    lines: list[dict[str, Any]],
+    selected_choices: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+    previous_summary: str = "",
+    mode: str = "rolling",
+    llm_refined_summary: str = "",
+    llm_trigger_lines: int = 30,
+) -> str:
+    local_summary = build_local_scene_summary(
+        scene_id=scene_id,
+        route_id=route_id,
+        lines=lines,
+        selected_choices=selected_choices,
+        snapshot=snapshot,
+    )
+    if mode == "rolling":
+        return local_summary
+
+    previous_summary = _bounded_summary_text(previous_summary)
+    llm_refined_summary = _bounded_summary_text(llm_refined_summary)
+    if mode == "cumulative_llm" and len(lines) >= max(1, int(llm_trigger_lines or 1)):
+        if llm_refined_summary:
+            return llm_refined_summary
+
+    if not previous_summary:
+        return local_summary
+    return _bounded_summary_text(f"{previous_summary} 最新进展：{local_summary}")
+
+
+def _previous_summary_from_state(local_state: dict[str, Any]) -> str:
+    for key in ("previous_scene_summary", "scene_summary_seed", "scene_summary"):
+        value = str(local_state.get(key) or "").strip()
+        if value:
+            return value
+    scene_state = local_state.get("scene_state")
+    if isinstance(scene_state, dict):
+        for key in ("summary_seed", "scene_summary", "previous_scene_summary"):
+            value = str(scene_state.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _llm_refined_summary_from_state(local_state: dict[str, Any]) -> str:
+    for key in ("llm_refined_scene_summary", "cumulative_llm_scene_summary"):
+        value = str(local_state.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _previous_scene_id_from_state(local_state: dict[str, Any]) -> str:
+    previous = str(local_state.get("previous_scene_id") or "").strip()
+    if previous:
+        return previous
+    scene_state = local_state.get("scene_state")
+    if isinstance(scene_state, dict):
+        return str(scene_state.get("previous_scene_id") or "").strip()
+    return ""
+
+
+def _scene_context_hint(
+    local_state: dict[str, Any],
+    *,
+    scene_id: str,
+    current_scene_lines: list[dict[str, Any]],
+) -> dict[str, str]:
+    if current_scene_lines:
+        return {}
+    previous_scene_id = _previous_scene_id_from_state(local_state)
+    if previous_scene_id and previous_scene_id != scene_id:
+        return {"scene_context": "new_scene_no_history"}
+    if not list(local_state.get("history_lines", []) or []) and not list(
+        local_state.get("history_observed_lines", []) or []
+    ):
+        return {"scene_context": "cold_start"}
+    return {}
+
+
 def _snapshot_for_stable_summary_seed(
     local_state: dict[str, Any],
     snapshot: dict[str, Any],
@@ -657,6 +906,9 @@ def build_explain_context(
         scene_id,
         line_limit=line_limit,
         target_line=target_line,
+        line_importance_enabled=bool(
+            getattr(config, "context_line_importance_enabled", False)
+        ),
     )
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
@@ -725,6 +977,11 @@ def build_explain_context(
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
+        **_scene_context_hint(
+            local_state,
+            scene_id=scene_id,
+            current_scene_lines=scene_lines,
+        ),
     }
 
 
@@ -758,6 +1015,9 @@ def build_summarize_context(
         line_limit=line_limit,
         extra_scene_ids=merge_from_scene_ids,
         dialogue_only=True,
+        line_importance_enabled=bool(
+            getattr(config, "context_line_importance_enabled", False)
+        ),
     )
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
@@ -770,6 +1030,19 @@ def build_summarize_context(
         line_id=str(snapshot.get("line_id") or ""),
         choice_ids=[str(choice.get("choice_id") or "") for choice in selected_choices],
     )
+    summary_seed = _cumulative_scene_summary(
+        scene_id=effective_scene_id,
+        route_id=route_id,
+        lines=stable_lines,
+        selected_choices=selected_choices,
+        snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
+        previous_summary=_previous_summary_from_state(local_state),
+        mode=_summary_mode(config),
+        llm_refined_summary=_llm_refined_summary_from_state(local_state),
+        llm_trigger_lines=int(
+            getattr(config, "context_cumulative_llm_trigger_lines", 30) or 30
+        ),
+    )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),
         "session_id": str(local_state.get("active_session_id") or ""),
@@ -780,16 +1053,15 @@ def build_summarize_context(
         "stable_lines": stable_lines,
         "observed_lines": observed_lines,
         "recent_choices": selected_choices,
-        "scene_summary_seed": build_local_scene_summary(
-            scene_id=effective_scene_id,
-            route_id=route_id,
-            lines=stable_lines,
-            selected_choices=selected_choices,
-            snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
-        ),
+        "scene_summary_seed": summary_seed,
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
+        **_scene_context_hint(
+            local_state,
+            scene_id=effective_scene_id,
+            current_scene_lines=scene_lines,
+        ),
     }
 
 
@@ -817,6 +1089,9 @@ def build_suggest_context(
         history_observed_lines,
         scene_id,
         line_limit=line_limit,
+        line_importance_enabled=bool(
+            getattr(config, "context_line_importance_enabled", False)
+        ),
     )
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
@@ -853,4 +1128,9 @@ def build_suggest_context(
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
+        **_scene_context_hint(
+            local_state,
+            scene_id=scene_id,
+            current_scene_lines=scene_lines,
+        ),
     }

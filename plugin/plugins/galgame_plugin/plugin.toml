@@ -66,6 +66,11 @@ context_semantic_compression = false
 context_explain_min_lines = 4
 context_explain_max_lines = 16
 context_window_target_tokens = 800
+context_scene_summary_mode = "rolling"
+context_cumulative_llm_trigger_lines = 30
+context_line_importance_enabled = false
+llm_repeat_detection_enabled = false
+llm_repeat_similarity_threshold = 0.85
 
 [memory_reader]
 textractor_path = ""

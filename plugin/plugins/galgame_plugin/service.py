@@ -549,6 +549,25 @@ def _coerce_context_counting_mode(value: object, default: str = "char") -> str:
     return default
 
 
+def _coerce_context_scene_summary_mode(value: object, default: str = "rolling") -> str:
+    normalized = str(value or default).strip().lower()
+    if normalized in {"rolling", "cumulative_light", "cumulative_llm"}:
+        return normalized
+    return default
+
+
+def _coerce_unit_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return max(0.0, min(parsed, 1.0))
+
+
 def _default_bridge_root_raw() -> str:
     if sys.platform.startswith("win"):
         return "%LOCALAPPDATA%/N.E.K.O/galgame-bridge"
@@ -694,6 +713,21 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         context_explain_max_lines=context_explain_max_lines,
         context_window_target_tokens=_coerce_int(
             llm_obj.get("context_window_target_tokens"), 800, minimum=1
+        ),
+        context_scene_summary_mode=_coerce_context_scene_summary_mode(
+            llm_obj.get("context_scene_summary_mode")
+        ),
+        context_cumulative_llm_trigger_lines=_coerce_int(
+            llm_obj.get("context_cumulative_llm_trigger_lines"), 30, minimum=1
+        ),
+        context_line_importance_enabled=_coerce_bool(
+            llm_obj.get("context_line_importance_enabled"), False
+        ),
+        llm_repeat_detection_enabled=_coerce_bool(
+            llm_obj.get("llm_repeat_detection_enabled"), False
+        ),
+        llm_repeat_similarity_threshold=_coerce_unit_float(
+            llm_obj.get("llm_repeat_similarity_threshold"), 0.85
         ),
         reader_mode=_coerce_reader_mode(galgame_obj.get("reader_mode")),
         memory_reader_enabled=_coerce_bool(
