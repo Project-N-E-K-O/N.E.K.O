@@ -6072,7 +6072,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     try {
-        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        const resp = await fetch('/api/characters/custom_tts_voices?provider=gptsovits', { signal: controller.signal });
         clearTimeout(timeoutId);
         // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
         // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。

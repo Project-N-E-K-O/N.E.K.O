@@ -431,7 +431,9 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
                 if isinstance(v, bool):
                     validated[k] = v
             elif k in _INT_INTERVAL_FIELDS:
-                if isinstance(v, int) and 1000 <= v <= 3600000:
+                # 单位：秒，与前端 ``app-state.js`` 的 S.proactive*Interval 一致；
+                # 前端使用时再 ×1000 转毫秒喂给 setTimeout。
+                if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 3600:
                     validated[k] = v
             elif k in _STRING_FIELDS:
                 if isinstance(v, str) and v:

@@ -22,6 +22,7 @@ import difflib
 import hashlib
 import hmac
 import ipaddress
+import json
 import math
 import random
 import re
@@ -4245,9 +4246,21 @@ async def proactive_chat(request: Request):
                 "state": mgr.state.snapshot(),
             }, status_code=409)
         _proactive_done_emitted = False
+        # Set after activity snapshot fetch — tells the frontend scheduler
+        # to skip the regular tier backoff and use a flat baseInterval on
+        # the next round (the backend will then inject a uniform
+        # [0, 0.5*baseInterval] sleep to provide the jitter). See the
+        # screen-only delay block further down and the matching
+        # ``S.proactiveFixedScheduleMode`` branch in static/app-proactive.js.
+        _next_schedule_fixed_mode = False
 
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
-            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。"""
+            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。
+
+            同时把 ``next_schedule_fixed_mode`` 注入响应体，前端读取后
+            决定下一轮调度走 tier backoff 还是固定 base interval。注入
+            发生在统一出口，新增的响应路径无需逐个修改。
+            """
             nonlocal _proactive_done_emitted
             if not _proactive_done_emitted:
                 _proactive_done_emitted = True
@@ -4255,7 +4268,16 @@ async def proactive_chat(request: Request):
                     await mgr.state.fire(_SE.PROACTIVE_DONE)
                 except Exception as _done_err:
                     logger.warning("[%s] PROACTIVE_DONE fire 异常: %s", lanlan_name, _done_err)
-            return resp
+            try:
+                body = json.loads(resp.body)
+            except Exception:
+                return resp
+            if not isinstance(body, dict):
+                return resp
+            if 'next_schedule_fixed_mode' in body:
+                return resp
+            body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
+            return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
             logger.info(
@@ -4370,6 +4392,50 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
             }))
+
+        # ========== Screen-only：固定间隔 + 后端抖动 ==========
+        # 用户处于 gaming / focused_work（propensity=restricted_screen_only）
+        # 时，常规的前端 3-tier 退避会让搭话间隔指数级增长，跟陪伴产品
+        # 命题冲突（用户最长会话段反而最安静）。改用：
+        #   1. 前端 reset backoffLevel=0 并按 baseInterval 等间隔触发
+        #      （由响应里的 next_schedule_fixed_mode=True 通知前端切换）
+        #   2. 后端在 LLM 调用前 sleep uniform(0, 0.5 * baseInterval)，把每轮
+        #      实际间隔从 base 抹成 [base, 1.5*base] 的均匀分布
+        # 总效果：屏幕态平均间隔 ≈ 1.25*base，且有自然的随机抖动。
+        # skip_probability（仅 immersive_horror=0.3）作为正交机制保留。
+        #
+        # ⚠️ 标志位 vs sleep 拆开：anti_slack_pending / work_break_pending
+        # 是 focused_work 下的 must-fire 提醒（紧跟在下一段 4425+），本身
+        # 时间敏感，不能被这里的随机抖动延后。但前端 fixed_mode 标志位
+        # 仍然要设——否则 must-fire 走 _end_proactive 时响应里会带回
+        # next_schedule_fixed_mode=False，前端误切回 tier backoff，让用户
+        # 离开 must-fire 状态后又被退避机制吞掉一段时间。
+        # Codex P2 + CodeRabbit Major review。
+        if (
+            activity_snapshot is not None
+            and activity_snapshot.propensity == 'restricted_screen_only'
+        ):
+            _next_schedule_fixed_mode = True
+            _has_must_fire = (
+                activity_snapshot.anti_slack_pending is not None
+                or activity_snapshot.work_break_pending is not None
+            )
+            if _has_must_fire:
+                print(f"[{lanlan_name}] propensity=restricted_screen_only 但有 must-fire 提醒待发，跳过本轮抖动 sleep")
+            else:
+                try:
+                    _base_interval_raw = data.get('base_interval_seconds')
+                    _base_interval = float(_base_interval_raw) if _base_interval_raw is not None else 0.0
+                except (TypeError, ValueError):
+                    _base_interval = 0.0
+                # 上限兜底：base 过大时把 0.5*base 截到 60s，避免极端配置
+                # （比如 user 把 proactiveChatInterval 调到 300s）让后端
+                # 单请求占连接十分钟。
+                if _base_interval > 0:
+                    _jitter_max = min(_base_interval * 0.5, 60.0)
+                    _jitter = random.uniform(0.0, _jitter_max)
+                    print(f"[{lanlan_name}] propensity=restricted_screen_only, 后端注入 {_jitter:.2f}s 间隔抖动（base={_base_interval:.1f}s）")
+                    await asyncio.sleep(_jitter)
 
         # ========== Must-fire: break-reminder branches ==========
         # Anti-slack outranks water-break (transition trigger more

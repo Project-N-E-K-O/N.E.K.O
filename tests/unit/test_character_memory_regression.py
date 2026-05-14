@@ -2071,3 +2071,139 @@ def test_timeindexed_readonly_open_still_runs_writable_bootstrap_on_first_write(
     assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is True
     assert ensure_calls == [("测试角色", writable_engine)]
     assert migrate_calls == [("测试角色", writable_engine)]
+
+
+def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp_path):
+    """``TimeIndexedMemory.db_paths`` 是 per-character path cache，cache 命中后
+    短路 return 不会重新校核当前 ``memory_dir``。罕见但可能：``/reload``
+    期间底层 ``storage_policy`` 被改写，或测试 monkeypatch 了 memory_dir，
+    cached 路径就和实际目标分叉。老 SQLAlchemy engine 还连着旧文件，新
+    数据全飘到老位置——``/process`` 的 ``except Exception`` 又把 SQL
+    错误吞掉，表象是 db 永远不更新（time perception 错乱）。
+
+    本用例验证 ``_ensure_engine_exists`` 检测到 cached vs expected 漂移
+    后会 dispose 旧 engine + 用 expected 路径重建。
+    """
+    from memory.timeindex import TimeIndexedMemory
+
+    class _DummyEngine:
+        def __init__(self, name):
+            self.name = name
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    old_db_path = (tmp_path / "old" / "测试角色" / "time_indexed.db").resolve()
+    old_db_path.parent.mkdir(parents=True, exist_ok=True)
+    old_db_path.write_text("", encoding="utf-8")
+    new_db_path = (tmp_path / "new" / "测试角色" / "time_indexed.db").resolve()
+    new_db_path.parent.mkdir(parents=True, exist_ok=True)
+    new_db_path.write_text("", encoding="utf-8")
+
+    old_engine = _DummyEngine("old")
+    new_engine = _DummyEngine("new")
+    created_engines = [old_engine, new_engine]
+    ensure_calls: list = []
+    migrate_calls: list = []
+
+    # 受控的 time_store——第一次返 old，第二次返 new，模拟 memory_dir 漂移。
+    current_time_store = {"测试角色": str(old_db_path)}
+
+    def _fake_character_data():
+        return ({}, {}, {}, {}, {}, {}, dict(current_time_store), {}, {})
+
+    fake_config_manager = SimpleNamespace(get_character_data=_fake_character_data)
+    monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+    monkeypatch.setattr(
+        "memory.timeindex.create_engine",
+        lambda _connection_string: created_engines.pop(0),
+    )
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
+    monkeypatch.setattr(
+        manager,
+        "_ensure_tables_exist_with",
+        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append((_lanlan_name, _engine)),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_check_and_migrate_schema",
+        lambda _engine, _lanlan_name: migrate_calls.append((_lanlan_name, _engine)),
+    )
+
+    # 第一次初始化：从 time_store 解析到 old_db_path，engine 缓存
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert manager.engines["测试角色"] is old_engine
+    assert os.path.normcase(str(manager.db_paths["测试角色"])) == os.path.normcase(str(old_db_path))
+    assert old_engine.dispose_calls == 0
+
+    # 模拟 memory_dir 漂移——time_store 现在指向 new_db_path
+    current_time_store["测试角色"] = str(new_db_path)
+
+    # 第二次 _ensure_engine_exists：cache 命中但 expected 已变；应 dispose + 重建
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert old_engine.dispose_calls == 1
+    assert manager.engines["测试角色"] is new_engine
+    assert os.path.normcase(str(manager.db_paths["测试角色"])) == os.path.normcase(str(new_db_path))
+    # 新 engine 走完整 writable 初始化（确保表结构在新文件里就位）
+    assert ensure_calls[-1] == ("测试角色", new_engine)
+    assert migrate_calls[-1] == ("测试角色", new_engine)
+
+
+def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_path):
+    """对偶用例：cached 与 expected 一致时 drift 检测不该误伤——cache 命中
+    应仍然短路，不重建 engine。
+    """
+    from memory.timeindex import TimeIndexedMemory
+
+    class _DummyEngine:
+        def __init__(self):
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    db_path = (tmp_path / "测试角色" / "time_indexed.db").resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_text("", encoding="utf-8")
+
+    engine = _DummyEngine()
+    created_engines = [engine]
+    create_calls: list = []
+    ensure_calls: list = []
+    migrate_calls: list = []
+
+    fake_config_manager = SimpleNamespace(
+        get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {"测试角色": str(db_path)}, {}, {}),
+    )
+    monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+
+    def _fake_create_engine(connection_string):
+        create_calls.append(connection_string)
+        return created_engines.pop(0)
+
+    monkeypatch.setattr("memory.timeindex.create_engine", _fake_create_engine)
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
+    monkeypatch.setattr(
+        manager,
+        "_ensure_tables_exist_with",
+        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append(_lanlan_name),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_check_and_migrate_schema",
+        lambda _engine, _lanlan_name: migrate_calls.append(_lanlan_name),
+    )
+
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert manager._ensure_engine_exists("测试角色") is True
+    # 仅第一次创建 engine + bootstrap，后续短路
+    assert len(create_calls) == 1
+    assert ensure_calls == ["测试角色"]
+    assert migrate_calls == ["测试角色"]
+    assert engine.dispose_calls == 0

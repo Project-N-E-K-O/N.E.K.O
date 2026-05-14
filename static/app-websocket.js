@@ -2517,7 +2517,39 @@
                             gameType: response.game_type || '',
                             sessionId: response.session_id || ''
                         };
-                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                        var currentGameSessionId = S.gameRouteSessionId || '';
+                        var incomingGameSessionId = detail.sessionId || '';
+                        var isStaleGameWindowEvent = detail.action === 'closed'
+                            && incomingGameSessionId
+                            && currentGameSessionId
+                            && incomingGameSessionId !== currentGameSessionId;
+                        if (isStaleGameWindowEvent) {
+                            console.log(`[GameWindow] 忽略过期窗口事件 | action=${detail.action} incoming=${incomingGameSessionId} current=${currentGameSessionId}`);
+                        } else if (detail.action === 'opened') {
+                            S.gameRouteActive = true;
+                            S.gameRouteGameType = detail.gameType || 'soccer';
+                            S.gameRouteLanlanName = detail.lanlanName || '';
+                            S.gameRouteSessionId = incomingGameSessionId || '';
+                            if (typeof window.stopProactiveChatSchedule === 'function') {
+                                S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
+                                window.stopProactiveChatSchedule();
+                            }
+                        } else if (detail.action === 'closed') {
+                            var wasGameRouteActive = !!S.gameRouteActive;
+                            S.gameRouteActive = false;
+                            S.gameRouteGameType = '';
+                            S.gameRouteLanlanName = '';
+                            S.gameRouteSessionId = '';
+                            if ((wasGameRouteActive || S.proactiveChatWasStoppedByGameRoute)
+                                    && S.proactiveChatEnabled
+                                    && typeof window.scheduleProactiveChat === 'function') {
+                                window.scheduleProactiveChat();
+                            }
+                            S.proactiveChatWasStoppedByGameRoute = false;
+                        }
+                        if (!isStaleGameWindowEvent) {
+                            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                        }
                     } catch (gwErr) {
                         console.warn('[GameWindow] dispatch failed:', gwErr);
                     }

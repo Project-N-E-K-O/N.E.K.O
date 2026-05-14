@@ -1,0 +1,4 @@
+{
+  "plugin.name": "主动搭话控制器",
+  "plugin.description": "系统级控制器：管理主动搭话的模式与频率，其他插件可通过 call_entry 集中调度"
+}
