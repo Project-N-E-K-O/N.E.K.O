@@ -305,6 +305,7 @@ class DanmakuBackgroundAgent:
             raise
         except Exception as e:
             self._handle_tick_error(e)
+            return False
         return True
 
     async def _normal_tick(self):
@@ -375,8 +376,11 @@ class DanmakuBackgroundAgent:
             else:
                 logger.info(f"[Agent] LLM池子 {pool_size}/{self._llm_pool_threshold}, 等待积累")
 
-        # 降级路径（按时间批次）：LLM 不可用、池子未达阈值、或 LLM 尝试失败
-        if not cards:
+        # 降级路径（按时间批次）：
+        # - LLM 未配置：总是走本地评分
+        # - LLM 已配置且池子触发但 LLM 调用失败（llm_attempted=True 但 cards 为空）：降级本地
+        # - LLM 已配置但池子积累中：跳过本地评分，避免同一批弹幕被推两次
+        if not cards and (not self._llm_client or llm_attempted):
             for batch in batches:
                 selected = self._select_interesting_danmaku(batch)
                 if selected:
@@ -401,18 +405,14 @@ class DanmakuBackgroundAgent:
             sc.priority = max(sc.priority, 7)
             formatted = self._format_interaction_suggestion(sc)
             if self._push_text_func:
-                self._push_text_func(formatted, "建议回复", sc.priority)
-                self._last_push_time = time.time()
-                self._last_push_type = sc.card_type
+                self._push_text_with_tracking(formatted, "建议回复", sc.priority, sc.card_type)
             else:
                 await self._do_push(sc)
 
         if other_cards:
             merged = "\n".join(c.summary for c in other_cards[:3])
             if self._push_text_func:
-                self._push_text_func(merged, "弹幕情报", 5)
-                self._last_push_time = time.time()
-                self._last_push_type = other_cards[0].card_type
+                self._push_text_with_tracking(merged, "弹幕情报", 5, other_cards[0].card_type)
             else:
                 await self._do_push(other_cards[0])
 
@@ -477,6 +477,22 @@ class DanmakuBackgroundAgent:
             return False
 
         return True
+
+    def _push_text_with_tracking(self, text: str, label: str, priority: int, card_type: str = "") -> None:
+        """文本推送回调封装，带统计和待机保护（与 _do_push 行为一致）"""
+        if not self._push_text_func:
+            return
+        try:
+            self._push_text_func(text, label, priority)
+            self._total_pushes += 1
+            self._last_push_time = time.time()
+            self._last_push_type = card_type
+            self._consecutive_failures = 0
+        except Exception as e:
+            self._consecutive_failures += 1
+            logger.warning(f"文本推送失败 ({self._consecutive_failures}/{self._standby_threshold}): {e}")
+            if self._consecutive_failures >= self._standby_threshold:
+                self._enter_standby(f"连续{self._standby_threshold}次文本推送失败: {e}")
 
     async def _do_push(self, card: IntelligenceCard):
         """执行推送"""
@@ -908,8 +924,8 @@ class DanmakuBackgroundAgent:
         self._hard_error = ""
         logger.warning(f"弹幕情报系统进入待机模式: {reason}")
 
-        # 清空缓存队列
-        self._drain_batches()
+        # 清空缓存队列（不限量，全部清空）
+        self._drain_batches(limit=None)
 
     def _clear_standby(self):
         """退出待机模式"""
@@ -936,10 +952,16 @@ class DanmakuBackgroundAgent:
     # 工具方法
     # ══════════════════════════════════════════════════════════
 
-    def _drain_batches(self) -> list[BatchedDanmaku]:
-        """清空批次队列"""
+    def _drain_batches(self, limit: Optional[int] = _DEFAULT_MAX_BATCHES_PER_TICK) -> list[BatchedDanmaku]:
+        """清空批次队列
+
+        Args:
+            limit: 最多取出条数，None 表示不限制
+        """
         batches = []
-        while not self._batch_queue.empty() and len(batches) < _DEFAULT_MAX_BATCHES_PER_TICK:
+        while not self._batch_queue.empty():
+            if limit is not None and len(batches) >= limit:
+                break
             try:
                 batch = self._batch_queue.get_nowait()
                 batches.append(batch)

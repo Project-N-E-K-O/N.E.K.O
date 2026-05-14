@@ -62,6 +62,10 @@ class GuidanceOrchestrator:
         self.degraded = 0
         self.last_was_llm = False  # 最后一条引导词是否由 LLM 生成（供上级检测超时）
 
+    async def stop(self):
+        """清理资源（兼容插件 shutdown 流程）"""
+        pass
+
     # ── 占位符替换 ────────────────────────────────────────────────────────────
 
     def _fill_placeholders(self, text: str) -> str:

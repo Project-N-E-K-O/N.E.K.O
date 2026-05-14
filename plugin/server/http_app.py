@@ -183,6 +183,18 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
             type(exc).__name__,
             str(exc),
         )
+    # bilibili_danmaku 插件 i18n / 测试接口
+    try:
+        from plugin.plugins.bilibili_danmaku.i18n_routes import (
+            router as bilibili_i18n_router,
+        )
+        app.include_router(bilibili_i18n_router)
+    except ImportError as exc:
+        logger.warning(
+            "bilibili i18n routes unavailable: err_type={}, err={}",
+            type(exc).__name__,
+            str(exc),
+        )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
     return app

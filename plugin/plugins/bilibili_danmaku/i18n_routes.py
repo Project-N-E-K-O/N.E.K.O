@@ -19,7 +19,14 @@ logger = get_logger("bilibili.i18n_routes")
 
 
 def _is_safe_url(url: str) -> bool:
-    """SSRF 防护：只允许公网 HTTP/HTTPS 请求"""
+    """SSRF 防护：只允许公网 HTTP/HTTPS 请求
+
+    检查所有 DNS 解析到的 IP（防止多 A 记录绕过）。
+    DNS rebinding（首次解析公网 IP 通过检查，后续重解析指向内网）需结合
+    aiohttp TCPConnector 的 resolved_hosts 参数做单次解析绑定才能根除；
+    在本插件的使用场景中（用户手动配置的 API URL），现有防护已提供足够
+    的防御深度。
+    """
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
@@ -28,11 +35,13 @@ def _is_safe_url(url: str) -> bool:
         # 禁止 localhost / 127.0.0.1 / ::1
         if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
             return False
-        # 禁止内网 / 链路本地地址
+        # 禁止内网 / 链路本地地址（检查所有解析到的 IP）
         try:
-            addr = ipaddress.ip_address(socket.getaddrinfo(host, 0)[0][4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
-                return False
+            addrs = socket.getaddrinfo(host, 0)
+            for addr_info in addrs:
+                addr = ipaddress.ip_address(addr_info[4][0])
+                if addr.is_private or addr.is_loopback or addr.is_link_local:
+                    return False
         except Exception:
             return False  # 解析失败也拒绝
         return True
