@@ -8,14 +8,18 @@
 
 Basta dizer ao AI Agent um dos seguintes tipos de comando e o plugin fará a análise e execução automaticamente:
 
-| Tipo de ação | Comando de exemplo (copie e use) | Observações |
-| :--- | :--- | :--- |
-| **💡 Ligar/desligar dispositivo** | `acenda a luz do quarto` <br> `desligue a tomada da sala` | Aceita verbos como «acenda / apague / ligue / desligue» |
-| **🏠 Controle por área** | `acenda a luz da sala` <br> `desligue o ar-condicionado do quarto principal` | **(Destaque da nova versão)** Aceita «nome do cômodo + nome do dispositivo» |
-| **🌡️ Ajustar temperatura** | `ajuste o ar para 26 graus` <br> `coloque o ar em 24 graus` | Reconhece números e unidades automaticamente |
-| **☀️ Ajustar brilho** | `coloque a luz em 50%` <br> `brilho da luminária 30` | Aceita porcentagens ou números inteiros |
-| **🔄 Trocar de modo** | `coloque o ar em modo refrigerar` <br> `coloque o ventilador em automático` | Aceita as palavras de modo mais comuns |
-| **🎬 Executar cena** | `executar a cena de chegar em casa` <br> `acionar a cena de sair de casa` | As cenas precisam estar configuradas previamente no Mijia App |
+- **💡 Ligar/desligar dispositivo** — `acenda a luz do quarto` / `desligue a tomada da sala`  
+  Aceita verbos como «acenda / apague / ligue / desligue»
+- **🏠 Controle por área** — `acenda a luz da sala` / `desligue o ar-condicionado do quarto principal`  
+  **(Destaque da nova versão)** Aceita «nome do cômodo + nome do dispositivo»
+- **🌡️ Ajustar temperatura** — `ajuste o ar para 26 graus` / `coloque o ar em 24 graus`  
+  Reconhece números e unidades automaticamente
+- **☀️ Ajustar brilho** — `coloque a luz em 50%` / `brilho da luminária 30`  
+  Aceita porcentagens ou números inteiros
+- **🔄 Trocar de modo** — `coloque o ar em modo refrigerar` / `coloque o ventilador em automático`  
+  Aceita as palavras de modo mais comuns
+- **🎬 Executar cena** — `executar a cena de chegar em casa` / `acionar a cena de sair de casa`  
+  As cenas precisam estar configuradas previamente no Mijia App
 
 ---
 
@@ -44,12 +48,14 @@ Para evitar confusão, recomendamos criar o hábito de usar **`[nome do cômodo]
 
 Se precisar chamar diretamente as interfaces do plugin, estes são os pontos de entrada principais:
 
-| ID de entrada | Função | Exemplo de parâmetros |
-| :--- | :--- | :--- |
-| `smart_control` | **Controle unificado por linguagem natural (recomendado)** | `{ "command": "acenda a luz do quarto" }` |
-| `find_device_by_name` | Procurar um dispositivo | `{ "name": "luz do quarto" }` |
-| `query_device_state` | Consultar o estado de um dispositivo | `{ "name": "ar-condicionado" }` |
-| `execute_scene` | Executar uma cena | `{ "scene_id": "12345" }` |
+- **`smart_control`** — Controle unificado por linguagem natural (recomendado)  
+  Parâmetros: `{ "command": "acenda a luz do quarto" }`
+- **`list_devices`** — Obter lista de dispositivos  
+  Parâmetros: `{ "home_id": "12345" }`
+- **`query_device_state`** — Consultar o estado de um dispositivo  
+  Parâmetros: `{ "name": "ar-condicionado" }`
+- **`list_scenes`** — Listar cenas inteligentes  
+  Parâmetros: `{ "home_id": "12345" }`
 
 ---
 

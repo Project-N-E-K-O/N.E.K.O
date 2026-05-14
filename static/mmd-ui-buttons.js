@@ -836,7 +836,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
  * 将屏幕像素偏移量应用到 MMD 模型的世界坐标
  * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
  */
-MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
+MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {}) {
     const mesh = this.currentModel && this.currentModel.mesh;
     if (!mesh || !this.camera || !this.renderer) return;
 
@@ -863,4 +863,9 @@ MMDManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
 
     mesh.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
     mesh.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+
+    if (options.clamp !== false && this.interaction && typeof this.interaction.clampModelPosition === 'function') {
+        const clamped = this.interaction.clampModelPosition(mesh.position.clone());
+        if (clamped && clamped.isVector3) mesh.position.copy(clamped);
+    }
 };

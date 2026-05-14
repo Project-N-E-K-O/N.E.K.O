@@ -281,10 +281,8 @@ function makeReference(src, configPath, inherited) {
 }
 
 function hasConfiguredAudioAdjustment(value) {
-  return value.configuredGainDb !== null
-    && value.configuredGainDb !== undefined
-    || value.configuredVolumeMultiplier !== null
-    && value.configuredVolumeMultiplier !== undefined;
+  return (value.configuredGainDb !== null && value.configuredGainDb !== undefined)
+    || (value.configuredVolumeMultiplier !== null && value.configuredVolumeMultiplier !== undefined);
 }
 
 function dedupeReferences(refs) {
@@ -366,18 +364,7 @@ function analyzeLoudness(filePath, options) {
     'null',
     '-',
   ]);
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
-  const jsonMatch = output.match(/\{\s*"input_i"[\s\S]*?\n\}/);
-  if (!jsonMatch) {
-    throw new Error(output.trim() || `ffmpeg exited with ${result.status}`);
-  }
-  const parsed = JSON.parse(jsonMatch[0]);
-  return {
-    integratedLufs: valueAsNumber(parsed.input_i),
-    truePeakDbfs: valueAsNumber(parsed.input_tp),
-    loudnessRangeLu: valueAsNumber(parsed.input_lra),
-    thresholdLufs: valueAsNumber(parsed.input_thresh),
-  };
+  return parseLoudnormOutput(result);
 }
 
 function parseLoudnormOutput(result) {

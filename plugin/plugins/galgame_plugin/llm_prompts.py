@@ -1,9 +1,34 @@
+"""Prompt construction and context budgeting for galgame LLM calls."""
+
 from __future__ import annotations
 
 import json
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from .context_tokens import estimate_context_tokens
 
 _PROMPT_CONTEXT_MAX_CHARS = 12000
+_PROMPT_CONTEXT_DEFAULT_MAX_TOKENS = 6000
+_PROMPT_COMPACTION_LEVELS = (
+    # (list items kept, max string chars, max dict keys) for the legacy 3-level compactor.
+    (16, 1000, 64),
+    (8, 500, 32),
+    (4, 240, 16),
+)
+
+
+class PromptBudgetConfig(Protocol):
+    context_counting_mode: str
+    context_max_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class PromptContextResult:
+    """Rendered context plus size metadata used by gateway metrics."""
+
+    text: str
+    metadata: dict[str, Any]
 
 
 def _json_dump(value: object) -> str:
@@ -61,14 +86,94 @@ def _compact_prompt_value(
     return value
 
 
-def _context_json_for_prompt(context: dict[str, Any]) -> str:
+def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
+    mode = str(getattr(config, "context_counting_mode", "char") or "char").strip().lower()
+    if mode != "token":
+        return "char", _PROMPT_CONTEXT_MAX_CHARS
+    try:
+        budget = int(getattr(config, "context_max_tokens", _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS))
+    except (TypeError, ValueError):
+        budget = _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS
+    return "token", max(1, budget)
+
+
+def _fallback_context_from_excerpt(raw: str, excerpt: str) -> dict[str, Any]:
+    return {
+        "_prompt_truncated": True,
+        "context_excerpt": f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]",
+    }
+
+
+def _token_budgeted_fallback_context(raw: str, budget: int) -> dict[str, Any]:
+    """Build a hard fallback whose full rendered JSON fits the token budget.
+
+    The old token-mode fallback used ``budget * 4`` as a one-shot char
+    estimate. That under-counted CJK-heavy excerpts because the wrapper JSON
+    itself was never re-measured. Measure the complete fallback object instead
+    and shrink the excerpt until the final rendered JSON is within budget. If
+    the configured budget is too small to fit even the marker JSON, preserve the
+    explicit truncation payload rather than returning an ambiguous empty object.
+    """
+    initial_limit = min(len(raw), max(0, budget * 4 - 200))
+    candidate = _fallback_context_from_excerpt(raw, raw[:initial_limit])
+    if estimate_context_tokens(candidate) <= budget:
+        return candidate
+
+    best_excerpt: str | None = None
+    low = 0
+    high = initial_limit
+    while low <= high:
+        mid = (low + high) // 2
+        excerpt = raw[:mid]
+        candidate = _fallback_context_from_excerpt(raw, excerpt)
+        if estimate_context_tokens(candidate) <= budget:
+            best_excerpt = excerpt
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    if best_excerpt is None:
+        # Extremely small budgets cannot fit even the marker JSON. Preserve the
+        # public contract that fallback payloads are explicit about truncation.
+        return _fallback_context_from_excerpt(raw, "")
+
+    # The omitted-char suffix changes as the excerpt length changes. Binary
+    # search should already be within budget, but keep a defensive trim loop so
+    # future suffix changes cannot leak past the token cap.
+    best = _fallback_context_from_excerpt(raw, best_excerpt)
+    while estimate_context_tokens(best) > budget:
+        if not best_excerpt:
+            break
+        best_excerpt = best_excerpt[:-1]
+        best = _fallback_context_from_excerpt(raw, best_excerpt)
+    return best
+
+
+def _context_json_result_for_prompt(
+    context: dict[str, Any],
+    config: PromptBudgetConfig | None = None,
+) -> PromptContextResult:
+    mode, budget = _context_budget(config)
     raw = _json_dump(context)
-    if len(raw) <= _PROMPT_CONTEXT_MAX_CHARS:
-        return raw
-    for list_limit, string_limit, dict_key_limit in (
-        (16, 1000, 64),
-        (8, 500, 32),
-        (4, 240, 16),
+    raw_chars = len(raw)
+    raw_tokens = estimate_context_tokens(context)
+    raw_size = raw_tokens if mode == "token" else raw_chars
+    if raw_size <= budget:
+        return PromptContextResult(
+            text=raw,
+            metadata={
+                "counting_mode": mode,
+                "budget": budget,
+                "raw_tokens": raw_tokens,
+                "compacted_tokens": raw_tokens,
+                "raw_chars": raw_chars,
+                "compacted_chars": raw_chars,
+                "compression_level": 0,
+            },
+        )
+    for compression_level, (list_limit, string_limit, dict_key_limit) in enumerate(
+        _PROMPT_COMPACTION_LEVELS,
+        start=1,
     ):
         compact = _compact_prompt_value(
             context,
@@ -79,14 +184,39 @@ def _context_json_for_prompt(context: dict[str, Any]) -> str:
         if isinstance(compact, dict):
             compact = {"_prompt_truncated": True, **compact}
         rendered = _json_dump(compact)
-        if len(rendered) <= _PROMPT_CONTEXT_MAX_CHARS:
-            return rendered
-    excerpt = raw[: max(0, _PROMPT_CONTEXT_MAX_CHARS - 200)]
-    return _json_dump(
-        {
-            "_prompt_truncated": True,
-            "context_excerpt": f"{excerpt}\n...[truncated {len(raw) - len(excerpt)} chars]",
-        }
+        compacted_tokens = estimate_context_tokens(compact if isinstance(compact, dict) else {})
+        rendered_size = compacted_tokens if mode == "token" else len(rendered)
+        if rendered_size <= budget:
+            return PromptContextResult(
+                text=rendered,
+                metadata={
+                    "counting_mode": mode,
+                    "budget": budget,
+                    "raw_tokens": raw_tokens,
+                    "compacted_tokens": compacted_tokens,
+                    "raw_chars": raw_chars,
+                    "compacted_chars": len(rendered),
+                    "compression_level": compression_level,
+                },
+            )
+    if mode == "token":
+        fallback = _token_budgeted_fallback_context(raw, budget)
+    else:
+        excerpt_limit = max(0, _PROMPT_CONTEXT_MAX_CHARS - 200)
+        excerpt = raw[:excerpt_limit]
+        fallback = _fallback_context_from_excerpt(raw, excerpt)
+    rendered = _json_dump(fallback)
+    return PromptContextResult(
+        text=rendered,
+        metadata={
+            "counting_mode": mode,
+            "budget": budget,
+            "raw_tokens": raw_tokens,
+            "compacted_tokens": estimate_context_tokens(fallback),
+            "raw_chars": raw_chars,
+            "compacted_chars": len(rendered),
+            "compression_level": len(_PROMPT_COMPACTION_LEVELS) + 1,
+        },
     )
 
 
@@ -221,14 +351,36 @@ _EXAMPLES = {
 
 
 def build_prompt_messages(operation: str, context: dict[str, Any]) -> list[dict[str, str]]:
+    """Build chat messages for an operation without exposing metadata."""
+    return build_prompt_messages_with_metadata(operation, context).messages
+
+
+@dataclass(frozen=True, slots=True)
+class PromptMessagesResult:
+    """Prompt messages plus context-size metadata from prompt construction."""
+
+    messages: list[dict[str, str]]
+    metadata: dict[str, Any]
+
+
+def build_prompt_messages_with_metadata(
+    operation: str,
+    context: dict[str, Any],
+    config: PromptBudgetConfig | None = None,
+) -> PromptMessagesResult:
+    """Build chat messages and return prompt context metadata for telemetry."""
     system_prompt = _SYSTEM_PROMPTS[operation]
+    context_result = _context_json_result_for_prompt(context, config)
     user_prompt = (
         _USER_PROMPT_PREFIXES[operation]
         + f"{_json_dump(_EXAMPLES[operation])}\n\n"
         + "context:\n"
-        + _context_json_for_prompt(context)
+        + context_result.text
     )
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+    return PromptMessagesResult(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        metadata=dict(context_result.metadata),
+    )

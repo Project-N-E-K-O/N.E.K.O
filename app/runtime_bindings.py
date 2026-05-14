@@ -34,6 +34,7 @@ from __future__ import annotations
 # slot in without restructuring.
 _INSTALLED: dict[str, bool] = {
     "config_runtime": False,
+    "user_directives_sink": False,
 }
 
 
@@ -108,3 +109,43 @@ def install_runtime_bindings() -> None:
                     pass
             # Flag stays False so a later call can retry if the underlying
             # issue gets fixed in-process.
+
+    # ---- main_logic.agent_event_bus ← memory.user_directives sink ----------
+    # ``memory`` 层在 ``main_logic`` 之下（check_module_layering.py），不能
+    # 自己向上 import event bus；所以把 ``_on_user_utterance`` 的注册放在 L6
+    # app 层（本模块）。``register_user_utterance_sink`` dedupes-on-identity，
+    # 重复调用 / 重复 install 都安全。
+    if not _INSTALLED["user_directives_sink"]:
+        try:
+            from main_logic.agent_event_bus import register_user_utterance_sink
+            from memory.user_directives import _on_user_utterance
+            register_user_utterance_sink(_on_user_utterance)
+            _INSTALLED["user_directives_sink"] = True
+        except Exception as exc:
+            # memory / main_logic 不在 sys.path（memory-only worker / 偏窄测试
+            # 环境）——静默退出。集成路径走 ``app/__init__`` 调本函数。
+            _expected_absent = {
+                "memory",
+                "memory.user_directives",
+                "config",
+                "config.prompts.prompts_directives",
+                "main_logic",
+                "main_logic.agent_event_bus",
+            }
+            _is_expected_absent = (
+                isinstance(exc, ModuleNotFoundError)
+                and getattr(exc, "name", None) in _expected_absent
+            )
+            if not _is_expected_absent:
+                try:
+                    from utils.logger_config import get_module_logger
+                    get_module_logger(__name__, "App").warning(
+                        "install_runtime_bindings(user_directives_sink) "
+                        "failed unexpectedly",
+                        exc_info=True,
+                    )
+                except Exception:
+                    # Logger 本身不可用（极早期 import / 配置坏）；同
+                    # config_runtime block 的策略——咽掉避免 startup 二次崩，
+                    # caller (app/__init__) 已经印过 stderr 面包屑。
+                    pass

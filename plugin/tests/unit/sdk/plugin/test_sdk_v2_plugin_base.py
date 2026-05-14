@@ -284,17 +284,19 @@ def test_enable_file_logging_keeps_default_logger_synced() -> None:
     assert logger is base.sdk_logger
 
 
-def test_plugin_base_convenience_accessors(tmp_path) -> None:
+def test_plugin_base_convenience_accessors(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "demo" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     base = _DemoPlugin(ctx=_Ctx(config_path=config_path))
     assert base.plugin_id == "demo"
     assert base.metadata == {"role": "demo"}
     assert base.bus is not None
     assert base.bus.messages.get().count() == 0
     assert base.config_dir == tmp_path / "demo"
-    assert base.data_path() == tmp_path / "demo" / "data"
-    assert base.data_path("cache", "x.json") == tmp_path / "demo" / "data" / "cache" / "x.json"
+    assert base.data_path() == runtime_root / "plugins" / "demo" / "data"
+    assert base.data_path("cache", "x.json") == runtime_root / "plugins" / "demo" / "data" / "cache" / "x.json"
 
 
 def test_plugin_base_runtime_facades_are_lazy_and_cached() -> None:

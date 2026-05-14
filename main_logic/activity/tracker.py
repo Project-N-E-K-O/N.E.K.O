@@ -928,7 +928,7 @@ class UserActivityTracker:
                     continue
 
                 from utils.language_utils import get_global_language
-                lang = get_global_language() or 'zh'
+                lang = get_global_language() or 'en'
 
                 # In-flight guard — capture conv_seq + buffer snapshots
                 # before the LLM call. Same pattern as

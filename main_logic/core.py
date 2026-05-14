@@ -58,17 +58,20 @@ from config.prompts.prompts_sys import (
     AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     CONTEXT_SUMMARY_READY,
-    SYSTEM_NOTIFICATION_PROACTIVE,
-    SYSTEM_NOTIFICATION_PASSIVE,
+    SYSTEM_NOTIFICATION_TASK_ACTIVE,
+    SYSTEM_NOTIFICATION_TASK_PASSIVE,
+    SYSTEM_NOTIFICATION_EVENT_ACTIVE,
+    SYSTEM_NOTIFICATION_EVENT_PASSIVE,
     SOURCE_DESCRIPTORS,
     TASK_STATUS_PHRASES,
     TASK_ACTION_PHRASES,
     CONTEXT_SUMMARY_TASK_HEADER, CONTEXT_SUMMARY_TASK_FOOTER,
+    CONTEXT_SUMMARY_EVENT_HEADER, CONTEXT_SUMMARY_EVENT_FOOTER,
     RESULT_PARSER_PHRASES,
 )
 
 
-# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_PROACTIVE
+# 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
 # 表达，emoji 仅作快速视觉识别用。
 _STATUS_EMOJI = {
     "completed": "✅",
@@ -169,9 +172,36 @@ def _build_callback_instruction(
 ) -> str:
     """Render a list of agent_task_callbacks into the LLM injection string.
 
-    Groups by ``(delivery_mode/passive flag, status, source_kind, source_name)``
-    so each group can pick the right outer template (PROACTIVE vs PASSIVE)
-    and slot in the right status/action phrases.
+    Each callback carries an ``origin`` tag stamped by the host at the
+    EventBus → callback boundary:
+      - ``"task_result"`` — real task completion (agent_server._emit_task_result),
+        e.g. Computer Use / Browser Use / plugin entry / MCP tool result.
+      - ``"event"`` — plugin push_message stream (proactive_bridge),
+        e.g. danmaku / gift / external notification.
+
+    Plugin authors cannot set ``origin``; it is derived structurally from
+    which SDK method they called (``finish()`` vs ``push_message()``) by
+    way of the event_type the upstream producer emitted.
+
+    Two axes (origin × passive) pick one of four outer templates:
+
+    +--------------+----------------------+-----------------------------+
+    | origin       | active (proactive)   | passive                     |
+    +==============+======================+=============================+
+    | task_result  | TASK_ACTIVE          | TASK_PASSIVE                |
+    |              | ("已完成，请汇报")   | ("任务结果")                |
+    +--------------+----------------------+-----------------------------+
+    | event        | EVENT_ACTIVE         | EVENT_PASSIVE               |
+    |              | ("新消息，请回应")   | ("消息")                    |
+    +--------------+----------------------+-----------------------------+
+
+    Unknown origin defaults to ``"event"`` + warning. Rationale: rather
+    have the AI naturally react than fabricate "I completed a task".
+
+    Callbacks are grouped by (passive, origin, status, source) so each
+    group can pick the right outer template and (for task_result+active)
+    slot in the right status/action phrases. Event templates ignore
+    status/action — the concept doesn't apply to passive event streams.
     """
     if not callbacks:
         return ""
@@ -182,8 +212,18 @@ def _build_callback_instruction(
         # passive=True call = drain path; treat all as passive regardless
         # of per-callback delivery_mode.
         cb_passive = passive or (cb.get("delivery_mode") == "passive")
+        origin = cb.get("origin")
+        if origin not in ("task_result", "event"):
+            if origin:
+                logger.warning(
+                    "[callback_instruction] unknown origin=%r, falling back to 'event'; "
+                    "source=%s/%s",
+                    origin, cb.get("source_kind"), cb.get("source_name"),
+                )
+            origin = "event"
         key = (
             cb_passive,
+            origin,
             cb.get("status") or "completed",
             cb.get("source_kind") or "unknown",
             (cb.get("source_name") or ""),
@@ -191,26 +231,36 @@ def _build_callback_instruction(
         grouped.setdefault(key, []).append(cb)
 
     parts: list[str] = []
-    for (cb_passive, status, _src_kind, _src_name), cbs in grouped.items():
+    for (cb_passive, origin, status, _src_kind, _src_name), cbs in grouped.items():
         source_text = _format_callback_source(cbs[0], lang)
-        if cb_passive:
-            header = _loc(SYSTEM_NOTIFICATION_PASSIVE, lang).format(source=source_text)
-        else:
-            status_phrase = _loc(
-                TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
-                lang,
-            )
-            action_phrase = _loc(
-                TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
-                lang,
-            )
-            header = _loc(SYSTEM_NOTIFICATION_PROACTIVE, lang).format(
-                source=source_text,
-                status_phrase=status_phrase,
-                action_phrase=action_phrase,
-                name=lanlan_name,
-                master=master_name,
-            )
+        if origin == "task_result":
+            if cb_passive:
+                header = _loc(SYSTEM_NOTIFICATION_TASK_PASSIVE, lang).format(source=source_text)
+            else:
+                status_phrase = _loc(
+                    TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+                    lang,
+                )
+                action_phrase = _loc(
+                    TASK_ACTION_PHRASES.get(status) or TASK_ACTION_PHRASES["completed"],
+                    lang,
+                )
+                header = _loc(SYSTEM_NOTIFICATION_TASK_ACTIVE, lang).format(
+                    source=source_text,
+                    status_phrase=status_phrase,
+                    action_phrase=action_phrase,
+                    name=lanlan_name,
+                    master=master_name,
+                )
+        else:  # origin == "event"
+            if cb_passive:
+                header = _loc(SYSTEM_NOTIFICATION_EVENT_PASSIVE, lang).format(source=source_text)
+            else:
+                header = _loc(SYSTEM_NOTIFICATION_EVENT_ACTIVE, lang).format(
+                    source=source_text,
+                    name=lanlan_name,
+                    master=master_name,
+                )
         items = [_render_callback_inner_item(cb, lang) for cb in cbs]
         items = [s for s in items if s]
         if items:
@@ -221,6 +271,124 @@ def _build_callback_instruction(
             # the joined output is clean.
             parts.append(header.rstrip())
     return "\n\n".join(parts)
+
+
+def _format_voice_swap_item(entry: dict, lang: str) -> str:
+    """Render a single voice-mode pending_extra_replies entry to a bulleted
+    line for the hot-swap injection.
+
+    Priority: ``summary`` → ``detail`` → synthesized "{status_phrase} from
+    {source}[: error_message]" placeholder. The placeholder path matters for
+    failure callbacks whose body is empty — without it, "执行失败 / 来自插件
+    X / Connection refused" header information would be silently dropped
+    (the voice-mode equivalent of the header-only branch in
+    ``_build_callback_instruction``).
+
+    Returns ``""`` when the entry is genuinely empty (no body, no error, and
+    a benign ``completed`` status) — caller filters those out.
+    """
+    summary = (entry.get("summary") or "").strip()
+    detail = (entry.get("detail") or "").strip()
+    text = summary or detail
+    status = entry.get("status") or "completed"
+    emoji = _STATUS_EMOJI.get(status, "•")
+
+    if text:
+        return f"- {emoji} {text}"
+
+    # No body text — synthesize from header info so the failure status
+    # doesn't disappear silently.
+    error_message = (entry.get("error_message") or "").strip()
+    source_name = (entry.get("source_name") or "").strip()
+    if not error_message and not source_name and status == "completed":
+        # Truly nothing to convey; drop. (enqueue_agent_callback already
+        # filters these out, but be defensive against legacy entries.)
+        return ""
+
+    source_text = _format_callback_source(entry, lang)
+    status_phrase = _loc(
+        TASK_STATUS_PHRASES.get(status) or TASK_STATUS_PHRASES["completed"],
+        lang,
+    )
+    line = f"- {emoji} {source_text} {status_phrase}"
+    if error_message:
+        line += f"：{error_message}"
+    return line
+
+
+def _render_pending_extra_replies_by_origin(
+    entries,
+    *,
+    lang: str,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    """Render voice-mode ``pending_extra_replies`` into the hot-swap injection
+    string, grouped by ``origin``.
+
+    Each entry should be a structured dict with at least ``origin``;
+    ``summary``/``detail``/``status``/``source_kind``/``source_name``/
+    ``error_message`` are consumed by :func:`_format_voice_swap_item`. Legacy
+    plain-string entries (pre-migration code paths) are tolerated and
+    treated as ``origin="event"`` event-stream content — the safer default,
+    since "汇报先前执行的任务的结果" framing on what may actually be a push
+    event is the bug this refactor fixes.
+
+    Returns a single string suitable for appending to ``final_prime_text``.
+    Order: task block first (if any), then event block — matches the original
+    single-block placement where everything followed the cache dump.
+    """
+    if not entries:
+        return ""
+
+    task_entries: list[dict] = []
+    event_entries: list[dict] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            normalized = dict(entry)
+            origin = normalized.get("origin")
+            if origin not in ("task_result", "event"):
+                normalized["origin"] = "event"  # fail-safe
+                origin = "event"
+            if origin == "task_result":
+                task_entries.append(normalized)
+            else:
+                event_entries.append(normalized)
+        elif isinstance(entry, str):
+            stripped = entry.strip()
+            if stripped:
+                event_entries.append({
+                    "origin": "event",
+                    "summary": stripped,
+                    "detail": "",
+                    "status": "completed",
+                    "source_kind": "unknown",
+                    "source_name": "",
+                    "error_message": "",
+                })
+
+    blocks: list[str] = []
+    if task_entries:
+        items = [_format_voice_swap_item(e, lang) for e in task_entries]
+        items = [s for s in items if s]
+        if items:
+            blocks.append(
+                _loc(CONTEXT_SUMMARY_TASK_HEADER, lang).format(name=lanlan_name, master=master_name)
+                + "\n".join(items)
+                + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
+            )
+    if event_entries:
+        items = [_format_voice_swap_item(e, lang) for e in event_entries]
+        items = [s for s in items if s]
+        if items:
+            blocks.append(
+                _loc(CONTEXT_SUMMARY_EVENT_HEADER, lang).format(name=lanlan_name, master=master_name)
+                + "\n".join(items)
+                + _loc(CONTEXT_SUMMARY_EVENT_FOOTER, lang)
+            )
+    return "".join(blocks)
+
+
 from config.prompts.prompts_avatar_interaction import (
     _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
@@ -236,9 +404,13 @@ from config.prompts.prompts_avatar_interaction import (
 # )
 from utils.config_manager import get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.native_voice_registry import resolve_native_voice_for_routing
+from utils.native_voice_registry import (
+    is_free_preset_voice_id,
+    resolve_native_voice_for_routing,
+    should_block_free_native_voice,
+    should_block_free_voice_for_route,
+)
 from utils.api_config_loader import (
-    get_free_voices,
     get_livestream_config,
     is_livestream_active,
 )
@@ -254,6 +426,14 @@ from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# 用户静默达到此阈值 → 后台 loop 主动 end_session，让下一条消息触发
+# start_session(new=False) 重新拉 /new_dialog 注入新鲜时间/长间隔提示/节日
+# 上下文，解决长挂机 session 上下文僵化（"猫娘还停留在前一晚"）的问题。
+# 周期检查间隔故意远小于阈值（粒度 ~1 min），避免静默 30:01 时还要再等
+# 一整轮。
+IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
+IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
@@ -478,16 +658,7 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        raw_voice_id = self._get_voice_id()
-        if self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', '')):
-            self.voice_id = ''
-            self._is_free_preset_voice = False
-        else:
-            self.voice_id = raw_voice_id
-            self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-        if self._is_free_preset_voice and self.core_api_type != 'free':
-            self.voice_id = ''
-            self._is_free_preset_voice = False
+        self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -509,8 +680,15 @@ class LLMSessionManager:
         self.final_swap_task = None
         self.receive_task = None
         self.message_handler_task = None
-        # 任务完成后的额外回复队列（将在下一次切换时统一汇报，语音模式使用）
-        self.pending_extra_replies = []
+        # Voice-mode-only callback queue, drained on hot-swap via
+        # ``_perform_final_swap_sequence`` into ``prime_context`` for the new
+        # session. Each element is a dict ``{"origin": "task_result"|"event",
+        # "text": str}`` — swap-time rendering groups by origin so event-stream
+        # pushes (push_message) get the EVENT hot-swap wrapper, not the TASK
+        # one. Kept independent from ``pending_agent_callbacks``: the two are
+        # consumed at different lifecycle points (text mode = next stream_text,
+        # voice mode = next hot-swap) and must not share state.
+        self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
@@ -584,6 +762,11 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+
+        # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
+        # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
+        # 单例），无 active session 时 sleep 后继续轮询。
+        self._idle_session_reset_task: Optional[asyncio.Task] = None
 
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
@@ -2847,12 +3030,6 @@ class LLMSessionManager:
             self.is_flushing_hot_swap_cache = False
 
     
-    def _is_preset_voice_id(self, voice_id: str) -> bool:
-        """判断 voice_id 是否属于免费 preset 列表。"""
-        if not voice_id:
-            return False
-        return voice_id in set(get_free_voices().values())
-
     def _resolve_session_use_tts(
         self,
         input_mode: str,
@@ -2870,11 +3047,18 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
-        _, uses_provider_native_voice = resolve_native_voice_for_routing(
-            self.core_api_type,
-            self.voice_id,
+        base_url = realtime_config.get('base_url', '')
+        if should_block_free_native_voice(
+            self.core_api_type, self.voice_id, base_url,
             self._config_manager.voice_id_exists_in_any_storage,
-        )
+        ):
+            uses_provider_native_voice = False
+        else:
+            _, uses_provider_native_voice = resolve_native_voice_for_routing(
+                self.core_api_type,
+                self.voice_id,
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
@@ -2891,21 +3075,41 @@ class LLMSessionManager:
             return True
         return False
 
-    def _should_block_free_preset_voice(self, voice_id: str, realtime_base_url: str) -> bool:
-        """lanlan.app/free 下仅屏蔽 preset 音色，不影响 custom 音色。"""
-        return bool(
-            self.core_api_type == "free"
-            and "lanlan.app" in (realtime_base_url or "")
-            and self._is_preset_voice_id(voice_id)
-        )
-
     def _get_voice_id(self) -> str:
-        return get_reserved(
+        raw = get_reserved(
             self.lanlan_basic_config[self.lanlan_name],
             'voice_id',
             default='',
             legacy_keys=('voice_id',),
         )
+        # strip 收口在源头：避免 characters.json 里偶发的前后空白让下游 literal
+        # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
+        return (raw or '').strip()
+
+    def _apply_voice_id_for_route(self, realtime_base_url: str) -> None:
+        """按当前 route 把角色卡里的 voice_id 解析进 self.voice_id /
+        self._is_free_preset_voice。
+
+        __init__ / start_session / _background_prepare_pending_session 三处
+        共用：读取 _get_voice_id() → 海外 free 路由屏蔽 → 校正 free preset
+        与 core_api_type 的匹配关系。集中在这里避免规则漂移。
+        """
+        raw_voice_id = self._get_voice_id()
+        if should_block_free_voice_for_route(
+            self.core_api_type,
+            raw_voice_id,
+            realtime_base_url,
+            self._config_manager.voice_id_exists_in_any_storage,
+        ):
+            self.voice_id = ''
+            self._is_free_preset_voice = False
+            return
+        self.voice_id = raw_voice_id
+        self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
+        # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
+        if self._is_free_preset_voice and self.core_api_type != 'free':
+            self.voice_id = ''
+            self._is_free_preset_voice = False
 
     def _is_livestream_active(self) -> bool:
         """Livestream 是 core_api_type='free' 之上的子模式，二者必须同时成立。"""
@@ -2921,13 +3125,20 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 _should_block_free_preset_voice 兜底）
+           lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
         """
-        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
-            self.core_api_type,
-            self.voice_id,
+        base_url = realtime_config.get('base_url', '')
+        if should_block_free_native_voice(
+            self.core_api_type, self.voice_id, base_url,
             self._config_manager.voice_id_exists_in_any_storage,
-        )
+        ):
+            voice_name, uses_provider_native_voice = self.voice_id, False
+        else:
+            voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
+                self.core_api_type,
+                self.voice_id,
+                self._config_manager.voice_id_exists_in_any_storage,
+            )
         if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():
@@ -3055,6 +3266,78 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self._memory_error_retry_after = 0
 
+    def shutdown(self) -> None:
+        """Manager 级别的关闭——取消 idle reset 后台任务。调用方：main_server 的
+        ``_init_character_resources`` 在用新 manager 替换旧 manager 之前调用。
+
+        必要性：``_idle_session_reset_task`` 是 bound method coroutine，对 ``self``
+        持强引用——配置热重载创建新 LLMSessionManager 替换旧的之后，旧 manager
+        本应被 GC，但残留的 task 每 60s 醒一次（虽然只走 ``is_active==False`` 早
+        退分支），无限延长旧 manager 的生命周期，多次 reload 后会积累 N 份。
+        """
+        task = self._idle_session_reset_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._idle_session_reset_task = None
+
+    def _ensure_idle_session_reset_loop(self) -> None:
+        """Lazily 启动 idle reset 后台任务。idempotent，重复调用安全。"""
+        if self._idle_session_reset_task is not None and not self._idle_session_reset_task.done():
+            return
+        try:
+            self._idle_session_reset_task = asyncio.create_task(self._idle_session_reset_loop())
+        except RuntimeError:
+            # 极端情况：没有 running event loop（不该发生于 start_session 路径）
+            logger.debug("[%s] _ensure_idle_session_reset_loop: no running loop, skip", self.lanlan_name)
+
+    async def _idle_session_reset_loop(self) -> None:
+        """周期检查用户静默时长，超阈值则主动 end_session 让下一条消息触发新鲜
+        /new_dialog 上下文注入。守卫：响应中 / takeover / session 启动中 / 无活动
+        时间戳 → 跳过本轮，下一轮再判。
+        """
+        while True:
+            try:
+                await asyncio.sleep(IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS)
+                if not self.is_active or self.session is None:
+                    continue
+                if self._starting_session_count > 0:
+                    continue
+                if self._takeover_active:
+                    continue
+                if getattr(self.session, '_is_responding', False):
+                    continue
+                last_activity = self.last_user_activity_time
+                if last_activity is None:
+                    continue
+                idle_seconds = time.time() - last_activity
+                if idle_seconds < IDLE_SESSION_RESET_THRESHOLD_SECONDS:
+                    continue
+                # 快照当前 session：传给 end_session 的 expected_session 守卫，
+                # 在 end_session 内部多个 await 期间若用户触发新一轮 start_session
+                # 把 self.session 换掉了，end_session 会早退而不会误清新 session
+                # 或 _starting_session_count guard（参见 end_session 6011-6013 注释）。
+                session_snapshot = self.session
+                logger.info(
+                    "[%s] idle_session_reset: 用户静默 %.0fs ≥ %ds，主动关闭 session 让下一条消息刷新上下文",
+                    self.lanlan_name, idle_seconds, IDLE_SESSION_RESET_THRESHOLD_SECONDS,
+                )
+                try:
+                    # by_server=True：抑制末尾的 CHARACTER_LEFT 状态推送，把本路径
+                    # 与用户主动离开的语义区分开。reset_starting_count=False：
+                    # expected_session 早退已经把 race 兜住了，再叠一层保险防止
+                    # await 期间挤进来的新 start_session guard 被清零。
+                    await self.end_session(
+                        by_server=True,
+                        expected_session=session_snapshot,
+                        reset_starting_count=False,
+                    )
+                except Exception as e:
+                    logger.warning("[%s] idle_session_reset: end_session 失败: %s", self.lanlan_name, e)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
@@ -3083,6 +3366,14 @@ class LLMSessionManager:
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
         self._starting_input_mode = input_mode
+        # 首次 start_session 起算，让 idle reset loop 永久存活
+        self._ensure_idle_session_reset_loop()
+        # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
+        # idle-reset 触发 end_session 后用户再开新 session 时，如不重置就会继承超过
+        # 阈值的旧时间戳，下一轮 sweep 立刻把新 session 当成 30 min idle 再关一次。
+        # 同步刷新 proactive 路径 10s 抑制窗口（prepare_proactive_delivery），避免
+        # session 刚起来就被立刻触发主动搭话。
+        self.last_user_activity_time = time.time()
         # CAS 落败早退标志：True 时禁止 finally 递减 guard，
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
@@ -3125,18 +3416,8 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            raw_voice_id = self._get_voice_id()
-            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-            if block_free_preset:
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-            else:
-                self.voice_id = raw_voice_id
-                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-            if self._is_free_preset_voice and self.core_api_type != 'free':
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-        
+            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # core_config 在单次 start_session 内不会变（改它走 save_core_api → end_session），复用顶部 snapshot
@@ -3645,6 +3926,44 @@ class LLMSessionManager:
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
 
+        # 记录 / 查询 key：lanlan_name 为空时落到 "default" 与 sink 端对齐
+        # （sink 在 lanlan 字段空 / "default" 时把 directive 写到 "default"
+        # bucket；这里读取也得用同一 key，否则用户的 ban-topic 永远进不来
+        # system prompt，codex P2）。
+        _directives_key = self.lanlan_name or "default"
+
+        # ── 用户显式 ban-topic 注入 ─────────────────────────────────
+        # 用户在过去 3 天里说过的 "别再提 X / stop saying X" 类指令，本轮 LLM
+        # 在 context 里已经看过；下一次 session 重启时原话已被 compress_history
+        # 抹掉，需要把活跃 term 拼成 system prompt 一段重新提醒模型避开。
+        # 抽取与落盘走 ``memory.user_directives`` 的 user_utterance sink；
+        # 这里只读。空时 render_prompt_block 返回 ""，对 prompt 长度无影响。
+        try:
+            from memory.user_directives import get_user_directives_manager
+            prompt += get_user_directives_manager().render_prompt_block(
+                _directives_key, _lang,
+            )
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[UserDirectives] prompt injection skipped: %s", _exc,
+            )
+
+        # ── 防复读 soft hint 注入 ──────────────────────────────────
+        # 把最近高 BM25 rank 的 topic 词列出来，提示模型"已经聊过这些"。这是
+        # 对**所有路径**生效的软约束（与 user ban list 不同：那个是用户明确
+        # 说过别提，必须强约束）。proactive 还会在 system_router Phase 2 出口
+        # 被 BM25 总分阈值二次拦截（regen / drop），常规 reply 只靠这段 prompt
+        # 软约束。空 corpus / 新角色第一轮 → render 返回 ""，无副作用。
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            from config.prompts.prompts_directives import render_recent_topics_block
+            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
+            prompt += render_recent_topics_block(topics, _lang)
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[AntiRepeat] soft hint injection skipped: %s", _exc,
+            )
+
         return prompt
 
     def _is_agent_enabled(self):
@@ -3762,18 +4081,8 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            raw_voice_id = self._get_voice_id()
-            block_free_preset = self._should_block_free_preset_voice(raw_voice_id, realtime_config.get('base_url', ''))
-            if block_free_preset:
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-            else:
-                self.voice_id = raw_voice_id
-                self._is_free_preset_voice = self._is_preset_voice_id(self.voice_id)
-            if self._is_free_preset_voice and self.core_api_type != 'free':
-                self.voice_id = ''
-                self._is_free_preset_voice = False
-            
+            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # 复用本次热切换准备顶部的 snapshot（save_core_api 会 end_session 才能改 core_config）
@@ -4035,7 +4344,7 @@ class LLMSessionManager:
             "lanlan_name": self.lanlan_name,
             "messages": messages,
             "conversation_id": uuid4().hex,
-            "lang": normalize_language_code(self.user_language, format='short') or "zh",
+            "lang": normalize_language_code(self.user_language, format='short') or "en",
         }
 
         try:
@@ -4111,7 +4420,7 @@ class LLMSessionManager:
         if self.is_hot_swap_imminent:
             logger.info("[%s] voice proactive nudge skipped: hot-swap imminent", self.lanlan_name)
             return False
-        _lang = normalize_language_code(self.user_language, format='short') or 'zh'
+        _lang = normalize_language_code(self.user_language, format='short') or 'en'
         delivered = await self.session.prompt_ephemeral(language=_lang)
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
@@ -4317,6 +4626,15 @@ class LLMSessionManager:
                     if note:
                         history_text = f"{full_text}\n{note}" if full_text else note
                 self.session._conversation_history.append(AIMessage(content=history_text))
+                # 防复读 corpus：只录"被说出口的"那段（full_text），action_note 是
+                # LLM 给自己的元数据备忘，不算复读对象。
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    get_anti_repeat_corpus().record_output(
+                        self.lanlan_name, full_text, is_proactive=True,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
 
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
@@ -4952,12 +5270,58 @@ class LLMSessionManager:
         prompt_ephemeral(), OR proactively via trigger_agent_callbacks().
         Voice mode: also appended to pending_extra_replies for hot-swap
         injection via prime_context().
+
+        Voice queue element shape is structured (not flat text) so the
+        hot-swap renderer can:
+          1. Pick TASK vs EVENT wrapper from ``origin``.
+          2. Recover status / source phrasing when both ``summary`` and
+             ``detail`` are empty — typical for failure callbacks where
+             the meaning lives in the header (e.g. ``status="failed"`` +
+             ``error_message="Connection refused"``).
+
+        ``summary`` and ``detail`` are normalized **independently** (strip
+        each, then prefer summary → detail), so a blank-whitespace
+        ``summary`` doesn't shadow a real ``detail`` via the legacy
+        ``summary or detail`` chain.
+
+        The two queues stay independent (text-mode drain and voice-mode
+        hot-swap fire at different lifecycle points).
         """
         try:
+            summary = str(callback.get("summary") or "").strip()
+            detail = str(callback.get("detail") or "").strip()
+            error_message = str(callback.get("error_message") or "").strip()
+            source_name = str(callback.get("source_name") or "").strip()
+            status = callback.get("status") or "completed"
+            origin = callback.get("origin")
+            if origin not in ("task_result", "event"):
+                # Fail-safe: missing/unknown origin defaults to event so the
+                # hot-swap renderer does not fabricate "我完成了任务" for what
+                # may actually be an external event push.
+                origin = "event"
+            # Skip enqueue (BOTH queues) only when there is *truly* nothing
+            # to convey: no body text, no error context, no identifiable
+            # source, and a benign completed status. Anything else
+            # (failed/cancelled/blocked, an error message, or a named source)
+            # carries meaning even with empty summary/detail and must survive
+            # into the hot-swap output.
+            #
+            # The two queues must filter consistently — otherwise text mode
+            # (which drains pending_agent_callbacks) would inject a garbage
+            # header-only block for callbacks the voice mode already
+            # discarded.
+            if not summary and not detail and not error_message and not source_name and status == "completed":
+                return
             self.pending_agent_callbacks.append(callback)
-            text = (callback.get("summary") or callback.get("detail") or "").strip()
-            if text:
-                self.pending_extra_replies.append(text)
+            self.pending_extra_replies.append({
+                "origin": origin,
+                "summary": summary,
+                "detail": detail,
+                "status": status,
+                "source_kind": callback.get("source_kind") or "unknown",
+                "source_name": source_name,
+                "error_message": error_message,
+            })
         except Exception:
             pass
 
@@ -5028,15 +5392,12 @@ class LLMSessionManager:
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
-                try:
-                    items = "\n".join([f"- {txt}" for txt in self.pending_extra_replies if isinstance(txt, str) and txt.strip()])
-                except Exception:
-                    items = ""
                 _lang = normalize_language_code(self.user_language, format='short')
-                final_prime_text += (
-                    _loc(CONTEXT_SUMMARY_TASK_HEADER, _lang).format(name=self.lanlan_name, master=self.master_name)
-                    + items
-                    + _loc(CONTEXT_SUMMARY_TASK_FOOTER, _lang)
+                final_prime_text += _render_pending_extra_replies_by_origin(
+                    self.pending_extra_replies,
+                    lang=_lang,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
                 )
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()
@@ -5362,6 +5723,11 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
+                    # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
+                    # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
+                    # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
+                    self.last_user_activity_time = time.time()
+
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())

@@ -185,8 +185,11 @@ def normalize_manifest_surface(
         "mode": mode,
         "permissions": normalized_permissions,
     }
-    if isinstance(raw_surface.get("title"), str) and raw_surface["title"].strip():
-        normalized["title"] = raw_surface["title"].strip()
+    title = raw_surface.get("title")
+    if isinstance(title, str) and title.strip():
+        normalized["title"] = title.strip()
+    elif isinstance(title, Mapping):
+        normalized["title"] = dict(title)
     if isinstance(entry, str) and entry.strip():
         normalized["entry"] = entry.strip()
     if open_in_value:

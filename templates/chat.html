@@ -387,6 +387,27 @@
             min-height: 385px !important;
         }
 
+        /* 附件预览（截图 / 导入图片）兜底：.composer-attachments 是 90px 的
+           卡片行 + ~20px 内边距/间距，会在 .composer-panel grid 里顶在 input-shell
+           之上。窗口偏小时 input-shell 整块被推出可视区，用户点不到也敲不了字。
+           身上贴 composer-has-attachments 时直接抬高 shell/body 兜住附件 + input
+           的总高度（385 ≈ chat-body 留白 + 90 附件 + ~190 输入区）。 */
+        body.composer-has-attachments #react-chat-window-shell {
+            min-height: 320px !important;
+        }
+        body.composer-has-attachments {
+            min-height: 385px !important;
+        }
+        /* GalGame + 附件并存的极端情况：两个兜底叠加，否则 attachments 仍能
+           吃掉 galgame slot 的 ~110px 预算把输入区顶出。直接拉到 495px 让
+           A/B/C + 附件 + 输入框三件套同屏可见。 */
+        body.galgame-mode-enabled.composer-has-attachments #react-chat-window-shell {
+            min-height: 430px !important;
+        }
+        body.galgame-mode-enabled.composer-has-attachments {
+            min-height: 495px !important;
+        }
+
         /* Electron 独立窗口始终显示全部工具按钮（覆盖 index.css 768px 媒体查询隐藏） */
         #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
             display: inline-flex !important;
@@ -778,20 +799,33 @@
         // GAL 模式的 320px 是内容壳最低高度；独立窗口还有 top/bottom inset，
         // 需要把外层窗口最小高度抬高，否则压扁后输入区底部会被窗口裁掉。
         var MIN_H_GALGAME = 385;
+        // 附件预览（截图 / 导入图片）也需要相同量级的兜底：单卡片 90px + 内边距，
+        // 没有兜底时窗口偏小附件会把 input-shell 推出可视区。和 galgame 同级（385）。
+        var MIN_H_ATTACHMENTS = 385;
+        // 极端情况：galgame slot 与附件预览并存。两份预算叠加（slot ~110 + 附件 ~110）。
+        var MIN_H_GALGAME_ATTACHMENTS = 495;
         function isGalgameModeOn() {
             return !!(document.body && document.body.classList.contains('galgame-mode-enabled'));
         }
+        function hasComposerAttachments() {
+            return !!(document.body && document.body.classList.contains('composer-has-attachments'));
+        }
         function currentMinH() {
-            return isGalgameModeOn() ? MIN_H_GALGAME : MIN_H_BASE;
+            var gal = isGalgameModeOn();
+            var att = hasComposerAttachments();
+            if (gal && att) return MIN_H_GALGAME_ATTACHMENTS;
+            if (gal) return MIN_H_GALGAME;
+            if (att) return MIN_H_ATTACHMENTS;
+            return MIN_H_BASE;
         }
         Object.defineProperty(window, '__nekoChatMinH', {
             get: currentMinH,
             configurable: true
         });
 
-        // GalGame 模式开/关时，如果当前窗口高度小于新最小值，主动 setBounds 撑高，
-        // 否则用户切到 ON 后会看到选项被裁切到 send 按钮下方。
-        function syncWindowToGalgameMin() {
+        // GalGame 模式开/关、或附件 0↔N 切换时，若当前窗口高度小于新最小值，
+        // 主动 setBounds 撑高，否则切到 ON / 贴上附件后会看到内容被窗口裁掉。
+        function syncWindowToMinH() {
             if (collapsed || resizing || animating) return;
             var minH = currentMinH();
             try {
@@ -804,7 +838,10 @@
         }
         // body class 由 app-react-chat-window.js 在 toggle 时刷新；这里订阅
         // 主动同步事件，避免轮询 / MutationObserver 的重绘开销。
-        window.addEventListener('react-chat-window:galgame-mode-change', syncWindowToGalgameMin);
+        window.addEventListener('react-chat-window:galgame-mode-change', syncWindowToMinH);
+        // 附件 0↔N 切换走对称事件；setComposerAttachments 在 dedupe 后只在
+        // 跨边界时 dispatch，所以这里不会因为附件计数增减触发不必要的 setBounds。
+        window.addEventListener('react-chat-window:composer-attachments-change', syncWindowToMinH);
         // 启动时不再主动撑高：app-react-chat-window 在 storage barrier 之后
         // 调 setGalgameModeEnabled(readPref) 把 false→true 翻转一次，change 事件
         // 兜底；ON 持久化时这条路径必走、OFF 持久化时不会触发不必要的扩大。

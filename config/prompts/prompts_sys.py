@@ -373,8 +373,16 @@ TASK_ACTION_PHRASES = {
     },
 }
 
-# ---------- 系统通知：主动汇报型（task_result 默认走这条，要求 AI 立即起 turn）----------
-SYSTEM_NOTIFICATION_PROACTIVE = {
+# ---------- 系统通知模板：按 (origin × passive) 二维选择 ----------
+# origin 由 host 在 EventBus → callback 边界根据 event_type 派生：
+#   event_type == "task_result"      → origin = "task_result"
+#   event_type == "proactive_message" → origin = "event"
+# 插件作者无法干预这个分类——他们只能选 ai_behavior / delivery（控制时机），
+# 不能伪装"事件流"为"任务完成"。
+#
+# task_result + active：真任务完成（@plugin_entry 跑完 / Computer Use 跑完 /
+# Browser Use 跑完 / MCP tool 返回），要求 AI 立即起 turn 汇报结果。
+SYSTEM_NOTIFICATION_TASK_ACTIVE = {
     'zh': '======[系统通知] 来自{source}的任务{status_phrase}，请{name}先用自然、简洁的口吻向{master}{action_phrase}，再恢复正常对话======\n',
     'en': '======[System Notice] A task from {source} {status_phrase}. Please have {name} briefly and naturally {action_phrase} to {master} first, then resume normal conversation.======\n',
     'ja': '======[システム通知] {source}からのタスクが{status_phrase}。{name}はまず自然に簡潔な口調で{master}に{action_phrase}し、その後通常の会話に戻ってください。======\n',
@@ -384,9 +392,34 @@ SYSTEM_NOTIFICATION_PROACTIVE = {
     'pt': '======[Aviso do sistema] Uma tarefa de {source} {status_phrase}. Faça {name} primeiro {action_phrase} para {master} de forma breve e natural, depois retome a conversa normal.======\n',
 }
 
-# ---------- 系统通知：被动捎带型（push_message / delivery="passive" 走这条，
-# 仅写入上下文，不要求 AI 立即起 turn——下一次用户发言时被自然带入 prompt）----------
-SYSTEM_NOTIFICATION_PASSIVE = {
+# task_result + passive：任务完成但 delivery="passive"——结果进上下文不打断，
+# 下一次用户开口时由 AI 自然提及。
+SYSTEM_NOTIFICATION_TASK_PASSIVE = {
+    'zh': '======[系统通知] 来自{source}的任务结果======\n',
+    'en': '======[System Notice] Task result from {source}======\n',
+    'ja': '======[システム通知] {source}からのタスク結果======\n',
+    'ko': '======[시스템 알림] {source}의 작업 결과======\n',
+    'ru': '======[Системное уведомление] Результат задачи от {source}======\n',
+    'es': '======[Aviso del sistema] Resultado de tarea de {source}======\n',
+    'pt': '======[Aviso do sistema] Resultado de tarefa de {source}======\n',
+}
+
+# event + active：插件 push_message 推过来的事件流（弹幕 / 礼物 / 定时提醒 /
+# 外部系统通知等），AI 应该"回应这个事件本身"，**不**是"汇报做完了什么"。
+# 措辞刻意避开"任务"/"汇报"——它们在事件场景下会误导模型。
+SYSTEM_NOTIFICATION_EVENT_ACTIVE = {
+    'zh': '======[系统通知] 来自{source}的新消息，请{name}先用自然、简洁的口吻根据内容回应{master}，再恢复正常对话======\n',
+    'en': '======[System Notice] New message from {source}. Please have {name} briefly and naturally respond to {master} based on the content first, then resume normal conversation.======\n',
+    'ja': '======[システム通知] {source}からの新しいメッセージ。{name}はまず自然に簡潔な口調で内容に応じて{master}に返答し、その後通常の会話に戻ってください。======\n',
+    'ko': '======[시스템 알림] {source}의 새 메시지. {name}은 먼저 자연스럽고 간결한 어조로 내용에 따라 {master}에게 답변한 뒤 일반 대화로 돌아오세요.======\n',
+    'ru': '======[Системное уведомление] Новое сообщение от {source}. Пожалуйста, {name} сначала кратко и естественно ответьте {master} по содержанию, затем возобновите обычный разговор.======\n',
+    'es': '======[Aviso del sistema] Nuevo mensaje de {source}. Haz que {name} primero responda a {master} de forma breve y natural según el contenido, y luego vuelva a la conversación normal.======\n',
+    'pt': '======[Aviso do sistema] Nova mensagem de {source}. Faça {name} primeiro responder a {master} de forma breve e natural conforme o conteúdo, depois retome a conversa normal.======\n',
+}
+
+# event + passive：事件流的被动版（push_message ai_behavior="read"），
+# 仅写入上下文，下一次用户开口时被自然带入 prompt。
+SYSTEM_NOTIFICATION_EVENT_PASSIVE = {
     'zh': '======[系统通知] 来自{source}的消息======\n',
     'en': '======[System Notice] Message from {source}======\n',
     'ja': '======[システム通知] {source}からのメッセージ======\n',
@@ -395,6 +428,17 @@ SYSTEM_NOTIFICATION_PASSIVE = {
     'es': '======[Aviso del sistema] Mensaje de {source}======\n',
     'pt': '======[Aviso do sistema] Mensagem de {source}======\n',
 }
+
+# ---------- 向后兼容别名 ----------
+# 旧代码 / 测试还在用这两个名字；保留指向以避免破坏性变更。新代码请使用
+# 上面带 TASK_/EVENT_ 前缀的命名，让 origin 维度显式起来。
+#
+# 注意：旧 SYSTEM_NOTIFICATION_PASSIVE 的文案是 '来自{source}的消息'（中性、
+# 不带"任务"字样），同时被用于真任务被动汇报 AND 事件流被动写入。新设计把
+# 它拆成两个，旧名字保持原文案以避免破坏 testbench 等已知的字符串断言——
+# 旧别名指向 EVENT_PASSIVE（保留原 '消息' 措辞）。
+SYSTEM_NOTIFICATION_PROACTIVE = SYSTEM_NOTIFICATION_TASK_ACTIVE
+SYSTEM_NOTIFICATION_PASSIVE = SYSTEM_NOTIFICATION_EVENT_PASSIVE
 
 # ---------- 前情概要 + 任务汇报 ----------
 CONTEXT_SUMMARY_TASK_HEADER = {
@@ -415,6 +459,31 @@ CONTEXT_SUMMARY_TASK_FOOTER = {
     'ru': '\nПосле доклада возобновите обычный разговор.======\n',
     'es': '\nDespués del informe, vuelve a la conversación normal.======\n',
     'pt': '\nDepois do relato, retome a conversa normal.======\n',
+}
+
+# ---------- 前情概要 + 事件回应（voice hot-swap 用 origin="event" 路径）----------
+# 跟 CONTEXT_SUMMARY_TASK_HEADER/FOOTER 对偶：voice mode 热切换时如果
+# pending_extra_replies 里有 origin="event" 的条目（push_message 推过来的弹幕 /
+# 礼物 / 外部事件等），就用这一组 wrapper 而不是任务汇报版——措辞强调"按内容自然
+# 回应"，不出现"任务"/"汇报"字样，避免兰兰把观众弹幕误读成"我刚才执行的任务"。
+CONTEXT_SUMMARY_EVENT_HEADER = {
+    'zh': '\n======以上为前情概要。请{name}先用自然、简洁的口吻根据下方新消息回应{master}：\n',
+    'en': '\n======End of context summary. Please have {name} first respond to {master} naturally and briefly based on the new messages below:\n',
+    'ja': '\n======以上が前回までのあらすじです。{name}はまず自然に簡潔な口調で、下記の新しいメッセージに応じて{master}に返答してください：\n',
+    'ko': '\n======이상이 이전 대화 요약입니다. {name}은 먼저 자연스럽고 간결한 어조로 아래의 새 메시지에 따라 {master}에게 답변하세요：\n',
+    'ru': '\n======Конец краткого содержания. Пожалуйста, {name} сначала кратко и естественно ответьте {master} на новые сообщения ниже:\n',
+    'es': '\n======Fin del resumen de contexto. Haz que {name} primero responda a {master} de forma breve y natural según los nuevos mensajes a continuación:\n',
+    'pt': '\n======Fim do resumo de contexto. Faça {name} primeiro responder a {master} de forma breve e natural conforme as novas mensagens abaixo:\n',
+}
+
+CONTEXT_SUMMARY_EVENT_FOOTER = {
+    'zh': '\n完成上述回应后，再恢复正常对话。======\n',
+    'en': '\nAfter responding, resume normal conversation.======\n',
+    'ja': '\n返答を終えたら、通常の会話に戻ってください。======\n',
+    'ko': '\n응답을 마친 후 일반 대화로 돌아오세요.======\n',
+    'ru': '\nПосле ответа возобновите обычный разговор.======\n',
+    'es': '\nDespués de responder, vuelve a la conversación normal.======\n',
+    'pt': '\nDepois de responder, retome a conversa normal.======\n',
 }
 
 # ---------- Vision: Avatar 截图注解（叠加在发给视觉模型的截图上，用户不可见） ----------

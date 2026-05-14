@@ -328,7 +328,7 @@ async function fetchSurfaces() {
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
   try {
-    const info = await getPluginUiSurfaceInfo(currentPluginId)
+    const info = await getPluginUiSurfaceInfo(currentPluginId, String(locale.value))
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
@@ -390,6 +390,10 @@ watch(pluginId, async () => {
   } finally {
     loading.value = false
   }
+})
+
+watch(locale, async () => {
+  await fetchSurfaces()
 })
 </script>
 

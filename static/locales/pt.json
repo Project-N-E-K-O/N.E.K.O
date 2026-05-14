@@ -1418,7 +1418,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax (China)",
-            "minimax_intl": "MiniMax (Internacional)"
+            "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "Selecione o arquivo de áudio local (8 segundos recomendados, máximo de 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefixo personalizado (obrigatório, usado para distinguir vozes diferentes)",
@@ -1481,6 +1482,9 @@
         "freePresetBadge": "Predefinido",
         "geminiNativeLabel": "Vozes nativas do Gemini",
         "geminiNativeBadge": "Nativa",
+        "nativePresetLabel": "Vozes nativas de {{provider}}",
+        "nativePresetLabelGeneric": "Vozes nativas predefinidas",
+        "nativePresetBadge": "Nativa",
         "workshopSourceBadge": "Voz de referência do workshop",
         "workshopSourceTitle": "Voz de referência do workshop",
         "workshopSourceLoading": "Carregando voz de referência do workshop...",
@@ -1867,8 +1871,19 @@
         "switchError": "Ocorreu um erro ao trocar de neko",
         "freePresetVoices": "Vozes predefinidas gratuitas",
         "geminiNativeVoices": "Vozes nativas do Gemini",
+        "nativePresetVoices": "Vozes nativas de {{provider}}",
+        "nativePresetVoicesGeneric": "Vozes nativas predefinidas",
         "savedVoiceFallback": "Voz atualmente salva",
         "gptsovitsVoices": "Vozes GPT-SoVITS",
+        "elevenlabsVoices": "Vozes ElevenLabs",
+        "gsvDiagNotEnabled": "GPT-SoVITS não está habilitado (habilite-o nas configurações da API)",
+        "gsvDiagUrlMissing": "URL do GPT-SoVITS não configurada (preencha-a nas configurações da API)",
+        "gsvDiagUrlInvalid": "URL do GPT-SoVITS ausente ou não usa http(s)",
+        "gsvDiagUrlLocalhostOnly": "A URL do GPT-SoVITS deve apontar para localhost",
+        "gsvDiagUnreachable": "GPT-SoVITS server não está em execução ou inacessível",
+        "gsvDiagLoadFailed": "Falha ao carregar o GPT-SoVITS",
+        "gsvDiagEmpty": "GPT-SoVITS server não retornou nenhuma voz (lista vazia)",
+        "gsvDiagTimeout": "Tempo limite do GPT-SoVITS server excedido (>3s)",
         "loadFailed": "Falha ao carregar dados de caracteres",
         "renameError": "Falha ao renomear: {{error}}",
         "renameMasterTitle": "Renomear mestre",
@@ -2388,6 +2403,8 @@
         "sourceLabel": "Fonte do guia",
         "contentLanguageNotice": "O corpo do guia muda com o idioma selecionado.",
         "languageLabel": "Linguagem",
+        "tocTitle": "Conteúdo",
+        "tocEmpty": "Sem índice ainda",
         "guideUnavailable": "O conteúdo do guia está vazio."
     },
     "subtitle": {
@@ -3091,20 +3108,20 @@
                 "sayHello": "Olá"
             },
             "lines": {
-                "introBasic": "Olha, tem um botão mágico aqui! É só clicar nele e você pode conversar diretamente comigo! Quer me contar as novidades divertidas de hoje? Ou talvez só chamar o meu nome? Vem experimentar, mal posso esperar para ouvir a sua voz! Miau!",
-                "takeoverCaptureCursor": "Um super botão mágico aparece! Basta clicar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas da web... Mas, se esse ponteiro do mouse ficar se mexendo para lá e para cá, talvez eu não consiga resistir a pular em cima dele! Está pronto para a minha bagunça... quer dizer, para a minha ajuda? Miau!",
-                "takeoverPluginPreviewHome": "Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!",
-                "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~",
+                "introBasic": "Ooh, olha este botaozinho brilhante! Dá um clique nele e a gente pode começar a conversar na hora! Quer me contar as novidades de hoje? Ou só chamar meu nome? Vamos, experimenta, mal posso esperar para ouvir sua voz! Miau!",
+                "takeoverCaptureCursor": "Ta-dá! Apareceu o interruptor mágico definitivo! É só tocar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas web... Mas, se esse ponteiro do mouse ficar se mexendo por aí, talvez eu não consiga resistir a pular nele! Você está pronto para minhas travessuras... ah, não, para minha ajuda? Miau!",
+                "takeoverPluginPreviewHome": "Ainda não acabou! Olha, olha, tem muuuitos plugins divertidos aqui!",
+                "takeoverPluginPreviewDashboard": "Com eles, eu não só consigo ler o danmaku do Bilibili, mas também ajudar você a apagar as luzes e ligar o ar-condicionado... Eu sou a super deusa gata onipotente! Hehe!",
                 "pluginDashboardPopupBlocked": "O navegador precisa que você clique aqui para abrir o painel de plugins. Clique em \"Painel de gerenciamento\" e eu continuo te mostrando.",
-                "takeoverSettingsPeekIntro": "Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.",
-                "takeoverSettingsPeekDetail": "Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!",
-                "takeoverSettingsPeekDetailPart1": "Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?!",
-                "takeoverSettingsPeekDetailPart2": "Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!",
-                "takeoverReturnControl": "Tá bom, tá bom, já parei de sequestrar o seu PC~! Devolvendo o controle pra você! Mas não ouse mexer em configurações estranhas enquanto eu não estou olhando! Conto com você daqui pra frente, nya~!",
-                "interruptResistLight1": "Ei! Não me arrasta! Ainda não é a sua vez, nya!",
-                "interruptResistLight3": "Calma aí! Ainda não terminei, não me interrompa desse jeito!",
-                "interruptAngryExit": "Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!",
-                "introGreetingReply": "Bem-vindo de volta para casa, miau~ O mundo lá fora pode ser tão cansativo, não é? Neste pequeno ninho só nosso, você pode deixar todas as preocupações de lado. Eu sou Lin Youyi. Pode confiar em mim nesta introdução; vou segurar sua mão e guiar você passo a passo.",
+                "takeoverSettingsPeekIntro": "Claro, se você quiser que eu converse mais com você, não é impossível. Só prepare mais peixinhos secos pra mim, hehe. Tá bom, vou parar de te provocar; todas as configurações estão neste ícone de engrenagem.",
+                "takeoverSettingsPeekDetail": "Olha, aqui você pode colocar roupas novas em mim, me dar uma voz bonita... Trocar por outra catgirl ou modificar memórias? Espera um pouco! O que você está fazendo? Não vai me substituir, vai? Aaaah, de jeito nenhum! Fecha, fecha rápido!",
+                "takeoverSettingsPeekDetailPart1": "Olha, aqui você pode colocar roupas novas em mim, me dar uma voz bonita... Trocar por outra catgirl ou modificar memórias?",
+                "takeoverSettingsPeekDetailPart2": "Espera um pouco! O que você está fazendo? Não vai me substituir, vai? Aaaah, de jeito nenhum! Fecha, fecha rápido!",
+                "takeoverReturnControl": "Tá bom, tá bom, não vou mais tomar conta do seu computador! O controle voltou pra você! Mas nada de clicar em configurações estranhas quando eu não estiver olhando! Conte comigo, e cuide de mim daqui em diante!",
+                "interruptResistLight1": "Ei! Não me arrasta, ainda não é a sua vez!",
+                "interruptResistLight3": "Espera um pouco! Ainda não acabou, não me interrompa assim!",
+                "interruptAngryExit": "Humano! Você é muito sem educação, miau! Já que você quer tanto operar tudo sozinho, então vai brincar com essa tela fria sozinho! Hmph!",
+                "introGreetingReply": "Brisa suave, sol, e você aparecendo exatamente na hora certa. Prazer em te conhecer, eu sou Lin Youyi; cuide bem de mim daqui em diante, miau! Escrevi tudo sobre este lugar no guia para iniciantes. Considere isso o primeiro presentinho do nosso encontro; dá uma olhada!",
                 "introPractice": "Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!",
                 "introActivationHint": "Clica aqui pra eu poder começar a falar, nya~!"
             }
@@ -3896,9 +3913,58 @@
             "ready": "Pronto",
             "startButton": "Iniciar"
         },
+        "startTutorial": {
+            "title": "Como jogar",
+            "move": "Mova o mouse para guiar o jogador.",
+            "charge": "Perto da bola, segure o botão esquerdo para carregar e solte para chutar.",
+            "range": "O chute só dispara a até {{distance}} da bola.",
+            "reset": "Pressione R para resetar a bola e as posições.",
+            "ai": "O humor e a dificuldade da NEKO mudam conforme a partida."
+        },
         "hint": {
-            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤90px da bola) · R = reset",
-            "aiMood": "1-6 = humor da IA (calma / feliz / brava / relaxada / triste / surpresa) · A dificuldade aumenta após cada gol"
+            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤{{distance}} da bola) · R = reset",
+            "aiMood": "O humor e a dificuldade da NEKO mudam conforme a partida"
+        },
+        "debugControls": {
+            "bounds": "Ativar limites (regra de fora)",
+            "voiceOutput": "Falar linhas LLM (voz do projeto)",
+            "voiceButton": "Voz de depuração",
+            "voicePlaceholder": "Depuração: digite a transcrição final e pressione Enter",
+            "send": "Enviar",
+            "voiceStatusHidden": "STT de depuração: oculto"
+        },
+        "debug": {
+            "mouse": "mouse: {{x}}, {{y}}",
+            "playerCenter": "centro do jogador: {{x}}, {{y}}",
+            "aiCenter": "centro da IA: {{x}}, {{y}}  modo: {{mode}}",
+            "state": "rodada: {{round}}  dificuldade: {{difficulty}}  humor: {{mood}}  carga: {{charge}}%",
+            "ball": "bola: ({{x}}, {{y}})  velocidade={{speed}}",
+            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Rodada {{round}}"
+        },
+        "moods": {
+            "calm": "calma",
+            "happy": "feliz",
+            "angry": "brava",
+            "relaxed": "relaxada",
+            "sad": "triste",
+            "surprised": "surpresa"
+        },
+        "difficulties": {
+            "max": "máxima",
+            "lv2": "nível 2",
+            "lv3": "nível 3",
+            "lv4": "nível 4"
+        },
+        "aiModes": {
+            "attack": "ataque",
+            "defend": "defesa",
+            "clear": "afastar"
+        },
+        "debugEvents": {
+            "player-kick": "chute do jogador",
+            "ai-kick": "chute da IA",
+            "unstick": "bola destravada"
         },
         "loading": {
             "beginStartDefault": "Analisando contexto de início…",

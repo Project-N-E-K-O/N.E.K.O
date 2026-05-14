@@ -2295,13 +2295,57 @@ class PersonaManager:
                     f"### {ai_name}最近的印象（还不太确定）\n" + "\n".join(lines)
                 )
 
-        if trimmed_confirmed_reflections:
-            lines = [f"- {r.get('text', '')}" for r in trimmed_confirmed_reflections
-                     if r.get('text')]
-            if lines:
-                sections.append(
-                    f"### {ai_name}比较确定的印象\n" + "\n".join(lines)
+        # Split confirmed reflections into active vs past at render time.
+        # Past = derived (state/episode 超 TTL) or stored 'past'。Pending
+        # reflections不参与 past 拆分（pending 本就是"还不太确定"，自身已
+        # 带不确定语义；要么被信号 reinforce 升 confirmed，要么被低分归档，
+        # 不需要再叠一层过时降级）。
+        from memory.temporal import (
+            is_past_for_render as _is_past,
+            time_since_label as _time_label,
+        )
+        now_for_past = datetime.now()
+        active_confirmed: list[dict] = []
+        past_confirmed: list[dict] = []
+        for r in trimmed_confirmed_reflections:
+            if not r.get('text'):
+                continue
+            (past_confirmed if _is_past(r, now=now_for_past) else active_confirmed).append(r)
+
+        if active_confirmed:
+            lines = [f"- {r.get('text', '')}" for r in active_confirmed]
+            sections.append(
+                f"### {ai_name}比较确定的印象\n" + "\n".join(lines)
+            )
+
+        if past_confirmed:
+            # 过时 block — 用本项目六等号 below/above 对偶分隔符（参见
+            # feedback_prompt_delimiters_above_below.md：分隔符内部禁冒号
+            # 和破折号）。每条前缀 [X 天前 / X 周前 / X 月前] 由
+            # time_since_label 按 0-6d / 7-29d / 30d+ 三档生成。整段按
+            # get_global_language() 本地化（Codex review on PR #1316
+            # P2 catch：之前硬编码 zh 让非 zh locale 看到中文时间标签）。
+            from utils.language_utils import get_global_language
+            from config.prompts.prompts_memory import render_past_memory_block
+            lang = get_global_language()
+            past_lines = []
+            for r in past_confirmed:
+                anchor = (
+                    r.get('event_end_at')
+                    or r.get('event_start_at')
+                    or r.get('created_at')
                 )
+                label = _time_label(anchor, now=now_for_past, lang=lang)
+                prefix = f"[{label}] " if label else ""
+                past_lines.append(f"- {prefix}{r.get('text', '')}")
+            sections.append(
+                render_past_memory_block(
+                    lang=lang,
+                    ai_name=ai_name,
+                    master_name=master_name,
+                    items_text="\n".join(past_lines),
+                )
+            )
 
         if suppressed_lines:
             sections.append(

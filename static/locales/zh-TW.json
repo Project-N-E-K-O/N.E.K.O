@@ -1418,7 +1418,8 @@
         "provider": {
             "cosyvoice": "阿里雲 CosyVoice",
             "minimax": "MiniMax（中國）",
-            "minimax_intl": "MiniMax（國際版）"
+            "minimax_intl": "MiniMax（國際版）",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "選擇本地音頻文件（8秒最佳，請勿超過20秒，wav/mp3格式）",
         "customPrefix": "自定義前綴（必填，用於區分音色）",
@@ -1481,6 +1482,9 @@
         "freePresetBadge": "預設",
         "geminiNativeLabel": "Gemini 原生音色",
         "geminiNativeBadge": "原生",
+        "nativePresetLabel": "{{provider}} 原生音色",
+        "nativePresetLabelGeneric": "原生預設音色",
+        "nativePresetBadge": "原生",
         "workshopSourceBadge": "創意工坊參考語音",
         "workshopSourceTitle": "創意工坊參考語音",
         "workshopSourceLoading": "正在加載參考語音...",
@@ -1867,8 +1871,19 @@
         "switchError": "切換貓娘時發生錯誤",
         "freePresetVoices": "── 免費預設音色 ──",
         "geminiNativeVoices": "Gemini 原生音色",
+        "nativePresetVoices": "{{provider}} 原生音色",
+        "nativePresetVoicesGeneric": "原生預設音色",
         "savedVoiceFallback": "目前已保存音色",
         "gptsovitsVoices": "GPT-SoVITS 聲音",
+        "elevenlabsVoices": "ElevenLabs 聲音",
+        "gsvDiagNotEnabled": "GPT-SoVITS 未啟用（請在 API 設定勾選）",
+        "gsvDiagUrlMissing": "GPT-SoVITS URL 未設定（請在 API 設定填寫）",
+        "gsvDiagUrlInvalid": "GPT-SoVITS URL 未設定或不是 http(s)",
+        "gsvDiagUrlLocalhostOnly": "GPT-SoVITS URL 必須是 localhost",
+        "gsvDiagUnreachable": "GPT-SoVITS server 未執行或無法連線",
+        "gsvDiagLoadFailed": "GPT-SoVITS 載入失敗",
+        "gsvDiagEmpty": "GPT-SoVITS server 沒有任何聲音（清單為空）",
+        "gsvDiagTimeout": "GPT-SoVITS server 回應逾時 (>3s)",
         "loadFailed": "載入角色資料失敗",
         "renameError": "重新命名失敗: {{error}}",
         "renameMasterTitle": "重新命名主人",
@@ -2388,6 +2403,8 @@
         "sourceLabel": "教學來源",
         "contentLanguageNotice": "語言切換會同時更新頁面控制文案和正文內容。",
         "languageLabel": "語言",
+        "tocTitle": "目錄",
+        "tocEmpty": "暫無目錄",
         "guideUnavailable": "教學內容為空。"
     },
     "subtitle": {
@@ -3091,20 +3108,20 @@
                 "sayHello": "你好"
             },
             "lines": {
-                "introBasic": "這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！",
-                "takeoverCaptureCursor": "超級魔法按鈕出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！",
-                "takeoverPluginPreviewHome": "還沒完呢！你快看快看，這裡還有超～～多好玩的外掛呢！",
-                "takeoverPluginPreviewDashboard": "有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼～",
+                "introBasic": "這裡有一個神奇的小按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！",
+                "takeoverCaptureCursor": "超級魔法開關出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！",
+                "takeoverPluginPreviewHome": "還沒完呢！你快看快看，這裡還有超多好玩的外掛呢！",
+                "takeoverPluginPreviewDashboard": "有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼！",
                 "pluginDashboardPopupBlocked": "瀏覽器需要你親自點一下這裡開啟外掛面板。點一下這個「管理面板」，我就繼續帶你看。",
-                "takeoverSettingsPeekIntro": "當然啦，如果你想讓本喵多和你聊聊天也不是不行啦，給我多準備點小魚乾吧，嘿嘿，好了不逗你啦，設定都在這個齒輪裡。",
-                "takeoverSettingsPeekDetail": "你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！",
-                "takeoverSettingsPeekDetailPart1": "你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘或是修改記憶？",
-                "takeoverSettingsPeekDetailPart2": "等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉快關掉！",
-                "takeoverReturnControl": "好啦好啦，不霸佔你的電腦啦～控制權還給你了喵！可不許趁我不注意亂點奇怪的設定哦！之後的日子也請你多多關照了喵～",
-                "interruptResistLight1": "喂！不要拉我啦，還沒輪到你的回合呢！",
-                "interruptResistLight3": "等一下啦！還沒結束呢，不要隨便打斷我啦！",
-                "interruptAngryExit": "人類~~~~！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！",
-                "introGreetingReply": "歡迎回家，喵~ 外面的世界很辛苦吧？在這個專屬我們的小窩裡，你可以放下所有的煩惱哦。我是林悠怡，接下來的熟悉過程請放心交給我，我會一步步牽著您的手慢慢來的。",
+                "takeoverSettingsPeekIntro": "當然啦，如果你想讓本喵多和你聊聊天，也不是不行啦。給我多準備點小魚乾吧，嘿嘿。好了，不逗你啦，設定都在這個齒輪裡。",
+                "takeoverSettingsPeekDetail": "你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘，或是修改記憶？等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉，快關掉！",
+                "takeoverSettingsPeekDetailPart1": "你看，這裡可以穿我的新衣服、給我換一個好聽的聲音……換一個貓娘，或是修改記憶？",
+                "takeoverSettingsPeekDetailPart2": "等一下！你在幹嘛？該不會是想把我換掉吧？啊啊啊不行！快關掉，快關掉！",
+                "takeoverReturnControl": "好啦好啦，不霸佔你的電腦啦！控制權還給你了喵！可不許趁我不注意亂點奇怪的設定哦！之後的日子也請你多多關照了喵！",
+                "interruptResistLight1": "喂！不要拽我啦，現在還沒輪到你的回合呢！",
+                "interruptResistLight3": "等一下啦！還沒結束呢，不要這麼隨便打斷我啦！",
+                "interruptAngryExit": "人類！你真的很沒禮貌喵！既然你這麼想自己操作，那你就自己對著冰冷的螢幕玩去吧！哼！",
+                "introGreetingReply": "微風、陽光，還有剛剛好出現的你。初次見面，我是林悠怡，未來的日子請多關照喵！我把關於這裡的一切都寫進新手指南裡啦！就當作是我們相遇的第一份小禮物，請查收吧！",
                 "introPractice": "現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～",
                 "introActivationHint": "點一下這裡，我就能開始說話啦～"
             }
@@ -3896,9 +3913,58 @@
             "ready": "準備完成",
             "startButton": "開始"
         },
+        "startTutorial": {
+            "title": "玩法說明",
+            "move": "移動滑鼠引導玩家角色。",
+            "charge": "靠近球時按住左鍵蓄力，鬆開射門。",
+            "range": "離球 {{distance}} 內才會觸發踢球。",
+            "reset": "按 R 可以復位球和雙方位置。",
+            "ai": "NEKO 的心情和難度會隨局勢變化。"
+        },
         "hint": {
-            "controls": "滑鼠 = 引導玩家 · 按住左鍵 = 蓄力，鬆開 = 射門（離球 ≤90px 觸發）· R 復位",
-            "aiMood": "1-6 = AI 心情（平靜/開心/生氣/放鬆/悲傷/驚訝）· 進球後自動切換難度檔"
+            "controls": "滑鼠 = 引導玩家 · 按住左鍵 = 蓄力，鬆開 = 射門（離球 ≤{{distance}} 觸發）· R 復位",
+            "aiMood": "NEKO 的心情和難度會隨局勢變化"
+        },
+        "debugControls": {
+            "bounds": "啟用邊界（出界規則）",
+            "voiceOutput": "播放 LLM 台詞（專案語音）",
+            "voiceButton": "除錯語音",
+            "voicePlaceholder": "除錯：輸入最終轉寫後按 Enter",
+            "send": "送出",
+            "voiceStatusHidden": "除錯 STT：隱藏"
+        },
+        "debug": {
+            "mouse": "滑鼠：{{x}}, {{y}}",
+            "playerCenter": "玩家中心：{{x}}, {{y}}",
+            "aiCenter": "AI 中心：{{x}}, {{y}}  狀態：{{mode}}",
+            "state": "回合：{{round}}  難度：{{difficulty}}  心情：{{mood}}  蓄力：{{charge}}%",
+            "ball": "球：({{x}}, {{y}})  速度={{speed}}",
+            "event": "{{age}}秒  {{label}}  @({{x}},{{y}})  速度=({{vx}},{{vy}})",
+            "roundCenter": "第 {{round}} 回合"
+        },
+        "moods": {
+            "calm": "平靜",
+            "happy": "開心",
+            "angry": "生氣",
+            "relaxed": "放鬆",
+            "sad": "悲傷",
+            "surprised": "驚訝"
+        },
+        "difficulties": {
+            "max": "最高",
+            "lv2": "二檔",
+            "lv3": "三檔",
+            "lv4": "四檔"
+        },
+        "aiModes": {
+            "attack": "進攻",
+            "defend": "防守",
+            "clear": "解圍"
+        },
+        "debugEvents": {
+            "player-kick": "玩家踢球",
+            "ai-kick": "AI 踢球",
+            "unstick": "球脫困"
         },
         "loading": {
             "beginStartDefault": "分析開局上下文…",

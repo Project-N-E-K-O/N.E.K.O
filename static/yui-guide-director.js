@@ -183,9 +183,9 @@
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
-    const INTRO_GREETING_REPLY_TEXT = '欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。';
+    const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
-    const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～';
+    const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT_KEY = 'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard';
     const PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT = '浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。';
     const PLUGIN_DASHBOARD_POPUP_BLOCKED_TEXT_KEY = 'tutorial.yuiGuide.lines.pluginDashboardPopupBlocked';
@@ -210,7 +210,7 @@
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
     const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
-        intro_greeting_reply: '欢迎回家，喵~ 外面.mp3',
+        intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
         takeover_capture_cursor: '超级魔法按钮出现！只.mp3',
         takeover_plugin_preview_home: '还没完呢！你快看快看.mp3',
         takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
@@ -218,7 +218,7 @@
         takeover_settings_peek_detail: '你看，这里可以穿我的.mp3',
         interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-        interrupt_angry_exit: '人类~~~~！你真的.mp3',
+        interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
         takeover_return_control: '好啦好啦，不霸占你的.mp3'
     });
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
@@ -613,99 +613,82 @@
 
     const GUIDE_AUDIO_DURATIONS_BY_KEY = Object.freeze({
         intro_basic: Object.freeze({
-            zh: 16129,
-            ja: 19977,
-            en: 12218,
-            ko: 17978,
-            ru: 17018
+            zh: 15020,
+            ja: 19418,
+            en: 12957,
+            ko: 20297,
+            ru: 15726
         }),
         intro_greeting_reply: Object.freeze({
-            zh: 18219,
-            ja: 21818,
-            en: 17097,
-            ko: 18777,
-            ru: 17097
+            zh: 15020,
+            ja: 19178,
+            en: 17058,
+            ko: 23066,
+            ru: 19122
         }),
         takeover_capture_cursor: Object.freeze({
-            zh: 22889,
-            ja: 26274,
-            en: 20457,
-            ko: 21497,
-            ru: 25954
+            zh: 21760,
+            ja: 27714,
+            en: 23066,
+            ko: 26671,
+            ru: 24085
         }),
         takeover_plugin_preview_home: Object.freeze({
-            zh: 6583,
-            ja: 8297,
-            en: 5738,
-            ko: 6640,
-            ru: 5897
+            zh: 4937,
+            ja: 7097,
+            en: 5251,
+            ko: 6609,
+            ru: 4885
         }),
         takeover_plugin_preview_dashboard: Object.freeze({
-            zh: 9218,
-            ja: 16538,
-            en: 10857,
-            ko: 10857,
-            ru: 9497
+            zh: 8333,
+            ja: 13097,
+            en: 11024,
+            ko: 12408,
+            ru: 10188
         }),
         takeover_settings_peek_intro: Object.freeze({
-            zh: 11877,
-            ja: 17817,
-            en: 9338,
-            ko: 11360,
-            ru: 10697
+            zh: 9800,
+            ja: 13097,
+            en: 13113,
+            ko: 16535,
+            ru: 13662
         }),
         takeover_settings_peek_detail: Object.freeze({
-            zh: 13923,
-            ja: 24514,
-            en: 15497,
-            ko: 21600,
-            ru: 14937
+            zh: 14263,
+            ja: 19497,
+            en: 16170,
+            ko: 21629,
+            ru: 17711
         }),
         interrupt_resist_light_1: Object.freeze({
-            zh: 3994,
+            zh: 3265,
             ja: 5337,
-            en: 4617,
-            ko: 4538,
-            ru: 4538
+            en: 3579,
+            ko: 4180,
+            ru: 3109
         }),
         interrupt_resist_light_3: Object.freeze({
-            zh: 4493,
+            zh: 4049,
             ja: 7257,
-            en: 5097,
-            ko: 5680,
-            ru: 4937
+            en: 4232,
+            ko: 5825,
+            ru: 4702
         }),
         interrupt_angry_exit: Object.freeze({
-            zh: 9160,
+            zh: 8124,
             ja: 13898,
-            en: 9338,
-            ko: 7920,
-            ru: 10617
+            en: 8411,
+            ko: 9900,
+            ru: 10841
         }),
         takeover_return_control: Object.freeze({
-            zh: 11761,
-            ja: 19680,
-            en: 10857,
-            ko: 11577,
-            ru: 11337
+            zh: 11938,
+            ja: 14640,
+            en: 11990,
+            ko: 13766,
+            ru: 11964
         })
-    });
-
-    const GUIDE_DEBUG_ZH_TEXT_BY_KEY = Object.freeze({
-        'tutorial.yuiGuide.lines.introBasic': '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
-        'tutorial.yuiGuide.lines.takeoverCaptureCursor': '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
-        'tutorial.yuiGuide.lines.takeoverPluginPreviewHome': '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
-        'tutorial.yuiGuide.lines.takeoverPluginPreviewDashboard': '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～',
-        'tutorial.yuiGuide.lines.pluginDashboardPopupBlocked': '浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。',
-        'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro': '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。',
-        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetail': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
-        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart1': '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？',
-        'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2': '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！',
-        'tutorial.yuiGuide.lines.takeoverReturnControl': '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～',
-        'tutorial.yuiGuide.lines.interruptResistLight1': '喂！不要拽我啦，还没轮到你的回合呢！',
-        'tutorial.yuiGuide.lines.interruptResistLight3': '等一下啦！还没结束呢，不要随便打断我啦！',
-        'tutorial.yuiGuide.lines.interruptAngryExit': '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！',
-        'tutorial.yuiGuide.lines.introGreetingReply': '欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。'
     });
 
     function getGuideAudioCueConfig(voiceKey) {
@@ -8640,7 +8623,7 @@
             this.overlay.setAngry(true);
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
-            this.appendGuideChatMessage(bubbleText || '人类~~~~！你真的很没礼貌喵！', {
+            this.appendGuideChatMessage(bubbleText || '人类！你真的很没礼貌喵！', {
                 textKey: performance.bubbleTextKey || '',
                 voiceKey: performance.voiceKey,
                 streamPauseWithScene: false,

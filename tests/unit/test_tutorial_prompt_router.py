@@ -100,6 +100,50 @@ def test_heartbeat_route_rejects_request_with_wrong_csrf_token(unauthenticated_p
 
 
 @pytest.mark.unit
+def test_tutorial_prompt_reset_route_clears_completed_state(tutorial_prompt_client):
+    client, config = tutorial_prompt_client
+
+    started = client.post("/api/tutorial-prompt/tutorial-started", json={
+        "page": "home",
+        "source": "manual",
+    })
+    assert started.status_code == 200
+    completed = client.post("/api/tutorial-prompt/tutorial-completed", json={
+        "page": "home",
+        "source": "manual",
+        "tutorial_run_token": started.json()["tutorial_run_token"],
+    })
+    assert completed.status_code == 200
+
+    response = client.post("/api/tutorial-prompt/reset", json={
+        "reason": "manual_home_tutorial_reset",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["state"]["status"] == "observing"
+    assert body["state"]["home_tutorial_completed"] is False
+    assert body["state"]["manual_home_tutorial_viewed"] is False
+
+    state = load_tutorial_prompt_state(config)
+    assert state["completed_at"] == 0
+    assert state["started_at"] == 0
+
+
+@pytest.mark.unit
+def test_tutorial_prompt_reset_route_rejects_request_without_csrf_and_origin(unauthenticated_prompt_client):
+    client, _config = unauthenticated_prompt_client
+
+    response = client.post("/api/tutorial-prompt/reset", json={
+        "reason": "manual_home_tutorial_reset",
+    })
+
+    assert response.status_code == 403
+    assert response.json().get("error_code") == "csrf_validation_failed"
+
+
+@pytest.mark.unit
 def test_yui_guide_handoff_token_is_backend_authoritative_and_single_use(tutorial_prompt_client):
     client, _config = tutorial_prompt_client
 

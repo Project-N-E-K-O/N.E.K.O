@@ -8,14 +8,18 @@
 
 Solo tienes que decirle al AI Agent uno de los siguientes tipos de comandos y el plugin los analizará y ejecutará automáticamente:
 
-| Tipo de acción | Comando de ejemplo (cópialo y úsalo) | Notas |
-| :--- | :--- | :--- |
-| **💡 Encender/apagar dispositivo** | `enciende la luz del dormitorio` <br> `apaga el enchufe del salón` | Admite verbos como «enciende / apaga / on / off» |
-| **🏠 Control por zona** | `enciende la luz del salón` <br> `apaga el aire acondicionado del dormitorio principal` | **(Novedad clave)** Admite «nombre de habitación + nombre de dispositivo» |
-| **🌡️ Ajustar temperatura** | `pon el aire a 26 grados` <br> `ajusta el aire a 24 grados` | Reconoce números y unidades automáticamente |
-| **☀️ Ajustar brillo** | `pon la luz al 50%` <br> `brillo de la lámpara de mesa 30` | Admite porcentajes o números enteros |
-| **🔄 Cambiar de modo** | `pon el aire en modo frío` <br> `pon el ventilador en automático` | Admite las palabras de modo más comunes |
-| **🎬 Ejecutar escena** | `ejecuta la escena de llegada a casa` <br> `activa la escena de salir de casa` | Las escenas deben estar configuradas previamente en la Mijia App |
+- **💡 Encender/apagar dispositivo** — `enciende la luz del dormitorio` / `apaga el enchufe del salón`  
+  Admite verbos como «enciende / apaga / on / off»
+- **🏠 Control por zona** — `enciende la luz del salón` / `apaga el aire acondicionado del dormitorio principal`  
+  **(Novedad clave)** Admite «nombre de habitación + nombre de dispositivo»
+- **🌡️ Ajustar temperatura** — `pon el aire a 26 grados` / `ajusta el aire a 24 grados`  
+  Reconoce números y unidades automáticamente
+- **☀️ Ajustar brillo** — `pon la luz al 50%` / `brillo de la lámpara de mesa 30`  
+  Admite porcentajes o números enteros
+- **🔄 Cambiar de modo** — `pon el aire en modo frío` / `pon el ventilador en automático`  
+  Admite las palabras de modo más comunes
+- **🎬 Ejecutar escena** — `ejecuta la escena de llegada a casa` / `activa la escena de salir de casa`  
+  Las escenas deben estar configuradas previamente en la Mijia App
 
 ---
 
@@ -44,12 +48,14 @@ Para evitar confusiones, recomendamos adoptar el hábito de usar **`[nombre de h
 
 Si necesitas llamar directamente a las interfaces del plugin, estos son los puntos de entrada principales:
 
-| ID de entrada | Función | Ejemplo de parámetros |
-| :--- | :--- | :--- |
-| `smart_control` | **Control unificado por lenguaje natural (recomendado)** | `{ "command": "enciende la luz del dormitorio" }` |
-| `find_device_by_name` | Buscar un dispositivo | `{ "name": "luz del dormitorio" }` |
-| `query_device_state` | Consultar el estado de un dispositivo | `{ "name": "aire acondicionado" }` |
-| `execute_scene` | Ejecutar una escena | `{ "scene_id": "12345" }` |
+- **`smart_control`** — Control unificado por lenguaje natural (recomendado)  
+  Parámetros: `{ "command": "enciende la luz del dormitorio" }`
+- **`list_devices`** — Obtener lista de dispositivos  
+  Parámetros: `{ "home_id": "12345" }`
+- **`query_device_state`** — Consultar el estado de un dispositivo  
+  Parámetros: `{ "name": "aire acondicionado" }`
+- **`list_scenes`** — Listar escenas inteligentes  
+  Parámetros: `{ "home_id": "12345" }`
 
 ---
 
