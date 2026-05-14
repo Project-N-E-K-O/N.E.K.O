@@ -169,6 +169,52 @@ def test_commit_state_keeps_live_context_snapshot_when_changed(tmp_path: Path) -
 
 
 @pytest.mark.plugin_unit
+def test_persist_context_snapshot_allows_semantic_degraded_summary(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(
+        plugin_dir,
+        _make_effective_config(
+            bridge_root,
+            llm={
+                "context_persist_enabled": True,
+                "context_persist_require_game_id": True,
+            },
+        ),
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    plugin._cfg = build_config(ctx._config)
+    plugin._state.active_game_id = "demo.alpha"
+    plugin._state.active_session_id = "sess-a"
+    plugin._state.latest_snapshot = {
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+    }
+
+    plugin._persist_context_snapshot_from_summary(
+        context={
+            "game_id": "demo.alpha",
+            "session_id": "sess-a",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "stable_lines": [{"line_id": " line-1 "}],
+        },
+        payload={
+            "degraded": True,
+            "semantic_degraded": True,
+            "fallback_used": False,
+            "summary": " OCR session summary ",
+        },
+    )
+
+    assert plugin._state.context_snapshot["summary_seed"] == "OCR session summary"
+    assert plugin._state.context_snapshot["stable_line_ids"] == ["line-1"]
+    assert plugin._persist.load_context_snapshot(
+        current_game_id="demo.alpha",
+        require_game_id=True,
+    )["summary_seed"] == "OCR session summary"
+
+
+@pytest.mark.plugin_unit
 def test_expand_bridge_root_and_read_bom_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     expanded = expand_bridge_root("%LOCALAPPDATA%/N.E.K.O/galgame-bridge")

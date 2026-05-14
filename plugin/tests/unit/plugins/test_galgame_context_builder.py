@@ -356,3 +356,54 @@ def test_summarize_context_respects_small_configured_maximum() -> None:
     )
 
     assert [item["line_id"] for item in result["stable_lines"]] == ["line-7", "line-8", "line-9"]
+
+
+def test_summarize_context_uses_restored_context_snapshot_when_history_is_empty() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "active_game_id": "demo.alpha",
+            "active_session_id": "sess-a",
+            "latest_snapshot": {},
+            "history_lines": [],
+            "history_observed_lines": [],
+            "history_choices": [],
+            "context_snapshot": {
+                "game_id": "demo.alpha",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "summary_seed": "上一轮总结：雪乃决定继续调查。",
+                "stable_line_ids": ["line-1", "line-2"],
+            },
+        },
+        scene_id="",
+    )
+
+    assert result["scene_id"] == "scene-a"
+    assert result["route_id"] == "route-a"
+    assert result["recent_lines"] == []
+    assert result["scene_summary_seed"] == "上一轮总结：雪乃决定继续调查。"
+    assert result["context_snapshot_summary_seed"] == "上一轮总结：雪乃决定继续调查。"
+
+
+def test_summarize_context_ignores_restored_context_snapshot_for_other_scene() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "active_game_id": "demo.alpha",
+            "latest_snapshot": {"scene_id": "scene-b"},
+            "history_lines": [],
+            "history_observed_lines": [],
+            "history_choices": [],
+            "context_snapshot": {
+                "game_id": "demo.alpha",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "summary_seed": "旧场景总结不应复用。",
+            },
+        },
+        scene_id="",
+    )
+
+    assert result["scene_id"] == "scene-b"
+    assert result["route_id"] == ""
+    assert result["context_snapshot_summary_seed"] == ""
+    assert result["scene_summary_seed"] != "旧场景总结不应复用。"

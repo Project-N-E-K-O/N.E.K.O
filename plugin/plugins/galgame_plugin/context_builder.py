@@ -587,6 +587,35 @@ def _snapshot_for_stable_summary_seed(
     return seed_snapshot
 
 
+def _restored_context_snapshot_summary_seed(
+    local_state: dict[str, Any],
+    *,
+    scene_id: str,
+    route_id: str,
+) -> str:
+    restored = local_state.get("context_snapshot")
+    if not isinstance(restored, dict):
+        return ""
+    summary_seed = str(restored.get("summary_seed") or "").strip()
+    if not summary_seed:
+        return ""
+
+    active_game_id = str(local_state.get("active_game_id") or "").strip()
+    restored_game_id = str(restored.get("game_id") or "").strip()
+    if restored_game_id and active_game_id and restored_game_id != active_game_id:
+        return ""
+
+    restored_scene_id = str(restored.get("scene_id") or "").strip()
+    if restored_scene_id and scene_id and restored_scene_id != scene_id:
+        return ""
+
+    restored_route_id = str(restored.get("route_id") or "").strip()
+    if restored_route_id and route_id and restored_route_id != route_id:
+        return ""
+
+    return summary_seed
+
+
 def build_explain_context(
     local_state: dict[str, Any],
     *,
@@ -711,10 +740,23 @@ def build_summarize_context(
     """Build the prompt context used by the summarize-scene LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
     effective_line = resolve_effective_current_line(local_state)
+    restored = local_state.get("context_snapshot")
+    restored = restored if isinstance(restored, dict) else {}
+    restored_scene_id = str(restored.get("scene_id") or "")
+    restored_route_id = str(restored.get("route_id") or "")
     effective_scene_id = scene_id or str(
-        snapshot.get("scene_id") or (effective_line or {}).get("scene_id") or ""
+        snapshot.get("scene_id")
+        or (effective_line or {}).get("scene_id")
+        or restored_scene_id
+        or ""
     )
-    route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
+    restored_route_matches = not restored_scene_id or restored_scene_id == effective_scene_id
+    route_id = str(
+        snapshot.get("route_id")
+        or (effective_line or {}).get("route_id")
+        or (restored_route_id if restored_route_matches else "")
+        or ""
+    )
     history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
         local_state,
         config,
@@ -745,6 +787,11 @@ def build_summarize_context(
         line_id=str(snapshot.get("line_id") or ""),
         choice_ids=[str(choice.get("choice_id") or "") for choice in selected_choices],
     )
+    restored_summary_seed = _restored_context_snapshot_summary_seed(
+        local_state,
+        scene_id=effective_scene_id,
+        route_id=route_id,
+    )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),
         "session_id": str(local_state.get("active_session_id") or ""),
@@ -755,13 +802,14 @@ def build_summarize_context(
         "stable_lines": stable_lines,
         "observed_lines": observed_lines,
         "recent_choices": selected_choices,
-        "scene_summary_seed": build_local_scene_summary(
+        "scene_summary_seed": restored_summary_seed or build_local_scene_summary(
             scene_id=effective_scene_id,
             route_id=route_id,
             lines=stable_lines,
             selected_choices=selected_choices,
             snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
         ),
+        "context_snapshot_summary_seed": restored_summary_seed,
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
