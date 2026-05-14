@@ -1065,17 +1065,23 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     if (!model || !model.internalModel || !model.internalModel.motionManager) return;
     const motionManager = model.internalModel.motionManager;
     if (this._temporaryMotionSuspendToken) return;
-    if (this.isAvatarPerformanceCapabilityLocked('motion')) return;
 
     // 初始化定时器集合，并在重新设置时清理旧定时器
     this._clearIdleMotionLoopTimers();
 
     // 生成一个调度器，自带当前模型有效性校验与定时器回收
-    const scheduleIdleMotion = (delay) => {
+    const scheduleIdleMotion = (delay, options = {}) => {
+        if (options.replace === true) {
+            this._clearIdleMotionLoopTimers();
+        }
         const timer = setTimeout(() => {
             this._idleMotionLoopTimers.delete(timer);
             // 如果模型已销毁，或当前挂载的模型已经不是传入的这个模型，则直接取消
-            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
+            if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
+                return;
+            }
+            if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+                scheduleIdleMotion(1000, { replace: true });
                 return;
             }
             if (!motionManager.playing) {
@@ -1105,6 +1111,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
             return;
         }
         if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+            scheduleIdleMotion(1000, { replace: true });
             return;
         }
         if (window._currentMotionPreviewId != null) {
