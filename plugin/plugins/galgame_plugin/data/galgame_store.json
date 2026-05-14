@@ -47,7 +47,7 @@
   "tutorial_progress": {
     "completed": false,
     "completed_at": 0.0,
-    "last_step_index": 1,
+    "last_step_index": 0,
     "skipped": false,
     "started_at": 0.0
   }
