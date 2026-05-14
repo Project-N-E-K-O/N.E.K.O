@@ -34,11 +34,15 @@ def build_knowledge_map_payload(
     weak_topic_ids = {str(item.get("topic_id") or "") for item in weak_items}
     nodes = []
     edges = []
+    weak_node_count = 0
     for topic in topic_items:
         topic_id = str(topic.get("id") or "").strip()
         if not topic_id:
             continue
         mastery = mastery_by_topic.get(topic_id) or {}
+        weak = topic_id in weak_topic_ids
+        if weak:
+            weak_node_count += 1
         nodes.append(
             {
                 "id": topic_id,
@@ -47,7 +51,7 @@ def build_knowledge_map_payload(
                 "chapter": str(topic.get("chapter") or ""),
                 "mastery": float(mastery.get("mastery") or 0.0),
                 "level": str(mastery.get("level") or ""),
-                "weak": topic_id in weak_topic_ids,
+                "weak": weak,
             }
         )
         for prereq in topic.get("prerequisites") or []:
@@ -71,7 +75,7 @@ def build_knowledge_map_payload(
         "summary": {
             "topic_count": len(nodes),
             "edge_count": len(edges),
-            "weak_topic_count": len(weak_items),
+            "weak_topic_count": weak_node_count,
             "wrong_question_count": len(wrong_items),
         },
     }

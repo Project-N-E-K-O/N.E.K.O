@@ -663,6 +663,23 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])
 
 
+def test_study_knowledge_map_weak_topic_count_matches_visible_nodes() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {"id": "visible_weak", "name": "Visible weak topic"},
+            {"id": "visible_strong", "name": "Visible strong topic"},
+        ],
+        weak_topics=[
+            {"topic_id": "visible_weak", "name": "Visible weak topic"},
+            {"topic_id": "hidden_weak", "name": "Hidden weak topic"},
+        ],
+    )
+
+    assert payload["summary"]["weak_topic_count"] == 1
+    assert [node["id"] for node in payload["nodes"] if node["weak"]] == ["visible_weak"]
+    assert len(payload["weak_topics"]) == 2
+
+
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
@@ -2133,6 +2150,46 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_study_plugin_shutdown_continues_when_dynamic_entry_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    shutdown_called = False
+
+    class _Agent:
+        async def shutdown(self):
+            nonlocal shutdown_called
+            shutdown_called = True
+
+    def _fail_unregister(_entry_id: str) -> None:
+        raise RuntimeError("unregister failed")
+
+    plugin._agent = _Agent()
+    plugin.logger = ctx.logger
+    plugin.unregister_dynamic_entry = _fail_unregister  # type: ignore[method-assign]
+
+    shutdown_result = await plugin.shutdown()
+
+    assert isinstance(shutdown_result, Ok)
+    assert shutdown_called is True
+    assert any("dynamic entry cleanup failed" in str(args[0]) for args, _kwargs in ctx.logger.warnings)
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2155,8 +2212,13 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
     try:
         entries = plugin.collect_entries()
         assert "study_export_notes" in entries
-        export_formats = entries["study_export_notes"].meta.input_schema["properties"]["fmt"]["enum"]
+        properties = entries["study_export_notes"].meta.input_schema["properties"]
+        export_formats = properties["fmt"]["enum"]
         assert export_formats == ["markdown", "pdf", "docx"]
+        assert "range" not in properties
+        assert properties["time_range"]["default"] == "recent"
+        assert properties["recent_limit"]["default"] == 30
+        assert properties["topic_ids"]["default"] == []
         plugin._store.append_interaction(
             kind="concept_explain",
             input_text="derivative",
@@ -2168,8 +2230,9 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         assert isinstance(exported, Ok)
         assert exported.value["filename"] == "unit-notes.md"
         assert exported.value["format"] == "markdown"
-        assert exported.value["style"] == "compact"
+        assert exported.value["style"] == "neko"
         assert exported.value["content_base64"]
+        assert "Range: recent" in exported.value["markdown"]
         assert "derivative" in exported.value["markdown"]
 
         knowledge_map = await plugin.study_knowledge_map(limit=10)

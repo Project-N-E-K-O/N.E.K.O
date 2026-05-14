@@ -165,7 +165,10 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
-        self.unregister_dynamic_entry("study_export_notes")
+        try:
+            self.unregister_dynamic_entry("study_export_notes")
+        except Exception as exc:
+            self.logger.warning("study shutdown dynamic entry cleanup failed: {}", exc)
         if self._agent is not None:
             await self._agent.shutdown()
         with self._lock:
@@ -263,7 +266,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "style": {"type": "string", "enum": ["neko", "academic", "compact"], "default": "neko"},
                     "title": {"type": "string", "default": "Study Notes"},
                     "preview_only": {"type": "boolean", "default": False},
-                    "range": {"type": "string", "default": "recent"},
+                    "time_range": {"type": "string", "default": "recent"},
                     "recent_limit": {"type": "integer", "default": 30},
                     "topic_ids": {"type": "array", "items": {"type": "string"}, "default": []},
                 },
@@ -275,12 +278,12 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def _study_export_notes_entry(
         self,
         fmt: str = "markdown",
-        style: str | None = None,
-        title: str | None = None,
+        style: str | None = "neko",
+        title: str | None = "Study Notes",
         preview_only: bool = False,
-        range: str | None = None,
-        recent_limit: int | None = None,
-        topic_ids: list[str] | None = None,
+        time_range: str | None = "recent",
+        recent_limit: int | None = 30,
+        topic_ids: list[str] | None = [],
         **_,
     ):
         try:
@@ -294,7 +297,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 style=style,
                 title=title,
                 preview_only=bool(preview_only),
-                range=range,
+                time_range=time_range,
                 recent_limit=recent_limit,
                 topic_ids=topic_ids if isinstance(topic_ids, list) else [],
             )

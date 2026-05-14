@@ -79,16 +79,19 @@ class DocExporter:
         style: str | None = None,
         title: str | None = None,
         preview_only: bool = False,
-        range: str | None = None,
+        time_range: str | None = None,
         recent_limit: int | None = None,
         topic_ids: list[str] | tuple[str, ...] | None = None,
+        **legacy_options: Any,
     ) -> ExportDocument:
+        if time_range is None:
+            time_range = str(legacy_options.get("range") or "") or None
         export_format = normalize_format(fmt)
         export_style = self.normalize_style(style or self._config.default_style)
         markdown = self.build_markdown(
             title=title,
             style=export_style,
-            range=range,
+            time_range=time_range,
             recent_limit=recent_limit,
             topic_ids=topic_ids,
         )
@@ -107,10 +110,13 @@ class DocExporter:
         *,
         title: str | None = None,
         style: str | None = None,
-        range: str | None = None,
+        time_range: str | None = None,
         recent_limit: int | None = None,
         topic_ids: list[str] | tuple[str, ...] | None = None,
+        **legacy_options: Any,
     ) -> str:
+        if time_range is None:
+            time_range = str(legacy_options.get("range") or "") or None
         export_style = self.normalize_style(style or self._config.default_style)
         style_payload = self.load_style(export_style)
         limit = max(1, min(200, int(recent_limit or 30)))
@@ -135,8 +141,8 @@ class DocExporter:
         ]
         if tone:
             lines.append(f"- Tone: `{escape_markdown(tone, limit=40)}`")
-        if range:
-            lines.append(f"- Range: {escape_markdown(range, limit=120)}")
+        if time_range:
+            lines.append(f"- Range: {escape_markdown(time_range, limit=120)}")
         lines.extend(["", "## Overview", ""])
         lines.append(f"- Recent interactions: {len(interactions)}")
         lines.append(f"- Topics included: {len(topics)}")
