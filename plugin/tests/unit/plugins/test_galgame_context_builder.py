@@ -279,6 +279,39 @@ def test_dynamic_line_sample_uses_timestamp_recency_across_sources() -> None:
     assert result == 16
 
 
+def test_recency_ordered_lines_tags_stream_source_before_condensing() -> None:
+    stable_lines = [
+        {
+            "speaker": "A",
+            "text": "stable",
+            "scene_id": "scene-a",
+            "line_id": "stable-1",
+            "stability": "stable",
+            "ts": "2026-05-14T00:00:00Z",
+        }
+    ]
+    observed_lines = [
+        {
+            "speaker": "A",
+            "text": "observed",
+            "scene_id": "scene-a",
+            "line_id": "observed-1",
+            "stability": "stable",
+            "ts": "2026-05-14T00:00:01Z",
+        }
+    ]
+
+    recent_lines = context_builder._recency_ordered_context_lines(
+        stable_lines,
+        observed_lines,
+    )
+    condensed = context_builder._condense_dialogue_batch(recent_lines)
+
+    assert [item["source"] for item in recent_lines] == ["stable", "observed"]
+    assert [item["line_id"] for item in condensed] == ["stable-1", "observed-1"]
+    assert all("_condensed_count" not in item for item in condensed)
+
+
 def test_context_window_bounds_preserves_zero_until_minimum_clamp() -> None:
     config = GalgameLLMConfig(
         context_explain_min_lines=0,

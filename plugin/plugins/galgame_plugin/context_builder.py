@@ -155,10 +155,14 @@ def _recency_ordered_context_lines(
     observed_lines: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     indexed: list[tuple[int, str, int, dict[str, Any]]] = []
-    for fallback_index, item in enumerate([*stable_lines, *observed_lines]):
-        line = dict(item) if isinstance(item, dict) else {}
-        ts = str(line.get("ts") or "").strip()
-        indexed.append((1 if ts else 0, ts, fallback_index, line))
+    fallback_index = 0
+    for source, items in (("stable", stable_lines), ("observed", observed_lines)):
+        for item in items:
+            line = dict(item) if isinstance(item, dict) else {}
+            line.setdefault("source", source)
+            ts = str(line.get("ts") or "").strip()
+            indexed.append((1 if ts else 0, ts, fallback_index, line))
+            fallback_index += 1
     indexed.sort(key=lambda item: (item[0], item[1], item[2]))
     return [item[3] for item in indexed]
 
