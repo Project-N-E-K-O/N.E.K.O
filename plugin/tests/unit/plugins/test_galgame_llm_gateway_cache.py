@@ -237,16 +237,16 @@ def test_validate_near_match_rejects_low_observed_similarity() -> None:
 @pytest.mark.plugin_unit
 def test_observed_similarity_helpers_jaccard_behaviour() -> None:
     sig_a = _line_similarity_signature(
-        [{"speaker": "雪乃", "text": "今天天气真好啊"}]
+        [{"speaker": "雪乃", "text": "她说：今天天气真好啊，要不要去外面散步呢？"}]
     )
     sig_b = _line_similarity_signature(
-        [{"speaker": "雪乃", "text": "今天天气真好啊"}]
+        [{"speaker": "雪乃", "text": "她说：今天天气真好啊，要不要去外面散步呢。"}]
     )
     sig_c = _line_similarity_signature(
         [{"speaker": "雪乃", "text": "完全不同的句子"}]
     )
-    assert sig_a == sig_b
-    assert _observed_similarity(sig_a, sig_b) == 1.0
+    assert "今天天气真好" in sig_a
+    assert _observed_similarity(sig_a, sig_b) >= _NEAR_MATCH_OBSERVED_SIMILARITY_THRESHOLD
     assert _observed_similarity(sig_a, sig_c) < _NEAR_MATCH_OBSERVED_SIMILARITY_THRESHOLD
     assert _observed_similarity("", "anything") == 0.0
     assert _observed_similarity("anything", "") == 0.0
@@ -280,10 +280,10 @@ async def test_near_match_cache_returns_cached_payload_for_similar_context() -> 
     first_context = _explain_context(
         observed_text="她对春希说：今天天气真好啊，要不要去外面散步呢",
     )
-    # Same normalized observed text, but volatile screen_context differs →
-    # exact fingerprint differs, near-match fingerprint matches.
+    # Slightly edited observed text and volatile screen_context differ, but
+    # the normalized text remains similar enough for near-match reuse.
     second_context = _explain_context(
-        observed_text="她对春希说：今天天气真好啊，要不要去外面散步呢",
+        observed_text="她对春希说：今天天气真好啊，要不要去外面散步呢。",
         screen_context={"background": "different"},
     )
 

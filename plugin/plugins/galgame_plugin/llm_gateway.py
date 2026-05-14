@@ -37,9 +37,6 @@ _NEAR_MATCH_EXCLUDED_FIELDS = frozenset(
         "current_snapshot",
     }
 )
-_NEAR_MATCH_HASH_KEYS = frozenset(
-    {"_stable_lines_hash", "_current_line_hash", "_observed_signature"}
-)
 _NEAR_MATCH_OBSERVED_SIMILARITY_THRESHOLD = 0.85
 
 
@@ -113,19 +110,18 @@ def _hash_line(line: Any) -> str:
 def _line_similarity_signature(observed_lines: Any) -> str:
     if not isinstance(observed_lines, list) or not observed_lines:
         return ""
-    normalized: list[dict[str, str]] = []
+    normalized: list[str] = []
     for ln in observed_lines:
         if not isinstance(ln, dict):
             continue
-        normalized.append(
-            {
-                "s": str(ln.get("speaker") or ""),
-                "t": _normalize_observed_text(ln.get("text")),
-            }
-        )
+        speaker = _normalize_observed_text(ln.get("speaker"))
+        text = _normalize_observed_text(ln.get("text"))
+        if not speaker and not text:
+            continue
+        normalized.append(f"{speaker}\n{text}" if speaker else text)
     if not normalized:
         return ""
-    return _stable_json_fingerprint(normalized)
+    return "\n".join(normalized)
 
 
 def _observed_similarity(cached_sig: str, current_sig: str) -> float:
