@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
-import { parseChatMessage } from './message-schema';
+import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   it('renders the empty state when there are no messages', () => {
@@ -39,6 +40,146 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-chat-stage-options')).not.toBeNull();
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
+  });
+
+  it('places compact galgame options below the surface when there is enough viewport space', async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 900,
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const appShell = container.querySelector('.app-shell');
+      const choiceLayer = container.querySelector('.compact-chat-choice-anchor');
+      expect(appShell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(appShell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 100,
+          left: 0,
+          right: 420,
+          bottom: 360,
+          width: 420,
+          height: 260,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'below');
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
+  it('places compact galgame options above the surface when the lower viewport space is insufficient', async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 460,
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const appShell = container.querySelector('.app-shell');
+      const choiceLayer = container.querySelector('.compact-chat-choice-anchor');
+      expect(appShell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(appShell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 100,
+          left: 0,
+          right: 420,
+          bottom: 380,
+          width: 420,
+          height: 280,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
   });
 
   it('keeps compact-only state derivation out of the full surface', () => {
@@ -104,6 +245,64 @@ describe('App', () => {
     expect(onCompactChatStateChange).toHaveBeenCalledWith('input');
   });
 
+  it('focuses the compact textarea immediately after opening input mode', async () => {
+    const message = parseChatMessage({
+      id: 'assistant-compact-focus',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '点开就直接输入吧' }],
+    });
+
+    function CompactFocusHarness() {
+      const [compactChatState, setCompactChatState] = useState<CompactChatState>('default');
+      return (
+        <App
+          chatSurfaceMode="compact"
+          compactChatState={compactChatState}
+          messages={[message]}
+          onCompactChatStateChange={setCompactChatState}
+        />
+      );
+    }
+
+    render(<CompactFocusHarness />);
+
+    fireEvent.click(screen.getByRole('button', { name: '点开就直接输入吧' }));
+
+    const input = await screen.findByPlaceholderText('Type a message...');
+    await waitFor(() => {
+      expect(input).toHaveFocus();
+    });
+  });
+
+  it('prefers the latest assistant text for compact preview instead of echoing the latest user message', () => {
+    const assistantMessage = parseChatMessage({
+      id: 'assistant-compact-priority',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '先看我这边的引导内容' }],
+    });
+    const userMessage = parseChatMessage({
+      id: 'user-compact-priority',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: '这是我刚刚发出的内容' }],
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" messages={[assistantMessage, userMessage]} />,
+    );
+
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('先看我这边的引导内容');
+    expect(container.querySelector('.compact-chat-capsule-button')).not.toHaveTextContent('这是我刚刚发出的内容');
+  });
+
   it('renders compact input as the same surface with an inline send button only', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
@@ -162,6 +361,75 @@ describe('App', () => {
     });
 
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+  });
+
+  it('re-attaches the composer width observer after returning from compact mode', async () => {
+    vi.useFakeTimers();
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const observerInstances: ResizeObserverMock[] = [];
+
+    const emitResize = (observer: ResizeObserverMock, width: number) => {
+      if (!observer.target) {
+        throw new Error('ResizeObserver target missing in test');
+      }
+      observer.callback([
+        {
+          target: observer.target,
+          contentRect: {
+            width,
+            height: 40,
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            bottom: 40,
+            right: width,
+            toJSON: () => ({}),
+          },
+        } as ResizeObserverEntry,
+      ], observer as unknown as ResizeObserver);
+    };
+
+    class ResizeObserverMock {
+      readonly callback: ResizeObserverCallback;
+      target: Element | null = null;
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        observerInstances.push(this);
+      }
+
+      observe(target: Element) {
+        this.target = target;
+      }
+
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return []; }
+    }
+
+    globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
+
+    try {
+      const { container, rerender } = render(<App />);
+      expect(observerInstances.length).toBeGreaterThanOrEqual(1);
+      const initialObserverCount = observerInstances.length;
+
+      rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
+      rerender(<App chatSurfaceMode="full" />);
+      expect(observerInstances.length).toBeGreaterThan(initialObserverCount);
+
+      await act(async () => {
+        emitResize(observerInstances[observerInstances.length - 1], 420);
+        vi.advanceTimersByTime(300);
+      });
+
+      expect(container.querySelector('.composer-overflow-btn')).toBeNull();
+      expect(container.querySelector('.composer-galgame-btn')).not.toBeNull();
+    } finally {
+      globalThis.ResizeObserver = originalResizeObserver;
+      vi.useRealTimers();
+    }
   });
 
   it('renders grouped assistant messages with a single visible avatar', () => {

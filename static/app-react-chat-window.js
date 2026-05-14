@@ -25,6 +25,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var savedExpandedShellPosition = null; // last known full-surface desktop position
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var CHAT_SURFACE_MODE_SEQUENCE = ['full', 'compact', 'minimized'];
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
@@ -640,15 +641,22 @@
         var topbar = root.querySelector('.window-topbar');
         var composer = root.querySelector('.composer-panel');
         var messageList = root.querySelector('.message-list');
-        if (!topbar || !composer || !messageList) {
-            resetMobileContentLayoutState(shell, topbar, composer, messageList);
+        var compactStage = root.querySelector('.chat-body-compact-surface');
+        var contentNode = messageList;
+        if (!contentNode && getCurrentChatSurfaceMode() === 'compact') {
+            contentNode = compactStage || root.querySelector('.compact-chat-stage') || root.querySelector('.compact-chat-input-shell') || root.querySelector('.compact-chat-capsule-shell');
+        }
+        if (!topbar || !composer || !contentNode) {
+            resetMobileContentLayoutState(shell, topbar, composer, messageList || compactStage);
             return;
         }
 
         var maxHeight = getMobileMaxHeight();
         if (!maxHeight) return;
 
-        var desiredMessageHeight = Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
+        var desiredMessageHeight = getCurrentChatSurfaceMode() === 'compact'
+            ? Math.max(0, Math.ceil(contentNode.getBoundingClientRect().height))
+            : Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
         var desiredHeight = Math.ceil(
             topbar.getBoundingClientRect().height
             + composer.getBoundingClientRect().height
@@ -1015,6 +1023,22 @@
         } catch (_) {}
     }
 
+    function rememberExpandedShellPosition(left, top) {
+        if (isMobileWidth()) return;
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+        savedExpandedShellPosition = {
+            left: Math.round(left),
+            top: Math.round(top)
+        };
+    }
+
+    function snapshotExpandedShellPositionFromShell() {
+        var shell = getShell();
+        if (!shell || isMobileWidth()) return;
+        var rect = shell.getBoundingClientRect();
+        rememberExpandedShellPosition(rect.left, rect.top);
+    }
+
     function persistSize(width, height) {
         try {
             localStorage.setItem(STORAGE_WIDTH_KEY, String(Math.round(width)));
@@ -1083,6 +1107,7 @@
         var left = Math.max(0, Math.round(window.innerWidth * DESKTOP_DEFAULT_LEFT_RATIO));
         var top = Math.max(0, Math.round((window.innerHeight - rect.height) / 2));
         applyPosition(left, top);
+        rememberExpandedShellPosition(left, top);
         persistPosition(left, top);
     }
 
@@ -1114,6 +1139,7 @@
         var stored = getStoredPosition();
         if (stored) {
             applyPosition(stored.left, stored.top);
+            rememberExpandedShellPosition(stored.left, stored.top);
         } else {
             positionWindowAtLeftMiddle();
         }
@@ -2259,11 +2285,32 @@
             height = rect.height;
         }
 
+        if (getCurrentChatSurfaceMode() === 'compact') {
+            var compactTarget = getCompactSurfaceTarget();
+            if (compactTarget) {
+                return {
+                    width: width,
+                    height: height,
+                    left: compactTarget.left,
+                    top: compactTarget.top
+                };
+            }
+        }
+
+        var expandedTargetPosition = savedExpandedShellPosition
+            || getStoredPosition()
+            || (savedShellPosition
+                ? {
+                    left: savedShellPosition.left,
+                    top: savedShellPosition.top
+                }
+                : null);
+
         return {
             width: width,
             height: height,
-            left: savedShellPosition ? savedShellPosition.left : 0,
-            top: savedShellPosition ? savedShellPosition.top : 0
+            left: expandedTargetPosition ? expandedTargetPosition.left : 0,
+            top: expandedTargetPosition ? expandedTargetPosition.top : 0
         };
     }
 
@@ -2313,6 +2360,10 @@
         if (previousMode === normalized) {
             syncChatSurfaceModeUI();
             return normalized;
+        }
+
+        if (!previousMinimized && previousMode === 'full') {
+            snapshotExpandedShellPositionFromShell();
         }
 
         resetCompactChatState();
@@ -2548,6 +2599,7 @@
                 activeAnimationCleanup = null;
                 shell.classList.remove('is-expanding');
                 shell.style.transform = 'none';
+                var surfaceModeAfterExpand = getCurrentChatSurfaceMode();
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
@@ -2559,18 +2611,15 @@
                         restorePosition();
                         return;
                     }
-                    if (isHomeCompactSurfaceRoute()) {
+                    if (surfaceModeAfterExpand !== 'full') {
+                        syncCompactSurfaceAnchor();
                         return;
                     }
-                    var targetPosition = savedShellPosition
-                        ? { left: savedShellPosition.left, top: savedShellPosition.top }
-                        : null;
                     var r = shell.getBoundingClientRect();
-                    var clamped = clampPosition(
-                        targetPosition ? targetPosition.left : r.left,
-                        targetPosition ? targetPosition.top : r.top
-                    );
+                    var targetPosition = savedExpandedShellPosition || getStoredPosition();
+                    var clamped = clampPosition(targetPosition ? targetPosition.left : r.left, targetPosition ? targetPosition.top : r.top);
                     applyPosition(clamped.left, clamped.top);
+                    rememberExpandedShellPosition(clamped.left, clamped.top);
                     if (!window._chatAdapterActive) {
                         persistPosition(clamped.left, clamped.top);
                     }
@@ -2818,7 +2867,8 @@
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
             // 移动端坐标也不持久化，避免污染桌面端保存的位置
-            if (!minimized && !isMobileWidth()) {
+            if (!minimized && !isMobileWidth() && getCurrentChatSurfaceMode() === 'full') {
+                rememberExpandedShellPosition(rect.left, rect.top);
                 persistPosition(rect.left, rect.top);
             }
         }
@@ -3026,9 +3076,10 @@
                 try {
                     localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
                 } catch (_) {}
-            } else {
+            } else if (getCurrentChatSurfaceMode() === 'full') {
                 persistPosition(rect.left, rect.top);
                 persistSize(rect.width, rect.height);
+                rememberExpandedShellPosition(rect.left, rect.top);
             }
         }
 

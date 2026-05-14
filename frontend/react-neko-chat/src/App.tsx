@@ -86,18 +86,25 @@ function getMessageBlockPreviewText(message: ChatMessage): string {
 }
 
 function getCompactMessagePreview(messages: ChatMessage[]): { author: string; text: string } | null {
+  let fallbackPreview: { author: string; text: string } | null = null;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (!message) continue;
     const text = getMessageBlockPreviewText(message);
     if (!text) continue;
 
-    return {
+    const preview = {
       author: message.author,
       text: truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
     };
+    if (message.role === 'assistant') {
+      return preview;
+    }
+    if (!fallbackPreview) {
+      fallbackPreview = preview;
+    }
   }
-  return null;
+  return fallbackPreview;
 }
 
 type ToolIconItem = {
@@ -689,6 +696,7 @@ export default function App({
   const showRightTools = composerLayout === 'expanded' || composerLayout === 'collapsing';
   const [collapseFromWidth, setCollapseFromWidth] = useState<number | null>(null);
   const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
+  const [composerBottomBarNode, setComposerBottomBarNode] = useState<HTMLDivElement | null>(null);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -697,10 +705,13 @@ export default function App({
   const [isCursorInsideHostWindow, setIsCursorInsideHostWindow] = useState(true);
   const [hammerSwingPhase, setHammerSwingPhase] = useState<'idle' | 'windup' | 'swing' | 'impact' | 'recover'>('idle');
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
+  const appShellRef = useRef<HTMLElement | null>(null);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
   const composerToolsRightRef = useRef<HTMLDivElement | null>(null);
   const compactInputShellRef = useRef<HTMLDivElement | null>(null);
+  const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
@@ -717,6 +728,8 @@ export default function App({
   const avatarRangeHoldUntilRef = useRef(0);
   const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
+  const compactPreviewTextVisibleRef = useRef('');
+  const previousCompactPreviewTextRef = useRef('');
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
   const avatarToolCacheState = useMemo<AvatarToolCacheState>(() => ({
     loadedCursorImageCache: new Map<string, Promise<HTMLImageElement>>(),
@@ -730,6 +743,7 @@ export default function App({
   const [floatingHearts, setFloatingHearts] = useState<FloatingHeart[]>([]);
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
+  const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -941,10 +955,93 @@ export default function App({
     draftRef.current = draft;
   }, [draft]);
 
+  useEffect(() => {
+    compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
+  }, [compactPreviewTextVisible]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    if (effectiveCompactChatState !== 'input') return;
+    if (composerDisabled) return;
+    const inputNode = compactInputRef.current;
+    if (!inputNode) return;
+    if (document.activeElement === inputNode) return;
+    inputNode.focus();
+    const selectionEnd = inputNode.value.length;
+    inputNode.setSelectionRange(selectionEnd, selectionEnd);
+  }, [composerDisabled, effectiveCompactChatState, isCompactSurface]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    if (!compactChoiceLayerOpen) return;
+
+    const shellNode = appShellRef.current;
+    const layerNode = compactChoiceLayerRef.current;
+    if (!shellNode || !layerNode) return;
+
+    const gap = 16;
+    let frameId: number | null = null;
+
+    const updatePlacement = () => {
+      const nextShellNode = appShellRef.current;
+      const nextLayerNode = compactChoiceLayerRef.current;
+      if (!nextShellNode || !nextLayerNode) return;
+
+      const shellRect = nextShellNode.getBoundingClientRect();
+      const layerRect = nextLayerNode.getBoundingClientRect();
+      const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const availableBelow = Math.max(0, viewportHeight - shellRect.bottom);
+      const nextPlacement = availableBelow >= layerHeight + gap ? 'below' : 'above';
+      setCompactChoiceLayerPlacement(current => (current === nextPlacement ? current : nextPlacement));
+    };
+
+    const schedulePlacementUpdate = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        updatePlacement();
+      });
+    };
+
+    schedulePlacementUpdate();
+
+    const visualViewport = window.visualViewport;
+    window.addEventListener('resize', schedulePlacementUpdate);
+    visualViewport?.addEventListener('resize', schedulePlacementUpdate);
+    visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => {
+        schedulePlacementUpdate();
+      });
+      observer.observe(shellNode);
+      observer.observe(layerNode);
+    }
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      window.removeEventListener('resize', schedulePlacementUpdate);
+      visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
+      visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
+      observer?.disconnect();
+    };
+  }, [compactChoiceLayerOpen, galgameOptions.length, galgameOptionsLoading, isCompactSurface, choicePrompt]);
+
   const requestCompactChatState = useCallback((nextState: CompactChatState) => {
     if (!isCompactSurface) return;
     onCompactChatStateChange?.(nextState);
   }, [isCompactSurface, onCompactChatStateChange]);
+
+  const handleComposerBottomBarRef = useCallback((node: HTMLDivElement | null) => {
+    composerBottomBarRef.current = node;
+    setComposerBottomBarNode(prev => (prev === node ? prev : node));
+  }, []);
 
   const scheduleCompactInputCollapse = useCallback(() => {
     if (!isCompactSurface) return;
@@ -963,17 +1060,27 @@ export default function App({
   useEffect(() => {
     if (!isCompactSurface) {
       setCompactPreviewTextVisible(compactPreviewText);
+      previousCompactPreviewTextRef.current = compactPreviewText;
       return;
     }
 
     if (!compactPreviewText) {
       setCompactPreviewTextVisible('');
+      previousCompactPreviewTextRef.current = '';
       return;
     }
 
     let active = true;
     let timeoutId: number | null = null;
-    setCompactPreviewTextVisible('');
+    const previousPreviewText = previousCompactPreviewTextRef.current;
+    const previousVisibleText = compactPreviewTextVisibleRef.current;
+    const seedText = compactPreviewText.startsWith(previousVisibleText)
+      ? previousVisibleText
+      : compactPreviewText.startsWith(previousPreviewText)
+        ? previousPreviewText
+        : '';
+    setCompactPreviewTextVisible(seedText);
+    previousCompactPreviewTextRef.current = compactPreviewText;
 
     const run = (index: number) => {
       if (!active) return;
@@ -985,7 +1092,9 @@ export default function App({
       timeoutId = window.setTimeout(() => run(nextIndex), 24);
     };
 
-    timeoutId = window.setTimeout(() => run(0), 18);
+    if (seedText.length < compactPreviewText.length) {
+      timeoutId = window.setTimeout(() => run(seedText.length), 18);
+    }
 
     return () => {
       active = false;
@@ -1219,7 +1328,7 @@ export default function App({
   }, [composerLayout]);
 
   useEffect(() => {
-    const target = composerBottomBarRef.current;
+    const target = composerBottomBarNode;
     if (!target || typeof ResizeObserver === 'undefined') return;
     const COMPACT_THRESHOLD = 300;
     const observer = new ResizeObserver(entries => {
@@ -1247,7 +1356,20 @@ export default function App({
     });
     observer.observe(target);
     return () => observer.disconnect();
-  }, []);
+  }, [composerBottomBarNode]);
+
+  useEffect(() => {
+    if (isCompactSurface) {
+      setOverflowMenuOpen(false);
+      return;
+    }
+    if (!composerBottomBarNode) return;
+    if (composerBottomBarNode.getBoundingClientRect().width >= 300) {
+      setComposerLayout(prev => (
+        prev === 'compact' || prev === 'collapsing' ? 'expanded' : prev
+      ));
+    }
+  }, [composerBottomBarNode, isCompactSurface]);
 
   // 鏀惰捣/灞曞紑鍔ㄧ敾璺戝畬鍚庡垏鍒扮ǔ鎬併€傛椂闀块渶涓?styles.css 涓殑 keyframes 瀵归綈銆?  // prefers-reduced-motion 涓?styles.css 鎶婂姩鐢昏鎴?none锛岃繖鏃惰繕绛?270/220ms
   // 浼氳宸ュ叿鍖烘粸鐣欏湪杩囨浮鎬侊紙鎺т欢瑙嗚涓婃彁鍓嶅埌浣嶄絾 layout state 娌″垏锛夛紝
@@ -1814,8 +1936,10 @@ export default function App({
   const choiceLayerNode = (
     <div
       className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
+      ref={isCompactSurface ? compactChoiceLayerRef : undefined}
       data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
       data-chat-surface-mode={chatSurfaceMode}
+      data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
     >
       {galgameModeEnabled && !choicePromptHasOptions ? (
         <div
@@ -1947,6 +2071,7 @@ export default function App({
   return (
     <main
       className={`app-shell ${surfaceModeClassName}`}
+      ref={appShellRef}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-chat-state={effectiveCompactChatState}
     >
@@ -2134,6 +2259,7 @@ export default function App({
                 <div className="compact-chat-inline-input">
                   <textarea
                     className="composer-input"
+                    ref={compactInputRef}
                     placeholder={inputPlaceholder}
                     aria-label={inputPlaceholder}
                     rows={1}
@@ -2285,7 +2411,10 @@ export default function App({
                 </div>
               ) : null}
               </div>
-              <div className="composer-bottom-bar" ref={composerBottomBarRef}>
+              <div
+                className="composer-bottom-bar"
+                ref={handleComposerBottomBarRef}
+              >
                 <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
                   <button
                     className="composer-tool-btn"

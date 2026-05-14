@@ -1807,12 +1807,21 @@ svg {
 .app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor {
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 16px);
   width: min(100%, 420px);
   transform: translateX(-50%);
   overflow: visible;
   z-index: 4;
   pointer-events: auto;
+}
+
+.app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor[data-compact-choice-placement="above"] {
+  top: auto;
+  bottom: calc(100% + 16px);
+}
+
+.app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor[data-compact-choice-placement="below"] {
+  top: calc(100% + 16px);
+  bottom: auto;
 }
 
 .chat-window.chat-surface-mode-compact .window-topbar {
