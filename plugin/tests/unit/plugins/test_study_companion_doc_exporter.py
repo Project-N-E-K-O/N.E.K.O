@@ -58,6 +58,30 @@ def test_markdown_build_escapes_and_truncates_user_text(tmp_path: Path) -> None:
         store.close()
 
 
+def test_topic_id_export_resolves_topics_outside_style_page_limit(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "many-topics.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        for index in range(250):
+            store.ensure_topic(
+                topic_id=f"topic-{index:03d}",
+                name=f"Topic {index:03d}",
+                subject="subject",
+                chapter=f"chapter-{index:03d}",
+            )
+
+        markdown = DocExporter(store).build_markdown(
+            style="compact",
+            topic_ids=["topic-249"],
+        )
+
+        assert "Topic 249" in markdown
+        assert "`topic\\-249`" in markdown
+        assert "Topics included: 1" in markdown
+    finally:
+        store.close()
+
+
 def test_export_markdown_handles_empty_store_and_declared_constants(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "empty.db", tmp_path / "seed.json", _Logger())
     store.open()

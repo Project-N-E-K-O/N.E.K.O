@@ -123,12 +123,10 @@ class DocExporter:
         limit = max(1, min(200, int(recent_limit or 30)))
         topics_limit = max(1, min(5000, int(style_payload.get("topics_limit") or 500)))
         tone = str(style_payload.get("tone") or "").strip()
-        requested_topic_ids = {str(item).strip() for item in (topic_ids or []) if str(item).strip()}
+        requested_topic_ids = _normalized_topic_ids(topic_ids)
 
         interactions = self._store.list_interactions(limit=limit)
-        topics = self._store.list_topics(limit=topics_limit)
-        if requested_topic_ids:
-            topics = [item for item in topics if str(item.get("id") or "") in requested_topic_ids]
+        topics = self._resolve_topics(topics_limit=topics_limit, topic_ids=requested_topic_ids)
         mastery = self._store.list_mastery_overview(limit=topics_limit)
         wrong_questions = self._store.list_wrong_questions(limit=limit)
 
@@ -196,6 +194,35 @@ class DocExporter:
         if len(markdown) > _MAX_MARKDOWN_CHARS:
             markdown = markdown[:_MAX_MARKDOWN_CHARS].rstrip() + "\n\n...[export truncated]\n"
         return markdown
+
+    def _resolve_topics(self, *, topics_limit: int, topic_ids: list[str]) -> list[dict[str, Any]]:
+        if not topic_ids:
+            return self._store.list_topics(limit=topics_limit)
+
+        get_topic = getattr(self._store, "get_topic", None)
+        if callable(get_topic):
+            topics: list[dict[str, Any]] = []
+            for topic_id in topic_ids:
+                topic = get_topic(topic_id)
+                if isinstance(topic, dict):
+                    topics.append(topic)
+            return topics
+
+        count_topics = getattr(self._store, "count_topics", None)
+        if callable(count_topics):
+            try:
+                lookup_limit = max(topics_limit, int(count_topics()))
+            except (TypeError, ValueError):
+                lookup_limit = topics_limit
+        else:
+            lookup_limit = max(topics_limit, 5000)
+
+        requested = set(topic_ids)
+        return [
+            item
+            for item in self._store.list_topics(limit=max(1, lookup_limit))
+            if str(item.get("id") or "") in requested
+        ]
 
     def normalize_style(self, style: str | None) -> str:
         candidate = str(style or "").strip().lower()
@@ -316,6 +343,18 @@ def normalize_format(value: str | None) -> str:
     if fmt not in STUDY_EXPORT_FORMATS:
         raise ValueError(f"unsupported export format: {fmt}")
     return fmt
+
+
+def _normalized_topic_ids(topic_ids: list[str] | tuple[str, ...] | None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in topic_ids or []:
+        topic_id = str(item).strip()
+        if not topic_id or topic_id in seen:
+            continue
+        result.append(topic_id)
+        seen.add(topic_id)
+    return result
 
 
 def extension_for_format(fmt: str) -> str:
