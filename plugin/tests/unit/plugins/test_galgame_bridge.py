@@ -10681,7 +10681,63 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
 
     assert [line["line_id"] for line in public_context["stable_lines"]] == ["s3", "s4", "s5"]
     assert [line["line_id"] for line in public_context["observed_lines"]] == ["o3", "o4", "o5"]
-    assert [line["line_id"] for line in public_context["recent_lines"]] == ["s5", "o5"]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o3", "o4", "o5"]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_fills_odd_recent_line_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 3,
+    )
+    shared = _shared_state(
+        history_lines=[
+            {
+                "speaker": "A",
+                "text": "stable middle",
+                "line_id": "s2",
+                "ts": "2026-05-14T00:00:02Z",
+            },
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "B",
+                "text": "observed older",
+                "line_id": "o1",
+                "ts": "2026-05-14T00:00:01Z",
+            },
+            {
+                "speaker": "B",
+                "text": "observed latest",
+                "line_id": "o3",
+                "ts": "2026-05-14T00:00:03Z",
+            },
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["recent_lines"]] == [
+        "o1",
+        "s2",
+        "o3",
+    ]
+    assert "observed older" in public_context["scene_summary_seed"]
+    assert "stable middle" in public_context["scene_summary_seed"]
+    assert "observed latest" in public_context["scene_summary_seed"]
 
 
 @pytest.mark.plugin_unit
