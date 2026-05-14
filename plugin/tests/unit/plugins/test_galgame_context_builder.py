@@ -301,6 +301,16 @@ def test_context_window_bounds_default_respects_small_configured_maximum() -> No
     assert context_builder._context_window_bounds(config) == (2, 3, 64)
 
 
+def test_context_window_bounds_min_floor_raises_minimum_and_maximum() -> None:
+    config = GalgameLLMConfig(
+        context_explain_min_lines=2,
+        context_explain_max_lines=3,
+        context_window_target_tokens=64,
+    )
+
+    assert context_builder._context_window_bounds(config, min_floor=16) == (16, 16, 64)
+
+
 def test_context_window_bounds_warns_on_invalid_config_values(caplog) -> None:
     config = SimpleNamespace(
         context_explain_min_lines="five",

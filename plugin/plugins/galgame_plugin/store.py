@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import math
 import os
 import threading
 import time
@@ -694,7 +695,7 @@ class GalgameStore:
             saved_at = float(raw_value.get("saved_at") or 0.0)
         except (TypeError, ValueError):
             saved_at = 0.0
-        if saved_at < 0.0:
+        if not math.isfinite(saved_at) or saved_at < 0.0:
             saved_at = 0.0
         if not scene_id and not summary_seed and not cleaned_ids:
             return {}
@@ -734,8 +735,11 @@ class GalgameStore:
             max_age = max(0.0, float(max_age_seconds))
         except (TypeError, ValueError):
             max_age = 3600.0
-        if max_age > 0.0 and snapshot["saved_at"] > 0.0:
-            if wall_now - snapshot["saved_at"] > max_age:
+        saved_at = float(snapshot.get("saved_at") or 0.0)
+        if not math.isfinite(saved_at):
+            saved_at = 0.0
+        if max_age > 0.0 and saved_at > 0.0:
+            if wall_now - saved_at > max_age:
                 return {}
         game_id = snapshot.get("game_id") or ""
         current_game = str(current_game_id or "").strip()

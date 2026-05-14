@@ -121,6 +121,7 @@ def _config_int(
 def _context_window_bounds(
     config: GalgameLLMConfig | None,
     *,
+    min_floor: int = 1,
     max_floor: int = 1,
 ) -> tuple[int, int, int]:
     if config is None:
@@ -143,8 +144,9 @@ def _context_window_bounds(
             raw=config.context_window_target_tokens,
             default=_DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS,
         )
-    min_limit = max(1, min_limit)
-    max_limit = max(1, max(max_limit, max_floor))
+    min_floor = max(1, min_floor)
+    min_limit = max(1, min_limit, min_floor)
+    max_limit = max(1, max(max_limit, max_floor, min_floor))
     if min_limit > max_limit:
         min_limit, max_limit = max_limit, min_limit
     return min_limit, max_limit, max(1, target_tokens)
@@ -182,6 +184,22 @@ def _recency_ordered_context_lines(
         indexed.append((1 if ts else 0, ts, fallback_index, line))
     indexed.sort(key=lambda item: (item[0], item[1], item[2]))
     return [item[3] for item in indexed]
+
+
+def _resolve_dynamic_line_limit(
+    local_state: dict[str, Any],
+    config: GalgameLLMConfig | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    history_lines = list(local_state.get("history_lines", []) or [])
+    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
+    min_limit, max_limit, target_tokens = _context_window_bounds(config)
+    line_limit = _compute_dynamic_line_limit(
+        _recency_ordered_context_lines(history_lines, history_observed_lines),
+        min_limit=min_limit,
+        max_limit=max_limit,
+        target_tokens=target_tokens,
+    )
+    return history_lines, history_observed_lines, line_limit
 
 
 def _line_condense_blocked(line: dict[str, Any]) -> bool:
@@ -598,14 +616,9 @@ def build_explain_context(
 
     scene_id = str(target_line.get("scene_id") or snapshot.get("scene_id") or "")
     route_id = str(target_line.get("route_id") or snapshot.get("route_id") or "")
-    history_lines = list(local_state.get("history_lines", []) or [])
-    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config)
-    line_limit = _compute_dynamic_line_limit(
-        _recency_ordered_context_lines(history_lines, history_observed_lines),
-        min_limit=min_limit,
-        max_limit=max_limit,
-        target_tokens=target_tokens,
+    history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
+        local_state,
+        config,
     )
     stable_lines = _scene_lines(history_lines, scene_id, limit=line_limit)
     observed_lines = _scene_lines(
@@ -702,14 +715,9 @@ def build_summarize_context(
         snapshot.get("scene_id") or (effective_line or {}).get("scene_id") or ""
     )
     route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
-    history_lines = list(local_state.get("history_lines", []) or [])
-    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config)
-    line_limit = _compute_dynamic_line_limit(
-        _recency_ordered_context_lines(history_lines, history_observed_lines),
-        min_limit=min_limit,
-        max_limit=max_limit,
-        target_tokens=target_tokens,
+    history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
+        local_state,
+        config,
     )
     stable_lines = _scene_lines(
         history_lines,
@@ -770,14 +778,9 @@ def build_suggest_context(
     visible_choices = [sanitize_choice(item) for item in snapshot.get("choices", [])]
     scene_id = str(snapshot.get("scene_id") or "")
     route_id = str(snapshot.get("route_id") or "")
-    history_lines = list(local_state.get("history_lines", []) or [])
-    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config)
-    line_limit = _compute_dynamic_line_limit(
-        _recency_ordered_context_lines(history_lines, history_observed_lines),
-        min_limit=min_limit,
-        max_limit=max_limit,
-        target_tokens=target_tokens,
+    history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
+        local_state,
+        config,
     )
     stable_lines = _scene_lines(history_lines, scene_id, limit=line_limit)
     observed_lines = _scene_lines(

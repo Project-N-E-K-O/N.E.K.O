@@ -1083,9 +1083,16 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
     context = agent._build_agent_reply_context(shared, prompt="status")
     public_context = context["public_context"]
 
-    assert [line["line_id"] for line in public_context["stable_lines"]] == []
-    assert [line["line_id"] for line in public_context["observed_lines"]] == ["o3", "o4", "o5"]
-    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o3", "o4", "o5"]
+    assert [line["line_id"] for line in public_context["stable_lines"]] == [
+        f"s{index}" for index in range(6)
+    ]
+    assert [line["line_id"] for line in public_context["observed_lines"]] == [
+        f"o{index}" for index in range(6)
+    ]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == [
+        *[f"s{index}" for index in range(6)],
+        *[f"o{index}" for index in range(6)],
+    ]
 
 
 @pytest.mark.plugin_unit

@@ -483,65 +483,68 @@ async def test_phase2_entries_mark_memory_reader_input_as_degraded_even_when_llm
     ctx.entry_handler = _handler
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    plugin._memory_reader_manager = SimpleNamespace(
-        update_config=lambda config: None,
-        tick=lambda **kwargs: asyncio.sleep(
-            0,
-            result=SimpleNamespace(
-                warnings=[],
-                should_rescan=False,
-                runtime={
-                    "enabled": True,
-                    "status": "active",
-                    "detail": "fixture_active",
-                    "process_name": "RenPy Demo.exe",
-                    "pid": 4242,
-                    "engine": "unknown",
-                    "game_id": game_id,
-                    "session_id": session_id,
-                    "last_seq": 2,
-                    "last_event_ts": "2026-04-21T08:31:01Z",
-                },
+    try:
+        plugin._memory_reader_manager = SimpleNamespace(
+            update_config=lambda config: None,
+            tick=lambda **kwargs: asyncio.sleep(
+                0,
+                result=SimpleNamespace(
+                    warnings=[],
+                    should_rescan=False,
+                    runtime={
+                        "enabled": True,
+                        "status": "active",
+                        "detail": "fixture_active",
+                        "process_name": "RenPy Demo.exe",
+                        "pid": 4242,
+                        "engine": "unknown",
+                        "game_id": game_id,
+                        "session_id": session_id,
+                        "last_seq": 2,
+                        "last_event_ts": "2026-04-21T08:31:01Z",
+                    },
+                ),
             ),
-        ),
-        shutdown=lambda: asyncio.sleep(0, result=None),
-    )
-    await plugin._poll_bridge(force=True)
+            shutdown=lambda: asyncio.sleep(0, result=None),
+        )
+        await plugin._poll_bridge(force=True)
 
-    status = await plugin.galgame_get_status()
-    explain = await plugin.galgame_explain_line()
-    summarize = await plugin.galgame_summarize_scene()
-    suggest = await plugin.galgame_suggest_choice()
+        status = await plugin.galgame_get_status()
+        explain = await plugin.galgame_explain_line()
+        summarize = await plugin.galgame_summarize_scene()
+        suggest = await plugin.galgame_suggest_choice()
 
-    assert isinstance(status, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
+        assert isinstance(status, Ok)
+        assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
 
-    assert isinstance(explain, Ok)
-    assert explain.value["degraded"] is True
-    assert "memory_reader_input" in explain.value["diagnostic"]
-    assert "weaker than bridge_sdk" in explain.value["diagnostic"]
-    assert explain.value["input_source"] == DATA_SOURCE_MEMORY_READER
-    assert explain.value["semantic_degraded"] is True
-    assert explain.value["fallback_used"] is False
-    assert explain.value["explanation"] == "这是对台词的解释。"
+        assert isinstance(explain, Ok)
+        assert explain.value["degraded"] is True
+        assert "memory_reader_input" in explain.value["diagnostic"]
+        assert "weaker than bridge_sdk" in explain.value["diagnostic"]
+        assert explain.value["input_source"] == DATA_SOURCE_MEMORY_READER
+        assert explain.value["semantic_degraded"] is True
+        assert explain.value["fallback_used"] is False
+        assert explain.value["explanation"] == "这是对台词的解释。"
 
-    assert isinstance(summarize, Ok)
-    assert summarize.value["degraded"] is True
-    assert "memory_reader_input" in summarize.value["diagnostic"]
-    assert "weaker than bridge_sdk" in summarize.value["diagnostic"]
-    assert summarize.value["input_source"] == DATA_SOURCE_MEMORY_READER
-    assert summarize.value["semantic_degraded"] is True
-    assert summarize.value["fallback_used"] is False
-    assert summarize.value["summary"] == "这是对场景的总结。"
+        assert isinstance(summarize, Ok)
+        assert summarize.value["degraded"] is True
+        assert "memory_reader_input" in summarize.value["diagnostic"]
+        assert "weaker than bridge_sdk" in summarize.value["diagnostic"]
+        assert summarize.value["input_source"] == DATA_SOURCE_MEMORY_READER
+        assert summarize.value["semantic_degraded"] is True
+        assert summarize.value["fallback_used"] is False
+        assert summarize.value["summary"] == "这是对场景的总结。"
 
-    assert isinstance(suggest, Ok)
-    assert suggest.value["degraded"] is True
-    assert "memory_reader_input" in suggest.value["diagnostic"]
-    assert "weaker than bridge_sdk" in suggest.value["diagnostic"]
-    assert suggest.value["input_source"] == DATA_SOURCE_MEMORY_READER
-    assert suggest.value["semantic_degraded"] is True
-    assert suggest.value["fallback_used"] is False
-    assert suggest.value["choices"][0]["choice_id"] == "mem:line-1#choice0"
+        assert isinstance(suggest, Ok)
+        assert suggest.value["degraded"] is True
+        assert "memory_reader_input" in suggest.value["diagnostic"]
+        assert "weaker than bridge_sdk" in suggest.value["diagnostic"]
+        assert suggest.value["input_source"] == DATA_SOURCE_MEMORY_READER
+        assert suggest.value["semantic_degraded"] is True
+        assert suggest.value["fallback_used"] is False
+        assert suggest.value["choices"][0]["choice_id"] == "mem:line-1#choice0"
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -643,61 +646,64 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
     ctx.entry_handler = _handler
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    assert plugin._cfg is not None
-    plugin._cfg.ocr_reader_enabled = True
-    plugin._cfg.ocr_reader_trigger_mode = "after_advance"
-    plugin._ocr_reader_manager = SimpleNamespace(
-        update_config=lambda config: None,
-        tick=lambda **kwargs: asyncio.sleep(
-            0,
-            result=SimpleNamespace(
-                warnings=[],
-                should_rescan=False,
-                runtime={
-                    "enabled": True,
-                    "status": "active",
-                    "detail": "fixture_active",
-                    "process_name": "RenPy Demo.exe",
-                    "pid": 5252,
-                    "game_id": game_id,
-                    "session_id": session_id,
-                    "last_seq": 2,
-                    "last_event_ts": "2026-04-21T08:31:01Z",
-                },
+    try:
+        assert plugin._cfg is not None
+        plugin._cfg.ocr_reader_enabled = True
+        plugin._cfg.ocr_reader_trigger_mode = "after_advance"
+        plugin._ocr_reader_manager = SimpleNamespace(
+            update_config=lambda config: None,
+            tick=lambda **kwargs: asyncio.sleep(
+                0,
+                result=SimpleNamespace(
+                    warnings=[],
+                    should_rescan=False,
+                    runtime={
+                        "enabled": True,
+                        "status": "active",
+                        "detail": "fixture_active",
+                        "process_name": "RenPy Demo.exe",
+                        "pid": 5252,
+                        "game_id": game_id,
+                        "session_id": session_id,
+                        "last_seq": 2,
+                        "last_event_ts": "2026-04-21T08:31:01Z",
+                    },
+                ),
             ),
-        ),
-        shutdown=lambda: asyncio.sleep(0, result=None),
-    )
-    await plugin._poll_bridge(force=True)
+            shutdown=lambda: asyncio.sleep(0, result=None),
+        )
+        await plugin._poll_bridge(force=True)
 
-    status = await plugin.galgame_get_status()
-    explain = await plugin.galgame_explain_line()
-    summarize = await plugin.galgame_summarize_scene()
-    suggest = await plugin.galgame_suggest_choice()
+        status = await plugin.galgame_get_status()
+        explain = await plugin.galgame_explain_line()
+        summarize = await plugin.galgame_summarize_scene()
+        suggest = await plugin.galgame_suggest_choice()
 
-    assert isinstance(status, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
+        assert isinstance(status, Ok)
+        assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
 
-    assert isinstance(explain, Ok)
-    assert explain.value["degraded"] is True
-    assert explain.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert explain.value["semantic_degraded"] is True
-    assert explain.value["fallback_used"] is False
-    assert "ocr_reader_input" in explain.value["diagnostic"]
-    assert explain.value["explanation"] == "è¿™æ˜¯å¯¹ OCR å°è¯çš„è§£é‡Šã€‚"
+        assert isinstance(explain, Ok)
+        assert explain.value["degraded"] is True
+        assert explain.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert explain.value["semantic_degraded"] is True
+        assert explain.value["fallback_used"] is False
+        assert "ocr_reader_input" in explain.value["diagnostic"]
+        assert explain.value["explanation"] == "è¿™æ˜¯å¯¹ OCR å°è¯çš„è§£é‡Šã€‚"
 
-    assert isinstance(summarize, Ok)
-    assert summarize.value["degraded"] is True
-    assert summarize.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert summarize.value["semantic_degraded"] is True
-    assert summarize.value["fallback_used"] is False
-    assert "ocr_reader_input" in summarize.value["diagnostic"]
-    assert summarize.value["summary"] == "è¿™æ˜¯å¯¹ OCR åœºæ™¯çš„æ€»ç»“ã€‚"
+        assert isinstance(summarize, Ok)
+        assert summarize.value["degraded"] is True
+        assert summarize.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert summarize.value["semantic_degraded"] is True
+        assert summarize.value["fallback_used"] is False
+        assert "ocr_reader_input" in summarize.value["diagnostic"]
+        assert summarize.value["summary"] == "è¿™æ˜¯å¯¹ OCR åœºæ™¯çš„æ€»ç»“ã€‚"
 
-    assert isinstance(suggest, Ok)
-    assert suggest.value["degraded"] is True
-    assert suggest.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert suggest.value["semantic_degraded"] is True
-    assert suggest.value["fallback_used"] is False
-    assert "ocr_reader_input" in suggest.value["diagnostic"]
-    assert suggest.value["choices"][0]["choice_id"] == "ocr:line-1#choice0"
+        assert isinstance(suggest, Ok)
+        assert suggest.value["degraded"] is True
+        assert suggest.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert suggest.value["semantic_degraded"] is True
+        assert suggest.value["fallback_used"] is False
+        assert "ocr_reader_input" in suggest.value["diagnostic"]
+        assert suggest.value["choices"][0]["choice_id"] == "ocr:line-1#choice0"
+    finally:
+        await plugin.shutdown()

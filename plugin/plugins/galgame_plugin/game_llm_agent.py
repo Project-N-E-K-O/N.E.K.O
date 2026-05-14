@@ -1241,7 +1241,7 @@ class GameLLMAgent:
                             self._planning_choice_signature = choice_signature
                             await self._run_choice_planning_inline(
                                 shared,
-                                context=build_suggest_context(shared),
+                                context=build_suggest_context(shared, config=self._context_config),
                                 now=now,
                             )
                             self._last_status = self._compute_status(shared)
@@ -5480,6 +5480,7 @@ class GameLLMAgent:
         # context even when explain/summarize windows are tuned aggressively.
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
+            min_floor=16,
             max_floor=16,
         )
         line_limit = _compute_dynamic_line_limit(
@@ -5537,7 +5538,7 @@ class GameLLMAgent:
                 and (not scene_id or str(item.get("scene_id") or "") == scene_id)
                 and (
                     not bounded_line_ids
-                    or item.get("line_id") is None
+                    or item.get("line_id") in (None, "")
                     or str(item.get("line_id") or "") in bounded_line_ids
                 )
             ][-line_limit:]

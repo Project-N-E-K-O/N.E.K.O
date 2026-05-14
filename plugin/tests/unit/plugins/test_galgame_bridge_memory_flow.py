@@ -275,12 +275,15 @@ async def test_memory_reader_keeps_recoverable_idle_state_when_textractor_autodi
         ),
     )
 
-    result = await manager.tick(bridge_sdk_available=False)
+    try:
+        result = await manager.tick(bridge_sdk_available=False)
 
-    assert factory_calls == []
-    assert result.runtime["status"] == "idle"
-    assert result.runtime["detail"] == "invalid_textractor_path"
-    assert result.warnings == ["memory_reader TextractorCLI.exe is invalid or missing"]
+        assert factory_calls == []
+        assert result.runtime["status"] == "idle"
+        assert result.runtime["detail"] == "invalid_textractor_path"
+        assert result.warnings == ["memory_reader TextractorCLI.exe is invalid or missing"]
+    finally:
+        await manager.shutdown()
 
 
 @pytest.mark.asyncio
@@ -342,17 +345,20 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
         ),
     )
 
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
+    try:
+        await plugin._poll_bridge(force=True)
+        status = await plugin.galgame_get_status()
+        snapshot = await plugin.galgame_get_snapshot()
 
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["memory_reader_enabled"] is True
-    assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
-    assert status.value["memory_reader_runtime"]["status"] == "active"
-    assert snapshot.value["snapshot"]["text"] == expected_snapshot_text
-    assert good_handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
+        assert isinstance(status, Ok)
+        assert isinstance(snapshot, Ok)
+        assert status.value["memory_reader_enabled"] is True
+        assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
+        assert status.value["memory_reader_runtime"]["status"] == "active"
+        assert snapshot.value["snapshot"]["text"] == expected_snapshot_text
+        assert good_handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
+    finally:
+        await plugin._memory_reader_manager.shutdown()
 
 
 @pytest.mark.asyncio
@@ -432,50 +438,53 @@ async def test_ocr_reader_fallback_activates_when_bridge_sdk_and_memory_reader_a
     monkeypatch.setattr(galgame_plugin_module, "MemoryReaderManager", _NoopMemoryReaderManager)
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    clock = {"now": 1710000000.0}
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=101,
-                title="OCR Demo Window",
-                process_name="DemoGame.exe",
-                pid=4242,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：来自 OCR 的台词。",
-                "雪乃：来自 OCR 的台词。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
+    try:
+        clock = {"now": 1710000000.0}
+        plugin._ocr_reader_manager = OcrReaderManager(
+            logger=plugin.logger,
+            config=plugin._cfg,
             time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
+            platform_fn=lambda: True,
+            window_scanner=lambda: [
+                DetectedGameWindow(
+                    hwnd=101,
+                    title="OCR Demo Window",
+                    process_name="DemoGame.exe",
+                    pid=4242,
+                )
+            ],
+            capture_backend=_FakeCaptureBackend(),
+            ocr_backend=_FakeOcrBackend(
+                [
+                    "雪乃：来自 OCR 的台词。",
+                    "雪乃：来自 OCR 的台词。",
+                ]
+            ),
+            writer=OcrReaderBridgeWriter(
+                bridge_root=bridge_root,
+                time_fn=lambda: clock["now"],
+            ),
+        )
+        _clear_bridge_root(bridge_root)
 
-    await plugin._poll_bridge(force=True)
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
+        await plugin._poll_bridge(force=True)
+        clock["now"] += 1.0
+        await plugin._poll_bridge(force=True)
+        clock["now"] += 1.0
+        await plugin._poll_bridge(force=True)
 
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
+        status = await plugin.galgame_get_status()
+        snapshot = await plugin.galgame_get_snapshot()
 
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
-    assert status.value["summary"].startswith("已通过 OCR 读取连接（降级模式）")
-    assert snapshot.value["snapshot"]["scene_id"] == "ocr:unknown_scene"
-    assert snapshot.value["snapshot"]["line_id"].startswith("ocr:")
-    assert snapshot.value["snapshot"]["text"] == "来自 OCR 的台词。"
+        assert isinstance(status, Ok)
+        assert isinstance(snapshot, Ok)
+        assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
+        assert status.value["summary"].startswith("已通过 OCR 读取连接（降级模式）")
+        assert snapshot.value["snapshot"]["scene_id"] == "ocr:unknown_scene"
+        assert snapshot.value["snapshot"]["line_id"].startswith("ocr:")
+        assert snapshot.value["snapshot"]["text"] == "来自 OCR 的台词。"
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -570,18 +579,21 @@ async def test_memory_reader_fallback_activates_when_bridge_sdk_is_missing(tmp_p
         ),
     )
 
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
+    try:
+        await plugin._poll_bridge(force=True)
+        status = await plugin.galgame_get_status()
+        snapshot = await plugin.galgame_get_snapshot()
 
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["memory_reader_enabled"] is True
-    assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
-    assert status.value["summary"].startswith("已通过内存读取连接（降级模式）")
-    assert status.value["memory_reader_runtime"]["status"] == "active"
-    assert snapshot.value["snapshot"]["text"] == "来自内存读取的台词。"
-    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
+        assert isinstance(status, Ok)
+        assert isinstance(snapshot, Ok)
+        assert status.value["memory_reader_enabled"] is True
+        assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
+        assert status.value["summary"].startswith("已通过内存读取连接（降级模式）")
+        assert status.value["memory_reader_runtime"]["status"] == "active"
+        assert snapshot.value["snapshot"]["text"] == "来自内存读取的台词。"
+        assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
+    finally:
+        await plugin._memory_reader_manager.shutdown()
 
 
 @pytest.mark.asyncio
@@ -628,33 +640,36 @@ async def test_bridge_sdk_session_preempts_memory_reader_candidate(tmp_path: Pat
         ),
     )
 
-    await plugin._poll_bridge(force=True)
-    memory_reader_status = await plugin.galgame_get_status()
-    assert isinstance(memory_reader_status, Ok)
-    assert memory_reader_status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
+    try:
+        await plugin._poll_bridge(force=True)
+        memory_reader_status = await plugin.galgame_get_status()
+        assert isinstance(memory_reader_status, Ok)
+        assert memory_reader_status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
 
-    _create_game_dir(
-        bridge_root,
-        game_id="demo.bridge",
-        session_payload=_session(
+        _create_game_dir(
+            bridge_root,
             game_id="demo.bridge",
-            session_id="sdk-sess",
-            last_seq=3,
-            state=_session_state(
-                speaker="桥接",
-                text="Bridge SDK 已接管。",
-                line_id="sdk-line",
-                scene_id="sdk-scene",
+            session_payload=_session(
+                game_id="demo.bridge",
+                session_id="sdk-sess",
+                last_seq=3,
+                state=_session_state(
+                    speaker="桥接",
+                    text="Bridge SDK 已接管。",
+                    line_id="sdk-line",
+                    scene_id="sdk-scene",
+                ),
             ),
-        ),
-    )
+        )
 
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
+        clock["now"] += 1.0
+        await plugin._poll_bridge(force=True)
+        status = await plugin.galgame_get_status()
 
-    assert isinstance(status, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_BRIDGE_SDK
-    assert status.value["active_session_id"] == "sdk-sess"
-    assert status.value["memory_reader_runtime"]["detail"] == "bridge_sdk_available"
-    assert handle.terminated is True
+        assert isinstance(status, Ok)
+        assert status.value["active_data_source"] == DATA_SOURCE_BRIDGE_SDK
+        assert status.value["active_session_id"] == "sdk-sess"
+        assert status.value["memory_reader_runtime"]["detail"] == "bridge_sdk_available"
+        assert handle.terminated is True
+    finally:
+        await plugin._memory_reader_manager.shutdown()
