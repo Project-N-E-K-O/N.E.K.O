@@ -981,6 +981,8 @@ export default function App({
 
     const gap = 16;
     let frameId: number | null = null;
+    let trackingFrameId: number | null = null;
+    let disposed = false;
 
     const updatePlacement = () => {
       const nextShellNode = appShellRef.current;
@@ -1006,7 +1008,14 @@ export default function App({
       });
     };
 
+    const trackPlacement = () => {
+      if (disposed) return;
+      updatePlacement();
+      trackingFrameId = window.requestAnimationFrame(trackPlacement);
+    };
+
     schedulePlacementUpdate();
+    trackingFrameId = window.requestAnimationFrame(trackPlacement);
 
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', schedulePlacementUpdate);
@@ -1023,8 +1032,12 @@ export default function App({
     }
 
     return () => {
+      disposed = true;
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
+      }
+      if (trackingFrameId !== null) {
+        window.cancelAnimationFrame(trackingFrameId);
       }
       window.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
