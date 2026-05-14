@@ -799,6 +799,14 @@ function captureBackendLabel(key, fallback = '') {
   return labels[normalized] || fallback || key || uiT('ui.status.unknown', '未知');
 }
 
+function requiresDxcamBackend(key) {
+  return textValue(key).toLowerCase() === 'dxcam';
+}
+
+function hasInstallFlow(kind) {
+  return Boolean(getInstallUIConfig()[kind]);
+}
+
 function readerModeLabel(key, fallback = '') {
   return uiDynamicT('ui.reader_mode', key, READER_MODE_LABELS_ZH[key] || fallback || key);
 }
@@ -1814,6 +1822,12 @@ function buildFirstRunSteps(status = {}) {
   const rapidocr = status.rapidocr || {};
   const dxcam = status.dxcam || {};
   const dxcamSupported = Boolean(dxcam.install_supported) && Boolean(dxcam.can_install);
+  const selectedCaptureBackend = textValue(
+    status.ocr_capture_backend_selection
+    || runtime.capture_backend_kind
+    || 'auto',
+  );
+  const dxcamRequired = requiresDxcamBackend(selectedCaptureBackend);
   const rapidocrModelsMissing = hasMissingRapidOcrModelFiles(rapidocr);
   const rapidocrUsable = isRapidOcrUsable(rapidocr);
   // Only route to the download CTA when the backend confirms it CAN run the
@@ -1836,7 +1850,7 @@ function buildFirstRunSteps(status = {}) {
     rapidocrUsable
     || (!rapidocrModelsMissing && rapidocr.detail === 'installed')
   );
-  const captureReady = Boolean(!dxcamSupported || runtime.capture_backend_kind || dxcam.installed);
+  const captureReady = Boolean(!dxcamSupported || !dxcamRequired || dxcam.installed);
   const hasGame = Boolean(
     textValue(status.active_session_id)
     || availableGameIds.length
@@ -1906,6 +1920,7 @@ function buildFirstRunSteps(status = {}) {
       done: false,
       title: uiT('ui.first_run.install_capture.title', '安装截图依赖'),
       body: uiT('ui.first_run.install_capture.pending', '前往“依赖安装”面板一键安装 DXcam。'),
+      installAction: dxcamRequired && !dxcam.installed ? 'install_dxcam' : null,
     });
   }
 
@@ -1974,11 +1989,12 @@ function buildFirstRunActions(steps, firstIncompleteIndex) {
     }
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'install_capture') {
-    // install_dxcam no longer runs an installer (PR #1191 bundled DXcam); the
-    // action just navigates to the DXcam status banner. Use primaryActionLabel
-    // so the fallback text matches actual behavior ("查看 DXcam 状态") when
-    // the i18n key isn't loaded yet.
-    actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(uiT('ui.first_run.action.install_dxcam', primaryActionLabel('install_dxcam')))}</button>`);
+    if (firstIncomplete.installAction === 'install_dxcam') {
+      const actionLabel = hasInstallFlow('dxcam')
+        ? uiT('ui.first_run.action.install_dxcam', primaryActionLabel('install_dxcam'))
+        : '查看 DXcam 修复说明';
+      actions.push(`<button class="primary" data-first-run-action="install_dxcam">${escapeHtml(actionLabel)}</button>`);
+    }
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
   } else if (firstIncomplete.key === 'start_game' || firstIncomplete.key === 'refresh_window') {
     actions.push(`<button class="secondary" data-first-run-action="refresh_all">${escapeHtml(uiT('ui.first_run.action.refresh_all', primaryActionLabel('refresh_status')))}</button>`);
@@ -7065,9 +7081,13 @@ async function handleDiagnosisAction(action) {
       setFlash(uiT('ui.flash.rapidocr_manual_guide_revealed', '已定位到 RapidOCR 模型说明。请按卡片中的下载来源和目录提示手动放置模型。'), 'info');
       break;
     case 'install_dxcam':
-      navigateToInstallPanel('dxcam', { scrollToSection: false });
-      expandAndScrollTo('dxcamCard');
-      setFlash(uiT('ui.flash.dxcam_hint_revealed', '已定位到 DXcam 状态卡片。请按卡片说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
+      if (hasInstallFlow('dxcam')) {
+        await startInstall('dxcam', false);
+      } else {
+        navigateToInstallPanel('dxcam', { scrollToSection: false });
+        expandAndScrollTo('dxcamCard');
+        setFlash(uiT('ui.flash.dxcam_hint_revealed', '已定位到 DXcam 状态卡片。请按卡片说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
+      }
       break;
     case 'capture_backend':
       revealCaptureBackendSettings();

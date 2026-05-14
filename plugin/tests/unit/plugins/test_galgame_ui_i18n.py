@@ -135,3 +135,19 @@ def test_galgame_ui_first_run_has_manual_rapidocr_model_cta() -> None:
     assert "show_rapidocr_models_guide" in script
     assert "ui.first_run.action.show_rapidocr_models_guide" in script
     assert "ui.flash.rapidocr_manual_guide_revealed" in script
+
+
+def test_galgame_ui_first_run_dxcam_prompt_requires_dxcam_backend() -> None:
+    script = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "galgame_plugin"
+        / "static"
+        / "main.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function requiresDxcamBackend" in script
+    assert "const dxcamRequired = requiresDxcamBackend(selectedCaptureBackend);" in script
+    assert "const captureReady = Boolean(!dxcamSupported || !dxcamRequired || dxcam.installed);" in script
+    assert "firstIncomplete.installAction === 'install_dxcam'" in script
+    assert "if (hasInstallFlow('dxcam'))" in script

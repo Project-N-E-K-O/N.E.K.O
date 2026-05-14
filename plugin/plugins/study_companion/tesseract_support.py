@@ -8,7 +8,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -36,6 +38,7 @@ DEFAULT_TESSDATA_SHA256 = {
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 _CJK_OR_KANA_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_TESSERACT_CMD_LOCK = threading.Lock()
 
 
 def _is_windows_platform() -> bool:
@@ -746,7 +749,10 @@ async def install_tesseract(
 def _prepare_ocr_image(image: Any) -> Any:
     from PIL import Image, ImageOps
 
-    resampling = getattr(Image, "Resampling", Image)
+    if hasattr(Image, "Resampling"):
+        resample_filter = Image.Resampling.LANCZOS
+    else:
+        resample_filter = getattr(Image, "LANCZOS", Image.BICUBIC)
     prepared = image.convert("L")
     prepared = ImageOps.autocontrast(prepared)
     long_edge = max(prepared.width, prepared.height, 1)
@@ -754,7 +760,7 @@ def _prepare_ocr_image(image: Any) -> Any:
         scale = min(3.0, 1200 / long_edge)
         prepared = prepared.resize(
             (max(1, int(prepared.width * scale)), max(1, int(prepared.height * scale))),
-            getattr(resampling, "LANCZOS", Image.BICUBIC),
+            resample_filter,
         )
     return prepared
 
@@ -765,6 +771,18 @@ def _score_ocr_text(text: str) -> tuple[float, int, int]:
     significant_chars = sum(1 for char in normalized if char.isalnum() or _CJK_OR_KANA_RE.match(char))
     score = float(significant_chars + (cjk_or_kana_count * 2))
     return score, cjk_or_kana_count, significant_chars
+
+
+@contextmanager
+def _temporary_tesseract_cmd(pytesseract: Any, path: str):
+    with _TESSERACT_CMD_LOCK:
+        original_cmd = pytesseract.pytesseract.tesseract_cmd
+        try:
+            if path:
+                pytesseract.pytesseract.tesseract_cmd = path
+            yield
+        finally:
+            pytesseract.pytesseract.tesseract_cmd = original_cmd
 
 
 class TesseractOcrBackend:
@@ -800,20 +818,19 @@ class TesseractOcrBackend:
             self._tesseract_path,
             install_target_dir_raw=self._install_target_dir_raw,
         )
-        if path:
-            pytesseract.pytesseract.tesseract_cmd = path
         config = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
         prepared = _prepare_ocr_image(image)
 
         best_text = ""
         best_score = (-1.0, 0, 0)
-        for candidate in (image, prepared):
-            text = pytesseract.image_to_string(candidate, lang=self._languages, config=config).strip()
-            score = _score_ocr_text(text)
-            if score > best_score:
-                best_text = text
-                best_score = score
-            score_value, cjk_or_kana_count, significant_chars = score
-            if significant_chars >= 8 and ((cjk_or_kana_count >= 2 and score_value >= 14.0) or score_value >= 20.0):
-                break
+        with _temporary_tesseract_cmd(pytesseract, path):
+            for candidate in (image, prepared):
+                text = pytesseract.image_to_string(candidate, lang=self._languages, config=config).strip()
+                score = _score_ocr_text(text)
+                if score > best_score:
+                    best_text = text
+                    best_score = score
+                score_value, cjk_or_kana_count, significant_chars = score
+                if significant_chars >= 8 and ((cjk_or_kana_count >= 2 and score_value >= 14.0) or score_value >= 20.0):
+                    break
         return best_text

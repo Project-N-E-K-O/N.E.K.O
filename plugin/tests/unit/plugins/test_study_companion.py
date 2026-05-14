@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -1335,6 +1336,36 @@ def test_study_ocr_pipeline_uses_local_tesseract_backend(monkeypatch: pytest.Mon
             "languages": "eng",
         }
     ]
+
+
+def test_study_tesseract_backend_restores_global_tesseract_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "tesseract.exe"
+    executable.write_text("", encoding="utf-8")
+    calls: list[tuple[object, str]] = []
+    fake_pytesseract = SimpleNamespace()
+    fake_pytesseract.pytesseract = SimpleNamespace(tesseract_cmd="original-cmd")
+
+    def image_to_string(candidate: object, *, lang: str, config: str) -> str:
+        calls.append((candidate, fake_pytesseract.pytesseract.tesseract_cmd))
+        return "recognized text"
+
+    fake_pytesseract.image_to_string = image_to_string
+    monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(study_tesseract_support, "_prepare_ocr_image", lambda image: "prepared-image")
+
+    backend = study_tesseract_support.TesseractOcrBackend(
+        tesseract_path=str(executable),
+        languages="eng",
+    )
+
+    assert backend.extract_text("source-image") == "recognized text"
+    assert calls == [
+        ("source-image", str(executable)),
+        ("prepared-image", str(executable)),
+    ]
+    assert fake_pytesseract.pytesseract.tesseract_cmd == "original-cmd"
 
 
 @pytest.mark.asyncio
