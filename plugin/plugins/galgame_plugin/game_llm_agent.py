@@ -5524,11 +5524,6 @@ class GameLLMAgent:
                 for item in bounded_window
                 if not scene_id or str(item.get("scene_id") or "") == scene_id
             ]
-            bounded_line_ids = {
-                str(item.get("line_id") or "")
-                for item in scene_bounded_window
-                if str(item.get("line_id") or "")
-            }
             stable_candidates = [
                 {key: value for key, value in item.items() if key != "_context_source"}
                 for item in scene_bounded_window
@@ -5539,8 +5534,8 @@ class GameLLMAgent:
                 for item in scene_bounded_window
                 if item.get("_context_source") == "observed"
             ]
-            stable_lines = _dialogue_context_lines(stable_candidates, limit=line_limit)
-            observed_lines = _dialogue_context_lines(observed_candidates, limit=line_limit)
+            stable_lines = _dialogue_context_lines(stable_candidates, limit=None)
+            observed_lines = _dialogue_context_lines(observed_candidates, limit=None)
             dialogue_line_ids = {
                 str(item.get("line_id") or "")
                 for item in [*stable_lines, *observed_lines]
@@ -5551,11 +5546,7 @@ class GameLLMAgent:
                 for item in history_choices
                 if isinstance(item, dict)
                 and (not scene_id or str(item.get("scene_id") or "") == scene_id)
-                and (
-                    not bounded_line_ids
-                    or item.get("line_id") in (None, "")
-                    or str(item.get("line_id") or "") in bounded_line_ids
-                )
+                and str(item.get("line_id") or "") in dialogue_line_ids
             ][-line_limit:]
             recent_lines = [
                 {key: value for key, value in item.items() if key != "_context_source"}

@@ -1138,6 +1138,16 @@ def test_game_llm_agent_reply_context_bounds_all_history_by_recency_window(
         ],
         history_choices=[
             {
+                "choice_id": "c-missing-line",
+                "text": "choice without line id",
+                "line_id": "",
+                "scene_id": "scene-a",
+                "action": "selected",
+                "ts": "2026-04-21T08:30:19Z",
+            },
+        ]
+        + [
+            {
                 "choice_id": f"c{index}",
                 "text": f"choice {index}",
                 "line_id": f"o{index}",
