@@ -223,6 +223,9 @@ async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
 
     assert sorted(result["downloaded"]) == sorted(file_bytes)
     assert result["source"] == "baidu_cloud"
+    assert set(result["sources"].values()) == {"baidu_cloud"}
+    assert result.get("fallback_used") is not True
+    assert result.get("baidu_error") in (None, "")
     for name, content in file_bytes.items():
         assert (install_target / "models" / name).read_bytes() == content
 

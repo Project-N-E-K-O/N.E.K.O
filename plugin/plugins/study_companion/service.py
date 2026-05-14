@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import importlib.util
-import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -75,10 +73,6 @@ def build_dependency_status(config: StudyConfig) -> dict[str, Any]:
     }
 
 
-def _expand_path(value: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(str(value or ""))))
-
-
 def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
     spec = importlib.util.find_spec("rapidocr_onnxruntime")
     origin = str(getattr(spec, "origin", "") or "") if spec is not None else ""
@@ -99,33 +93,13 @@ def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
 
 
 def _inspect_tesseract(config: StudyConfig) -> dict[str, Any]:
-    candidates: list[Path] = []
-    if config.ocr_tesseract_path:
-        candidates.append(_expand_path(config.ocr_tesseract_path))
-    if config.ocr_install_target_dir:
-        candidates.append(_expand_path(config.ocr_install_target_dir) / "tesseract.exe")
-    path_hit = shutil.which("tesseract.exe" if sys.platform == "win32" else "tesseract")
-    if path_hit:
-        candidates.append(Path(path_hit))
-    detected = next((candidate for candidate in candidates if candidate.is_file()), None)
-    installed = detected is not None
-    target_dir = config.ocr_install_target_dir
-    required_languages = [item for item in config.ocr_languages.split("+") if item]
-    available_languages = _available_tesseract_languages(detected, _expand_path(target_dir) if target_dir else None)
-    missing_languages = [lang for lang in required_languages if lang not in available_languages]
-    detail = "installed" if installed else "missing"
-    if installed and missing_languages:
-        detail = f"missing languages: {', '.join(missing_languages)}"
-    return {
-        "install_supported": sys.platform == "win32",
-        "installed": installed,
-        "can_install": sys.platform == "win32" and not installed,
-        "detected_path": str(detected) if detected else "",
-        "target_dir": target_dir,
-        "required_languages": required_languages,
-        "missing_languages": missing_languages,
-        "detail": detail,
-    }
+    from .tesseract_support import inspect_tesseract_installation
+
+    return inspect_tesseract_installation(
+        configured_path=config.ocr_tesseract_path,
+        install_target_dir_raw=config.ocr_install_target_dir,
+        languages=config.ocr_languages,
+    )
 
 
 def _available_tesseract_languages(detected: Path | None, target_dir: Path | None) -> set[str]:

@@ -116,12 +116,13 @@ class _FakeCaptureBackend:
 
 
 class _FakeOcrBackend:
-    def __init__(self, texts: list[str] | None = None) -> None:
+    def __init__(self, texts: list[str] | None = None, *, available: bool = True) -> None:
         self._texts = list(texts or [])
+        self.available = available
         self.calls = 0
 
     def is_available(self) -> bool:
-        return True
+        return self.available
 
     def extract_text(self, image: str) -> str:
         del image
@@ -207,6 +208,13 @@ def _install_fake_ocr_runtime(root: Path, *, languages: str = DEFAULT_OCR_TEST_L
     for language in [item.strip() for item in languages.split("+") if item.strip()]:
         (tessdata_dir / f"{language}.traineddata").write_text("", encoding="utf-8")
     return executable
+
+
+@pytest.fixture
+def ocr_runtime_root(tmp_path: Path) -> Path:
+    install_root = tmp_path / "OcrRuntime"
+    _install_fake_ocr_runtime(install_root)
+    return install_root
 
 
 def _read_events(events_path: Path) -> list[dict[str, object]]:
@@ -1458,11 +1466,11 @@ def test_ocr_select_target_window_does_not_pick_unrelated_window_when_memory_tar
 @pytest.mark.asyncio
 async def test_ocr_reader_backpressure_skip_is_not_capture_error(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -1509,12 +1517,12 @@ async def test_ocr_reader_backpressure_skip_is_not_capture_error(
 @pytest.mark.asyncio
 async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     started = threading.Event()
     release = threading.Event()
 
@@ -1589,12 +1597,12 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
 @pytest.mark.asyncio
 async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     backend = _FakeOcrBackend(["雪乃：恢复后的台词。"])
     logger = _CapturingLogger()
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
@@ -1645,12 +1653,12 @@ async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
 @pytest.mark.asyncio
 async def test_ocr_reader_capture_timeout_recovery_is_bounded(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     backend = _FakeOcrBackend(["雪乃：不应执行。"])
     logger = _CapturingLogger()
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
@@ -2084,6 +2092,27 @@ def test_mouse_monitor_drains_pending_events_outside_hook_callback(monkeypatch: 
     assert events[1].point_hwnd == 70
     assert events[2].key_code == 0x20
     assert events[2].foreground_hwnd == 900
+
+
+def test_custom_ocr_backend_plan_uses_backend_availability(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    backend = _FakeOcrBackend(available=False)
+    backend.kind = "fake_custom"
+    backend.detail = "dependency_missing"
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        ocr_backend=backend,
+    )
+
+    plan = manager._custom_ocr_backend_plan()
+
+    assert plan.selection == "custom"
+    assert plan.primary.backend is backend
+    assert plan.primary.kind == "fake_custom"
+    assert plan.primary.detail == "dependency_missing"
+    assert plan.primary.available is False
 
 
 def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> None:
@@ -3252,11 +3281,11 @@ def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
 @pytest.mark.asyncio
 async def test_ocr_reader_runtime_exposes_stable_text_tracker(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -3643,11 +3672,13 @@ def test_ocr_reader_build_runtime_preserves_foreground_advance_diagnostics(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_restarts_session_after_initial_capture_failure(tmp_path: Path) -> None:
+async def test_ocr_reader_restarts_session_after_initial_capture_failure(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 3000.0}
 
     class _FailOnceCaptureBackend(_FakeCaptureBackend):
@@ -4438,11 +4469,11 @@ def test_install_task_runtime_root_uses_app_docs_dir(
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_waits_before_taking_over_after_memory_reader_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1000.0}
     manager = OcrReaderManager(
         logger=_Logger(),
@@ -4489,11 +4520,11 @@ async def test_ocr_reader_manager_waits_before_taking_over_after_memory_reader_t
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_clears_memory_wait_on_new_idle_memory_session(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1000.0}
     capture_backend = _FakeCaptureBackend()
     manager = OcrReaderManager(
@@ -4544,11 +4575,11 @@ async def test_ocr_reader_manager_clears_memory_wait_on_new_idle_memory_session(
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_does_not_treat_memory_reader_heartbeats_as_live_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -4579,12 +4610,12 @@ async def test_ocr_reader_manager_does_not_treat_memory_reader_heartbeats_as_liv
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_prefers_memory_reader_game_window_over_foreground_window(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     windows = [
         DetectedGameWindow(
             hwnd=202,
@@ -4637,12 +4668,12 @@ async def test_ocr_reader_manager_prefers_memory_reader_game_window_over_foregro
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_locks_auto_target_when_user_focuses_other_window(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     game_window = DetectedGameWindow(
         hwnd=101,
         title="哀鸿",
@@ -4710,11 +4741,13 @@ async def test_ocr_reader_manager_locks_auto_target_when_user_focuses_other_wind
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_manager_applies_builtin_aihong_capture_profile(tmp_path: Path) -> None:
+async def test_ocr_reader_manager_applies_builtin_aihong_capture_profile(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -4749,11 +4782,11 @@ async def test_ocr_reader_manager_applies_builtin_aihong_capture_profile(tmp_pat
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_prefers_manual_capture_profile_over_builtin_aihong_profile(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -4798,11 +4831,11 @@ async def test_ocr_reader_manager_prefers_manual_capture_profile_over_builtin_ai
 @pytest.mark.asyncio
 async def test_aihong_menu_stage_accepts_plain_text_choices_after_dialogue_idle_polls(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 3000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -4866,11 +4899,11 @@ async def test_aihong_menu_stage_accepts_plain_text_choices_after_dialogue_idle_
 @pytest.mark.asyncio
 async def test_aihong_menu_probe_rejects_dialogue_like_multiline_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 4000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -4931,11 +4964,11 @@ async def test_aihong_menu_probe_rejects_dialogue_like_multiline_text(
 @pytest.mark.asyncio
 async def test_aihong_menu_stage_returns_to_dialogue_profile_after_stable_line(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 5000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5000,11 +5033,13 @@ async def test_aihong_menu_stage_returns_to_dialogue_profile_after_stable_line(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(tmp_path: Path) -> None:
+async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5070,11 +5105,11 @@ async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(tmp_path:
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_reports_capture_diagnostic_after_repeated_no_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1200.0}
     manager = OcrReaderManager(
         logger=_Logger(),
@@ -5110,11 +5145,13 @@ async def test_ocr_reader_manager_reports_capture_diagnostic_after_repeated_no_t
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_manager_emits_choices_after_stable_menu_detection(tmp_path: Path) -> None:
+async def test_ocr_reader_manager_emits_choices_after_stable_menu_detection(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 2000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5204,12 +5241,12 @@ def test_drop_ocr_chrome_noise_lines_keeps_dialogue() -> None:
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_mode_prefers_rapidocr_when_available(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     monkeypatch.setattr(
         "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
         lambda **kwargs: {
@@ -5279,11 +5316,11 @@ def test_rapidocr_missing_model_files_are_not_marked_available(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_target(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -5319,12 +5356,12 @@ async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_prefers_manual_target_and_rebinds_by_signature(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manual_window = DetectedGameWindow(
         hwnd=777,
         title="Aiyoku no Eustia",
@@ -5391,11 +5428,11 @@ async def test_ocr_reader_manager_prefers_manual_target_and_rebinds_by_signature
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_prefers_memory_reader_target_over_stale_manual_target(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     stale_manual_window = DetectedGameWindow(
         hwnd=777,
         title="TheLamentingGeese",
@@ -5458,11 +5495,11 @@ async def test_ocr_reader_manager_auto_prefers_memory_reader_target_over_stale_m
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_does_not_fall_back_to_stale_manual_when_memory_target_missing(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     stale_manual_window = DetectedGameWindow(
         hwnd=777,
         title="TheLamentingGeese",
@@ -5519,11 +5556,11 @@ async def test_ocr_reader_manager_auto_does_not_fall_back_to_stale_manual_when_m
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_ocr_mode_keeps_manual_target_over_memory_reader_runtime(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     manual_window = DetectedGameWindow(
         hwnd=777,
         title="TheLamentingGeese",
@@ -5581,11 +5618,11 @@ async def test_ocr_reader_manager_ocr_mode_keeps_manual_target_over_memory_reade
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_blocks_text_that_looks_like_neko_plugin_ui(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "OcrRuntime"
-    _install_fake_ocr_runtime(install_root)
+    install_root = ocr_runtime_root
     writer = OcrReaderBridgeWriter(bridge_root=bridge_root)
     manager = OcrReaderManager(
         logger=_Logger(),

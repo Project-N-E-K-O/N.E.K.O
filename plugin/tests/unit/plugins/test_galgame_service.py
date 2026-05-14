@@ -750,6 +750,56 @@ def test_status_payload_keeps_last_stable_line_after_new_ocr_session(
     assert payload["ocr_reader_runtime"]["last_stable_line"]["source"] == "stable"
 
 
+def test_status_payload_skips_tentative_history_when_backfilling_last_stable_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = galgame_service.build_config({})
+    state = _status_state(
+        ocr_reader_runtime={"status": "running"},
+        latest_snapshot={
+            "speaker": "",
+            "text": "新的候选台词。",
+            "line_id": "ocr:tentative",
+            "scene_id": "ocr:game:scene-0001",
+            "route_id": "ocr",
+            "choices": [],
+            "is_menu_open": False,
+            "stability": "tentative",
+        },
+        history_lines=[
+            {
+                "speaker": "",
+                "text": "上一条已确认台词。",
+                "line_id": "ocr:stable",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "stable",
+                "ts": "2026-05-13T17:39:52Z",
+            },
+            {
+                "speaker": "",
+                "text": "新的候选台词。",
+                "line_id": "ocr:tentative",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "tentative",
+                "ts": "2026-05-13T17:40:01Z",
+            },
+        ],
+    )
+    _patch_status_dependencies(monkeypatch)
+
+    payload = galgame_service.build_status_payload(
+        state,
+        config=config,
+        state_is_snapshot=True,
+    )
+
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["text"] == "上一条已确认台词。"
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["line_id"] == "ocr:stable"
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["stability"] == "stable"
+
+
 def test_status_payload_exposes_ocr_decision_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

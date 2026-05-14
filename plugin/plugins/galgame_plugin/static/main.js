@@ -132,7 +132,7 @@ function getInstallUIConfig() {
       actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
       retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
       runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
-      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从百度云拉取缺失的模型文件，并通过 SSE 推送实时进度。'),
+      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会优先从百度云拉取缺失模型文件，失败则回退到 ModelScope，并通过 SSE 推送实时进度。'),
       successFlash: uiT('ui.install.rapidocr.download_models.success', 'RapidOCR 模型下载完成'),
       failureFlash: uiT('ui.install.rapidocr.download_models.failure', 'RapidOCR 模型下载失败'),
     },
@@ -1834,9 +1834,9 @@ function buildFirstRunSteps(status = {}) {
   }
   const ocrReady = Boolean(
     rapidocrUsable
-    || (!rapidocrModelsMissing && rapidocr.detail !== 'missing')
+    || (!rapidocrModelsMissing && rapidocr.detail === 'installed')
   );
-  const captureReady = Boolean(dxcam.installed || !dxcamSupported);
+  const captureReady = Boolean(!dxcamSupported || runtime.capture_backend_kind || dxcam.installed);
   const hasGame = Boolean(
     textValue(status.active_session_id)
     || availableGameIds.length
@@ -1870,7 +1870,7 @@ function buildFirstRunSteps(status = {}) {
       const sizeMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
       body = uiTf(
         'ui.first_run.install_ocr.pending_models',
-        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，从百度云拉取约 {size} MB 的模型文件。',
+        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，会优先从百度云拉取约 {size} MB 的模型文件，失败则回退到 ModelScope。',
         {
           lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
@@ -2586,12 +2586,20 @@ function dependencySummaryItem(kind, status = {}) {
 
   if (kind === 'dxcam') {
     const dxcam = status.dxcam || {};
+    const runtime = status.ocr_reader_runtime || {};
+    const activeCaptureBackend = textValue(runtime.capture_backend_kind);
+    const selectedCaptureBackend = textValue(status.ocr_capture_backend_selection || 'auto');
+    const activeBackendLabel = activeCaptureBackend
+      ? captureBackendLabel(activeCaptureBackend)
+      : captureBackendLabel(selectedCaptureBackend);
+    const label = uiT('ui.install.summary.capture_backend', '截图后端');
     if (!dxcam.install_supported) {
-      return { kind, label: 'DXcam', state: 'optional', labelText: uiT('ui.install.summary.platform_unsupported', '平台不支持'), needsAttention: false };
+      return { kind, label, state: 'optional', labelText: activeBackendLabel, needsAttention: false };
     }
-    return dxcam.installed
-      ? { kind, label: 'DXcam', state: 'installed', labelText: uiT('ui.install.summary.ready', '已就绪'), needsAttention: false }
-      : { kind, label: 'DXcam', state: 'warning', labelText: uiT('ui.install.summary.not_found', '未检测到'), needsAttention: true };
+    if (activeCaptureBackend) {
+      return { kind, label, state: 'installed', labelText: activeBackendLabel, needsAttention: false };
+    }
+    return { kind, label, state: 'warning', labelText: uiT('ui.install.capture_backend.waiting_active', '等待下一次 OCR 截图确认'), needsAttention: true };
   }
 
   const textractor = status.textractor || {};
@@ -5202,7 +5210,7 @@ function renderRapidOcr(status) {
     const modelCacheDir = rapidocr.model_cache_dir || uiT('ui.status.unknown', '未知');
     const manualRecoveryBody = uiTf(
       'ui.install.rapidocr.missing_models_manual_body',
-      '当前选择 lang_type={lang} + ocr_version={version}，需要下载缺失模型文件到本地缓存。当前无法自动下载，请手动从 {source} 下载缺失文件到 {dir}，然后点击"刷新状态"。',
+      '当前选择 lang_type={lang} + ocr_version={version}，需要下载缺失模型文件到本地缓存。自动下载会优先使用百度云，失败则回退到备用源/ModelScope；也可按 {source} 提供的信息手动下载并放到 {dir}，再点击“刷新状态”。',
       {
         lang: langType,
         version: ocrVersion,
@@ -7054,7 +7062,7 @@ async function handleDiagnosisAction(action) {
     case 'show_rapidocr_models_guide':
       navigateToInstallPanel('rapidocr', { scrollToSection: false });
       expandAndScrollTo('rapidocrCard');
-      setFlash(uiT('ui.flash.rapidocr_manual_guide_revealed', '已定位到 RapidOCR 模型说明。请按卡片中的百度云链接和目录提示手动放置模型。'), 'info');
+      setFlash(uiT('ui.flash.rapidocr_manual_guide_revealed', '已定位到 RapidOCR 模型说明。请按卡片中的下载来源和目录提示手动放置模型。'), 'info');
       break;
     case 'install_dxcam':
       navigateToInstallPanel('dxcam', { scrollToSection: false });

@@ -7300,15 +7300,7 @@ class OcrReaderManager:
 
         backend_plan_started_at = self._time_fn()
         if self._custom_ocr_backend:
-            backend_plan = SelectedOcrBackendPlan(
-                selection="custom",
-                primary=OcrBackendDescriptor(
-                    kind=str(self._runtime.backend_kind or "custom"),
-                    backend=self._ocr_backend,
-                    detail=str(self._runtime.backend_detail or "custom_backend"),
-                    available=True,
-                ),
-            )
+            backend_plan = self._custom_ocr_backend_plan()
         else:
             backend_plan = await asyncio.to_thread(self._resolve_backend_plan)
         backend_plan_duration = max(0.0, self._time_fn() - backend_plan_started_at)
@@ -8369,15 +8361,56 @@ class OcrReaderManager:
         self._backend_plan_cache = plan
         return plan
 
+    def _custom_ocr_backend_plan(self) -> SelectedOcrBackendPlan:
+        backend = self._ocr_backend
+        kind = str(
+            self._runtime.backend_kind
+            or getattr(backend, "kind", "")
+            or backend.__class__.__name__
+            or "custom"
+        )
+        detail = str(
+            self._runtime.backend_detail
+            or getattr(backend, "detail", "")
+            or "custom_backend"
+        )
+        available = False
+        try:
+            is_available = getattr(backend, "is_available", None)
+            if callable(is_available):
+                available = bool(is_available())
+            else:
+                availability = getattr(backend, "availability", None)
+                available = bool(availability() if callable(availability) else availability)
+        except Exception as exc:  # noqa: BLE001 - custom backend status must not crash preflight
+            detail = f"availability_error:{type(exc).__name__}"
+            available = False
+        if not available and detail == "custom_backend":
+            detail = "custom_backend_unavailable"
+        return SelectedOcrBackendPlan(
+            selection="custom",
+            primary=OcrBackendDescriptor(
+                kind=kind,
+                backend=backend,
+                detail=detail,
+                available=available,
+            ),
+        )
+
     def _backend_unavailable_detail(self, plan: SelectedOcrBackendPlan) -> str:
         if plan.primary.kind == "rapidocr":
             return plan.primary.detail or "missing"
-        return "missing_rapidocr"
+        return plan.primary.detail or f"{plan.primary.kind or 'custom'}_unavailable"
 
     def _backend_unavailable_warnings(self, plan: SelectedOcrBackendPlan) -> list[str]:
         warnings: list[str] = []
         if plan.selection == "rapidocr" or plan.primary.kind == "rapidocr":
             warnings.append(f"ocr_reader RapidOCR is unavailable: {plan.primary.detail or 'missing'}")
+            return warnings
+        if plan.primary.kind:
+            warnings.append(
+                f"ocr_reader {plan.primary.kind} is unavailable: {plan.primary.detail or 'unavailable'}"
+            )
             return warnings
         rapid_detail = str(plan.rapidocr_inspection.get("detail") or "")
         if rapid_detail and rapid_detail != "installed":
@@ -8778,14 +8811,7 @@ class OcrReaderManager:
         if plan is not None:
             resolved_plan = plan
         elif self._custom_ocr_backend:
-            resolved_plan = SelectedOcrBackendPlan(
-                primary=OcrBackendDescriptor(
-                    kind=str(self._runtime.backend_kind or "custom"),
-                    backend=self._ocr_backend,
-                    detail=str(self._runtime.backend_detail or "custom_backend"),
-                    available=True,
-                )
-            )
+            resolved_plan = self._custom_ocr_backend_plan()
         else:
             resolved_plan = self._resolve_backend_plan()
         if self._custom_ocr_backend:

@@ -138,7 +138,9 @@ def _build_download_guide_payload(
     )
     rapidocr_available = (
         bool(_BAIDU_YUN_RAPIDOCR_URL)
+        and "____" not in _BAIDU_YUN_RAPIDOCR_URL
         and bool(_BAIDU_YUN_RAPIDOCR_CODE)
+        and _BAIDU_YUN_RAPIDOCR_CODE != "____"
         and not bool(rapidocr.get("installed"))
     )
     return {
@@ -2819,13 +2821,15 @@ def _latest_stable_history_line(history_lines: Any) -> dict[str, Any]:
     for item in reversed(history_lines):
         if not isinstance(item, dict):
             continue
+        if str(item.get("stability") or "").strip().lower() != "stable":
+            continue
         text = str(item.get("text") or "")
         line_id = str(item.get("line_id") or "")
         if not text or not line_id:
             continue
         result = dict(item)
         result["source"] = str(result.get("source") or "stable")
-        result["stability"] = str(result.get("stability") or "stable")
+        result["stability"] = "stable"
         return result
     return {}
 

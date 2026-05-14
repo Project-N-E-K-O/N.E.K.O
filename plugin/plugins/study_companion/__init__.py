@@ -794,7 +794,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError("Tesseract install is already running"))
         run_id = self._resolve_current_run_id(kwargs)
         try:
-            from plugin.plugins.galgame_plugin.tesseract_support import install_tesseract
+            from .tesseract_support import install_tesseract
 
             result = await install_tesseract(
                 logger=self.logger,
