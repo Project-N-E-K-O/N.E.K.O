@@ -132,6 +132,23 @@ def test_llm_gateway_ttl_for_operation_uses_phase3_fields() -> None:
     assert gateway._ttl_for_operation("agent_reply") == 3
 
 
+def test_repeat_config_fingerprint_preserves_zero_threshold() -> None:
+    zero_gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_repeat_detection_enabled=True, llm_repeat_similarity_threshold=0.0),
+        backend=_Backend(),
+    )
+    default_gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_repeat_detection_enabled=True),
+        backend=_Backend(),
+    )
+
+    assert zero_gateway._repeat_config_fingerprint() != default_gateway._repeat_config_fingerprint()
+
+
 @pytest.mark.asyncio
 async def test_llm_gateway_near_match_reuses_safe_explain_result() -> None:
     backend = _Backend()
@@ -160,6 +177,39 @@ async def test_llm_gateway_near_match_reuses_safe_explain_result() -> None:
     assert first["explanation"] == "explain-1"
     assert second["explanation"] == "explain-1"
     assert backend.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_update_config_clears_near_match_cache_on_context_budget_change() -> None:
+    backend = _Backend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(
+            llm_near_match_cache_enabled=True,
+            llm_request_cache_ttl_seconds=0,
+            context_counting_mode="token",
+            context_max_tokens=300,
+        ),
+        backend=backend,
+    )
+
+    try:
+        await gateway.explain_line(_explain_context())
+        assert len(gateway._near_match_cache) == 1
+
+        gateway.update_config(
+            _config(
+                llm_near_match_cache_enabled=True,
+                llm_request_cache_ttl_seconds=0,
+                context_counting_mode="token",
+                context_max_tokens=1000,
+            )
+        )
+
+        assert len(gateway._near_match_cache) == 0
+    finally:
+        await gateway.shutdown()
 
 
 @pytest.mark.asyncio

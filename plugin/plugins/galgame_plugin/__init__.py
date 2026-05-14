@@ -1913,6 +1913,7 @@ class GalgamePlugin(NekoPluginBase):
             assign_json("ocr_reader_runtime", payload["ocr_reader_runtime"])
             assign_json_if_live_unchanged("ocr_capture_profiles", payload["ocr_capture_profiles"])
             assign_json_if_live_unchanged("ocr_window_target", payload["ocr_window_target"])
+            assign_json("context_snapshot", payload.get("context_snapshot", state.context_snapshot))
             assign("plugin_error", str(payload["plugin_error"]))
             assign_json_if_live_unchanged(
                 "dependency_status",
@@ -2791,16 +2792,45 @@ class GalgamePlugin(NekoPluginBase):
 
         self._apply_config_overrides_from_store()
 
-    def _load_context_snapshot_for_state(self) -> dict[str, Any]:
+    def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
         if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
             return {}
-        bound_game_id = str(self._state.bound_game_id or "")
         snapshot = self._persist.load_context_snapshot(
-            current_game_id=bound_game_id,
+            current_game_id=str(current_game_id or ""),
             max_age_seconds=float(getattr(self._cfg, "context_persist_max_age_seconds", 3600.0)),
             require_game_id=bool(getattr(self._cfg, "context_persist_require_game_id", True)),
         )
         return json_copy(snapshot) if isinstance(snapshot, dict) else {}
+
+    def _load_context_snapshot_for_state(self) -> dict[str, Any]:
+        bound_game_id = str(self._state.bound_game_id or "")
+        active_game_id = str(self._state.active_game_id or "")
+        require_game_id = bool(getattr(self._cfg, "context_persist_require_game_id", True))
+        game_ids: list[str] = []
+        for game_id in (bound_game_id, active_game_id):
+            if game_id and game_id not in game_ids:
+                game_ids.append(game_id)
+        if not require_game_id and not game_ids:
+            game_ids.append("")
+        for game_id in game_ids:
+            if require_game_id and not game_id:
+                continue
+            snapshot = self._load_context_snapshot_for_game(game_id)
+            if snapshot:
+                return snapshot
+        return {}
+
+    def _context_snapshot_needs_reload(
+        self,
+        snapshot: object,
+        *,
+        current_game_id: str,
+    ) -> bool:
+        if not isinstance(snapshot, dict) or not snapshot:
+            return True
+        if not bool(getattr(self._cfg, "context_persist_require_game_id", True)):
+            return False
+        return str(snapshot.get("game_id") or "").strip() != str(current_game_id or "").strip()
 
     def _active_game_id_for_context_persist(self) -> str:
         with self._state_lock:
@@ -4045,6 +4075,14 @@ class GalgamePlugin(NekoPluginBase):
         local["active_session_meta"] = build_active_session_meta(candidate)
         local["active_data_source"] = candidate.data_source
         local["latest_snapshot"] = json_copy(session.get("state", {}))
+        if self._context_snapshot_needs_reload(
+            local.get("context_snapshot"),
+            current_game_id=candidate.game_id,
+        ):
+            local["context_snapshot"] = await asyncio.to_thread(
+                self._load_context_snapshot_for_game,
+                candidate.game_id,
+            )
 
         if warmup_needed:
             end_offset = int(local["events_byte_offset"]) if restore_cursor else None
@@ -6323,7 +6361,13 @@ class GalgamePlugin(NekoPluginBase):
             context=context,
         )
         payload["scene_id"] = str(context.get("scene_id") or "")
-        await asyncio.to_thread(self._persist_context_snapshot_from_summary, context, payload)
+        try:
+            await asyncio.to_thread(self._persist_context_snapshot_from_summary, context, payload)
+        except Exception as exc:
+            self.logger.warning(
+                "persist context snapshot from scene summary failed: {}",
+                exc,
+            )
         return Ok(payload)
 
     @plugin_entry(

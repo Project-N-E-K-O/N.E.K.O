@@ -587,6 +587,35 @@ def test_importance_compaction_keeps_high_score_older_line() -> None:
     assert "_importance_score" not in result["recent_lines"][0]
 
 
+def test_importance_compaction_preserves_target_line() -> None:
+    lines = [
+        {
+            "speaker": "A",
+            "text": "但是我终于想起那个秘密约定了！",
+            "route_id": "route-a",
+            "line_id": "old-important",
+            "scene_id": "scene-a",
+        }
+    ]
+    target_line = {
+        "speaker": "B",
+        "text": "ok",
+        "line_id": "target",
+        "scene_id": "scene-a",
+    }
+
+    _, _, recent = context_builder._global_scene_context_window(
+        lines,
+        [],
+        "scene-a",
+        line_limit=1,
+        target_line=target_line,
+        line_importance_enabled=True,
+    )
+
+    assert [item["line_id"] for item in recent] == ["target"]
+
+
 def test_disabled_importance_keeps_recency_behavior() -> None:
     lines = [
         {
@@ -644,6 +673,32 @@ def test_cumulative_llm_uses_refined_summary_after_trigger() -> None:
     assert result == "refined summary"
 
 
+def test_cumulative_llm_trigger_uses_full_scene_history_not_window_size() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "active_game_id": "game-a",
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": [
+                {"scene_id": "scene-a", "speaker": "A", "text": "第一句。", "line_id": "1"},
+                {"scene_id": "scene-a", "speaker": "A", "text": "第二句。", "line_id": "2"},
+                {"scene_id": "scene-a", "speaker": "A", "text": "第三句。", "line_id": "3"},
+            ],
+            "history_observed_lines": [],
+            "history_choices": [],
+            "llm_refined_scene_summary": "LLM 精炼后的完整摘要。",
+        },
+        scene_id="scene-a",
+        config=GalgameLLMConfig(
+            context_scene_summary_mode="cumulative_llm",
+            context_cumulative_llm_trigger_lines=3,
+            context_explain_min_lines=1,
+            context_explain_max_lines=1,
+        ),
+    )
+
+    assert result["scene_summary_seed"] == "LLM 精炼后的完整摘要。"
+
+
 def test_cumulative_summary_is_bounded_for_large_inputs() -> None:
     result = context_builder._cumulative_scene_summary(
         scene_id="scene-a",
@@ -656,6 +711,74 @@ def test_cumulative_summary_is_bounded_for_large_inputs() -> None:
     )
 
     assert len(result) <= 1600
+
+
+def test_previous_summary_accepts_context_snapshot_only_for_same_game_and_route() -> None:
+    state = {
+        "active_game_id": "game-a",
+        "context_snapshot": {
+            "game_id": "game-a",
+            "route_id": "route-a",
+            "summary_seed": "同一游戏同一路线的摘要。",
+        },
+    }
+
+    assert (
+        context_builder._previous_summary_from_state(
+            state,
+            current_game_id="game-a",
+            current_route_id="route-a",
+        )
+        == "同一游戏同一路线的摘要。"
+    )
+    assert (
+        context_builder._previous_summary_from_state(
+            state,
+            current_game_id="game-b",
+            current_route_id="route-a",
+        )
+        == ""
+    )
+    assert (
+        context_builder._previous_summary_from_state(
+            state,
+            current_game_id="game-a",
+            current_route_id="route-b",
+        )
+        == ""
+    )
+
+
+def test_summarize_context_does_not_reuse_persisted_seed_across_game_or_route() -> None:
+    config = GalgameLLMConfig(context_scene_summary_mode="cumulative_light")
+    state = {
+        "active_game_id": "game-b",
+        "latest_snapshot": {"scene_id": "scene-b", "route_id": "route-b"},
+        "history_lines": [
+            {
+                "scene_id": "scene-b",
+                "route_id": "route-b",
+                "speaker": "B",
+                "text": "新的游戏路线台词。",
+            }
+        ],
+        "history_observed_lines": [],
+        "history_choices": [],
+        "context_snapshot": {
+            "game_id": "game-a",
+            "route_id": "route-a",
+            "summary_seed": "旧游戏旧路线摘要。",
+        },
+    }
+
+    result = context_builder.build_summarize_context(
+        state,
+        scene_id="scene-b",
+        config=config,
+    )
+
+    assert "新的游戏路线台词" in result["scene_summary_seed"]
+    assert "旧游戏旧路线摘要" not in result["scene_summary_seed"]
 
 
 def test_scene_context_hint_new_scene_no_history() -> None:

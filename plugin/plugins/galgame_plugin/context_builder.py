@@ -441,6 +441,29 @@ def _append_limited_with_importance(
     return _compact_lines_by_importance(merged, limit=limit)
 
 
+def _ensure_target_line_present(
+    lines: list[dict[str, Any]],
+    target_line: dict[str, Any] | None,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if limit <= 0 or not target_line:
+        return lines[-limit:] if limit > 0 else []
+    target_key = _dialogue_line_dedupe_key(target_line)
+    if target_key and any(_dialogue_line_dedupe_key(item) == target_key for item in lines):
+        return lines
+    target = dict(target_line)
+    if len(lines) < limit:
+        return _append_unique_line(lines, target, limit=limit)
+    lowest_index = min(
+        range(len(lines)),
+        key=lambda index: (_line_importance_score(lines[index]), index),
+    )
+    result = [dict(item) for index, item in enumerate(lines) if index != lowest_index]
+    result.append(target)
+    return result[-limit:]
+
+
 def _append_unique_line(
     lines: list[dict[str, Any]],
     line: dict[str, Any] | None,
@@ -523,6 +546,11 @@ def _global_scene_context_window(
         )
     if line_importance_enabled:
         recent_lines = _compact_lines_by_importance(ordered_lines, limit=line_limit)
+        recent_lines = _ensure_target_line_present(
+            recent_lines,
+            target_line,
+            limit=line_limit,
+        )
     else:
         recent_lines = ordered_lines[-line_limit:]
 
@@ -758,6 +786,7 @@ def _cumulative_scene_summary(
     mode: str = "rolling",
     llm_refined_summary: str = "",
     llm_trigger_lines: int = 30,
+    trigger_line_count: int | None = None,
 ) -> str:
     local_summary = build_local_scene_summary(
         scene_id=scene_id,
@@ -771,7 +800,8 @@ def _cumulative_scene_summary(
 
     previous_summary = _bounded_summary_text(previous_summary)
     llm_refined_summary = _bounded_summary_text(llm_refined_summary)
-    if mode == "cumulative_llm" and len(lines) >= max(1, int(llm_trigger_lines or 1)):
+    trigger_count = len(lines) if trigger_line_count is None else max(0, int(trigger_line_count))
+    if mode == "cumulative_llm" and trigger_count >= max(1, int(llm_trigger_lines or 1)):
         if llm_refined_summary:
             return llm_refined_summary
 
@@ -780,7 +810,64 @@ def _cumulative_scene_summary(
     return _bounded_summary_text(f"{previous_summary} 最新进展：{local_summary}")
 
 
-def _previous_summary_from_state(local_state: dict[str, Any]) -> str:
+def _scene_history_dialogue_line_count(
+    history_lines: list[dict[str, Any]],
+    history_observed_lines: list[dict[str, Any]],
+    *,
+    scene_id: str,
+    route_id: str,
+) -> int:
+    match_ids = {scene_id} if scene_id else set()
+    candidates: list[dict[str, Any]] = []
+    for item in [*history_lines, *history_observed_lines]:
+        if not isinstance(item, dict):
+            continue
+        if match_ids and str(item.get("scene_id") or "") not in match_ids:
+            continue
+        item_route = str(item.get("route_id") or "")
+        if route_id and item_route and item_route != route_id:
+            continue
+        candidates.append(dict(item))
+    if not candidates:
+        return 0
+    return len(_dialogue_context_lines(candidates, limit=len(candidates)))
+
+
+def _context_snapshot_summary_seed(
+    local_state: dict[str, Any],
+    *,
+    current_game_id: str,
+    current_route_id: str,
+) -> str:
+    context_snapshot = local_state.get("context_snapshot")
+    if not isinstance(context_snapshot, dict):
+        return ""
+
+    value = str(context_snapshot.get("summary_seed") or "").strip()
+    if not value:
+        return ""
+
+    snapshot_game_id = str(context_snapshot.get("game_id") or "").strip()
+    normalized_game_id = str(current_game_id or local_state.get("active_game_id") or "").strip()
+    if not snapshot_game_id or not normalized_game_id:
+        return ""
+    if snapshot_game_id != normalized_game_id:
+        return ""
+
+    snapshot_route_id = str(context_snapshot.get("route_id") or "").strip()
+    normalized_route_id = str(current_route_id or "").strip()
+    if snapshot_route_id != normalized_route_id:
+        return ""
+
+    return value
+
+
+def _previous_summary_from_state(
+    local_state: dict[str, Any],
+    *,
+    current_game_id: str = "",
+    current_route_id: str = "",
+) -> str:
     for key in ("previous_scene_summary", "scene_summary_seed", "scene_summary"):
         value = str(local_state.get(key) or "").strip()
         if value:
@@ -791,12 +878,11 @@ def _previous_summary_from_state(local_state: dict[str, Any]) -> str:
             value = str(scene_state.get(key) or "").strip()
             if value:
                 return value
-    context_snapshot = local_state.get("context_snapshot")
-    if isinstance(context_snapshot, dict):
-        value = str(context_snapshot.get("summary_seed") or "").strip()
-        if value:
-            return value
-    return ""
+    return _context_snapshot_summary_seed(
+        local_state,
+        current_game_id=current_game_id,
+        current_route_id=current_route_id,
+    )
 
 
 def _llm_refined_summary_from_state(local_state: dict[str, Any]) -> str:
@@ -1041,11 +1127,21 @@ def build_summarize_context(
         lines=stable_lines,
         selected_choices=selected_choices,
         snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
-        previous_summary=_previous_summary_from_state(local_state),
+        previous_summary=_previous_summary_from_state(
+            local_state,
+            current_game_id=str(local_state.get("active_game_id") or ""),
+            current_route_id=route_id,
+        ),
         mode=_summary_mode(config),
         llm_refined_summary=_llm_refined_summary_from_state(local_state),
         llm_trigger_lines=int(
             getattr(config, "context_cumulative_llm_trigger_lines", 30) or 30
+        ),
+        trigger_line_count=_scene_history_dialogue_line_count(
+            history_lines,
+            history_observed_lines,
+            scene_id=effective_scene_id,
+            route_id=route_id,
         ),
     )
     return {

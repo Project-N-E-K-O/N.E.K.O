@@ -276,9 +276,16 @@ class LLMGateway:
             self._context_metrics = None
         if hasattr(self._backend, "_config"):
             self._backend._config = config
-        if self._cache_config_fingerprint() != old_cache_config_fingerprint:
+        cache_config_changed = (
+            self._cache_config_fingerprint() != old_cache_config_fingerprint
+        )
+        near_match_config_changed = (
+            self._near_match_config_fingerprint()
+            != old_near_match_config_fingerprint
+        )
+        if cache_config_changed:
             self._cache.clear()
-        if self._near_match_config_fingerprint() != old_near_match_config_fingerprint:
+        if cache_config_changed or near_match_config_changed:
             self._near_match_cache.clear()
         if self._repeat_config_fingerprint() != old_repeat_config_fingerprint:
             self._repeat_guard.clear()
@@ -511,10 +518,9 @@ class LLMGateway:
         )
 
     def _repeat_config_fingerprint(self) -> str:
+        raw_threshold = getattr(self._config, "llm_repeat_similarity_threshold", None)
         try:
-            threshold = float(
-                getattr(self._config, "llm_repeat_similarity_threshold", 0.85) or 0.85
-            )
+            threshold = 0.85 if raw_threshold is None else float(raw_threshold)
         except (TypeError, ValueError):
             threshold = 0.85
         return _stable_json_fingerprint(

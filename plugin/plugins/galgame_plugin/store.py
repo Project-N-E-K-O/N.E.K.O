@@ -265,11 +265,15 @@ class GalgameStore:
         self._write(key, value)
 
     @staticmethod
-    def _sanitize_context_snapshot(raw_value: Any) -> dict[str, Any]:
+    def _sanitize_context_snapshot(
+        raw_value: Any,
+        *,
+        require_game_id: bool = False,
+    ) -> dict[str, Any]:
         if not isinstance(raw_value, dict):
             return {}
         game_id = str(raw_value.get("game_id") or "").strip()
-        if not game_id:
+        if require_game_id and not game_id:
             return {}
         try:
             saved_at = float(raw_value.get("saved_at") or 0.0)
@@ -302,7 +306,8 @@ class GalgameStore:
         require_game_id: bool = True,
     ) -> dict[str, Any]:
         snapshot = self._sanitize_context_snapshot(
-            self._read(STORE_CONTEXT_SNAPSHOT, {})
+            self._read(STORE_CONTEXT_SNAPSHOT, {}),
+            require_game_id=require_game_id,
         )
         if not snapshot:
             return {}
@@ -328,7 +333,7 @@ class GalgameStore:
     def persist_context_snapshot(self, snapshot: dict[str, Any]) -> None:
         payload = self._sanitize_context_snapshot(snapshot)
         if not payload:
-            self._logger.warning("invalid context snapshot dropped: missing game_id or bad schema")
+            self._logger.warning("invalid context snapshot dropped: bad schema")
             return
         self._write(STORE_CONTEXT_SNAPSHOT, payload)
 

@@ -186,6 +186,31 @@ def test_semantic_compression_merges_same_speaker_short_lines() -> None:
     assert result.metadata["semantic_lines_after"] == 2
 
 
+def test_prompt_metadata_strip_removes_all_internal_condensed_keys() -> None:
+    context = {
+        "recent_lines": [
+            {
+                "speaker": "A",
+                "text": "one",
+                "line_id": "1",
+                "_importance_score": 9,
+                "_condensed_line_ids": ["1"],
+                "_condensed_count": 2,
+                "_condensed_debug": {"source": "test"},
+            }
+        ]
+    }
+
+    result = build_prompt_messages_with_metadata("explain_line", context)
+    rendered = json.loads(_rendered_context(result))
+
+    line = rendered["recent_lines"][0]
+    assert "_importance_score" not in line
+    assert "_condensed_line_ids" not in line
+    assert "_condensed_count" not in line
+    assert "_condensed_debug" not in line
+
+
 def test_semantic_compression_does_not_touch_evidence_current_or_choices() -> None:
     context = {
         "current_line": {"speaker": "A", "text": "current", "line_id": "current"},

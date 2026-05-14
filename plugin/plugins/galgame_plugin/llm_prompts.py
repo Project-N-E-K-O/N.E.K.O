@@ -103,7 +103,7 @@ def _strip_prompt_metadata(value: Any) -> Any:
         return {
             str(key): _strip_prompt_metadata(item)
             for key, item in value.items()
-            if key != "_importance_score"
+            if key != "_importance_score" and not str(key).startswith("_condensed_")
         }
     if isinstance(value, list):
         return [_strip_prompt_metadata(item) for item in value]

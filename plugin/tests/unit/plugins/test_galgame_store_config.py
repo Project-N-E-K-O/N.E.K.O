@@ -176,13 +176,21 @@ def test_galgame_store_context_snapshot_round_trips_and_checks_game_id(tmp_path:
     assert mismatch == {}
 
 
-def test_galgame_store_context_snapshot_rejects_empty_game_id_and_expires(
+def test_galgame_store_context_snapshot_strict_load_rejects_empty_game_id_and_expires(
     tmp_path: Path,
 ) -> None:
     store = _make_store(tmp_path)
 
-    store.persist_context_snapshot({"game_id": "", "summary_seed": "bad"})
+    store.persist_context_snapshot(
+        {"game_id": "", "summary_seed": "no game", "saved_at": time.time()}
+    )
     assert store.load_context_snapshot(current_game_id="") == {}
+    assert (
+        store.load_context_snapshot(current_game_id="", require_game_id=False)[
+            "summary_seed"
+        ]
+        == "no game"
+    )
 
     store.persist_context_snapshot(
         {

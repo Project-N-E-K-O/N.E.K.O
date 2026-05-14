@@ -411,6 +411,69 @@ def _enable_injected_ocr_reader(plugin: GalgameBridgePlugin, *, trigger_mode: st
     plugin._cfg.ocr_reader_trigger_mode = trigger_mode
 
 
+def test_load_context_snapshot_for_state_falls_back_to_active_game() -> None:
+    calls: list[str] = []
+
+    class _Persist:
+        def load_context_snapshot(self, *, current_game_id: str, **_: object) -> dict[str, object]:
+            calls.append(current_game_id)
+            if current_game_id == "game-active":
+                return {
+                    "game_id": "game-active",
+                    "summary_seed": "restored",
+                    "saved_at": time.time(),
+                }
+            return {}
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_max_age_seconds=3600.0,
+        context_persist_require_game_id=True,
+    )
+    plugin._state = SimpleNamespace(bound_game_id="", active_game_id="game-active")
+    plugin._persist = _Persist()
+
+    assert plugin._load_context_snapshot_for_state()["summary_seed"] == "restored"
+    assert calls == ["game-active"]
+
+
+@pytest.mark.asyncio
+async def test_summarize_scene_treats_context_snapshot_persist_as_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Gateway:
+        async def summarize_scene(self, context: dict[str, object]) -> dict[str, object]:
+            return {"summary": "summary ok"}
+
+    def _raise_persist(*_: object) -> None:
+        raise RuntimeError("store unavailable")
+
+    context = {
+        "scene_id": "scene-a",
+        "recent_lines": [{"speaker": "A", "text": "line."}],
+        "current_snapshot": {"text": "line."},
+    }
+    monkeypatch.setattr(
+        galgame_plugin_module,
+        "build_summarize_context",
+        lambda *_args, **_kwargs: context,
+    )
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._llm_gateway = _Gateway()
+    plugin._snapshot_state = lambda **_kwargs: {}
+    plugin._cfg = SimpleNamespace()
+    plugin._persist_context_snapshot_from_summary = _raise_persist
+    plugin.logger = _Logger()
+
+    result = await plugin.galgame_summarize_scene()
+
+    assert isinstance(result, Ok)
+    assert result.value["summary"] == "summary ok"
+    assert result.value["scene_id"] == "scene-a"
+
+
 def _create_game_dir(
     bridge_root: Path,
     *,
