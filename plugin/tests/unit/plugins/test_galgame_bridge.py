@@ -10679,9 +10679,10 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
     context = agent._build_agent_reply_context(shared, prompt="status")
     public_context = context["public_context"]
 
-    assert [line["line_id"] for line in public_context["stable_lines"]] == ["s3", "s4", "s5"]
+    assert public_context["stable_lines"] == []
     assert [line["line_id"] for line in public_context["observed_lines"]] == ["o3", "o4", "o5"]
     assert [line["line_id"] for line in public_context["recent_lines"]] == ["o3", "o4", "o5"]
+    assert len(public_context["recent_lines"]) == 3
 
 
 @pytest.mark.plugin_unit
@@ -10854,6 +10855,64 @@ def test_game_llm_agent_reply_context_fills_odd_recent_line_limit(
     assert "observed older" in public_context["scene_summary_seed"]
     assert "stable middle" in public_context["scene_summary_seed"]
     assert "observed latest" in public_context["scene_summary_seed"]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_choices_follow_recent_line_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 2,
+    )
+    shared = _shared_state(
+        history_lines=[
+            {
+                "speaker": "A",
+                "text": "stable older",
+                "line_id": "s1",
+                "ts": "2026-05-14T00:00:01Z",
+            },
+            {
+                "speaker": "A",
+                "text": "stable recent",
+                "line_id": "s2",
+                "ts": "2026-05-14T00:00:03Z",
+            },
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "B",
+                "text": "observed recent",
+                "line_id": "o2",
+                "ts": "2026-05-14T00:00:02Z",
+            },
+        ],
+        history_choices=[
+            {"choice_id": "c-old", "text": "old", "line_id": "s1"},
+            {"choice_id": "c-observed", "text": "observed", "line_id": "o2"},
+            {"choice_id": "c-stable", "text": "stable", "line_id": "s2"},
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o2", "s2"]
+    assert [choice["choice_id"] for choice in public_context["recent_choices"]] == [
+        "c-observed",
+        "c-stable",
+    ]
 
 
 @pytest.mark.plugin_unit

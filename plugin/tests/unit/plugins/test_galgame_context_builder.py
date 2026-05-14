@@ -403,3 +403,140 @@ def test_summarize_context_respects_small_configured_maximum() -> None:
     )
 
     assert [item["line_id"] for item in result["stable_lines"]] == ["line-7", "line-8", "line-9"]
+
+
+def test_summarize_context_applies_line_limit_across_all_dialogue_streams() -> None:
+    stable_lines = [
+        {
+            "speaker": "A",
+            "text": f"stable line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"stable-{index}",
+            "ts": f"2026-05-14T00:00:0{index}Z",
+        }
+        for index in range(6)
+    ]
+    observed_lines = [
+        {
+            "speaker": "B",
+            "text": f"observed line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"observed-{index}",
+            "ts": f"2026-05-14T00:00:1{index}Z",
+        }
+        for index in range(6)
+    ]
+    config = GalgameLLMConfig(
+        context_explain_min_lines=4,
+        context_explain_max_lines=4,
+        context_window_target_tokens=800,
+    )
+
+    result = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": stable_lines,
+            "history_observed_lines": observed_lines,
+            "history_choices": [],
+        },
+        scene_id="scene-a",
+        config=config,
+    )
+
+    assert len(result["recent_lines"]) == 4
+    assert len(result["stable_lines"]) + len(result["observed_lines"]) == 4
+    assert [item["line_id"] for item in result["stable_lines"]] == []
+    assert [item["line_id"] for item in result["observed_lines"]] == [
+        "observed-2",
+        "observed-3",
+        "observed-4",
+        "observed-5",
+    ]
+
+
+def test_suggest_context_applies_line_limit_across_all_dialogue_streams() -> None:
+    stable_lines = [
+        {
+            "speaker": "A",
+            "text": f"stable line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"stable-{index}",
+            "ts": f"2026-05-14T00:00:0{index}Z",
+        }
+        for index in range(6)
+    ]
+    observed_lines = [
+        {
+            "speaker": "B",
+            "text": f"observed line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"observed-{index}",
+            "ts": f"2026-05-14T00:00:1{index}Z",
+        }
+        for index in range(6)
+    ]
+    config = GalgameLLMConfig(
+        context_explain_min_lines=4,
+        context_explain_max_lines=4,
+        context_window_target_tokens=800,
+    )
+
+    result = context_builder.build_suggest_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": stable_lines,
+            "history_observed_lines": observed_lines,
+            "history_choices": [],
+        },
+        config=config,
+    )
+
+    assert len(result["recent_lines"]) == 4
+    assert len(result["stable_lines"]) + len(result["observed_lines"]) == 4
+
+
+def test_explain_context_applies_line_limit_across_all_dialogue_streams() -> None:
+    stable_lines = [
+        {
+            "speaker": "A",
+            "text": f"stable line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"stable-{index}",
+            "ts": f"2026-05-14T00:00:0{index}Z",
+        }
+        for index in range(6)
+    ]
+    observed_lines = [
+        {
+            "speaker": "B",
+            "text": f"observed line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"observed-{index}",
+            "ts": f"2026-05-14T00:00:1{index}Z",
+        }
+        for index in range(6)
+    ]
+    config = GalgameLLMConfig(
+        context_explain_min_lines=4,
+        context_explain_max_lines=4,
+        context_window_target_tokens=800,
+    )
+
+    result = context_builder.build_explain_context(
+        {
+            "latest_snapshot": {
+                "scene_id": "scene-a",
+                "line_id": "observed-5",
+                "speaker": "B",
+                "text": "observed line 5.",
+            },
+            "history_lines": stable_lines,
+            "history_observed_lines": observed_lines,
+            "history_choices": [],
+        },
+        line_id="observed-5",
+        config=config,
+    )
+
+    assert len(result["recent_lines"]) == 4
+    assert len(result["stable_lines"]) + len(result["observed_lines"]) == 4

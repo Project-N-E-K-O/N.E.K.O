@@ -5510,18 +5510,50 @@ class GameLLMAgent:
         )
         history_choices = list(shared.get("history_choices") or [])
         if line_limit > 0:
-            stable_lines = history_lines[-line_limit:]
-            observed_lines = history_observed_lines[-line_limit:]
-            recent_choices = history_choices[-line_limit:]
+            tagged_stable = [
+                {**dict(item), "_reply_context_source": "stable"}
+                for item in history_lines
+                if isinstance(item, dict)
+            ]
+            tagged_observed = [
+                {**dict(item), "_reply_context_source": "observed"}
+                for item in history_observed_lines
+                if isinstance(item, dict)
+            ]
+            merged_recent = _recency_ordered_context_lines(
+                tagged_stable,
+                tagged_observed,
+            )[-line_limit:]
+            stable_lines = [
+                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                for item in merged_recent
+                if item.get("_reply_context_source") == "stable"
+            ]
+            observed_lines = [
+                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                for item in merged_recent
+                if item.get("_reply_context_source") == "observed"
+            ]
+            recent_lines = [
+                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                for item in merged_recent
+            ]
+            recent_line_ids = {
+                str(item.get("line_id") or "")
+                for item in recent_lines
+                if str(item.get("line_id") or "")
+            }
+            recent_choices = [
+                dict(item)
+                for item in history_choices
+                if isinstance(item, dict)
+                and str(item.get("line_id") or "") in recent_line_ids
+            ][-line_limit:]
         else:
             stable_lines = []
             observed_lines = []
             recent_choices = []
-        recent_lines = (
-            _recency_ordered_context_lines(stable_lines, observed_lines)[-line_limit:]
-            if line_limit > 0
-            else []
-        )
+            recent_lines = []
         effective_line = resolve_effective_current_line(shared) or {}
         latest_line = ""
         if effective_line.get("text"):
