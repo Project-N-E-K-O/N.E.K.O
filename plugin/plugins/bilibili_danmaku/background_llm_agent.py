@@ -334,6 +334,16 @@ class DanmakuBackgroundAgent:
                     text=entry.text,
                 )
 
+        # 3.5 运行分析流水线（节奏检测、话题分析），产出 topic/rhythm 卡片
+        analyzer_cards: list[IntelligenceCard] = []
+        if self._analyzer:
+            for batch in batches:
+                try:
+                    pipeline_cards = await self._analyzer.run_pipeline(batch)
+                    analyzer_cards.extend(pipeline_cards)
+                except Exception as e:
+                    logger.warning(f"[Agent] 分析流水线异常: {e}")
+
         # 4. 弹幕筛选：
         #    LLM 路径 → 数量池子（攒够 N 条才调 LLM）
         #    降级路径 → 按时间批次（聚合器窗口触发，走本地评分）
@@ -387,6 +397,10 @@ class DanmakuBackgroundAgent:
                     cards.append(selected)
 
         self._cards_generated += len(cards)
+
+        # 分析流水线卡不计入 _cards_generated（另有独立统计），追加至推送列表
+        cards.extend(analyzer_cards)
+
         mode = "LLM" if cards and llm_attempted else ("池积累" if self._llm_client and not llm_attempted else "本地降级")
         logger.info(f"[Agent] {mode}筛选完成: 生成 {len(cards)} 张推送卡片, 累计={self._cards_generated}")
         for card in cards:

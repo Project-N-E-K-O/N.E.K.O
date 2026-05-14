@@ -34,15 +34,38 @@ const I18n = {
 
   async init(pluginId) {
     const encodedPluginId = encodeURIComponent(pluginId || 'bilibili_danmaku');
+
+    // 1. 优先检查 URL 参数 ?locale=
+    const urlParams = new URLSearchParams(window.location.search);
+    let localeFromUrl = urlParams.get('locale') || '';
+    localeFromUrl = String(localeFromUrl).trim();
+
+    // 2. 其次检查 localStorage（插件管理器写入了 'locale'）
+    let localeFromStorage = '';
     try {
-      const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
-      if (resp.ok) {
-        const data = await resp.json();
-        this._lang = data.locale || 'zh-CN';
-      }
+      localeFromStorage = String(localStorage.getItem('locale') || '').trim();
     } catch {
-      this._lang = 'zh-CN';
+      // 存储可能受限
     }
+
+    // 3. 从 URL / localStorage / 后端 API 中选取第一个有效值
+    let resolved = '';
+    if (localeFromUrl && localeFromUrl !== 'auto') {
+      resolved = localeFromUrl;
+    } else if (localeFromStorage && localeFromStorage !== 'auto') {
+      resolved = localeFromStorage;
+    } else {
+      try {
+        const resp = await fetch(`/plugin/${encodedPluginId}/ui-api/locale`, { cache: 'no-store' });
+        if (resp.ok) {
+          const data = await resp.json();
+          resolved = data.locale || 'zh-CN';
+        }
+      } catch {
+        resolved = 'zh-CN';
+      }
+    }
+    this._lang = resolved || 'zh-CN';
 
     for (const locale of this._localeCandidates(this._lang)) {
       try {

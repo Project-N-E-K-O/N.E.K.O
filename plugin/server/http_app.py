@@ -189,7 +189,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
             router as bilibili_i18n_router,
         )
         app.include_router(bilibili_i18n_router)
-    except ImportError as exc:
+    except ModuleNotFoundError as exc:
         logger.warning(
             "bilibili i18n routes unavailable: err_type={}, err={}",
             type(exc).__name__,
