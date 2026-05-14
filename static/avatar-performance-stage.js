@@ -179,6 +179,26 @@
         }
     }
 
+    function cloneParamIdSnapshot(value) {
+        if (value instanceof Set) {
+            return Array.from(value);
+        }
+        if (Array.isArray(value)) {
+            return value.slice();
+        }
+        return cloneJsonCompatible(value);
+    }
+
+    function restoreParamIdSnapshot(value) {
+        if (value instanceof Set) {
+            return new Set(Array.from(value));
+        }
+        if (Array.isArray(value)) {
+            return new Set(value);
+        }
+        return cloneJsonCompatible(value);
+    }
+
     function hasOwn(object, key) {
         return !!(object && Object.prototype.hasOwnProperty.call(object, key));
     }
@@ -1800,9 +1820,7 @@
                 snapshot.persistentExpressionParamsByName = cloneJsonCompatible(manager.persistentExpressionParamsByName);
             }
             if (hasOwn(manager, '_activeExpressionParamIds')) {
-                snapshot.activeExpressionParamIds = Array.isArray(manager._activeExpressionParamIds)
-                    ? manager._activeExpressionParamIds.slice()
-                    : cloneJsonCompatible(manager._activeExpressionParamIds);
+                snapshot.activeExpressionParamIds = cloneParamIdSnapshot(manager._activeExpressionParamIds);
             }
             return snapshot;
         }
@@ -1822,9 +1840,7 @@
                 manager.persistentExpressionParamsByName = cloneJsonCompatible(snapshot.persistentExpressionParamsByName);
             }
             if (hasOwn(snapshot, 'activeExpressionParamIds')) {
-                manager._activeExpressionParamIds = Array.isArray(snapshot.activeExpressionParamIds)
-                    ? snapshot.activeExpressionParamIds.slice()
-                    : cloneJsonCompatible(snapshot.activeExpressionParamIds);
+                manager._activeExpressionParamIds = restoreParamIdSnapshot(snapshot.activeExpressionParamIds);
             }
             return true;
         }
