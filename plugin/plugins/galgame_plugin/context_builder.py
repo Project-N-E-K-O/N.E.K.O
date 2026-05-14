@@ -154,17 +154,17 @@ def _recency_ordered_context_lines(
     stable_lines: list[dict[str, Any]],
     observed_lines: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    indexed: list[tuple[int, str, int, dict[str, Any]]] = []
-    fallback_index = 0
-    for source, items in (("stable", stable_lines), ("observed", observed_lines)):
-        for item in items:
+    indexed: list[tuple[int, str, int, int, int, dict[str, Any]]] = []
+    for source_order, (source, items) in enumerate(
+        (("stable", stable_lines), ("observed", observed_lines))
+    ):
+        for source_index, item in enumerate(items):
             line = dict(item) if isinstance(item, dict) else {}
             line.setdefault("source", source)
             ts = str(line.get("ts") or "").strip()
-            indexed.append((1 if ts else 0, ts, fallback_index, line))
-            fallback_index += 1
-    indexed.sort(key=lambda item: (item[0], item[1], item[2]))
-    return [item[3] for item in indexed]
+            indexed.append((1 if ts else 0, ts, source_index, source_order, source_index, line))
+    indexed.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]))
+    return [item[5] for item in indexed]
 
 
 def _line_condense_blocked(line: dict[str, Any]) -> bool:

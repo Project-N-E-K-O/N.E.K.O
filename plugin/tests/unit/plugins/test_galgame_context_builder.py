@@ -312,6 +312,32 @@ def test_recency_ordered_lines_tags_stream_source_before_condensing() -> None:
     assert all("_condensed_count" not in item for item in condensed)
 
 
+def test_recency_ordered_lines_interleaves_sources_with_same_timestamp() -> None:
+    stable_lines = [
+        {"line_id": f"stable-{index}", "text": f"stable {index}", "ts": "2026-05-14T00:00:00Z"}
+        for index in range(3)
+    ]
+    observed_lines = [
+        {
+            "line_id": f"observed-{index}",
+            "text": f"observed {index}",
+            "ts": "2026-05-14T00:00:00Z",
+        }
+        for index in range(3)
+    ]
+
+    result = context_builder._recency_ordered_context_lines(stable_lines, observed_lines)
+
+    assert [item["line_id"] for item in result] == [
+        "stable-0",
+        "observed-0",
+        "stable-1",
+        "observed-1",
+        "stable-2",
+        "observed-2",
+    ]
+
+
 def test_context_window_bounds_preserves_zero_until_minimum_clamp() -> None:
     config = GalgameLLMConfig(
         context_explain_min_lines=0,
