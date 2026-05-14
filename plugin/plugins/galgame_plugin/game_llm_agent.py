@@ -121,6 +121,22 @@ def _bounded_choice_instruction_text(value: object) -> str:
     return f"{text[:_CHOICE_INSTRUCTION_TEXT_MAX_CHARS]}\n...[truncated {omitted} chars]"
 
 
+def _context_line_count(lines: object) -> int:
+    if not isinstance(lines, list):
+        return 0
+    total = 0
+    for item in lines:
+        if not isinstance(item, dict):
+            total += 1
+            continue
+        try:
+            count = int(item.get("_condensed_count") or 1)
+        except (TypeError, ValueError):
+            count = 1
+        total += max(1, count)
+    return total
+
+
 class AgentMessageRouter:
     def __init__(self, *, now_factory: Callable[[], str], limit: int = 100) -> None:
         self._now_factory = now_factory
@@ -4619,7 +4635,7 @@ class GameLLMAgent:
             context_payload = dict(context)
             metadata_payload = dict(metadata)
         scheduled_seq = int(metadata_payload.get("scheduled_from_event_seq") or 0)
-        stable_line_count = len(list(context_payload.get("stable_lines") or []))
+        stable_line_count = _context_line_count(context_payload.get("stable_lines"))
         last_line_seq = int(metadata_payload.get("last_line_seq") or scheduled_seq or 0)
         delivery_key = str(metadata_payload.get("summary_delivery_key") or "")
         if not delivery_key:
@@ -5082,6 +5098,7 @@ class GameLLMAgent:
             if scene_id == self._pending_cross_scene_primary:
                 self._pending_cross_scene_primary = ""
             stable_lines = list(context.get("stable_lines") or [])
+            stable_line_count = _context_line_count(stable_lines)
             if not stable_lines:
                 self._summary_debug["gate_blocked"] = {
                     "gate": "empty_stable_lines",
@@ -5103,7 +5120,7 @@ class GameLLMAgent:
                 scene_id=scene_id,
                 scheduled_seq=scheduled_seq,
                 last_line_seq=scheduled_seq,
-                stable_line_count=len(stable_lines),
+                stable_line_count=stable_line_count,
             )
             if delivery_key and delivery_key == self._last_delivered_summary_key:
                 self._summary_debug["last_skip"] = {
@@ -5126,7 +5143,7 @@ class GameLLMAgent:
                 "line_interval": self._scene_summary_push_line_interval,
                 "scheduled_from_event_seq": scheduled_seq,
                 "last_line_seq": scheduled_seq,
-                "stable_line_count": len(stable_lines),
+                "stable_line_count": stable_line_count,
                 "summary_delivery_key": delivery_key,
                 "current_scene_id_at_schedule": current_scene_id,
             }
@@ -5156,7 +5173,7 @@ class GameLLMAgent:
                     "scheduled_from_event_seq": scheduled_seq,
                     "summary_delivery_key": delivery_key,
                     "current_scene_id_at_schedule": current_scene_id,
-                    "stable_line_count": len(stable_lines),
+                    "stable_line_count": stable_line_count,
                 }
             )
 
@@ -5541,7 +5558,7 @@ class GameLLMAgent:
                 {
                     key: value
                     for key, value in item.items()
-                    if key != "_reply_context_source" and not str(key).startswith("_condensed_")
+                    if key != "_reply_context_source"
                 }
                 for item in merged_recent
                 if item.get("_reply_context_source") == "stable"
@@ -5550,7 +5567,7 @@ class GameLLMAgent:
                 {
                     key: value
                     for key, value in item.items()
-                    if key != "_reply_context_source" and not str(key).startswith("_condensed_")
+                    if key != "_reply_context_source"
                 }
                 for item in merged_recent
                 if item.get("_reply_context_source") == "observed"
