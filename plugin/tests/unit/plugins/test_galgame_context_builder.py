@@ -355,7 +355,58 @@ def test_summarize_context_respects_small_configured_maximum() -> None:
         config=config,
     )
 
-    assert [item["line_id"] for item in result["stable_lines"]] == ["line-7", "line-8", "line-9"]
+    assert len(result["stable_lines"]) == 1
+    assert result["stable_lines"][0]["line_id"] == "line-7"
+    assert result["stable_lines"][0]["_condensed_line_ids"] == ["line-7", "line-8", "line-9"]
+    assert "line 7.\nline 8.\nline 9." == result["stable_lines"][0]["text"]
+
+
+def test_summarize_context_applies_global_line_limit_before_condensing() -> None:
+    lines = [
+        {
+            "speaker": "A",
+            "text": f"stable line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"stable-{index}",
+            "stability": "stable",
+        }
+        for index in range(5)
+    ]
+    observed = [
+        {
+            "speaker": "B",
+            "text": f"observed line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"observed-{index}",
+            "stability": "tentative",
+        }
+        for index in range(5)
+    ]
+    config = GalgameLLMConfig(
+        context_explain_min_lines=1,
+        context_explain_max_lines=3,
+        context_window_target_tokens=800,
+    )
+
+    result = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": lines,
+            "history_observed_lines": observed,
+            "history_choices": [],
+        },
+        scene_id="scene-a",
+        config=config,
+    )
+
+    recent_ids = {
+        line_id
+        for item in result["recent_lines"]
+        for line_id in item.get("_condensed_line_ids", [item.get("line_id")])
+    }
+    assert len(recent_ids) == 3
+    assert recent_ids & {"stable-3", "stable-4"}
+    assert recent_ids & {"observed-3", "observed-4"}
 
 
 def test_summarize_context_uses_restored_context_snapshot_when_history_is_empty() -> None:

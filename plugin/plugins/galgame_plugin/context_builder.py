@@ -230,7 +230,7 @@ def _condense_run_key(line: dict[str, Any]) -> tuple[str, str, str, str, str]:
         str(line.get("speaker") or "").strip(),
         str(line.get("scene_id") or ""),
         str(line.get("route_id") or ""),
-        str(line.get("source") or ""),
+        str(line.get("_context_source") or line.get("source") or ""),
         str(line.get("stability") or ""),
     )
 
@@ -287,7 +287,7 @@ def _scene_lines(
     history_lines: list[dict[str, Any]],
     scene_id: str,
     *,
-    limit: int,
+    limit: int | None,
     extra_scene_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if scene_id:
@@ -301,6 +301,8 @@ def _scene_lines(
         ]
     else:
         items = [dict(item) for item in history_lines]
+    if limit is None:
+        return items
     return items[-limit:]
 
 
@@ -349,7 +351,11 @@ def _append_unique_line(
     return merged[-limit:]
 
 
-def _dialogue_context_lines(lines: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+def _dialogue_context_lines(
+    lines: list[dict[str, Any]],
+    *,
+    limit: int | None,
+) -> list[dict[str, Any]]:
     deduped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for item in lines:
@@ -362,7 +368,103 @@ def _dialogue_context_lines(lines: list[dict[str, Any]], *, limit: int) -> list[
         if key not in deduped:
             order.append(key)
         deduped[key] = normalized
-    return [deduped[key] for key in order][-limit:]
+    result = [deduped[key] for key in order]
+    if limit is None:
+        return result
+    return result[-limit:]
+
+
+def _strip_context_source(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: value for key, value in item.items() if key != "_context_source"}
+        for item in lines
+    ]
+
+
+def _condense_context_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _strip_context_source(_condense_dialogue_batch(lines))
+
+
+def _split_context_line_budget(
+    stable_count: int,
+    observed_count: int,
+    line_limit: int,
+) -> tuple[int, int]:
+    if line_limit <= 0:
+        return 0, 0
+    if stable_count <= 0:
+        return 0, line_limit
+    if observed_count <= 0:
+        return line_limit, 0
+    observed_budget = min(observed_count, max(1, line_limit // 3))
+    stable_budget = min(stable_count, max(1, line_limit - observed_budget))
+    remaining = max(0, line_limit - stable_budget - observed_budget)
+    if remaining:
+        observed_budget += min(remaining, max(0, observed_count - observed_budget))
+    remaining = max(0, line_limit - stable_budget - observed_budget)
+    if remaining:
+        stable_budget += min(remaining, max(0, stable_count - stable_budget))
+    return stable_budget, observed_budget
+
+
+def _scene_context_windows(
+    history_lines: list[dict[str, Any]],
+    history_observed_lines: list[dict[str, Any]],
+    scene_id: str,
+    *,
+    line_limit: int,
+    extra_scene_ids: list[str] | None = None,
+    target_line: dict[str, Any] | None = None,
+    dialogue_only: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    stable_candidates = _scene_lines(
+        history_lines,
+        scene_id,
+        limit=None,
+        extra_scene_ids=extra_scene_ids,
+    )
+    observed_candidates = _scene_lines(
+        history_observed_lines,
+        scene_id,
+        limit=None,
+        extra_scene_ids=extra_scene_ids,
+    )
+    if dialogue_only:
+        stable_candidates = _dialogue_context_lines(stable_candidates, limit=None)
+        observed_candidates = _dialogue_context_lines(observed_candidates, limit=None)
+    stable_budget, observed_budget = _split_context_line_budget(
+        len(stable_candidates),
+        len(observed_candidates),
+        line_limit,
+    )
+    stable_candidates = stable_candidates[-stable_budget:] if stable_budget else []
+    observed_candidates = observed_candidates[-observed_budget:] if observed_budget else []
+    tagged_stable = [
+        {**dict(item), "_context_source": "stable"}
+        for item in stable_candidates
+        if isinstance(item, dict)
+    ]
+    tagged_observed = [
+        {**dict(item), "_context_source": "observed"}
+        for item in observed_candidates
+        if isinstance(item, dict)
+    ]
+    recent_lines = _recency_ordered_context_lines(tagged_stable, tagged_observed)
+    if target_line is not None:
+        recent_lines = _append_unique_line(recent_lines, target_line, limit=line_limit)
+    else:
+        recent_lines = recent_lines[-line_limit:]
+    stable_lines = [
+        item for item in recent_lines if item.get("_context_source") == "stable"
+    ]
+    observed_lines = [
+        item for item in recent_lines if item.get("_context_source") == "observed"
+    ]
+    return (
+        _condense_context_lines(stable_lines),
+        _condense_context_lines(observed_lines),
+        _condense_context_lines(recent_lines),
+    )
 
 
 def _is_memory_reader_identifier(value: object) -> bool:
@@ -649,16 +751,12 @@ def build_explain_context(
         local_state,
         config,
     )
-    stable_lines = _scene_lines(history_lines, scene_id, limit=line_limit)
-    observed_lines = _scene_lines(
+    stable_lines, observed_lines, scene_lines = _scene_context_windows(
+        history_lines,
         history_observed_lines,
         scene_id,
-        limit=line_limit,
-    )
-    scene_lines = _append_unique_line(
-        [*stable_lines, *observed_lines],
-        target_line,
-        limit=line_limit,
+        line_limit=line_limit,
+        target_line=target_line,
     )
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
@@ -761,21 +859,14 @@ def build_summarize_context(
         local_state,
         config,
     )
-    stable_lines = _scene_lines(
+    stable_lines, observed_lines, scene_lines = _scene_context_windows(
         history_lines,
-        effective_scene_id,
-        limit=line_limit,
-        extra_scene_ids=merge_from_scene_ids,
-    )
-    observed_lines = _scene_lines(
         history_observed_lines,
         effective_scene_id,
-        limit=line_limit,
+        line_limit=line_limit,
         extra_scene_ids=merge_from_scene_ids,
+        dialogue_only=True,
     )
-    stable_lines = _dialogue_context_lines(stable_lines, limit=line_limit)
-    observed_lines = _dialogue_context_lines(observed_lines, limit=line_limit)
-    scene_lines = _dialogue_context_lines([*stable_lines, *observed_lines], limit=line_limit)
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
         effective_scene_id,
@@ -830,13 +921,12 @@ def build_suggest_context(
         local_state,
         config,
     )
-    stable_lines = _scene_lines(history_lines, scene_id, limit=line_limit)
-    observed_lines = _scene_lines(
+    stable_lines, observed_lines, scene_lines = _scene_context_windows(
+        history_lines,
         history_observed_lines,
         scene_id,
-        limit=line_limit,
+        line_limit=line_limit,
     )
-    scene_lines = [*stable_lines, *observed_lines][-line_limit:]
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
         scene_id,
