@@ -3913,9 +3913,58 @@
             "ready": "준비 완료",
             "startButton": "시작"
         },
+        "startTutorial": {
+            "title": "플레이 방법",
+            "move": "마우스를 움직여 플레이어를 안내합니다.",
+            "charge": "공 가까이에서 좌클릭을 길게 눌러 차징하고, 놓으면 슛합니다.",
+            "range": "공에서 {{distance}} 이내일 때만 킥이 발동합니다.",
+            "reset": "R 키로 공과 양쪽 위치를 리셋할 수 있습니다.",
+            "ai": "NEKO의 기분과 난이도는 경기 흐름에 따라 바뀝니다."
+        },
         "hint": {
-            "controls": "마우스 = 플레이어 안내 · 좌클릭 길게 = 차징, 놓으면 = 슛 (공에서 90px 이내에서 발동) · R = 리셋",
-            "aiMood": "1-6 = AI 기분 (평온 / 행복 / 화남 / 편안 / 슬픔 / 놀람) · 골 후에는 난이도가 자동으로 올라갑니다"
+            "controls": "마우스 = 플레이어 안내 · 좌클릭 길게 = 차징, 놓으면 = 슛 (공에서 {{distance}} 이내에서 발동) · R = 리셋",
+            "aiMood": "NEKO의 기분과 난이도는 경기 흐름에 따라 바뀝니다"
+        },
+        "debugControls": {
+            "bounds": "경계 활성화(아웃 판정)",
+            "voiceOutput": "LLM 대사 재생(프로젝트 음성)",
+            "voiceButton": "디버그 음성",
+            "voicePlaceholder": "디버그: 최종 전사 입력 후 Enter",
+            "send": "전송",
+            "voiceStatusHidden": "디버그 STT: 숨김"
+        },
+        "debug": {
+            "mouse": "마우스: {{x}}, {{y}}",
+            "playerCenter": "플레이어 중심: {{x}}, {{y}}",
+            "aiCenter": "AI 중심: {{x}}, {{y}}  상태: {{mode}}",
+            "state": "라운드: {{round}}  난이도: {{difficulty}}  기분: {{mood}}  차징: {{charge}}%",
+            "ball": "공: ({{x}}, {{y}})  속도={{speed}}",
+            "event": "{{age}}초  {{label}}  @({{x}},{{y}})  속도=({{vx}},{{vy}})",
+            "roundCenter": "라운드 {{round}}"
+        },
+        "moods": {
+            "calm": "평온",
+            "happy": "행복",
+            "angry": "화남",
+            "relaxed": "편안",
+            "sad": "슬픔",
+            "surprised": "놀람"
+        },
+        "difficulties": {
+            "max": "최고",
+            "lv2": "2단계",
+            "lv3": "3단계",
+            "lv4": "4단계"
+        },
+        "aiModes": {
+            "attack": "공격",
+            "defend": "수비",
+            "clear": "클리어"
+        },
+        "debugEvents": {
+            "player-kick": "플레이어 킥",
+            "ai-kick": "AI 킥",
+            "unstick": "공 탈출"
         },
         "loading": {
             "beginStartDefault": "게임 시작 컨텍스트를 분석 중…",

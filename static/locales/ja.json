@@ -3913,9 +3913,58 @@
             "ready": "準備完了",
             "startButton": "開始"
         },
+        "startTutorial": {
+            "title": "遊び方",
+            "move": "マウスを動かしてプレイヤーを誘導します。",
+            "charge": "ボールの近くで左クリックを長押ししてチャージし、離すとシュートします。",
+            "range": "キックはボールから {{distance}} 以内でのみ発動します。",
+            "reset": "R キーでボールと両者の位置をリセットできます。",
+            "ai": "NEKO の気分と難易度は試合展開に応じて変化します。"
+        },
         "hint": {
-            "controls": "マウス = プレイヤー誘導 · 左クリック長押し = チャージ、離す = シュート（ボールから 90px 以内で発動）· R = リセット",
-            "aiMood": "1-6 = AI の気分（平静/嬉しい/怒り/リラックス/悲しい/驚き）· ゴール後に難易度が自動で上がります"
+            "controls": "マウス = プレイヤー誘導 · 左クリック長押し = チャージ、離す = シュート（ボールから {{distance}} 以内で発動）· R = リセット",
+            "aiMood": "NEKO の気分と難易度は試合展開に応じて変化します"
+        },
+        "debugControls": {
+            "bounds": "境界を有効化（アウト判定）",
+            "voiceOutput": "LLM 台詞を再生（プロジェクト音声）",
+            "voiceButton": "デバッグ音声",
+            "voicePlaceholder": "デバッグ：最終書き起こしを入力して Enter",
+            "send": "送信",
+            "voiceStatusHidden": "デバッグ STT：非表示"
+        },
+        "debug": {
+            "mouse": "マウス：{{x}}, {{y}}",
+            "playerCenter": "プレイヤー中心：{{x}}, {{y}}",
+            "aiCenter": "AI 中心：{{x}}, {{y}}  状態：{{mode}}",
+            "state": "ラウンド：{{round}}  難易度：{{difficulty}}  気分：{{mood}}  チャージ：{{charge}}%",
+            "ball": "ボール：({{x}}, {{y}})  速度={{speed}}",
+            "event": "{{age}}秒  {{label}}  @({{x}},{{y}})  速度=({{vx}},{{vy}})",
+            "roundCenter": "ラウンド {{round}}"
+        },
+        "moods": {
+            "calm": "平静",
+            "happy": "嬉しい",
+            "angry": "怒り",
+            "relaxed": "リラックス",
+            "sad": "悲しい",
+            "surprised": "驚き"
+        },
+        "difficulties": {
+            "max": "最高",
+            "lv2": "レベル2",
+            "lv3": "レベル3",
+            "lv4": "レベル4"
+        },
+        "aiModes": {
+            "attack": "攻撃",
+            "defend": "防御",
+            "clear": "クリア"
+        },
+        "debugEvents": {
+            "player-kick": "プレイヤーキック",
+            "ai-kick": "AI キック",
+            "unstick": "ボール脱出"
         },
         "loading": {
             "beginStartDefault": "開幕コンテキストを分析中…",

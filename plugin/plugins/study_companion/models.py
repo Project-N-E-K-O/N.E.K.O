@@ -4,19 +4,7 @@ from dataclasses import asdict, dataclass, field
 import math
 from typing import Any, Literal, TypedDict
 
-from .constants import (
-    LLM_OPERATION_ANSWER_EVALUATE,
-    LLM_OPERATION_CONCEPT_EXPLAIN,
-    LLM_OPERATION_KNOWLEDGE_TRACK,
-    LLM_OPERATION_QUESTION_GENERATE,
-    LLM_OPERATION_SUMMARIZE_SESSION,
-    MODE_COMPANION,
-    MODE_CONCEPT_EXPLAIN,
-    MODE_INTERACTIVE,
-    MODE_TEACHING,
-    SUPPORTED_LLM_OPERATIONS,
-    SUPPORTED_MODES,
-)
+from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
 from .json_utils import json_copy
 from .mode_manager import normalize_mode
 
@@ -115,18 +103,10 @@ class StudyConfig:
     rapidocr_model_type: str = "mobile"
     rapidocr_ocr_version: str = "PP-OCRv4"
     llm_call_timeout_seconds: float = 30.0
-    llm_temperature: float = 0.2
-    llm_max_tokens: int = 900
-    llm_temperature_concept_explain: float = 0.2
-    llm_max_tokens_concept_explain: int = 900
-    llm_temperature_question_generate: float = 0.35
-    llm_max_tokens_question_generate: int = 720
-    llm_temperature_answer_evaluate: float = 0.12
-    llm_max_tokens_answer_evaluate: int = 720
-    llm_temperature_knowledge_track: float = 0.08
-    llm_max_tokens_knowledge_track: int = 480
-    llm_temperature_summarize_session: float = 0.18
-    llm_max_tokens_summarize_session: int = 1200
+    fsrs_retention_target: float = 0.90
+    fsrs_auto_optimize_interval_days: int = 30
+    knowledge_contribution_opt_in: bool = False
+    knowledge_contribution_min_sample_count: int = 3
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
@@ -139,18 +119,13 @@ class StudyConfig:
         self.ocr_top_ratio = self._clamp_float(self.ocr_top_ratio, 0.0, 1.0, 0.0)
         self.ocr_bottom_inset_ratio = self._clamp_float(self.ocr_bottom_inset_ratio, 0.0, 1.0, 0.0)
         self.llm_call_timeout_seconds = self._clamp_float(self.llm_call_timeout_seconds, 1.0, 3600.0, 30.0)
-        self.llm_temperature = self._clamp_float(self.llm_temperature, 0.0, 2.0, 0.2)
-        self.llm_max_tokens = max(1, self._coerce_int(self.llm_max_tokens, 900))
-        self.llm_temperature_concept_explain = self._clamp_float(self.llm_temperature_concept_explain, 0.0, 2.0, 0.2)
-        self.llm_max_tokens_concept_explain = max(1, self._coerce_int(self.llm_max_tokens_concept_explain, 900))
-        self.llm_temperature_question_generate = self._clamp_float(self.llm_temperature_question_generate, 0.0, 2.0, 0.35)
-        self.llm_max_tokens_question_generate = max(1, self._coerce_int(self.llm_max_tokens_question_generate, 720))
-        self.llm_temperature_answer_evaluate = self._clamp_float(self.llm_temperature_answer_evaluate, 0.0, 2.0, 0.12)
-        self.llm_max_tokens_answer_evaluate = max(1, self._coerce_int(self.llm_max_tokens_answer_evaluate, 720))
-        self.llm_temperature_knowledge_track = self._clamp_float(self.llm_temperature_knowledge_track, 0.0, 2.0, 0.08)
-        self.llm_max_tokens_knowledge_track = max(1, self._coerce_int(self.llm_max_tokens_knowledge_track, 480))
-        self.llm_temperature_summarize_session = self._clamp_float(self.llm_temperature_summarize_session, 0.0, 2.0, 0.18)
-        self.llm_max_tokens_summarize_session = max(1, self._coerce_int(self.llm_max_tokens_summarize_session, 1200))
+        self.fsrs_retention_target = self._clamp_float(self.fsrs_retention_target, 0.1, 0.99, 0.90)
+        self.fsrs_auto_optimize_interval_days = max(1, self._coerce_int(self.fsrs_auto_optimize_interval_days, 30))
+        self.knowledge_contribution_opt_in = bool(self.knowledge_contribution_opt_in)
+        self.knowledge_contribution_min_sample_count = max(
+            1,
+            self._coerce_int(self.knowledge_contribution_min_sample_count, 3),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -171,21 +146,6 @@ class StudyConfig:
         if not math.isfinite(number):
             number = default
         return max(minimum, min(maximum, number))
-
-    def llm_limits_for_operation(self, operation: str) -> tuple[float, int]:
-        normalized = operation if operation in SUPPORTED_LLM_OPERATIONS else LLM_OPERATION_CONCEPT_EXPLAIN
-        if normalized == LLM_OPERATION_QUESTION_GENERATE:
-            return self.llm_temperature_question_generate, self.llm_max_tokens_question_generate
-        if normalized == LLM_OPERATION_ANSWER_EVALUATE:
-            return self.llm_temperature_answer_evaluate, self.llm_max_tokens_answer_evaluate
-        if normalized == LLM_OPERATION_KNOWLEDGE_TRACK:
-            return self.llm_temperature_knowledge_track, self.llm_max_tokens_knowledge_track
-        if normalized == LLM_OPERATION_SUMMARIZE_SESSION:
-            return self.llm_temperature_summarize_session, self.llm_max_tokens_summarize_session
-        if normalized == LLM_OPERATION_CONCEPT_EXPLAIN:
-            return self.llm_temperature_concept_explain, self.llm_max_tokens_concept_explain
-        return self.llm_temperature, self.llm_max_tokens
-
 
 @dataclass(slots=True)
 class StudyState:
@@ -254,6 +214,8 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
     ocr = raw.get("ocr_reader") if isinstance(raw.get("ocr_reader"), dict) else {}
     rapidocr = raw.get("rapidocr") if isinstance(raw.get("rapidocr"), dict) else {}
+    fsrs = raw.get("fsrs") if isinstance(raw.get("fsrs"), dict) else {}
+    contribution = raw.get("knowledge_contribution") if isinstance(raw.get("knowledge_contribution"), dict) else {}
 
     def _raw(section: dict[str, Any], key: str, default: Any, flat_key: str | None = None) -> Any:
         if key in section:
@@ -303,8 +265,6 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     default_mode = _str(study, "default_mode", _str(study, "mode", MODE_COMPANION, "mode"), "default_mode").strip() or MODE_COMPANION
     default_mode = normalize_mode(default_mode)
     mode = normalize_mode(_str(study, "mode", default_mode, "mode"))
-    generic_llm_temperature = _clamp(_float(llm, "temperature", 0.2, "llm_temperature"), 0.0, 2.0, 0.2)
-    generic_llm_max_tokens = max(1, _int(llm, "max_tokens", 900, "llm_max_tokens"))
 
     return StudyConfig(
         mode=mode,
@@ -339,56 +299,24 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             3600.0,
             30.0,
         ),
-        llm_temperature=generic_llm_temperature,
-        llm_max_tokens=generic_llm_max_tokens,
-        llm_temperature_concept_explain=_clamp(
-            _float_alias(llm, ("temperature_concept_explain", "llm_temperature_concept_explain"), generic_llm_temperature, "llm_temperature_concept_explain"),
-            0.0,
-            2.0,
-            generic_llm_temperature,
-        ),
-        llm_max_tokens_concept_explain=max(
+        fsrs_retention_target=_clamp(_float(fsrs, "retention_target", 0.90, "fsrs_retention_target"), 0.1, 0.99, 0.90),
+        fsrs_auto_optimize_interval_days=max(
             1,
-            _int(llm, "max_tokens_concept_explain", generic_llm_max_tokens, "llm_max_tokens_concept_explain"),
+            _int(fsrs, "auto_optimize_interval_days", 30, "fsrs_auto_optimize_interval_days"),
         ),
-        llm_temperature_question_generate=_clamp(
-            _float_alias(llm, ("temperature_question_generate", "llm_temperature_question_generate"), generic_llm_temperature, "llm_temperature_question_generate"),
-            0.0,
-            2.0,
-            generic_llm_temperature,
+        knowledge_contribution_opt_in=_bool(
+            contribution,
+            "opt_in",
+            False,
+            "knowledge_contribution_opt_in",
         ),
-        llm_max_tokens_question_generate=max(
+        knowledge_contribution_min_sample_count=max(
             1,
-            _int(llm, "max_tokens_question_generate", generic_llm_max_tokens, "llm_max_tokens_question_generate"),
-        ),
-        llm_temperature_answer_evaluate=_clamp(
-            _float_alias(llm, ("temperature_answer_evaluate", "llm_temperature_answer_evaluate"), generic_llm_temperature, "llm_temperature_answer_evaluate"),
-            0.0,
-            2.0,
-            generic_llm_temperature,
-        ),
-        llm_max_tokens_answer_evaluate=max(
-            1,
-            _int(llm, "max_tokens_answer_evaluate", generic_llm_max_tokens, "llm_max_tokens_answer_evaluate"),
-        ),
-        llm_temperature_knowledge_track=_clamp(
-            _float_alias(llm, ("temperature_knowledge_track", "llm_temperature_knowledge_track"), generic_llm_temperature, "llm_temperature_knowledge_track"),
-            0.0,
-            2.0,
-            generic_llm_temperature,
-        ),
-        llm_max_tokens_knowledge_track=max(
-            1,
-            _int(llm, "max_tokens_knowledge_track", generic_llm_max_tokens, "llm_max_tokens_knowledge_track"),
-        ),
-        llm_temperature_summarize_session=_clamp(
-            _float_alias(llm, ("temperature_summarize_session", "llm_temperature_summarize_session"), generic_llm_temperature, "llm_temperature_summarize_session"),
-            0.0,
-            2.0,
-            generic_llm_temperature,
-        ),
-        llm_max_tokens_summarize_session=max(
-            1,
-            _int(llm, "max_tokens_summarize_session", generic_llm_max_tokens, "llm_max_tokens_summarize_session"),
+            _int(
+                contribution,
+                "min_sample_count",
+                3,
+                "knowledge_contribution_min_sample_count",
+            ),
         ),
     )

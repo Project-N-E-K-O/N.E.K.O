@@ -3913,9 +3913,58 @@
             "ready": "Pronto",
             "startButton": "Iniciar"
         },
+        "startTutorial": {
+            "title": "Como jogar",
+            "move": "Mova o mouse para guiar o jogador.",
+            "charge": "Perto da bola, segure o botão esquerdo para carregar e solte para chutar.",
+            "range": "O chute só dispara a até {{distance}} da bola.",
+            "reset": "Pressione R para resetar a bola e as posições.",
+            "ai": "O humor e a dificuldade da NEKO mudam conforme a partida."
+        },
         "hint": {
-            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤90px da bola) · R = reset",
-            "aiMood": "1-6 = humor da IA (calma / feliz / brava / relaxada / triste / surpresa) · A dificuldade aumenta após cada gol"
+            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤{{distance}} da bola) · R = reset",
+            "aiMood": "O humor e a dificuldade da NEKO mudam conforme a partida"
+        },
+        "debugControls": {
+            "bounds": "Ativar limites (regra de fora)",
+            "voiceOutput": "Falar linhas LLM (voz do projeto)",
+            "voiceButton": "Voz de depuração",
+            "voicePlaceholder": "Depuração: digite a transcrição final e pressione Enter",
+            "send": "Enviar",
+            "voiceStatusHidden": "STT de depuração: oculto"
+        },
+        "debug": {
+            "mouse": "mouse: {{x}}, {{y}}",
+            "playerCenter": "centro do jogador: {{x}}, {{y}}",
+            "aiCenter": "centro da IA: {{x}}, {{y}}  modo: {{mode}}",
+            "state": "rodada: {{round}}  dificuldade: {{difficulty}}  humor: {{mood}}  carga: {{charge}}%",
+            "ball": "bola: ({{x}}, {{y}})  velocidade={{speed}}",
+            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Rodada {{round}}"
+        },
+        "moods": {
+            "calm": "calma",
+            "happy": "feliz",
+            "angry": "brava",
+            "relaxed": "relaxada",
+            "sad": "triste",
+            "surprised": "surpresa"
+        },
+        "difficulties": {
+            "max": "máxima",
+            "lv2": "nível 2",
+            "lv3": "nível 3",
+            "lv4": "nível 4"
+        },
+        "aiModes": {
+            "attack": "ataque",
+            "defend": "defesa",
+            "clear": "afastar"
+        },
+        "debugEvents": {
+            "player-kick": "chute do jogador",
+            "ai-kick": "chute da IA",
+            "unstick": "bola destravada"
         },
         "loading": {
             "beginStartDefault": "Analisando contexto de início…",
