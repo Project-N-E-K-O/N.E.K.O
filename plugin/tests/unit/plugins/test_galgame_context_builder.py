@@ -249,6 +249,36 @@ def test_compute_dynamic_line_limit_uses_recent_twenty_lines_only() -> None:
     assert result == 16
 
 
+def test_dynamic_line_sample_uses_timestamp_recency_across_sources() -> None:
+    recent_sparse_stable = [
+        {
+            "text": "ok",
+            "ts": f"2026-05-14T00:{index:02d}:00Z",
+            "line_id": f"stable-{index}",
+        }
+        for index in range(20)
+    ]
+    old_dense_observed = [
+        {
+            "text": "dense" * 1000,
+            "ts": f"2026-05-13T00:{index % 60:02d}:00Z",
+            "line_id": f"observed-{index}",
+        }
+        for index in range(200)
+    ]
+
+    sample = context_builder._recency_ordered_context_lines(
+        recent_sparse_stable,
+        old_dense_observed,
+    )
+    result = context_builder._compute_dynamic_line_limit(sample, 4, 16, 800)
+
+    assert [item["line_id"] for item in sample[-20:]] == [
+        f"stable-{index}" for index in range(20)
+    ]
+    assert result == 16
+
+
 def test_context_window_bounds_preserves_zero_until_minimum_clamp() -> None:
     config = GalgameLLMConfig(
         context_explain_min_lines=0,
@@ -267,3 +297,34 @@ def test_context_window_bounds_default_respects_small_configured_maximum() -> No
     )
 
     assert context_builder._context_window_bounds(config) == (2, 3, 64)
+
+
+def test_summarize_context_respects_small_configured_maximum() -> None:
+    lines = [
+        {
+            "speaker": "A",
+            "text": f"line {index}.",
+            "scene_id": "scene-a",
+            "line_id": f"line-{index}",
+            "stability": "stable",
+        }
+        for index in range(10)
+    ]
+    config = GalgameLLMConfig(
+        context_explain_min_lines=1,
+        context_explain_max_lines=3,
+        context_window_target_tokens=800,
+    )
+
+    result = context_builder.build_summarize_context(
+        {
+            "latest_snapshot": {"scene_id": "scene-a"},
+            "history_lines": lines,
+            "history_observed_lines": [],
+            "history_choices": [],
+        },
+        scene_id="scene-a",
+        config=config,
+    )
+
+    assert [item["line_id"] for item in result["stable_lines"]] == ["line-7", "line-8", "line-9"]

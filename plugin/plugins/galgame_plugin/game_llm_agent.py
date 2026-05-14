@@ -8,7 +8,11 @@ import time
 from typing import Any, Callable
 
 from .host_agent_adapter import HostAgentAdapter, HostAgentError
-from .context_builder import _compute_dynamic_line_limit, _context_window_bounds
+from .context_builder import (
+    _compute_dynamic_line_limit,
+    _context_window_bounds,
+    _recency_ordered_context_lines,
+)
 from .local_input_actuator import (
     VIRTUAL_MOUSE_DIALOGUE_CANDIDATES,
     perform_local_input_actuation,
@@ -5476,7 +5480,7 @@ class GameLLMAgent:
             max_floor=16,
         )
         line_limit = _compute_dynamic_line_limit(
-            [*history_lines, *history_observed_lines],
+            _recency_ordered_context_lines(history_lines, history_observed_lines),
             min_limit=min_limit,
             max_limit=max_limit,
             target_tokens=target_tokens,

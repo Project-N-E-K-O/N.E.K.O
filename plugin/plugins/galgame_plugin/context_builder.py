@@ -150,6 +150,19 @@ def _compute_dynamic_line_limit(
     return max(min_limit, min(max_limit, limit))
 
 
+def _recency_ordered_context_lines(
+    stable_lines: list[dict[str, Any]],
+    observed_lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    indexed: list[tuple[int, str, int, dict[str, Any]]] = []
+    for fallback_index, item in enumerate([*stable_lines, *observed_lines]):
+        line = dict(item) if isinstance(item, dict) else {}
+        ts = str(line.get("ts") or "").strip()
+        indexed.append((1 if ts else 0, ts, fallback_index, line))
+    indexed.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in indexed]
+
+
 def _line_condense_blocked(line: dict[str, Any]) -> bool:
     speaker = str(line.get("speaker") or "").strip()
     text = str(line.get("text") or "").strip()
@@ -568,7 +581,7 @@ def build_explain_context(
     history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
     min_limit, max_limit, target_tokens = _context_window_bounds(config)
     line_limit = _compute_dynamic_line_limit(
-        [*history_lines, *history_observed_lines],
+        _recency_ordered_context_lines(history_lines, history_observed_lines),
         min_limit=min_limit,
         max_limit=max_limit,
         target_tokens=target_tokens,
@@ -670,9 +683,9 @@ def build_summarize_context(
     route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
     history_lines = list(local_state.get("history_lines", []) or [])
     history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config, max_floor=20)
+    min_limit, max_limit, target_tokens = _context_window_bounds(config)
     line_limit = _compute_dynamic_line_limit(
-        [*history_lines, *history_observed_lines],
+        _recency_ordered_context_lines(history_lines, history_observed_lines),
         min_limit=min_limit,
         max_limit=max_limit,
         target_tokens=target_tokens,
@@ -740,7 +753,7 @@ def build_suggest_context(
     history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
     min_limit, max_limit, target_tokens = _context_window_bounds(config)
     line_limit = _compute_dynamic_line_limit(
-        [*history_lines, *history_observed_lines],
+        _recency_ordered_context_lines(history_lines, history_observed_lines),
         min_limit=min_limit,
         max_limit=max_limit,
         target_tokens=target_tokens,
