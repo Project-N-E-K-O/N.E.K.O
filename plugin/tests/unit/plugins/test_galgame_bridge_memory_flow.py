@@ -311,7 +311,7 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
 
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     clock = {"now": 1710000000.0}
     expected_snapshot_text = "Windows default config takeover."
     good_handle = _FakeTextractorHandle(
@@ -505,7 +505,7 @@ async def test_memory_reader_text_freshness_resets_when_session_changes(
         ),
     )
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     now = time.monotonic()
 
     first_runtime = {
@@ -551,7 +551,7 @@ async def test_memory_reader_fallback_activates_when_bridge_sdk_is_missing(tmp_p
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     clock = {"now": 1710000000.0}
     handle = _FakeTextractorHandle(
         ["[4242:100:0:0] 雪乃：来自内存读取的台词。"]
@@ -609,7 +609,7 @@ async def test_bridge_sdk_session_preempts_memory_reader_candidate(tmp_path: Pat
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     clock = {"now": 1710000000.0}
     handle = _FakeTextractorHandle(
         ["[4242:100:0:0] 雪乃：先走内存读取链路。"]

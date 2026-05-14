@@ -97,22 +97,15 @@ async def test_install_textractor_entry_returns_install_result_and_refreshed_sta
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     install_root = tmp_path / "TextractorInstalled"
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            memory_reader={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-                "textractor_proxy": "http://127.0.0.1:7890",
-            },
-        ),
+    plugin, _, _ = _make_install_entry_plugin(
+        tmp_path,
+        memory_reader={
+            "enabled": True,
+            "install_target_dir": str(install_root),
+            "textractor_proxy": "http://127.0.0.1:7890",
+        },
     )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._poll_bridge = _noop_install_entry_poll
     captured_install_kwargs: dict[str, object] = {}
 
     async def _fake_install_textractor(**kwargs):
@@ -156,21 +149,14 @@ async def test_install_textractor_entry_uses_ctx_run_id_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     install_root = tmp_path / "TextractorInstalled"
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            memory_reader={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-            },
-        ),
+    plugin, _, _ = _make_install_entry_plugin(
+        tmp_path,
+        memory_reader={
+            "enabled": True,
+            "install_target_dir": str(install_root),
+        },
     )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._poll_bridge = _noop_install_entry_poll
 
     observed: dict[str, object] = {}
 
@@ -207,21 +193,14 @@ async def test_install_tesseract_entry_returns_install_result_and_refreshed_stat
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     install_root = tmp_path / "TesseractInstalled"
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-            },
-        ),
+    plugin, _, _ = _make_install_entry_plugin(
+        tmp_path,
+        ocr_reader={
+            "enabled": True,
+            "install_target_dir": str(install_root),
+        },
     )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._poll_bridge = _noop_install_entry_poll
 
     async def _fake_install_tesseract(**kwargs):
         del kwargs
@@ -267,72 +246,50 @@ async def test_install_tesseract_entry_returns_install_result_and_refreshed_stat
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_phase2_entries_return_structured_degraded_results_without_target_entry(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     game_id = "demo.alpha"
     session_id = "sess-a"
-    _create_game_dir(
-        bridge_root,
-        game_id=game_id,
-        session_payload=_session(
+    snapshot = _session_state(
+        speaker="Yukino",
+        text="Current line",
+        scene_id="scene-a",
+        line_id="line-1",
+        choices=[
+            {"choice_id": "choice-1", "text": "Yes", "index": 0, "enabled": True},
+            {"choice_id": "choice-2", "text": "Later", "index": 1, "enabled": True},
+        ],
+        is_menu_open=True,
+        ts="2026-04-21T08:31:00Z",
+    )
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(
             game_id=game_id,
             session_id=session_id,
             last_seq=2,
-            state=_session_state(
-                speaker="雪乃",
-                text="今天一起回家吗？",
-                scene_id="scene-a",
-                line_id="line-1",
-                choices=[
-                    {"choice_id": "choice-1", "text": "好啊", "index": 0, "enabled": True},
-                    {"choice_id": "choice-2", "text": "下次吧", "index": 1, "enabled": True},
-                ],
-                is_menu_open=True,
-                ts="2026-04-21T08:31:00Z",
-            ),
+            snapshot=snapshot,
+            history_lines=[
+                {
+                    "speaker": "Yukino",
+                    "text": snapshot["text"],
+                    "line_id": "line-1",
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "ts": "2026-04-21T08:31:00Z",
+                }
+            ],
+            history_choices=list(snapshot["choices"]),
+            active_data_source=DATA_SOURCE_BRIDGE_SDK,
         ),
-        events=[
-            _event(
-                seq=1,
-                event_type="line_changed",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "speaker": "雪乃",
-                    "text": "今天一起回家吗？",
-                    "line_id": "line-1",
-                    "scene_id": "scene-a",
-                    "route_id": "",
-                },
-                ts="2026-04-21T08:31:00Z",
-            ),
-            _event(
-                seq=2,
-                event_type="choices_shown",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "line_id": "line-1",
-                    "scene_id": "scene-a",
-                    "route_id": "",
-                    "choices": [
-                        {"choice_id": "choice-1", "text": "好啊", "index": 0, "enabled": True},
-                        {"choice_id": "choice-2", "text": "下次吧", "index": 1, "enabled": True},
-                    ],
-                },
-                ts="2026-04-21T08:31:01Z",
-            ),
-        ],
     )
-
-    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
 
     explain = await plugin.galgame_explain_line()
     summarize = await plugin.galgame_summarize_scene()
     suggest = await plugin.galgame_suggest_choice()
     agent_status = await plugin.galgame_agent_command(action="query_status")
-    agent_reply = await plugin.galgame_agent_command(action="query_context", context_query="当前场景在讲什么？")
+    agent_reply = await plugin.galgame_agent_command(
+        action="query_context",
+        context_query="scene query",
+    )
 
     assert isinstance(explain, Ok)
     assert explain.value["degraded"] is True
@@ -353,7 +310,7 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
 
     assert isinstance(agent_reply, Ok)
     assert agent_reply.value["action"] == "query_context"
-    assert "场景" in agent_reply.value["result"]
+    assert "scene query" in agent_reply.value["result"]
 
 
 @pytest.mark.asyncio

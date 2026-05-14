@@ -383,6 +383,10 @@ async def test_startup_auto_opens_ui_only_when_enabled(
     disabled_plugin_dir, disabled_bridge_root = _make_plugin_dirs(disabled_root)
     disabled_ctx = _Ctx(disabled_plugin_dir, _make_effective_config(disabled_bridge_root))
     disabled_plugin = GalgameBridgePlugin(disabled_ctx)
+    disabled_plugin._poll_bridge = _noop_install_entry_poll  # type: ignore[method-assign]
+    disabled_plugin._build_status_payload_async = lambda: asyncio.sleep(0, result={})  # type: ignore[method-assign]
+    disabled_plugin._start_ocr_fast_loop = lambda: False  # type: ignore[method-assign]
+    disabled_plugin._ensure_ocr_foreground_advance_monitor = lambda: asyncio.sleep(0, result=False)  # type: ignore[method-assign]
     disabled_startup = await disabled_plugin.startup()
 
     assert isinstance(disabled_startup, Ok)
@@ -396,6 +400,10 @@ async def test_startup_auto_opens_ui_only_when_enabled(
         _make_effective_config(enabled_bridge_root, galgame={"auto_open_ui": True}),
     )
     enabled_plugin = GalgameBridgePlugin(enabled_ctx)
+    enabled_plugin._poll_bridge = _noop_install_entry_poll  # type: ignore[method-assign]
+    enabled_plugin._build_status_payload_async = lambda: asyncio.sleep(0, result={})  # type: ignore[method-assign]
+    enabled_plugin._start_ocr_fast_loop = lambda: False  # type: ignore[method-assign]
+    enabled_plugin._ensure_ocr_foreground_advance_monitor = lambda: asyncio.sleep(0, result=False)  # type: ignore[method-assign]
     enabled_startup = await enabled_plugin.startup()
 
     assert isinstance(enabled_startup, Ok)

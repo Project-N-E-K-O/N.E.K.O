@@ -3994,7 +3994,7 @@ async def test_ocr_reader_after_advance_keyboard_writes_next_stable_line(
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     _enable_injected_ocr_reader(plugin, trigger_mode="after_advance")
     plugin._start_background_bridge_poll = lambda: False
     clock = {"now": 1710000260.0}
@@ -4076,7 +4076,7 @@ async def test_ocr_reader_foreground_refresh_queues_pending_capture_retry(
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     _enable_injected_ocr_reader(plugin, trigger_mode="after_advance")
 
     class _ForegroundRefreshOcrManager:
@@ -4228,7 +4228,7 @@ async def test_after_advance_manual_click_writes_stable_line_without_memory_bloc
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     _enable_injected_ocr_reader(plugin, trigger_mode="after_advance")
     plugin._start_background_bridge_poll = lambda: False
     target = DetectedGameWindow(
@@ -4345,7 +4345,7 @@ async def test_after_advance_manual_click_ocr_is_not_blocked_by_memory_candidate
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     _enable_injected_ocr_reader(plugin, trigger_mode="after_advance")
     plugin._start_background_bridge_poll = lambda: False
     plugin._memory_reader_manager = SimpleNamespace(
@@ -4489,7 +4489,7 @@ async def test_after_advance_manual_input_discovers_ocr_target_while_memory_acti
     )
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
+    plugin._cfg = build_config(ctx._config)
     _enable_injected_ocr_reader(plugin, trigger_mode="after_advance")
     plugin._start_background_bridge_poll = lambda: False
     plugin._memory_reader_manager = SimpleNamespace(
