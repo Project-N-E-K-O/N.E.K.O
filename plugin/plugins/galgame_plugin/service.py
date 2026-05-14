@@ -2375,7 +2375,7 @@ def _build_status_payload_unchecked(
     summary = summarize_status(
         connection_state=state.current_connection_state,
         mode=state.mode,
-        bound_game_id=state.bound_game_id or state.active_game_id,
+        bound_game_id=state.bound_game_id,
         active_session_id=state.active_session_id,
         last_seq=state.last_seq,
         last_error=last_error,

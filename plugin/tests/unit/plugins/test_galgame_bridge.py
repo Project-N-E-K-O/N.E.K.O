@@ -88,6 +88,15 @@ from plugin.sdk.plugin import Err, Ok
 _PLUGIN_FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "galgame_plugin"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_galgame_runtime_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+
+
 class _Logger:
     def info(self, *args, **kwargs):
         return None
@@ -2598,6 +2607,7 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_bind_game",
         "galgame_build_ocr_screen_template_draft",
         "galgame_continue_auto_advance",
+        "galgame_download_rapidocr_models",
         "galgame_evaluate_ocr_screen_awareness_model",
         "galgame_explain_line",
         "galgame_get_history",
@@ -2618,6 +2628,7 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_set_ocr_screen_templates",
         "galgame_set_ocr_timing",
         "galgame_set_ocr_window_target",
+        "galgame_set_rapidocr_lang",
         "galgame_suggest_choice",
         "galgame_summarize_scene",
         "galgame_train_ocr_screen_awareness_model",
