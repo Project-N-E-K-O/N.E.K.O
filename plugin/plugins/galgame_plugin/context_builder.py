@@ -158,6 +158,7 @@ def _significant_char_count(text: object) -> int:
 def _context_window_bounds(
     config: GalgameLLMConfig | None,
     *,
+    min_floor: int = 1,
     max_floor: int = 1,
 ) -> tuple[int, int, int]:
     try:
@@ -177,8 +178,9 @@ def _context_window_bounds(
         )
     except (TypeError, ValueError):
         target_tokens = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
-    min_limit = max(1, min_limit)
-    max_limit = max(1, max(max_limit, max_floor))
+    min_floor = max(1, min_floor)
+    min_limit = max(1, min_limit, min_floor)
+    max_limit = max(1, max(max_limit, max_floor, min_floor))
     if min_limit > max_limit:
         min_limit, max_limit = max_limit, min_limit
     return min_limit, max_limit, max(1, target_tokens)
@@ -216,6 +218,7 @@ def _recency_ordered_context_lines(
     observed_lines: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     indexed: list[tuple[int, str, int, int, int, dict[str, Any]]] = []
+    total_count = len(stable_lines) + len(observed_lines)
     for source_order, (source, items) in enumerate(
         (("stable", stable_lines), ("observed", observed_lines))
     ):
@@ -223,11 +226,7 @@ def _recency_ordered_context_lines(
             line = dict(item) if isinstance(item, dict) else {}
             line.setdefault("source", source)
             ts = str(line.get("ts") or "").strip()
-            fallback_index = (
-                source_index
-                if ts
-                else source_order * (len(stable_lines) + len(observed_lines)) + source_index
-            )
+            fallback_index = source_index if ts else source_order * total_count + source_index
             indexed.append((1 if ts else 0, ts, fallback_index, source_order, source_index, line))
     indexed.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]))
     return [item[5] for item in indexed]
@@ -1195,10 +1194,23 @@ def build_summarize_context(
     """Build the prompt context used by the summarize-scene LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
     effective_line = resolve_effective_current_line(local_state)
+    restored = local_state.get("context_snapshot")
+    restored = restored if isinstance(restored, dict) else {}
+    restored_scene_id = str(restored.get("scene_id") or "").strip()
+    restored_route_id = str(restored.get("route_id") or "").strip()
     effective_scene_id = scene_id or str(
-        snapshot.get("scene_id") or (effective_line or {}).get("scene_id") or ""
+        snapshot.get("scene_id")
+        or (effective_line or {}).get("scene_id")
+        or restored_scene_id
+        or ""
     )
-    route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
+    restored_scene_matches = not restored_scene_id or restored_scene_id == effective_scene_id
+    route_id = str(
+        snapshot.get("route_id")
+        or (effective_line or {}).get("route_id")
+        or (restored_route_id if restored_scene_matches else "")
+        or ""
+    )
     history_lines = list(local_state.get("history_lines", []) or [])
     history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
     min_limit, max_limit, target_tokens = _context_window_bounds(config)

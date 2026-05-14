@@ -6993,13 +6993,13 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
             session_id=session_id,
             last_seq=2,
             state=_session_state(
-                speaker="é›ªä¹ƒ",
-                text="è¿™æ˜¯ OCR è¯»å–æ¥çš„å°è¯ã€‚",
+                speaker="雪乃",
+                text="这是 OCR 读取来的台词。",
                 scene_id="ocr:scene-a",
                 line_id="ocr:line-1",
                 choices=[
-                    {"choice_id": "ocr:line-1#choice0", "text": "åŽ»æ•™å®¤", "index": 0, "enabled": True},
-                    {"choice_id": "ocr:line-1#choice1", "text": "åŽ»å¤©å°", "index": 1, "enabled": True},
+                    {"choice_id": "ocr:line-1#choice0", "text": "去教室", "index": 0, "enabled": True},
+                    {"choice_id": "ocr:line-1#choice1", "text": "去天台", "index": 1, "enabled": True},
                 ],
                 is_menu_open=True,
                 ts="2026-04-21T08:31:00Z",
@@ -7012,8 +7012,8 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
                 session_id=session_id,
                 game_id=game_id,
                 payload={
-                    "speaker": "é›ªä¹ƒ",
-                    "text": "è¿™æ˜¯ OCR è¯»å–æ¥çš„å°è¯ã€‚",
+                    "speaker": "雪乃",
+                    "text": "这是 OCR 读取来的台词。",
                     "line_id": "ocr:line-1",
                     "scene_id": "ocr:scene-a",
                     "route_id": "",
@@ -7030,8 +7030,8 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
                     "scene_id": "ocr:scene-a",
                     "route_id": "",
                     "choices": [
-                        {"choice_id": "ocr:line-1#choice0", "text": "åŽ»æ•™å®¤", "index": 0, "enabled": True},
-                        {"choice_id": "ocr:line-1#choice1", "text": "åŽ»å¤©å°", "index": 1, "enabled": True},
+                        {"choice_id": "ocr:line-1#choice0", "text": "去教室", "index": 0, "enabled": True},
+                        {"choice_id": "ocr:line-1#choice1", "text": "去天台", "index": 1, "enabled": True},
                     ],
                 },
                 ts="2026-04-21T08:31:01Z",
@@ -7052,11 +7052,11 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
         params = kwargs.get("params") or {}
         operation = params.get("operation")
         if operation == "explain_line":
-            return {"explanation": "è¿™æ˜¯å¯¹ OCR å°è¯çš„è§£é‡Šã€‚", "evidence": []}
+            return {"explanation": "这是对 OCR 台词的解释。", "evidence": []}
         if operation == "summarize_scene":
             return {
-                "summary": "è¿™æ˜¯å¯¹ OCR åœºæ™¯çš„æ€»ç»“ã€‚",
-                "key_points": [{"type": "plot", "text": "OCR ä¸»çº¿å¯ç”¨ã€‚"}],
+                "summary": "这是对 OCR 场景的总结。",
+                "key_points": [{"type": "plot", "text": "OCR 主线可用。"}],
             }
         if operation == "suggest_choice":
             context = params.get("context") or {}
@@ -7067,7 +7067,7 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
                         "choice_id": visible_choices[0]["choice_id"],
                         "text": visible_choices[0]["text"],
                         "rank": 1,
-                        "reason": "OCR ä¸‹ä¼˜å…ˆç»§ç»­ä¸»çº¿ã€‚",
+                        "reason": "OCR 下优先继续主线。",
                     }
                 ]
             }
@@ -7117,7 +7117,7 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
     assert explain.value["semantic_degraded"] is True
     assert explain.value["fallback_used"] is False
     assert "ocr_reader_input" in explain.value["diagnostic"]
-    assert explain.value["explanation"] == "è¿™æ˜¯å¯¹ OCR å°è¯çš„è§£é‡Šã€‚"
+    assert explain.value["explanation"] == "这是对 OCR 台词的解释。"
 
     assert isinstance(summarize, Ok)
     assert summarize.value["degraded"] is True
@@ -7125,7 +7125,7 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
     assert summarize.value["semantic_degraded"] is True
     assert summarize.value["fallback_used"] is False
     assert "ocr_reader_input" in summarize.value["diagnostic"]
-    assert summarize.value["summary"] == "è¿™æ˜¯å¯¹ OCR åœºæ™¯çš„æ€»ç»“ã€‚"
+    assert summarize.value["summary"] == "这是对 OCR 场景的总结。"
 
     assert isinstance(suggest, Ok)
     assert suggest.value["degraded"] is True
@@ -8734,10 +8734,16 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
     context = agent._build_agent_reply_context(shared, prompt="status")
     public_context = context["public_context"]
 
-    assert public_context["stable_lines"] == []
-    assert [line["line_id"] for line in public_context["observed_lines"]] == ["o3", "o4", "o5"]
-    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o3", "o4", "o5"]
-    assert len(public_context["recent_lines"]) == 3
+    assert [line["line_id"] for line in public_context["stable_lines"]] == [
+        f"s{index}" for index in range(6)
+    ]
+    assert [line["line_id"] for line in public_context["observed_lines"]] == [
+        f"o{index}" for index in range(6)
+    ]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == [
+        *[f"s{index}" for index in range(6)],
+        *[f"o{index}" for index in range(6)],
+    ]
 
 
 @pytest.mark.plugin_unit
@@ -11102,8 +11108,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     lines = [
         {
             "line_id": f"line-{index}",
-            "speaker": "é›ªä¹ƒ",
-            "text": f"ç¬¬ {index} å¥å°è¯ã€‚",
+            "speaker": "雪乃",
+            "text": f"第 {index} 句台词。",
             "scene_id": "scene-a",
             "route_id": "",
             "ts": f"2026-04-21T08:33:{index:02d}Z",
@@ -11113,8 +11119,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     shared_scene_a = _shared_state(
         mode="companion",
         snapshot=_session_state(
-            speaker="é›ªä¹ƒ",
-            text="ç¬¬ 8 å¥å°è¯ã€‚",
+            speaker="雪乃",
+            text="第 8 句台词。",
             scene_id="scene-a",
             line_id="line-8",
             ts="2026-04-21T08:33:08Z",
@@ -11125,8 +11131,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
         mode="companion",
         push_notifications=False,
         snapshot=_session_state(
-            speaker="é›ªä¹ƒ",
-            text="ä¸‹ä¸€å¹•ã€‚",
+            speaker="雪乃",
+            text="下一幕。",
             scene_id="scene-b",
             line_id="line-9",
             ts="2026-04-21T08:34:00Z",
@@ -11134,8 +11140,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
         history_lines=[
             {
                 "line_id": "line-9",
-                "speaker": "é›ªä¹ƒ",
-                "text": "ä¸‹ä¸€å¹•ã€‚",
+                "speaker": "雪乃",
+                "text": "下一幕。",
                 "scene_id": "scene-b",
                 "route_id": "",
                 "ts": "2026-04-21T08:34:00Z",

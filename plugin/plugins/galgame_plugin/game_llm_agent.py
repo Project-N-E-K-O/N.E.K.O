@@ -5504,19 +5504,28 @@ class GameLLMAgent:
         route_id = str(snapshot.get("route_id") or "")
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
+            min_floor=16,
             max_floor=16,
         )
         tagged_stable = [
             {**dict(item), "_reply_context_source": "stable"}
             for item in history_lines
             if isinstance(item, dict)
-            and (not scene_id or str(item.get("scene_id") or "") == scene_id)
+            and (
+                not scene_id
+                or not str(item.get("scene_id") or "")
+                or str(item.get("scene_id") or "") == scene_id
+            )
         ]
         tagged_observed = [
             {**dict(item), "_reply_context_source": "observed"}
             for item in history_observed_lines
             if isinstance(item, dict)
-            and (not scene_id or str(item.get("scene_id") or "") == scene_id)
+            and (
+                not scene_id
+                or not str(item.get("scene_id") or "")
+                or str(item.get("scene_id") or "") == scene_id
+            )
         ]
         recency_ordered = _recency_ordered_context_lines(tagged_stable, tagged_observed)
         line_limit = _compute_dynamic_line_limit(
@@ -5529,17 +5538,29 @@ class GameLLMAgent:
         if line_limit > 0:
             merged_recent = recency_ordered[-line_limit:]
             stable_lines = [
-                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_reply_context_source" and not str(key).startswith("_condensed_")
+                }
                 for item in merged_recent
                 if item.get("_reply_context_source") == "stable"
             ]
             observed_lines = [
-                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_reply_context_source" and not str(key).startswith("_condensed_")
+                }
                 for item in merged_recent
                 if item.get("_reply_context_source") == "observed"
             ]
             recent_lines = [
-                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_reply_context_source" and not str(key).startswith("_condensed_")
+                }
                 for item in merged_recent
             ]
             recent_line_ids = {
@@ -5551,7 +5572,11 @@ class GameLLMAgent:
                 (index, dict(item))
                 for index, item in enumerate(history_choices)
                 if isinstance(item, dict)
-                and (not scene_id or str(item.get("scene_id") or "") == scene_id)
+                and (
+                    not scene_id
+                    or not str(item.get("scene_id") or "")
+                    or str(item.get("scene_id") or "") == scene_id
+                )
             ]
             choices_without_line_id = [
                 (index, item)

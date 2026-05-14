@@ -156,7 +156,7 @@ def _strip_condense_metadata(value: Any) -> Any:
         return {
             key: item
             for key, item in value.items()
-            if key not in {"_condensed_line_ids", "_condensed_count"}
+            if not str(key).startswith("_condensed_")
         }
     return value
 

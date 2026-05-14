@@ -490,8 +490,16 @@ class LLMGateway:
         mode = str(
             getattr(self._config, "context_counting_mode", "char") or "char"
         ).strip().lower()
+        semantic_compression = bool(
+            getattr(self._config, "context_semantic_compression", False)
+        )
         if mode != "token":
-            return _stable_json_fingerprint({"context_counting_mode": "char"})
+            return _stable_json_fingerprint(
+                {
+                    "context_counting_mode": "char",
+                    "context_semantic_compression": semantic_compression,
+                }
+            )
         try:
             budget = int(getattr(self._config, "context_max_tokens", 6000))
         except (TypeError, ValueError):
@@ -500,6 +508,7 @@ class LLMGateway:
             {
                 "context_counting_mode": "token",
                 "context_max_tokens": max(1, budget),
+                "context_semantic_compression": semantic_compression,
             }
         )
 
