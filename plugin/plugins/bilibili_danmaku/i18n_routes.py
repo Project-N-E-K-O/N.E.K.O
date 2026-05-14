@@ -174,4 +174,8 @@ def _normalize_locale(locale: str) -> str:
         return "ko"
     if normalized.startswith("ru"):
         return "ru"
+    if normalized.startswith("es"):
+        return "es"
+    if normalized.startswith("pt"):
+        return "pt"
     return "zh-CN"

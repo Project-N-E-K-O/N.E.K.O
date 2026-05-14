@@ -323,16 +323,9 @@ class DanmakuBackgroundAgent:
         self._batches_processed += len(batches)
         logger.info(f"[Agent] _normal_tick: 处理 {len(batches)} 个批次, 累计={self._batches_processed}")
 
-        # 3. 更新用户记录 + 房间级指标
+        # 3. 更新房间级指标（用户画像已在 _process_danmaku_event 中记录）
         for batch in batches:
             for entry in batch.entries:
-                # 用户画像（UserRecordManager）
-                if self._user_records:
-                    self._user_records.record_danmaku(
-                        uid=entry.uid,
-                        uname=entry.uname,
-                        text=entry.text,
-                    )
                 # 房间级指标（DanmakuMemory: 静默计时、提问检测）
                 self._memory.record_danmaku(
                     uid=entry.uid,
@@ -409,6 +402,8 @@ class DanmakuBackgroundAgent:
             formatted = self._format_interaction_suggestion(sc)
             if self._push_text_func:
                 self._push_text_func(formatted, "建议回复", sc.priority)
+                self._last_push_time = time.time()
+                self._last_push_type = sc.card_type
             else:
                 await self._do_push(sc)
 
@@ -416,6 +411,8 @@ class DanmakuBackgroundAgent:
             merged = "\n".join(c.summary for c in other_cards[:3])
             if self._push_text_func:
                 self._push_text_func(merged, "弹幕情报", 5)
+                self._last_push_time = time.time()
+                self._last_push_type = other_cards[0].card_type
             else:
                 await self._do_push(other_cards[0])
 
