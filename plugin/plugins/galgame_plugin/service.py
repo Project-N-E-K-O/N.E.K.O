@@ -677,6 +677,9 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         llm_request_cache_ttl_seconds=_coerce_float(
             llm_obj.get("llm_request_cache_ttl_seconds"), 2.0, minimum=0.0
         ),
+        llm_explain_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_explain_cache_ttl_seconds"), 8.0, minimum=0.0
+        ),
         llm_target_entry_ref=str(llm_obj.get("target_entry_ref") or "").strip(),
         llm_vision_enabled=_coerce_bool(llm_obj.get("vision_enabled"), False),
         llm_vision_max_image_px=_coerce_int(
@@ -684,6 +687,15 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         ),
         llm_scene_summary_cache_ttl_seconds=_coerce_float(
             llm_obj.get("llm_scene_summary_cache_ttl_seconds"), 10.0, minimum=0.0
+        ),
+        llm_choice_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_choice_cache_ttl_seconds"), 4.0, minimum=0.0
+        ),
+        llm_near_match_cache_enabled=_coerce_bool(
+            llm_obj.get("llm_near_match_cache_enabled"), False
+        ),
+        llm_near_match_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_near_match_cache_ttl_seconds"), 15.0, minimum=0.0
         ),
         llm_temperature_agent_reply=_coerce_float(
             llm_obj.get("temperature_agent_reply"), 0.2, minimum=0.0
@@ -722,6 +734,15 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         ),
         context_line_importance_enabled=_coerce_bool(
             llm_obj.get("context_line_importance_enabled"), False
+        ),
+        context_persist_enabled=_coerce_bool(
+            llm_obj.get("context_persist_enabled"), False
+        ),
+        context_persist_max_age_seconds=_coerce_float(
+            llm_obj.get("context_persist_max_age_seconds"), 3600.0, minimum=0.0
+        ),
+        context_persist_require_game_id=_coerce_bool(
+            llm_obj.get("context_persist_require_game_id"), True
         ),
         llm_repeat_detection_enabled=_coerce_bool(
             llm_obj.get("llm_repeat_detection_enabled"), False

@@ -791,6 +791,11 @@ def _previous_summary_from_state(local_state: dict[str, Any]) -> str:
             value = str(scene_state.get(key) or "").strip()
             if value:
                 return value
+    context_snapshot = local_state.get("context_snapshot")
+    if isinstance(context_snapshot, dict):
+        value = str(context_snapshot.get("summary_seed") or "").strip()
+        if value:
+            return value
     return ""
 
 

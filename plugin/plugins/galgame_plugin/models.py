@@ -131,6 +131,7 @@ STORE_RAPIDOCR_LANG_TYPE = "rapidocr.lang_type"
 STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
 STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
 STORE_TUTORIAL_PROGRESS = "tutorial_progress"
+STORE_CONTEXT_SNAPSHOT = "context_snapshot"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
     STORE_MODE,
@@ -158,6 +159,7 @@ STORE_KEYS = (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_TUTORIAL_PROGRESS,
+    STORE_CONTEXT_SNAPSHOT,
 )
 
 DEFAULT_SAVE_CONTEXT = {
@@ -512,7 +514,11 @@ class GalgameLLMConfig:
     llm_call_timeout_seconds: float = 15.0
     llm_max_in_flight: int = 2
     llm_request_cache_ttl_seconds: float = 2.0
+    llm_explain_cache_ttl_seconds: float = 8.0
     llm_scene_summary_cache_ttl_seconds: float = 10.0
+    llm_choice_cache_ttl_seconds: float = 4.0
+    llm_near_match_cache_enabled: bool = False
+    llm_near_match_cache_ttl_seconds: float = 15.0
     llm_target_entry_ref: str = ""
     llm_vision_enabled: bool = False
     llm_vision_max_image_px: int = 768
@@ -530,6 +536,9 @@ class GalgameLLMConfig:
     context_scene_summary_mode: str = "rolling"
     context_cumulative_llm_trigger_lines: int = 30
     context_line_importance_enabled: bool = False
+    context_persist_enabled: bool = False
+    context_persist_max_age_seconds: float = 3600.0
+    context_persist_require_game_id: bool = True
     llm_repeat_detection_enabled: bool = False
     llm_repeat_similarity_threshold: float = 0.85
 
@@ -646,7 +655,11 @@ class GalgameConfig:
         "llm_call_timeout_seconds": ("llm", "llm_call_timeout_seconds"),
         "llm_max_in_flight": ("llm", "llm_max_in_flight"),
         "llm_request_cache_ttl_seconds": ("llm", "llm_request_cache_ttl_seconds"),
+        "llm_explain_cache_ttl_seconds": ("llm", "llm_explain_cache_ttl_seconds"),
         "llm_scene_summary_cache_ttl_seconds": ("llm", "llm_scene_summary_cache_ttl_seconds"),
+        "llm_choice_cache_ttl_seconds": ("llm", "llm_choice_cache_ttl_seconds"),
+        "llm_near_match_cache_enabled": ("llm", "llm_near_match_cache_enabled"),
+        "llm_near_match_cache_ttl_seconds": ("llm", "llm_near_match_cache_ttl_seconds"),
         "llm_target_entry_ref": ("llm", "llm_target_entry_ref"),
         "llm_vision_enabled": ("llm", "llm_vision_enabled"),
         "llm_vision_max_image_px": ("llm", "llm_vision_max_image_px"),
@@ -667,6 +680,9 @@ class GalgameConfig:
             "context_cumulative_llm_trigger_lines",
         ),
         "context_line_importance_enabled": ("llm", "context_line_importance_enabled"),
+        "context_persist_enabled": ("llm", "context_persist_enabled"),
+        "context_persist_max_age_seconds": ("llm", "context_persist_max_age_seconds"),
+        "context_persist_require_game_id": ("llm", "context_persist_require_game_id"),
         "llm_repeat_detection_enabled": ("llm", "llm_repeat_detection_enabled"),
         "llm_repeat_similarity_threshold": ("llm", "llm_repeat_similarity_threshold"),
         "reader_mode": ("reader", "reader_mode"),

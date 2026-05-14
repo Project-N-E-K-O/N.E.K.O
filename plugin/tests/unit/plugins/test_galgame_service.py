@@ -175,6 +175,13 @@ def test_build_config_reads_context_optimization_fields() -> None:
                 "context_scene_summary_mode": "cumulative_light",
                 "context_cumulative_llm_trigger_lines": 12,
                 "context_line_importance_enabled": True,
+                "llm_explain_cache_ttl_seconds": 7,
+                "llm_choice_cache_ttl_seconds": 5,
+                "llm_near_match_cache_enabled": True,
+                "llm_near_match_cache_ttl_seconds": 11,
+                "context_persist_enabled": True,
+                "context_persist_max_age_seconds": 120,
+                "context_persist_require_game_id": False,
                 "llm_repeat_detection_enabled": True,
                 "llm_repeat_similarity_threshold": 0.9,
             }
@@ -203,6 +210,13 @@ def test_build_config_reads_context_optimization_fields() -> None:
     assert cfg.context_scene_summary_mode == "cumulative_light"
     assert cfg.context_cumulative_llm_trigger_lines == 12
     assert cfg.context_line_importance_enabled is True
+    assert cfg.llm_explain_cache_ttl_seconds == 7
+    assert cfg.llm_choice_cache_ttl_seconds == 5
+    assert cfg.llm_near_match_cache_enabled is True
+    assert cfg.llm_near_match_cache_ttl_seconds == 11
+    assert cfg.context_persist_enabled is True
+    assert cfg.context_persist_max_age_seconds == 120
+    assert cfg.context_persist_require_game_id is False
     assert cfg.llm_repeat_detection_enabled is True
     assert cfg.llm_repeat_similarity_threshold == 0.9
     assert invalid.context_counting_mode == "char"
@@ -221,6 +235,13 @@ def test_build_config_defaults_phase2_context_fields() -> None:
     assert cfg.context_scene_summary_mode == "rolling"
     assert cfg.context_cumulative_llm_trigger_lines == 30
     assert cfg.context_line_importance_enabled is False
+    assert cfg.llm_explain_cache_ttl_seconds == 8.0
+    assert cfg.llm_choice_cache_ttl_seconds == 4.0
+    assert cfg.llm_near_match_cache_enabled is False
+    assert cfg.llm_near_match_cache_ttl_seconds == 15.0
+    assert cfg.context_persist_enabled is False
+    assert cfg.context_persist_max_age_seconds == 3600.0
+    assert cfg.context_persist_require_game_id is True
     assert cfg.llm_repeat_detection_enabled is False
     assert cfg.llm_repeat_similarity_threshold == 0.85
 
