@@ -17,8 +17,8 @@ _EXPECTED_RUNTIME_KEYS = [
     "errors.install_in_progress",
 ]
 
-_EXPECTED_LOCALES = ["zh-CN", "en", "ja", "ru", "ko"]
-_PARTIAL_LOCALES = ["zh-TW"]
+_EXPECTED_LOCALES = ["zh-CN", "en", "ja", "ru", "ko", "zh-TW"]
+_PARTIAL_LOCALES = ["es", "pt"]
 
 
 def _galgame_entry_ids() -> list[str]:
@@ -53,14 +53,10 @@ def test_i18n_all_locales_have_all_keys(galgame_i18n_dir, locale) -> None:
 
 
 @pytest.mark.parametrize("locale", _PARTIAL_LOCALES)
-def test_i18n_partial_locales_cover_current_entry_additions(galgame_i18n_dir, locale) -> None:
+def test_i18n_partial_locales_cover_plugin_metadata(galgame_i18n_dir, locale) -> None:
     i18n = load_plugin_i18n_from_dir(galgame_i18n_dir)
-    for entry_id in (
-        "galgame_download_rapidocr_models",
-        "galgame_set_rapidocr_lang",
-    ):
-        _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.name")
-        _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.description")
+    _assert_bundle_has_key(i18n, locale, "plugin.name")
+    _assert_bundle_has_key(i18n, locale, "plugin.description")
 
 
 def test_tr_ref_resolves_to_correct_locale(galgame_i18n_dir) -> None:
