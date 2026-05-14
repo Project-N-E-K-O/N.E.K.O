@@ -467,7 +467,7 @@ git diff --check
 
 不要做这些事：
 
-1. 把首页剧情、文案、按钮 selector 写进 `AvatarPerformanceStage`。
+1. 把首页剧情、文案、按钮选择器写进 `AvatarPerformanceStage`。
 2. 在 adapter 里自己发明 emotion 分类或 motion/expression 名。
 3. 为了首页新手引导删除或重置 overlay、taking-over、ghost cursor 等业务状态。
 4. 把 `window.YuiGuideWakeup` 或旧 `yui-guide-wakeup.js` 扩回独立视觉演出链路。
