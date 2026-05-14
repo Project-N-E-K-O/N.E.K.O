@@ -1,4 +1,8 @@
 {
   "plugin.name": "Galgame 遊玩助手",
-  "plugin.description": "讓貓娘陪伴你一起玩 Galgame"
+  "plugin.description": "讓貓娘陪伴你一起玩 Galgame",
+  "entries.galgame_download_rapidocr_models.name": "下載 RapidOCR 模型",
+  "entries.galgame_download_rapidocr_models.description": "為目前語言和 OCR 版本下載缺少的 RapidOCR 模型檔案到本機模型快取。",
+  "entries.galgame_set_rapidocr_lang.name": "切換 OCR 識別語言",
+  "entries.galgame_set_rapidocr_lang.description": "切換 RapidOCR 文字識別語言模型；手動切換語言後會關閉自動偵測。"
 }

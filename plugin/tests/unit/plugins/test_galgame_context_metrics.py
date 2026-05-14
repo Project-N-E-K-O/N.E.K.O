@@ -84,6 +84,7 @@ def _config(**overrides: Any) -> SimpleNamespace:
         "llm_request_cache_ttl_seconds": 0.0,
         "llm_scene_summary_cache_ttl_seconds": 0.0,
         "context_metrics_enabled": False,
+        "context_semantic_compression": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -295,22 +296,27 @@ async def test_llm_gateway_cache_is_scoped_to_prompt_budget_config() -> None:
 
 @pytest.mark.asyncio
 async def test_llm_gateway_records_real_prompt_metadata_end_to_end() -> None:
-    backend = _RealPromptBackend(logger=None, config=_config(context_metrics_enabled=True))
+    config = _config(
+        context_metrics_enabled=True,
+        context_counting_mode="token",
+        context_max_tokens=1000,
+        llm_request_cache_ttl_seconds=0.0,
+    )
+    backend = _RealPromptBackend(logger=None, config=config)
     gateway = LLMGateway(
         None,
         None,
-        _config(
-            context_metrics_enabled=True,
-            context_counting_mode="token",
-            context_max_tokens=1000,
-            llm_request_cache_ttl_seconds=60.0,
-        ),
+        config,
         backend=backend,
     )
 
     result = await gateway.agent_reply({"prompt": "status", "public_context": {}})
 
-    assert result["reply"] == "ok"
+    assert result["reply"]
+    prompt = backend.last_messages[-1]["content"]
+    assert "Task: Answer query_context or send_message" in prompt
+    assert "context:" in prompt
+    assert '"prompt": "status"' in prompt
     assert gateway.context_metrics is not None
     record = gateway.context_metrics.records()[0]
     assert record.operation == "agent_reply"

@@ -175,7 +175,7 @@ def test_memory_reader_config_reads_textractor_proxy(tmp_path: Path) -> None:
     )
 
     assert config.memory_reader_textractor_proxy == "http://127.0.0.1:7890"
-    assert config.memory_reader_install_timeout_seconds == 300.0
+    assert config.memory_reader_install_timeout_seconds == 600.0
 
 
 @pytest.mark.asyncio
