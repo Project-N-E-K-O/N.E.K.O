@@ -1301,10 +1301,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 const happyTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
                     this.motionTimer = null;
-                    this.softClearEmotionEffects({
-                        preserveExpression: true,
-                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
-                    });
+                    this.clearEmotionEffects();
                 }, 1000);
                 this.motionTimer = { type: 'timeout', id: happyTimer, generation };
                 break;
@@ -1315,10 +1312,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 const sadTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
                     this.motionTimer = null;
-                    this.softClearEmotionEffects({
-                        preserveExpression: true,
-                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
-                    });
+                    this.clearEmotionEffects();
                 }, 1200);
                 this.motionTimer = { type: 'timeout', id: sadTimer, generation };
                 break;
@@ -1333,10 +1327,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 const angryTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
                     this.motionTimer = null;
-                    this.softClearEmotionEffects({
-                        preserveExpression: true,
-                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
-                    });
+                    this.clearEmotionEffects();
                 }, 800);
                 this.motionTimer = { type: 'timeout', id: angryTimer, extraTimeoutIds: [angryPhaseTimer], generation };
                 break;
@@ -1347,10 +1338,7 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 const surprisedTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
                     this.motionTimer = null;
-                    this.softClearEmotionEffects({
-                        preserveExpression: true,
-                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
-                    });
+                    this.clearEmotionEffects();
                 }, 800);
                 this.motionTimer = { type: 'timeout', id: surprisedTimer, generation };
                 break;
