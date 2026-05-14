@@ -1240,7 +1240,10 @@ class GameLLMAgent:
                             self._planning_choice_signature = choice_signature
                             await self._run_choice_planning_inline(
                                 shared,
-                                context=build_suggest_context(shared),
+                                context=build_suggest_context(
+                                    shared,
+                                    config=self._context_config,
+                                ),
                                 now=now,
                             )
                             self._last_status = self._compute_status(shared)
@@ -3673,7 +3676,11 @@ class GameLLMAgent:
 
         if scene_changed:
             previous_scene_id = str(self._scene_state.get("scene_id") or "")
-            summary_context = build_summarize_context(shared, scene_id=scene_id)
+            summary_context = build_summarize_context(
+                shared,
+                scene_id=scene_id,
+                config=self._context_config,
+            )
             summary_seed = build_local_scene_summary(
                 scene_id=scene_id,
                 route_id=route_id,
@@ -3956,7 +3963,11 @@ class GameLLMAgent:
         if not trigger or trigger == "scene_changed" or not self._should_push_scene(shared):
             return
         route_id = str(boundary.get("route_id") or snapshot.get("route_id") or "")
-        context = build_summarize_context(shared, scene_id=scene_id)
+        context = build_summarize_context(
+            shared,
+            scene_id=scene_id,
+            config=self._context_config,
+        )
         self._schedule_scene_summary_task(
             shared=shared,
             session_id=session_id,
@@ -4461,7 +4472,11 @@ class GameLLMAgent:
         if scene_changed:
             if not allow_agent_side_effects:
                 return
-            context = build_summarize_context(shared, scene_id=current_scene_id)
+            context = build_summarize_context(
+                shared,
+                scene_id=current_scene_id,
+                config=self._context_config,
+            )
             summary = self._build_local_scene_summary_from_context(
                 context,
                 scene_id=current_scene_id,
@@ -5054,7 +5069,10 @@ class GameLLMAgent:
                 else None
             )
             context = build_summarize_context(
-                shared, scene_id=scene_id, merge_from_scene_ids=merge_ids
+                shared,
+                scene_id=scene_id,
+                merge_from_scene_ids=merge_ids,
+                config=self._context_config,
             )
             if scene_id == self._pending_merge_primary:
                 self._pending_merge_scene_ids = None
@@ -5161,7 +5179,11 @@ class GameLLMAgent:
         route_id: str,
         snapshot: dict[str, Any],
     ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        context = build_summarize_context(shared, scene_id=scene_id)
+        context = build_summarize_context(
+            shared,
+            scene_id=scene_id,
+            config=self._context_config,
+        )
         # Fallback: if current scene has no lines yet, include previous scene
         # if the scene change was recent (within 10 seconds)
         if not list(context.get("stable_lines") or []):
@@ -5172,6 +5194,7 @@ class GameLLMAgent:
                     shared,
                     scene_id=scene_id,
                     merge_from_scene_ids=[previous_scene_id],
+                    config=self._context_config,
                 )
         summary, meta = await self._summarize_scene_context_for_cat(
             context,
