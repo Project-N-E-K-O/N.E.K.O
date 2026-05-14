@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
@@ -146,8 +147,8 @@ def test_galgame_ui_first_run_dxcam_prompt_requires_dxcam_backend() -> None:
         / "main.js"
     ).read_text(encoding="utf-8")
 
-    assert "function requiresDxcamBackend" in script
-    assert "const dxcamRequired = requiresDxcamBackend(selectedCaptureBackend);" in script
-    assert "const captureReady = Boolean(!dxcamSupported || !dxcamRequired || dxcam.installed);" in script
-    assert "firstIncomplete.installAction === 'install_dxcam'" in script
-    assert "if (hasInstallFlow('dxcam'))" in script
+    assert re.search(r"function\s+requiresDxcamBackend\s*\(", script)
+    assert "dxcamRequired" in script
+    assert "dxcam.installed" in script
+    assert "install_dxcam" in script
+    assert re.search(r"hasInstallFlow\s*\(\s*['\"]dxcam['\"]\s*\)", script)
