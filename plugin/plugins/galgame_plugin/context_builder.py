@@ -162,7 +162,12 @@ def _recency_ordered_context_lines(
             line = dict(item) if isinstance(item, dict) else {}
             line.setdefault("source", source)
             ts = str(line.get("ts") or "").strip()
-            indexed.append((1 if ts else 0, ts, source_index, source_order, source_index, line))
+            fallback_index = (
+                source_index
+                if ts
+                else source_order * (len(stable_lines) + len(observed_lines)) + source_index
+            )
+            indexed.append((1 if ts else 0, ts, fallback_index, source_order, source_index, line))
     indexed.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]))
     return [item[5] for item in indexed]
 

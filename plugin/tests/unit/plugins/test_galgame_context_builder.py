@@ -338,6 +338,22 @@ def test_recency_ordered_lines_interleaves_sources_with_same_timestamp() -> None
     ]
 
 
+def test_recency_ordered_lines_preserves_cross_stream_append_order_without_timestamps() -> None:
+    stable_lines = [
+        {"line_id": f"s{index}", "text": f"stable {index}"}
+        for index in range(3, 6)
+    ]
+    observed_lines = [
+        {"line_id": f"o{index}", "text": f"observed {index}"}
+        for index in range(3, 6)
+    ]
+
+    result = context_builder._recency_ordered_context_lines(stable_lines, observed_lines)
+
+    assert [item["line_id"] for item in result] == ["s3", "s4", "s5", "o3", "o4", "o5"]
+    assert [item["line_id"] for item in result[-3:]] == ["o3", "o4", "o5"]
+
+
 def test_context_window_bounds_preserves_zero_until_minimum_clamp() -> None:
     config = GalgameLLMConfig(
         context_explain_min_lines=0,
