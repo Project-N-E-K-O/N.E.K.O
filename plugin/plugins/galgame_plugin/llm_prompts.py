@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from .context_builder import _condense_dialogue_batch
 from .context_tokens import estimate_context_tokens
+from .models import json_copy
 
 _PROMPT_CONTEXT_MAX_CHARS = 12000
 _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS = 6000
@@ -91,11 +92,13 @@ def _compact_prompt_value(
 
 
 def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
-    mode = str(getattr(config, "context_counting_mode", "char") or "char").strip().lower()
+    if config is None:
+        return "char", _PROMPT_CONTEXT_MAX_CHARS
+    mode = str(config.context_counting_mode or "char").strip().lower()
     if mode != "token":
         return "char", _PROMPT_CONTEXT_MAX_CHARS
     try:
-        budget = int(getattr(config, "context_max_tokens", _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS))
+        budget = int(config.context_max_tokens)
     except (TypeError, ValueError):
         budget = _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS
     return "token", max(1, budget)
@@ -152,16 +155,25 @@ def _condense_context(
     context: dict[str, Any],
     config: PromptBudgetConfig | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    enabled = bool(getattr(config, "context_semantic_compression", False))
-    if not enabled:
-        return context, {
+    if config is None:
+        prompt_context = json_copy(context)
+        return prompt_context, {
             "semantic_compression_enabled": False,
-            "semantic_lines_before": _count_condensable_lines(context),
-            "semantic_lines_after": _count_condensable_lines(context),
+            "semantic_lines_before": _count_condensable_lines(prompt_context),
+            "semantic_lines_after": _count_condensable_lines(prompt_context),
         }
-    before = _count_condensable_lines(context)
+    enabled = bool(config.context_semantic_compression)
+    if not enabled:
+        prompt_context = json_copy(context)
+        return prompt_context, {
+            "semantic_compression_enabled": False,
+            "semantic_lines_before": _count_condensable_lines(prompt_context),
+            "semantic_lines_after": _count_condensable_lines(prompt_context),
+        }
+    prompt_context = json_copy(context)
+    before = _count_condensable_lines(prompt_context)
     try:
-        condensed = _condense_keys(context)
+        condensed = _condense_keys(prompt_context)
         public_context = condensed.get("public_context")
         if isinstance(public_context, dict):
             condensed["public_context"] = _condense_keys(public_context)
@@ -173,7 +185,8 @@ def _condense_context(
         }
     except Exception:
         logger.warning("Context compression failed, falling back to uncompressed", exc_info=True)
-        return dict(context), {
+        fallback_context = json_copy(context)
+        return fallback_context, {
             "semantic_compression_enabled": False,
             "semantic_compression_fallback": True,
             "semantic_lines_before": before,

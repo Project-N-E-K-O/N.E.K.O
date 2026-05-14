@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from plugin.plugins.galgame_plugin import context_builder
 from plugin.plugins.galgame_plugin.models import DATA_SOURCE_OCR_READER, GalgameLLMConfig
 
@@ -297,6 +299,22 @@ def test_context_window_bounds_default_respects_small_configured_maximum() -> No
     )
 
     assert context_builder._context_window_bounds(config) == (2, 3, 64)
+
+
+def test_context_window_bounds_warns_on_invalid_config_values(caplog) -> None:
+    config = SimpleNamespace(
+        context_explain_min_lines="five",
+        context_explain_max_lines="many",
+        context_window_target_tokens="lots",
+    )
+
+    with caplog.at_level("WARNING", logger=context_builder.__name__):
+        result = context_builder._context_window_bounds(config)
+
+    assert result == (4, 16, 800)
+    assert "context_explain_min_lines='five'" in caplog.text
+    assert "context_explain_max_lines='many'" in caplog.text
+    assert "context_window_target_tokens='lots'" in caplog.text
 
 
 def test_summarize_context_respects_small_configured_maximum() -> None:

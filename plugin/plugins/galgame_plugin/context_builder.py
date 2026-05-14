@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -15,6 +16,8 @@ from .models import (
     sanitize_snapshot_state,
 )
 from .reader import normalize_text
+
+logger = logging.getLogger(__name__)
 
 _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
     ".agent",
@@ -81,6 +84,7 @@ _CONDENSE_SHORT_LINE_MAX_CHARS = 30
 _DYNAMIC_WINDOW_DEFAULT_MIN_LINES = 4
 _DYNAMIC_WINDOW_DEFAULT_MAX_LINES = 16
 _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS = 800
+_DYNAMIC_WINDOW_SAMPLE_LINES = 20
 
 
 def _looks_like_ocr_overlay_text(text: object) -> bool:
@@ -94,28 +98,51 @@ def _significant_char_count(text: object) -> int:
     return sum(1 for ch in str(text or "") if not ch.isspace())
 
 
+def _config_int(
+    *,
+    name: str,
+    raw: object,
+    default: int,
+) -> int:
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "galgame_plugin.context_builder: invalid config %s=%r, falling back to %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
 def _context_window_bounds(
     config: GalgameLLMConfig | None,
     *,
     max_floor: int = 1,
 ) -> tuple[int, int, int]:
-    try:
-        raw_min = getattr(config, "context_explain_min_lines", None)
-        min_limit = int(raw_min) if raw_min is not None else _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
-    except (TypeError, ValueError):
+    if config is None:
         min_limit = _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
-    try:
-        raw_max = getattr(config, "context_explain_max_lines", None)
-        max_limit = int(raw_max) if raw_max is not None else _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
-    except (TypeError, ValueError):
         max_limit = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
-    try:
-        raw_target = getattr(config, "context_window_target_tokens", None)
-        target_tokens = (
-            int(raw_target) if raw_target is not None else _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
-        )
-    except (TypeError, ValueError):
         target_tokens = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
+    else:
+        min_limit = _config_int(
+            name="context_explain_min_lines",
+            raw=config.context_explain_min_lines,
+            default=_DYNAMIC_WINDOW_DEFAULT_MIN_LINES,
+        )
+        max_limit = _config_int(
+            name="context_explain_max_lines",
+            raw=config.context_explain_max_lines,
+            default=_DYNAMIC_WINDOW_DEFAULT_MAX_LINES,
+        )
+        target_tokens = _config_int(
+            name="context_window_target_tokens",
+            raw=config.context_window_target_tokens,
+            default=_DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS,
+        )
     min_limit = max(1, min_limit)
     max_limit = max(1, max(max_limit, max_floor))
     if min_limit > max_limit:
@@ -129,24 +156,18 @@ def _compute_dynamic_line_limit(
     max_limit: int = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES,
     target_tokens: int = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS,
 ) -> int:
-    min_limit = max(1, int(min_limit or _DYNAMIC_WINDOW_DEFAULT_MIN_LINES))
-    max_limit = max(1, int(max_limit or _DYNAMIC_WINDOW_DEFAULT_MAX_LINES))
-    if min_limit > max_limit:
-        min_limit, max_limit = max_limit, min_limit
     if not lines:
         return min_limit
-    lines = lines[-20:]
+    sampled = lines[-_DYNAMIC_WINDOW_SAMPLE_LINES:]
     token_counts = [
         count_tokens_heuristic(str(item.get("text") or "")) if isinstance(item, dict) else 0
-        for item in lines
+        for item in sampled
     ]
     non_empty_counts = [count for count in token_counts if count > 0]
     if not non_empty_counts:
         return max_limit
     average_tokens = sum(non_empty_counts) / len(non_empty_counts)
-    if average_tokens <= 0:
-        return max_limit
-    limit = int(max(1, target_tokens) / average_tokens)
+    limit = int(target_tokens / average_tokens)
     return max(min_limit, min(max_limit, limit))
 
 

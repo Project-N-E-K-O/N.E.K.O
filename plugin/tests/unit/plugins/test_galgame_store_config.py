@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from plugin.plugins.galgame_plugin import GalgamePlugin
 from plugin.plugins.galgame_plugin.models import (
+    STORE_CONTEXT_SNAPSHOT,
     STORE_LLM_VISION_ENABLED,
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_OCR_BACKEND_SELECTION,
@@ -149,3 +150,126 @@ def test_galgame_store_reads_refresh_from_disk_after_first_load(tmp_path: Path) 
     second.persist_config_override(STORE_READER_MODE, "ocr_reader")
 
     assert first.load_config_overrides()[STORE_READER_MODE] == "ocr_reader"
+
+
+def _valid_snapshot(
+    *,
+    game_id: str = "demo.alpha",
+    scene_id: str = "scene-a",
+    summary_seed: str = "scene summary",
+    stable_line_ids: list[str] | None = None,
+    saved_at: float = 1_700_000_000.0,
+) -> dict[str, object]:
+    return {
+        "scene_id": scene_id,
+        "game_id": game_id,
+        "route_id": "route-1",
+        "summary_seed": summary_seed,
+        "stable_line_ids": stable_line_ids or ["line-1", "line-2"],
+        "saved_at": saved_at,
+    }
+
+
+def test_persist_context_snapshot_round_trip(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    snapshot = _valid_snapshot()
+
+    assert store.persist_context_snapshot(snapshot) is True
+
+    loaded = store.load_context_snapshot(
+        current_game_id="demo.alpha",
+        max_age_seconds=0.0,
+        require_game_id=True,
+    )
+    assert loaded["scene_id"] == "scene-a"
+    assert loaded["summary_seed"] == "scene summary"
+    assert loaded["stable_line_ids"] == ["line-1", "line-2"]
+    assert loaded["game_id"] == "demo.alpha"
+
+
+def test_persist_context_snapshot_rejects_empty_game_id_by_default(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    snapshot = _valid_snapshot(game_id="")
+
+    assert store.persist_context_snapshot(snapshot) is False
+    # And explicit allow path lets it through.
+    assert store.persist_context_snapshot(snapshot, require_game_id=False) is True
+
+
+def test_load_context_snapshot_rejects_mismatched_game_id(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(_valid_snapshot(game_id="demo.alpha"))
+
+    loaded = store.load_context_snapshot(
+        current_game_id="demo.beta",
+        max_age_seconds=0.0,
+    )
+    assert loaded == {}
+
+
+def test_load_context_snapshot_returns_empty_when_expired(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(_valid_snapshot(saved_at=1_000.0))
+
+    loaded = store.load_context_snapshot(
+        current_game_id="demo.alpha",
+        max_age_seconds=60.0,
+        now=10_000.0,
+    )
+    assert loaded == {}
+
+
+def test_load_context_snapshot_returns_empty_for_missing_or_corrupt(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+
+    # No record yet
+    assert store.load_context_snapshot(current_game_id="x") == {}
+
+    # Corrupt raw value (non-dict)
+    store.persist_config_override(STORE_CONTEXT_SNAPSHOT, "not-a-dict")
+    assert store.load_context_snapshot(current_game_id="x") == {}
+
+    # Empty-ish payload (no scene_id / summary / line_ids)
+    store.persist_config_override(STORE_CONTEXT_SNAPSHOT, {"game_id": "x"})
+    assert store.load_context_snapshot(current_game_id="x") == {}
+
+
+def test_clear_context_snapshot_resets_storage(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(_valid_snapshot())
+    store.clear_context_snapshot()
+    assert store.load_context_snapshot(current_game_id="demo.alpha") == {}
+
+
+def test_build_config_parses_phase3_llm_fields() -> None:
+    config = build_config(
+        {
+            "llm": {
+                "llm_explain_cache_ttl_seconds": 12.0,
+                "llm_choice_cache_ttl_seconds": 1.5,
+                "llm_near_match_cache_enabled": True,
+                "llm_near_match_cache_ttl_seconds": 20.0,
+                "context_persist_enabled": True,
+                "context_persist_max_age_seconds": 7200.0,
+                "context_persist_require_game_id": False,
+            }
+        }
+    )
+    assert config.llm.llm_explain_cache_ttl_seconds == 12.0
+    assert config.llm.llm_choice_cache_ttl_seconds == 1.5
+    assert config.llm.llm_near_match_cache_enabled is True
+    assert config.llm.llm_near_match_cache_ttl_seconds == 20.0
+    assert config.llm.context_persist_enabled is True
+    assert config.llm.context_persist_max_age_seconds == 7200.0
+    assert config.llm.context_persist_require_game_id is False
+
+
+def test_build_config_phase3_defaults_preserve_old_behaviour() -> None:
+    config = build_config({})
+    assert config.llm.llm_explain_cache_ttl_seconds == 8.0
+    assert config.llm.llm_choice_cache_ttl_seconds == 4.0
+    assert config.llm.llm_near_match_cache_enabled is False
+    assert config.llm.llm_near_match_cache_ttl_seconds == 15.0
+    assert config.llm.context_persist_enabled is False
+    assert config.llm.context_persist_max_age_seconds == 3600.0
+    assert config.llm.context_persist_require_game_id is True

@@ -63,9 +63,19 @@ context_max_tokens = 6000
 context_counting_mode = "char"
 context_metrics_enabled = false
 context_semantic_compression = false
+# Minimum dialogue lines retained in explain/summarize/suggest contexts.
 context_explain_min_lines = 4
+# Maximum dialogue lines retained before dynamic token budgeting narrows them.
 context_explain_max_lines = 16
+# Target token budget for dynamic dialogue-window sizing.
 context_window_target_tokens = 800
+llm_explain_cache_ttl_seconds = 8
+llm_choice_cache_ttl_seconds = 4
+llm_near_match_cache_enabled = false
+llm_near_match_cache_ttl_seconds = 15
+context_persist_enabled = false
+context_persist_max_age_seconds = 3600
+context_persist_require_game_id = true
 
 [memory_reader]
 textractor_path = ""
@@ -120,9 +130,7 @@ known_screen_timeout_seconds = 5.0
 
 [rapidocr]
 enabled = true
-install_manifest_url = ""
 install_target_dir = ""
-install_timeout_seconds = 180
 engine_type = "onnxruntime"
 # Default to the bundled Chinese model for better Chinese VN OCR. Japanese
 # games can switch this back to `japan`; discrete GPUs may prefer

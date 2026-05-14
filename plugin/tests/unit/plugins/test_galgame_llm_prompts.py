@@ -125,6 +125,29 @@ def test_semantic_compression_disabled_keeps_rendered_context_unchanged() -> Non
     assert disabled.metadata["semantic_compression_enabled"] is False
 
 
+def test_semantic_compression_disabled_returns_independent_context() -> None:
+    context = {
+        "recent_lines": [
+            {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+        ],
+        "public_context": {
+            "recent_lines": [
+                {"speaker": "B", "text": "two", "scene_id": "s", "line_id": "2"},
+            ],
+        },
+    }
+
+    prompt_context, _metadata = llm_prompts._condense_context(
+        context,
+        _cfg(context_semantic_compression=False),
+    )
+    prompt_context["recent_lines"][0]["text"] = "changed"
+    prompt_context["public_context"]["recent_lines"][0]["text"] = "changed-public"
+
+    assert context["recent_lines"][0]["text"] == "one"
+    assert context["public_context"]["recent_lines"][0]["text"] == "two"
+
+
 def test_semantic_compression_merges_same_speaker_short_lines() -> None:
     context = {
         "recent_lines": [
@@ -237,6 +260,37 @@ def test_semantic_compression_failure_falls_back_to_uncompressed(
     assert rendered == context
     assert result.metadata["semantic_compression_enabled"] is False
     assert result.metadata["semantic_compression_fallback"] is True
+
+
+def test_semantic_compression_failure_fallback_returns_independent_context(
+    monkeypatch,
+) -> None:
+    context = {
+        "recent_lines": [
+            {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+        ],
+        "public_context": {
+            "recent_lines": [
+                {"speaker": "B", "text": "two", "scene_id": "s", "line_id": "2"},
+            ],
+        },
+    }
+
+    def _raise(_lines):
+        raise ValueError("bad lines")
+
+    monkeypatch.setattr(llm_prompts, "_condense_dialogue_batch", _raise)
+
+    prompt_context, metadata = llm_prompts._condense_context(
+        context,
+        _cfg(context_semantic_compression=True),
+    )
+    prompt_context["recent_lines"][0]["text"] = "changed"
+    prompt_context["public_context"]["recent_lines"][0]["text"] = "changed-public"
+
+    assert metadata["semantic_compression_fallback"] is True
+    assert context["recent_lines"][0]["text"] == "one"
+    assert context["public_context"]["recent_lines"][0]["text"] == "two"
 
 
 def test_semantic_compression_preserves_local_scene_summary_seed() -> None:

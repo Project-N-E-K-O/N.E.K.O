@@ -659,6 +659,40 @@ def test_commit_state_only_copies_changed_mutable_fields(
     assert plugin._cached_snapshot is None
 
 
+@pytest.mark.plugin_unit
+def test_snapshot_state_includes_context_snapshot(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._state.context_snapshot = {
+        "game_id": "demo.alpha",
+        "summary_seed": "restored summary",
+        "stable_line_ids": ["line-1"],
+    }
+    plugin._mark_state_dirty()
+
+    snapshot = plugin._snapshot_state()
+    snapshot["context_snapshot"]["stable_line_ids"].append("injected")
+
+    assert snapshot["context_snapshot"]["summary_seed"] == "restored summary"
+    assert plugin._state.context_snapshot["stable_line_ids"] == ["line-1"]
+
+
+@pytest.mark.plugin_unit
+def test_commit_state_keeps_live_context_snapshot_when_changed(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._state.context_snapshot = {"summary_seed": "base"}
+    plugin._mark_state_dirty()
+    payload = plugin._snapshot_state(fresh=True)
+    payload["_commit_base"] = {"context_snapshot": dict(payload["context_snapshot"])}
+    payload["context_snapshot"] = {"summary_seed": "poll result"}
+    plugin._state.context_snapshot = {"summary_seed": "external update"}
+
+    plugin._commit_state(payload)
+
+    assert plugin._state.context_snapshot == {"summary_seed": "external update"}
+
+
 class _FakeTextractorHandle:
     def __init__(self, lines: list[str] | None = None) -> None:
         self.lines = list(lines or [])
@@ -10667,11 +10701,21 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
     )
     shared = _shared_state(
         history_lines=[
-            {"speaker": "A", "text": f"stable {index}", "line_id": f"s{index}"}
+            {
+                "speaker": "A",
+                "text": f"stable {index}",
+                "line_id": f"s{index}",
+                "scene_id": "scene-a",
+            }
             for index in range(6)
         ],
         history_observed_lines=[
-            {"speaker": "A", "text": f"observed {index}", "line_id": f"o{index}"}
+            {
+                "speaker": "A",
+                "text": f"observed {index}",
+                "line_id": f"o{index}",
+                "scene_id": "scene-a",
+            }
             for index in range(6)
         ],
     )
@@ -10679,9 +10723,113 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
     context = agent._build_agent_reply_context(shared, prompt="status")
     public_context = context["public_context"]
 
-    assert [line["line_id"] for line in public_context["stable_lines"]] == ["s3", "s4", "s5"]
+    assert [line["line_id"] for line in public_context["stable_lines"]] == []
     assert [line["line_id"] for line in public_context["observed_lines"]] == ["o3", "o4", "o5"]
-    assert [line["line_id"] for line in public_context["recent_lines"]] == ["s5", "o5"]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o3", "o4", "o5"]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_bounds_all_history_by_recency_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 3,
+    )
+    shared = _shared_state(
+        snapshot=_session_state(scene_id="scene-a", line_id="line-current"),
+        history_lines=[
+            {
+                "speaker": "A",
+                "text": f"stable {index}",
+                "line_id": f"s{index}",
+                "scene_id": "scene-a",
+                "ts": f"2026-04-21T08:30:0{index}Z",
+            }
+            for index in range(4)
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "B",
+                "text": f"observed {index}",
+                "line_id": f"o{index}",
+                "scene_id": "scene-a",
+                "ts": f"2026-04-21T08:30:1{index}Z",
+            }
+            for index in range(4)
+        ],
+        history_choices=[
+            {
+                "choice_id": f"c{index}",
+                "text": f"choice {index}",
+                "line_id": f"o{index}",
+                "scene_id": "scene-a",
+                "action": "selected",
+                "ts": f"2026-04-21T08:30:1{index}Z",
+            }
+            for index in range(4)
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["stable_lines"]] == []
+    assert [line["line_id"] for line in public_context["observed_lines"]] == ["o1", "o2", "o3"]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o1", "o2", "o3"]
+    assert [choice["choice_id"] for choice in public_context["recent_choices"]] == [
+        "c1",
+        "c2",
+        "c3",
+    ]
+    assert len(public_context["recent_lines"]) <= 3
+    assert len(public_context["recent_choices"]) <= 3
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_filters_scene_and_diagnostics(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        snapshot=_session_state(scene_id="scene-a", line_id="line-current"),
+        history_lines=[
+            {"speaker": "A", "text": "keep stable", "line_id": "s1", "scene_id": "scene-a"},
+            {"speaker": "A", "text": "drop other", "line_id": "s2", "scene_id": "scene-b"},
+            {
+                "speaker": "",
+                "text": "status=capture_failed",
+                "line_id": "diag",
+                "scene_id": "scene-a",
+                "is_diagnostic": True,
+            },
+        ],
+        history_observed_lines=[
+            {"speaker": "B", "text": "keep observed", "line_id": "o1", "scene_id": "scene-a"},
+            {"speaker": "B", "text": "drop observed", "line_id": "o2", "scene_id": "scene-b"},
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["stable_lines"]] == ["s1"]
+    assert [line["line_id"] for line in public_context["observed_lines"]] == ["o1"]
 
 
 @pytest.mark.plugin_unit

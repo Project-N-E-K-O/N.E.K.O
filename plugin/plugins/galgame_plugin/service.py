@@ -83,6 +83,8 @@ _INSTALL_INSPECT_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 _OCR_READER_BACKGROUND_SCENE_CHANGE_DISTANCE_DEFAULT = 28
 _OCR_READER_BACKGROUND_SCENE_CHANGE_DISTANCE_MIN = 18
 _OCR_READER_BACKGROUND_SCENE_CHANGE_DISTANCE_MAX = 40
+_CONTEXT_EXPLAIN_LINES_MAX = 128
+_CONTEXT_WINDOW_TARGET_TOKENS_MAX = 32000
 
 
 def _cached_install_inspection(
@@ -597,11 +599,17 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     bridge_root_raw = str(bridge_root_value).strip() if bridge_root_value is not None else ""
     if not bridge_root_raw:
         bridge_root_raw = _default_bridge_root_raw()
-    context_explain_min_lines = _coerce_int(
-        llm_obj.get("context_explain_min_lines"), 4, minimum=1
+    context_explain_min_lines = _coerce_int_range(
+        llm_obj.get("context_explain_min_lines"),
+        4,
+        minimum=1,
+        maximum=_CONTEXT_EXPLAIN_LINES_MAX,
     )
-    context_explain_max_lines = _coerce_int(
-        llm_obj.get("context_explain_max_lines"), 16, minimum=1
+    context_explain_max_lines = _coerce_int_range(
+        llm_obj.get("context_explain_max_lines"),
+        16,
+        minimum=1,
+        maximum=_CONTEXT_EXPLAIN_LINES_MAX,
     )
     if context_explain_min_lines > context_explain_max_lines:
         context_explain_min_lines, context_explain_max_lines = (
@@ -692,8 +700,32 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         ),
         context_explain_min_lines=context_explain_min_lines,
         context_explain_max_lines=context_explain_max_lines,
-        context_window_target_tokens=_coerce_int(
-            llm_obj.get("context_window_target_tokens"), 800, minimum=1
+        context_window_target_tokens=_coerce_int_range(
+            llm_obj.get("context_window_target_tokens"),
+            800,
+            minimum=1,
+            maximum=_CONTEXT_WINDOW_TARGET_TOKENS_MAX,
+        ),
+        llm_explain_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_explain_cache_ttl_seconds"), 8.0, minimum=0.0
+        ),
+        llm_choice_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_choice_cache_ttl_seconds"), 4.0, minimum=0.0
+        ),
+        llm_near_match_cache_enabled=_coerce_bool(
+            llm_obj.get("llm_near_match_cache_enabled"), False
+        ),
+        llm_near_match_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_near_match_cache_ttl_seconds"), 15.0, minimum=0.0
+        ),
+        context_persist_enabled=_coerce_bool(
+            llm_obj.get("context_persist_enabled"), False
+        ),
+        context_persist_max_age_seconds=_coerce_float(
+            llm_obj.get("context_persist_max_age_seconds"), 3600.0, minimum=0.0
+        ),
+        context_persist_require_game_id=_coerce_bool(
+            llm_obj.get("context_persist_require_game_id"), True
         ),
         reader_mode=_coerce_reader_mode(galgame_obj.get("reader_mode")),
         memory_reader_enabled=_coerce_bool(
@@ -2890,8 +2922,6 @@ def build_explain_context(
 ) -> dict[str, Any]:
     from .context_builder import build_explain_context as _build_explain_context
 
-    if config is None:
-        return _build_explain_context(local_state, line_id=line_id)
     return _build_explain_context(local_state, line_id=line_id, config=config)
 
 
@@ -2904,12 +2934,6 @@ def build_summarize_context(
 ) -> dict[str, Any]:
     from .context_builder import build_summarize_context as _build_summarize_context
 
-    if config is None:
-        return _build_summarize_context(
-            local_state,
-            scene_id=scene_id,
-            merge_from_scene_ids=merge_from_scene_ids,
-        )
     return _build_summarize_context(
         local_state,
         scene_id=scene_id,
@@ -2925,8 +2949,6 @@ def build_suggest_context(
 ) -> dict[str, Any]:
     from .context_builder import build_suggest_context as _build_suggest_context
 
-    if config is None:
-        return _build_suggest_context(local_state)
     return _build_suggest_context(local_state, config=config)
 
 

@@ -1101,6 +1101,7 @@ class GalgamePlugin(NekoPluginBase):
                 "ocr_window_target": dict(state.ocr_window_target),
                 "plugin_error": state.plugin_error,
                 "dependency_status": dict(state.dependency_status),
+                "context_snapshot": dict(state.context_snapshot),
             }
             should_cache = not fresh
             if should_cache:
@@ -1143,6 +1144,7 @@ class GalgamePlugin(NekoPluginBase):
             "ocr_window_target": json_copy(raw["ocr_window_target"]),
             "plugin_error": raw["plugin_error"],
             "dependency_status": json_copy(raw["dependency_status"]),
+            "context_snapshot": json_copy(raw["context_snapshot"]),
         }
         if should_cache:
             with self._state_lock:
@@ -1887,6 +1889,10 @@ class GalgamePlugin(NekoPluginBase):
             assign_json_if_live_unchanged(
                 "dependency_status",
                 payload.get("dependency_status", self._state.dependency_status),
+            )
+            assign_json_if_live_unchanged(
+                "context_snapshot",
+                payload.get("context_snapshot", self._state.context_snapshot),
             )
             if changed:
                 self._state_dirty = True
@@ -2749,6 +2755,9 @@ class GalgamePlugin(NekoPluginBase):
                 restored.get(STORE_OCR_CAPTURE_PROFILES, {})
             )
             self._state.ocr_window_target = json_copy(restored.get(STORE_OCR_WINDOW_TARGET, {}))
+            self._state.context_snapshot = self._restore_context_snapshot(
+                bound_game_id=self._state.bound_game_id
+            )
             if warnings and not self._state.last_error:
                 self._state.last_error = make_error(
                     "; ".join(warnings),
@@ -2759,6 +2768,71 @@ class GalgamePlugin(NekoPluginBase):
             self._cached_snapshot = None
 
         self._apply_config_overrides_from_store()
+
+    def _restore_context_snapshot(self, *, bound_game_id: str) -> dict[str, Any]:
+        if self._cfg is None or not self._cfg.llm.context_persist_enabled:
+            return {}
+        try:
+            return self._persist.load_context_snapshot(
+                current_game_id=bound_game_id,
+                max_age_seconds=float(self._cfg.llm.context_persist_max_age_seconds),
+                require_game_id=bool(self._cfg.llm.context_persist_require_game_id),
+            )
+        except Exception as exc:
+            self.logger.warning("galgame context_snapshot restore failed: {}", exc)
+            return {}
+
+    def _persist_context_snapshot_from_summary(
+        self,
+        *,
+        context: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        if self._cfg is None or not self._cfg.llm.context_persist_enabled:
+            return
+        if not isinstance(payload, dict) or payload.get("degraded"):
+            return
+        summary = str(payload.get("summary") or "").strip()
+        if not summary:
+            return
+        scene_id = str(context.get("scene_id") or "").strip()
+        route_id = str(context.get("route_id") or "").strip()
+        game_id = str(context.get("game_id") or "").strip()
+        stable_lines = context.get("stable_lines")
+        if not isinstance(stable_lines, list):
+            stable_lines = []
+        stable_line_ids = [
+            str(item.get("line_id") or "").strip()
+            for item in stable_lines
+            if isinstance(item, dict) and str(item.get("line_id") or "").strip()
+        ]
+        snapshot = {
+            "scene_id": scene_id,
+            "game_id": game_id,
+            "route_id": route_id,
+            "summary_seed": summary,
+            "stable_line_ids": stable_line_ids,
+        }
+        try:
+            saved = self._persist.persist_context_snapshot(
+                snapshot,
+                require_game_id=bool(self._cfg.llm.context_persist_require_game_id),
+            )
+        except Exception as exc:
+            self.logger.warning("galgame context_snapshot persist failed: {}", exc)
+            return
+        if saved:
+            with self._state_lock:
+                self._state.context_snapshot = {
+                    "scene_id": scene_id,
+                    "game_id": game_id,
+                    "route_id": route_id,
+                    "summary_seed": summary,
+                    "stable_line_ids": stable_line_ids,
+                    "saved_at": time.time(),
+                }
+                self._state_dirty = True
+                self._cached_snapshot = None
 
     def _apply_config_overrides_from_store(self) -> None:
         if self._cfg is None:
@@ -4111,6 +4185,7 @@ class GalgamePlugin(NekoPluginBase):
             "active_data_source": str(local.get("active_data_source") or ""),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
+            "context_snapshot": json_copy(local.get("context_snapshot") or {}),
             # Track dependency_status in the snapshot base so a parallel
             # _refresh_dependency_status() call (e.g. from install_textractor)
             # isn't clobbered by the stale poll-snapshot when the bridge tick
@@ -6185,7 +6260,7 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state()
         try:
-            context = build_explain_context(local, line_id=line_id.strip(), config=self._cfg)
+            context = build_explain_context(local, line_id=line_id.strip(), config=self._cfg.llm)
         except ValueError as exc:
             context = {
                 "line_id": "",
@@ -6225,7 +6300,7 @@ class GalgamePlugin(NekoPluginBase):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state()
-        context = build_summarize_context(local, scene_id=scene_id.strip(), config=self._cfg)
+        context = build_summarize_context(local, scene_id=scene_id.strip(), config=self._cfg.llm)
         snapshot = context.get("current_snapshot") if isinstance(context.get("current_snapshot"), dict) else {}
         if not list(context.get("recent_lines") or []) and not str(snapshot.get("text") or ""):
             return Ok(
@@ -6239,6 +6314,7 @@ class GalgamePlugin(NekoPluginBase):
             context=context,
         )
         payload["scene_id"] = str(context.get("scene_id") or "")
+        self._persist_context_snapshot_from_summary(context=context, payload=payload)
         return Ok(payload)
 
     @plugin_entry(
@@ -6253,7 +6329,7 @@ class GalgamePlugin(NekoPluginBase):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state()
-        context = build_suggest_context(local, config=self._cfg)
+        context = build_suggest_context(local, config=self._cfg.llm)
         if not context["visible_choices"]:
             return Ok(
                 apply_input_degraded_result(

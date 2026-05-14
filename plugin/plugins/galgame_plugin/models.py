@@ -131,6 +131,7 @@ STORE_RAPIDOCR_LANG_TYPE = "rapidocr.lang_type"
 STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
 STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
 STORE_TUTORIAL_PROGRESS = "tutorial_progress"
+STORE_CONTEXT_SNAPSHOT = "context_snapshot"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
     STORE_MODE,
@@ -158,6 +159,7 @@ STORE_KEYS = (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_TUTORIAL_PROGRESS,
+    STORE_CONTEXT_SNAPSHOT,
 )
 
 DEFAULT_SAVE_CONTEXT = {
@@ -527,6 +529,13 @@ class GalgameLLMConfig:
     context_explain_min_lines: int = 4
     context_explain_max_lines: int = 16
     context_window_target_tokens: int = 800
+    llm_explain_cache_ttl_seconds: float = 8.0
+    llm_choice_cache_ttl_seconds: float = 4.0
+    llm_near_match_cache_enabled: bool = False
+    llm_near_match_cache_ttl_seconds: float = 15.0
+    context_persist_enabled: bool = False
+    context_persist_max_age_seconds: float = 3600.0
+    context_persist_require_game_id: bool = True
 
 
 @dataclass(slots=True)
@@ -656,6 +665,13 @@ class GalgameConfig:
         "context_explain_min_lines": ("llm", "context_explain_min_lines"),
         "context_explain_max_lines": ("llm", "context_explain_max_lines"),
         "context_window_target_tokens": ("llm", "context_window_target_tokens"),
+        "llm_explain_cache_ttl_seconds": ("llm", "llm_explain_cache_ttl_seconds"),
+        "llm_choice_cache_ttl_seconds": ("llm", "llm_choice_cache_ttl_seconds"),
+        "llm_near_match_cache_enabled": ("llm", "llm_near_match_cache_enabled"),
+        "llm_near_match_cache_ttl_seconds": ("llm", "llm_near_match_cache_ttl_seconds"),
+        "context_persist_enabled": ("llm", "context_persist_enabled"),
+        "context_persist_max_age_seconds": ("llm", "context_persist_max_age_seconds"),
+        "context_persist_require_game_id": ("llm", "context_persist_require_game_id"),
         "reader_mode": ("reader", "reader_mode"),
         "memory_reader_enabled": ("memory_reader", "memory_reader_enabled"),
         "memory_reader_textractor_path": ("memory_reader", "memory_reader_textractor_path"),

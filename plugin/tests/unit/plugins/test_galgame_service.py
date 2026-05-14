@@ -214,6 +214,22 @@ def test_build_config_normalizes_invalid_phase2_context_fields() -> None:
     assert cfg.context_window_target_tokens == 800
 
 
+def test_build_config_rejects_excessive_phase2_context_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "llm": {
+                "context_explain_min_lines": 129,
+                "context_explain_max_lines": 999,
+                "context_window_target_tokens": 32001,
+            }
+        }
+    )
+
+    assert cfg.context_explain_min_lines == 4
+    assert cfg.context_explain_max_lines == 16
+    assert cfg.context_window_target_tokens == 800
+
+
 def test_context_builder_forwards_context_builders_without_behavior_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

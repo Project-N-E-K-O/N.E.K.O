@@ -44,6 +44,7 @@ from .models import (
     STORE_READER_MODE,
     STORE_SESSION_ID,
     STORE_TUTORIAL_PROGRESS,
+    STORE_CONTEXT_SNAPSHOT,
     build_ocr_capture_profile_bucket_key,
     compute_ocr_window_aspect_ratio,
     parse_ocr_capture_profile_bucket_key,
@@ -668,6 +669,107 @@ class GalgameStore:
 
     def save_tutorial_progress(self, progress: dict[str, Any]) -> None:
         self._write(STORE_TUTORIAL_PROGRESS, dict(progress))
+
+    @staticmethod
+    def _sanitize_context_snapshot(raw_value: Any) -> dict[str, Any]:
+        if not isinstance(raw_value, dict):
+            return {}
+        scene_id = str(raw_value.get("scene_id") or "").strip()
+        game_id = str(raw_value.get("game_id") or "").strip()
+        route_id = str(raw_value.get("route_id") or "").strip()
+        summary_seed = raw_value.get("summary_seed")
+        if not isinstance(summary_seed, str):
+            summary_seed = ""
+        stable_line_ids = raw_value.get("stable_line_ids")
+        if isinstance(stable_line_ids, list):
+            cleaned_ids = [
+                str(item)
+                for item in stable_line_ids
+                if isinstance(item, (str, int)) and str(item)
+            ]
+        else:
+            cleaned_ids = []
+        try:
+            saved_at = float(raw_value.get("saved_at") or 0.0)
+        except (TypeError, ValueError):
+            saved_at = 0.0
+        if saved_at < 0.0:
+            saved_at = 0.0
+        if not scene_id and not summary_seed and not cleaned_ids:
+            return {}
+        return {
+            "scene_id": scene_id,
+            "game_id": game_id,
+            "route_id": route_id,
+            "summary_seed": summary_seed,
+            "stable_line_ids": cleaned_ids,
+            "saved_at": saved_at,
+        }
+
+    def load_context_snapshot(
+        self,
+        *,
+        current_game_id: str = "",
+        max_age_seconds: float = 3600.0,
+        require_game_id: bool = True,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Restore the persisted context snapshot for this session.
+
+        Returns an empty dict when:
+        - no snapshot is present (first launch),
+        - the snapshot is older than ``max_age_seconds``,
+        - ``require_game_id`` is True and the snapshot's ``game_id`` is empty or
+          does not match ``current_game_id`` (cross-game pollution guard).
+        """
+
+        raw = self._read(STORE_CONTEXT_SNAPSHOT, None)
+        snapshot = self._sanitize_context_snapshot(raw)
+        if not snapshot:
+            return {}
+        wall_now = float(now if now is not None else time.time())
+        try:
+            max_age = max(0.0, float(max_age_seconds))
+        except (TypeError, ValueError):
+            max_age = 3600.0
+        if max_age > 0.0 and snapshot["saved_at"] > 0.0:
+            if wall_now - snapshot["saved_at"] > max_age:
+                return {}
+        if require_game_id:
+            game_id = snapshot.get("game_id") or ""
+            if not game_id:
+                return {}
+            if current_game_id and game_id != current_game_id:
+                return {}
+        return snapshot
+
+    def persist_context_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        require_game_id: bool = True,
+        now: float | None = None,
+    ) -> bool:
+        """Persist a context snapshot. Returns False when the payload is rejected.
+
+        Rejection conditions:
+        - snapshot has no scene_id and no summary_seed and no stable_line_ids;
+        - ``require_game_id`` is True and game_id is empty (cross-game pollution
+          guard).
+        """
+
+        sanitized = self._sanitize_context_snapshot(snapshot)
+        if not sanitized:
+            return False
+        if require_game_id and not sanitized["game_id"]:
+            return False
+        if not sanitized["saved_at"]:
+            sanitized["saved_at"] = float(now if now is not None else time.time())
+        self._write(STORE_CONTEXT_SNAPSHOT, sanitized)
+        return True
+
+    def clear_context_snapshot(self) -> None:
+        self._write(STORE_CONTEXT_SNAPSHOT, {})
 
     def clear_runtime(self) -> None:
         self.persist_runtime(

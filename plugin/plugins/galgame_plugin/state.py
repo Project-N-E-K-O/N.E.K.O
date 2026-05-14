@@ -48,6 +48,7 @@ class GalgameSharedState:
         "degraded": False,
         "missing": [],
     })
+    context_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 def build_initial_state(

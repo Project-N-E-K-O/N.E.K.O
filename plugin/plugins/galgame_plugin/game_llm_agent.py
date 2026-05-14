@@ -11,6 +11,7 @@ from .host_agent_adapter import HostAgentAdapter, HostAgentError
 from .context_builder import (
     _compute_dynamic_line_limit,
     _context_window_bounds,
+    _dialogue_context_lines,
     _recency_ordered_context_lines,
 )
 from .local_input_actuator import (
@@ -5475,6 +5476,8 @@ class GameLLMAgent:
         status = self._compute_status(shared)
         history_lines = list(shared.get("history_lines") or [])
         history_observed_lines = list(shared.get("history_observed_lines") or [])
+        # Agent replies answer free-form user prompts, so keep enough dialogue
+        # context even when explain/summarize windows are tuned aggressively.
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
             max_floor=16,
@@ -5487,19 +5490,70 @@ class GameLLMAgent:
         )
         history_choices = list(shared.get("history_choices") or [])
         if line_limit > 0:
-            stable_lines = history_lines[-line_limit:]
-            observed_lines = history_observed_lines[-line_limit:]
-            recent_choices = history_choices[-line_limit:]
+            scene_id = str(snapshot.get("scene_id") or "")
+            stable_window = [
+                {**dict(item), "_context_source": "stable"}
+                for item in history_lines
+                if isinstance(item, dict)
+            ]
+            observed_window = [
+                {**dict(item), "_context_source": "observed"}
+                for item in history_observed_lines
+                if isinstance(item, dict)
+            ]
+            recency_ordered = _recency_ordered_context_lines(stable_window, observed_window)
+            bounded_window = recency_ordered[-line_limit:]
+            scene_bounded_window = [
+                item
+                for item in bounded_window
+                if not scene_id or str(item.get("scene_id") or "") == scene_id
+            ]
+            bounded_line_ids = {
+                str(item.get("line_id") or "")
+                for item in scene_bounded_window
+                if str(item.get("line_id") or "")
+            }
+            stable_candidates = [
+                {key: value for key, value in item.items() if key != "_context_source"}
+                for item in scene_bounded_window
+                if item.get("_context_source") == "stable"
+            ]
+            observed_candidates = [
+                {key: value for key, value in item.items() if key != "_context_source"}
+                for item in scene_bounded_window
+                if item.get("_context_source") == "observed"
+            ]
+            stable_lines = _dialogue_context_lines(stable_candidates, limit=line_limit)
+            observed_lines = _dialogue_context_lines(observed_candidates, limit=line_limit)
+            dialogue_line_ids = {
+                str(item.get("line_id") or "")
+                for item in [*stable_lines, *observed_lines]
+                if str(item.get("line_id") or "")
+            }
+            recent_choices = [
+                dict(item)
+                for item in history_choices
+                if isinstance(item, dict)
+                and (not scene_id or str(item.get("scene_id") or "") == scene_id)
+                and (
+                    not bounded_line_ids
+                    or str(item.get("line_id") or "") in bounded_line_ids
+                )
+            ][-line_limit:]
+            recent_lines = [
+                {key: value for key, value in item.items() if key != "_context_source"}
+                for item in scene_bounded_window
+                if item.get("_context_source") in {"stable", "observed"}
+                and (
+                    not dialogue_line_ids
+                    or str(item.get("line_id") or "") in dialogue_line_ids
+                )
+            ]
         else:
             stable_lines = []
             observed_lines = []
             recent_choices = []
-        recent_half_limit = max(0, line_limit // 2)
-        recent_lines = (
-            [*stable_lines[-recent_half_limit:], *observed_lines[-recent_half_limit:]]
-            if recent_half_limit > 0
-            else []
-        )
+            recent_lines = []
         effective_line = resolve_effective_current_line(shared) or {}
         latest_line = ""
         if effective_line.get("text"):
