@@ -269,6 +269,7 @@ def test_context_builder_forwards_context_builders_without_behavior_change(
     summarize_result = {"sentinel": "summarize"}
     explain_result = {"sentinel": "explain"}
     suggest_result = {"sentinel": "suggest"}
+    config_sentinel = object()
     calls: dict[str, object] = {}
 
     def fake_build_summarize_context(
@@ -318,13 +319,23 @@ def test_context_builder_forwards_context_builders_without_behavior_change(
         local_state,
         scene_id="ocr:game:scene-0001",
         merge_from_scene_ids=merge_from_scene_ids,
+        config=config_sentinel,
     ) is summarize_result
-    assert build_explain_context(local_state, line_id="ocr:line-stable") is explain_result
-    assert build_suggest_context(local_state) is suggest_result
+    assert build_explain_context(
+        local_state,
+        line_id="ocr:line-stable",
+        config=config_sentinel,
+    ) is explain_result
+    assert build_suggest_context(local_state, config=config_sentinel) is suggest_result
     assert calls == {
-        "summarize": (local_state, "ocr:game:scene-0001", merge_from_scene_ids, None),
-        "explain": (local_state, "ocr:line-stable", None),
-        "suggest": (local_state, None),
+        "summarize": (
+            local_state,
+            "ocr:game:scene-0001",
+            merge_from_scene_ids,
+            config_sentinel,
+        ),
+        "explain": (local_state, "ocr:line-stable", config_sentinel),
+        "suggest": (local_state, config_sentinel),
     }
 
 

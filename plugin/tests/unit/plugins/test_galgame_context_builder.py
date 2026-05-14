@@ -801,6 +801,17 @@ def test_previous_summary_accepts_context_snapshot_when_both_game_ids_missing() 
     )
 
 
+def test_matching_context_snapshot_ignores_non_dict_values() -> None:
+    assert (
+        context_builder._matching_context_snapshot(
+            {"context_snapshot": "broken"},
+            scene_id="scene-a",
+            route_id="route-a",
+        )
+        == {}
+    )
+
+
 def test_summarize_context_does_not_reuse_persisted_seed_across_game_or_route() -> None:
     config = GalgameLLMConfig(context_scene_summary_mode="cumulative_light")
     state = {
@@ -837,7 +848,7 @@ def test_summarize_context_keeps_live_route_when_restored_scene_differs() -> Non
     result = context_builder.build_summarize_context(
         {
             "active_game_id": "demo.alpha",
-            "latest_snapshot": {"scene_id": "scene-b", "route_id": "route-b"},
+            "latest_snapshot": {"scene_id": "scene-b", "route_id": "route-a"},
             "history_lines": [],
             "history_observed_lines": [],
             "history_choices": [],
@@ -852,7 +863,7 @@ def test_summarize_context_keeps_live_route_when_restored_scene_differs() -> Non
     )
 
     assert result["scene_id"] == "scene-b"
-    assert result["route_id"] == "route-b"
+    assert result["route_id"] == "route-a"
     assert "旧场景总结不应复用。" not in result["scene_summary_seed"]
 
 

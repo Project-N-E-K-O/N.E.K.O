@@ -766,6 +766,86 @@ def build_local_scene_summary(
     return summary
 
 
+def _matching_context_snapshot(
+    local_state: dict[str, Any],
+    *,
+    scene_id: str,
+    route_id: str,
+) -> dict[str, Any]:
+    context_snapshot = local_state.get("context_snapshot")
+    if not isinstance(context_snapshot, dict):
+        return {}
+
+    summary_seed = str(context_snapshot.get("summary_seed") or "").strip()
+    stable_line_ids_raw = context_snapshot.get("stable_line_ids")
+    stable_line_ids = (
+        [str(item).strip() for item in stable_line_ids_raw if str(item).strip()]
+        if isinstance(stable_line_ids_raw, list)
+        else []
+    )
+    if not summary_seed and not stable_line_ids:
+        return {}
+
+    active_game_id = str(local_state.get("active_game_id") or "").strip()
+    snapshot_game_id = str(context_snapshot.get("game_id") or "").strip()
+    if active_game_id and snapshot_game_id and active_game_id != snapshot_game_id:
+        return {}
+
+    snapshot_scene_id = str(context_snapshot.get("scene_id") or "").strip()
+    normalized_scene_id = str(scene_id or "").strip()
+    if normalized_scene_id and snapshot_scene_id and normalized_scene_id != snapshot_scene_id:
+        return {}
+
+    snapshot_route_id = str(context_snapshot.get("route_id") or "").strip()
+    normalized_route_id = str(route_id or "").strip()
+    if normalized_route_id and snapshot_route_id and normalized_route_id != snapshot_route_id:
+        return {}
+
+    return {
+        "scene_id": snapshot_scene_id,
+        "game_id": snapshot_game_id,
+        "route_id": snapshot_route_id,
+        "summary_seed": summary_seed,
+        "stable_line_ids": stable_line_ids,
+    }
+
+
+def _scene_summary_seed_with_restored_context(
+    local_state: dict[str, Any],
+    *,
+    scene_id: str,
+    route_id: str,
+    lines: list[dict[str, Any]],
+    selected_choices: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+    restored_context_snapshot: dict[str, Any] | None = None,
+) -> str:
+    if restored_context_snapshot is None:
+        restored_context_snapshot = _matching_context_snapshot(
+            local_state,
+            scene_id=scene_id,
+            route_id=route_id,
+        )
+    summary_seed = str((restored_context_snapshot or {}).get("summary_seed") or "").strip()
+    if not lines and summary_seed:
+        summary = f"Restored previous scene summary: {summary_seed}"
+        stable_line_ids = list((restored_context_snapshot or {}).get("stable_line_ids") or [])
+        if stable_line_ids:
+            summary += f" Restored stable line ids: {', '.join(stable_line_ids[-6:])}."
+        if route_id:
+            summary += f" Route {route_id}."
+        if selected_choices:
+            summary += f" {len(selected_choices)} confirmed choices are available."
+        return summary
+    return build_local_scene_summary(
+        scene_id=scene_id,
+        route_id=route_id,
+        lines=lines,
+        selected_choices=selected_choices,
+        snapshot=snapshot,
+    )
+
+
 def _summary_mode(config: GalgameLLMConfig | None) -> str:
     mode = str(getattr(config, "context_scene_summary_mode", "rolling") or "rolling").strip()
     if mode in {"rolling", "cumulative_light", "cumulative_llm"}:
@@ -842,6 +922,7 @@ def _context_snapshot_summary_seed(
     local_state: dict[str, Any],
     *,
     current_game_id: str,
+    current_scene_id: str = "",
     current_route_id: str,
 ) -> str:
     context_snapshot = local_state.get("context_snapshot")
@@ -860,6 +941,11 @@ def _context_snapshot_summary_seed(
         if snapshot_game_id != normalized_game_id:
             return ""
 
+    snapshot_scene_id = str(context_snapshot.get("scene_id") or "").strip()
+    normalized_scene_id = str(current_scene_id or "").strip()
+    if snapshot_scene_id and normalized_scene_id and snapshot_scene_id != normalized_scene_id:
+        return ""
+
     snapshot_route_id = str(context_snapshot.get("route_id") or "").strip()
     normalized_route_id = str(current_route_id or "").strip()
     if snapshot_route_id != normalized_route_id:
@@ -872,6 +958,7 @@ def _previous_summary_from_state(
     local_state: dict[str, Any],
     *,
     current_game_id: str = "",
+    current_scene_id: str = "",
     current_route_id: str = "",
 ) -> str:
     for key in ("previous_scene_summary", "scene_summary_seed", "scene_summary"):
@@ -887,6 +974,7 @@ def _previous_summary_from_state(
     return _context_snapshot_summary_seed(
         local_state,
         current_game_id=current_game_id,
+        current_scene_id=current_scene_id,
         current_route_id=current_route_id,
     )
 
@@ -1012,6 +1100,11 @@ def build_explain_context(
         scene_id,
         limit=6,
     )
+    restored_context_snapshot = _matching_context_snapshot(
+        local_state,
+        scene_id=scene_id,
+        route_id=route_id,
+    )
 
     evidence: list[dict[str, Any]] = []
     snapshot_line = _current_line_entry(snapshot)
@@ -1070,6 +1163,16 @@ def build_explain_context(
         "stable_lines": stable_lines,
         "observed_lines": observed_lines,
         "recent_choices": selected_choices,
+        "scene_summary_seed": _scene_summary_seed_with_restored_context(
+            local_state,
+            scene_id=scene_id,
+            route_id=route_id,
+            lines=scene_lines,
+            selected_choices=selected_choices,
+            snapshot=snapshot,
+            restored_context_snapshot=restored_context_snapshot,
+        ),
+        "restored_context_snapshot": restored_context_snapshot,
         "evidence": evidence,
         "input_source": input_source,
         "input_degraded": input_degraded,
@@ -1121,6 +1224,11 @@ def build_summarize_context(
         effective_scene_id,
         limit=12,
     )
+    restored_context_snapshot = _matching_context_snapshot(
+        local_state,
+        scene_id=effective_scene_id,
+        route_id=route_id,
+    )
     input_source, input_degraded, degraded_reasons = _build_input_degraded_context(
         local_state,
         scene_id=effective_scene_id,
@@ -1136,6 +1244,7 @@ def build_summarize_context(
         previous_summary=_previous_summary_from_state(
             local_state,
             current_game_id=str(local_state.get("active_game_id") or ""),
+            current_scene_id=effective_scene_id,
             current_route_id=route_id,
         ),
         mode=_summary_mode(config),
@@ -1161,6 +1270,7 @@ def build_summarize_context(
         "observed_lines": observed_lines,
         "recent_choices": selected_choices,
         "scene_summary_seed": summary_seed,
+        "restored_context_snapshot": restored_context_snapshot,
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
