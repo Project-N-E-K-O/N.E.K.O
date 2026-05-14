@@ -2414,7 +2414,7 @@
         throw e;
       }
       window.__focusL2DAt = window.__SoccerSetAiVrmFocus;
-      resumeAiAvatarRenderer(previousType);
+      resumeAiAvatarRenderer('vrm');
       window.__SoccerAiAvatar = { type: 'vrm', path, ready: true };
       emitEvent('ai-avatar-changed', { type, path });
       return;
@@ -2449,7 +2449,7 @@
     }
     fitAiLive2dModel();
     window.__focusL2DAt = window.__SoccerSetAiLive2dFocus;
-    resumeAiAvatarRenderer(previousType);
+    resumeAiAvatarRenderer('live2d');
     window.__SoccerAiAvatar = { type: 'live2d', path, ready: true };
     emitEvent('ai-avatar-changed', { type, path });
   }
