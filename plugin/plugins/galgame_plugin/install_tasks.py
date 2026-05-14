@@ -9,7 +9,7 @@ from utils.config_manager import get_config_manager
 
 
 INSTALL_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled"})
-INSTALL_KINDS = frozenset({"textractor", "dxcam", "rapidocr_models"})
+INSTALL_KINDS = frozenset({"textractor", "dxcam", "rapidocr_models", "tesseract"})
 DEFAULT_INSTALL_PLUGIN_ID = "galgame_plugin"
 
 

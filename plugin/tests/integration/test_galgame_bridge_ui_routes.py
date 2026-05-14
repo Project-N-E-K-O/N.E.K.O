@@ -341,21 +341,34 @@ async def test_study_companion_install_routes_map_to_study_entries(
         "/plugin/study_companion/ui-api/rapidocr-models",
         json={"force": False},
     )
+    tesseract_response = await plugin_ui_async_client.post(
+        "/plugin/study_companion/ui-api/tesseract/install",
+        json={"force": True},
+    )
     textractor_response = await plugin_ui_async_client.post(
         "/plugin/study_companion/ui-api/textractor/install",
         json={"force": True},
     )
 
     assert rapidocr_response.status_code == 200
+    assert tesseract_response.status_code == 200
     assert textractor_response.status_code == 404
     assert seen == [
         ("study_companion", "study_download_rapidocr_models", {"force": False, "_ctx": {"entry_timeout": 600.0}}),
+        ("study_companion", "study_install_tesseract", {"force": True, "_ctx": {"entry_timeout": 600.0}}),
     ]
     assert rapidocr_response.json()["state"]["kind"] == "rapidocr_models"
     assert rapidocr_response.json()["state"]["plugin_id"] == "study_companion"
+    assert tesseract_response.json()["state"]["kind"] == "tesseract"
+    assert tesseract_response.json()["state"]["plugin_id"] == "study_companion"
     assert install_task_module.load_install_task_state(
         "run-study_download_rapidocr_models",
         kind="rapidocr_models",
+        plugin_id="study_companion",
+    ) is not None
+    assert install_task_module.load_install_task_state(
+        "run-study_install_tesseract",
+        kind="tesseract",
         plugin_id="study_companion",
     ) is not None
 
@@ -543,5 +556,4 @@ async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Textractor install task 'missing-stream-task' not found"
-
 
