@@ -10685,6 +10685,40 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
 
 
 @pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_keeps_recent_line_when_limit_is_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 1,
+    )
+    shared = _shared_state(
+        history_lines=[
+            {"speaker": "A", "text": "stable latest", "line_id": "s1"},
+        ],
+        history_observed_lines=[
+            {"speaker": "B", "text": "observed latest", "line_id": "o1"},
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o1"]
+    assert public_context["scene_summary_seed"]
+
+
+@pytest.mark.plugin_unit
 def test_game_llm_agent_reply_context_zero_line_limit_omits_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -5494,9 +5494,11 @@ class GameLLMAgent:
             stable_lines = []
             observed_lines = []
             recent_choices = []
-        recent_half_limit = max(0, line_limit // 2)
+        recent_half_limit = max(1, line_limit // 2) if line_limit > 0 else 0
         recent_lines = (
-            [*stable_lines[-recent_half_limit:], *observed_lines[-recent_half_limit:]]
+            [*stable_lines[-recent_half_limit:], *observed_lines[-recent_half_limit:]][
+                -line_limit:
+            ]
             if recent_half_limit > 0
             else []
         )
