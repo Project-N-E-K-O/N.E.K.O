@@ -1876,16 +1876,62 @@ svg {
 }
 
 .compact-chat-capsule {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   width: min(100%, 520px);
   min-width: 0;
   min-height: 58px;
   padding: 0 24px;
-  border: 0;
+  border: 1px solid rgba(255, 255, 255, 0.30);
   border-radius: 999px;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background: rgba(255, 255, 255, 0.022);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.42),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+    inset 0 8px 16px rgba(255, 255, 255, 0.045),
+    0 0 0 1px rgba(22, 54, 86, 0.075),
+    0 18px 48px rgba(20, 36, 64, 0.09);
+  backdrop-filter: blur(15px) saturate(1.36) contrast(1.04);
+  -webkit-backdrop-filter: blur(15px) saturate(1.36) contrast(1.04);
+}
+
+.compact-chat-capsule::before,
+.compact-chat-inline-input::before {
+  content: "";
+  position: absolute;
+  inset: 1px -14%;
+  z-index: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.018) 48%, rgba(255, 255, 255, 0.035) 100%);
+  backdrop-filter: blur(7px) saturate(1.12);
+  -webkit-backdrop-filter: blur(7px) saturate(1.12);
+  transform: scaleX(1.12);
+  transform-origin: center;
+}
+
+.compact-chat-capsule::after,
+.compact-chat-inline-input::after {
+  content: "";
+  position: absolute;
+  inset: 1px 2px 2px;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.46) 0%, rgba(255, 255, 255, 0.22) 14%, rgba(255, 255, 255, 0.07) 42%, rgba(255, 255, 255, 0.00) 78%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.018) 18%, rgba(255, 255, 255, 0.00) 52%, rgba(255, 255, 255, 0.018) 82%, rgba(255, 255, 255, 0.09) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    inset 0 1px 14px rgba(255, 255, 255, 0.16),
+    inset 0 -10px 18px rgba(255, 255, 255, 0.028);
+}
+
+.compact-chat-capsule > *,
+.compact-chat-inline-input > * {
+  position: relative;
+  z-index: 2;
 }
 
 .compact-chat-capsule-button {
@@ -1920,6 +1966,16 @@ svg {
   color: #7c91ad;
 }
 
+.compact-chat-capsule-text[data-compact-preview-streaming="true"] {
+  text-overflow: clip;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.compact-chat-capsule-text[data-compact-preview-streaming="true"]::-webkit-scrollbar {
+  display: none;
+}
+
 .compact-chat-input-shell {
   position: relative;
   min-height: 0;
@@ -1945,6 +2001,9 @@ svg {
 }
 
 .compact-chat-inline-input {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   display: flex;
   align-items: flex-end;
   gap: 10px;
@@ -1953,10 +2012,16 @@ svg {
   margin: 0 auto;
   padding: 8px 10px 8px 22px;
   border-radius: 999px;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background: rgba(255, 255, 255, 0.022);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.42),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+    inset 0 8px 16px rgba(255, 255, 255, 0.045),
+    0 0 0 1px rgba(22, 54, 86, 0.075),
+    0 18px 48px rgba(20, 36, 64, 0.09);
+  backdrop-filter: blur(15px) saturate(1.36) contrast(1.04);
+  -webkit-backdrop-filter: blur(15px) saturate(1.36) contrast(1.04);
+  border: 1px solid rgba(255, 255, 255, 0.30);
 }
 
 .compact-chat-input-shell .composer-input {
@@ -1977,13 +2042,189 @@ svg {
   width: 42px;
   height: 42px;
   border-radius: 999px;
-  background: linear-gradient(135deg, #63b7fb 0%, #3a89df 100%);
-  box-shadow: 0 8px 18px rgba(72, 145, 219, 0.28);
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
 }
 
 .compact-chat-input-shell .send-button-circle img {
-  width: 34px;
-  height: 34px;
+  width: 46px;
+  height: 46px;
+}
+
+.compact-chat-input-shell .compact-input-tool-toggle {
+  position: relative;
+  z-index: 2;
+}
+
+.compact-chat-input-shell .compact-input-tool-toggle[aria-haspopup="true"] {
+  background: rgba(99, 183, 251, 0.18);
+  box-shadow: 0 8px 18px rgba(72, 145, 219, 0.16);
+}
+
+.compact-chat-input-shell .compact-input-tool-toggle-icon {
+  width: 73px;
+  height: 73px;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+
+.compact-chat-input-shell .compact-input-tool-toggle.is-open .compact-input-tool-toggle-icon {
+  transform: rotate(-90deg);
+}
+
+.compact-input-tool-fan {
+  --compact-tool-button-size: 38px;
+  --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
+  --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
+  --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
+  --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
+  --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 126px;
+  height: 126px;
+  pointer-events: none;
+  z-index: 100003;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.compact-input-tool-fan .compact-input-tool-item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin-top: calc(var(--compact-tool-button-size) / -2);
+  margin-left: calc(var(--compact-tool-button-size) / -2);
+  width: var(--compact-tool-button-size);
+  height: var(--compact-tool-button-size);
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  transform: translate(0, 0) scale(0.72);
+  transition:
+    opacity 0.18s ease,
+    transform 0.22s cubic-bezier(0.2, 0.9, 0.22, 1.12),
+    background 0.15s ease;
+  pointer-events: none;
+  isolation: isolate;
+}
+
+.compact-input-tool-fan .compact-input-tool-item::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.compact-input-tool-fan .compact-input-tool-item::after {
+  inset: 0;
+  border-radius: inherit;
+  background: var(--compact-tool-button-fill);
+  box-shadow: var(--compact-tool-button-shadow);
+  z-index: 1;
+  transition: background 0.15s ease;
+}
+
+.compact-input-tool-fan .compact-input-tool-item:hover::after {
+  background: var(--compact-tool-button-hover-fill);
+}
+
+.compact-input-tool-fan .compact-input-tool-item > img,
+.compact-input-tool-fan .compact-input-tool-item > .composer-galgame-btn-glyph,
+.compact-input-tool-fan .compact-input-tool-item > .composer-tool-btn {
+  position: relative;
+  z-index: 2;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item {
+  opacity: 0;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+  opacity: 1;
+  box-shadow: var(--compact-tool-button-shadow);
+  transform: translate(-35px, 70px) scale(0.86);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn {
+  -webkit-mask-image: var(--compact-tool-preview-fade-left);
+  mask-image: var(--compact-tool-preview-fade-left);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after {
+  box-shadow: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+  opacity: 1;
+  transform: translate(12px, 77px) scale(0.98);
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+  opacity: 1;
+  transform: translate(55px, 55px) scale(1.04);
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+  opacity: 1;
+  transform: translate(77px, 12px) scale(0.98);
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+  opacity: 1;
+  box-shadow: var(--compact-tool-button-shadow);
+  transform: translate(70px, -35px) scale(0.86);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
+  -webkit-mask-image: var(--compact-tool-preview-fade-right);
+  mask-image: var(--compact-tool-preview-fade-right);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after {
+  box-shadow: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
+  opacity: 0;
+  transform: translate(55px, 55px) scale(0.56);
+}
+
+.compact-input-tool-fan .composer-tool-btn img {
+  width: 26px;
+  height: 26px;
+}
+
+.compact-input-tool-fan .composer-galgame-btn-glyph {
+  width: 24px;
+  height: 24px;
+}
+
+.compact-input-tool-fan .composer-icon-popover {
+  left: auto;
+  right: 0;
+  bottom: calc(100% + 6px);
+  transform: none;
+  z-index: 13;
+}
+
+.compact-input-tool-fan .composer-tool-menu {
+  justify-content: center;
 }
 
 @media (max-width: 820px) {
@@ -2438,8 +2679,31 @@ svg {
 
 [data-theme="dark"] .compact-chat-capsule,
 [data-theme="dark"] .compact-chat-inline-input {
-  background: transparent;
-  box-shadow: none;
+  background: rgba(255, 255, 255, 0.024);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.34),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+    inset 0 8px 16px rgba(255, 255, 255, 0.032),
+    0 0 0 1px rgba(2, 8, 18, 0.14),
+    0 18px 48px rgba(8, 16, 32, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+}
+
+[data-theme="dark"] .compact-chat-capsule::before,
+[data-theme="dark"] .compact-chat-inline-input::before {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.018) 48%, rgba(255, 255, 255, 0.04) 100%);
+}
+
+[data-theme="dark"] .compact-chat-capsule::after,
+[data-theme="dark"] .compact-chat-inline-input::after {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36) 0%, rgba(255, 255, 255, 0.16) 14%, rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.00) 78%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.014) 18%, rgba(255, 255, 255, 0.00) 52%, rgba(255, 255, 255, 0.014) 82%, rgba(255, 255, 255, 0.07) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.11),
+    inset 0 1px 14px rgba(255, 255, 255, 0.12),
+    inset 0 -10px 18px rgba(255, 255, 255, 0.026);
 }
 
 [data-theme="dark"] .compact-chat-capsule-text {
@@ -2455,8 +2719,18 @@ svg {
 }
 
 [data-theme="dark"] .compact-chat-input-shell .send-button-circle {
-  background: linear-gradient(135deg, #4e94da 0%, #2e6fb4 100%);
-  box-shadow: 0 8px 18px rgba(16, 45, 81, 0.38);
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item {
+  --compact-tool-button-fill: rgba(20, 31, 46, 0.94);
+  --compact-tool-button-hover-fill: rgba(30, 47, 68, 0.98);
+  --compact-tool-button-shadow: 0 8px 18px rgba(5, 12, 24, 0.36);
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item:hover {
+  background: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {

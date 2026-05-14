@@ -1004,11 +1004,54 @@ body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-
     border-radius: 999px;
     background-clip: padding-box;
     clip-path: inset(0 round 999px);
-    background: rgba(255, 255, 255, 0.7);
-    box-shadow: 0 18px 40px rgba(20, 36, 64, 0.12);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    border: 0 !important;
+    background: rgba(255, 255, 255, 0.022);
+    box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.42),
+        inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+        inset 0 8px 16px rgba(255, 255, 255, 0.045),
+        0 0 0 1px rgba(22, 54, 86, 0.075),
+        0 18px 48px rgba(20, 36, 64, 0.09);
+    backdrop-filter: blur(15px) saturate(1.36) contrast(1.04) !important;
+    -webkit-backdrop-filter: blur(15px) saturate(1.36) contrast(1.04) !important;
+    border: 1px solid rgba(255, 255, 255, 0.30) !important;
+}
+
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule::before,
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-inline-input::before {
+    content: "";
+    position: absolute;
+    inset: 1px -14%;
+    z-index: 0;
+    border-radius: inherit;
+    background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.018) 48%, rgba(255, 255, 255, 0.035) 100%);
+    backdrop-filter: blur(7px) saturate(1.12);
+    -webkit-backdrop-filter: blur(7px) saturate(1.12);
+    transform: scaleX(1.12);
+    transform-origin: center;
+}
+
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule::after,
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-inline-input::after {
+    content: "";
+    position: absolute;
+    inset: 1px 2px 2px;
+    z-index: 1;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.46) 0%, rgba(255, 255, 255, 0.22) 14%, rgba(255, 255, 255, 0.07) 42%, rgba(255, 255, 255, 0.00) 78%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.018) 18%, rgba(255, 255, 255, 0.00) 52%, rgba(255, 255, 255, 0.018) 82%, rgba(255, 255, 255, 0.09) 100%);
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+        inset 0 1px 14px rgba(255, 255, 255, 0.16),
+        inset 0 -10px 18px rgba(255, 255, 255, 0.028);
+}
+
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule > *,
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-inline-input > * {
+    position: relative;
+    z-index: 2;
 }
 
 body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-capsule-shell,
@@ -1021,6 +1064,12 @@ body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-
 body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-capsule-shell .compact-chat-choice-anchor,
 body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-input-shell .compact-chat-choice-anchor {
     z-index: 100002;
+}
+
+body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-input-shell .compact-input-tool-fan {
+    overflow: visible !important;
+    clip-path: none !important;
+    z-index: 100003 !important;
 }
 
 body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule {
@@ -1187,8 +1236,30 @@ body.react-chat-window-resizing {
 
 [data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule,
 [data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-inline-input {
-    background: #ffffff;
-    box-shadow: 0 18px 40px rgba(8, 16, 32, 0.22);
+    background: rgba(255, 255, 255, 0.024);
+    box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.34),
+        inset 0 -1px 1px rgba(255, 255, 255, 0.06),
+        inset 0 8px 16px rgba(255, 255, 255, 0.032),
+        0 0 0 1px rgba(2, 8, 18, 0.14),
+        0 18px 48px rgba(8, 16, 32, 0.16);
+}
+
+[data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule::before,
+[data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-inline-input::before {
+    background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.018) 48%, rgba(255, 255, 255, 0.04) 100%);
+}
+
+[data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule::after,
+[data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-inline-input::after {
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.36) 0%, rgba(255, 255, 255, 0.16) 14%, rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.00) 78%),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.014) 18%, rgba(255, 255, 255, 0.00) 52%, rgba(255, 255, 255, 0.014) 82%, rgba(255, 255, 255, 0.07) 100%);
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.11),
+        inset 0 1px 14px rgba(255, 255, 255, 0.12),
+        inset 0 -10px 18px rgba(255, 255, 255, 0.026);
 }
 
 [data-theme="dark"] body.subtitle-web-host:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-chat-capsule-text {

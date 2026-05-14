@@ -87,6 +87,9 @@
             active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
             speechId: S.currentPlayingSpeechId || null,
             turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+            playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
+            playbackStartAudioTime: Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ? S.assistantSpeechPlaybackStartAudioTime : 0,
+            playbackEndAudioTime: Number.isFinite(S.assistantSpeechPlaybackEndAudioTime) ? S.assistantSpeechPlaybackEndAudioTime : 0,
             scheduledEndAudioTime: scheduledEnd,
             audioContextTime: audioTime,
             audioContextState: S.audioPlayerContext ? S.audioPlayerContext.state : '',
@@ -115,6 +118,11 @@
         } else {
             clearSpeechPlaybackStateHeartbeat();
         }
+        try {
+            window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+                detail: state
+            }));
+        } catch (_) { /* noop */ }
         return state;
     }
 
@@ -304,6 +312,11 @@
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        if (S.assistantSpeechPlaybackTurnId === normalizedTurnId) {
+            S.assistantSpeechPlaybackTurnId = null;
+            S.assistantSpeechPlaybackStartAudioTime = 0;
+            S.assistantSpeechPlaybackEndAudioTime = 0;
+        }
         logAudioLifecycle('dispatchAssistantSpeechEnd', {
             turnId: normalizedTurnId
         });
@@ -371,6 +384,9 @@
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        S.assistantSpeechPlaybackTurnId = null;
+        S.assistantSpeechPlaybackStartAudioTime = 0;
+        S.assistantSpeechPlaybackEndAudioTime = 0;
         logAudioLifecycle('dispatchAssistantSpeechCancel', {
             turnId: normalizedTurnId,
             source: source || 'audio_playback'
@@ -894,6 +910,19 @@
 
                     var scheduledStartTime = S.nextChunkTime;
                     var scheduledEndTime = scheduledStartTime + nextBuffer.duration;
+                    if (source._nekoAssistantTurnId) {
+                        if (S.assistantSpeechPlaybackTurnId !== source._nekoAssistantTurnId ||
+                            !Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ||
+                            S.assistantSpeechPlaybackStartAudioTime <= 0 ||
+                            scheduledStartTime < S.assistantSpeechPlaybackStartAudioTime) {
+                            S.assistantSpeechPlaybackTurnId = source._nekoAssistantTurnId;
+                            S.assistantSpeechPlaybackStartAudioTime = scheduledStartTime;
+                        }
+                        S.assistantSpeechPlaybackEndAudioTime = Math.max(
+                            Number.isFinite(S.assistantSpeechPlaybackEndAudioTime) ? S.assistantSpeechPlaybackEndAudioTime : 0,
+                            scheduledEndTime
+                        );
+                    }
 
                     // Precise time scheduling
                     source.start(scheduledStartTime);
@@ -924,6 +953,9 @@
                         active: true,
                         speechId: normalizeAssistantTurnId(item.speechId) || S.currentPlayingSpeechId || null,
                         turnId: source._nekoAssistantTurnId || null,
+                        playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
+                        playbackStartAudioTime: S.assistantSpeechPlaybackStartAudioTime || 0,
+                        playbackEndAudioTime: S.assistantSpeechPlaybackEndAudioTime || scheduledEndTime,
                         scheduledEndAudioTime: S.nextChunkTime
                     });
                 } else {

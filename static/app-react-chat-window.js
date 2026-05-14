@@ -15,6 +15,7 @@
     var STORAGE_WIDTH_KEY = 'neko.reactChatWindow.width';
     var STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
     var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
+    var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
 
@@ -107,6 +108,30 @@
         state.compactChatState = 'default';
     }
 
+    function shouldPersistChatSurfaceModePreference() {
+        return !!(document.body && !document.body.classList.contains('electron-chat-window'));
+    }
+
+    function readChatSurfaceModePreference() {
+        if (!shouldPersistChatSurfaceModePreference()) {
+            return 'full';
+        }
+        try {
+            var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
+            return raw === 'compact' ? 'compact' : 'full';
+        } catch (_) {
+            return 'full';
+        }
+    }
+
+    function persistChatSurfaceModePreference(mode) {
+        if (mode !== 'full' && mode !== 'compact') return;
+        if (!shouldPersistChatSurfaceModePreference()) return;
+        try {
+            localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
+        } catch (_) {}
+    }
+
     function readGalgameModePreference() {
         try {
             var raw = localStorage.getItem(GALGAME_STORAGE_KEY);
@@ -176,6 +201,7 @@
     var compactMinimizeBallFrame = 0;
     var compactMinimizeBallSnapshot = '';
     var compactSurfaceAnchorSnapshot = '';
+    var compactSurfacePendingModelOpen = false;
 
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
@@ -298,6 +324,14 @@
             left: placement.left,
             top: placement.top
         };
+    }
+
+    function shouldDelayCompactSurfaceOpenForModel() {
+        return !!(
+            !isMobileWidth()
+            && getCurrentChatSurfaceMode() === 'compact'
+            && !getCompactMinimizeBallAvatarBounds()
+        );
     }
 
     function getCompactSurfaceMetrics() {
@@ -462,6 +496,7 @@
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
+        compactSurfacePendingModelOpen = false;
         clearCompactMinimizeBallAnchor();
         clearCompactSurfaceAnchor();
     }
@@ -489,6 +524,20 @@
         syncCompactSurfaceAnchor();
         syncCompactMinimizeBallAnchor();
         compactMinimizeBallFrame = window.requestAnimationFrame(loop);
+    }
+
+    function revealPendingCompactSurfaceOpen() {
+        if (!compactSurfacePendingModelOpen) return false;
+        if (shouldDelayCompactSurfaceOpenForModel()) return false;
+        var overlay = getOverlay();
+        if (!overlay) return false;
+        compactSurfacePendingModelOpen = false;
+        overlay.hidden = false;
+        document.body.classList.add('react-chat-window-open');
+        syncCompactSurfaceAnchor();
+        scheduleCompactMinimizeBallTracking();
+        scheduleMobileContentLayout();
+        return true;
     }
 
     function clearMobileExpandVisualGuard() {
@@ -2368,6 +2417,7 @@
 
         resetCompactChatState();
         state.chatSurfaceMode = normalized;
+        persistChatSurfaceModePreference(normalized);
         renderWindow();
 
         if (nextMinimized !== previousMinimized) {
@@ -2732,9 +2782,20 @@
                     setMinimized(false);
                     scheduleMobileContentLayout();
                 } else {
+                    if (shouldDelayCompactSurfaceOpenForModel()) {
+                        compactSurfacePendingModelOpen = true;
+                        overlay.hidden = true;
+                        document.body.classList.remove('react-chat-window-open');
+                        return;
+                    }
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
-                    restorePosition();
+                    if (getCurrentChatSurfaceMode() === 'compact') {
+                        syncCompactSurfaceAnchor();
+                        scheduleCompactMinimizeBallTracking();
+                    } else {
+                        restorePosition();
+                    }
                     scheduleMobileContentLayout();
                 }
                 // closeWindow / hidden-state turn-end both invalidate the
@@ -3163,6 +3224,10 @@
             setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
         });
 
+        ['live2d-floating-buttons-ready', 'vrm-model-loaded', 'mmd-model-loaded'].forEach(function (eventName) {
+            window.addEventListener(eventName, revealPendingCompactSurfaceOpen);
+        });
+
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
@@ -3224,6 +3289,13 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        state.chatSurfaceMode = readChatSurfaceModePreference();
+        resetCompactChatState();
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState()
+        });
+        syncChatSurfaceModeUI();
         prewarmUserDisplayName();
         // Resolve the persisted GalGame preference now that the storage-location
         // barrier has settled (initAfterStorageBarrier has awaited it before

@@ -111,6 +111,9 @@
         assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
         assistantSpeechStartedTurnId: null,
+        assistantSpeechPlaybackTurnId: null,
+        assistantSpeechPlaybackStartAudioTime: 0,
+        assistantSpeechPlaybackEndAudioTime: 0,
         // 最近一次本地麦克风 RMS 超过语音阈值的时间戳（ms epoch）。
         // 由 app-audio-capture.js 里的 monitorInputVolume 持续写入；
         // app-proactive.js 在 voice 模式 tick 时用它判断"用户最近是否在发声"，

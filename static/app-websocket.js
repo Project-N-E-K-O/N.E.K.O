@@ -1511,6 +1511,14 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode === 'TTS_CONNECTION_FAILED') {
+                        emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
+                            code: statusCode,
+                            details: statusDetails || null,
+                            source: 'tts_status'
+                        });
+                    }
+
                     if (statusCode === 'GAME_ROUTE_ENDED') {
                         var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
                         var realtimeRestore = statusDetails && statusDetails.realtime_restore;
