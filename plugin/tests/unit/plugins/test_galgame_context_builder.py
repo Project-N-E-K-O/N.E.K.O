@@ -357,8 +357,9 @@ def test_summarize_context_respects_small_configured_maximum() -> None:
 
     assert len(result["stable_lines"]) == 1
     assert result["stable_lines"][0]["line_id"] == "line-7"
-    assert result["stable_lines"][0]["_condensed_line_ids"] == ["line-7", "line-8", "line-9"]
     assert "line 7.\nline 8.\nline 9." == result["stable_lines"][0]["text"]
+    assert "_condensed_line_ids" not in result["stable_lines"][0]
+    assert "_condensed_count" not in result["stable_lines"][0]
 
 
 def test_summarize_context_applies_global_line_limit_before_condensing() -> None:
@@ -399,14 +400,12 @@ def test_summarize_context_applies_global_line_limit_before_condensing() -> None
         config=config,
     )
 
-    recent_ids = {
-        line_id
-        for item in result["recent_lines"]
-        for line_id in item.get("_condensed_line_ids", [item.get("line_id")])
-    }
-    assert len(recent_ids) == 3
-    assert recent_ids & {"stable-3", "stable-4"}
-    assert recent_ids & {"observed-3", "observed-4"}
+    recent_text = "\n".join(str(item.get("text") or "") for item in result["recent_lines"])
+    assert len(result["recent_lines"]) == 2
+    assert "stable line 3.\nstable line 4." in recent_text
+    assert "observed line 4." in recent_text
+    assert all("_condensed_line_ids" not in item for item in result["recent_lines"])
+    assert all("_condensed_count" not in item for item in result["recent_lines"])
 
 
 def test_summarize_context_uses_restored_context_snapshot_when_history_is_empty() -> None:
@@ -455,6 +454,30 @@ def test_summarize_context_ignores_restored_context_snapshot_for_other_scene() -
     )
 
     assert result["scene_id"] == "scene-b"
-    assert result["route_id"] == ""
+    assert result["route_id"] == "route-a"
+    assert result["context_snapshot_summary_seed"] == ""
+    assert result["scene_summary_seed"] != "旧场景总结不应复用。"
+
+
+def test_summarize_context_does_not_apply_current_route_to_restored_other_scene() -> None:
+    result = context_builder.build_summarize_context(
+        {
+            "active_game_id": "demo.alpha",
+            "latest_snapshot": {"scene_id": "scene-b", "route_id": "route-b"},
+            "history_lines": [],
+            "history_observed_lines": [],
+            "history_choices": [],
+            "context_snapshot": {
+                "game_id": "demo.alpha",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "summary_seed": "旧场景总结不应复用。",
+            },
+        },
+        scene_id="",
+    )
+
+    assert result["scene_id"] == "scene-b"
+    assert result["route_id"] == "route-a"
     assert result["context_snapshot_summary_seed"] == ""
     assert result["scene_summary_seed"] != "旧场景总结不应复用。"

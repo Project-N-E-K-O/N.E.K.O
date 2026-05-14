@@ -399,3 +399,57 @@ async def test_update_config_clears_near_match_cache_on_toggle() -> None:
     gateway.update_config(_make_config(llm_near_match_cache_enabled=False))
     assert len(gateway._near_match_cache) == 0
     await gateway.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_update_config_clears_exact_cache_when_operation_ttl_changes() -> None:
+    backend = _ExplainBackend()
+    gateway = LLMGateway(
+        plugin=SimpleNamespace(plugins=None),
+        logger=_Logger(),
+        config=_make_config(llm_explain_cache_ttl_seconds=60.0),
+        backend=backend,
+    )
+
+    first = await gateway.explain_line(_explain_context())
+    assert len(gateway._cache) == 1
+
+    gateway.update_config(_make_config(llm_explain_cache_ttl_seconds=0.0))
+    assert len(gateway._cache) == 0
+
+    second = await gateway.explain_line(_explain_context())
+    await gateway.shutdown()
+
+    assert first["explanation"] == "explanation-1"
+    assert second["explanation"] == "explanation-2"
+    assert backend.calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_update_config_clears_near_match_cache_when_ttl_changes() -> None:
+    backend = _ExplainBackend()
+    gateway = LLMGateway(
+        plugin=SimpleNamespace(plugins=None),
+        logger=_Logger(),
+        config=_make_config(
+            llm_near_match_cache_enabled=True,
+            llm_near_match_cache_ttl_seconds=60.0,
+            llm_explain_cache_ttl_seconds=0.0,
+        ),
+        backend=backend,
+    )
+
+    await gateway.explain_line(_explain_context())
+    assert len(gateway._near_match_cache) == 1
+
+    gateway.update_config(
+        _make_config(
+            llm_near_match_cache_enabled=True,
+            llm_near_match_cache_ttl_seconds=0.0,
+            llm_explain_cache_ttl_seconds=0.0,
+        )
+    )
+    assert len(gateway._near_match_cache) == 0
+    await gateway.shutdown()

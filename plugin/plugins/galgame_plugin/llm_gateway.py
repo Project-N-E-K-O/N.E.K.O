@@ -158,6 +158,7 @@ class LLMGateway:
 
     def update_config(self, config) -> None:
         old_cache_config_fingerprint = self._cache_config_fingerprint()
+        old_cache_policy_fingerprint = self._cache_policy_fingerprint()
         old_near_match_enabled = self._near_match_enabled()
         self._config = config
         if not self._metrics_enabled():
@@ -166,6 +167,7 @@ class LLMGateway:
             self._backend._config = config
         if (
             self._cache_config_fingerprint() != old_cache_config_fingerprint
+            or self._cache_policy_fingerprint() != old_cache_policy_fingerprint
             or self._near_match_enabled() != old_near_match_enabled
         ):
             self._cache.clear()
@@ -399,6 +401,17 @@ class LLMGateway:
         return self._safe_float(
             getattr(self._config, "llm_near_match_cache_ttl_seconds", default_ttl),
             default_ttl,
+        )
+
+    def _cache_policy_fingerprint(self) -> str:
+        return _stable_json_fingerprint(
+            {
+                "request": self._ttl_for_operation(""),
+                "explain": self._ttl_for_operation("explain_line"),
+                "choice": self._ttl_for_operation("suggest_choice"),
+                "scene_summary": self._ttl_for_operation("scene_summary"),
+                "near_match": self._near_match_ttl(),
+            }
         )
 
     def _near_match_fingerprint(

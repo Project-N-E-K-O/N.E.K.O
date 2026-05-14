@@ -376,7 +376,11 @@ def _dialogue_context_lines(
 
 def _strip_context_source(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {key: value for key, value in item.items() if key != "_context_source"}
+        {
+            key: value
+            for key, value in item.items()
+            if key != "_context_source" and not str(key).startswith("_condensed_")
+        }
         for item in lines
     ]
 
@@ -848,12 +852,17 @@ def build_summarize_context(
         or restored_scene_id
         or ""
     )
-    restored_route_matches = not restored_scene_id or restored_scene_id == effective_scene_id
+    restored_scene_matches = not restored_scene_id or restored_scene_id == effective_scene_id
+    restored_route_matches = restored_scene_matches
     route_id = str(
-        snapshot.get("route_id")
-        or (effective_line or {}).get("route_id")
-        or (restored_route_id if restored_route_matches else "")
-        or ""
+        (
+            snapshot.get("route_id")
+            or (effective_line or {}).get("route_id")
+            or restored_route_id
+            or ""
+        )
+        if restored_route_matches
+        else (restored_route_id or "")
     )
     history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
         local_state,
