@@ -13,6 +13,7 @@ def _cfg(**overrides):
     values = {
         "context_counting_mode": "char",
         "context_max_tokens": 6000,
+        "context_semantic_compression": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -98,3 +99,93 @@ def test_build_prompt_messages_public_contract_returns_message_list() -> None:
 
     assert isinstance(messages, list)
     assert [message["role"] for message in messages] == ["system", "user"]
+
+
+def test_semantic_compression_disabled_keeps_rendered_context_unchanged() -> None:
+    context = {
+        "recent_lines": [
+            {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+            {"speaker": "A", "text": "two", "scene_id": "s", "line_id": "2"},
+        ],
+        "evidence": [
+            {"type": "history_line", "text": "one", "line_id": "1", "speaker": "A"},
+        ],
+    }
+
+    default = build_prompt_messages_with_metadata("explain_line", context)
+    disabled = build_prompt_messages_with_metadata(
+        "explain_line",
+        context,
+        _cfg(context_semantic_compression=False),
+    )
+
+    assert _rendered_context(default) == _rendered_context(disabled)
+    assert disabled.metadata["semantic_compression_enabled"] is False
+
+
+def test_semantic_compression_merges_same_speaker_short_lines() -> None:
+    context = {
+        "recent_lines": [
+            {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+            {"speaker": "A", "text": "two", "scene_id": "s", "line_id": "2"},
+            {"speaker": "B", "text": "three", "scene_id": "s", "line_id": "3"},
+        ],
+    }
+
+    result = build_prompt_messages_with_metadata(
+        "explain_line",
+        context,
+        _cfg(context_semantic_compression=True),
+    )
+    rendered = json.loads(_rendered_context(result))
+
+    assert len(rendered["recent_lines"]) == 2
+    assert rendered["recent_lines"][0]["text"] == "one\ntwo"
+    assert rendered["recent_lines"][0]["_condensed_count"] == 2
+    assert result.metadata["semantic_compression_enabled"] is True
+    assert result.metadata["semantic_lines_before"] == 3
+    assert result.metadata["semantic_lines_after"] == 2
+
+
+def test_semantic_compression_does_not_touch_evidence_current_or_choices() -> None:
+    context = {
+        "current_line": {"speaker": "A", "text": "current", "line_id": "current"},
+        "visible_choices": [
+            {"choice_id": "c1", "text": "left"},
+            {"choice_id": "c2", "text": "right"},
+        ],
+        "recent_choices": [
+            {"speaker": "A", "text": "choice one", "line_id": "choice-1"},
+            {"speaker": "A", "text": "choice two", "line_id": "choice-2"},
+        ],
+        "evidence": [
+            {"speaker": "A", "text": "evidence one", "line_id": "e1"},
+            {"speaker": "A", "text": "evidence two", "line_id": "e2"},
+        ],
+        "public_context": {
+            "recent_lines": [
+                {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+                {"speaker": "A", "text": "two", "scene_id": "s", "line_id": "2"},
+            ],
+            "recent_choices": [
+                {"speaker": "A", "text": "public choice one", "line_id": "pc1"},
+                {"speaker": "A", "text": "public choice two", "line_id": "pc2"},
+            ],
+            "current_line": {"speaker": "A", "text": "public current", "line_id": "pc"},
+        },
+    }
+
+    result = build_prompt_messages_with_metadata(
+        "agent_reply",
+        context,
+        _cfg(context_semantic_compression=True),
+    )
+    rendered = json.loads(_rendered_context(result))
+
+    assert rendered["current_line"] == context["current_line"]
+    assert rendered["visible_choices"] == context["visible_choices"]
+    assert rendered["recent_choices"] == context["recent_choices"]
+    assert rendered["evidence"] == context["evidence"]
+    assert rendered["public_context"]["recent_choices"] == context["public_context"]["recent_choices"]
+    assert rendered["public_context"]["current_line"] == context["public_context"]["current_line"]
+    assert len(rendered["public_context"]["recent_lines"]) == 1

@@ -8,6 +8,7 @@ import time
 from typing import Any, Callable
 
 from .host_agent_adapter import HostAgentAdapter, HostAgentError
+from .context_builder import _compute_dynamic_line_limit
 from .local_input_actuator import (
     VIRTUAL_MOUSE_DIALOGUE_CANDIDATES,
     perform_local_input_actuation,
@@ -608,6 +609,7 @@ class GameLLMAgent:
         self._logger = logger
         self._llm_gateway = llm_gateway
         self._host_adapter = host_adapter
+        self._context_config = config
         self._scene_summary_push_line_interval = max(
             1,
             int(
@@ -5466,10 +5468,38 @@ class GameLLMAgent:
     def _build_agent_reply_context(self, shared: dict[str, Any], *, prompt: str) -> dict[str, Any]:
         snapshot = sanitize_snapshot_state(shared.get("latest_snapshot", {}))
         status = self._compute_status(shared)
-        stable_lines = list(shared.get("history_lines") or [])[-8:]
-        observed_lines = list(shared.get("history_observed_lines") or [])[-8:]
-        recent_choices = list(shared.get("history_choices") or [])[-8:]
-        recent_lines = [*stable_lines[-4:], *observed_lines[-4:]]
+        history_lines = list(shared.get("history_lines") or [])
+        history_observed_lines = list(shared.get("history_observed_lines") or [])
+        try:
+            min_limit = int(getattr(self._context_config, "context_explain_min_lines", 4) or 4)
+        except (TypeError, ValueError):
+            min_limit = 4
+        try:
+            max_limit = int(getattr(self._context_config, "context_explain_max_lines", 16) or 16)
+        except (TypeError, ValueError):
+            max_limit = 16
+        min_limit = max(1, min_limit)
+        max_limit = max(1, max_limit)
+        if min_limit > max_limit:
+            min_limit, max_limit = max_limit, min_limit
+        try:
+            target_tokens = int(
+                getattr(self._context_config, "context_window_target_tokens", 800) or 800
+            )
+        except (TypeError, ValueError):
+            target_tokens = 800
+        target_tokens = max(1, target_tokens)
+        line_limit = _compute_dynamic_line_limit(
+            [*history_lines, *history_observed_lines],
+            min_limit=min_limit,
+            max_limit=max_limit,
+            target_tokens=target_tokens,
+        )
+        stable_lines = history_lines[-line_limit:]
+        observed_lines = history_observed_lines[-line_limit:]
+        recent_choices = list(shared.get("history_choices") or [])[-line_limit:]
+        recent_half_limit = max(1, line_limit // 2)
+        recent_lines = [*stable_lines[-recent_half_limit:], *observed_lines[-recent_half_limit:]]
         effective_line = resolve_effective_current_line(shared) or {}
         latest_line = ""
         if effective_line.get("text"):

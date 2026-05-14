@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .context_tokens import count_tokens_heuristic
 from .models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
@@ -74,6 +75,11 @@ _NON_DIALOGUE_CONTEXT_TOKENS = (
     "recent raw ocr",
     "最近 raw ocr",
 )
+_CONDENSE_BLOCKING_PUNCTUATION_RE = re.compile(r"[!?\uFF01\uFF1F\u2026]")
+_CONDENSE_SHORT_LINE_MAX_CHARS = 30
+_DYNAMIC_WINDOW_DEFAULT_MIN_LINES = 4
+_DYNAMIC_WINDOW_DEFAULT_MAX_LINES = 16
+_DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS = 800
 
 
 def _looks_like_ocr_overlay_text(text: object) -> bool:
@@ -85,6 +91,117 @@ def _looks_like_ocr_overlay_text(text: object) -> bool:
 
 def _significant_char_count(text: object) -> int:
     return sum(1 for ch in str(text or "") if not ch.isspace())
+
+
+def _context_window_bounds(
+    config: Any | None,
+    *,
+    max_floor: int = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES,
+) -> tuple[int, int, int]:
+    try:
+        min_limit = int(
+            getattr(config, "context_explain_min_lines", _DYNAMIC_WINDOW_DEFAULT_MIN_LINES)
+            or _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
+        )
+    except (TypeError, ValueError):
+        min_limit = _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
+    try:
+        max_limit = int(
+            getattr(config, "context_explain_max_lines", _DYNAMIC_WINDOW_DEFAULT_MAX_LINES)
+            or _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
+        )
+    except (TypeError, ValueError):
+        max_limit = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
+    try:
+        target_tokens = int(
+            getattr(config, "context_window_target_tokens", _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS)
+            or _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
+        )
+    except (TypeError, ValueError):
+        target_tokens = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
+    min_limit = max(1, min_limit)
+    max_limit = max(1, max(max_limit, max_floor))
+    if min_limit > max_limit:
+        min_limit, max_limit = max_limit, min_limit
+    return min_limit, max_limit, max(1, target_tokens)
+
+
+def _compute_dynamic_line_limit(
+    lines: list[dict[str, Any]],
+    min_limit: int = _DYNAMIC_WINDOW_DEFAULT_MIN_LINES,
+    max_limit: int = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES,
+    target_tokens: int = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS,
+) -> int:
+    min_limit = max(1, int(min_limit or _DYNAMIC_WINDOW_DEFAULT_MIN_LINES))
+    max_limit = max(1, int(max_limit or _DYNAMIC_WINDOW_DEFAULT_MAX_LINES))
+    if min_limit > max_limit:
+        min_limit, max_limit = max_limit, min_limit
+    if not lines:
+        return min_limit
+    token_counts = [
+        count_tokens_heuristic(str(item.get("text") or "")) if isinstance(item, dict) else 0
+        for item in lines
+    ]
+    non_empty_counts = [count for count in token_counts if count > 0]
+    if not non_empty_counts:
+        return max_limit
+    average_tokens = sum(non_empty_counts) / len(non_empty_counts)
+    if average_tokens <= 0:
+        return max_limit
+    limit = int(max(1, target_tokens) / average_tokens)
+    return max(min_limit, min(max_limit, limit))
+
+
+def _line_condense_blocked(line: dict[str, Any]) -> bool:
+    speaker = str(line.get("speaker") or "").strip()
+    text = str(line.get("text") or "").strip()
+    if not speaker or not text:
+        return True
+    if _significant_char_count(text) > _CONDENSE_SHORT_LINE_MAX_CHARS:
+        return True
+    return bool(_CONDENSE_BLOCKING_PUNCTUATION_RE.search(text))
+
+
+def _merge_condensed_run(run: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(run) == 1:
+        return dict(run[0])
+    merged = dict(run[0])
+    texts = [str(item.get("text") or "").strip() for item in run]
+    merged["text"] = "\n".join(text for text in texts if text)
+    merged["_condensed_line_ids"] = [
+        str(item.get("line_id") or "") for item in run if str(item.get("line_id") or "")
+    ]
+    merged["_condensed_count"] = len(run)
+    return merged
+
+
+def _condense_dialogue_batch(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    run: list[dict[str, Any]] = []
+
+    def flush_run() -> None:
+        nonlocal run
+        if run:
+            result.append(_merge_condensed_run(run))
+            run = []
+
+    for item in lines:
+        line = dict(item) if isinstance(item, dict) else {}
+        if _line_condense_blocked(line):
+            flush_run()
+            result.append(line)
+            continue
+        speaker = str(line.get("speaker") or "").strip()
+        scene_id = str(line.get("scene_id") or "")
+        if run:
+            previous = run[-1]
+            previous_speaker = str(previous.get("speaker") or "").strip()
+            previous_scene_id = str(previous.get("scene_id") or "")
+            if speaker != previous_speaker or scene_id != previous_scene_id:
+                flush_run()
+        run.append(line)
+    flush_run()
+    return result
 
 
 def _looks_like_game_dialogue_context_line(line: dict[str, Any]) -> bool:
@@ -415,7 +532,12 @@ def _snapshot_for_stable_summary_seed(
     return seed_snapshot
 
 
-def build_explain_context(local_state: dict[str, Any], *, line_id: str) -> dict[str, Any]:
+def build_explain_context(
+    local_state: dict[str, Any],
+    *,
+    line_id: str,
+    config: Any | None = None,
+) -> dict[str, Any]:
     """Build the prompt context used by the explain-line LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
     effective_line = resolve_effective_current_line(local_state)
@@ -439,13 +561,26 @@ def build_explain_context(local_state: dict[str, Any], *, line_id: str) -> dict[
 
     scene_id = str(target_line.get("scene_id") or snapshot.get("scene_id") or "")
     route_id = str(target_line.get("route_id") or snapshot.get("route_id") or "")
-    stable_lines = _scene_lines(local_state.get("history_lines", []), scene_id, limit=8)
-    observed_lines = _scene_lines(
-        local_state.get("history_observed_lines", []),
-        scene_id,
-        limit=8,
+    history_lines = list(local_state.get("history_lines", []) or [])
+    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
+    min_limit, max_limit, target_tokens = _context_window_bounds(config)
+    line_limit = _compute_dynamic_line_limit(
+        [*history_lines, *history_observed_lines],
+        min_limit=min_limit,
+        max_limit=max_limit,
+        target_tokens=target_tokens,
     )
-    scene_lines = _append_unique_line([*stable_lines, *observed_lines], target_line, limit=8)
+    stable_lines = _scene_lines(history_lines, scene_id, limit=line_limit)
+    observed_lines = _scene_lines(
+        history_observed_lines,
+        scene_id,
+        limit=line_limit,
+    )
+    scene_lines = _append_unique_line(
+        [*stable_lines, *observed_lines],
+        target_line,
+        limit=line_limit,
+    )
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
         scene_id,
@@ -521,6 +656,7 @@ def build_summarize_context(
     *,
     scene_id: str,
     merge_from_scene_ids: list[str] | None = None,
+    config: Any | None = None,
 ) -> dict[str, Any]:
     """Build the prompt context used by the summarize-scene LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
@@ -529,21 +665,30 @@ def build_summarize_context(
         snapshot.get("scene_id") or (effective_line or {}).get("scene_id") or ""
     )
     route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
+    history_lines = list(local_state.get("history_lines", []) or [])
+    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
+    min_limit, max_limit, target_tokens = _context_window_bounds(config, max_floor=20)
+    line_limit = _compute_dynamic_line_limit(
+        [*history_lines, *history_observed_lines],
+        min_limit=min_limit,
+        max_limit=max_limit,
+        target_tokens=target_tokens,
+    )
     stable_lines = _scene_lines(
-        local_state.get("history_lines", []),
+        history_lines,
         effective_scene_id,
-        limit=20,
+        limit=line_limit,
         extra_scene_ids=merge_from_scene_ids,
     )
     observed_lines = _scene_lines(
-        local_state.get("history_observed_lines", []),
+        history_observed_lines,
         effective_scene_id,
-        limit=20,
+        limit=line_limit,
         extra_scene_ids=merge_from_scene_ids,
     )
-    stable_lines = _dialogue_context_lines(stable_lines, limit=20)
-    observed_lines = _dialogue_context_lines(observed_lines, limit=20)
-    scene_lines = _dialogue_context_lines([*stable_lines, *observed_lines], limit=20)
+    stable_lines = _dialogue_context_lines(stable_lines, limit=line_limit)
+    observed_lines = _dialogue_context_lines(observed_lines, limit=line_limit)
+    scene_lines = _dialogue_context_lines([*stable_lines, *observed_lines], limit=line_limit)
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
         effective_scene_id,
@@ -578,19 +723,32 @@ def build_summarize_context(
     }
 
 
-def build_suggest_context(local_state: dict[str, Any]) -> dict[str, Any]:
+def build_suggest_context(
+    local_state: dict[str, Any],
+    *,
+    config: Any | None = None,
+) -> dict[str, Any]:
     """Build the prompt context used by the suggest-choice LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
     visible_choices = [sanitize_choice(item) for item in snapshot.get("choices", [])]
     scene_id = str(snapshot.get("scene_id") or "")
     route_id = str(snapshot.get("route_id") or "")
-    stable_lines = _scene_lines(local_state.get("history_lines", []), scene_id, limit=8)
-    observed_lines = _scene_lines(
-        local_state.get("history_observed_lines", []),
-        scene_id,
-        limit=8,
+    history_lines = list(local_state.get("history_lines", []) or [])
+    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
+    min_limit, max_limit, target_tokens = _context_window_bounds(config)
+    line_limit = _compute_dynamic_line_limit(
+        [*history_lines, *history_observed_lines],
+        min_limit=min_limit,
+        max_limit=max_limit,
+        target_tokens=target_tokens,
     )
-    scene_lines = [*stable_lines, *observed_lines][-8:]
+    stable_lines = _scene_lines(history_lines, scene_id, limit=line_limit)
+    observed_lines = _scene_lines(
+        history_observed_lines,
+        scene_id,
+        limit=line_limit,
+    )
+    scene_lines = [*stable_lines, *observed_lines][-line_limit:]
     selected_choices = _scene_selected_choices(
         local_state.get("history_choices", []),
         scene_id,

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .context_builder import _condense_dialogue_batch
 from .context_tokens import estimate_context_tokens
 
 _PROMPT_CONTEXT_MAX_CHARS = 12000
@@ -21,6 +22,7 @@ _PROMPT_COMPACTION_LEVELS = (
 class PromptBudgetConfig(Protocol):
     context_counting_mode: str
     context_max_tokens: int
+    context_semantic_compression: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +97,61 @@ def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
     except (TypeError, ValueError):
         budget = _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS
     return "token", max(1, budget)
+
+
+_CONDENSABLE_CONTEXT_KEYS = ("recent_lines", "stable_lines", "observed_lines")
+
+
+def _count_condensable_lines(context: dict[str, Any]) -> int:
+    total = 0
+    for key in _CONDENSABLE_CONTEXT_KEYS:
+        value = context.get(key)
+        if isinstance(value, list):
+            total += len(value)
+    public_context = context.get("public_context")
+    if isinstance(public_context, dict):
+        for key in _CONDENSABLE_CONTEXT_KEYS:
+            value = public_context.get(key)
+            if isinstance(value, list):
+                total += len(value)
+    return total
+
+
+def _condensed_context_lines(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    return _condense_dialogue_batch([dict(item) for item in value if isinstance(item, dict)])
+
+
+def _condense_context(
+    context: dict[str, Any],
+    config: PromptBudgetConfig | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    enabled = bool(getattr(config, "context_semantic_compression", False))
+    if not enabled:
+        return context, {
+            "semantic_compression_enabled": False,
+            "semantic_lines_before": _count_condensable_lines(context),
+            "semantic_lines_after": _count_condensable_lines(context),
+        }
+    condensed = dict(context)
+    before = _count_condensable_lines(condensed)
+    for key in _CONDENSABLE_CONTEXT_KEYS:
+        if key in condensed:
+            condensed[key] = _condensed_context_lines(condensed[key])
+    public_context = condensed.get("public_context")
+    if isinstance(public_context, dict):
+        next_public_context = dict(public_context)
+        for key in _CONDENSABLE_CONTEXT_KEYS:
+            if key in next_public_context:
+                next_public_context[key] = _condensed_context_lines(next_public_context[key])
+        condensed["public_context"] = next_public_context
+    after = _count_condensable_lines(condensed)
+    return condensed, {
+        "semantic_compression_enabled": True,
+        "semantic_lines_before": before,
+        "semantic_lines_after": after,
+    }
 
 
 def _fallback_context_from_excerpt(raw: str, excerpt: str) -> dict[str, Any]:
@@ -370,7 +427,8 @@ def build_prompt_messages_with_metadata(
 ) -> PromptMessagesResult:
     """Build chat messages and return prompt context metadata for telemetry."""
     system_prompt = _SYSTEM_PROMPTS[operation]
-    context_result = _context_json_result_for_prompt(context, config)
+    prompt_context, semantic_metadata = _condense_context(context, config)
+    context_result = _context_json_result_for_prompt(prompt_context, config)
     user_prompt = (
         _USER_PROMPT_PREFIXES[operation]
         + f"{_json_dump(_EXAMPLES[operation])}\n\n"
@@ -382,5 +440,5 @@ def build_prompt_messages_with_metadata(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        metadata=dict(context_result.metadata),
+        metadata={**dict(context_result.metadata), **semantic_metadata},
     )

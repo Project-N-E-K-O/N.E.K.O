@@ -10650,6 +10650,41 @@ def test_game_llm_agent_reply_context_exposes_public_context_not_private_memory(
 
 
 @pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=SimpleNamespace(
+            context_explain_min_lines=3,
+            context_explain_max_lines=3,
+            context_window_target_tokens=800,
+        ),
+    )
+    shared = _shared_state(
+        history_lines=[
+            {"speaker": "A", "text": f"stable {index}", "line_id": f"s{index}"}
+            for index in range(6)
+        ],
+        history_observed_lines=[
+            {"speaker": "A", "text": f"observed {index}", "line_id": f"o{index}"}
+            for index in range(6)
+        ],
+    )
+
+    context = agent._build_agent_reply_context(shared, prompt="status")
+    public_context = context["public_context"]
+
+    assert [line["line_id"] for line in public_context["stable_lines"]] == ["s3", "s4", "s5"]
+    assert [line["line_id"] for line in public_context["observed_lines"]] == ["o3", "o4", "o5"]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["s5", "o5"]
+
+
+@pytest.mark.plugin_unit
 def test_game_llm_agent_reply_context_attaches_vision_only_when_needed(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

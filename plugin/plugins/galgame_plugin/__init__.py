@@ -6185,7 +6185,7 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state()
         try:
-            context = build_explain_context(local, line_id=line_id.strip())
+            context = build_explain_context(local, line_id=line_id.strip(), config=self._cfg)
         except ValueError as exc:
             context = {
                 "line_id": "",
@@ -6225,7 +6225,7 @@ class GalgamePlugin(NekoPluginBase):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state()
-        context = build_summarize_context(local, scene_id=scene_id.strip())
+        context = build_summarize_context(local, scene_id=scene_id.strip(), config=self._cfg)
         snapshot = context.get("current_snapshot") if isinstance(context.get("current_snapshot"), dict) else {}
         if not list(context.get("recent_lines") or []) and not str(snapshot.get("text") or ""):
             return Ok(
@@ -6253,7 +6253,7 @@ class GalgamePlugin(NekoPluginBase):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state()
-        context = build_suggest_context(local)
+        context = build_suggest_context(local, config=self._cfg)
         if not context["visible_choices"]:
             return Ok(
                 apply_input_degraded_result(

@@ -523,6 +523,10 @@ class GalgameLLMConfig:
     context_max_tokens: int = 6000
     context_metrics_enabled: bool = False
     context_counting_mode: str = "char"
+    context_semantic_compression: bool = False
+    context_explain_min_lines: int = 4
+    context_explain_max_lines: int = 16
+    context_window_target_tokens: int = 800
 
 
 @dataclass(slots=True)
@@ -648,6 +652,10 @@ class GalgameConfig:
         "context_max_tokens": ("llm", "context_max_tokens"),
         "context_metrics_enabled": ("llm", "context_metrics_enabled"),
         "context_counting_mode": ("llm", "context_counting_mode"),
+        "context_semantic_compression": ("llm", "context_semantic_compression"),
+        "context_explain_min_lines": ("llm", "context_explain_min_lines"),
+        "context_explain_max_lines": ("llm", "context_explain_max_lines"),
+        "context_window_target_tokens": ("llm", "context_window_target_tokens"),
         "reader_mode": ("reader", "reader_mode"),
         "memory_reader_enabled": ("memory_reader", "memory_reader_enabled"),
         "memory_reader_textractor_path": ("memory_reader", "memory_reader_textractor_path"),

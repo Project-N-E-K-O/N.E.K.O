@@ -596,6 +596,17 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     bridge_root_raw = str(bridge_root_value).strip() if bridge_root_value is not None else ""
     if not bridge_root_raw:
         bridge_root_raw = _default_bridge_root_raw()
+    context_explain_min_lines = _coerce_int(
+        llm_obj.get("context_explain_min_lines"), 4, minimum=1
+    )
+    context_explain_max_lines = _coerce_int(
+        llm_obj.get("context_explain_max_lines"), 16, minimum=1
+    )
+    if context_explain_min_lines > context_explain_max_lines:
+        context_explain_min_lines, context_explain_max_lines = (
+            context_explain_max_lines,
+            context_explain_min_lines,
+        )
 
     return GalgameConfig(
         bridge_root=expand_bridge_root(bridge_root_raw),
@@ -674,6 +685,14 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         ),
         context_counting_mode=_coerce_context_counting_mode(
             llm_obj.get("context_counting_mode")
+        ),
+        context_semantic_compression=_coerce_bool(
+            llm_obj.get("context_semantic_compression"), False
+        ),
+        context_explain_min_lines=context_explain_min_lines,
+        context_explain_max_lines=context_explain_max_lines,
+        context_window_target_tokens=_coerce_int(
+            llm_obj.get("context_window_target_tokens"), 800, minimum=1
         ),
         reader_mode=_coerce_reader_mode(galgame_obj.get("reader_mode")),
         memory_reader_enabled=_coerce_bool(
@@ -2862,10 +2881,17 @@ def build_local_scene_summary(
     return summary
 
 
-def build_explain_context(local_state: dict[str, Any], *, line_id: str) -> dict[str, Any]:
+def build_explain_context(
+    local_state: dict[str, Any],
+    *,
+    line_id: str,
+    config: Any | None = None,
+) -> dict[str, Any]:
     from .context_builder import build_explain_context as _build_explain_context
 
-    return _build_explain_context(local_state, line_id=line_id)
+    if config is None:
+        return _build_explain_context(local_state, line_id=line_id)
+    return _build_explain_context(local_state, line_id=line_id, config=config)
 
 
 def build_summarize_context(
@@ -2873,20 +2899,34 @@ def build_summarize_context(
     *,
     scene_id: str,
     merge_from_scene_ids: list[str] | None = None,
+    config: Any | None = None,
 ) -> dict[str, Any]:
     from .context_builder import build_summarize_context as _build_summarize_context
 
+    if config is None:
+        return _build_summarize_context(
+            local_state,
+            scene_id=scene_id,
+            merge_from_scene_ids=merge_from_scene_ids,
+        )
     return _build_summarize_context(
         local_state,
         scene_id=scene_id,
         merge_from_scene_ids=merge_from_scene_ids,
+        config=config,
     )
 
 
-def build_suggest_context(local_state: dict[str, Any]) -> dict[str, Any]:
+def build_suggest_context(
+    local_state: dict[str, Any],
+    *,
+    config: Any | None = None,
+) -> dict[str, Any]:
     from .context_builder import build_suggest_context as _build_suggest_context
 
-    return _build_suggest_context(local_state)
+    if config is None:
+        return _build_suggest_context(local_state)
+    return _build_suggest_context(local_state, config=config)
 
 
 def build_explain_degraded_result(

@@ -116,3 +116,72 @@ def test_snapshot_for_stable_summary_seed_blanks_unstable_ocr_snapshot() -> None
     assert result["text"] == ""
     assert result["line_id"] == ""
     assert result["stability"] == ""
+
+
+def test_condense_dialogue_batch_merges_same_speaker_short_lines() -> None:
+    lines = [
+        {"speaker": "A", "text": "hello", "scene_id": "s", "line_id": "1"},
+        {"speaker": "A", "text": "again", "scene_id": "s", "line_id": "2"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert len(result) == 1
+    assert result[0]["text"] == "hello\nagain"
+    assert result[0]["_condensed_line_ids"] == ["1", "2"]
+    assert result[0]["_condensed_count"] == 2
+
+
+def test_condense_dialogue_batch_keeps_alternating_speakers_separate() -> None:
+    lines = [
+        {"speaker": "A", "text": "hello", "scene_id": "s", "line_id": "1"},
+        {"speaker": "B", "text": "again", "scene_id": "s", "line_id": "2"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert [item["line_id"] for item in result] == ["1", "2"]
+    assert all("_condensed_count" not in item for item in result)
+
+
+def test_condense_dialogue_batch_keeps_emotional_punctuation_separate() -> None:
+    lines = [
+        {"speaker": "A", "text": "hello!", "scene_id": "s", "line_id": "1"},
+        {"speaker": "A", "text": "again", "scene_id": "s", "line_id": "2"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert [item["line_id"] for item in result] == ["1", "2"]
+
+
+def test_condense_dialogue_batch_keeps_long_lines_separate() -> None:
+    lines = [
+        {"speaker": "A", "text": "x" * 31, "scene_id": "s", "line_id": "1"},
+        {"speaker": "A", "text": "again", "scene_id": "s", "line_id": "2"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert [item["line_id"] for item in result] == ["1", "2"]
+
+
+def test_compute_dynamic_line_limit_empty_list_returns_min() -> None:
+    assert context_builder._compute_dynamic_line_limit([], 4, 16, 800) == 4
+
+
+def test_compute_dynamic_line_limit_empty_text_returns_max() -> None:
+    lines = [{"text": ""}, {"text": "   "}]
+
+    assert context_builder._compute_dynamic_line_limit(lines, 4, 16, 800) == 16
+
+
+def test_compute_dynamic_line_limit_dense_cjk_near_min_sparse_english_near_max() -> None:
+    dense = [{"text": "漢" * 200} for _ in range(4)]
+    sparse = [{"text": "ok"} for _ in range(4)]
+
+    dense_limit = context_builder._compute_dynamic_line_limit(dense, 4, 16, 800)
+    sparse_limit = context_builder._compute_dynamic_line_limit(sparse, 4, 16, 800)
+
+    assert dense_limit == 4
+    assert sparse_limit == 16

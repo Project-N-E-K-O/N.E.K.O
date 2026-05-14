@@ -62,6 +62,10 @@ max_tokens_default = 1200
 context_max_tokens = 6000
 context_counting_mode = "char"
 context_metrics_enabled = false
+context_semantic_compression = false
+context_explain_min_lines = 4
+context_explain_max_lines = 16
+context_window_target_tokens = 800
 
 [memory_reader]
 textractor_path = ""
