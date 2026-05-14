@@ -63,8 +63,8 @@
     const PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08;
     const PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35;
     const PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647';
-    const TAKEOVER_TOP_PEEK_TOP_OUTSIDE_RATIO = 0.38;
-    const TAKEOVER_TOP_PEEK_CENTER_ABOVE_TOP_RATIO = 0.34;
+    const TAKEOVER_TOP_PEEK_TOP_OUTSIDE_RATIO = 0.6;
+    const TAKEOVER_TOP_PEEK_CENTER_ABOVE_TOP_RATIO = 0.6;
     const GUIDE_IDLE_SWAY_READY_WAIT_MS = 900;
     const GUIDE_IDLE_SWAY_BLEND_IN_MS = 360;
     const GUIDE_IDLE_SWAY_RELEASE_MS = 320;
@@ -2709,6 +2709,8 @@
             this.cornerHiddenFrame = null;
             this.originalContainerZIndex = null;
             this.containerZIndexElevated = false;
+            this.floatingButtonsFreezeToken = null;
+            this.floatingButtonsFrozen = false;
             this.performanceLock = null;
             this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-plugin-dashboard-corner';
             this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
@@ -2743,6 +2745,7 @@
             this.hiddenFrame = this.resolveHiddenFrame();
             this.cornerFrame = this.resolveCornerFrame();
             this.cornerHiddenFrame = this.resolveCornerHiddenFrame();
+            this.freezeFloatingButtonsPosition();
             this.performanceLock = acquireYuiGuidePerformanceLock(
                 this.performanceLockKey,
                 this.performanceLockCapabilities
@@ -2801,6 +2804,7 @@
                 window.cancelAnimationFrame(this.frameId);
                 this.frameId = 0;
             }
+            this.restoreFloatingButtonsPositionUpdates();
             this.restoreContainerZIndex();
             this.restoreModelFrame();
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
@@ -2847,6 +2851,36 @@
             this.container.style.zIndex = this.originalContainerZIndex || '';
             this.originalContainerZIndex = null;
             this.containerZIndexElevated = false;
+            return true;
+        }
+
+        freezeFloatingButtonsPosition() {
+            if (!this.manager || this.floatingButtonsFrozen) {
+                return false;
+            }
+            const token = this.floatingButtonsFreezeToken || {};
+            this.floatingButtonsFreezeToken = token;
+            if (!this.manager._floatingButtonsPositionFreezeTokens
+                    || typeof this.manager._floatingButtonsPositionFreezeTokens.add !== 'function') {
+                this.manager._floatingButtonsPositionFreezeTokens = new Set();
+            }
+            this.manager._floatingButtonsPositionFreezeTokens.add(token);
+            this.manager._freezeFloatingButtonsPosition = true;
+            this.floatingButtonsFrozen = true;
+            return true;
+        }
+
+        restoreFloatingButtonsPositionUpdates() {
+            if (!this.manager || !this.floatingButtonsFrozen) {
+                return false;
+            }
+            const freezes = this.manager._floatingButtonsPositionFreezeTokens;
+            if (freezes && typeof freezes.delete === 'function' && this.floatingButtonsFreezeToken) {
+                freezes.delete(this.floatingButtonsFreezeToken);
+            }
+            this.manager._freezeFloatingButtonsPosition = !!(freezes && freezes.size > 0);
+            this.floatingButtonsFreezeToken = null;
+            this.floatingButtonsFrozen = false;
             return true;
         }
 

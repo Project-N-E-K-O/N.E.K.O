@@ -44,10 +44,10 @@ Live2D 正常链路保护：
 4. `main_routers/pages_router.py`
    - 静态资源版本缓存包含上述新模块
 
-旧入口：
+兼容入口：
 
-1. `static/yui-guide-wakeup.js` 已删除，不应恢复为独立苏醒链路。
-2. `window.YuiGuideWakeup` 不应再作为首页新手引导演出入口。
+1. `static/yui-guide-wakeup.js` 仍保留为兼容/预热桥接入口，由 `yui-guide-director.js` 和新的演出适配层承接实际流程。
+2. `window.YuiGuideWakeup` 只允许作为兼容桥接对象存在，不应恢复为独立视觉演出链路或新增剧情逻辑。
 
 ## 模块边界
 
@@ -432,7 +432,7 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 
 1. `static/avatar-performance-stage.js` 不包含首页 step、文案、overlay 或 Yui 剧情。
 2. `static/yui-guide-avatar-stage.js` 不删除首页 overlay，不改 `yui-taking-over` 或 ghost cursor 状态。
-3. 旧 `static/yui-guide-wakeup.js` 不存在，模板不加载旧入口。
+3. 旧 `static/yui-guide-wakeup.js` 只保留兼容桥接职责，模板加载它时不能绕过 director / adapter。
 4. `templates/index.html` 脚本顺序正确。
 5. `main_routers/pages_router.py` 的静态资源版本路径包含新模块。
 6. 首页新手引导从苏醒到 intro，再到 takeover steps 能推进。
@@ -459,7 +459,7 @@ git diff --check
 1. 把首页剧情、文案、按钮 selector 写进 `AvatarPerformanceStage`。
 2. 在 adapter 里自己发明 emotion 分类或 motion/expression 名。
 3. 为了首页新手引导删除或重置 overlay、taking-over、ghost cursor 等业务状态。
-4. 恢复 `window.YuiGuideWakeup` 或旧 `yui-guide-wakeup.js` 独立链路。
+4. 把 `window.YuiGuideWakeup` 或旧 `yui-guide-wakeup.js` 扩回独立视觉演出链路。
 5. 在 release 时硬编码回某个固定 Idle / neutral 资源。
 6. 让某个演出 session 没有 release / destroy 路径。
 7. 为 3D 接入复制 Live2D 参数逻辑。

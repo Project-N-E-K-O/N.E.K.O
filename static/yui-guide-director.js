@@ -3158,13 +3158,38 @@
             layer.appendChild(playback);
 
             let doneTimer = 0;
+            let playbackStopTimer = 0;
             let doneResolved = false;
+            let playbackStopped = false;
             let resolveDone = null;
+            const playbackStopMs = reducedMotion
+                ? transitionMs
+                : Math.min(transitionMs, RETURN_PETAL_SEQUENCE_DURATION_MS);
+            const stopPlayback = () => {
+                if (playbackStopped) {
+                    return;
+                }
+                playbackStopped = true;
+                playback.style.animationPlayState = 'paused';
+                playback.removeAttribute('src');
+                playback.style.display = 'none';
+            };
             const donePromise = new Promise((resolve) => {
                 resolveDone = resolve;
+                if (playbackStopMs < transitionMs) {
+                    playbackStopTimer = window.setTimeout(() => {
+                        playbackStopTimer = 0;
+                        stopPlayback();
+                    }, playbackStopMs);
+                }
                 doneTimer = window.setTimeout(() => {
                     doneResolved = true;
                     doneTimer = 0;
+                    if (playbackStopTimer) {
+                        window.clearTimeout(playbackStopTimer);
+                        playbackStopTimer = 0;
+                    }
+                    stopPlayback();
                     resolve();
                 }, transitionMs);
             });
@@ -3177,6 +3202,11 @@
                     window.clearTimeout(doneTimer);
                     doneTimer = 0;
                 }
+                if (playbackStopTimer) {
+                    window.clearTimeout(playbackStopTimer);
+                    playbackStopTimer = 0;
+                }
+                stopPlayback();
                 if (typeof resolveDone === 'function') {
                     resolveDone();
                 }

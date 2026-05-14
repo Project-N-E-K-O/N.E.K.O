@@ -197,7 +197,7 @@ def main() -> None:
             save_all=True,
             append_images=rest,
             duration=frame_duration_ms,
-            loop=0,
+            loop=1,
             quality=68,
             method=0,
             lossless=False,
