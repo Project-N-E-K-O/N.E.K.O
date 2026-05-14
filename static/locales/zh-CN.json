@@ -3688,7 +3688,7 @@
             "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新信息"
         }
     },
     "proactive": {

@@ -19,7 +19,7 @@ Live2DManager.prototype.recordInitialParameters = function() {
         return;
     }
 
-    let expressionApplied = false;
+    this.expressionApplied = false;
     try {
         const coreModel = this.currentModel.internalModel.coreModel;
         this.initialParameters = {};
@@ -908,6 +908,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         choiceFile = this.getRandomElement(expressionFiles);
     }
     if (!choiceFile) return false;
+    this.expressionApplied = false;
 
     // 将 basename（如 expression7.exp3.json）归一化回 FileReferences 中的真实路径（如 expressions/expression7.exp3.json）
     const resolvedRef = (typeof this.resolveExpressionReferenceByFile === 'function')
@@ -1018,7 +1019,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         if (expressionData.Parameters && expressionData.Parameters.length > 0) {
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
             this._installManualExpressionOverride(expressionData.Parameters, LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS);
-            expressionApplied = true;
+            this.expressionApplied = true;
         }
         
         console.log(`手动设置表情（带淡入过渡）: ${loadedExpressionFile}`);
@@ -1029,7 +1030,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     // 重放常驻表情，确保不被覆盖
     // skipBackup=true 因为只是重新应用，不需要再次备份
     try { await this.applyPersistentExpressionsNative(true); } catch (e) {}
-    return expressionApplied;
+    return this.expressionApplied === true;
 };
 
 // 播放动作
@@ -1232,7 +1233,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                         }
 
                         console.log(`预期motion持续时间: ${motionDuration}ms`);
-                        if (!isCurrentMotionInvocation()) return;
+                        if (!isCurrentMotionInvocation()) return false;
 
                         // 设置定时器在motion结束后清理motion参数（但保留expression）
                         const generation = this._nextMotionTimerGeneration();

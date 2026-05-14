@@ -1,6 +1,6 @@
 # 首页 YUI 新手教程文本、高亮与 Ghost Cursor 流程
 
-本文按首页新手教程期间文本输出的先后顺序，记录当前高亮和 ghost cursor 的流程情况。它只描述首页教程的文本、spotlight/highlight、ghost cursor、真实 UI 点击和流程交接；YUI 模型动作演出看 `home-yui-guide-motion-design.md`，通用动作运行时维护规则看 `avatar-performance-module-maintenance.md`。
+本文按首页新手教程期间文本输出的先后顺序，记录当前高亮和 ghost cursor 的流程情况。它只描述首页教程的文本、spotlight/highlight、ghost cursor、真实 UI 点击和流程交接；YUI 模型动作演出看 `home-tutorial-yui-guide-performance-owner-stage-breakdown.md`，通用动作运行时维护规则看 `avatar-performance-module-maintenance.md`。
 
 若本文与当前代码冲突，以当前代码为准。主要代码入口：
 

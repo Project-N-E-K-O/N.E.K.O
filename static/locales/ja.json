@@ -3688,7 +3688,7 @@
             "legacyDetected": "旧バージョンの CosyVoice 音声が検出されました。動作しない可能性があります。再クローンをお勧めします。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新情報"
         }
     },
     "proactive": {

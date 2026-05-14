@@ -441,7 +441,7 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 9. reduced motion 下 sequence 能完成。
 10. driver 不可用时教程不崩。
 
-推荐命令：
+推荐命令（Windows / PowerShell 示例）：
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
@@ -449,6 +449,17 @@ node --check static/avatar-performance-stage.js
 node --check static/yui-guide-avatar-stage.js
 node --check static/yui-guide-director.js
 python -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
+git diff --check
+```
+
+macOS / Linux 可使用等价命令：
+
+```bash
+./.venv/bin/python -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
+node --check static/avatar-performance-stage.js
+node --check static/yui-guide-avatar-stage.js
+node --check static/yui-guide-director.js
+python3 -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
 git diff --check
 ```
 

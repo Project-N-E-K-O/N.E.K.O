@@ -3688,7 +3688,7 @@
             "legacyDetected": "Legacy CosyVoice voices detected that may no longer work. Consider re-cloning your voices."
         },
         "changelog": {
-            "title": "What's New"
+            "title": "Update Info"
         }
     },
     "proactive": {

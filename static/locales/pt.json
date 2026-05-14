@@ -3688,7 +3688,7 @@
             "legacyDetected": "Detectadas vozes antigas do CosyVoice que podem não funcionar mais. Considere clonar novamente suas vozes."
         },
         "changelog": {
-            "title": "O que há de novo"
+            "title": "Informações da atualização"
         }
     },
     "proactive": {

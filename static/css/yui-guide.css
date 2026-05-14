@@ -120,6 +120,31 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   to { opacity: var(--yui-guide-petal-final-opacity, 0.6); }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .yui-guide-petal-transition {
+    transition: none;
+    opacity: 1;
+    pointer-events: none;
+  }
+
+  .yui-guide-petal-transition.is-exiting {
+    opacity: 1;
+  }
+
+  .yui-guide-petal-sequence {
+    animation: none;
+    animation-name: none;
+    animation-duration: 0ms;
+    transform: translate3d(
+      calc(((var(--yui-guide-petal-origin-x, 50vw) - 50vw) * 0.16) + 6vw),
+      calc((var(--yui-guide-petal-origin-y, 50vh) - 50vh) * 0.14),
+      0
+    ) scale(var(--yui-guide-petal-end-scale, 0.9));
+    opacity: var(--yui-guide-petal-final-opacity, 1);
+    will-change: auto;
+  }
+}
+
 .yui-guide-backdrop {
   position: fixed;
   inset: 0;
