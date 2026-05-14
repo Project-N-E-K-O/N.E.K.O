@@ -173,6 +173,16 @@ def _merge_condensed_run(run: list[dict[str, Any]]) -> dict[str, Any]:
     return merged
 
 
+def _condense_run_key(line: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(line.get("speaker") or "").strip(),
+        str(line.get("scene_id") or ""),
+        str(line.get("route_id") or ""),
+        str(line.get("source") or ""),
+        str(line.get("stability") or ""),
+    )
+
+
 def _condense_dialogue_batch(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     run: list[dict[str, Any]] = []
@@ -189,13 +199,8 @@ def _condense_dialogue_batch(lines: list[dict[str, Any]]) -> list[dict[str, Any]
             flush_run()
             result.append(line)
             continue
-        speaker = str(line.get("speaker") or "").strip()
-        scene_id = str(line.get("scene_id") or "")
         if run:
-            previous = run[-1]
-            previous_speaker = str(previous.get("speaker") or "").strip()
-            previous_scene_id = str(previous.get("scene_id") or "")
-            if speaker != previous_speaker or scene_id != previous_scene_id:
+            if _condense_run_key(line) != _condense_run_key(run[-1]):
                 flush_run()
         run.append(line)
     flush_run()

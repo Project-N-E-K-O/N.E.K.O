@@ -144,6 +144,42 @@ def test_condense_dialogue_batch_keeps_alternating_speakers_separate() -> None:
     assert all("_condensed_count" not in item for item in result)
 
 
+def test_condense_dialogue_batch_keeps_different_stability_separate() -> None:
+    lines = [
+        {"speaker": "A", "text": "stable", "scene_id": "s", "line_id": "1", "stability": "stable"},
+        {"speaker": "A", "text": "observed", "scene_id": "s", "line_id": "2", "stability": "tentative"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert [item["line_id"] for item in result] == ["1", "2"]
+    assert all("_condensed_count" not in item for item in result)
+
+
+def test_condense_dialogue_batch_keeps_different_sources_separate() -> None:
+    lines = [
+        {"speaker": "A", "text": "stable", "scene_id": "s", "line_id": "1", "source": "stable"},
+        {"speaker": "A", "text": "observed", "scene_id": "s", "line_id": "2", "source": "observed"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert [item["line_id"] for item in result] == ["1", "2"]
+    assert all("_condensed_count" not in item for item in result)
+
+
+def test_condense_dialogue_batch_keeps_different_routes_separate() -> None:
+    lines = [
+        {"speaker": "A", "text": "left", "scene_id": "s", "route_id": "left", "line_id": "1"},
+        {"speaker": "A", "text": "right", "scene_id": "s", "route_id": "right", "line_id": "2"},
+    ]
+
+    result = context_builder._condense_dialogue_batch(lines)
+
+    assert [item["line_id"] for item in result] == ["1", "2"]
+    assert all("_condensed_count" not in item for item in result)
+
+
 def test_condense_dialogue_batch_keeps_emotional_punctuation_separate() -> None:
     lines = [
         {"speaker": "A", "text": "hello!", "scene_id": "s", "line_id": "1"},
