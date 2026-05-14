@@ -309,6 +309,7 @@ class DanmakuBackgroundAgent:
 
     async def _normal_tick(self):
         """正常 tick：收集 → 分析 → 推送 → 处理猫娘消息 → 清理"""
+        self._ticks += 1
         # 1. 处理猫娘发来的消息（优先）
         await self._process_catgirl_mail()
 
@@ -531,11 +532,11 @@ class DanmakuBackgroundAgent:
 - 在 reply_hint 字段给出 5-15 字的具体回复建议
 
 输出格式（严格 JSON）：
-{{"selected": [
-  {{"text": "弹幕原文", "username": "发送者", "context": "补充说明", "reply_hint": "回复建议"}}
-]}}
+{"selected": [
+  {"text": "弹幕原文", "username": "发送者", "context": "补充说明", "reply_hint": "回复建议"}
+]}
 
-如果没有值得选的弹幕，输出 {{"selected": []}}
+如果没有值得选的弹幕，输出 {"selected": []}
 不要分析趋势，只筛选弹幕并补充信息。"""
 
     async def _llm_select_danmaku(

@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from openai import AuthenticationError, RateLimitError, APITimeoutError, APIConnectionError
 from utils.llm_client import ChatOpenAI
 
 import time as _time
@@ -85,19 +86,19 @@ class LLMClient:
             await client.ainvoke([{"role": "user", "content": "hi"}])
             elapsed = _time.monotonic() - start
             return {"success": True, "elapsed": round(elapsed, 2)}
+        except AuthenticationError:
+            return {"success": False, "error": "API Key 无效或已过期", "error_code": "auth_failed"}
+        except RateLimitError:
+            # Rate limit: key 有效但限流，当作成功
+            return {"success": True, "rate_limited": True, "elapsed": 0}
+        except APITimeoutError:
+            return {"success": False, "error": "连接超时（5秒）", "error_code": "timeout"}
+        except APIConnectionError:
+            return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
         except Exception as e:
             err_str = str(e).lower()
-            if "401" in err_str or "unauthorized" in err_str:
-                return {"success": False, "error": "API Key 无效或已过期", "error_code": "auth_failed"}
-            if "429" in err_str:
-                # Rate limit: key 有效但限流，当作成功
-                return {"success": True, "elapsed": 0}
-            if "timeout" in err_str or "timed out" in err_str:
-                return {"success": False, "error": "连接超时（5秒）", "error_code": "timeout"}
             if "getaddrinfo" in err_str or "name or service not known" in err_str:
                 return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
-            if "refused" in err_str or "connection" in err_str:
-                return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
             return {"success": False, "error": str(e)[:200], "error_code": "unknown"}
 
     @classmethod

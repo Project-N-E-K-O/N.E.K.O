@@ -1105,6 +1105,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     def _on_agent_ready_to_push_text(self, text: str, description: str, priority: int):
         """Agent 直接文本推送回调"""
+        self._bg_llm_last_llm_success_ts = time.time()
+        self._bg_llm_fail_streak = 0
+        if self._bg_llm_health != "healthy":
+            self.logger.info("背景LLM恢复健康（Agent文本推送成功）")
+            self._bg_llm_health = "healthy"
         self._push_to_ai(text, description, priority=priority)
 
     async def _on_batch_ready(self, batch: BatchedDanmaku):
@@ -1662,7 +1667,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             if not t:
                 continue
             # 纯表情或纯轻词
-            if t in light_patterns or all(ord(c) > 127 for c in t):
+            if t in light_patterns:
                 continue
             meaningful += 1
         return meaningful < 2  # 最多1条有实质内容就算轻互动
