@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from plugin.plugins.galgame_plugin import llm_prompts
 from plugin.plugins.galgame_plugin.llm_prompts import (
     build_prompt_messages,
     build_prompt_messages_with_metadata,
@@ -141,7 +142,8 @@ def test_semantic_compression_merges_same_speaker_short_lines() -> None:
 
     assert len(rendered["recent_lines"]) == 2
     assert rendered["recent_lines"][0]["text"] == "one\ntwo"
-    assert rendered["recent_lines"][0]["_condensed_count"] == 2
+    assert "_condensed_count" not in rendered["recent_lines"][0]
+    assert "_condensed_line_ids" not in rendered["recent_lines"][0]
     assert result.metadata["semantic_compression_enabled"] is True
     assert result.metadata["semantic_lines_before"] == 3
     assert result.metadata["semantic_lines_after"] == 2
@@ -189,3 +191,48 @@ def test_semantic_compression_does_not_touch_evidence_current_or_choices() -> No
     assert rendered["public_context"]["recent_choices"] == context["public_context"]["recent_choices"]
     assert rendered["public_context"]["current_line"] == context["public_context"]["current_line"]
     assert len(rendered["public_context"]["recent_lines"]) == 1
+
+
+def test_semantic_compression_handles_missing_or_empty_public_context() -> None:
+    contexts = [
+        {},
+        {"recent_lines": []},
+        {"public_context": {"recent_lines": None}},
+        {"public_context": {"recent_lines": []}},
+    ]
+
+    for context in contexts:
+        result = build_prompt_messages_with_metadata(
+            "agent_reply",
+            context,
+            _cfg(context_semantic_compression=True),
+        )
+
+        assert result.metadata["semantic_compression_enabled"] is True
+        assert isinstance(json.loads(_rendered_context(result)), dict)
+
+
+def test_semantic_compression_failure_falls_back_to_uncompressed(
+    monkeypatch,
+) -> None:
+    context = {
+        "recent_lines": [
+            {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+        ],
+    }
+
+    def _raise(_lines):
+        raise ValueError("bad lines")
+
+    monkeypatch.setattr(llm_prompts, "_condense_dialogue_batch", _raise)
+
+    result = build_prompt_messages_with_metadata(
+        "agent_reply",
+        context,
+        _cfg(context_semantic_compression=True),
+    )
+    rendered = json.loads(_rendered_context(result))
+
+    assert rendered == context
+    assert result.metadata["semantic_compression_enabled"] is False
+    assert result.metadata["semantic_compression_fallback"] is True

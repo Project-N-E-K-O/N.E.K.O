@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -17,6 +18,7 @@ _PROMPT_COMPACTION_LEVELS = (
     (8, 500, 32),
     (4, 240, 16),
 )
+logger = logging.getLogger(__name__)
 
 
 class PromptBudgetConfig(Protocol):
@@ -117,10 +119,33 @@ def _count_condensable_lines(context: dict[str, Any]) -> int:
     return total
 
 
+def _strip_condense_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in {"_condensed_line_ids", "_condensed_count"}
+        }
+    return value
+
+
 def _condensed_context_lines(value: Any) -> Any:
     if not isinstance(value, list):
         return value
-    return _condense_dialogue_batch([dict(item) for item in value if isinstance(item, dict)])
+    return [
+        _strip_condense_metadata(item)
+        for item in _condense_dialogue_batch(
+            [dict(item) for item in value if isinstance(item, dict)]
+        )
+    ]
+
+
+def _condense_keys(container: dict[str, Any]) -> dict[str, Any]:
+    result = dict(container)
+    for key in _CONDENSABLE_CONTEXT_KEYS:
+        if key in result:
+            result[key] = _condensed_context_lines(result[key])
+    return result
 
 
 def _condense_context(
@@ -134,24 +159,26 @@ def _condense_context(
             "semantic_lines_before": _count_condensable_lines(context),
             "semantic_lines_after": _count_condensable_lines(context),
         }
-    condensed = dict(context)
-    before = _count_condensable_lines(condensed)
-    for key in _CONDENSABLE_CONTEXT_KEYS:
-        if key in condensed:
-            condensed[key] = _condensed_context_lines(condensed[key])
-    public_context = condensed.get("public_context")
-    if isinstance(public_context, dict):
-        next_public_context = dict(public_context)
-        for key in _CONDENSABLE_CONTEXT_KEYS:
-            if key in next_public_context:
-                next_public_context[key] = _condensed_context_lines(next_public_context[key])
-        condensed["public_context"] = next_public_context
-    after = _count_condensable_lines(condensed)
-    return condensed, {
-        "semantic_compression_enabled": True,
-        "semantic_lines_before": before,
-        "semantic_lines_after": after,
-    }
+    before = _count_condensable_lines(context)
+    try:
+        condensed = _condense_keys(context)
+        public_context = condensed.get("public_context")
+        if isinstance(public_context, dict):
+            condensed["public_context"] = _condense_keys(public_context)
+        after = _count_condensable_lines(condensed)
+        return condensed, {
+            "semantic_compression_enabled": True,
+            "semantic_lines_before": before,
+            "semantic_lines_after": after,
+        }
+    except Exception:
+        logger.warning("Context compression failed, falling back to uncompressed", exc_info=True)
+        return dict(context), {
+            "semantic_compression_enabled": False,
+            "semantic_compression_fallback": True,
+            "semantic_lines_before": before,
+            "semantic_lines_after": before,
+        }
 
 
 def _fallback_context_from_excerpt(raw: str, excerpt: str) -> dict[str, Any]:

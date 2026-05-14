@@ -10661,8 +10661,8 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
         host_adapter=_FakeHostAdapter(),
         config=SimpleNamespace(
             context_explain_min_lines=3,
-            context_explain_max_lines=3,
-            context_window_target_tokens=800,
+            context_explain_max_lines=16,
+            context_window_target_tokens=6,
         ),
     )
     shared = _shared_state(

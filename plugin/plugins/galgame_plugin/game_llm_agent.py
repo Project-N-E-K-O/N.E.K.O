@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable
 
 from .host_agent_adapter import HostAgentAdapter, HostAgentError
-from .context_builder import _compute_dynamic_line_limit
+from .context_builder import _compute_dynamic_line_limit, _context_window_bounds
 from .local_input_actuator import (
     VIRTUAL_MOUSE_DIALOGUE_CANDIDATES,
     perform_local_input_actuation,
@@ -36,6 +36,7 @@ from .models import (
     OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
     OCR_TRIGGER_MODE_AFTER_ADVANCE,
     OCR_TRIGGER_MODE_INTERVAL,
+    GalgameLLMConfig,
     SharedStatePayload,
     json_copy,
     sanitize_snapshot_state,
@@ -601,7 +602,7 @@ class GameLLMAgent:
         logger,
         llm_gateway,
         host_adapter: HostAgentAdapter,
-        config: Any | None = None,
+        config: GalgameLLMConfig | None = None,
         local_input_actuator: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
         | None = None,
     ) -> None:
@@ -5470,25 +5471,10 @@ class GameLLMAgent:
         status = self._compute_status(shared)
         history_lines = list(shared.get("history_lines") or [])
         history_observed_lines = list(shared.get("history_observed_lines") or [])
-        try:
-            min_limit = int(getattr(self._context_config, "context_explain_min_lines", 4) or 4)
-        except (TypeError, ValueError):
-            min_limit = 4
-        try:
-            max_limit = int(getattr(self._context_config, "context_explain_max_lines", 16) or 16)
-        except (TypeError, ValueError):
-            max_limit = 16
-        min_limit = max(1, min_limit)
-        max_limit = max(1, max_limit)
-        if min_limit > max_limit:
-            min_limit, max_limit = max_limit, min_limit
-        try:
-            target_tokens = int(
-                getattr(self._context_config, "context_window_target_tokens", 800) or 800
-            )
-        except (TypeError, ValueError):
-            target_tokens = 800
-        target_tokens = max(1, target_tokens)
+        min_limit, max_limit, target_tokens = _context_window_bounds(
+            self._context_config,
+            max_floor=16,
+        )
         line_limit = _compute_dynamic_line_limit(
             [*history_lines, *history_observed_lines],
             min_limit=min_limit,

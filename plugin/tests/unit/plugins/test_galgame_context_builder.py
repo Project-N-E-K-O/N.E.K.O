@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from plugin.plugins.galgame_plugin import context_builder
-from plugin.plugins.galgame_plugin.models import DATA_SOURCE_OCR_READER
+from plugin.plugins.galgame_plugin.models import DATA_SOURCE_OCR_READER, GalgameLLMConfig
 
 
 def test_scene_lines_filters_scene_and_keeps_tail() -> None:
@@ -155,6 +155,18 @@ def test_condense_dialogue_batch_keeps_emotional_punctuation_separate() -> None:
     assert [item["line_id"] for item in result] == ["1", "2"]
 
 
+def test_condense_dialogue_batch_keeps_cjk_emotional_punctuation_separate() -> None:
+    for punctuation in ["！", "？", "…"]:
+        lines = [
+            {"speaker": "A", "text": f"待って{punctuation}", "scene_id": "s", "line_id": "1"},
+            {"speaker": "A", "text": "again", "scene_id": "s", "line_id": "2"},
+        ]
+
+        result = context_builder._condense_dialogue_batch(lines)
+
+        assert [item["line_id"] for item in result] == ["1", "2"]
+
+
 def test_condense_dialogue_batch_keeps_long_lines_separate() -> None:
     lines = [
         {"speaker": "A", "text": "x" * 31, "scene_id": "s", "line_id": "1"},
@@ -185,3 +197,27 @@ def test_compute_dynamic_line_limit_dense_cjk_near_min_sparse_english_near_max()
 
     assert dense_limit == 4
     assert sparse_limit == 16
+
+
+def test_compute_dynamic_line_limit_uses_recent_twenty_lines_only() -> None:
+    old_dense_lines = [{"text": "日" * 1000} for _ in range(200)]
+    recent_sparse_lines = [{"text": "ok"} for _ in range(20)]
+
+    result = context_builder._compute_dynamic_line_limit(
+        [*old_dense_lines, *recent_sparse_lines],
+        4,
+        16,
+        800,
+    )
+
+    assert result == 16
+
+
+def test_context_window_bounds_preserves_zero_until_minimum_clamp() -> None:
+    config = GalgameLLMConfig(
+        context_explain_min_lines=0,
+        context_explain_max_lines=0,
+        context_window_target_tokens=0,
+    )
+
+    assert context_builder._context_window_bounds(config, max_floor=1) == (1, 1, 1)

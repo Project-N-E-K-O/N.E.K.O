@@ -27,6 +27,7 @@ from .models import (
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
     GalgameConfig,
+    GalgameLLMConfig,
     MODE_CHOICE_ADVISOR,
     MODE_COMPANION,
     MODES,
@@ -2885,7 +2886,7 @@ def build_explain_context(
     local_state: dict[str, Any],
     *,
     line_id: str,
-    config: Any | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
     from .context_builder import build_explain_context as _build_explain_context
 
@@ -2899,7 +2900,7 @@ def build_summarize_context(
     *,
     scene_id: str,
     merge_from_scene_ids: list[str] | None = None,
-    config: Any | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
     from .context_builder import build_summarize_context as _build_summarize_context
 
@@ -2920,7 +2921,7 @@ def build_summarize_context(
 def build_suggest_context(
     local_state: dict[str, Any],
     *,
-    config: Any | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
     from .context_builder import build_suggest_context as _build_suggest_context
 

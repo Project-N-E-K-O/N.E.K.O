@@ -10,6 +10,7 @@ from .models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
+    GalgameLLMConfig,
     sanitize_choice,
     sanitize_snapshot_state,
 )
@@ -94,28 +95,24 @@ def _significant_char_count(text: object) -> int:
 
 
 def _context_window_bounds(
-    config: Any | None,
+    config: GalgameLLMConfig | None,
     *,
     max_floor: int = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES,
 ) -> tuple[int, int, int]:
     try:
-        min_limit = int(
-            getattr(config, "context_explain_min_lines", _DYNAMIC_WINDOW_DEFAULT_MIN_LINES)
-            or _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
-        )
+        raw_min = getattr(config, "context_explain_min_lines", None)
+        min_limit = int(raw_min) if raw_min is not None else _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
     except (TypeError, ValueError):
         min_limit = _DYNAMIC_WINDOW_DEFAULT_MIN_LINES
     try:
-        max_limit = int(
-            getattr(config, "context_explain_max_lines", _DYNAMIC_WINDOW_DEFAULT_MAX_LINES)
-            or _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
-        )
+        raw_max = getattr(config, "context_explain_max_lines", None)
+        max_limit = int(raw_max) if raw_max is not None else _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
     except (TypeError, ValueError):
         max_limit = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES
     try:
-        target_tokens = int(
-            getattr(config, "context_window_target_tokens", _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS)
-            or _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
+        raw_target = getattr(config, "context_window_target_tokens", None)
+        target_tokens = (
+            int(raw_target) if raw_target is not None else _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
         )
     except (TypeError, ValueError):
         target_tokens = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
@@ -138,6 +135,7 @@ def _compute_dynamic_line_limit(
         min_limit, max_limit = max_limit, min_limit
     if not lines:
         return min_limit
+    lines = lines[-20:]
     token_counts = [
         count_tokens_heuristic(str(item.get("text") or "")) if isinstance(item, dict) else 0
         for item in lines
@@ -536,7 +534,7 @@ def build_explain_context(
     local_state: dict[str, Any],
     *,
     line_id: str,
-    config: Any | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
     """Build the prompt context used by the explain-line LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
@@ -656,7 +654,7 @@ def build_summarize_context(
     *,
     scene_id: str,
     merge_from_scene_ids: list[str] | None = None,
-    config: Any | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
     """Build the prompt context used by the summarize-scene LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
@@ -726,7 +724,7 @@ def build_summarize_context(
 def build_suggest_context(
     local_state: dict[str, Any],
     *,
-    config: Any | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
     """Build the prompt context used by the suggest-choice LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
