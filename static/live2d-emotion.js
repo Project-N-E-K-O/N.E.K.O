@@ -7,6 +7,11 @@
  * - 常驻表情管理（如设置和清除常驻表情）
  */
 
+const LIVE2D_EMOTION_SOFT_RESET_MS = 220;
+const LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS = 220;
+const LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS = 200;
+const LIVE2D_EMOTION_IDLE_PRIORITY = 1;
+
 // 记录模型的初始参数（用于expression重置，跳过位置参数）
 Live2DManager.prototype.recordInitialParameters = function() {
     if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
@@ -447,6 +452,21 @@ Live2DManager.prototype._isCurrentMotionTimerGeneration = function(generation) {
     return generation === (this._motionTimerGeneration || 0);
 };
 
+Live2DManager.prototype.hasActiveMotionPlayback = function() {
+    if (this.isEmotionChanging) {
+        return true;
+    }
+
+    const motionTimer = this.motionTimer;
+    if (motionTimer) {
+        return true;
+    }
+
+    const motionManager = this.currentModel?.internalModel?.motionManager;
+    const currentPriority = Number(motionManager?.state?.currentPriority ?? 0);
+    return Number.isFinite(currentPriority) && currentPriority > LIVE2D_EMOTION_IDLE_PRIORITY;
+};
+
 Live2DManager.prototype._clearMotionTimer = function() {
     this._nextMotionTimerGeneration();
     if (!this.motionTimer) return false;
@@ -718,6 +738,49 @@ Live2DManager.prototype._cancelSmoothReset = function() {
     }
 };
 
+Live2DManager.prototype.softClearEmotionEffects = async function(options = {}) {
+    const preserveExpression = options.preserveExpression !== false;
+    const duration = Number.isFinite(Number(options.duration))
+        ? Math.max(0, Number(options.duration))
+        : LIVE2D_EMOTION_SOFT_RESET_MS;
+
+    this._clearMotionTimer();
+
+    try {
+        const motionManager = this.currentModel?.internalModel?.motionManager;
+        if (motionManager && typeof motionManager.stopAllMotions === 'function') {
+            motionManager.stopAllMotions();
+        }
+    } catch (motionError) {
+        console.warn('停止motion失败:', motionError);
+    }
+
+    if (duration <= 0) {
+        this.clearEmotionEffects();
+        return true;
+    }
+
+    try {
+        await this.smoothResetToInitialState(duration);
+    } catch (error) {
+        console.warn('平滑清理情绪失败，回退即时清理:', error);
+        this.clearEmotionEffects();
+        return false;
+    }
+
+    const resetCount = this._resetActiveMotionParameters({ preserveExpression });
+    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression });
+    this._clearActiveMotionParamIds();
+    console.log(`已平滑清理motion效果，重置${resetCount}个motion参数，显式恢复${explicitResetCount}个motion参数`);
+
+    if (preserveExpression) {
+        Promise.resolve(this.applyPersistentExpressionsNative(true)).catch((e) => {
+            console.warn('重新应用常驻表情失败:', e);
+        });
+    }
+    return true;
+};
+
 /**
  * 安装手动表情覆盖（Method 2 回退时使用，带淡入效果）
  *
@@ -954,7 +1017,7 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         console.log('使用手动参数设置播放expression（带淡入过渡）');
         if (expressionData.Parameters && expressionData.Parameters.length > 0) {
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
-            this._installManualExpressionOverride(expressionData.Parameters, 300);
+            this._installManualExpressionOverride(expressionData.Parameters, LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS);
             expressionApplied = true;
         }
         
@@ -1236,10 +1299,11 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 8);
                 const happyTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
-                    this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
                     this.motionTimer = null;
-                    // motion完成后清除motion参数，但保留expression
-                    this.clearEmotionEffects();
+                    this.softClearEmotionEffects({
+                        preserveExpression: true,
+                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
+                    });
                 }, 1000);
                 this.motionTimer = { type: 'timeout', id: happyTimer, generation };
                 break;
@@ -1249,10 +1313,11 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', -5);
                 const sadTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
-                    this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
                     this.motionTimer = null;
-                    // motion完成后清除motion参数，但保留expression
-                    this.clearEmotionEffects();
+                    this.softClearEmotionEffects({
+                        preserveExpression: true,
+                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
+                    });
                 }, 1200);
                 this.motionTimer = { type: 'timeout', id: sadTimer, generation };
                 break;
@@ -1266,10 +1331,11 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 }, 400);
                 const angryTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
-                    this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleX', 0);
                     this.motionTimer = null;
-                    // motion完成后清除motion参数，但保留expression
-                    this.clearEmotionEffects();
+                    this.softClearEmotionEffects({
+                        preserveExpression: true,
+                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
+                    });
                 }, 800);
                 this.motionTimer = { type: 'timeout', id: angryTimer, extraTimeoutIds: [angryPhaseTimer], generation };
                 break;
@@ -1279,10 +1345,11 @@ Live2DManager.prototype.playSimpleMotion = function(emotion) {
                 this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', -8);
                 const surprisedTimer = setTimeout(() => {
                     if (!isCurrentMotion()) return;
-                    this.currentModel.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
                     this.motionTimer = null;
-                    // motion完成后清除motion参数，但保留expression
-                    this.clearEmotionEffects();
+                    this.softClearEmotionEffects({
+                        preserveExpression: true,
+                        duration: LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS
+                    });
                 }, 800);
                 this.motionTimer = { type: 'timeout', id: surprisedTimer, generation };
                 break;
@@ -1435,6 +1502,9 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         // setEmotion 切入新情绪时应清理上一套 expression/motion 残留；
         // 唯一例外是回退到 Idle 且没有新 expression，此时沿用旧语义：
         // 只清 motion 残留，不把当前情绪表情洗掉。
+        if (!shouldPreserveExistingExpression) {
+            await this.smoothResetToInitialState(LIVE2D_EMOTION_SOFT_RESET_MS);
+        }
         await this.resetTransientMotionAndExpressionState({
             preserveExpression: shouldPreserveExistingExpression,
             resetAllParameters: !shouldPreserveExistingExpression

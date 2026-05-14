@@ -242,7 +242,7 @@
     const RETURN_PETAL_SEQUENCE_URL = '/static/assets/tutorial/petals/yui-guide-petal-transition.webp';
     const RETURN_PETAL_ANIMATION_EXTRA_MS = 1000;
     const RETURN_PETAL_SEQUENCE_DURATION_MS = 6200;
-    const RETURN_PETAL_FINAL_OPACITY = 0.7;
+    const RETURN_PETAL_FINAL_OPACITY = 0.6;
     const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
@@ -438,6 +438,13 @@
 
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    function easeInOutCubic(value) {
+        const t = clamp(value, 0, 1);
+        return t < 0.5
+            ? 4 * t * t * t
+            : 1 - Math.pow(-2 * t + 2, 3) / 2;
     }
 
     const HOME_TUTORIAL_PLATFORM_PROFILES = Object.freeze({
@@ -1706,6 +1713,14 @@
     }
 
     class YuiGuideEmotionBridge {
+        constructor() {
+            this.live2dApplySequence = Promise.resolve();
+            this.live2dExpressionSequence = Promise.resolve();
+            this.pendingLive2DEmotion = '';
+            this.pendingLive2DExpressionFile = '';
+            this.activeLive2DExpressionFile = '';
+        }
+
         normalizeModelType(modelType) {
             const normalizedType = String(modelType || '').toLowerCase();
             if (normalizedType === 'vrm' || normalizedType === 'mmd') {
@@ -1783,6 +1798,257 @@
             }
         }
 
+        async waitForLive2DMotionTail(manager, timeoutMs) {
+            const maxWaitMs = Math.max(0, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 0));
+            if (!manager || typeof manager.hasActiveMotionPlayback !== 'function' || maxWaitMs <= 0) {
+                return;
+            }
+
+            const startedAt = Date.now();
+            while ((Date.now() - startedAt) < maxWaitMs) {
+                if (!manager.currentModel) {
+                    return;
+                }
+                if (!manager.hasActiveMotionPlayback()) {
+                    return;
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, 48));
+            }
+        }
+
+        async waitForLive2DMotionCompletion(manager, timeoutMs) {
+            const maxWaitMs = Math.max(0, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 0));
+            if (!manager || typeof manager.hasActiveMotionPlayback !== 'function' || maxWaitMs <= 0) {
+                return;
+            }
+
+            const startedAt = Date.now();
+            while ((Date.now() - startedAt) < maxWaitMs) {
+                if (!manager.currentModel) {
+                    return;
+                }
+                if (!manager.hasActiveMotionPlayback()) {
+                    return;
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, 48));
+            }
+        }
+
+        queueLive2DEmotionApply(emotion) {
+            const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
+            if (!normalizedEmotion) {
+                return Promise.resolve();
+            }
+
+            this.pendingLive2DEmotion = normalizedEmotion;
+            const run = async () => {
+                const targetEmotion = this.pendingLive2DEmotion;
+                const manager = window.live2dManager;
+                if (!manager || !manager.currentModel) {
+                    return;
+                }
+
+                if (this.activeLive2DExpressionFile) {
+                    this.clearLive2DGuideExpression(manager);
+                }
+
+                await this.waitForLive2DMotionCompletion(manager, 2200);
+                if (this.pendingLive2DEmotion !== targetEmotion) {
+                    return;
+                }
+
+                if (typeof manager.setEmotion === 'function') {
+                    await manager.setEmotion(targetEmotion);
+                    return;
+                }
+                if (typeof manager.playMotion === 'function') {
+                    await manager.playMotion(targetEmotion);
+                }
+            };
+
+            this.live2dApplySequence = this.live2dApplySequence
+                .catch(() => {})
+                .then(run);
+            return this.live2dApplySequence;
+        }
+
+        getActiveGuideExpressionFile() {
+            return this.activeLive2DExpressionFile || '';
+        }
+
+        clearLive2DGuideExpression(managerOverride) {
+            const manager = managerOverride || window.live2dManager;
+            this.pendingLive2DExpressionFile = '';
+            this.activeLive2DExpressionFile = '';
+
+            if (!manager) {
+                return false;
+            }
+
+            let handled = false;
+            if (typeof manager._removeManualExpressionOverride === 'function') {
+                try {
+                    manager._removeManualExpressionOverride();
+                    handled = true;
+                } catch (error) {
+                    console.warn('[YuiGuide] 清理教程临时表情失败:', error);
+                }
+            }
+
+            if (Object.prototype.hasOwnProperty.call(manager, '_activeExpressionParamIds')) {
+                manager._activeExpressionParamIds = null;
+                handled = true;
+            }
+
+            return handled;
+        }
+
+        buildLive2DExpressionCandidates(manager, expressionFile) {
+            const normalizedExpressionFile = typeof expressionFile === 'string'
+                ? expressionFile.trim()
+                : '';
+            if (!manager || !normalizedExpressionFile) {
+                return [];
+            }
+
+            const candidateFiles = [];
+            const pushCandidate = (filePath) => {
+                if (!filePath || typeof filePath !== 'string') {
+                    return;
+                }
+                const normalizedPath = filePath.replace(/\\/g, '/').trim();
+                if (normalizedPath && !candidateFiles.includes(normalizedPath)) {
+                    candidateFiles.push(normalizedPath);
+                }
+            };
+
+            pushCandidate(normalizedExpressionFile);
+            const resolvedRef = typeof manager.resolveExpressionReferenceByFile === 'function'
+                ? manager.resolveExpressionReferenceByFile(normalizedExpressionFile)
+                : null;
+            if (resolvedRef && resolvedRef.file) {
+                pushCandidate(resolvedRef.file);
+            }
+
+            const baseName = normalizedExpressionFile.split('/').pop() || '';
+            if (baseName) {
+                pushCandidate(baseName);
+                pushCandidate('expressions/' + baseName);
+            }
+
+            return candidateFiles;
+        }
+
+        async loadLive2DExpressionData(manager, expressionFile) {
+            const candidateFiles = this.buildLive2DExpressionCandidates(manager, expressionFile);
+            if (candidateFiles.length === 0) {
+                return null;
+            }
+
+            let lastFetchError = null;
+            for (const candidateFile of candidateFiles) {
+                try {
+                    const response = await fetch(manager.resolveAssetPath(candidateFile));
+                    if (!response.ok) {
+                        lastFetchError = new Error('Failed to load expression: ' + response.statusText);
+                        continue;
+                    }
+
+                    return {
+                        expressionData: await response.json(),
+                        loadedExpressionFile: candidateFile
+                    };
+                } catch (error) {
+                    lastFetchError = error;
+                }
+            }
+
+            if (typeof manager.markExpressionFileMissing === 'function') {
+                candidateFiles.forEach((candidateFile) => {
+                    manager.markExpressionFileMissing(candidateFile);
+                });
+            }
+
+            if (lastFetchError) {
+                throw lastFetchError;
+            }
+            return null;
+        }
+
+        queueLive2DExpressionApply(expressionFile, options) {
+            const normalizedExpressionFile = typeof expressionFile === 'string'
+                ? expressionFile.trim()
+                : '';
+            if (!normalizedExpressionFile) {
+                return Promise.resolve(false);
+            }
+
+            const normalizedOptions = options || {};
+            const fadeInMs = Math.max(
+                60,
+                Math.min(
+                    1600,
+                    Math.round(Number.isFinite(normalizedOptions.fadeInMs) ? normalizedOptions.fadeInMs : 220)
+                )
+            );
+            this.pendingLive2DExpressionFile = normalizedExpressionFile;
+
+            const previousEmotionSequence = this.live2dApplySequence;
+            const previousExpressionSequence = this.live2dExpressionSequence;
+            const run = async () => {
+                const targetExpressionFile = this.pendingLive2DExpressionFile;
+                const manager = window.live2dManager;
+                if (!manager || !manager.currentModel || targetExpressionFile !== normalizedExpressionFile) {
+                    return false;
+                }
+
+                const loadedExpression = await this.loadLive2DExpressionData(manager, targetExpressionFile);
+                if (!loadedExpression || this.pendingLive2DExpressionFile !== targetExpressionFile) {
+                    return false;
+                }
+
+                const expressionParams = Array.isArray(loadedExpression.expressionData && loadedExpression.expressionData.Parameters)
+                    ? loadedExpression.expressionData.Parameters
+                    : [];
+                if (expressionParams.length === 0 || typeof manager._installManualExpressionOverride !== 'function') {
+                    return false;
+                }
+
+                manager._activeExpressionParamIds = new Set(
+                    expressionParams
+                        .map((param) => param && param.Id)
+                        .filter(Boolean)
+                );
+                manager._installManualExpressionOverride(expressionParams, fadeInMs);
+                this.activeLive2DExpressionFile = loadedExpression.loadedExpressionFile;
+                return true;
+            };
+
+            this.live2dExpressionSequence = Promise.all([
+                previousEmotionSequence.catch(() => {}),
+                previousExpressionSequence.catch(() => {})
+            ]).then(run);
+            return this.live2dExpressionSequence;
+        }
+
+        applyExpressionFile(expressionFile, options) {
+            const activeModelType = this.getActiveModelType();
+            if (activeModelType !== 'live2d') {
+                return;
+            }
+
+            if (!window.live2dManager || !window.live2dManager.currentModel) {
+                return;
+            }
+
+            try {
+                const applyPromise = this.queueLive2DExpressionApply(expressionFile, options);
+                this.handleAsyncFailure(applyPromise, '[YuiGuide] 播放教程临时表情失败:', expressionFile);
+            } catch (error) {
+                console.warn('[YuiGuide] 播放教程临时表情失败:', expressionFile, error);
+            }
+        }
+
         apply(emotion) {
             if (!emotion) {
                 return;
@@ -1790,13 +2056,13 @@
 
             const activeModelType = this.getActiveModelType();
             if (activeModelType === 'live2d') {
-                if (!window.live2dManager || !window.live2dManager.currentModel || typeof window.live2dManager.playMotion !== 'function') {
+                if (!window.live2dManager || !window.live2dManager.currentModel) {
                     return;
                 }
 
                 try {
-                    const motionPromise = window.live2dManager.playMotion(emotion);
-                    this.handleAsyncFailure(motionPromise, '[YuiGuide] 播放教程动作失败:', emotion);
+                    const applyPromise = this.queueLive2DEmotionApply(emotion);
+                    this.handleAsyncFailure(applyPromise, '[YuiGuide] 播放教程动作失败:', emotion);
                 } catch (error) {
                     console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
                 }
@@ -1840,9 +2106,17 @@
                 return false;
             }
 
-            let handled = false;
+            let handled = this.clearLive2DGuideExpression(manager);
 
-            if (typeof manager.clearEmotionEffects === 'function') {
+            if (typeof manager.softClearEmotionEffects === 'function') {
+                this.handleAsyncFailure(
+                    manager.softClearEmotionEffects({
+                        preserveExpression: true
+                    }),
+                    '[YuiGuide] 平滑清理 Live2D 教程动作失败:'
+                );
+                handled = true;
+            } else if (typeof manager.clearEmotionEffects === 'function') {
                 this.handleAsyncFailure(
                     manager.clearEmotionEffects(),
                     '[YuiGuide] 清理 Live2D 教程动作失败:'
@@ -1850,19 +2124,17 @@
                 handled = true;
             }
 
-            if (typeof manager.clearExpression === 'function') {
+            if (typeof manager.smoothResetToInitialState === 'function') {
+                this.handleAsyncFailure(
+                    manager.smoothResetToInitialState(220),
+                    '[YuiGuide] 平滑清理 Live2D 表情失败:'
+                );
+                handled = true;
+            } else if (typeof manager.clearExpression === 'function') {
                 this.handleAsyncFailure(
                     manager.clearExpression(),
                     '[YuiGuide] 清理 Live2D 表情失败:'
                 );
-                handled = true;
-            }
-
-            const motionManager = manager.currentModel
-                && manager.currentModel.internalModel
-                && manager.currentModel.internalModel.motionManager;
-            if (motionManager && typeof motionManager.stopAllMotions === 'function') {
-                motionManager.stopAllMotions();
                 handled = true;
             }
 
@@ -2182,6 +2454,10 @@
             this.manualPluginDashboardOpenUserClicked = false;
             this.takeoverOriginalAgentSwitches = null;
             this.customSecondarySpotlightTarget = null;
+            this.persistentGhostCursorLookAtHandle = null;
+            this.preTakeoverGhostCursorLookAtHandle = null;
+            this.guideIdleSwayHandle = null;
+            this.takeoverTopPeekHandle = null;
             this.returnPetalTransitionActive = false;
             this.returnPetalTransitionOpacityRestores = null;
             this.keydownHandler = this.onKeyDown.bind(this);
@@ -2298,6 +2574,7 @@
 
         applyTutorialFaceForwardLock() {
             window.nekoYuiGuideFaceForwardLock = true;
+            window.nekoYuiGuideFaceForwardSuppressParamWrite = true;
             window.mouseTrackingEnabled = false;
 
             const live2dManager = window.live2dManager || null;
@@ -2341,6 +2618,7 @@
 
             this.tutorialFaceForwardLockSnapshot = null;
             window.nekoYuiGuideFaceForwardLock = false;
+            window.nekoYuiGuideFaceForwardSuppressParamWrite = false;
             if (snapshot.hadWindowMouseTrackingEnabled) {
                 window.mouseTrackingEnabled = snapshot.windowMouseTrackingEnabled;
             } else {
@@ -2821,7 +3099,7 @@
                         return;
                     }
                     const progress = duration > 0 ? clamp((now - startedAt) / duration, 0, 1) : 1;
-                    const opacity = 1 - progress;
+                    const opacity = 1 - easeInOutCubic(progress);
                     document.body.style.setProperty('--yui-guide-return-avatar-opacity', String(clamp(opacity, 0, 1)));
                     targets.forEach((target) => target.apply(target.from * opacity));
                     if (progress >= 1) {
@@ -3053,9 +3331,14 @@
         }
 
         captureCurrentGuidePresentationSnapshot() {
-            if (this.activeGuideEmotion) {
+            const activeExpressionFile = this.emotionBridge && typeof this.emotionBridge.getActiveGuideExpressionFile === 'function'
+                ? this.emotionBridge.getActiveGuideExpressionFile()
+                : '';
+
+            if (this.activeGuideEmotion || activeExpressionFile) {
                 return {
-                    emotion: this.activeGuideEmotion
+                    emotion: this.activeGuideEmotion,
+                    expressionFile: activeExpressionFile
                 };
             }
 
@@ -3067,8 +3350,18 @@
                 return false;
             }
 
+            let restored = false;
             if (snapshot.emotion) {
                 this.applyGuideEmotion(snapshot.emotion);
+                restored = true;
+            }
+
+            if (snapshot.expressionFile && this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile(snapshot.expressionFile);
+                restored = true;
+            }
+
+            if (restored) {
                 return true;
             }
 
@@ -4843,10 +5136,39 @@
             if (!(options && options.skipEmotion)) {
                 if (performance.emotion) {
                     this.applyGuideEmotion(performance.emotion);
-                } else if (this.activeGuideEmotion) {
-                    this.clearGuidePresentation();
                 }
             }
+        }
+
+        shouldUsePersistentGhostCursorLookAt(stepId) {
+            return (
+                stepId === 'takeover_capture_cursor'
+                || stepId === 'takeover_plugin_preview'
+                || stepId === 'takeover_settings_peek'
+                || stepId === 'takeover_return_control'
+            );
+        }
+
+        async syncPersistentGhostCursorLookAtForScene(stepId, runId) {
+            if (this.shouldUsePersistentGhostCursorLookAt(stepId)) {
+                this.adoptPreTakeoverGhostCursorLookAtHandle();
+                return this.ensurePersistentGhostCursorLookAtPerformance({
+                    isCancelled: () => this.isStopping()
+                });
+            }
+            const stopReason = stepId === 'takeover_return_control'
+                ? 'handoff'
+                : 'scene_follow_not_required';
+            if (this.preTakeoverGhostCursorLookAtHandle) {
+                await this.stopIntroVoiceCursorLookAtPerformance(
+                    this.preTakeoverGhostCursorLookAtHandle,
+                    stopReason
+                );
+            }
+            await this.stopPersistentGhostCursorLookAtPerformance(
+                stopReason
+            );
+            return null;
         }
 
         async playManagedScene(stepId, meta) {
@@ -6285,9 +6607,6 @@
                 );
             };
             const guardFailed = () => runId !== this.sceneRunId || this.isStopping();
-            const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
-                isCancelled: () => guardFailed()
-            });
             const createToggleSpotlightTarget = (key, element) => {
                 const rect = this.getElementRect(element);
                 if (!rect) {
@@ -6304,97 +6623,109 @@
                     radius: 18
                 });
             };
-            try {
-                const catPawButton = await this.waitForVisibleTarget([
-                    () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
-                    () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
-                    () => this.getFloatingButtonShell(this.resolveElement(step && step.anchor ? step.anchor : '')),
-                    () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw)))
-                ], 2200);
-                if (!catPawButton || guardFailed()) {
-                    return false;
-                }
-                this.setSpotlightGeometryHint(catPawButton, {
-                    padding: 4,
-                    geometry: 'circle'
-                });
-                this.addRetainedExtraSpotlight(catPawButton);
-
-                const openedAgentPanel = await this.performHighlightedApiClick({
-                    target: catPawButton,
-                    durationMs: scaleSceneMs(1500, 900, 2600),
-                    runId: runId,
-                    action: () => this.openAgentPanel()
-                });
-                if (!openedAgentPanel || guardFailed()) {
-                    return false;
-                }
-
-                const agentMasterToggle = await this.waitForElement(() => {
-                    const toggleItem = this.getAgentToggleElement('agent-master');
-                    return this.getElementRect(toggleItem) ? toggleItem : null;
-                }, 4000);
-                if (!agentMasterToggle || guardFailed()) {
-                    return false;
-                }
-                const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
-                this.addRetainedExtraSpotlight(agentMasterSpotlight);
-
-                const enabledAgentMaster = await this.performHighlightedApiClick({
-                    target: agentMasterSpotlight,
-                    durationMs: scaleSceneMs(1200, 760, 2200),
-                    runId: runId,
-                    action: async () => {
-                        const enabled = await this.setAgentMasterEnabled(true);
-                        if (!enabled) {
-                            return false;
-                        }
-                        return !!(await this.waitForAgentToggleState('agent-master', true, 1800));
-                    }
-                });
-                if (!enabledAgentMaster || guardFailed()) {
-                    return false;
-                }
-
-                if (!(await this.waitForSceneDelay(scaleSceneMs(240, 120, 600))) || guardFailed()) {
-                    return false;
-                }
-
-                const keyboardToggle = await this.waitForElement(() => {
-                    const toggleItem = this.getAgentToggleElement('agent-keyboard');
-                    return this.getElementRect(toggleItem) ? toggleItem : null;
-                }, 2400);
-                if (!keyboardToggle || guardFailed()) {
-                    return false;
-                }
-                const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
-                this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
-                this.removeRetainedExtraSpotlight(agentMasterSpotlight);
-
-                const enabledKeyboardControl = await this.performHighlightedApiClick({
-                    target: keyboardToggleSpotlight,
-                    durationMs: scaleSceneMs(520, 320, 950),
-                    runId: runId,
-                    action: async () => {
-                        const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
-                        if (!enabled) {
-                            return false;
-                        }
-                        return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
-                    }
-                });
-                if (!enabledKeyboardControl || guardFailed()) {
-                    return false;
-                }
-
-                await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
-                return !guardFailed();
-            } finally {
-                await this.stopIntroVoiceCursorLookAtPerformance(
-                    ghostCursorLookAtHandle,
-                    'takeover_keyboard_control_complete'
-                );
+            const catPawButton = await this.waitForVisibleTarget([
+                () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
+                () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
+                () => this.getFloatingButtonShell(this.resolveElement(step && step.anchor ? step.anchor : '')),
+                () => this.getFloatingButtonShell(this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw)))
+            ], 2200);
+            if (!catPawButton || guardFailed()) {
+                return false;
             }
+            this.setSpotlightGeometryHint(catPawButton, {
+                padding: 4,
+                geometry: 'circle'
+            });
+            this.addRetainedExtraSpotlight(catPawButton);
+
+            const openedAgentPanel = await this.performHighlightedApiClick({
+                target: catPawButton,
+                durationMs: scaleSceneMs(1500, 900, 2600),
+                runId: runId,
+                action: () => this.openAgentPanel()
+            });
+            if (!openedAgentPanel || guardFailed()) {
+                return false;
+            }
+
+            if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile('expressions/xxy.exp3.json');
+            }
+
+            const agentMasterToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-master');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 4000);
+            if (!agentMasterToggle || guardFailed()) {
+                return false;
+            }
+            const agentMasterSpotlight = createToggleSpotlightTarget('takeover-agent-master-toggle', agentMasterToggle);
+            this.addRetainedExtraSpotlight(agentMasterSpotlight);
+
+            const enabledAgentMaster = await this.performHighlightedApiClick({
+                target: agentMasterSpotlight,
+                durationMs: scaleSceneMs(1200, 760, 2200),
+                runId: runId,
+                action: async () => {
+                    const enabled = await this.setAgentMasterEnabled(true);
+                    if (!enabled) {
+                        return false;
+                    }
+                    return !!(await this.waitForAgentToggleState('agent-master', true, 1800));
+                }
+            });
+            if (!enabledAgentMaster || guardFailed()) {
+                return false;
+            }
+
+            if (!(await this.waitForSceneDelay(scaleSceneMs(240, 120, 600))) || guardFailed()) {
+                return false;
+            }
+
+            const keyboardToggle = await this.waitForElement(() => {
+                const toggleItem = this.getAgentToggleElement('agent-keyboard');
+                return this.getElementRect(toggleItem) ? toggleItem : null;
+            }, 2400);
+            if (!keyboardToggle || guardFailed()) {
+                return false;
+            }
+            const keyboardToggleSpotlight = createToggleSpotlightTarget('takeover-keyboard-toggle', keyboardToggle);
+            this.addRetainedExtraSpotlight(keyboardToggleSpotlight);
+            this.removeRetainedExtraSpotlight(agentMasterSpotlight);
+
+            const enabledKeyboardControl = await this.performHighlightedApiClick({
+                target: keyboardToggleSpotlight,
+                durationMs: scaleSceneMs(520, 320, 950),
+                runId: runId,
+                action: async () => {
+                    const enabled = await this.setAgentFlagEnabled('computer_use_enabled', true);
+                    if (!enabled) {
+                        return false;
+                    }
+                    return !!(await this.waitForAgentToggleState('agent-keyboard', true, 1800));
+                }
+            });
+            if (!enabledKeyboardControl || guardFailed()) {
+                return false;
+            }
+
+            await this.stopPersistentGhostCursorLookAtPerformance('takeover_top_peek');
+            if (guardFailed()) {
+                return false;
+            }
+            this.takeoverTopPeekHandle = await this.startPluginDashboardCornerPeekPerformance(runId, {
+                targetPreset: 'top_flipped'
+            });
+            if (guardFailed()) {
+                return false;
+            }
+
+            if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile('expressions/slh.exp3.json');
+            }
+
+            await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
+            return !guardFailed();
         }
 
         async runPluginDashboardLaunchSequence(step, performance, runId) {
@@ -7161,6 +7492,9 @@
 
         async runPluginDashboardPreviewScene(step, runId) {
             this.highlightChatWindow();
+            if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile('expressions/xxy.exp3.json');
+            }
             const stepBubbleText = this.resolvePerformanceBubbleText(step && step.performance);
             let homeNarrationPromise = Promise.resolve();
             if (stepBubbleText) {
@@ -7219,6 +7553,7 @@
                     return;
                 }
                 let dashboardWindow = launchResult.pluginDashboardWindow;
+                await this.stopPersistentGhostCursorLookAtPerformance('plugin_dashboard_corner_peek');
                 pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId);
                 this.setPluginDashboardSkipBypassEnabled(true);
 
@@ -7314,23 +7649,19 @@
             this.customSecondarySpotlightTarget = null;
             const settingsButton = this.resolveElement(performance.cursorTarget || step.anchor);
             const settingsSpotlightTarget = this.getFloatingButtonShell(settingsButton) || settingsButton;
-            const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
-                isCancelled: () => runId !== this.sceneRunId || this.isStopping()
-            });
             this.setSpotlightGeometryHint(settingsSpotlightTarget, {
                 padding: 4,
                 geometry: 'circle'
             });
-            try {
-                if (settingsSpotlightTarget) {
-                    this.addRetainedExtraSpotlight(settingsSpotlightTarget);
-                }
-                const introText = this.resolvePerformanceBubbleText(performance);
-                await this.closeAgentPanel();
-                this.clearPreciseHighlights();
-                this.clearSceneExtraSpotlights();
-                this.overlay.clearActionSpotlight();
-                this.highlightChatWindow();
+            if (settingsSpotlightTarget) {
+                this.addRetainedExtraSpotlight(settingsSpotlightTarget);
+            }
+            const introText = this.resolvePerformanceBubbleText(performance);
+            await this.closeAgentPanel();
+            this.clearPreciseHighlights();
+            this.clearSceneExtraSpotlights();
+            this.overlay.clearActionSpotlight();
+            this.highlightChatWindow();
 
                 if (introText) {
                     const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
@@ -7516,6 +7847,7 @@
 
                 let settingsDetailSecondLineDisplayed = false;
                 let settingsPeekPanicMotionTargetRect = null;
+                let settingsPeekPanicPromise = Promise.resolve();
                 const appendSettingsDetailSecondLine = () => {
                     if (
                         settingsDetailSecondLineDisplayed
@@ -7532,11 +7864,11 @@
                         voiceKey: detailVoiceKey,
                         streamDurationMs: detailPart2StreamDurationMs
                     });
-                    this.runSettingsPeekPanicPerformance({
+                    settingsPeekPanicPromise = this.runSettingsPeekPanicPerformance({
                         runId: runId,
                         targetRect: settingsPeekPanicMotionTargetRect,
                         totalDurationMs: detailPart2StreamDurationMs
-                    }).catch(() => {});
+                    }).catch(() => null);
                 };
                 const narrationPromise = this.speakGuideLine(detailText, {
                     voiceKey: detailVoiceKey
@@ -7683,24 +8015,33 @@
                     }
                 })();
 
-                await Promise.all([guardedNarrationPromise, actionPromise, guardedSecondLineDisplayPromise]);
+                await Promise.all([
+                    guardedNarrationPromise,
+                    actionPromise,
+                    guardedSecondLineDisplayPromise,
+                    settingsPeekPanicPromise
+                ]);
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
                 this.cleanupTutorialReturnButtons();
                 clearSettingsPeekHighlights();
                 // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
-                await closeSettingsPeekPanel();
-            } finally {
-                await this.stopIntroVoiceCursorLookAtPerformance(
-                    ghostCursorLookAtHandle,
-                    'settings_peek_complete'
-                );
-            }
+            await closeSettingsPeekPanel();
         }
 
         beginTerminationVisualCleanup() {
             this.sceneRunId += 1;
+            this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup').catch(() => {});
+            this.takeoverTopPeekHandle = null;
+            this.stopGuideIdleSwayPerformance('termination_cleanup').catch(() => {});
+            if (this.preTakeoverGhostCursorLookAtHandle) {
+                this.stopIntroVoiceCursorLookAtPerformance(
+                    this.preTakeoverGhostCursorLookAtHandle,
+                    'termination_cleanup'
+                ).catch(() => {});
+            }
+            this.stopPersistentGhostCursorLookAtPerformance('termination_cleanup').catch(() => {});
             this.resumeCurrentSceneAfterResistance();
             this.setCurrentScene(null, null);
             this.clearSceneTimers();
@@ -7778,7 +8119,7 @@
                     return;
                 }
 
-                await wait(120);
+                await wait(380);
                 if (this.isStopping()) {
                     return;
                 }
@@ -8360,22 +8701,114 @@
             }
         }
 
+        async ensurePreTakeoverGhostCursorLookAtPerformance(options) {
+            const existingHandle = this.preTakeoverGhostCursorLookAtHandle;
+            if (existingHandle && typeof existingHandle.stop === 'function') {
+                return existingHandle;
+            }
+
+            const createdHandle = await this.startGhostCursorLookAtPerformance(options || {});
+            if (createdHandle && typeof createdHandle.stop === 'function') {
+                this.preTakeoverGhostCursorLookAtHandle = createdHandle;
+            }
+            return this.preTakeoverGhostCursorLookAtHandle;
+        }
+
+        async ensurePersistentGhostCursorLookAtPerformance(options) {
+            const existingHandle = this.persistentGhostCursorLookAtHandle;
+            if (existingHandle && typeof existingHandle.stop === 'function') {
+                return existingHandle;
+            }
+
+            const createdHandle = await this.startGhostCursorLookAtPerformance(options || {});
+            if (createdHandle && typeof createdHandle.stop === 'function') {
+                this.persistentGhostCursorLookAtHandle = createdHandle;
+            }
+            return this.persistentGhostCursorLookAtHandle;
+        }
+
         async stopIntroVoiceCursorLookAtPerformance(handle, reason) {
             if (!handle || typeof handle.stop !== 'function') {
                 return;
+            }
+            if (this.preTakeoverGhostCursorLookAtHandle === handle) {
+                this.preTakeoverGhostCursorLookAtHandle = null;
+            }
+            if (this.persistentGhostCursorLookAtHandle === handle) {
+                this.persistentGhostCursorLookAtHandle = null;
             }
             try {
                 await handle.stop(reason || 'intro_voice_showcase_complete');
             } catch (_) {}
         }
 
-        async startPluginDashboardCornerPeekPerformance(runId) {
+        adoptPreTakeoverGhostCursorLookAtHandle() {
+            if (
+                !this.persistentGhostCursorLookAtHandle
+                && this.preTakeoverGhostCursorLookAtHandle
+                && typeof this.preTakeoverGhostCursorLookAtHandle.stop === 'function'
+            ) {
+                this.persistentGhostCursorLookAtHandle = this.preTakeoverGhostCursorLookAtHandle;
+            }
+            this.preTakeoverGhostCursorLookAtHandle = null;
+        }
+
+        async stopPersistentGhostCursorLookAtPerformance(reason) {
+            const handle = this.persistentGhostCursorLookAtHandle;
+            this.persistentGhostCursorLookAtHandle = null;
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'ghost_cursor_look_at_complete');
+            } catch (_) {}
+        }
+
+        async ensureGuideIdleSwayPerformance() {
+            const existingHandle = this.guideIdleSwayHandle;
+            if (existingHandle && typeof existingHandle.stop === 'function') {
+                return existingHandle;
+            }
+
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startGuideIdleSway !== 'function') {
+                return null;
+            }
+            try {
+                const handle = await api.startGuideIdleSway({
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => this.isStopping()
+                });
+                if (handle && typeof handle.stop === 'function') {
+                    this.guideIdleSwayHandle = handle;
+                }
+                return this.guideIdleSwayHandle;
+            } catch (error) {
+                console.warn('[YuiGuide] 教程常驻轻微晃动启动失败:', error);
+                return null;
+            }
+        }
+
+        async stopGuideIdleSwayPerformance(reason) {
+            const handle = this.guideIdleSwayHandle;
+            this.guideIdleSwayHandle = null;
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'guide_idle_sway_complete');
+            } catch (_) {}
+        }
+
+        async startPluginDashboardCornerPeekPerformance(runId, options) {
             const api = window.YuiGuideAvatarStage;
             if (!api || typeof api.startPluginDashboardCornerPeek !== 'function') {
                 return null;
             }
+            const normalizedOptions = options || {};
             try {
                 return await api.startPluginDashboardCornerPeek({
+                    targetPreset: normalizedOptions.targetPreset,
                     reducedMotion: this.shouldReduceTutorialMotion(),
                     isCancelled: () => runId !== this.sceneRunId || this.isStopping()
                 });
@@ -8500,6 +8933,7 @@
                 if (typeof document !== 'undefined' && document.body) {
                     document.body.classList.remove('yui-guide-live2d-preparing');
                 }
+                await this.ensureGuideIdleSwayPerformance();
                 return;
             }
 
@@ -8517,6 +8951,7 @@
                     reason: 'exception'
                 });
             }
+            await this.ensureGuideIdleSwayPerformance();
         }
 
         async runChatIntroPrelude() {
@@ -8537,6 +8972,7 @@
             }
 
             this.introFlowStarted = true;
+            await this.ensureGuideIdleSwayPerformance();
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
@@ -8583,8 +9019,13 @@
                 this.overlay.hideBubble();
                 this.overlay.setTakingOver(true);
                 this.cursor.wobble();
-                await wait(200);
+                await wait(280);
             }
+            if (this.isStopping()) {
+                return;
+            }
+
+            await this.waitForSceneDelay(140);
             if (this.isStopping()) {
                 return;
             }
@@ -8603,7 +9044,9 @@
             if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
-            const introVoiceLookAtHandle = await this.startIntroVoiceCursorLookAtPerformance();
+            const introVoiceLookAtHandle = await this.ensurePreTakeoverGhostCursorLookAtPerformance({
+                isCancelled: () => this.isStopping()
+            });
             try {
                 await Promise.all([
                     this.speakGuideLine(introText, {
@@ -8616,10 +9059,14 @@
                     ).catch(() => {})
                 ]);
             } finally {
-                await this.stopIntroVoiceCursorLookAtPerformance(
-                    introVoiceLookAtHandle,
-                    'intro_voice_showcase_complete'
-                );
+                if (this.isStopping()) {
+                    await this.stopIntroVoiceCursorLookAtPerformance(
+                        introVoiceLookAtHandle,
+                        'intro_voice_showcase_complete'
+                    );
+                } else {
+                    this.adoptPreTakeoverGhostCursorLookAtHandle();
+                }
             }
             if (this.isStopping()) {
                 return;
@@ -8643,6 +9090,7 @@
         // 因此跳过首页点击激活，但后续旁白与高亮演示照常执行。
         async runChatIntroPreludeExternalized(introStep) {
             this.introFlowStarted = true;
+            await this.ensureGuideIdleSwayPerformance();
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
@@ -8664,7 +9112,9 @@
             if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
-            const introVoiceLookAtHandle = await this.startIntroVoiceCursorLookAtPerformance();
+            const introVoiceLookAtHandle = await this.ensurePreTakeoverGhostCursorLookAtPerformance({
+                isCancelled: () => this.isStopping()
+            });
             try {
                 await Promise.all([
                     this.speakGuideLine(introText || '', {
@@ -8677,10 +9127,14 @@
                     ).catch(() => {})
                 ]);
             } finally {
-                await this.stopIntroVoiceCursorLookAtPerformance(
-                    introVoiceLookAtHandle,
-                    'intro_voice_showcase_complete'
-                );
+                if (this.isStopping()) {
+                    await this.stopIntroVoiceCursorLookAtPerformance(
+                        introVoiceLookAtHandle,
+                        'intro_voice_showcase_complete'
+                    );
+                } else {
+                    this.adoptPreTakeoverGhostCursorLookAtHandle();
+                }
             }
             if (this.isStopping()) {
                 return;
@@ -8773,6 +9227,10 @@
             }
 
             const runId = ++this.sceneRunId;
+            await this.syncPersistentGhostCursorLookAtForScene(stepId, runId);
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
             const performance = step.performance || {};
             const bubbleText = this.resolvePerformanceBubbleText(performance);
             const anchorRect = this.resolveRect(step.anchor);
@@ -8856,6 +9314,8 @@
                     }).catch(() => {}),
                     this.runTakeoverKeyboardControlSequence(step, performance, runId)
                 ]);
+                await this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'takeover_capture_cursor_complete');
+                this.takeoverTopPeekHandle = null;
                 this.clearRetainedExtraSpotlights();
                 this.clearVirtualSpotlight('takeover-agent-master-toggle');
                 this.clearVirtualSpotlight('takeover-keyboard-toggle');
@@ -9547,6 +10007,16 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
+            this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy').catch(() => {});
+            this.takeoverTopPeekHandle = null;
+            this.stopGuideIdleSwayPerformance('destroy').catch(() => {});
+            if (this.preTakeoverGhostCursorLookAtHandle) {
+                this.stopIntroVoiceCursorLookAtPerformance(
+                    this.preTakeoverGhostCursorLookAtHandle,
+                    'destroy'
+                ).catch(() => {});
+            }
+            this.stopPersistentGhostCursorLookAtPerformance('destroy').catch(() => {});
             this.releaseTutorialFaceForwardLock();
             this.resumeCurrentSceneAfterResistance();
             this.clearExternalizedChatFx();

@@ -300,15 +300,18 @@ Live2DManager.prototype.getCurrentModel = function() {
 };
 
 // 安装短期姿态覆盖。多个来源可按注册顺序组合，避免并行动作互相顶掉。
-Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply) {
+Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply, options = {}) {
     if (typeof apply !== 'function') {
         return false;
     }
     const normalizedSource = String(source || 'temporary_pose');
     const entry = {
         source: normalizedSource,
-        apply: apply
+        apply: apply,
+        priority: Number.isFinite(Number(options.priority)) ? Number(options.priority) : 0,
+        sequence: ((this._temporaryPoseOverrideSequence || 0) + 1)
     };
+    this._temporaryPoseOverrideSequence = entry.sequence;
     if (!this._temporaryPoseOverrides || typeof this._temporaryPoseOverrides.set !== 'function') {
         this._temporaryPoseOverrides = new Map();
     }
@@ -353,6 +356,16 @@ Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
     if (!entries.length) {
         return;
     }
+    entries.sort((left, right) => {
+        const leftPriority = Number.isFinite(Number(left && left.priority)) ? Number(left.priority) : 0;
+        const rightPriority = Number.isFinite(Number(right && right.priority)) ? Number(right.priority) : 0;
+        if (leftPriority !== rightPriority) {
+            return leftPriority - rightPriority;
+        }
+        const leftSequence = Number.isFinite(Number(left && left.sequence)) ? Number(left.sequence) : 0;
+        const rightSequence = Number.isFinite(Number(right && right.sequence)) ? Number(right.sequence) : 0;
+        return leftSequence - rightSequence;
+    });
     const context = {
         manager: this,
         model: this.currentModel || null,
@@ -409,6 +422,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtCurrentY = 0;
     this._temporaryPoseOverride = null;
     this._temporaryPoseOverrides = new Map();
+    this._temporaryPoseOverrideSequence = 0;
     this._temporaryMotionSuspendToken = null;
     this._idleMotionFinishHandler = null;
     this._idleMotionFinishModel = null;
@@ -926,15 +940,31 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
     if (window.nekoYuiGuideFaceForwardLock === true && window.nekoYuiGuideIntroVoiceLookAtActive !== true) {
-        this._lookAtTargetX = 0;
-        this._lookAtTargetY = 0;
-        this._lookAtCurrentX = 0;
-        this._lookAtCurrentY = 0;
+        if (window.nekoYuiGuideFaceForwardSuppressParamWrite === true) {
+            return;
+        }
+        if (this._lookAtTargetX === undefined || !Number.isFinite(this._lookAtTargetX)) {
+            this._lookAtTargetX = 0;
+        }
+        if (this._lookAtTargetY === undefined || !Number.isFinite(this._lookAtTargetY)) {
+            this._lookAtTargetY = 0;
+        }
+        if (this._lookAtCurrentX === undefined || !Number.isFinite(this._lookAtCurrentX)) {
+            this._lookAtCurrentX = 0;
+        }
+        if (this._lookAtCurrentY === undefined || !Number.isFinite(this._lookAtCurrentY)) {
+            this._lookAtCurrentY = 0;
+        }
+        const settleFactor = Math.min(1, Math.max(0.08, 4.8 * Math.max(0, Number(delta) || 0)));
+        this._lookAtTargetX += (0 - this._lookAtTargetX) * settleFactor;
+        this._lookAtTargetY += (0 - this._lookAtTargetY) * settleFactor;
+        this._lookAtCurrentX += (this._lookAtTargetX - this._lookAtCurrentX) * settleFactor;
+        this._lookAtCurrentY += (this._lookAtTargetY - this._lookAtCurrentY) * settleFactor;
         try {
-            coreModel.setParameterValueById('ParamAngleX', 0);
-            coreModel.setParameterValueById('ParamAngleY', 0);
-            coreModel.setParameterValueById('ParamEyeBallX', 0);
-            coreModel.setParameterValueById('ParamEyeBallY', 0);
+            coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
+            coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
+            coreModel.setParameterValueById('ParamEyeBallX', this._lookAtCurrentX / 30);
+            coreModel.setParameterValueById('ParamEyeBallY', this._lookAtCurrentY / 30);
         } catch (_) {}
         return;
     }

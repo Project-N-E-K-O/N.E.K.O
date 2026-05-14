@@ -393,7 +393,7 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
         "const RETURN_PETAL_SEQUENCE_URL = '/static/assets/tutorial/petals/yui-guide-petal-transition.webp';",
         "const RETURN_PETAL_ANIMATION_EXTRA_MS = 1000;",
         "const RETURN_PETAL_SEQUENCE_DURATION_MS = 6200;",
-        "const RETURN_PETAL_FINAL_OPACITY = 0.7;",
+        "const RETURN_PETAL_FINAL_OPACITY = 0.6;",
         "returnPetalTransition: Object.freeze({ at: 0.7 })",
         "this.runReturnControlCueWavePerformance().catch((error) => {",
         "async runReturnControlCueWavePerformance()",
@@ -431,21 +431,22 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
     assert ".yui-guide-petal-sequence" in style_source
     assert "object-fit: cover;" in style_source
     assert " + 6vw)" in style_source
-    assert "animation-name: yui-guide-petal-sequence-opacity;" in style_source
+    assert "animation-name: yui-guide-petal-sequence-motion, yui-guide-petal-sequence-opacity;" in style_source
     assert "@keyframes yui-guide-petal-sequence-play" not in style_source
+    assert "@keyframes yui-guide-petal-sequence-motion" in style_source
     assert "@keyframes yui-guide-petal-sequence-opacity" in style_source
-    assert "opacity: var(--yui-guide-petal-final-opacity, 0.7);" in style_source
+    assert "opacity: var(--yui-guide-petal-final-opacity, 0.6);" in style_source
     assert petal_animation.exists()
     assert petal_animation.stat().st_size > 0
     assert "花瓣整体透明度与模型淡出分离" in doc_source
-    assert "预渲染 animated WebP" in doc_source
+    assert "预渲染 30fps animated WebP" in doc_source
     assert "运行时直接用 `<img>` 播放" in doc_source
-    assert "花瓣数量、下方轨迹长度和上下边缘分布加密" in doc_source
+    assert "花瓣单体进一步缩小，并把总体排布调整为起点更密、终点更疏" in doc_source
     assert "持续约 4.2 秒的右手挥手 `playReturnControlCueWave()`" in doc_source
     assert "复用开场 `computeWakeupPose()` 的右手挥手曲线" in doc_source
     assert "只写 `Param75/90/92/95`" in doc_source
     assert "额外向右校准约 `6vw`" in doc_source
-    assert "播放层最终通过 CSS 透明度保持约 70% 覆盖继续流动" in doc_source
+    assert "播放层最终通过 CSS 透明度保持约 60% 覆盖继续流动" in doc_source
     assert "最短播放约 6.2 秒" in doc_source
     assert "等待约 6.2 秒 animated WebP 剩余时间播完" in doc_source
     assert "先大幅向右形成弧线，再向左铺开并从页面左边消失" in doc_source

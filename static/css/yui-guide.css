@@ -80,27 +80,44 @@ body.yui-guide-return-petal-fade #mmd-canvas {
 
 .yui-guide-petal-sequence {
   position: absolute;
-  left: -18vw;
-  top: -18vh;
-  width: 136vw;
-  height: 136vh;
+  left: -10vw;
+  top: -10vh;
+  width: 120vw;
+  height: 120vh;
   object-fit: cover;
   transform: translate3d(
     calc(((var(--yui-guide-petal-origin-x, 50vw) - 50vw) * 0.16) + 6vw),
     calc((var(--yui-guide-petal-origin-y, 50vh) - 50vh) * 0.14),
     0
-  );
+  ) scale(var(--yui-guide-petal-start-scale, 0.82));
   opacity: 1;
   will-change: opacity, transform;
-  animation-name: yui-guide-petal-sequence-opacity;
+  animation-name: yui-guide-petal-sequence-motion, yui-guide-petal-sequence-opacity;
   animation-duration: 5200ms;
   animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   animation-fill-mode: forwards;
 }
 
+@keyframes yui-guide-petal-sequence-motion {
+  from {
+    transform: translate3d(
+      calc(((var(--yui-guide-petal-origin-x, 50vw) - 50vw) * 0.16) + 6vw),
+      calc((var(--yui-guide-petal-origin-y, 50vh) - 50vh) * 0.14),
+      0
+    ) scale(var(--yui-guide-petal-start-scale, 0.82));
+  }
+  to {
+    transform: translate3d(
+      calc(((var(--yui-guide-petal-origin-x, 50vw) - 50vw) * 0.16) + 6vw),
+      calc((var(--yui-guide-petal-origin-y, 50vh) - 50vh) * 0.14),
+      0
+    ) scale(var(--yui-guide-petal-end-scale, 0.9));
+  }
+}
+
 @keyframes yui-guide-petal-sequence-opacity {
   from { opacity: 1; }
-  to { opacity: var(--yui-guide-petal-final-opacity, 0.7); }
+  to { opacity: var(--yui-guide-petal-final-opacity, 0.6); }
 }
 
 .yui-guide-backdrop {

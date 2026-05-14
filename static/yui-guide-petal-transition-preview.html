@@ -12,7 +12,7 @@
       --text: #2e2924;
       --muted: rgba(46, 41, 36, 0.64);
       --accent: #2f83ff;
-      --petal-final-opacity: 0.7;
+      --petal-final-opacity: 0.6;
       --petal-duration: 6200ms;
       font-family:
         Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
@@ -109,20 +109,25 @@
 
     .petal-sequence {
       position: absolute;
-      left: -18vw;
-      top: -18vh;
-      width: 136vw;
-      height: 136vh;
+      left: -10vw;
+      top: -10vh;
+      width: 120vw;
+      height: 120vh;
       object-fit: cover;
-      transform: translate3d(6vw, 0, 0);
+      transform: translate3d(6vw, 0, 0) scale(0.82);
       opacity: 1;
       will-change: opacity, transform;
-      animation-name: petal-sequence-opacity;
+      animation-name: petal-sequence-motion, petal-sequence-opacity;
       animation-duration: var(--petal-duration);
       animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
       animation-fill-mode: forwards;
       user-select: none;
       -webkit-user-drag: none;
+    }
+
+    @keyframes petal-sequence-motion {
+      from { transform: translate3d(6vw, 0, 0) scale(0.82); }
+      to { transform: translate3d(6vw, 0, 0) scale(0.9); }
     }
 
     @keyframes petal-sequence-opacity {

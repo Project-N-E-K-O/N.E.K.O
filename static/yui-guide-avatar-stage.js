@@ -41,6 +41,7 @@
     const SETTINGS_PEEK_PANIC_REACT_MS = 260;
     const SETTINGS_PEEK_PANIC_SHAKE_MS = 520;
     const SETTINGS_PEEK_PANIC_SETTLE_MS = 680;
+    const SETTINGS_PEEK_PANIC_RELEASE_MS = 260;
     const SETTINGS_PEEK_PANIC_SHIFT_RATIO = 0.12;
     const SETTINGS_PEEK_PANIC_MIN_SHIFT_PX = 54;
     const SETTINGS_PEEK_PANIC_MAX_SHIFT_PX = 118;
@@ -62,6 +63,11 @@
     const PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08;
     const PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35;
     const PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647';
+    const TAKEOVER_TOP_PEEK_TOP_OUTSIDE_RATIO = 0.38;
+    const TAKEOVER_TOP_PEEK_CENTER_ABOVE_TOP_RATIO = 0.34;
+    const GUIDE_IDLE_SWAY_READY_WAIT_MS = 900;
+    const GUIDE_IDLE_SWAY_BLEND_IN_MS = 360;
+    const GUIDE_IDLE_SWAY_RELEASE_MS = 320;
     const YUI_GUIDE_AVATAR_ID = 'main-live2d';
     const YUI_GUIDE_CHARACTER_ID = 'yui';
     const YUI_GUIDE_PERFORMANCE_PRIORITY = 80;
@@ -71,6 +77,9 @@
     const YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES = Object.freeze(['frame', 'params', 'expression']);
     const YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES = Object.freeze(['params']);
     const YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame']);
+    const INTRO_VOICE_LOOK_AT_SMOOTHING = 0.2;
+    const INTRO_VOICE_LOOK_AT_RELEASE_MS = 220;
+    const INTRO_GREETING_HUG_BLEND_IN_MS = 460;
     const YUI_WAKEUP_PARAMS = Object.freeze({
         eyeLeft: 'ParamEyeLOpen',
         eyeRight: 'ParamEyeROpen',
@@ -521,6 +530,7 @@
     let activeIntroVoiceLookAtSession = null;
     let activePluginDashboardCornerSession = null;
     let activeReturnControlCueWaveSession = null;
+    let activeGuideIdleSwaySession = null;
 
     function clamp(value, min, max) {
         const number = Number(value);
@@ -705,6 +715,75 @@
     function lerp(from, to, weight) {
         const t = clamp(weight, 0, 1);
         return from + (to - from) * t;
+    }
+
+    function blendNumericPose(fromPose, toPose, weight) {
+        const t = clamp(weight, 0, 1);
+        const result = {};
+        const keys = new Set([
+            ...Object.keys(fromPose || {}),
+            ...Object.keys(toPose || {})
+        ]);
+        keys.forEach((key) => {
+            const fromValue = Number.isFinite(Number(fromPose && fromPose[key]))
+                ? Number(fromPose[key])
+                : (key === 'frameScale' ? 1 : 0);
+            const toValue = Number.isFinite(Number(toPose && toPose[key]))
+                ? Number(toPose[key])
+                : (key === 'frameScale' ? 1 : 0);
+            result[key] = lerp(fromValue, toValue, t);
+        });
+        return result;
+    }
+
+    function blendPoseTowardNeutral(pose, weight) {
+        const neutral = {};
+        Object.keys(pose || {}).forEach((key) => {
+            neutral[key] = key === 'frameScale' ? 1 : 0;
+        });
+        return blendNumericPose(pose, neutral, weight);
+    }
+
+    function readMappedPose(coreModel, mapping, fallbackPose) {
+        const pose = Object.assign({}, fallbackPose || {});
+        if (!coreModel || !mapping) {
+            return pose;
+        }
+        Object.keys(mapping).forEach((key) => {
+            const paramId = mapping[key];
+            if (!paramId) {
+                return;
+            }
+            try {
+                const idx = coreModel.getParameterIndex(paramId);
+                if (idx >= 0) {
+                    const value = coreModel.getParameterValueByIndex(idx);
+                    if (Number.isFinite(Number(value))) {
+                        pose[key] = Number(value);
+                    }
+                }
+            } catch (_) {}
+        });
+        return pose;
+    }
+
+    function computeGuideIdleSwayPose(now, context) {
+        const elapsedMs = Math.max(0, Number(now) - Number(context && context.startedAt || 0));
+        const elapsedSeconds = elapsedMs / 1000;
+        const reducedMotion = !!(context && context.reducedMotion);
+        const swayAmplitude = reducedMotion ? 0.55 : 1;
+        const shoulderAmplitude = reducedMotion ? 0.35 : 0.68;
+        const headWave = Math.sin(elapsedSeconds * 1.18);
+        const secondaryWave = Math.sin(elapsedSeconds * 2.07 + 0.6);
+        const slowWave = Math.sin(elapsedSeconds * 0.72 + 1.1);
+        return {
+            angleX: (headWave * 1.1 + secondaryWave * 0.35) * swayAmplitude,
+            angleY: slowWave * 0.55 * swayAmplitude,
+            angleZ: (headWave * 0.38 + secondaryWave * 0.16) * swayAmplitude,
+            bodyAngleX: (headWave * 1.25 + secondaryWave * 0.42) * shoulderAmplitude,
+            bodyAngleY: slowWave * 0.44 * shoulderAmplitude,
+            bodyAngleZ: (headWave * 0.3 + secondaryWave * 0.1) * shoulderAmplitude
+        };
     }
 
     function scanLive2DParams(coreModel) {
@@ -1250,7 +1329,7 @@
         const yieldedX = suppressedYieldX + interceptX + blockRightX;
         const yieldedY = shiftY * yieldProgress + (torsoBounce * 2.2) - (interceptWeight * 2.6) - walkBob + walkDip;
 
-        return {
+        return blendPoseTowardNeutral({
             angleX: direction * lerp(0, 7.1, react) + (shakePhase * 0.68 * direction * (1 - settle)) - (direction * 1.6 * settle) + ((naturalBodySway + shoulderTremor) * 0.74 * direction) - (direction * interceptWeight * 1.4) + (tiltSway * 0.18 * direction),
             angleY: lerp(0, -5.2, react) + (shakeEnvelope * 0.36) + (holdBob * 0.42 * (1 - settle * 0.74)) + (torsoBounce * 0.22) - (interceptWeight * 0.42) + (walkDip * 0.12),
             angleZ: (-direction * 6.8 * react) + (shakePhase * 0.92 * direction * (1 - settle)) + (direction * 1.2 * settle) + ((naturalBodySway * 0.92) + (shoulderTremor * 0.34)) * direction + (direction * interceptWeight * 1.2) + (tiltSway * 0.94 * direction),
@@ -1302,7 +1381,7 @@
             skirtY4: Math.abs(shakePhase) * 0.24 + Math.abs(holdBob) * 0.28 + Math.abs(holdBobFast) * 0.12,
             frameX: frameShakeX + yieldedX,
             frameY: frameShakeY + yieldedY
-        };
+        }, settle);
     }
 
     function computeInterruptResistPose(progress, context) {
@@ -1358,7 +1437,7 @@
                 + (bobWave * -1.2 * dodgeWeight)
             ) * (1 - settle * 0.82);
 
-        return {
+        return blendPoseTowardNeutral({
             angleX: (pointerXNormalized * 7.8 * lookWeight) + (pointerXNormalized * 2.6 * dodgeWeight) + (headSway * 1.2 * direction),
             angleY: (pointerYNormalized * 5.4 * lookWeight) - (closeLean * 1.8) + (dodgeLean * 1.1) - (Math.abs(bobWaveFast) * 0.32 * dodgeWeight),
             angleZ: (-direction * 3.4 * closeLean) + (direction * 4.2 * dodgeLean) + (headSway * 1.6 * direction),
@@ -1388,7 +1467,7 @@
             frameX: (dodgeShiftX * dodgeWeight) + frameShakeX,
             frameY: (closeFrameY * closeWeight) + (dodgeFrameY * dodgeWeight) + frameShakeY,
             frameScale: 1 + (closeScaleDelta * closeWeight) - (closeScaleDelta * 0.18 * dodgeWeight)
-        };
+        }, settle);
     }
 
     function computeAngryExitPose(progress, context) {
@@ -1424,8 +1503,9 @@
         const mouthWeight = clamp(closeWeight * 0.76 + angryWeight * 0.28, 0, 1);
         const guardWeight = clamp(expressionWeight * 0.94, 0, 1);
         const armReachWeight = clamp(guardWeight * 0.9 + closeWeight * 0.12, 0, 1);
+        const settleToIdle = easeInOutCubic(clamp((normalizedProgress - 0.8) / 0.2, 0, 1));
 
-        return {
+        return blendPoseTowardNeutral({
             angleX: (pointerXNormalized * 5.8 * focusWeight) + direction * (3.4 * angryWeight) + headSway * 1.04,
             angleY: (pointerYNormalized * 2.6 * focusWeight) - (5.6 * closeWeight) + bodyBob * 0.16,
             angleZ: (-direction * 6.2 * angryWeight) + bodySway * 0.64,
@@ -1456,7 +1536,7 @@
             frameX: frameShakeX,
             frameY: (closeFrameY * closeWeight) + frameShakeY,
             frameScale: 1 + (closeScaleDelta * 1.08 * closeWeight)
-        };
+        }, settleToIdle);
     }
 
     function blendIntroGreetingHugPose(fromPose, toPose, progress) {
@@ -1950,6 +2030,7 @@
             this.finalFrameY = Number.isFinite(Number(normalizedOptions.finalFrameY))
                 ? Number(normalizedOptions.finalFrameY)
                 : this.closeFrameY;
+            this.entryBlendMs = normalizeDuration(normalizedOptions.entryBlendMs, INTRO_GREETING_HUG_BLEND_IN_MS);
             this.startedAt = 0;
             this.active = false;
             this.finished = false;
@@ -1958,6 +2039,7 @@
             this.poseOverrideSource = 'yui_guide_intro_greeting_hug_' + this.token;
             this.usesTemporaryPoseOverride = false;
             this.initialModelFrame = null;
+            this.entryPose = null;
             this.performanceLock = null;
             this.performanceLockKey = normalizedOptions.performanceLockKey || 'home-yui-guide-intro-greeting';
             this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)
@@ -1992,10 +2074,11 @@
             );
             this.active = true;
             this.startedAt = performance.now();
-            this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
             this.initialModelFrame = readIntroGreetingHugModelFrame(this.model);
-            this.applyPose(this.computePose(0), 1);
-            this.applyFrame(this.computePose(0));
+            this.entryPose = this.captureEntryPose();
+            this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
+            this.applyPose(this.entryPose, 1);
+            this.applyFrame(this.entryPose);
             if (this.ticker && typeof this.ticker.add === 'function') {
                 this.ticker.add(this.tick);
             } else {
@@ -2131,6 +2214,18 @@
             });
         }
 
+        captureEntryPose() {
+            const pose = readMappedPose(this.coreModel, YUI_INTRO_GREETING_HUG_PARAMS, {
+                frameScale: 1,
+                frameY: 0,
+                frameX: 0
+            });
+            pose.frameScale = 1;
+            pose.frameY = 0;
+            pose.frameX = 0;
+            return pose;
+        }
+
         applyTemporaryPose(coreModel) {
             if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel()) {
                 return;
@@ -2156,6 +2251,10 @@
             } else {
                 const releaseProgress = this.releaseMs > 0 ? clamp((elapsed - settleEnd) / this.releaseMs, 0, 1) : 1;
                 pose = blendIntroGreetingHugPose(this.computePose(1), this.getFinalRestPose(), easeInOutCubic(releaseProgress));
+            }
+            if (this.entryPose && this.entryBlendMs > 0 && elapsed < this.entryBlendMs) {
+                const entryProgress = easeInOutCubic(clamp(elapsed / this.entryBlendMs, 0, 1));
+                pose = blendIntroGreetingHugPose(this.entryPose, pose, entryProgress);
             }
             return {
                 elapsed: elapsed,
@@ -2591,6 +2690,9 @@
             this.hideMs = normalizeDuration(normalizedOptions.hideMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
             this.appearMs = normalizeDuration(normalizedOptions.appearMs, PLUGIN_DASHBOARD_CORNER_APPEAR_MS);
             this.totalDurationMs = this.reducedMotion ? 0 : this.hideMs + this.appearMs;
+            this.targetPreset = normalizedOptions.targetPreset === 'top_flipped'
+                ? 'top_flipped'
+                : 'corner';
             this.token = normalizedOptions.token || 0;
             this.isCancelled = typeof normalizedOptions.isCancelled === 'function'
                 ? normalizedOptions.isCancelled
@@ -2807,6 +2909,9 @@
         }
 
         resolveCornerFrame() {
+            if (this.targetPreset === 'top_flipped') {
+                return this.resolveTopFlippedFrame();
+            }
             const base = this.initialModelFrame;
             const viewport = this.getViewportSize();
             const bounds = this.initialBounds || {
@@ -2828,7 +2933,32 @@
             };
         }
 
+        resolveTopFlippedFrame() {
+            const base = this.initialModelFrame;
+            const viewport = this.getViewportSize();
+            const bounds = this.initialBounds || {
+                x: base.x - viewport.width * 0.18,
+                y: base.y - viewport.height * 0.55,
+                width: viewport.width * 0.36,
+                height: viewport.height * 0.7
+            };
+            const modelCenterOffsetX = (bounds.x + bounds.width * 0.5) - base.x;
+            const modelCenterOffsetY = (bounds.y + bounds.height * 0.5) - base.y;
+            const desiredCenterX = viewport.width * 0.5;
+            const desiredCenterY = -(bounds.height * TAKEOVER_TOP_PEEK_CENTER_ABOVE_TOP_RATIO);
+            return {
+                x: desiredCenterX - modelCenterOffsetX,
+                y: desiredCenterY - modelCenterOffsetY,
+                scaleX: base.scaleX,
+                scaleY: base.scaleY,
+                rotation: base.rotation + Math.PI
+            };
+        }
+
         resolveCornerHiddenFrame() {
+            if (this.targetPreset === 'top_flipped') {
+                return this.resolveTopFlippedHiddenFrame();
+            }
             const viewport = this.getViewportSize();
             const bounds = this.initialBounds;
             const diagonalShift = bounds && bounds.height > 0
@@ -2837,6 +2967,21 @@
             return {
                 x: this.cornerFrame.x + diagonalShift,
                 y: this.cornerFrame.y + diagonalShift,
+                scaleX: this.cornerFrame.scaleX,
+                scaleY: this.cornerFrame.scaleY,
+                rotation: this.cornerFrame.rotation
+            };
+        }
+
+        resolveTopFlippedHiddenFrame() {
+            const viewport = this.getViewportSize();
+            const bounds = this.initialBounds;
+            const upwardShift = bounds && bounds.height > 0
+                ? Math.max(180, bounds.height * TAKEOVER_TOP_PEEK_TOP_OUTSIDE_RATIO)
+                : Math.max(180, viewport.height * 0.28);
+            return {
+                x: this.cornerFrame.x,
+                y: this.cornerFrame.y - upwardShift,
                 scaleX: this.cornerFrame.scaleX,
                 scaleY: this.cornerFrame.scaleY,
                 rotation: this.cornerFrame.rotation
@@ -3000,6 +3145,7 @@
             this.direction = -1;
             this.shiftX = -SETTINGS_PEEK_PANIC_MIN_SHIFT_PX;
             this.shiftY = 18;
+            this.currentFramePose = null;
             this.tick = this.tick.bind(this);
             this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
         }
@@ -3048,7 +3194,58 @@
             return true;
         }
 
-        stop(reason) {
+        shouldPreserveLookAtRelease() {
+            return this.preserveCursorLookAt
+                && window.nekoYuiGuideIntroVoiceLookAtActive === true;
+        }
+
+        buildReleasePose(fromPose, progress) {
+            const neutralPose = blendPoseTowardNeutral(fromPose, progress);
+            if (this.shouldPreserveLookAtRelease()) {
+                [
+                    'angleX',
+                    'angleY',
+                    'angleZ',
+                    'bodyAngleX',
+                    'bodyAngleY',
+                    'bodyAngleZ'
+                ].forEach((key) => {
+                    delete neutralPose[key];
+                });
+            }
+            return neutralPose;
+        }
+
+        async animateRelease() {
+            const durationMs = this.reducedMotion ? 0 : SETTINGS_PEEK_PANIC_RELEASE_MS;
+            if (durationMs <= 0 || !this.isCurrentModel()) {
+                return;
+            }
+            const fromPose = this.computePose(1);
+            const fromFramePose = this.currentFramePose || fromPose;
+            const startedAt = performance.now();
+            await new Promise((resolve) => {
+                const step = (now) => {
+                    if (!this.isCurrentModel()) {
+                        resolve();
+                        return;
+                    }
+                    const progress = easeInOutCubic(clamp((now - startedAt) / durationMs, 0, 1));
+                    const releasePose = this.buildReleasePose(fromPose, progress);
+                    const releaseFrame = blendNumericPose(fromFramePose, { frameX: 0, frameY: 0 }, progress);
+                    this.applyPose(releasePose, 1);
+                    this.applyFrame(releaseFrame);
+                    if (progress >= 1) {
+                        resolve();
+                        return;
+                    }
+                    window.requestAnimationFrame(step);
+                };
+                window.requestAnimationFrame(step);
+            });
+        }
+
+        async stop(reason) {
             if (!this.active && this.finished) {
                 return;
             }
@@ -3064,13 +3261,16 @@
                 window.cancelAnimationFrame(this.frameId);
                 this.frameId = 0;
             }
+            await this.animateRelease();
             if (this.manager) {
                 this.clearTemporaryPoseOverride();
             }
             if (activeSettingsPeekPanicSession === this) {
                 activeSettingsPeekPanicSession = null;
             }
-            this.restoreCapturedParams();
+            if (!this.shouldPreserveLookAtRelease()) {
+                this.restoreCapturedParams();
+            }
             this.restoreModelFrame();
             restoreLive2DOverlayAnchors(this.frozenOverlayAnchors);
             this.frozenOverlayAnchors = null;
@@ -3211,6 +3411,7 @@
                 return;
             }
             const frame = this.getFrameState(now);
+            this.currentFramePose = frame.pose;
             if (!this.usesTemporaryPoseOverride) {
                 this.applyPose(frame.pose, frame.weight);
             }
@@ -3940,6 +4141,7 @@
                 ? normalizedOptions.performanceLockCapabilities.slice()
                 : YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES.slice();
             this.poseOverrideSource = 'home-yui-guide-intro-voice-look-at-' + (normalizedOptions.token || Date.now());
+            this.continuationState = normalizedOptions.continuationState || null;
             this.params = scanMappedLive2DParams(this.coreModel, YUI_INTRO_VOICE_LOOK_AT_PARAMS);
             this.stage = null;
             this.stageSession = null;
@@ -3949,10 +4151,36 @@
             this.frameId = 0;
             this.tickerAttached = false;
             this.introVoiceLookAtFlagEnabled = false;
-            this.latestPoint = null;
+            this.latestPoint = this.clonePoint(this.continuationState && this.continuationState.latestPoint);
+            this.smoothedPoint = this.clonePoint(this.continuationState && this.continuationState.smoothedPoint);
+            this.currentPose = this.clonePose(this.continuationState && this.continuationState.currentPose)
+                || this.computeNeutralPose();
+            this.lastTickAt = 0;
             this.usesTemporaryPoseOverride = false;
             this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
             this.tick = this.tick.bind(this);
+        }
+
+        clonePoint(point) {
+            if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) {
+                return null;
+            }
+            return {
+                x: Number(point.x),
+                y: Number(point.y)
+            };
+        }
+
+        clonePose(pose) {
+            if (!pose || typeof pose !== 'object') {
+                return null;
+            }
+            const clone = {};
+            Object.keys(pose).forEach((key) => {
+                const value = Number(pose[key]);
+                clone[key] = Number.isFinite(value) ? value : 0;
+            });
+            return clone;
         }
 
         isCurrentModel() {
@@ -3993,13 +4221,7 @@
         }
 
         normalizePoint(point) {
-            if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) {
-                return null;
-            }
-            return {
-                x: Number(point.x),
-                y: Number(point.y)
-            };
+            return this.clonePoint(point);
         }
 
         enableIntroVoiceLookAtFlag() {
@@ -4042,6 +4264,21 @@
                 if (Number.isFinite(Number(focusController.y))) {
                     focusController.y = 0;
                 }
+            } catch (_) {}
+        }
+
+        applyFocusPoint(point) {
+            if (
+                !point
+                || !this.model
+                || typeof this.model.focus !== 'function'
+                || !Number.isFinite(Number(point.x))
+                || !Number.isFinite(Number(point.y))
+            ) {
+                return;
+            }
+            try {
+                this.model.focus(Number(point.x), Number(point.y));
             } catch (_) {}
         }
 
@@ -4156,6 +4393,31 @@
             };
         }
 
+        computeNeutralPose() {
+            return {
+                angleX: 0,
+                angleY: 0,
+                angleZ: 0,
+                eyeBallX: 0,
+                eyeBallY: 0,
+                bodyAngleX: 0,
+                bodyAngleY: 0,
+                bodyAngleZ: 0
+            };
+        }
+
+        blendPose(fromPose, toPose, weight) {
+            return blendNumericPose(fromPose, toPose, weight);
+        }
+
+        getContinuationState() {
+            return {
+                latestPoint: this.clonePoint(this.latestPoint),
+                smoothedPoint: this.clonePoint(this.smoothedPoint),
+                currentPose: this.clonePose(this.currentPose)
+            };
+        }
+
         writeWeighted(key, targetValue, weight) {
             const meta = this.params[key];
             if (!meta) {
@@ -4179,10 +4441,10 @@
         }
 
         applyTemporaryPose(coreModel) {
-            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel() || !this.latestPoint) {
+            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel()) {
                 return;
             }
-            this.applyPose(this.computeLookAtPose(this.latestPoint), 1);
+            this.applyPose(this.currentPose || this.computeNeutralPose(), 1);
         }
 
         start() {
@@ -4209,9 +4471,11 @@
             this.active = true;
             this.finished = false;
             this.result = 'playing';
+            this.lastTickAt = performance.now();
+            this.currentPose = this.clonePose(this.currentPose) || this.computeNeutralPose();
             this.enableIntroVoiceLookAtFlag();
             this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
-            this.applyCurrentPoint();
+            this.applyCurrentPoint(this.lastTickAt);
             if (this.ticker && typeof this.ticker.add === 'function') {
                 this.attachTicker();
             } else {
@@ -4220,22 +4484,54 @@
             return true;
         }
 
-        applyCurrentPoint() {
-            if (!this.active) {
+        applyCurrentPoint(now) {
+            if (!this.active || !this.isCurrentModel()) {
                 return false;
             }
+            const currentNow = Number.isFinite(Number(now)) ? Number(now) : performance.now();
+            const deltaMs = Math.max(0, currentNow - (this.lastTickAt || currentNow));
+            this.lastTickAt = currentNow;
+            const blendWeight = 1 - Math.pow(
+                1 - INTRO_VOICE_LOOK_AT_SMOOTHING,
+                Math.max(1, deltaMs / 16.67)
+            );
             const point = this.normalizePoint(this.getPoint());
-            if (!point) {
-                return false;
+            if (point) {
+                this.latestPoint = point;
+                const lookAtOrigin = this.getLookAtOrigin();
+                if (!this.smoothedPoint) {
+                    this.smoothedPoint = {
+                        x: lookAtOrigin && Number.isFinite(Number(lookAtOrigin.x))
+                            ? Number(lookAtOrigin.x)
+                            : point.x,
+                        y: lookAtOrigin && Number.isFinite(Number(lookAtOrigin.y))
+                            ? Number(lookAtOrigin.y)
+                            : point.y
+                    };
+                }
+                this.smoothedPoint = {
+                    x: lerp(this.smoothedPoint.x, point.x, blendWeight),
+                    y: lerp(this.smoothedPoint.y, point.y, blendWeight)
+                };
+            } else if (this.smoothedPoint) {
+                this.smoothedPoint = {
+                    x: lerp(this.smoothedPoint.x, this.getLookAtOrigin().x, blendWeight * 0.42),
+                    y: lerp(this.smoothedPoint.y, this.getLookAtOrigin().y, blendWeight * 0.42)
+                };
             }
-            this.latestPoint = point;
-            if (this.model && typeof this.model.focus === 'function') {
+
+            const targetPose = this.smoothedPoint
+                ? this.computeLookAtPose(this.smoothedPoint)
+                : this.computeNeutralPose();
+            this.currentPose = this.blendPose(this.currentPose, targetPose, blendWeight);
+
+            if (this.model && typeof this.model.focus === 'function' && this.smoothedPoint) {
                 try {
-                    this.model.focus(point.x, point.y);
+                    this.model.focus(this.smoothedPoint.x, this.smoothedPoint.y);
                 } catch (_) {}
             }
             if (!this.usesTemporaryPoseOverride) {
-                this.applyPose(this.computeLookAtPose(point), 1);
+                this.applyPose(this.currentPose, 1);
             }
             return true;
         }
@@ -4266,37 +4562,94 @@
                 this.stop('cancelled');
                 return;
             }
-            this.applyCurrentPoint();
+            this.applyCurrentPoint(performance.now());
             if (!this.tickerAttached) {
                 this.frameId = window.requestAnimationFrame(this.tick);
             }
         }
 
-        stop(reason) {
+        async animateReleaseToNeutral() {
+            const durationMs = INTRO_VOICE_LOOK_AT_RELEASE_MS;
+            if (
+                durationMs <= 0
+                || !this.isCurrentModel()
+                || typeof window.requestAnimationFrame !== 'function'
+            ) {
+                return;
+            }
+            const fromPose = this.currentPose ? Object.assign({}, this.currentPose) : this.computeNeutralPose();
+            const neutralPose = this.computeNeutralPose();
+            const originPoint = this.getLookAtOrigin();
+            const fromPoint = this.clonePoint(this.smoothedPoint)
+                || this.clonePoint(this.latestPoint)
+                || this.clonePoint(originPoint);
+            const startedAt = performance.now();
+            await new Promise((resolve) => {
+                const step = (now) => {
+                    if (!this.isCurrentModel()) {
+                        resolve();
+                        return;
+                    }
+                    const progress = clamp((now - startedAt) / durationMs, 0, 1);
+                    const easedProgress = easeInOutCubic(progress);
+                    this.currentPose = this.blendPose(fromPose, neutralPose, easedProgress);
+                    if (fromPoint && originPoint) {
+                        const releasePoint = {
+                            x: lerp(fromPoint.x, originPoint.x, easedProgress),
+                            y: lerp(fromPoint.y, originPoint.y, easedProgress)
+                        };
+                        this.smoothedPoint = releasePoint;
+                        this.latestPoint = releasePoint;
+                        this.applyFocusPoint(releasePoint);
+                    }
+                    this.applyPose(this.currentPose, 1);
+                    if (progress >= 1) {
+                        this.smoothedPoint = this.clonePoint(originPoint);
+                        this.latestPoint = this.clonePoint(originPoint);
+                        resolve();
+                        return;
+                    }
+                    window.requestAnimationFrame(step);
+                };
+                window.requestAnimationFrame(step);
+            });
+        }
+
+        async stop(reason) {
             if (this.finished) {
                 return Promise.resolve();
             }
+            const normalizedReason = typeof reason === 'string' ? reason : '';
+            const isHandoffStop = normalizedReason === 'replaced' || normalizedReason === 'handoff';
             this.active = false;
             this.finished = true;
-            this.result = reason || this.result || 'stopped';
+            this.result = normalizedReason || this.result || 'stopped';
             this.detachTicker();
             if (this.frameId) {
                 window.cancelAnimationFrame(this.frameId);
                 this.frameId = 0;
             }
+            if (!isHandoffStop) {
+                await this.animateReleaseToNeutral();
+            }
             if (this.stage && this.stageSession && this.stageSession.id) {
                 try {
-                    this.stage.release(this.stageSession.id, reason || 'stopped');
+                    this.stage.release(this.stageSession.id, normalizedReason || 'stopped');
                 } catch (_) {}
             }
             this.clearTemporaryPoseOverride();
-            this.restoreCapturedParams();
-            this.resetFocusController();
+            if (!isHandoffStop) {
+                this.restoreCapturedParams();
+                if (this.smoothedPoint) {
+                    this.applyFocusPoint(this.smoothedPoint);
+                }
+                this.resetFocusController();
+            }
             this.releaseIntroVoiceLookAtFlag();
             this.stageSession = null;
             this.stage = null;
             if (this.performanceLock && typeof this.performanceLock.release === 'function') {
-                this.performanceLock.release(reason || 'stopped');
+                this.performanceLock.release(normalizedReason || 'stopped');
                 this.performanceLock = null;
             }
             if (activeIntroVoiceLookAtSession === this) {
@@ -4335,6 +4688,19 @@
         );
     }
 
+    function waitForSessionCompletion(session, resultBuilder) {
+        return new Promise((resolve) => {
+            const poll = () => {
+                if (!session || session.finished) {
+                    resolve(typeof resultBuilder === 'function' ? resultBuilder(session) : null);
+                    return;
+                }
+                window.requestAnimationFrame(poll);
+            };
+            window.requestAnimationFrame(poll);
+        });
+    }
+
     async function playIntroGreetingHug(options) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, INTRO_GREETING_HUG_READY_WAIT_MS);
@@ -4348,20 +4714,11 @@
                 activeIntroGreetingHugSession.cancel('replaced');
             } else {
                 const session = activeIntroGreetingHugSession;
-                return new Promise((resolve) => {
-                    const waitForFinish = () => {
-                        if (session.finished) {
-                            resolve({
-                                result: session.result || 'played',
-                                reason: session.result && session.result !== 'played' ? session.result : '',
-                                paramCount: Object.keys(session.params || {}).length
-                            });
-                            return;
-                        }
-                        window.requestAnimationFrame(waitForFinish);
-                    };
-                    window.requestAnimationFrame(waitForFinish);
-                });
+                return waitForSessionCompletion(session, (finishedSession) => ({
+                    result: finishedSession.result || 'played',
+                    reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : '',
+                    paramCount: Object.keys(finishedSession.params || {}).length
+                }));
             }
         }
         const session = new Live2DIntroGreetingHugSession(context, {
@@ -4381,20 +4738,11 @@
         }
         activeIntroGreetingHugSession = session;
 
-        return new Promise((resolve) => {
-            const poll = () => {
-                if (session.finished) {
-                    resolve({
-                        result: session.result || 'played',
-                        reason: session.result && session.result !== 'played' ? session.result : '',
-                        paramCount: Object.keys(session.params || {}).length
-                    });
-                    return;
-                }
-                window.requestAnimationFrame(poll);
-            };
-            window.requestAnimationFrame(poll);
-        });
+        return waitForSessionCompletion(session, (finishedSession) => ({
+            result: finishedSession.result || 'played',
+            reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : '',
+            paramCount: Object.keys(finishedSession.params || {}).length
+        }));
     }
 
     async function playReturnControlCueWave(options) {
@@ -4408,7 +4756,16 @@
             return { result: 'fallback', reason: 'live2d_unavailable' };
         }
         if (activeReturnControlCueWaveSession && activeReturnControlCueWaveSession.active) {
-            activeReturnControlCueWaveSession.cancel('replaced');
+            if (!activeReturnControlCueWaveSession.isCurrentModel()) {
+                activeReturnControlCueWaveSession.cancel('replaced');
+            } else {
+                const session = activeReturnControlCueWaveSession;
+                return waitForSessionCompletion(session, (finishedSession) => ({
+                    result: finishedSession.result || 'played',
+                    reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : '',
+                    paramCount: Object.keys(finishedSession.params || {}).length
+                }));
+            }
         }
         const session = new Live2DReturnControlCueWaveSession(context, {
             reducedMotion: reducedMotion,
@@ -4423,20 +4780,11 @@
         }
         activeReturnControlCueWaveSession = session;
 
-        return new Promise((resolve) => {
-            const poll = () => {
-                if (session.finished) {
-                    resolve({
-                        result: session.result || 'played',
-                        reason: session.result && session.result !== 'played' ? session.result : '',
-                        paramCount: Object.keys(session.params || {}).length
-                    });
-                    return;
-                }
-                window.requestAnimationFrame(poll);
-            };
-            window.requestAnimationFrame(poll);
-        });
+        return waitForSessionCompletion(session, (finishedSession) => ({
+            result: finishedSession.result || 'played',
+            reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : '',
+            paramCount: Object.keys(finishedSession.params || {}).length
+        }));
     }
 
     async function playIntroGiftHeart(options) {
@@ -4452,20 +4800,11 @@
                 activeIntroGiftHeartSession.cancel('replaced');
             } else {
                 const session = activeIntroGiftHeartSession;
-                return new Promise((resolve) => {
-                    const waitForFinish = () => {
-                        if (session.finished) {
-                            resolve({
-                                result: session.result || 'played',
-                                reason: session.result && session.result !== 'played' ? session.result : '',
-                                paramCount: Object.keys(session.params || {}).length
-                            });
-                            return;
-                        }
-                        window.requestAnimationFrame(waitForFinish);
-                    };
-                    window.requestAnimationFrame(waitForFinish);
-                });
+                return waitForSessionCompletion(session, (finishedSession) => ({
+                    result: finishedSession.result || 'played',
+                    reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : '',
+                    paramCount: Object.keys(finishedSession.params || {}).length
+                }));
             }
         }
         const session = new Live2DIntroGiftHeartSession(context, {
@@ -4484,20 +4823,11 @@
         }
         activeIntroGiftHeartSession = session;
 
-        return new Promise((resolve) => {
-            const poll = () => {
-                if (session.finished) {
-                    resolve({
-                        result: session.result || 'played',
-                        reason: session.result && session.result !== 'played' ? session.result : '',
-                        paramCount: Object.keys(session.params || {}).length
-                    });
-                    return;
-                }
-                window.requestAnimationFrame(poll);
-            };
-            window.requestAnimationFrame(poll);
-        });
+        return waitForSessionCompletion(session, (finishedSession) => ({
+            result: finishedSession.result || 'played',
+            reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : '',
+            paramCount: Object.keys(finishedSession.params || {}).length
+        }));
     }
 
     async function startIntroVoiceCursorLookAt(options) {
@@ -4507,13 +4837,18 @@
         if (!context) {
             return null;
         }
+        let continuationState = normalizedOptions.continuationState || null;
         if (activeIntroVoiceLookAtSession && activeIntroVoiceLookAtSession.active) {
-            activeIntroVoiceLookAtSession.stop('replaced');
+            if (typeof activeIntroVoiceLookAtSession.getContinuationState === 'function') {
+                continuationState = activeIntroVoiceLookAtSession.getContinuationState();
+            }
+            await activeIntroVoiceLookAtSession.stop('replaced');
         }
         const session = new Live2DIntroVoiceLookAtSession(context, {
             document: normalizedOptions.document || document,
             getPoint: normalizedOptions.getPoint,
-            isCancelled: normalizedOptions.isCancelled
+            isCancelled: normalizedOptions.isCancelled,
+            continuationState: continuationState
         });
         if (!session.start()) {
             return null;
@@ -4524,6 +4859,263 @@
                 return session.stop(reason || 'stopped');
             },
             isActive: function isIntroVoiceCursorLookAtActive() {
+                return !!session.active;
+            }
+        };
+    }
+
+    class Live2DGuideIdleSwaySession {
+        constructor(context, options) {
+            const normalizedOptions = options || {};
+            this.manager = context.manager;
+            this.model = context.model;
+            this.coreModel = context.coreModel;
+            this.ticker = context.ticker || null;
+            this.reducedMotion = !!normalizedOptions.reducedMotion;
+            this.isCancelled = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : function () { return false; };
+            this.poseOverrideSource = 'home-yui-guide-idle-sway-' + (normalizedOptions.token || Date.now());
+            this.entryBlendMs = normalizeDuration(normalizedOptions.entryBlendMs, GUIDE_IDLE_SWAY_BLEND_IN_MS);
+            this.releaseMs = normalizeDuration(normalizedOptions.releaseMs, GUIDE_IDLE_SWAY_RELEASE_MS);
+            this.params = scanMappedLive2DParams(this.coreModel, {
+                angleX: 'ParamAngleX',
+                angleY: 'ParamAngleY',
+                angleZ: 'ParamAngleZ',
+                bodyAngleX: 'ParamBodyAngleX',
+                bodyAngleY: 'ParamBodyAngleY',
+                bodyAngleZ: 'ParamBodyAngleZ'
+            });
+            this.active = false;
+            this.finished = false;
+            this.result = 'idle';
+            this.startedAt = 0;
+            this.frameId = 0;
+            this.tickerAttached = false;
+            this.usesTemporaryPoseOverride = false;
+            this.currentPose = {
+                angleX: 0,
+                angleY: 0,
+                angleZ: 0,
+                bodyAngleX: 0,
+                bodyAngleY: 0,
+                bodyAngleZ: 0
+            };
+            this.entryPose = null;
+            this.tick = this.tick.bind(this);
+            this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
+        }
+
+        isCurrentModel() {
+            if (!this.manager || !this.model || this.model.destroyed || !this.coreModel) {
+                return false;
+            }
+            const current = getCurrentLive2DModel(this.manager);
+            return current === this.model
+                && current.internalModel
+                && current.internalModel.coreModel === this.coreModel;
+        }
+
+        installTemporaryPoseOverride() {
+            if (!this.manager || typeof this.manager.setTemporaryPoseOverride !== 'function') {
+                return false;
+            }
+            try {
+                return this.manager.setTemporaryPoseOverride(
+                    this.poseOverrideSource,
+                    this.applyTemporaryPose,
+                    { priority: -100 }
+                ) === true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        clearTemporaryPoseOverride() {
+            if (!this.manager || typeof this.manager.clearTemporaryPoseOverride !== 'function') {
+                return;
+            }
+            try {
+                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
+            } catch (_) {}
+        }
+
+        writeWeighted(key, targetValue, weight) {
+            const meta = this.params[key];
+            if (!meta) {
+                return;
+            }
+            const current = readParam(this.coreModel, meta);
+            writeParam(this.coreModel, meta, lerp(current, targetValue, weight));
+        }
+
+        applyPose(pose, weight) {
+            const w = clamp(weight, 0, 1);
+            this.writeWeighted('angleX', pose.angleX, w);
+            this.writeWeighted('angleY', pose.angleY, w);
+            this.writeWeighted('angleZ', pose.angleZ, w);
+            this.writeWeighted('bodyAngleX', pose.bodyAngleX, w);
+            this.writeWeighted('bodyAngleY', pose.bodyAngleY, w);
+            this.writeWeighted('bodyAngleZ', pose.bodyAngleZ, w);
+        }
+
+        getPose(now) {
+            const swayPose = computeGuideIdleSwayPose(now, {
+                startedAt: this.startedAt,
+                reducedMotion: this.reducedMotion
+            });
+            const elapsed = Math.max(0, Number(now) - Number(this.startedAt || 0));
+            if (!this.entryPose || this.entryBlendMs <= 0 || elapsed >= this.entryBlendMs) {
+                return swayPose;
+            }
+            const progress = easeInOutCubic(clamp(elapsed / this.entryBlendMs, 0, 1));
+            return blendNumericPose(this.entryPose, swayPose, progress);
+        }
+
+        applyTemporaryPose(coreModel, context) {
+            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel()) {
+                return;
+            }
+            const pose = this.getPose(context && context.now ? context.now : performance.now());
+            this.currentPose = pose;
+            this.applyPose(pose, 0.42);
+        }
+
+        start() {
+            if (!this.isCurrentModel()) {
+                return false;
+            }
+            this.active = true;
+            this.finished = false;
+            this.result = 'playing';
+            this.startedAt = performance.now();
+            this.entryPose = readMappedPose(this.coreModel, {
+                angleX: 'ParamAngleX',
+                angleY: 'ParamAngleY',
+                angleZ: 'ParamAngleZ',
+                bodyAngleX: 'ParamBodyAngleX',
+                bodyAngleY: 'ParamBodyAngleY',
+                bodyAngleZ: 'ParamBodyAngleZ'
+            }, this.currentPose);
+            this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
+            if (!this.usesTemporaryPoseOverride) {
+                return false;
+            }
+            if (this.ticker && typeof this.ticker.add === 'function') {
+                this.ticker.add(this.tick);
+                this.tickerAttached = true;
+            } else {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+            return true;
+        }
+
+        tick() {
+            if (!this.active) {
+                return;
+            }
+            if (this.isCancelled() || !this.isCurrentModel()) {
+                this.stop(this.isCancelled() ? 'cancelled' : 'model_changed');
+                return;
+            }
+            const pose = this.getPose(performance.now());
+            this.currentPose = pose;
+            if (!this.usesTemporaryPoseOverride) {
+                this.applyPose(pose, 0.42);
+            }
+            if (!this.tickerAttached) {
+                this.frameId = window.requestAnimationFrame(this.tick);
+            }
+        }
+
+        detachTicker() {
+            if (this.tickerAttached && this.ticker && typeof this.ticker.remove === 'function') {
+                try {
+                    this.ticker.remove(this.tick);
+                } catch (_) {}
+            }
+            this.tickerAttached = false;
+            if (this.frameId) {
+                window.cancelAnimationFrame(this.frameId);
+                this.frameId = 0;
+            }
+        }
+
+        async animateRelease() {
+            if (this.releaseMs <= 0 || !this.isCurrentModel()) {
+                return;
+            }
+            const fromPose = Object.assign({}, this.currentPose);
+            const startedAt = performance.now();
+            await new Promise((resolve) => {
+                const step = (now) => {
+                    if (!this.isCurrentModel()) {
+                        resolve();
+                        return;
+                    }
+                    const progress = clamp((now - startedAt) / this.releaseMs, 0, 1);
+                    const pose = blendPoseTowardNeutral(fromPose, easeInOutCubic(progress));
+                    this.applyPose(pose, 0.42);
+                    if (progress >= 1) {
+                        resolve();
+                        return;
+                    }
+                    window.requestAnimationFrame(step);
+                };
+                window.requestAnimationFrame(step);
+            });
+        }
+
+        async stop(reason) {
+            if (this.finished) {
+                return;
+            }
+            this.active = false;
+            this.finished = true;
+            this.result = reason || 'stopped';
+            this.detachTicker();
+            await this.animateRelease();
+            this.clearTemporaryPoseOverride();
+            if (activeGuideIdleSwaySession === this) {
+                activeGuideIdleSwaySession = null;
+            }
+        }
+    }
+
+    async function startGuideIdleSway(options) {
+        const normalizedOptions = options || {};
+        const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, GUIDE_IDLE_SWAY_READY_WAIT_MS);
+        const context = await waitForLive2DContext(waitMs);
+        if (!context) {
+            return null;
+        }
+        if (activeGuideIdleSwaySession && activeGuideIdleSwaySession.active) {
+            return {
+                stop: function stopGuideIdleSway(reason) {
+                    return activeGuideIdleSwaySession
+                        ? activeGuideIdleSwaySession.stop(reason || 'stopped')
+                        : Promise.resolve();
+                },
+                isActive: function isGuideIdleSwayActive() {
+                    return !!(activeGuideIdleSwaySession && activeGuideIdleSwaySession.active);
+                }
+            };
+        }
+        const session = new Live2DGuideIdleSwaySession(context, {
+            reducedMotion: !!normalizedOptions.reducedMotion,
+            token: normalizedOptions.token || Date.now(),
+            isCancelled: normalizedOptions.isCancelled,
+            releaseMs: normalizedOptions.releaseMs
+        });
+        if (!session.start()) {
+            return null;
+        }
+        activeGuideIdleSwaySession = session;
+        return {
+            stop: function stopGuideIdleSway(reason) {
+                return session.stop(reason || 'stopped');
+            },
+            isActive: function isGuideIdleSwayActive() {
                 return !!session.active;
             }
         };
@@ -4545,7 +5137,8 @@
             token: normalizedOptions.token || Date.now(),
             isCancelled: normalizedOptions.isCancelled,
             hideMs: normalizedOptions.hideMs,
-            appearMs: normalizedOptions.appearMs
+            appearMs: normalizedOptions.appearMs,
+            targetPreset: normalizedOptions.targetPreset
         });
         if (!session.start()) {
             return null;
@@ -4569,7 +5162,15 @@
             return { result: 'fallback', reason: 'live2d_unavailable' };
         }
         if (activeSettingsPeekPanicSession && activeSettingsPeekPanicSession.active) {
-            activeSettingsPeekPanicSession.cancel('replaced');
+            if (!activeSettingsPeekPanicSession.isCurrentModel()) {
+                activeSettingsPeekPanicSession.cancel('replaced');
+            } else {
+                const session = activeSettingsPeekPanicSession;
+                return waitForSessionCompletion(session, (finishedSession) => ({
+                    result: finishedSession.result || 'played',
+                    reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : ''
+                }));
+            }
         }
         const session = new Live2DSettingsPeekPanicSession(context, {
             document: normalizedOptions.document || document,
@@ -4594,19 +5195,10 @@
         }
         activeSettingsPeekPanicSession = session;
 
-        return new Promise((resolve) => {
-            const poll = () => {
-                if (session.finished) {
-                    resolve({
-                        result: session.result || 'played',
-                        reason: session.result && session.result !== 'played' ? session.result : ''
-                    });
-                    return;
-                }
-                window.requestAnimationFrame(poll);
-            };
-            window.requestAnimationFrame(poll);
-        });
+        return waitForSessionCompletion(session, (finishedSession) => ({
+            result: finishedSession.result || 'played',
+            reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : ''
+        }));
     }
 
     async function playInterruptResist(options) {
@@ -4617,7 +5209,15 @@
             return { result: 'fallback', reason: 'live2d_unavailable' };
         }
         if (activeInterruptResistSession && activeInterruptResistSession.active) {
-            activeInterruptResistSession.cancel('replaced');
+            if (!activeInterruptResistSession.isCurrentModel()) {
+                activeInterruptResistSession.cancel('replaced');
+            } else {
+                const session = activeInterruptResistSession;
+                return waitForSessionCompletion(session, (finishedSession) => ({
+                    result: finishedSession.result || 'played',
+                    reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : ''
+                }));
+            }
         }
         const session = new Live2DInterruptResistSession(context, {
             document: normalizedOptions.document || document,
@@ -4636,19 +5236,10 @@
         }
         activeInterruptResistSession = session;
 
-        return new Promise((resolve) => {
-            const poll = () => {
-                if (session.finished) {
-                    resolve({
-                        result: session.result || 'played',
-                        reason: session.result && session.result !== 'played' ? session.result : ''
-                    });
-                    return;
-                }
-                window.requestAnimationFrame(poll);
-            };
-            window.requestAnimationFrame(poll);
-        });
+        return waitForSessionCompletion(session, (finishedSession) => ({
+            result: finishedSession.result || 'played',
+            reason: finishedSession.result && finishedSession.result !== 'played' ? finishedSession.result : ''
+        }));
     }
 
     async function playAngryExit(options) {
@@ -4701,6 +5292,7 @@
         playReturnControlCueWave: playReturnControlCueWave,
         playIntroGiftHeart: playIntroGiftHeart,
         startIntroVoiceCursorLookAt: startIntroVoiceCursorLookAt,
+        startGuideIdleSway: startGuideIdleSway,
         playSettingsPeekPanic: playSettingsPeekPanic,
         playInterruptResist: playInterruptResist,
         playAngryExit: playAngryExit,
@@ -4711,6 +5303,7 @@
         Live2DIntroGreetingHugSession: Live2DIntroGreetingHugSession,
         Live2DIntroGiftHeartSession: Live2DIntroGiftHeartSession,
         Live2DIntroVoiceLookAtSession: Live2DIntroVoiceLookAtSession,
+        Live2DGuideIdleSwaySession: Live2DGuideIdleSwaySession,
         Live2DSettingsPeekPanicSession: Live2DSettingsPeekPanicSession,
         Live2DInterruptResistSession: Live2DInterruptResistSession,
         Live2DAngryExitSession: Live2DAngryExitSession,
