@@ -130,7 +130,7 @@ def _line_similarity_signature(observed_lines: Any) -> str:
 
 def _observed_similarity(cached_sig: str, current_sig: str) -> float:
     if cached_sig == current_sig:
-        return 1.0 if cached_sig else 0.0
+        return 1.0
     if not cached_sig or not current_sig:
         return 0.0
     n = 3
@@ -416,10 +416,11 @@ class LLMGateway:
             key: value
             for key, value in context.items()
             if key not in _NEAR_MATCH_EXCLUDED_FIELDS
+            and key not in {"observed_lines", "stable_lines", "current_line"}
         }
-        stable["__observed_signature__"] = _line_similarity_signature(
-            context.get("observed_lines")
-        )
+        meta = self._build_near_match_meta(context)
+        stable["__stable_lines_hash__"] = meta["_stable_lines_hash"]
+        stable["__current_line_hash__"] = meta["_current_line_hash"]
         return (
             f"near:{operation}:{self._cache_config_fingerprint()}:"
             f"{_stable_json_fingerprint(stable)}"
@@ -455,8 +456,16 @@ class LLMGateway:
         mode = str(
             getattr(self._config, "context_counting_mode", "char") or "char"
         ).strip().lower()
+        semantic_compression = bool(
+            getattr(self._config, "context_semantic_compression", False)
+        )
         if mode != "token":
-            return _stable_json_fingerprint({"context_counting_mode": "char"})
+            return _stable_json_fingerprint(
+                {
+                    "context_counting_mode": "char",
+                    "context_semantic_compression": semantic_compression,
+                }
+            )
         try:
             budget = int(getattr(self._config, "context_max_tokens", 6000))
         except (TypeError, ValueError):
@@ -465,6 +474,7 @@ class LLMGateway:
             {
                 "context_counting_mode": "token",
                 "context_max_tokens": max(1, budget),
+                "context_semantic_compression": semantic_compression,
             }
         )
 

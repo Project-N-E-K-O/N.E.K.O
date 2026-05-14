@@ -5537,6 +5537,7 @@ class GameLLMAgent:
                 and (not scene_id or str(item.get("scene_id") or "") == scene_id)
                 and (
                     not bounded_line_ids
+                    or item.get("line_id") is None
                     or str(item.get("line_id") or "") in bounded_line_ids
                 )
             ][-line_limit:]

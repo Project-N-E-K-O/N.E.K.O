@@ -3,10 +3,6 @@ from __future__ import annotations
 from _galgame_test_support import *
 
 
-async def _noop_install_entry_poll(**_: object) -> None:
-    return None
-
-
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(tmp_path: Path) -> None:

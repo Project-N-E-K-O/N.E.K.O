@@ -207,6 +207,32 @@ def test_load_context_snapshot_rejects_mismatched_game_id(tmp_path: Path) -> Non
     assert loaded == {}
 
 
+def test_load_context_snapshot_rejects_mismatched_game_id_even_when_optional(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(_valid_snapshot(game_id="demo.alpha"))
+
+    loaded = store.load_context_snapshot(
+        current_game_id="demo.beta",
+        max_age_seconds=0.0,
+        require_game_id=False,
+    )
+
+    assert loaded == {}
+
+
+def test_load_context_snapshot_rejects_bound_snapshot_for_unbound_session(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(_valid_snapshot(game_id="demo.alpha"))
+
+    loaded = store.load_context_snapshot(
+        current_game_id="",
+        max_age_seconds=0.0,
+        require_game_id=False,
+    )
+
+    assert loaded == {}
+
+
 def test_load_context_snapshot_returns_empty_when_expired(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     store.persist_context_snapshot(_valid_snapshot(saved_at=1_000.0))

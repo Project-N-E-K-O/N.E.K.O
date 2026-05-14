@@ -2798,6 +2798,7 @@ class GalgamePlugin(NekoPluginBase):
         scene_id = str(context.get("scene_id") or "").strip()
         route_id = str(context.get("route_id") or "").strip()
         game_id = str(context.get("game_id") or "").strip()
+        session_id = str(context.get("session_id") or "").strip()
         stable_lines = context.get("stable_lines")
         if not isinstance(stable_lines, list):
             stable_lines = []
@@ -2813,6 +2814,25 @@ class GalgamePlugin(NekoPluginBase):
             "summary_seed": summary,
             "stable_line_ids": stable_line_ids,
         }
+        with self._state_lock:
+            live_snapshot = (
+                self._state.latest_snapshot
+                if isinstance(self._state.latest_snapshot, dict)
+                else {}
+            )
+            if session_id:
+                live_matches = session_id == str(self._state.active_session_id or "")
+            else:
+                live_matches = (
+                    (not game_id or game_id == str(self._state.active_game_id or ""))
+                    and (not scene_id or scene_id == str(live_snapshot.get("scene_id") or ""))
+                    and (not route_id or route_id == str(live_snapshot.get("route_id") or ""))
+                )
+        if not live_matches:
+            self.logger.warning(
+                "galgame context_snapshot persist skipped: stale summary context"
+            )
+            return
         try:
             saved = self._persist.persist_context_snapshot(
                 snapshot,
@@ -2823,6 +2843,24 @@ class GalgamePlugin(NekoPluginBase):
             return
         if saved:
             with self._state_lock:
+                live_snapshot = (
+                    self._state.latest_snapshot
+                    if isinstance(self._state.latest_snapshot, dict)
+                    else {}
+                )
+                if session_id:
+                    live_matches = session_id == str(self._state.active_session_id or "")
+                else:
+                    live_matches = (
+                        (not game_id or game_id == str(self._state.active_game_id or ""))
+                        and (not scene_id or scene_id == str(live_snapshot.get("scene_id") or ""))
+                        and (not route_id or route_id == str(live_snapshot.get("route_id") or ""))
+                    )
+                if not live_matches:
+                    self.logger.warning(
+                        "galgame context_snapshot state update skipped: stale summary context"
+                    )
+                    return
                 self._state.context_snapshot = {
                     "scene_id": scene_id,
                     "game_id": game_id,

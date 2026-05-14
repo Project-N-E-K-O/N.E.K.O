@@ -317,9 +317,6 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
     good_handle = _FakeTextractorHandle(
         [f"[4242:100:0:0] {expected_snapshot_text}"]
     )
-    handle = _FakeTextractorHandle(
-        ["[4242:100:0:0] é›ªä¹ƒï¼šWindows é»˜è®¤é…ç½®å·²è‡ªåŠ¨æŽ¥ç®¡ã€‚"]
-    )
 
     async def _process_factory(path: str):
         assert path == str(textractor_path)
@@ -356,15 +353,6 @@ async def test_windows_default_memory_reader_config_autodiscovers_textractor_and
     assert status.value["memory_reader_runtime"]["status"] == "active"
     assert snapshot.value["snapshot"]["text"] == expected_snapshot_text
     assert good_handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
-    return
-
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["memory_reader_enabled"] is True
-    assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
-    assert status.value["memory_reader_runtime"]["status"] == "active"
-    assert snapshot.value["snapshot"]["text"] == "Windows é»˜è®¤é…ç½®å·²è‡ªåŠ¨æŽ¥ç®¡ã€‚"
-    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
 
 
 @pytest.mark.asyncio
@@ -393,26 +381,29 @@ async def test_windows_default_memory_reader_config_stays_idle_when_textractor_a
     ctx = _Ctx(plugin_dir, cfg)
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    plugin._memory_reader_manager = MemoryReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        process_scanner=lambda: [],
-        time_fn=lambda: 1710000000.0,
-        platform_fn=lambda: True,
-        writer=MemoryReaderBridgeWriter(
-            bridge_root=bridge_root,
+    try:
+        plugin._memory_reader_manager = MemoryReaderManager(
+            logger=plugin.logger,
+            config=plugin._cfg,
+            process_scanner=lambda: [],
             time_fn=lambda: 1710000000.0,
-        ),
-    )
+            platform_fn=lambda: True,
+            writer=MemoryReaderBridgeWriter(
+                bridge_root=bridge_root,
+                time_fn=lambda: 1710000000.0,
+            ),
+        )
 
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
+        await plugin._poll_bridge(force=True)
+        status = await plugin.galgame_get_status()
 
-    assert isinstance(status, Ok)
-    assert status.value["memory_reader_enabled"] is True
-    assert status.value["active_data_source"] == "none"
-    assert status.value["memory_reader_runtime"]["status"] == "idle"
-    assert status.value["memory_reader_runtime"]["detail"] == "invalid_textractor_path"
+        assert isinstance(status, Ok)
+        assert status.value["memory_reader_enabled"] is True
+        assert status.value["active_data_source"] == "none"
+        assert status.value["memory_reader_runtime"]["status"] == "idle"
+        assert status.value["memory_reader_runtime"]["detail"] == "invalid_textractor_path"
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio

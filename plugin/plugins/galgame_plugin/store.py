@@ -680,12 +680,13 @@ class GalgameStore:
         summary_seed = raw_value.get("summary_seed")
         if not isinstance(summary_seed, str):
             summary_seed = ""
+        summary_seed = summary_seed.strip()
         stable_line_ids = raw_value.get("stable_line_ids")
         if isinstance(stable_line_ids, list):
             cleaned_ids = [
-                str(item)
+                str(item).strip()
                 for item in stable_line_ids
-                if isinstance(item, (str, int)) and str(item)
+                if isinstance(item, (str, int)) and str(item).strip()
             ]
         else:
             cleaned_ids = []
@@ -719,8 +720,9 @@ class GalgameStore:
         Returns an empty dict when:
         - no snapshot is present (first launch),
         - the snapshot is older than ``max_age_seconds``,
-        - ``require_game_id`` is True and the snapshot's ``game_id`` is empty or
-          does not match ``current_game_id`` (cross-game pollution guard).
+        - the snapshot has a ``game_id`` but it does not match
+          ``current_game_id`` (cross-game pollution guard),
+        - ``require_game_id`` is True and the snapshot's ``game_id`` is empty.
         """
 
         raw = self._read(STORE_CONTEXT_SNAPSHOT, None)
@@ -735,12 +737,13 @@ class GalgameStore:
         if max_age > 0.0 and snapshot["saved_at"] > 0.0:
             if wall_now - snapshot["saved_at"] > max_age:
                 return {}
-        if require_game_id:
-            game_id = snapshot.get("game_id") or ""
-            if not game_id:
+        game_id = snapshot.get("game_id") or ""
+        current_game = str(current_game_id or "").strip()
+        if game_id:
+            if not current_game or game_id != current_game:
                 return {}
-            if current_game_id and game_id != current_game_id:
-                return {}
+        elif require_game_id:
+            return {}
         return snapshot
 
     def persist_context_snapshot(
