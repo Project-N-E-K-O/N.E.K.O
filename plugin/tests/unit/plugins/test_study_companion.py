@@ -38,6 +38,7 @@ from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
+from plugin.plugins.study_companion.knowledge_contribution import PublicGraphContributionBuilder
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
 from plugin.plugins.study_companion.state import build_initial_state
@@ -2216,6 +2217,7 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         export_formats = properties["fmt"]["enum"]
         assert export_formats == ["markdown", "pdf", "docx"]
         assert "range" not in properties
+        assert properties["style"]["default"] == "compact"
         assert properties["time_range"]["default"] == "recent"
         assert properties["recent_limit"]["default"] == 30
         assert properties["topic_ids"]["default"] == []
@@ -2230,10 +2232,19 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         assert isinstance(exported, Ok)
         assert exported.value["filename"] == "unit-notes.md"
         assert exported.value["format"] == "markdown"
-        assert exported.value["style"] == "neko"
+        assert exported.value["style"] == "compact"
         assert exported.value["content_base64"]
         assert "Range: recent" in exported.value["markdown"]
         assert "derivative" in exported.value["markdown"]
+
+        explicit_style = await entries["study_export_notes"].handler(
+            fmt="markdown",
+            style="academic",
+            preview_only=True,
+            title="Academic Notes",
+        )
+        assert isinstance(explicit_style, Ok)
+        assert explicit_style.value["style"] == "academic"
 
         knowledge_map = await plugin.study_knowledge_map(limit=10)
         assert isinstance(knowledge_map, Ok)
@@ -2247,6 +2258,32 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         assert isinstance(preview, Ok)
         assert preview.value["opt_in"] is True
         assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is True
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_knowledge_contribution_opt_in_preview_failure_is_atomic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    def _raise_preview(self, *, limit: int = 100):
+        raise RuntimeError("preview failed")
+
+    monkeypatch.setattr(PublicGraphContributionBuilder, "preview", _raise_preview)
+
+    try:
+        result = await plugin.study_set_knowledge_contribution_opt_in(opt_in=True)
+        assert isinstance(result, Err)
+        assert plugin._cfg.knowledge_contribution_opt_in is False
+        assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is False
     finally:
         await plugin.shutdown()
 

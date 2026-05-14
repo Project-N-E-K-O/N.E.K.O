@@ -5,7 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from plugin.plugins.study_companion.doc_exporter import DocExporter, _pdf_safe_text, _safe_utf8_truncate, escape_markdown
+from plugin.plugins.study_companion.doc_exporter import DocExporter, _pdf_safe_text, escape_markdown, safe_utf8_truncate
 from plugin.plugins.study_companion.models import DocExportConfig, STUDY_EXPORT_FORMATS, STUDY_EXPORT_STYLES
 from plugin.plugins.study_companion.store import StudyStore
 
@@ -123,11 +123,28 @@ def test_xmind_export_requires_explicit_enable(tmp_path: Path) -> None:
         store.close()
 
 
+def test_preview_export_uses_markdown_metadata_for_non_markdown_format(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        exported = DocExporter(store, config=DocExportConfig(xmind_enabled=True)).export(
+            fmt="xmind",
+            title="Preview Notes",
+            preview_only=True,
+        )
+
+        assert exported.content.startswith(b"# Preview Notes")
+        assert exported.filename == "preview-notes.md"
+        assert exported.content_type.startswith("text/markdown")
+        assert exported.format == "markdown"
+    finally:
+        store.close()
+
+
 def test_escape_markdown_handles_emoji_and_none() -> None:
     assert escape_markdown(None) == ""
     assert "😀" in escape_markdown("emoji 😀")
 
 
 def test_safe_utf8_truncate_does_not_split_multibyte_characters() -> None:
-    assert _safe_utf8_truncate("\u4e2d\u6587abc", 5) == "\u4e2d"
-    assert _safe_utf8_truncate("abc", 120) == "abc"
+    assert safe_utf8_truncate("\u4e2d\u6587abc", 5) == "\u4e2d"
+    assert safe_utf8_truncate("abc", 120) == "abc"

@@ -87,6 +87,7 @@ class DocExporter:
         if time_range is None:
             time_range = str(legacy_options.get("range") or "") or None
         export_format = normalize_format(fmt)
+        effective_format = "markdown" if preview_only else export_format
         export_style = self.normalize_style(style or self._config.default_style)
         markdown = self.build_markdown(
             title=title,
@@ -95,13 +96,13 @@ class DocExporter:
             recent_limit=recent_limit,
             topic_ids=topic_ids,
         )
-        content = markdown.encode("utf-8") if preview_only or export_format == "markdown" else self._render(export_format, markdown)
+        content = markdown.encode("utf-8") if effective_format == "markdown" else self._render(effective_format, markdown)
         return ExportDocument(
             content=content,
-            filename=f"{slugify(title or 'study-notes')}.{extension_for_format(export_format)}",
-            content_type=_CONTENT_TYPES[export_format],
+            filename=f"{slugify(title or 'study-notes')}.{extension_for_format(effective_format)}",
+            content_type=_CONTENT_TYPES[effective_format],
             markdown=markdown,
-            format=export_format,
+            format=effective_format,
             style=export_style,
         )
 
@@ -256,7 +257,7 @@ class DocExporter:
                     pdf.showPage()
                     pdf.setFont(font_name, 10)
                     y = height - 48
-                pdf.drawString(x, y, _safe_utf8_truncate(part, 120))
+                pdf.drawString(x, y, safe_utf8_truncate(part, 92 * 4))
                 y -= 14
         pdf.save()
         return output.getvalue()
@@ -346,7 +347,7 @@ def _pdf_safe_text(value: object) -> str:
     return str(value or "").replace("\t", "    ")
 
 
-def _safe_utf8_truncate(text: str, max_bytes: int) -> str:
+def safe_utf8_truncate(text: str, max_bytes: int) -> str:
     if max_bytes <= 0:
         return ""
     payload = str(text or "").encode("utf-8")
@@ -362,6 +363,6 @@ __all__ = [
     "escape_markdown",
     "extension_for_format",
     "normalize_format",
-    "_safe_utf8_truncate",
+    "safe_utf8_truncate",
     "slugify",
 ]

@@ -263,7 +263,11 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "type": "object",
                 "properties": {
                     "fmt": {"type": "string", "enum": export_formats, "default": "markdown"},
-                    "style": {"type": "string", "enum": ["neko", "academic", "compact"], "default": "neko"},
+                    "style": {
+                        "type": "string",
+                        "enum": ["neko", "academic", "compact"],
+                        "default": self._cfg.doc_export.default_style,
+                    },
                     "title": {"type": "string", "default": "Study Notes"},
                     "preview_only": {"type": "boolean", "default": False},
                     "time_range": {"type": "string", "default": "recent"},
@@ -278,7 +282,7 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def _study_export_notes_entry(
         self,
         fmt: str = "markdown",
-        style: str | None = "neko",
+        style: str | None = None,
         title: str | None = "Study Notes",
         preview_only: bool = False,
         time_range: str | None = "recent",
@@ -718,11 +722,14 @@ class StudyCompanionPlugin(NekoPluginBase):
     )
     async def study_set_knowledge_contribution_opt_in(self, opt_in: bool = False, **_):
         try:
-            self._cfg.knowledge_contribution_opt_in = bool(opt_in)
-            await self._persist_state()
-            builder = PublicGraphContributionBuilder(self._store, self._cfg)
+            desired_opt_in = bool(opt_in)
+            preview_config = StudyConfig(**self._cfg.to_dict())
+            preview_config.knowledge_contribution_opt_in = desired_opt_in
+            builder = PublicGraphContributionBuilder(self._store, preview_config)
             preview = await asyncio.to_thread(builder.preview, limit=100)
-            return Ok(build_contribution_settings_payload(opt_in=self._cfg.knowledge_contribution_opt_in, preview=preview))
+            self._cfg.knowledge_contribution_opt_in = desired_opt_in
+            await self._persist_state()
+            return Ok(build_contribution_settings_payload(opt_in=desired_opt_in, preview=preview))
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
