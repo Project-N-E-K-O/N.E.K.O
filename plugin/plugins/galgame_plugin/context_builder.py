@@ -97,7 +97,7 @@ def _significant_char_count(text: object) -> int:
 def _context_window_bounds(
     config: GalgameLLMConfig | None,
     *,
-    max_floor: int = _DYNAMIC_WINDOW_DEFAULT_MAX_LINES,
+    max_floor: int = 1,
 ) -> tuple[int, int, int]:
     try:
         raw_min = getattr(config, "context_explain_min_lines", None)

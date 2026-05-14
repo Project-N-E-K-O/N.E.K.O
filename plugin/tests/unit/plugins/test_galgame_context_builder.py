@@ -221,3 +221,13 @@ def test_context_window_bounds_preserves_zero_until_minimum_clamp() -> None:
     )
 
     assert context_builder._context_window_bounds(config, max_floor=1) == (1, 1, 1)
+
+
+def test_context_window_bounds_default_respects_small_configured_maximum() -> None:
+    config = GalgameLLMConfig(
+        context_explain_min_lines=2,
+        context_explain_max_lines=3,
+        context_window_target_tokens=64,
+    )
+
+    assert context_builder._context_window_bounds(config) == (2, 3, 64)

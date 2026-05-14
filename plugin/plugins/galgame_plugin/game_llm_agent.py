@@ -5481,11 +5481,21 @@ class GameLLMAgent:
             max_limit=max_limit,
             target_tokens=target_tokens,
         )
-        stable_lines = history_lines[-line_limit:]
-        observed_lines = history_observed_lines[-line_limit:]
-        recent_choices = list(shared.get("history_choices") or [])[-line_limit:]
-        recent_half_limit = max(1, line_limit // 2)
-        recent_lines = [*stable_lines[-recent_half_limit:], *observed_lines[-recent_half_limit:]]
+        history_choices = list(shared.get("history_choices") or [])
+        if line_limit > 0:
+            stable_lines = history_lines[-line_limit:]
+            observed_lines = history_observed_lines[-line_limit:]
+            recent_choices = history_choices[-line_limit:]
+        else:
+            stable_lines = []
+            observed_lines = []
+            recent_choices = []
+        recent_half_limit = max(0, line_limit // 2)
+        recent_lines = (
+            [*stable_lines[-recent_half_limit:], *observed_lines[-recent_half_limit:]]
+            if recent_half_limit > 0
+            else []
+        )
         effective_line = resolve_effective_current_line(shared) or {}
         latest_line = ""
         if effective_line.get("text"):

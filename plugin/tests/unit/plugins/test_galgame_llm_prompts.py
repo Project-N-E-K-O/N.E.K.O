@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from plugin.plugins.galgame_plugin.context_builder import build_local_scene_summary
 from plugin.plugins.galgame_plugin import llm_prompts
 from plugin.plugins.galgame_plugin.llm_prompts import (
     build_prompt_messages,
@@ -236,3 +237,37 @@ def test_semantic_compression_failure_falls_back_to_uncompressed(
     assert rendered == context
     assert result.metadata["semantic_compression_enabled"] is False
     assert result.metadata["semantic_compression_fallback"] is True
+
+
+def test_semantic_compression_preserves_local_scene_summary_seed() -> None:
+    lines = [
+        {"speaker": "A", "text": "one", "scene_id": "s", "line_id": "1"},
+        {"speaker": "A", "text": "two", "scene_id": "s", "line_id": "2"},
+        {"speaker": "B", "text": "three", "scene_id": "s", "line_id": "3"},
+    ]
+    scene_summary_seed = build_local_scene_summary(
+        scene_id="s",
+        route_id="r",
+        lines=lines,
+        selected_choices=[{"choice_id": "c1", "text": "left"}],
+        snapshot={"speaker": "B", "text": "three", "scene_id": "s", "route_id": "r"},
+    )
+    context = {
+        "scene_id": "s",
+        "scene_summary_seed": scene_summary_seed,
+        "recent_lines": lines,
+    }
+
+    disabled = json.loads(_rendered_context(build_prompt_messages_with_metadata(
+        "summarize_scene",
+        context,
+        _cfg(context_semantic_compression=False),
+    )))
+    enabled = json.loads(_rendered_context(build_prompt_messages_with_metadata(
+        "summarize_scene",
+        context,
+        _cfg(context_semantic_compression=True),
+    )))
+
+    assert disabled["scene_summary_seed"] == scene_summary_seed
+    assert enabled["scene_summary_seed"] == scene_summary_seed
