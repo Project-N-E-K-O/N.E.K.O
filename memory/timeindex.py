@@ -41,6 +41,34 @@ class TimeIndexedMemory:
             os.makedirs(db_dir, exist_ok=True)
         return normalized_db_path, f"sqlite:///{uri_path}"
 
+    def _resolve_expected_db_path(self, lanlan_name: str, *, readonly: bool) -> str | None:
+        """计算当前 memory_dir 下该角色 db 的目标路径。
+
+        time_store 优先（允许角色把 db 显式登记到 memory_dir 之外），否则
+        回退到 ``memory_dir/{name}/time_indexed.db``。每次调用都重读
+        ``config_manager.memory_dir``，让 ``_ensure_engine_exists`` 的
+        path-drift 自检能感知到 in-process memory_dir 漂移。
+        """
+        try:
+            _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+        except Exception as exc:
+            logger.warning("[TimeIndexedMemory] get_character_data 失败，回退默认 db_path: %s", exc)
+            time_store = {}
+        if lanlan_name in time_store:
+            return time_store[lanlan_name]
+        config_mgr = get_config_manager()
+        if readonly:
+            return os.path.join(str(config_mgr.memory_dir), lanlan_name, "time_indexed.db")
+        from memory import ensure_character_dir
+        return os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
+
+    @staticmethod
+    def _db_paths_equivalent(left: str, right: str) -> bool:
+        try:
+            return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+        except Exception:
+            return left == right
+
     def _ensure_engine_exists(
         self,
         lanlan_name: str,
@@ -54,7 +82,30 @@ class TimeIndexedMemory:
             cached_engine = self.engines[lanlan_name]
             cached_db_path = str(self.db_paths[lanlan_name])
             cached_readonly = bool(self._engine_readonly_flags.get(lanlan_name, False))
-            if not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
+
+            # Path-drift defense: 罕见但可能——/reload 期间 storage_policy
+            # 重写 selected_root，新实例已经 reload 过但旧实例还在被某条
+            # async path 持有；或测试场景里 monkeypatch 了 memory_dir。
+            # 一旦 cached db_path 与当前 memory_dir 推导出的目标不一致，
+            # 老 SQLAlchemy engine 会继续往旧文件写，前端表象就是 db 永远
+            # 不更新（/process 的 except Exception 又把 SQL 错误吞掉）。
+            # 嗅探到漂移就 dispose 让下面的新建分支用 expected 重建。
+            expected_db_path = db_path
+            if expected_db_path is None:
+                try:
+                    expected_db_path = self._resolve_expected_db_path(lanlan_name, readonly=readonly)
+                except Exception as exc:
+                    logger.debug("[TimeIndexedMemory] 解析 expected db_path 失败，跳过 drift 检查: %s", exc)
+                    expected_db_path = None
+            if expected_db_path and not self._db_paths_equivalent(expected_db_path, cached_db_path):
+                logger.warning(
+                    "[TimeIndexedMemory] 角色 %s 的 db_path 漂移，dispose 重建：cached=%s expected=%s",
+                    lanlan_name, cached_db_path, expected_db_path,
+                )
+                self.dispose_engine(lanlan_name)
+                db_path = expected_db_path
+                # 落到下面"新建 engine"分支
+            elif not readonly and cached_readonly and lanlan_name not in self._writable_bootstrapped:
                 logger.info("[TimeIndexedMemory] 角色 %s 当前为只读引擎，切换为可写引擎后再执行迁移", lanlan_name)
                 self.dispose_engine(lanlan_name)
                 if not db_path:
@@ -81,17 +132,10 @@ class TimeIndexedMemory:
         connection_string = None
         try:
             if not db_path:
-                _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
-                if lanlan_name in time_store:
-                    db_path = time_store[lanlan_name]
-                else:
-                    config_mgr = get_config_manager()
-                    if readonly:
-                        db_path = os.path.join(config_mgr.memory_dir, lanlan_name, "time_indexed.db")
-                    else:
-                        from memory import ensure_character_dir
-                        db_path = os.path.join(ensure_character_dir(config_mgr.memory_dir, lanlan_name), 'time_indexed.db')
-                    logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
+                db_path = self._resolve_expected_db_path(lanlan_name, readonly=readonly)
+                if not db_path:
+                    logger.error(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 无法解析 db_path")
+                    return False
 
             normalized_db_path, connection_string = self._build_sqlite_connection_string(
                 db_path,
@@ -149,9 +193,15 @@ class TimeIndexedMemory:
             return False
 
     async def _aensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
-        """异步版本：把阻塞的 engine 创建丢到线程池。"""
-        if lanlan_name in self.engines and lanlan_name in self.db_paths:
-            return True
+        """异步版本：把阻塞的 engine 创建丢到线程池。
+
+        以前在这里有个 ``if lanlan_name in self.engines and lanlan_name in self.db_paths:
+        return True`` 的早期短路，把 cache hit 的判定挡在 sync 实现之外——这条
+        路径会绕过 ``_ensure_engine_exists`` 新增的 path-drift 自检（cached db_path
+        vs 当前 memory_dir 推导出的 expected 不一致时 dispose 重建）。当前没有
+        async 调用方走这条入口，但为了避免未来加进来后 drift 检测被静默废掉，
+        删掉短路统一委托给 sync 实现。
+        """
         return await asyncio.to_thread(self._ensure_engine_exists, lanlan_name, db_path)
 
     def dispose_engine(self, lanlan_name: str):
