@@ -374,19 +374,32 @@ def _dialogue_context_lines(
     return result[-limit:]
 
 
-def _strip_context_source(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _strip_context_source(
+    lines: list[dict[str, Any]],
+    *,
+    preserve_condensed_count: bool = False,
+) -> list[dict[str, Any]]:
     return [
         {
             key: value
             for key, value in item.items()
-            if key != "_context_source" and not str(key).startswith("_condensed_")
+            if key != "_context_source"
+            and key != "_condensed_line_ids"
+            and (preserve_condensed_count or key != "_condensed_count")
         }
         for item in lines
     ]
 
 
-def _condense_context_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return _strip_context_source(_condense_dialogue_batch(lines))
+def _condense_context_lines(
+    lines: list[dict[str, Any]],
+    *,
+    preserve_condensed_count: bool = False,
+) -> list[dict[str, Any]]:
+    return _strip_context_source(
+        _condense_dialogue_batch(lines),
+        preserve_condensed_count=preserve_condensed_count,
+    )
 
 
 def _split_context_line_budget(
@@ -465,8 +478,8 @@ def _scene_context_windows(
         item for item in recent_lines if item.get("_context_source") == "observed"
     ]
     return (
-        _condense_context_lines(stable_lines),
-        _condense_context_lines(observed_lines),
+        _condense_context_lines(stable_lines, preserve_condensed_count=True),
+        _condense_context_lines(observed_lines, preserve_condensed_count=True),
         _condense_context_lines(recent_lines),
     )
 

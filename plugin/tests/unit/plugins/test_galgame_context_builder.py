@@ -359,7 +359,7 @@ def test_summarize_context_respects_small_configured_maximum() -> None:
     assert result["stable_lines"][0]["line_id"] == "line-7"
     assert "line 7.\nline 8.\nline 9." == result["stable_lines"][0]["text"]
     assert "_condensed_line_ids" not in result["stable_lines"][0]
-    assert "_condensed_count" not in result["stable_lines"][0]
+    assert result["stable_lines"][0]["_condensed_count"] == 3
 
 
 def test_summarize_context_applies_global_line_limit_before_condensing() -> None:
