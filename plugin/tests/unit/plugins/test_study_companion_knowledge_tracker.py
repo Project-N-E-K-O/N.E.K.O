@@ -294,7 +294,7 @@ def test_add_qa_record_trims_unknown_topic_rows(tmp_path: Path) -> None:
         store.close()
 
 
-def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
+def test_runtime_topic_answer_records_are_pruned(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         original_add_qa_record = store.add_qa_record
@@ -308,7 +308,7 @@ def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
         for index in range(3):
             tracker.on_answer(
                 topic_id="",
-                question={"topic": f"runtime topic {index}", "question": f"q{index}", "answer": "a"},
+                question={"topic": "runtime topic", "question": f"q{index}", "answer": "a"},
                 user_answer="a",
                 eval_result={"verdict": "correct", "score": 90},
                 mode="interactive",
@@ -319,12 +319,14 @@ def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
                 """
                 SELECT question
                 FROM qa_records
-                WHERE topic_id IS NULL
+                WHERE topic_id = ?
                 ORDER BY id
-                """
+                """,
+                ("runtime_topic",),
             ).fetchall()
 
         questions = [json.loads(row[0])["question"] for row in rows]
+        assert store.get_topic("runtime_topic") is not None
         assert questions == ["q1", "q2"]
     finally:
         store.close()
