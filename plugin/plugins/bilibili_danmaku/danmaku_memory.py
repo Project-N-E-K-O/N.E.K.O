@@ -146,7 +146,7 @@ class DanmakuMemory:
         topic.keywords.update(keywords)
         topic.last_seen = now
         topic.mention_count += window_count
-        topic.sentiment_sum += sentiment
+        topic.sentiment_sum += sentiment * window_count
         topic.window_counts.append(window_count)
         if window_count > topic.peak_density:
             topic.peak_density = window_count

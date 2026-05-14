@@ -638,7 +638,7 @@ class DanmakuListener:
             elif cmd in self._CMD_HANDLERS:
                 handler = self._CMD_HANDLERS[cmd]
                 try:
-                    ld = handler(self, data)
+                    ld = handler(data)
                     if ld:
                         await self._emit("on_event", cmd, ld)
                 except Exception as e:

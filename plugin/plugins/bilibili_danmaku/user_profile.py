@@ -230,13 +230,13 @@ class UserRecordManager:
             profile = self._profiles[key]
         else:
             profile = self._get_or_create(uname, 0, uname)
+            key = profile.key
 
         profile.gift_total += price
         profile.gift_count += 1
         profile.is_vip = profile.gift_total > _VIP_GIFT_THRESHOLD
 
-        if key:
-            self._touch(key)
+        self._touch(key)
 
     def record_entry(self, uid: int, uname: str):
         """记录用户进入直播间（参考 C++: userComeTimes）
@@ -516,8 +516,10 @@ class UserRecordManager:
                 lambda: json.loads(path.read_text(encoding="utf-8"))
             )
             self._profiles.clear()
+            all_fields = set(UserRecord.__dataclass_fields__)
             for k, v in raw.get("profiles", {}).items():
-                self._profiles[k] = UserRecord(**v)
+                filtered = {fk: fv for fk, fv in v.items() if fk in all_fields}
+                self._profiles[k] = UserRecord(**filtered)
             self._activity_order = raw.get("activity_order", [])
             logger.info(f"已恢复 {len(self._profiles)} 个用户记录")
         except Exception as e:

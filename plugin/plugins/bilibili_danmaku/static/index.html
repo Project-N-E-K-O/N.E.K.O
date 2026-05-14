@@ -1205,7 +1205,6 @@
         <span class="toggle-label" data-i18n="bgllm.event_block">禁言通知</span>
       </div>
       <div class="toggle-wrap">
-        	      <div class="toggle-wrap">
 	        <div class="toggle-switch" id="eventWatchedToggle" onclick="toggleEventNotify('watched_enabled', this)">
 	          <span class="knob"></span>
 	        </div>
@@ -1225,7 +1224,7 @@
 	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_follow">关注</label><input type="number" id="cooldown_follow" value="30" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
 	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_live_status">直播状态</label><input type="number" id="cooldown_live_status" value="60" min="1" max="600" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
 	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_gift">礼物</label><input type="number" id="cooldown_gift" value="5" min="1" max="120" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
-t	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_gift_min_rmb">礼物最低价值(元)</label><input type="number" id="gift_min_rmb" value="0" min="0" max="10000" step="0.1" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
+	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_gift_min_rmb">礼物最低价值(元)</label><input type="number" id="gift_min_rmb" value="0" min="0" max="10000" step="0.1" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
 	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_sc">SC</label><input type="number" id="cooldown_sc" value="3" min="1" max="120" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
 	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_guard_buy">上舰</label><input type="number" id="cooldown_guard_buy" value="30" min="1" max="300" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
 	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" data-i18n="bgllm.event_label_entry_effect">进场特效</label><input type="number" id="cooldown_entry_effect" value="10" min="1" max="120" style="width:100%;background:var(--bg-input);border:1.5px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:0.85rem;"></div>
@@ -1272,7 +1271,7 @@ t	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" 
 	        </div>
 
 	      </div>
-	    </div>    </div>
+	    </div>
 
   </div>
 
@@ -2225,7 +2224,6 @@ t	            <div><label style="font-size:0.75rem;color:var(--text-secondary)" 
 
       const enabled = data.enabled === true;
       syncBgLlmToggle(enabled);
-      const health = bg.health || 'unknown';
 
       const dot = document.getElementById('bgLlmDot');
       dot.className = 'status-dot';

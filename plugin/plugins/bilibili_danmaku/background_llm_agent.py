@@ -575,7 +575,7 @@ class DanmakuBackgroundAgent:
             {"role": "user", "content": "\n".join(parts)},
         ]
 
-        raw = await self._llm_client._call_llm(messages)
+        raw = await self._llm_client.call(messages)
         if not raw:
             return None
 

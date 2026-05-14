@@ -1089,7 +1089,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             if not self._llm_client:
                 return None
             full_messages = [{"role": "system", "content": system_prompt}] + messages
-            return await self._llm_client._call_llm(full_messages)
+            return await self._llm_client.call(full_messages)
         return _call
 
     def _on_agent_ready_to_push(self, card):

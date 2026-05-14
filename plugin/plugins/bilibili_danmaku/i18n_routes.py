@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiohttp
 from fastapi import APIRouter
@@ -13,6 +16,28 @@ from plugin.logging_config import get_logger
 
 router = APIRouter(tags=["bilibili-i18n"])
 logger = get_logger("bilibili.i18n_routes")
+
+
+def _is_safe_url(url: str) -> bool:
+    """SSRF 防护：只允许公网 HTTP/HTTPS 请求"""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname or ""
+        # 禁止 localhost / 127.0.0.1 / ::1
+        if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False
+        # 禁止内网 / 链路本地地址
+        try:
+            addr = ipaddress.ip_address(socket.getaddrinfo(host, 0)[0][4][0])
+            if addr.is_private or addr.is_loopback or addr.is_link_local:
+                return False
+        except Exception:
+            return False  # 解析失败也拒绝
+        return True
+    except Exception:
+        return False
 
 _I18N_DIR = Path(__file__).resolve().parent / "i18n"
 _ALLOWED_LOCALES = {"zh-CN", "en", "ja", "ko", "zh-TW", "ru"}
@@ -89,6 +114,12 @@ async def test_bg_llm(req: BgLlmTestRequest) -> JSONResponse:
             api_url += "/chat/completions"
         else:
             api_url += "/v1/chat/completions"
+
+    # SSRF 防护
+    if not _is_safe_url(api_url):
+        return JSONResponse(
+            {"success": False, "error": "不安全的 API 地址：仅允许公网 HTTP/HTTPS 请求", "error_code": "ssrf_blocked"}
+        )
 
     payload = {
         "model": model or "gpt-3.5-turbo",

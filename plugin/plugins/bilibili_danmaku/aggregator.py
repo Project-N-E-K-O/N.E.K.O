@@ -53,8 +53,9 @@ class DanmakuEntry:
         权重：guard > admin > medal_level > user_level > text_length
         """
         score = 0.0
-        # guard: 总督3分, 提督2分, 舰长1分
-        score += self.guard * 1000
+        # guard: 总督(1)=3000, 提督(2)=2000, 舰长(3)=1000
+        _guard_score = {1: 3000, 2: 2000, 3: 1000}
+        score += _guard_score.get(self.guard, 0)
         # admin: 房管/主播 +500
         if self.admin:
             score += 500

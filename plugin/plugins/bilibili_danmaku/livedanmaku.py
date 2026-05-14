@@ -181,7 +181,7 @@ class LiveDanmaku:
             uid=int(d.get("uid", 0)),
             nickname=str(d.get("uname", "")),
             text=f"赠送 {d.get('num', 1)} 个 {d.get('giftName', '礼物')}",
-            room_id=int(d.get("ruid", 0)),
+            room_id=int(d.get("room_id") or d.get("ruid", 0)),
             medal=MedalInfo(
                 name=str(d.get("medal_info", {}).get("medal_name", "")),
                 level=int(d.get("medal_info", {}).get("medal_level", 0)),
@@ -422,7 +422,8 @@ class LiveDanmaku:
         用于降级模式下的优选/排序
         """
         score = 0.0
-        score += self.guard_level * 1000
+        _guard_score = {1: 3000, 2: 2000, 3: 1000}
+        score += _guard_score.get(self.guard_level, 0)
         if self.admin:
             score += 500
         if self.vip:

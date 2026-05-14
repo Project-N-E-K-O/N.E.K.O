@@ -41,7 +41,7 @@ class LLMClient:
 
     def __init__(
         self,
-        api_url: str = "https://api.deepseek.com/v1",
+        api_url: str = "",
         api_key: str = "",
         model: str = "deepseek-chat",
         timeout_sec: float = 10.0,
@@ -116,7 +116,7 @@ class LLMClient:
             cloud = config["cloud"]  # 全量 background_llm dict
         else:
             cloud = config            # 已经是 cloud 子对象
-        api_url = cloud.get("url", "https://api.deepseek.com").rstrip("/")
+        api_url = cloud.get("url", "").rstrip("/")
         # SDK 自动处理 /chat/completions 路径，不需要手动拼接
         if api_url.endswith("/chat/completions"):
             api_url = api_url[: -len("/chat/completions")]
@@ -169,6 +169,10 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
+        return await self._call_llm(messages)
+
+    async def call(self, messages: list[dict]) -> Optional[str]:
+        """执行通用 LLM API 调用（公开接口）"""
         return await self._call_llm(messages)
 
     async def _call_llm(self, messages: list[dict]) -> Optional[str]:
