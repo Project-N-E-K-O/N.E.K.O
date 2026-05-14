@@ -1266,6 +1266,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 "ANCHOR_LOT_END": self._process_lottery_event,
                 "ROOM_BLOCK_MSG": self._process_block_event,
                 "WATCHED_CHANGE": self._process_watched_change_event,
+                "ROOM_CHANGE": self._process_room_change_event,
+                "SUPER_CHAT_MESSAGE_JPN": self._process_sc_jpn_event,
             }
             handler = handler_map.get(cmd)
             if handler:
@@ -1358,6 +1360,23 @@ class BiliDanmakuPlugin(NekoPluginBase):
             return
         priority = int(self._get_event_notify_cfg("priority.watched", 1))
         self._push_to_ai(ld.text, "看过人数", priority=priority)
+
+    async def _process_room_change_event(self, ld):
+        """直播间信息变更"""
+        cd = float(self._get_event_notify_cfg("cooldowns.room_change", 60))
+        if not self._cooldown_tracker.check_and_set("room_change", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.room_change", 3))
+        self._push_to_ai(ld.text, "直播间变更", priority=priority)
+
+    async def _process_sc_jpn_event(self, ld):
+        """日文 SC（复用 SC 处理逻辑）"""
+        cd = float(self._get_event_notify_cfg("cooldowns.sc", 10))
+        if not self._cooldown_tracker.check_and_set(f"sc_jpn:{ld.uid}", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.sc", 7))
+        content = f"💰 {ld.nickname} 发送了 {ld.price}元日文SC:\n{ld.text}"
+        self._push_to_ai(content, "日文SC", priority=priority)
 
     # ==========================================
     # 弹幕处理流程（集成背景LLM）
@@ -3300,6 +3319,22 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
                 bg = self._config.get("background_llm", {})
                 self._event_notify_cfg = bg.get("event_notify", {})
+
+                # 从旧版 config_enhanced.json 迁移 background_llm 配置
+                enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
+                if enhanced_path.exists() and not bg.get("cloud"):
+                    try:
+                        with open(enhanced_path, "r", encoding="utf-8") as f:
+                            enhanced = json.load(f)
+                        legacy_bg = enhanced.get("background_llm", {})
+                        if legacy_bg.get("cloud") or legacy_bg.get("enabled"):
+                            self._config["background_llm"] = legacy_bg
+                            bg = legacy_bg
+                            self._event_notify_cfg = bg.get("event_notify", {})
+                            self.logger.info("已从 config_enhanced.json 迁移 background_llm 配置")
+                    except Exception as exc:
+                        self.logger.warning("config_enhanced.json 读取失败: %s", exc)
+
                 self.logger.info(f"配置加载成功: room_id={self._room_id}, interval={self._interval}, background_llm={'已启用' if bg.get('enabled') else '未启用'}")
             else:
                 self._config = {}
