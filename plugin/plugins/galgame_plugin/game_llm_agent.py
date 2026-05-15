@@ -5532,32 +5532,30 @@ class GameLLMAgent:
         status = self._compute_status(shared)
         history_lines = list(shared.get("history_lines") or [])
         history_observed_lines = list(shared.get("history_observed_lines") or [])
-        scene_id = str(snapshot.get("scene_id") or "")
-        route_id = str(snapshot.get("route_id") or "")
+        effective_line = resolve_effective_current_line(shared) or {}
+        scene_id = str(snapshot.get("scene_id") or effective_line.get("scene_id") or "")
+        route_id = str(snapshot.get("route_id") or effective_line.get("route_id") or "")
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
             min_floor=16,
             max_floor=16,
         )
+        def _matches_reply_scene(item: dict[str, Any]) -> bool:
+            item_scene_id = str(item.get("scene_id") or "")
+            if scene_id and item_scene_id and item_scene_id != scene_id:
+                return False
+            item_route_id = str(item.get("route_id") or "")
+            return not route_id or not item_route_id or item_route_id == route_id
+
         tagged_stable = [
             {**dict(item), "_reply_context_source": "stable"}
             for item in history_lines
-            if isinstance(item, dict)
-            and (
-                not scene_id
-                or not str(item.get("scene_id") or "")
-                or str(item.get("scene_id") or "") == scene_id
-            )
+            if isinstance(item, dict) and _matches_reply_scene(item)
         ]
         tagged_observed = [
             {**dict(item), "_reply_context_source": "observed"}
             for item in history_observed_lines
-            if isinstance(item, dict)
-            and (
-                not scene_id
-                or not str(item.get("scene_id") or "")
-                or str(item.get("scene_id") or "") == scene_id
-            )
+            if isinstance(item, dict) and _matches_reply_scene(item)
         ]
         recency_ordered = _recency_ordered_context_lines(tagged_stable, tagged_observed)
         line_limit = _compute_dynamic_line_limit(
@@ -5567,7 +5565,7 @@ class GameLLMAgent:
             target_tokens=target_tokens,
         )
         history_choices = list(shared.get("history_choices") or [])
-        scene_id = str(snapshot.get("scene_id") or "")
+
         if line_limit > 0:
             merged_recent = recency_ordered[-line_limit:]
             stable_lines = [
@@ -5605,11 +5603,7 @@ class GameLLMAgent:
                 (index, dict(item))
                 for index, item in enumerate(history_choices)
                 if isinstance(item, dict)
-                and (
-                    not scene_id
-                    or not str(item.get("scene_id") or "")
-                    or str(item.get("scene_id") or "") == scene_id
-                )
+                and _matches_reply_scene(item)
             ]
             choices_without_line_id = [
                 (index, item)
@@ -5634,7 +5628,6 @@ class GameLLMAgent:
             observed_lines = []
             recent_choices = []
             recent_lines = []
-        effective_line = resolve_effective_current_line(shared) or {}
         latest_line = ""
         if effective_line.get("text"):
             speaker = str(effective_line.get("speaker") or "Narration")
