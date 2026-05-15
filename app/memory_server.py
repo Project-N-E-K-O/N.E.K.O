@@ -27,7 +27,7 @@ from memory.event_log import (
     EVIDENCE_SOURCE_MIGRATION_SEED,
 )
 from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
-from memory.outbox import Outbox, OP_EXTRACT_FACTS
+from memory.outbox import Outbox, OP_POST_TURN_SIGNALS
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
 import json
@@ -617,16 +617,18 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
             sem.release()
 
 
-async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> asyncio.Task:
-    """把 extract_facts+feedback 背景任务登记到 outbox 并 spawn。
+async def _spawn_outbox_post_turn_signals(lanlan_name: str, messages: list) -> asyncio.Task:
+    """把 per-turn signals 背景任务登记到 outbox 并 spawn。
 
+    "per-turn signals" = counter bump（给 batch loop 计数）+ 复读嗅探 +
+    check_feedback + OFF-mode Stage-1 fallback，见 ``_run_post_turn_signals``。
     登记的 payload 包含 messages_to_dict 序列化后的整轮对话，重启时可重放。
     """
     from utils.llm_client import messages_to_dict
 
     payload = {'messages': messages_to_dict(messages)}
     try:
-        op_id = await outbox.aappend_pending(lanlan_name, OP_EXTRACT_FACTS, payload)
+        op_id = await outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)
     except Exception as e:
         # Outbox 写失败不能阻塞主流程，降级为一次性任务（与重构前行为一致）
         logger.warning(
@@ -634,9 +636,9 @@ async def _spawn_outbox_extract_facts(lanlan_name: str, messages: list) -> async
             f"{type(e).__name__}: {e}"
         )
         return _spawn_background_task(
-            _extract_facts_and_check_feedback(messages, lanlan_name)
+            _run_post_turn_signals(messages, lanlan_name)
         )
-    op = {'op_id': op_id, 'type': OP_EXTRACT_FACTS, 'payload': payload}
+    op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return _spawn_background_task(_run_outbox_op(lanlan_name, op))
 
 
@@ -2543,22 +2545,27 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     return {"ok": True}
 
 
-async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
-    """后台异步：counter bump + 复读嗅探 + 反馈检查。失败静默跳过。
+async def _run_post_turn_signals(messages: list, lanlan_name: str):
+    """后台异步：每轮 turn end 的 per-turn signals。失败静默跳过。
 
-    认知框架：Facts → Reflection(pending→confirmed→promoted) → Persona
-    memory-evidence-rfc 接入点：
-      - 每轮 tick 给 signal-extraction loop 的 turn counter +1
-      - check_feedback 的 confirmed/denied/ignored 三值分别派 evidence 信号
-      - 如果 user message 命中 NEGATIVE_KEYWORDS，触发快速 LLM target check
+    职责（按 step 顺序）：
+      0. counter bump —— 给 ``_periodic_signal_extraction_loop`` 的 turn
+         counter +1，让 batch loop 在累积 10 turn 时触发 Stage-1+Stage-2
+      1. OFF-mode Stage-1 fallback —— powerful_memory 关闭时 batch loop 整段
+         停，per-turn ``fact_store.extract_facts`` 是 fact extraction 唯一
+         兜底（ON-mode 不跑，交给 batch loop）
+      2. 复读嗅探 —— 本地 BM25，§2.6 5h 窗口 suppress
+      3. check_feedback —— 用户对 surfaced reflection 的反馈检测（LLM 仅在
+         surfaced 有 pending 时跑）+ NEGATIVE_KEYWORDS 命中触发 LLM target check
 
-    历史 — 函数名带 ``extract_facts`` 是 PR-1 (RFC #928) 引入时的命名，
-    当时 step 1 还跑 ``fact_store.extract_facts`` (Stage-1) 兼容 legacy
-    "每轮抽 fact" 体验。RFC §3.4.3 标题原话："**不**在对话主路径上每轮
-    运行 extract_facts——太贵。改为背景调度"，因此 Stage-1+Stage-2 batch
-    抽取从一开始就有专职 background loop ``_periodic_signal_extraction_loop``
-    负责，per-turn 这条本来就是过渡期 legacy。step 1 已于本次 commit
-    迁完，函数名留作历史以减少 outbox handler 注册路径的重命名波及。
+    命名史 — 本函数 PR-1 (RFC #928) 引入时叫 ``_extract_facts_and_check_feedback``，
+    当时 step 1 还是无条件每轮跑 ``fact_store.extract_facts`` (Stage-1)。
+    RFC §3.4.3 原话："**不**在对话主路径上每轮运行 extract_facts——太贵。
+    改为背景调度"——PR #1346 把 ON-mode Stage-1 剥离到
+    ``_periodic_signal_extraction_loop``，step 1 退化为 OFF-mode fallback，
+    本 follow-up 把符号名（含 outbox spawn helper / handler / op 常量）统一
+    改成 ``post_turn_signals`` 以匹配实际语义。``OP_POST_TURN_SIGNALS`` 的
+    **字符串值**仍是 ``"extract_facts"``（outbox.ndjson wire-format 不可变）。
     """
     user_msgs = _extract_user_messages(messages)
 
@@ -2708,12 +2715,13 @@ async def _extract_facts_and_check_feedback(messages: list, lanlan_name: str):
             logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
 
 
-async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None:
-    """OP_EXTRACT_FACTS 的 outbox handler：从 payload 还原 messages 再跑常规流程。
+async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> None:
+    """OP_POST_TURN_SIGNALS 的 outbox handler：从 payload 还原 messages 再跑
+    ``_run_post_turn_signals``。
 
     幂等性来源：
-      - fact_store.extract_facts 内部靠 SHA-256 对事实去重，重复提取不会
-        产生重复 fact。
+      - fact_store.extract_facts（OFF-mode fallback）内部靠 SHA-256 对事实
+        去重，重复提取不会产生重复 fact。
       - arecord_mentions 是单调累加计数，重放会小幅抬高提及次数（可接受的
         at-least-once 语义）。
       - check_feedback 下次自然回补——reflection 的 surfaced/feedback
@@ -2728,10 +2736,10 @@ async def _outbox_extract_facts_handler(lanlan_name: str, payload: dict) -> None
     messages = messages_from_dict(raw)
     if not messages:
         return
-    await _extract_facts_and_check_feedback(messages, lanlan_name)
+    await _run_post_turn_signals(messages, lanlan_name)
 
 
-register_outbox_handler(OP_EXTRACT_FACTS, _outbox_extract_facts_handler)
+register_outbox_handler(OP_POST_TURN_SIGNALS, _outbox_post_turn_signals_handler)
 
 
 @app.post("/cache/{lanlan_name}")
@@ -2757,7 +2765,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     "短期行为不变"暂留的 Stage-1 per-turn fact_extract（``legacy flow``）
     一并迁完——RFC 原本就计划只让 ``_periodic_signal_extraction_loop`` 跑
     fact extraction。``astore_conversation`` 是 SQLite INSERT（~ms 量级），
-    ``_spawn_outbox_extract_facts`` 现内部只跑 counter bump + 本地复读嗅探
+    ``_spawn_outbox_post_turn_signals`` 现内部只跑 counter bump + 本地复读嗅探
     + check_feedback（LLM 仅在 surfaced 有 pending 时才跑），是 ndjson
     append + spawn background task（不阻塞响应）。``cache`` 保持"前台无
     LLM 延迟"的轻量语义，**且比 PR-1 实现更轻**——单 turn fact_extract
@@ -2780,7 +2788,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             await time_manager.astore_conversation(uid, input_history, lanlan_name)
         # outbox 登记走锁外——它会 spawn background task 跑 LLM，长持锁会
         # 阻塞下一轮 /cache 写盘。
-        await _spawn_outbox_extract_facts(lanlan_name, input_history)
+        await _spawn_outbox_post_turn_signals(lanlan_name, input_history)
         return {"status": "cached", "count": len(input_history)}
     except Exception as e:
         logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
@@ -2820,7 +2828,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
         await time_manager.astore_conversation(uid, input_history, lanlan_name)
 
         # 异步事实提取（不阻塞返回，失败静默跳过）
-        await _spawn_outbox_extract_facts(lanlan_name, input_history)
+        await _spawn_outbox_post_turn_signals(lanlan_name, input_history)
 
         # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
         # 门 + min_interval + in-flight 多重 gate 后决定起或不起。在跑的 review
@@ -2863,7 +2871,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 
         # 以下操作在锁外执行，不阻塞 /new_dialog
         # 异步事实提取
-        await _spawn_outbox_extract_facts(lanlan_name, input_history)
+        await _spawn_outbox_post_turn_signals(lanlan_name, input_history)
 
         # Phase C: 见 /process 的注释——不再 cancel-and-restart。
         await maybe_spawn_review(lanlan_name)
@@ -2897,7 +2905,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             await recent_history_manager.update_history([], lanlan_name, detailed=True)
 
         if input_history:
-            await _spawn_outbox_extract_facts(lanlan_name, input_history)
+            await _spawn_outbox_post_turn_signals(lanlan_name, input_history)
 
         # Phase C: 见 /process 的注释——不再 cancel-and-restart。
         await maybe_spawn_review(lanlan_name)

@@ -3,7 +3,7 @@
 History — commit cba377c5 (2026-03-29 "Fix/memory hotswap timing") introduced
 the /settle endpoint to cover the "cross_server cached everything → renew
 session arrives with msgs=0" case, but only the review LLM was wired into the
-msgs=0 path. ``store_conversation`` and ``_spawn_outbox_extract_facts`` were
+msgs=0 path. ``store_conversation`` and ``_spawn_outbox_post_turn_signals`` were
 gated behind ``if input_history``, so:
 
   - ``time_indexed.db`` was never written (time perception broken — gap
@@ -60,7 +60,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
 
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
-         patch.object(memory_server, "_spawn_outbox_extract_facts", fake_spawn_outbox), \
+         patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
          patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)):
         result = await memory_server.cache_conversation(request, "测试角色")
 
@@ -79,10 +79,11 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
     """/cache 端点必须登记 outbox op，让 events.ndjson / outbox.ndjson 这条
     链能动起来——op handler 跑 counter bump + 复读嗅探 + check_feedback。
 
-    注：op type 仍叫 ``OP_EXTRACT_FACTS`` 是历史命名（PR-1 引入时 handler
-    里跑过 Stage-1 fact_extract），但 Stage-1 per-turn 抽取已按 RFC §3.4.3
-    迁到 ``_periodic_signal_extraction_loop``——见
-    ``test_extract_facts_and_check_feedback_does_not_run_stage1_legacy``。
+    注：``OP_POST_TURN_SIGNALS`` 的字符串值仍是 ``"extract_facts"``——
+    outbox.ndjson wire-format 不可变（见 memory/outbox.py 注释）。Stage-1
+    per-turn 抽取已按 RFC §3.4.3 迁到 ``_periodic_signal_extraction_loop``，
+    ON-mode 不再 per-turn 跑——见
+    ``test_run_post_turn_signals_skips_stage1_when_powerful_memory_on``。
 
     Regression: 旧 cache 完全跳过 outbox，evidence-RFC 链路全空转。
     """
@@ -102,7 +103,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
 
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
-         patch.object(memory_server, "_spawn_outbox_extract_facts", fake_spawn_outbox), \
+         patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
          patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)):
         await memory_server.cache_conversation(request, "测试角色")
 
@@ -114,7 +115,7 @@ async def test_cache_endpoint_spawns_outbox_post_turn_signals():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_extract_facts_and_check_feedback_skips_stage1_when_powerful_memory_on():
+async def test_run_post_turn_signals_skips_stage1_when_powerful_memory_on():
     """powerful_memory ON 模式：Stage-1 per-turn fact_extract 已按 RFC §3.4.3
     迁到 ``_periodic_signal_extraction_loop`` 做 batch 抽取，per-turn 主路径
     不应再调 ``fact_store.extract_facts``。
@@ -148,7 +149,7 @@ async def test_extract_facts_and_check_feedback_skips_stage1_when_powerful_memor
          patch.object(memory_server, "reflection_engine", fake_reflection_engine), \
          patch.object(memory_server, "_signal_check_record_turn", MagicMock(return_value=None)), \
          patch.object(memory_server, "_ais_powerful_memory_enabled", AsyncMock(return_value=True)):
-        await memory_server._extract_facts_and_check_feedback(payload_messages, "测试角色")
+        await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
     # ON-mode 下 Stage-1 per-turn fact_extract 一定不能被调（交给 batch loop）
     fake_fact_store.extract_facts.assert_not_awaited()
@@ -160,7 +161,7 @@ async def test_extract_facts_and_check_feedback_skips_stage1_when_powerful_memor
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_extract_facts_and_check_feedback_keeps_stage1_when_powerful_memory_off():
+async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
     """powerful_memory OFF 模式：``_periodic_signal_extraction_loop`` 整段停
     （见 ``if not powerful_enabled: continue``），per-turn Stage-1 是 fact
     extraction 的唯一兜底路径，必须保留——否则 OFF 模式用户的 facts.json
@@ -189,7 +190,7 @@ async def test_extract_facts_and_check_feedback_keeps_stage1_when_powerful_memor
          patch.object(memory_server, "reflection_engine", fake_reflection_engine), \
          patch.object(memory_server, "_signal_check_record_turn", MagicMock(return_value=None)), \
          patch.object(memory_server, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
-        await memory_server._extract_facts_and_check_feedback(payload_messages, "测试角色")
+        await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
     # OFF-mode 下 batch loop 不跑——per-turn Stage-1 必须 fallback
     fake_fact_store.extract_facts.assert_awaited_once()
@@ -214,7 +215,7 @@ async def test_cache_endpoint_empty_payload_short_circuits():
 
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
-         patch.object(memory_server, "_spawn_outbox_extract_facts", fake_spawn_outbox):
+         patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox):
         result = await memory_server.cache_conversation(request, "测试角色")
 
     assert result == {"status": "cached", "count": 0}
@@ -272,7 +273,7 @@ async def test_cache_endpoint_serialises_recent_and_store_under_settle_lock():
 
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
-         patch.object(memory_server, "_spawn_outbox_extract_facts", AsyncMock(side_effect=_fake_spawn)), \
+         patch.object(memory_server, "_spawn_outbox_post_turn_signals", AsyncMock(side_effect=_fake_spawn)), \
          patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)), \
          patch.object(memory_server, "_get_settle_lock", MagicMock(return_value=observable_lock)):
         await memory_server.cache_conversation(request, "测试角色")
@@ -309,7 +310,7 @@ async def test_settle_endpoint_msgs_zero_still_runs_review():
 
     with patch.object(memory_server, "time_manager", fake_time_manager), \
          patch.object(memory_server, "recent_history_manager", fake_recent_history_manager), \
-         patch.object(memory_server, "_spawn_outbox_extract_facts", fake_spawn_outbox), \
+         patch.object(memory_server, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
          patch.object(memory_server, "_aclear_review_clean", AsyncMock(return_value=None)), \
          patch.object(memory_server, "maybe_spawn_review", fake_maybe_spawn_review):
         result = await memory_server.settle_conversation(request, "测试角色")
