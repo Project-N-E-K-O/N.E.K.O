@@ -49,6 +49,9 @@
 <script src="/static/yui-guide-overlay.js"></script>
 <script src="/static/yui-guide-page-handoff.js"></script>
 <script src="/static/tutorial-interaction-takeover.js"></script>
+<script src="/static/avatar-performance-stage.js"></script>
+<script src="/static/yui-guide-avatar-stage.js"></script>
+<script src="/static/yui-guide-wakeup.js"></script>
 <script src="/static/yui-guide-director.js"></script>
 <script src="/static/tutorial-skip-controller.js"></script>
 <script src="/static/tutorial-avatar-reload-controller.js"></script>

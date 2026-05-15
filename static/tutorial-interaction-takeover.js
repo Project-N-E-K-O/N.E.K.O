@@ -50,10 +50,11 @@
         }
 
         setActive(active) {
-            if (this.destroyed) {
+            const nextActive = active === true;
+            if (this.destroyed && nextActive) {
                 return;
             }
-            this.active = active === true;
+            this.active = nextActive;
             if (this.overlay && typeof this.overlay.setInteractionShieldSuppressed === 'function') {
                 this.overlay.setInteractionShieldSuppressed(this.active && this.allowWindowPassthrough);
             }
@@ -298,7 +299,7 @@
         }
 
         onInteractionGuard(event) {
-            if (this.destroyed || this.page !== 'home' || !event || event.isTrusted === false) {
+            if (this.destroyed || !this.active || this.page !== 'home' || !event || event.isTrusted === false) {
                 return;
             }
             if (safeInvoke(this.isDestroyed, [], false) === true) {
@@ -334,11 +335,11 @@
                 return;
             }
 
-            this.destroyed = true;
             this.setActive(false);
             this.clearExternalizedChatFx();
             this.setExternalizedChatButtonsDisabled(false);
             this.releaseFaceForwardLock();
+            this.destroyed = true;
 
             this.document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
             this.document.removeEventListener('pointerup', this.interactionGuardHandler, true);

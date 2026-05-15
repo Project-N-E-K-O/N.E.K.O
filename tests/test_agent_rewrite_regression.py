@@ -982,6 +982,18 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         _stylesheet_tag_position(source, "yui-guide.css")
 
 
+def test_emotion_manager_templates_use_static_asset_version_for_tutorial_runtime():
+    for template_path in (
+        "templates/live2d_emotion_manager.html",
+        "templates/mmd_emotion_manager.html",
+        "templates/vrm_emotion_manager.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        assert "tutorial-skip-controller.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "tutorial-avatar-reload-controller.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "universal-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}" in source
+
+
 def test_home_yui_guide_does_not_route_to_steam_workshop():
     yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
@@ -1201,8 +1213,11 @@ def test_tutorial_lifecycle_modules_export_reusable_controllers():
         "window.TutorialInteractionTakeover = {",
         "createController: function (options)",
         "setActive(active)",
+        "if (this.destroyed && nextActive) {",
         "enableFaceForwardLock()",
+        "if (this.destroyed || !this.active || this.page !== 'home'",
         "setExternalizedChatButtonsDisabled(disabled)",
+        "this.setActive(false);",
     ):
         assert expected in interaction_source
 
