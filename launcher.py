@@ -84,7 +84,17 @@ def _configure_ssl_cert_bundle() -> None:
 
     def _existing_is_valid(name: str) -> bool:
         value = os.environ.get(name)
-        return bool(value and os.path.isfile(value))
+        if not value:
+            return False
+        # 各变量对"有效"的定义不同：
+        # - REQUESTS_CA_BUNDLE: requests 文档明确允许 PEM 文件 *或* c_rehash
+        #   过的 CA 目录（capath 模式），把目录当失效值覆盖会破坏企业 PKI 的
+        #   capath 配置。
+        # - SSL_CERT_FILE / CURL_CA_BUNDLE: OpenSSL / curl 都只接受 PEM 文件，
+        #   目录由各自的 SSL_CERT_DIR / CURL_CA_PATH 单独表达。
+        if name == "REQUESTS_CA_BUNDLE":
+            return os.path.isfile(value) or os.path.isdir(value)
+        return os.path.isfile(value)
 
     # 三个变量都已经指向有效文件 → 完全不动。
     if all(_existing_is_valid(name) for name in var_names):
