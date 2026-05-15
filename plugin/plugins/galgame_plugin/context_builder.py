@@ -1143,8 +1143,7 @@ def _restored_context_snapshot_summary_seed(
         return ""
 
     restored_route_id = str(restored.get("route_id") or "").strip()
-    normalized_route_id = str(route_id or "").strip()
-    if restored_route_id and restored_route_id != normalized_route_id:
+    if restored_route_id and route_id and restored_route_id != route_id:
         return ""
 
     return summary_seed
@@ -1286,6 +1285,7 @@ def build_summarize_context(
     restored = local_state.get("context_snapshot")
     restored = restored if isinstance(restored, dict) else {}
     restored_scene_id = str(restored.get("scene_id") or "")
+    restored_route_id = str(restored.get("route_id") or "")
     live_route_id = str(
         snapshot.get("route_id")
         or (effective_line or {}).get("route_id")
@@ -1297,7 +1297,12 @@ def build_summarize_context(
         or restored_scene_id
         or ""
     )
-    route_id = live_route_id
+    restored_scene_matches = not restored_scene_id or restored_scene_id == effective_scene_id
+    route_id = str(
+        live_route_id
+        or (restored_route_id if restored_scene_matches else "")
+        or ""
+    )
     history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
         local_state,
         config,
