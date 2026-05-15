@@ -263,6 +263,76 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_summarize_scene_treats_context_snapshot_persist_as_best_effort(
+    tmp_path: Path,
+) -> None:
+    class _FailingPersist:
+        def __init__(self) -> None:
+            self.snapshots: list[dict[str, object]] = []
+
+        def load_context_snapshot(self, **_: object) -> dict[str, object]:
+            return {}
+
+        def persist_context_snapshot(self, snapshot: dict[str, object]) -> None:
+            self.snapshots.append(dict(snapshot))
+            raise OSError("transient store failure")
+
+    game_id = "demo.alpha"
+    session_id = "sess-a"
+    snapshot = _session_state(
+        speaker="Yukino",
+        text="We should keep going.",
+        scene_id="scene-a",
+        line_id="line-1",
+        route_id="route-a",
+        ts="2026-04-21T08:31:00Z",
+    )
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(
+            game_id=game_id,
+            session_id=session_id,
+            last_seq=2,
+            snapshot=snapshot,
+            history_lines=[
+                {
+                    "speaker": "Yukino",
+                    "text": snapshot["text"],
+                    "line_id": "line-1",
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "ts": "2026-04-21T08:31:00Z",
+                }
+            ],
+            active_data_source=DATA_SOURCE_BRIDGE_SDK,
+        ),
+        config_overrides={"llm": {"context_persist_enabled": True}},
+    )
+    failing_persist = _FailingPersist()
+    plugin._persist = failing_persist
+    plugin._llm_gateway = _FakeLLMGateway(
+        summarize_payload={
+            "degraded": False,
+            "summary": "The scene continues after the first line.",
+            "diagnostic": "",
+        }
+    )
+
+    try:
+        result = await plugin.galgame_summarize_scene()
+
+        assert isinstance(result, Ok)
+        assert result.value["degraded"] is False
+        assert result.value["scene_id"] == "scene-a"
+        assert result.value["summary"] == "The scene continues after the first line."
+        assert failing_persist.snapshots
+        assert failing_persist.snapshots[0]["game_id"] == game_id
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_galgame_continue_auto_advance_sets_choice_advisor_and_resumes_agent(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
