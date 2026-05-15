@@ -231,24 +231,59 @@ def _normalize_quotes(s: str) -> str:
     return ''.join(out)
 
 
+def _normalize_overescaped_newlines(obj: Any) -> Any:
+    """LLM 偶尔会把 `\\n` 在 JSON 源里再转义一遍，导致解析出来是字面量
+    backslash-n（2 字符）而非真换行。这里递归把 string value 里的过度转义还原。
+
+    保守触发：**完全没有真换行 ∧ 含字面量 ``\\n``**，才动手。
+    - 全字面量是 LLM 整段过度转义的典型故障，归一化绝对安全。
+    - 真换行已存在说明 LLM 知道用 newline 转义，那剩下的字面量 ``\\n`` 可能是
+      它有意为之（罕见但要尊重），不动。
+
+    只处理换行 / 回车 / 制表（``\\n`` / ``\\r\\n`` / ``\\r`` / ``\\t``）—— 其它
+    ``\\X``（如 ``\\u`` 编码、自定义 escape 在 code/regex 字符串里）一律不动，
+    避免误伤 tool call args 等以字面量传递的代码/正则。
+    """
+    if isinstance(obj, str):
+        if '\n' not in obj and '\\n' in obj:
+            return (
+                obj.replace('\\r\\n', '\n')
+                .replace('\\n', '\n')
+                .replace('\\r', '\n')
+                .replace('\\t', '\t')
+            )
+        return obj
+    if isinstance(obj, dict):
+        return {k: _normalize_overescaped_newlines(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_overescaped_newlines(v) for v in obj]
+    return obj
+
+
 def robust_json_loads(raw: str) -> Any:
     """json.loads with fallback for common LLM JSON quirks.
 
-    原始输入若能直接 parse，无条件返回原结果（绝不预先 transform）。否则按
-    fallback pipeline 逐步修补 —— 每步 transform 后立即 try parse，能 parse
-    即停，避免后续步骤（尤其是 scanner）在不必要时动文本。
+    原始输入若能直接 parse，无条件返回原结果。否则按 fallback pipeline 逐步
+    修补 —— 每步 transform 后立即 try parse，能 parse 即停，避免后续步骤
+    （尤其是 scanner）在不必要时动文本。
 
     所有"纯文本替换" transform（Python 字面量、`{{}}`、尾逗号、无引号 key）
     都通过 ``_apply_outside_strings`` 包装，仅在字符串外生效，避免把字符串值
     （如 ``"True"`` / ``"x,]"``）静默改坏。
 
+    Parse 成功后还会跑一次 ``_normalize_overescaped_newlines`` 后处理：当某条
+    string value **完全没有真换行 ∧ 含字面量 ``\\n``** 时，说明 LLM 把整段
+    over-escape 了，归一化成真换行 / 制表。这条只针对换行类 escape，code/regex
+    里有意的字面量 ``\\n`` 因为伴随真换行而被保留。
+
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
-    single-quoted strings (including mixed-quote scenarios), and stray hallucinated
-    chars between structural tokens (e.g. ``,결{`` → ``,{``).
+    single-quoted strings (including mixed-quote scenarios), stray hallucinated
+    chars between structural tokens (e.g. ``,결{`` → ``,{``), and over-escaped
+    newline / tab in string values.
     """
     parsed, ok = _try_json_loads(raw)
     if ok:
-        return parsed
+        return _normalize_overescaped_newlines(parsed)
 
     transforms = (
         # {{ }} → { }  (LLM 模仿 prompt 模板转义)；段感知
@@ -275,8 +310,8 @@ def robust_json_loads(raw: str) -> Any:
         s = transform(s)
         parsed, ok = _try_json_loads(s)
         if ok:
-            return parsed
-    return json.loads(s)  # 让最终错误带完整上下文抛出
+            return _normalize_overescaped_newlines(parsed)
+    return _normalize_overescaped_newlines(json.loads(s))  # 让最终错误带完整上下文抛出
 
 
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:

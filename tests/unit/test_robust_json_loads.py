@@ -243,3 +243,89 @@ def test_unicode_numeric_prefixes_not_stripped(raw):
     """
     with pytest.raises(json.JSONDecodeError):
         robust_json_loads(raw)
+
+
+# ── over-escaped newlines normalization ───────────────────────────────
+
+
+@pytest.mark.unit
+def test_overescaped_newlines_normalized_when_no_real_newlines():
+    """LLM 把整段 over-escape 时（JSON 源 ``\\\\n``，解码后字面量 ``\\n``）应当
+    还原成真换行——summary 含 `---` 分隔符的场景实测会出。"""
+    # JSON 源里的 `\\n` 解码出来是字面量两字符 (backslash + n)
+    raw = '{"summary": "body\\\\n\\\\n---\\\\n\\\\nolder"}'
+    parsed = robust_json_loads(raw)
+    assert parsed["summary"] == "body\n\n---\n\nolder"
+
+
+@pytest.mark.unit
+def test_overescaped_tab_normalized_alongside_newline():
+    """``\\t`` 跟 ``\\n`` 一起出现时（典型 over-escape 故障）顺手归一化。
+    单独 ``\\t``（无 ``\\n`` 信号）保守起见不动——见
+    `test_isolated_literal_backslash_t_preserved`。"""
+    raw = '{"line": "a\\\\nb\\\\tc"}'
+    parsed = robust_json_loads(raw)
+    assert parsed["line"] == "a\nb\tc"
+
+
+@pytest.mark.unit
+def test_isolated_literal_backslash_t_preserved():
+    """单独的 ``\\t`` 字面量（不带 ``\\n`` 信号）视为 LLM 有意为之，不改。
+
+    触发条件以 ``\\n``+无真换行作为故障指纹——避免误伤 tool args 里
+    意图保留字面量 ``\\t`` 的代码/正则字符串。
+    """
+    raw = '{"code": "say\\\\thi"}'
+    parsed = robust_json_loads(raw)
+    assert parsed["code"] == "say\\thi"
+
+
+@pytest.mark.unit
+def test_overescaped_crlf_normalized():
+    """``\\r\\n`` 也走通——优先匹配避免变成 ``\\n\\r``。"""
+    raw = '{"s": "a\\\\r\\\\nb"}'
+    parsed = robust_json_loads(raw)
+    assert parsed["s"] == "a\nb"
+
+
+@pytest.mark.unit
+def test_literal_backslash_n_preserved_when_real_newlines_exist():
+    """保守触发：string 已含真换行时，字面量 ``\\n`` 视为 LLM 有意为之，不改。
+
+    保护 tool args / code 字符串场景：``code: "print('hello\\n')"`` 这种希望
+    保留字面量 ``\\n`` 让运行时再 decode 一次的用法。
+    """
+    # 源里既有真换行 (`\n` decoded to newline) 又有字面量 (`\\n` decoded to \n)
+    raw = '{"code": "line1\\nprint(\\"hello\\\\n\\")"}'
+    parsed = robust_json_loads(raw)
+    assert parsed["code"] == 'line1\nprint("hello\\n")'
+    # 字面量 backslash-n 保留
+    assert '\\n' in parsed["code"]
+
+
+@pytest.mark.unit
+def test_nested_structures_walked():
+    """字典 / 列表里的字符串都要被递归归一化。"""
+    raw = (
+        '{"outer": {"inner": "a\\\\nb"}, '
+        '"items": ["x\\\\ny", "z"]}'
+    )
+    parsed = robust_json_loads(raw)
+    assert parsed["outer"]["inner"] == "a\nb"
+    assert parsed["items"] == ["x\ny", "z"]
+
+
+@pytest.mark.unit
+def test_non_string_values_unchanged():
+    """non-str value 不动（int/bool/None/float）。"""
+    raw = '{"n": 1, "b": true, "x": null, "f": 1.5}'
+    parsed = robust_json_loads(raw)
+    assert parsed == {"n": 1, "b": True, "x": None, "f": 1.5}
+
+
+@pytest.mark.unit
+def test_clean_string_passes_through_unchanged():
+    """既没真换行也没字面量 ``\\n`` 的普通字符串完全不动。"""
+    raw = '{"s": "hello world"}'
+    parsed = robust_json_loads(raw)
+    assert parsed["s"] == "hello world"
