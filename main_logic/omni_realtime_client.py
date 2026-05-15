@@ -1678,8 +1678,23 @@ class OmniRealtimeClient:
                 ],
             },
         }
+        # send_event() silently returns when ws drops to None or fatal flag
+        # flips mid-flight (it does not raise). Without the post-send checks,
+        # a connection lost in the brief await window between the entry guard
+        # and the actual send would look like a successful inject — caller
+        # would prune the cb but nothing reached the model. Re-check after
+        # each send and raise so the caller's exception branch keeps the cb
+        # for retry.
         await self.send_event(item_event)
+        if self._fatal_error_occurred or self.ws is None:
+            raise RuntimeError(
+                "realtime connection lost after proactive conversation.item.create"
+            )
         await self.send_event({"type": "response.create"})
+        if self._fatal_error_occurred or self.ws is None:
+            raise RuntimeError(
+                "realtime connection lost after proactive response.create"
+            )
 
     async def prompt_ephemeral(
         self,

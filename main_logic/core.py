@@ -5604,14 +5604,40 @@ class LLMSessionManager:
                 )
                 return
 
-            # Inject succeeded. Remove just the cbs we delivered — preserve
-            # passive cbs (and any proactive cbs another task enqueued during
-            # the ``await inject_text_and_request_response`` window).
+            # Inject succeeded. Drop the cbs we delivered from BOTH queues:
+            # ``pending_agent_callbacks`` (text-mode drain + proactive trigger)
+            # AND the matching ``pending_extra_replies`` entries (voice
+            # hot-swap prime channel). Leaving the extras intact would have
+            # two concrete bad consequences:
+            #   1. ``_finalize_turn_after_emit`` gates immediate session
+            #      preparation on ``bool(pending_extra_replies)`` — stale
+            #      entries trigger needless background hot-swap prep.
+            #   2. The eventual hot-swap re-primes the new session with cbs
+            #      the AI already spoke about, producing duplicate
+            #      announcements.
+            # ``enqueue_agent_callback`` appends both queues in lockstep
+            # (one extras entry per cb), so they're 1:1 at enqueue time.
+            # If a racing caller (``drain_agent_callbacks_for_llm`` /
+            # ``_perform_final_swap_sequence``) bulk-cleared one queue during
+            # our ``await inject_*`` window, alignment is broken — fall back
+            # to id-only drop on ``pending_agent_callbacks`` and leave the
+            # racing caller's view of ``pending_extra_replies`` alone.
             voice_ids = {id(cb) for cb in voice_snapshot}
-            self.pending_agent_callbacks = [
-                cb for cb in self.pending_agent_callbacks
-                if id(cb) not in voice_ids
-            ]
+            pac = self.pending_agent_callbacks
+            extras = self.pending_extra_replies
+            if len(pac) == len(extras):
+                new_pac: list[dict] = []
+                new_extras: list[dict] = []
+                for cb, extra in zip(pac, extras):
+                    if id(cb) not in voice_ids:
+                        new_pac.append(cb)
+                        new_extras.append(extra)
+                self.pending_agent_callbacks = new_pac
+                self.pending_extra_replies = new_extras
+            else:
+                self.pending_agent_callbacks = [
+                    cb for cb in pac if id(cb) not in voice_ids
+                ]
             logger.info(
                 "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
                 self.lanlan_name, len(voice_snapshot),

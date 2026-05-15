@@ -84,8 +84,12 @@ def _make_mgr(session=None) -> LLMSessionManager:
 # trigger_agent_callbacks
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_voice_mode_idle_injects_and_drops_cbs():
-    """Voice 模式（idle）：调 inject_text_and_request_response 并清 pending，
+async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
+    """Voice 模式（idle）：调 inject_text_and_request_response，并把 cb 从
+    pending_agent_callbacks **和** 配对的 pending_extra_replies 同步剔除——
+    后者必须清，否则 _finalize_turn_after_emit 看到 pending_extra_replies 非空
+    会触发 _trigger_immediate_preparation_for_extra 的无谓 hot-swap 准备，并在
+    下次 hot-swap 时 prime 出已经播过的内容造成重复投递。
     不 fire SM 任何事件（voice 走 realtime API 直接 inject，不进 SM 流水线）。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
@@ -102,7 +106,10 @@ async def test_voice_mode_idle_injects_and_drops_cbs():
 
     sess = _VoiceSess()
     mgr = _make_mgr(session=sess)
-    mgr.pending_agent_callbacks = [{"status": "completed", "summary": "task done"}]
+    cb = {"status": "completed", "summary": "task done"}
+    extra = {"origin": "task_result", "summary": "task done", "status": "completed"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
 
     events: list[SessionEvent] = []
     mgr.state.subscribe(None, lambda ev, p: events.append(ev))
@@ -110,10 +117,46 @@ async def test_voice_mode_idle_injects_and_drops_cbs():
     await LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
-    assert len(sess.injected) == 1  # 主动 inject 已调
+    assert len(sess.injected) == 1
     assert mgr.pending_agent_callbacks == []
+    # 关键回归：matching extras 同步剔除
+    assert mgr.pending_extra_replies == []
     assert mgr.state.phase is ProactivePhase.IDLE
-    assert events == []  # 未走 SM 任何事件
+    assert events == []
+
+
+async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
+    """Voice 模式：inject 只删 proactive cb 配对的 extras 项，
+    passive cb 及其 extras 必须原封不动留下 —— 它们要走 user-turn drain。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+            self.injected: list[str] = []
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str) -> None:
+            self.injected.append(text)
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    passive_cb = {"status": "completed", "summary": "passive note", "delivery_mode": "passive"}
+    proactive_cb = {"status": "completed", "summary": "ping user now"}
+    passive_extra = {"origin": "event", "summary": "passive note"}
+    proactive_extra = {"origin": "task_result", "summary": "ping user now"}
+    # enqueue_agent_callback appends both queues in lockstep — same order
+    mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
+    mgr.pending_extra_replies = [passive_extra, proactive_extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert len(sess.injected) == 1
+    assert mgr.pending_agent_callbacks == [passive_cb]
+    assert mgr.pending_extra_replies == [passive_extra]
 
 
 async def test_voice_mode_busy_defers_cbs_for_retry():
