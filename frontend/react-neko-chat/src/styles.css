@@ -1863,6 +1863,8 @@ svg {
   padding-top: 4px;
   width: 100%;
   overflow: visible;
+  z-index: 4;
+  -webkit-app-region: no-drag;
 }
 
 .compact-chat-capsule-shell .compact-chat-choice-anchor {
@@ -1881,16 +1883,12 @@ svg {
   isolation: isolate;
   width: min(100%, 520px);
   min-width: 0;
-  min-height: 58px;
-  padding: 0 24px;
+  min-height: 54px;
+  padding: 0 20px;
   border: 1px solid rgba(255, 255, 255, 0.52);
   border-radius: 999px;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.062) 0%, rgba(255, 255, 255, 0.012) 18%, rgba(255, 255, 255, 0.003) 50%, rgba(255, 255, 255, 0.012) 82%, rgba(255, 255, 255, 0.062) 100%),
-    rgba(255, 255, 255, 0.007);
+  background: rgba(255, 255, 255, 0.012);
   box-shadow:
-    inset 18px 0 22px rgba(255, 255, 255, 0.026),
-    inset -18px 0 22px rgba(255, 255, 255, 0.022),
     0 0 0 1px rgba(208, 233, 255, 0.16),
     0 8px 16px rgba(8, 22, 40, 0.018);
   backdrop-filter: blur(8px) saturate(1.08) brightness(1.03);
@@ -1899,34 +1897,12 @@ svg {
 
 .compact-chat-capsule::before,
 .compact-chat-inline-input::before {
-  content: "";
-  position: absolute;
-  inset: 1px -14%;
-  z-index: 0;
-  border-radius: inherit;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.090) 0%, rgba(255, 255, 255, 0.010) 22%, rgba(255, 255, 255, 0.000) 50%, rgba(255, 255, 255, 0.010) 78%, rgba(255, 255, 255, 0.090) 100%);
-  opacity: 0.74;
-  backdrop-filter: blur(0.5px) saturate(1.00);
-  -webkit-backdrop-filter: blur(0.5px) saturate(1.00);
-  transform: scaleX(1.12);
-  transform-origin: center;
+  content: none;
 }
 
 .compact-chat-capsule::after,
 .compact-chat-inline-input::after {
-  content: "";
-  position: absolute;
-  inset: 1px 2px 2px;
-  z-index: 1;
-  pointer-events: none;
-  border-radius: inherit;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.018) 14%, rgba(255, 255, 255, 0.00) 50%, rgba(255, 255, 255, 0.018) 86%, rgba(255, 255, 255, 0.22) 100%);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.30),
-    inset 16px 0 14px rgba(255, 255, 255, 0.012),
-    inset -16px 0 14px rgba(255, 255, 255, 0.010);
+  content: none;
 }
 
 .compact-chat-capsule > *,
@@ -1980,11 +1956,13 @@ svg {
 .compact-chat-input-shell {
   position: relative;
   min-height: 0;
-  padding-top: 4px;
+  padding: 4px 0 0;
   background: transparent;
   box-shadow: none;
   width: 100%;
   overflow: visible;
+  z-index: 4;
+  -webkit-app-region: no-drag;
 }
 
 .compact-chat-input-shell .composer-choice-layer[data-choice-layer-open="false"] {
@@ -2008,17 +1986,14 @@ svg {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  width: min(100%, 560px);
+  width: min(100%, 520px);
   min-width: 0;
+  min-height: 54px;
   margin: 0 auto;
-  padding: 8px 10px 8px 22px;
+  padding: 5px 10px 5px 20px;
   border-radius: 999px;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.062) 0%, rgba(255, 255, 255, 0.012) 18%, rgba(255, 255, 255, 0.003) 50%, rgba(255, 255, 255, 0.012) 82%, rgba(255, 255, 255, 0.062) 100%),
-    rgba(255, 255, 255, 0.007);
+  background: rgba(255, 255, 255, 0.012);
   box-shadow:
-    inset 18px 0 22px rgba(255, 255, 255, 0.026),
-    inset -18px 0 22px rgba(255, 255, 255, 0.022),
     0 0 0 1px rgba(208, 233, 255, 0.16),
     0 8px 16px rgba(8, 22, 40, 0.018);
   backdrop-filter: blur(8px) saturate(1.08) brightness(1.03);
@@ -2056,12 +2031,17 @@ svg {
 
 .compact-chat-input-shell .compact-input-tool-toggle {
   position: relative;
-  z-index: 2;
+  z-index: 5;
+  -webkit-app-region: no-drag;
 }
 
 .compact-chat-input-shell .compact-input-tool-toggle[aria-haspopup="true"] {
-  background: rgba(99, 183, 251, 0.18);
-  box-shadow: 0 8px 18px rgba(72, 145, 219, 0.16);
+  background: rgba(160, 220, 255, 0.26);
+  box-shadow:
+    0 0 0 1px rgba(193, 236, 255, 0.48),
+    0 8px 18px rgba(68, 183, 254, 0.24),
+    0 0 18px rgba(68, 183, 254, 0.18);
+  filter: drop-shadow(0 5px 12px rgba(68, 183, 254, 0.18));
 }
 
 .compact-chat-input-shell .compact-input-tool-toggle-icon {
@@ -2091,6 +2071,13 @@ svg {
   z-index: 100003;
   overflow: visible;
   touch-action: pan-y;
+  -webkit-app-region: no-drag;
+}
+
+.compact-chat-capsule-shell *,
+.compact-chat-input-shell *,
+.compact-input-tool-fan * {
+  -webkit-app-region: no-drag;
 }
 
 .compact-input-tool-fan .compact-input-tool-item {
@@ -2125,8 +2112,9 @@ svg {
   border-radius: inherit;
   background: var(--compact-tool-button-fill);
   box-shadow: var(--compact-tool-button-shadow);
+  filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
   z-index: 1;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, filter 0.15s ease;
 }
 
 .compact-input-tool-fan .compact-input-tool-item:hover::after {
@@ -2150,7 +2138,6 @@ svg {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
-  box-shadow: var(--compact-tool-button-shadow);
   transform: translate(-35px, 70px) scale(0.86);
 }
 
@@ -2163,7 +2150,8 @@ svg {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after {
-  box-shadow: none;
+  box-shadow: var(--compact-tool-button-shadow);
+  filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
@@ -2186,7 +2174,6 @@ svg {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
   opacity: 1;
-  box-shadow: var(--compact-tool-button-shadow);
   transform: translate(70px, -35px) scale(0.86);
 }
 
@@ -2199,7 +2186,8 @@ svg {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after {
-  box-shadow: none;
+  box-shadow: var(--compact-tool-button-shadow);
+  filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
@@ -2681,31 +2669,11 @@ svg {
 
 [data-theme="dark"] .compact-chat-capsule,
 [data-theme="dark"] .compact-chat-inline-input {
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.062) 0%, rgba(255, 255, 255, 0.012) 18%, rgba(255, 255, 255, 0.003) 50%, rgba(255, 255, 255, 0.012) 82%, rgba(255, 255, 255, 0.062) 100%),
-    rgba(255, 255, 255, 0.007);
+  background: rgba(255, 255, 255, 0.012);
   box-shadow:
-    inset 18px 0 22px rgba(255, 255, 255, 0.026),
-    inset -18px 0 22px rgba(255, 255, 255, 0.022),
     0 0 0 1px rgba(208, 233, 255, 0.16),
     0 8px 16px rgba(8, 22, 40, 0.018);
   border: 1px solid rgba(255, 255, 255, 0.52);
-}
-
-[data-theme="dark"] .compact-chat-capsule::before,
-[data-theme="dark"] .compact-chat-inline-input::before {
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.090) 0%, rgba(255, 255, 255, 0.010) 22%, rgba(255, 255, 255, 0.000) 50%, rgba(255, 255, 255, 0.010) 78%, rgba(255, 255, 255, 0.090) 100%);
-}
-
-[data-theme="dark"] .compact-chat-capsule::after,
-[data-theme="dark"] .compact-chat-inline-input::after {
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.018) 14%, rgba(255, 255, 255, 0.00) 50%, rgba(255, 255, 255, 0.018) 86%, rgba(255, 255, 255, 0.22) 100%);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.30),
-    inset 16px 0 14px rgba(255, 255, 255, 0.012),
-    inset -16px 0 14px rgba(255, 255, 255, 0.010);
 }
 
 [data-theme="dark"] .compact-chat-capsule-text {

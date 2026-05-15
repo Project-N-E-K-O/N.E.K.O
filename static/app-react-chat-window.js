@@ -90,7 +90,6 @@
         return !!(
             body
             && body.classList.contains('subtitle-web-host')
-            && !body.classList.contains('electron-chat-window')
             && getCurrentChatSurfaceMode() === 'compact'
         );
     }
@@ -203,6 +202,46 @@
     var compactSurfaceAnchorSnapshot = '';
     var compactSurfacePendingModelOpen = false;
 
+    function normalizeCompactDesktopRect(raw) {
+        if (!raw) return null;
+        var left = Number(raw.left);
+        var top = Number(raw.top);
+        var width = Number(raw.width);
+        var height = Number(raw.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
+            return null;
+        }
+        if (width <= 0 || height <= 0) return null;
+        return {
+            left: left,
+            top: top,
+            right: Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width,
+            bottom: Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height,
+            width: width,
+            height: height,
+            centerX: Number.isFinite(Number(raw.centerX)) ? Number(raw.centerX) : left + width / 2,
+            centerY: Number.isFinite(Number(raw.centerY)) ? Number(raw.centerY) : top + height / 2
+        };
+    }
+
+    function getElectronCompactDesktopAvatarBounds() {
+        if (!isElectronChatWindow()) return null;
+        return normalizeCompactDesktopRect(window.__nekoDesktopAvatarBounds);
+    }
+
+    function getElectronCompactLayoutOverride() {
+        if (!isElectronChatWindow()) return null;
+        var layout = window.__nekoDesktopCompactLayout;
+        if (!layout) return null;
+        var surface = normalizeCompactDesktopRect(layout.surface);
+        var ball = normalizeCompactDesktopRect(layout.ball);
+        if (!surface || !ball) return null;
+        return {
+            surface: surface,
+            ball: ball
+        };
+    }
+
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
     }
@@ -242,7 +281,6 @@
         return !!(
             body
             && body.classList.contains('subtitle-web-host')
-            && !body.classList.contains('electron-chat-window')
             && overlay
             && !overlay.hidden
         );
@@ -258,6 +296,9 @@
     }
 
     function getCompactMinimizeBallAvatarBounds() {
+        var electronBounds = getElectronCompactDesktopAvatarBounds();
+        if (electronBounds) return electronBounds;
+
         var hostWindow = window;
         var candidates = [
             { containerId: 'mmd-container', manager: hostWindow.mmdManager },
@@ -308,6 +349,16 @@
             return null;
         }
 
+        var layoutOverride = getElectronCompactLayoutOverride();
+        if (layoutOverride && layoutOverride.ball) {
+            return {
+                width: MINIMIZED_SIZE,
+                height: MINIMIZED_SIZE,
+                left: layoutOverride.ball.left,
+                top: layoutOverride.ball.top
+            };
+        }
+
         var bounds = getCompactMinimizeBallAvatarBounds();
         if (!bounds) {
             return null;
@@ -328,7 +379,9 @@
 
     function shouldDelayCompactSurfaceOpenForModel() {
         return !!(
-            !isMobileWidth()
+            !isElectronChatWindow()
+            && isHomeCompactSurfaceRoute()
+            && !isMobileWidth()
             && getCurrentChatSurfaceMode() === 'compact'
             && !getCompactMinimizeBallAvatarBounds()
         );
@@ -348,6 +401,15 @@
     }
 
     function getCompactSurfaceTarget() {
+        var layoutOverride = getElectronCompactLayoutOverride();
+        if (layoutOverride && layoutOverride.surface) {
+            return {
+                width: layoutOverride.surface.width,
+                left: layoutOverride.surface.left,
+                top: layoutOverride.surface.top
+            };
+        }
+
         var metrics = getCompactSurfaceMetrics();
         var viewportWidth = window.innerWidth;
         var viewportHeight = window.innerHeight;
@@ -475,7 +537,10 @@
             return;
         }
 
-        var placement = getCompactMinimizeBallPlacement(bounds);
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var placement = layoutOverride && layoutOverride.ball
+            ? { left: layoutOverride.ball.left, top: layoutOverride.ball.top }
+            : getCompactMinimizeBallPlacement(bounds);
         if (!placement) {
             clearCompactMinimizeBallAnchor();
             return;
@@ -2372,6 +2437,7 @@
     }
 
     function ensureMinimizedBallIcon() {
+        if (isElectronChatWindow()) return null;
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
@@ -2398,6 +2464,10 @@
         }
         state.compactChatState = normalized;
         renderWindow();
+        syncChatSurfaceModeUI();
+        dispatchHostEvent('compact-chat-state-change', {
+            state: normalized
+        });
         return normalized;
     }
 
@@ -2448,6 +2518,16 @@
         isMinimizeTransitioning = true;
 
         minimized = willMinimize;
+
+        if (isElectronChatWindow()) {
+            shell.classList.remove('is-collapsing', 'is-expanding', 'is-minimized');
+            shell.style.removeProperty('transform');
+            shell.style.removeProperty('transform-origin');
+            shell.style.removeProperty('opacity');
+            isMinimizeTransitioning = false;
+            syncChatSurfaceModeUI();
+            return;
+        }
 
         if (willMinimize) {
             // ---- 折叠动画：向对话框左下角缩放 ----
@@ -3421,6 +3501,13 @@
         window.addEventListener('localechange', function () {
             state.viewProps = createBaseViewProps();
             renderWindow();
+        });
+
+        window.addEventListener('neko:desktop-compact-layout-change', function () {
+            scheduleCompactMinimizeBallTracking();
+        });
+        window.addEventListener('neko:desktop-avatar-bounds-change', function () {
+            scheduleCompactMinimizeBallTracking();
         });
     }
 
