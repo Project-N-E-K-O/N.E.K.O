@@ -1103,7 +1103,11 @@ class OmniRealtimeClient:
         if not self.ws:
             return
         
-        event['event_id'] = "event_" + str(int(time.time() * 1000))
+        # Use setdefault so callers that explicitly stamp an event_id
+        # (e.g. proactive inject paths matching server-side
+        # ``error.event_id`` echoes for rejection callbacks) keep theirs.
+        # Otherwise fall back to the legacy timestamp-based id.
+        event.setdefault('event_id', "event_" + str(int(time.time() * 1000)))
         async with self._send_semaphore:  # 限制并发发送数量
             try:
                 if not self.ws:

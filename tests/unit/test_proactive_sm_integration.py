@@ -337,6 +337,42 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     assert mgr.pending_agent_callbacks == original
 
 
+async def test_send_event_preserves_caller_stamped_event_id():
+    """``send_event`` 必须保留 caller 显式标的 ``event_id``，不能拿时间戳覆盖。
+    这是 ``inject_text_and_request_response`` 的 ``on_rejected`` 路径能工作的
+    前提：server ``error.event_id`` 必须能 echo 回 caller 注册的 id 才会命中
+    ``_inject_rejection_handlers``。锁死 Codex r3249069126。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _CapturingWS:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._fatal_error_occurred = False
+    sess._is_throttled = False
+    sess._throttle_until = 0.0
+    sess._is_gemini = False
+    sess._send_semaphore = asyncio.Semaphore(25)
+    sess.on_connection_error = None
+    sess._bg_tasks = set()
+    ws = _CapturingWS()
+    sess.ws = ws
+
+    explicit_id = "event_inject_test_preserve_me"
+    await OmniRealtimeClient.send_event(
+        sess, {"type": "response.create", "event_id": explicit_id}
+    )
+
+    assert len(ws.sent) == 1
+    import json as _json
+    payload = _json.loads(ws.sent[0])
+    assert payload["event_id"] == explicit_id
+
+
 async def test_text_mode_sm_denied_when_phase_active():
     """另一路 proactive 已占 phase1 时，text 投递不应清 callbacks。"""
     sess = _FakeOmniOffline()
