@@ -217,6 +217,9 @@
         : (this.persistVolume ? readStoredVolume(this.storageKey, DEFAULT_BGM_VOLUME) : DEFAULT_BGM_VOLUME);
       this.currentAudio = null;
       this.fadingAudio = null;
+      this.fadingTrack = null;
+      this.fadingOptions = {};
+      this.fadingProgress = 0;
       this.currentPlaylist = [];
       this.currentSignature = '';
       this.currentContentSignature = '';
@@ -297,12 +300,14 @@
       this.volume = clamp01(volume, this.volume);
       if (this.persistVolume) writeStoredVolume(this.storageKey, this.volume);
       this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
+      this._applyVolume(this.fadingAudio, this.fadingProgress, this.fadingTrack, this.fadingOptions);
       return this.volume;
     }
 
     setMix(mix = {}) {
       this.mix = normalizeVolumeMix(mix);
       this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
+      this._applyVolume(this.fadingAudio, this.fadingProgress, this.fadingTrack, this.fadingOptions);
     }
 
     pause() {
@@ -324,6 +329,9 @@
       disposeAudio(this.fadingAudio);
       this.currentAudio = null;
       this.fadingAudio = null;
+      this.fadingTrack = null;
+      this.fadingOptions = {};
+      this.fadingProgress = 0;
       this.currentTrack = null;
       this.currentOptions = {};
       if (options.notifyWaiters !== false) this._resolveEndWaiters(false);
@@ -411,7 +419,12 @@
       this._clearFadeTimer();
       disposeAudio(this.fadingAudio);
       this.fadingAudio = null;
+      this.fadingTrack = null;
+      this.fadingOptions = {};
+      this.fadingProgress = 0;
       const previousAudio = this.currentAudio;
+      const previousTrack = this.currentTrack;
+      const previousOptions = this.currentOptions;
       const nextAudio = this._createAudio(track);
       this.currentAudio = nextAudio;
       this.currentTrack = track;
@@ -428,7 +441,7 @@
       }
 
       this.fadingAudio = previousAudio;
-      this._startCrossfade(previousAudio, nextAudio, fadeMs, track, volumeOptions);
+      this._startCrossfade(previousAudio, nextAudio, fadeMs, previousTrack, previousOptions, track, volumeOptions);
       return playPromise;
     }
 
@@ -466,20 +479,31 @@
       this._preloadTrack(nextTrack);
     }
 
-    _startCrossfade(previousAudio, nextAudio, fadeMs, nextTrack, nextOptions) {
+    _startCrossfade(previousAudio, nextAudio, fadeMs, previousTrack, previousOptions, nextTrack, nextOptions) {
       const startedAt = Date.now();
       const previousStartVolume = Number(previousAudio.volume) || 0;
+      const previousFullVolume = resolveMixedVolume(this.volume, this.mix, previousTrack, previousOptions, 1);
+      const previousStartProgress = previousFullVolume > 0
+        ? clamp01(previousStartVolume / previousFullVolume, 1)
+        : (previousStartVolume > 0 ? 1 : 0);
+      this.fadingTrack = previousTrack;
+      this.fadingOptions = previousOptions || {};
+      this.fadingProgress = previousStartProgress;
 
       this.fadeTimer = window.setInterval(() => {
         const elapsed = Date.now() - startedAt;
         const progress = Math.min(1, elapsed / fadeMs);
-        this._applyRawVolume(previousAudio, previousStartVolume * (1 - progress));
+        this.fadingProgress = previousStartProgress * (1 - progress);
+        this._applyVolume(previousAudio, this.fadingProgress, previousTrack, previousOptions);
         this._applyVolume(nextAudio, progress, nextTrack, nextOptions);
 
         if (progress >= 1) {
           this._clearFadeTimer();
           disposeAudio(previousAudio);
           if (this.fadingAudio === previousAudio) this.fadingAudio = null;
+          this.fadingTrack = null;
+          this.fadingOptions = {};
+          this.fadingProgress = 0;
           this._applyVolume(nextAudio, 1, nextTrack, nextOptions);
         }
       }, 50);
@@ -556,11 +580,6 @@
     _applyVolume(audio, progress = 1, track = this.currentTrack, options = {}) {
       if (!audio) return;
       audio.volume = resolveMixedVolume(this.volume, this.mix, track, options, progress);
-    }
-
-    _applyRawVolume(audio, volume) {
-      if (!audio) return;
-      audio.volume = clamp01(volume, this.volume);
     }
 
     _clearFadeTimer() {
@@ -717,6 +736,9 @@
       this.currentOptions = {};
       this.phase = 'stopped';
       this.fadingAudio = null;
+      this.fadingTrack = null;
+      this.fadingOptions = {};
+      this.fadingProgress = 0;
       this.pendingFinish = false;
       this.pendingPlayAfterUnlock = false;
       this.pausedByUser = false;
@@ -791,12 +813,14 @@
     setVolume(volume) {
       this.volume = clamp01(volume, this.volume);
       this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
+      this._applyVolume(this.fadingAudio, this.fadingProgress, this.fadingTrack, this.fadingOptions);
       return this.volume;
     }
 
     setMix(mix = {}) {
       this.mix = normalizeVolumeMix(mix);
       this._applyVolume(this.currentAudio, 1, this.currentTrack, this.currentOptions);
+      this._applyVolume(this.fadingAudio, this.fadingProgress, this.fadingTrack, this.fadingOptions);
     }
 
     // 立即停止循环 BGM。用于强制退出页面、强制切换到普通 BGM 等场景。
@@ -806,7 +830,12 @@
       this._clearFadeTimer();
       disposeAudio(this.fadingAudio);
       this.fadingAudio = null;
+      this.fadingTrack = null;
+      this.fadingOptions = {};
+      this.fadingProgress = 0;
       const audio = this.currentAudio;
+      const track = this.currentTrack;
+      const fadeOptions = this.currentOptions;
       this.currentAudio = null;
       this.currentTrack = null;
       this.currentConfig = null;
@@ -815,7 +844,7 @@
       this.currentOptions = {};
       this.phase = 'stopped';
       const fadeMs = Math.max(0, Number(options.fadeMs ?? 0) || 0);
-      if (audio && fadeMs > 0) this._fadeOutAndDispose(audio, fadeMs);
+      if (audio && fadeMs > 0) this._fadeOutAndDispose(audio, fadeMs, track, fadeOptions);
       else disposeAudio(audio);
     }
 
@@ -893,7 +922,12 @@
       this._clearFadeTimer();
       disposeAudio(this.fadingAudio);
       this.fadingAudio = null;
+      this.fadingTrack = null;
+      this.fadingOptions = {};
+      this.fadingProgress = 0;
       const previousAudio = this.currentAudio;
+      const previousTrack = this.currentTrack;
+      const previousOptions = this.currentOptions;
       const audio = this._createAudio(track, phase);
       this.currentAudio = audio;
       this.currentTrack = track;
@@ -906,7 +940,7 @@
         // 循环 BGM 之间切换时，这里是主要的抗停顿路径：
         // 新音频先启动，再把旧音频淡出。若改回先 stop 再 play，inGame -> max+angry
         // 这类切换会更容易出现可感知空白。
-        this._startCrossfade(previousAudio, audio, fadeMs);
+        this._startCrossfade(previousAudio, audio, fadeMs, previousTrack, previousOptions);
       } else {
         disposeAudio(previousAudio);
         this._applyVolume(audio, 1, track, this.currentOptions);
@@ -1008,38 +1042,60 @@
       audio.volume = resolveMixedVolume(this.volume, this.mix, track, options, progress);
     }
 
-    _startCrossfade(previousAudio, nextAudio, fadeMs) {
+    _startCrossfade(previousAudio, nextAudio, fadeMs, previousTrack, previousOptions) {
       this._clearFadeTimer();
       disposeAudio(this.fadingAudio);
       this.fadingAudio = previousAudio;
+      this.fadingTrack = previousTrack;
+      this.fadingOptions = previousOptions || {};
       const startedAt = Date.now();
       const previousStartVolume = Number(previousAudio.volume) || 0;
+      const previousFullVolume = resolveMixedVolume(this.volume, this.mix, previousTrack, previousOptions, 1);
+      const previousStartProgress = previousFullVolume > 0
+        ? clamp01(previousStartVolume / previousFullVolume, 1)
+        : (previousStartVolume > 0 ? 1 : 0);
+      this.fadingProgress = previousStartProgress;
       this.fadeTimer = window.setInterval(() => {
         const elapsed = Date.now() - startedAt;
         const progress = Math.min(1, elapsed / fadeMs);
-        this._applyRawVolume(previousAudio, previousStartVolume * (1 - progress));
+        this.fadingProgress = previousStartProgress * (1 - progress);
+        this._applyVolume(previousAudio, this.fadingProgress, previousTrack, previousOptions);
         this._applyVolume(nextAudio, progress, this.currentTrack, this.currentOptions);
         if (progress >= 1) {
           this._clearFadeTimer();
           disposeAudio(this.fadingAudio);
           this.fadingAudio = null;
+          this.fadingTrack = null;
+          this.fadingOptions = {};
+          this.fadingProgress = 0;
           this._applyVolume(nextAudio, 1, this.currentTrack, this.currentOptions);
         }
       }, 50);
     }
 
-    _fadeOutAndDispose(audio, fadeMs) {
+    _fadeOutAndDispose(audio, fadeMs, track, options) {
       disposeAudio(this.fadingAudio);
       this.fadingAudio = audio;
+      this.fadingTrack = track;
+      this.fadingOptions = options || {};
       const startedAt = Date.now();
       const startVolume = Number(audio.volume) || 0;
+      const fullVolume = resolveMixedVolume(this.volume, this.mix, track, options, 1);
+      const startProgress = fullVolume > 0
+        ? clamp01(startVolume / fullVolume, 1)
+        : (startVolume > 0 ? 1 : 0);
+      this.fadingProgress = startProgress;
       this.fadeTimer = window.setInterval(() => {
         const elapsed = Date.now() - startedAt;
         const progress = Math.min(1, elapsed / fadeMs);
-        this._applyRawVolume(audio, startVolume * (1 - progress));
+        this.fadingProgress = startProgress * (1 - progress);
+        this._applyVolume(audio, this.fadingProgress, track, options);
         if (progress >= 1) {
           this._clearFadeTimer();
           if (this.fadingAudio === audio) this.fadingAudio = null;
+          this.fadingTrack = null;
+          this.fadingOptions = {};
+          this.fadingProgress = 0;
           disposeAudio(audio);
         }
       }, 50);
@@ -1051,10 +1107,6 @@
       this.fadeTimer = null;
     }
 
-    _applyRawVolume(audio, volume) {
-      if (!audio) return;
-      audio.volume = clamp01(volume, this.volume);
-    }
   }
 
   class GameAudioSystem {
