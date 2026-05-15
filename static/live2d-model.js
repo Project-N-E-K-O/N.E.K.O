@@ -940,9 +940,6 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
     if (window.nekoYuiGuideFaceForwardLock === true && window.nekoYuiGuideIntroVoiceLookAtActive !== true) {
-        if (window.nekoYuiGuideFaceForwardSuppressParamWrite === true) {
-            return;
-        }
         if (this._lookAtTargetX === undefined || !Number.isFinite(this._lookAtTargetX)) {
             this._lookAtTargetX = 0;
         }
@@ -960,6 +957,25 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
         this._lookAtTargetY += (0 - this._lookAtTargetY) * settleFactor;
         this._lookAtCurrentX += (this._lookAtTargetX - this._lookAtCurrentX) * settleFactor;
         this._lookAtCurrentY += (this._lookAtTargetY - this._lookAtCurrentY) * settleFactor;
+        const isCentered = Math.abs(this._lookAtTargetX) < 0.01
+            && Math.abs(this._lookAtTargetY) < 0.01
+            && Math.abs(this._lookAtCurrentX) < 0.01
+            && Math.abs(this._lookAtCurrentY) < 0.01;
+        const isParamCentered = (paramId, threshold) => {
+            try {
+                const idx = coreModel.getParameterIndex(paramId);
+                return idx < 0 || Math.abs(coreModel.getParameterValueByIndex(idx)) < threshold;
+            } catch (_) {
+                return true;
+            }
+        };
+        const areCoreLookAtParamsCentered = isParamCentered('ParamAngleX', 0.01)
+            && isParamCentered('ParamAngleY', 0.01)
+            && isParamCentered('ParamEyeBallX', 0.001)
+            && isParamCentered('ParamEyeBallY', 0.001);
+        if (window.nekoYuiGuideFaceForwardSuppressParamWrite === true && isCentered && areCoreLookAtParamsCentered) {
+            return;
+        }
         try {
             coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
             coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
