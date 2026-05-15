@@ -203,6 +203,24 @@ def test_galgame_store_context_snapshot_rejects_mismatched_session_id(tmp_path: 
     assert store.load_context_snapshot(current_game_id="game-a") == {}
 
 
+def test_galgame_store_context_snapshot_rejects_missing_session_when_current_given(
+    tmp_path: Path,
+) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(
+        {
+            "game_id": "game-a",
+            "summary_seed": "legacy summary",
+            "saved_at": time.time(),
+        }
+    )
+
+    assert store.load_context_snapshot(
+        current_game_id="game-a",
+        current_session_id="sess-a",
+    ) == {}
+
+
 def test_galgame_store_clear_context_snapshot_checks_expected_snapshot(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     old_snapshot = {
