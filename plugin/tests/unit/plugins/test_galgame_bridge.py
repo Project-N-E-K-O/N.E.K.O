@@ -515,7 +515,12 @@ def test_persist_context_snapshot_allows_missing_game_id_when_not_required() -> 
         context_persist_enabled=True,
         context_persist_require_game_id=False,
     )
-    plugin._state = SimpleNamespace(active_game_id="", context_snapshot={})
+    plugin._state = SimpleNamespace(
+        active_game_id="",
+        active_session_id="",
+        latest_snapshot={"scene_id": "scene-a", "route_id": ""},
+        context_snapshot={},
+    )
     plugin._state_lock = threading.Lock()
     plugin._state_dirty = False
     plugin._cached_snapshot = {"stale": True}
@@ -537,6 +542,63 @@ def test_persist_context_snapshot_allows_missing_game_id_when_not_required() -> 
     assert plugin._state.context_snapshot["summary_seed"] == "summary without game id"
     assert plugin._state_dirty is True
     assert plugin._cached_snapshot is None
+
+
+def test_persist_context_snapshot_skips_write_when_session_turns_stale() -> None:
+    saved: list[dict[str, object]] = []
+
+    class _Persist:
+        def persist_context_snapshot(self, snapshot: dict[str, object]) -> None:
+            saved.append(dict(snapshot))
+
+    class _Logger:
+        def warning(self, *_: object, **__: object) -> None:
+            return None
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_require_game_id=True,
+    )
+    plugin._state = SimpleNamespace(
+        active_game_id="demo.alpha",
+        active_session_id="sess-a",
+        latest_snapshot={"scene_id": "scene-a", "route_id": "route-a"},
+        context_snapshot={},
+    )
+    plugin._state_lock = threading.Lock()
+    plugin._state_dirty = False
+    plugin._cached_snapshot = {"stale": True}
+    plugin._persist = _Persist()
+    plugin.logger = _Logger()
+
+    checks = 0
+    original_liveness = plugin._context_snapshot_liveness_matches
+
+    def _flip_session_after_first_check(**kwargs: object) -> bool:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            plugin._state.active_session_id = "sess-b"
+        return original_liveness(**kwargs)  # type: ignore[arg-type]
+
+    plugin._context_snapshot_liveness_matches = _flip_session_after_first_check  # type: ignore[method-assign]
+
+    plugin._persist_context_snapshot_from_summary(
+        {
+            "game_id": "demo.alpha",
+            "session_id": "sess-a",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "stable_lines": [{"line_id": "line-1"}],
+        },
+        {"summary": "stale during write"},
+    )
+
+    assert checks == 2
+    assert saved == []
+    assert plugin._state.context_snapshot == {}
+    assert plugin._state_dirty is False
 
 
 @pytest.mark.asyncio
