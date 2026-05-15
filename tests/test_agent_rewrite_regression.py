@@ -994,6 +994,13 @@ def test_emotion_manager_templates_use_static_asset_version_for_tutorial_runtime
         assert "universal-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}" in source
 
 
+def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+
+    assert '_PROJECT_ROOT / "static/tutorial-skip-controller.js"' in source
+    assert '_PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js"' in source
+
+
 def test_home_yui_guide_does_not_route_to_steam_workshop():
     yui_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
