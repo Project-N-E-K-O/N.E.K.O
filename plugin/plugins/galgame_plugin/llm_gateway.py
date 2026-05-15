@@ -5,6 +5,7 @@ from collections import OrderedDict
 from enum import Enum
 import json
 import logging
+from difflib import SequenceMatcher
 import time
 from typing import Any, Callable, Mapping
 
@@ -26,6 +27,7 @@ _KEY_POINT_TYPES = frozenset({"plot", "emotion", "decision", "reveal", "objectiv
 _LLM_RESPONSE_CACHE_MAX_ITEMS = 50
 _LLM_PROVIDER_BACKOFF_SECONDS = 2.0
 _LLM_PROVIDER_BACKOFF_CATEGORIES = frozenset({"busy", "gateway_unavailable", "timeout"})
+_REPEAT_GUARD_MAX_ITEMS = 8
 
 _NEAR_MATCH_OPERATIONS = frozenset({"explain_line", "summarize_scene", "scene_summary"})
 _NEAR_MATCH_EXCLUDED_FIELDS = frozenset(
@@ -156,6 +158,57 @@ def _observed_similarity(cached_sig: str, current_sig: str) -> float:
     return len(set_a & set_b) / len(set_a | set_b)
 
 
+def _response_similarity(left: Any, right: Any) -> float:
+    left_fingerprint = _stable_json_fingerprint(left)
+    right_fingerprint = _stable_json_fingerprint(right)
+    if left_fingerprint == right_fingerprint:
+        return 1.0
+
+    def _response_text(value: Any, fingerprint: str) -> str:
+        if isinstance(value, Mapping):
+            text = str(value.get("reply") or value.get("result") or "").strip()
+            if text:
+                return " ".join(text.lower().split())
+        return " ".join(fingerprint.lower().split())
+
+    left_text = _response_text(left, left_fingerprint)
+    right_text = _response_text(right, right_fingerprint)
+    if not left_text or not right_text:
+        return 0.0
+    return SequenceMatcher(None, left_text, right_text).ratio()
+
+
+class ResponseRepeatGuard:
+    def __init__(self, *, max_items: int = _REPEAT_GUARD_MAX_ITEMS) -> None:
+        self._max_items = max(1, int(max_items))
+        self._recent: list[dict[str, Any]] = []
+
+    def clear(self) -> None:
+        self._recent.clear()
+
+    def is_repeat(self, response: dict[str, Any], *, threshold: float) -> bool:
+        threshold = max(0.0, min(float(threshold), 1.0))
+        fingerprint = _stable_json_fingerprint(response)
+        for item in self._recent:
+            if fingerprint == str(item.get("fingerprint") or ""):
+                return True
+            previous = item.get("response")
+            if _response_similarity(response, previous) >= threshold:
+                return True
+        return False
+
+    def record(self, response: dict[str, Any]) -> None:
+        payload = _json_payload_copy(response)
+        self._recent.append(
+            {
+                "fingerprint": _stable_json_fingerprint(payload),
+                "response": payload,
+            }
+        )
+        if len(self._recent) > self._max_items:
+            del self._recent[: len(self._recent) - self._max_items]
+
+
 class LLMGateway:
     def __init__(self, plugin, logger, config, *, backend: GalgameLLMBackend | None = None) -> None:
         self._plugin = plugin
@@ -172,11 +225,13 @@ class LLMGateway:
         self._provider_backoff: dict[tuple[str, str], tuple[float, str]] = {}
         self._active_calls = 0
         self._context_metrics: ContextMetricsCollector | None = None
+        self._repeat_guard = ResponseRepeatGuard()
 
     def update_config(self, config) -> None:
         old_cache_config_fingerprint = self._cache_config_fingerprint()
         old_cache_policy_fingerprint = self._cache_policy_fingerprint()
         old_near_match_enabled = self._near_match_enabled()
+        old_repeat_config_fingerprint = self._repeat_config_fingerprint()
         self._config = config
         if not self._metrics_enabled():
             self._context_metrics = None
@@ -189,6 +244,8 @@ class LLMGateway:
         ):
             self._cache.clear()
             self._near_match_cache.clear()
+        if self._repeat_config_fingerprint() != old_repeat_config_fingerprint:
+            self._repeat_guard.clear()
 
     @property
     def context_metrics(self) -> ContextMetricsCollector | None:
@@ -247,6 +304,7 @@ class LLMGateway:
             self._cache.clear()
             self._near_match_cache.clear()
             self._provider_backoff.clear()
+            self._repeat_guard.clear()
             self._active_calls = 0
         for task in tasks:
             task.cancel()
@@ -431,6 +489,22 @@ class LLMGateway:
             }
         )
 
+
+    def _repeat_config_fingerprint(self) -> str:
+        raw_threshold = getattr(self._config, "llm_repeat_similarity_threshold", None)
+        try:
+            threshold = 0.85 if raw_threshold is None else float(raw_threshold)
+        except (TypeError, ValueError):
+            threshold = 0.85
+        return _stable_json_fingerprint(
+            {
+                "llm_repeat_detection_enabled": bool(
+                    getattr(self._config, "llm_repeat_detection_enabled", False)
+                ),
+                "llm_repeat_similarity_threshold": max(0.0, min(threshold, 1.0)),
+            }
+        )
+
     def _near_match_fingerprint(
         self, operation: str, context: dict[str, Any]
     ) -> str | None:
@@ -534,6 +608,13 @@ class LLMGateway:
                 validate=validate,
                 degraded=degraded,
             )
+            result = await self._maybe_retry_repeated_response(
+                operation=operation,
+                context=context,
+                result=result,
+                validate=validate,
+                degraded=degraded,
+            )
             prompt_metadata = self._consume_backend_prompt_metadata()
             total_time_ms = (time.monotonic() - start_time) * 1000.0
             ttl = self._ttl_for_operation(operation)
@@ -588,6 +669,47 @@ class LLMGateway:
             async with self._lock:
                 self._inflight.pop(fingerprint, None)
                 self._active_calls = max(0, self._active_calls - 1)
+
+
+    async def _maybe_retry_repeated_response(
+        self,
+        *,
+        operation: str,
+        context: dict[str, Any],
+        result: dict[str, Any],
+        validate: Callable[[dict[str, Any]], dict[str, Any]],
+        degraded: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        if operation != "agent_reply":
+            return result
+        if not bool(getattr(self._config, "llm_repeat_detection_enabled", False)):
+            return result
+        if bool(result.get("degraded")):
+            return result
+        try:
+            threshold = float(getattr(self._config, "llm_repeat_similarity_threshold", 0.85))
+        except (TypeError, ValueError):
+            threshold = 0.85
+        threshold = max(0.0, min(threshold, 1.0))
+        if not self._repeat_guard.is_repeat(result, threshold=threshold):
+            self._repeat_guard.record(result)
+            return result
+
+        retry_context = _json_payload_copy(context)
+        retry_context["_anti_repeat_instruction"] = (
+            "The previous agent reply was too similar to a recent reply. "
+            "Answer using the current public_context, avoid repeating the same wording, "
+            "and add only facts supported by context."
+        )
+        retry = await self._call_target(
+            operation=operation,
+            context=retry_context,
+            validate=validate,
+            degraded=degraded,
+        )
+        final = result if bool(retry.get("degraded")) else retry
+        self._repeat_guard.record(final)
+        return final
 
     def _consume_backend_prompt_metadata(self) -> dict[str, Any]:
         consume = getattr(self._backend, "consume_prompt_metadata", None)

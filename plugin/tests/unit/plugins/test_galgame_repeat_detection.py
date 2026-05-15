@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from plugin.plugins.galgame_plugin.llm_gateway import LLMGateway, _response_similarity
+from plugin.sdk.shared.models import Ok
 
 
 class _Backend:
@@ -23,6 +24,22 @@ class _Backend:
 
     async def shutdown(self) -> None:
         return None
+
+
+class _TargetEntries:
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    async def call_entry(
+        self,
+        entry_ref: str,
+        *,
+        params: dict[str, Any],
+        timeout: float,
+    ) -> Ok[dict[str, Any]]:
+        self.calls.append({"entry_ref": entry_ref, "params": params, "timeout": timeout})
+        return Ok(self.responses.pop(0))
 
 
 def _config(**overrides: Any) -> SimpleNamespace:
@@ -59,6 +76,29 @@ async def test_repeat_guard_retries_identical_agent_reply_once() -> None:
     assert second["reply"] == "The current line adds new tension."
     assert len(backend.calls) == 3
     assert "_anti_repeat_instruction" in backend.calls[2][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_repeat_guard_retries_identical_agent_reply_from_target_entry() -> None:
+    target = _TargetEntries(
+        [
+            {"reply": "The scene is quiet."},
+            {"reply": "The scene is quiet."},
+            {"reply": "The current line adds new tension."},
+        ]
+    )
+    plugin = SimpleNamespace(plugins=target)
+    gateway = LLMGateway(plugin, None, _config(llm_target_entry_ref="fake_llm:run"))
+
+    first = await gateway.agent_reply({"prompt": "status", "public_context": {}})
+    second = await gateway.agent_reply({"prompt": "status", "public_context": {}})
+
+    assert first["reply"] == "The scene is quiet."
+    assert second["reply"] == "The current line adds new tension."
+    assert len(target.calls) == 3
+    retry_context = target.calls[2]["params"]["context"]
+    assert "_anti_repeat_instruction" in retry_context
 
 
 @pytest.mark.asyncio
