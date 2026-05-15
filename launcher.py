@@ -61,6 +61,51 @@ else:
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+def _configure_ssl_cert_bundle() -> None:
+    """让 OpenSSL 找到 certifi 的 CA bundle，避免打包后外网 HTTPS / WSS 全报
+    `certificate verify failed`。
+
+    Nuitka / PyInstaller 会复制 `libssl`，但其编译期硬编码的 OPENSSLDIR 指向
+    构建机路径，用户机上不存在；如果同时没设 SSL_CERT_FILE 环境变量，
+    `ssl.create_default_context()` 拿不到任何根证书，所有外部 TLS 一律失败。
+    build-desktop.yml 已经把 `certifi/cacert.pem` 当 package data 打进去，
+    这里只是把它显式指给 OpenSSL。源码模式下 certifi.where() 指向 venv 里
+    同一份文件，等价于显式声明默认行为，无副作用。
+    """
+    existing = os.environ.get("SSL_CERT_FILE")
+    if existing and os.path.isfile(existing):
+        return
+
+    ca_path: str | None = None
+    try:
+        import certifi  # noqa: WPS433 — 故意放在函数内，保持模块导入开销可控
+        candidate = certifi.where()
+        if candidate and os.path.isfile(candidate):
+            ca_path = candidate
+    except Exception:
+        ca_path = None
+
+    if ca_path is None:
+        # 冻结环境兜底：build-desktop.yml 把 certifi/cacert.pem 落到 bundle_dir 下
+        candidate = os.path.join(bundle_dir, "certifi", "cacert.pem")
+        if os.path.isfile(candidate):
+            ca_path = candidate
+
+    if ca_path is None:
+        return
+
+    os.environ["SSL_CERT_FILE"] = ca_path
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_path)
+    os.environ.setdefault("CURL_CA_BUNDLE", ca_path)
+
+
+# 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
+# import 时就会通过 OpenSSL 把默认 verify paths 锁住，之后再设环境变量
+# 对已有 SSLContext 不生效。下面 from utils.* import ... 已经会拉起 httpx /
+# openai SDK 链路，所以这里抢在前面跑。
+_configure_ssl_cert_bundle()
+
+
 def _get_project_venv_python(project_dir: str) -> str | None:
     if sys.platform == 'win32':
         candidate = os.path.join(project_dir, '.venv', 'Scripts', 'python.exe')
