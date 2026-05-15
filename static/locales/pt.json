@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 O servidor de memória (porta {{port}}) travou. Reinicie memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 O serviço de memória está se recuperando, aguarde {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Conexão do servidor recusada. Verifique sua chave API e conexão de rede.",
-        "API_KEY_REJECTED": "💥 Chave API rejeitada pelo servidor. Verifique se sua chave API corresponde ao modelo selecionado.",
+        "API_KEY_REJECTED": "A API Key fornecida é inválida. Verifique as configurações atuais da API.",
         "API_RATE_LIMIT_SESSION": "💥 Taxa de solicitação de API muito alta. Tente novamente mais tarde.",
         "LLM_CONNECTION_FAILED": "💥 Falha na conexão da API LLM. Verifique sua conexão de rede e configuração de API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Conexão fechada de forma anormal: {{error}}",

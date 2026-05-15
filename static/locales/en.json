@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 Memory server (port {{port}}) has crashed. Please restart memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 Memory service is recovering, please wait {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Server connection refused. Please check your API Key and network connection.",
-        "API_KEY_REJECTED": "💥 API Key rejected by server. Please check if your API Key matches the selected model.",
+        "API_KEY_REJECTED": "The provided API Key is invalid. Please check your current API settings.",
         "API_RATE_LIMIT_SESSION": "💥 API request rate too high, please try again later.",
         "LLM_CONNECTION_FAILED": "💥 LLM API connection failed. Please check your network connection and API configuration.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Connection closed abnormally: {{error}}",

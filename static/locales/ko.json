@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 메모리 서버(포트 {{port}})가 충돌했습니다. memory_server.py를 재시작하세요.",
         "MEMORY_SERVER_COOLDOWN": "🧠 메모리 서비스가 복구 중입니다. {{wait_time}}초 후 다시 시도해주세요",
         "CONNECTION_REFUSED": "💥 서버 연결이 거부되었습니다. API Key와 네트워크 연결을 확인하세요.",
-        "API_KEY_REJECTED": "💥 API Key가 서버에 의해 거부되었습니다. API Key가 선택한 모델과 일치하는지 확인하세요.",
+        "API_KEY_REJECTED": "제공된 API Key가 유효하지 않습니다. 현재 API 설정을 확인하세요.",
         "API_RATE_LIMIT_SESSION": "💥 API 요청 빈도가 너무 높습니다. 잠시 후 다시 시도해 주세요.",
         "LLM_CONNECTION_FAILED": "💥 LLM API 연결에 실패했습니다. 네트워크 연결과 API 설정을 확인하세요.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 연결이 비정상적으로 종료되었습니다: {{error}}",

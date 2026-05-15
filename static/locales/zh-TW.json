@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 記憶伺服器(端口{{port}})已崩潰。請重啟 memory_server.py",
         "MEMORY_SERVER_COOLDOWN": "🧠 記憶服務正在恢復中，請稍候{{wait_time}}秒",
         "CONNECTION_REFUSED": "💥 伺服器連接被拒絕。請檢查API Key和網路連接。",
-        "API_KEY_REJECTED": "💥 API Key被伺服器拒絕。請檢查API Key是否與所選模型匹配。",
+        "API_KEY_REJECTED": "提供的 API Key 無效，請檢查目前的 API 設定。",
         "API_RATE_LIMIT_SESSION": "💥 API請求頻率過高，請稍後再試。",
         "LLM_CONNECTION_FAILED": "💥 LLM API 連接失敗。請檢查網路連接和API配置。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 連接異常關閉: {{error}}",

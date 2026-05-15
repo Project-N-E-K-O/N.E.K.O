@@ -6,7 +6,7 @@ import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
-from openai import APIConnectionError, InternalServerError, RateLimitError
+from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
 from config import OMNI_RECENT_RESPONSES_MAX
@@ -46,6 +46,28 @@ _GENAI_NATIVE_MODEL_HINTS = ("gemini",)
 # rerolls have been exhausted. Commas, semicolons, and colons are NOT
 # included on purpose — those would leave the kept text mid-thought.
 _SENTENCE_END_CHARS = '.!?。！？…'
+_API_KEY_REJECTED_KEYWORDS = (
+    "incorrect api key",
+    "incorect api key",
+    "invalid_api_key",
+    "invalid api key",
+    "invalid key",
+    "api key is invalid",
+    "authenticationerror",
+    "authentication",
+    "unauthorized",
+)
+
+
+def _is_api_key_rejected_error(error: BaseException | str) -> bool:
+    """Return True when an upstream error clearly means the API key was rejected."""
+    status_code = getattr(error, "status_code", None)
+    if status_code in (401, 403):
+        return True
+    text = f"{type(error).__name__}: {error}".lower()
+    if "401" in text or "403" in text:
+        return True
+    return any(keyword in text for keyword in _API_KEY_REJECTED_KEYWORDS)
 
 
 def _truncate_to_last_sentence_end(text: str) -> str:
@@ -1539,7 +1561,7 @@ class OmniOfflineClient:
                     if assistant_message_total:
                         break
 
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
@@ -1552,9 +1574,7 @@ class OmniOfflineClient:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                             status_reported = True
                         break
-                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
-                            or 'authentication' in error_str_lower
-                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                    elif _is_api_key_rejected_error(e):
                         logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
@@ -1594,7 +1614,27 @@ class OmniOfflineClient:
                             status_reported = True
                         break
                 except Exception as e:
-                    error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
+                    is_api_key_rejected = _is_api_key_rejected_error(e)
+                    if is_api_key_rejected:
+                        status_error_payload = {"code": "API_KEY_REJECTED"}
+                        discard_error_payload = status_error_payload
+                        error_msg = f"💥 文本生成异常: 检测到 API Key 被拒绝: {type(e).__name__}: {e}"
+                    else:
+                        status_error_payload = {
+                            "code": "TEXT_GEN_ERROR",
+                            "details": {
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                            },
+                        }
+                        discard_error_payload = {
+                            "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
+                            "details": {
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                            },
+                        }
+                        error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
                     logger.error(error_msg)
                     # 如果本轮已经向前端吐过文本（典型场景：genai 路径在
                     # _astream_with_tools 已吐文本后再抛 transient/tools-
@@ -1612,13 +1652,7 @@ class OmniOfflineClient:
                                 attempt + 1,
                                 max_retries,
                                 will_retry=False,
-                                message=json.dumps({
-                                    "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
-                                    "details": {
-                                        "error_type": type(e).__name__,
-                                        "error": str(e),
-                                    },
-                                }),
+                                message=json.dumps(discard_error_payload),
                             )
                             status_reported = True
                         except Exception as _notify_err:
@@ -1627,7 +1661,7 @@ class OmniOfflineClient:
                                 _notify_err,
                             )
                     if not status_reported and self.on_status_message:
-                        await self.on_status_message(json.dumps({"code": "TEXT_GEN_ERROR", "details": {"error_type": type(e).__name__, "error": str(e)}}))
+                        await self.on_status_message(json.dumps(status_error_payload))
                         status_reported = True
                     break
         finally:
@@ -1895,7 +1929,7 @@ class OmniOfflineClient:
 
                     break  # 流正常结束，跳出 retry 循环
 
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
@@ -1908,9 +1942,7 @@ class OmniOfflineClient:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                         assistant_message = ""
                         return False
-                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
-                            or 'authentication' in error_str_lower
-                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                    elif _is_api_key_rejected_error(e):
                         logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))

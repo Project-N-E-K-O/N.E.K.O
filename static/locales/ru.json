@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 Сервер памяти (порт {{port}}) аварийно завершился. Перезапустите memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 Служба памяти восстанавливается, подождите {{wait_time}} сек.",
         "CONNECTION_REFUSED": "💥 Подключение к серверу отклонено. Проверьте API Key и сетевое подключение.",
-        "API_KEY_REJECTED": "💥 API Key отклонён сервером. Убедитесь, что API Key соответствует выбранной модели.",
+        "API_KEY_REJECTED": "Предоставленный API Key недействителен. Проверьте текущие настройки API.",
         "API_RATE_LIMIT_SESSION": "💥 Слишком частые запросы API. Повторите попытку позже.",
         "LLM_CONNECTION_FAILED": "💥 Ошибка подключения к LLM API. Проверьте сеть и настройки API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Соединение аварийно закрыто: {{error}}",

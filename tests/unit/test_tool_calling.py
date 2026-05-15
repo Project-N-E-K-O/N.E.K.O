@@ -854,6 +854,57 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
 
 
 @pytest.mark.asyncio
+async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(monkeypatch):
+    """Raw provider auth errors should not leak the full exception into UI text."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    async def _astream_auth_error(self, messages, **overrides):
+        raise RuntimeError(
+            "AuthenticationError: Error code: 401 - {'error': {'message': "
+            "'Incorrect API key provided.', 'code': 'invalid_api_key'}}"
+        )
+        if False:  # pragma: no cover - keeps this as an async generator
+            yield None
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_auth_error)
+
+    status_messages: list[dict] = []
+
+    async def fake_status(msg):
+        status_messages.append(json.loads(msg))
+
+    async def fake_done():
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "qwen-plus"
+    client.on_text_delta = None
+    client.on_input_transcript = None
+    client.on_response_done = fake_done
+    client.on_response_discarded = None
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+
+    await client.stream_text("hi")
+
+    assert status_messages == [{"code": "API_KEY_REJECTED"}]
+
+
+@pytest.mark.asyncio
 async def test_stream_text_length_guard_finishes_visible_long_reply_without_discard(monkeypatch):
     """正常长回复已经流式吐到前端时，长度 guard 不应走 discard/recovery。
 

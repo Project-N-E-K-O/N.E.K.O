@@ -939,6 +939,28 @@
      * @param {string|object} message - Error message string or structured error object
      * @returns {string} Translated message
      */
+    function looksLikeApiKeyRejected(message) {
+        var parts = [];
+        if (typeof message === 'string') {
+            parts.push(message);
+        } else if (message && typeof message === 'object') {
+            parts.push(message.code || '', message.message || '');
+            if (message.details && typeof message.details === 'object') {
+                parts.push(
+                    message.details.error || '',
+                    message.details.msg || '',
+                    message.details.error_type || ''
+                );
+            }
+        }
+        var text = parts.join(' ').toLowerCase();
+        return text.indexOf('incorrect api key') !== -1 ||
+            text.indexOf('incorect api key') !== -1 ||
+            text.indexOf('invalid_api_key') !== -1 ||
+            text.indexOf('invalid api key') !== -1 ||
+            text.indexOf('authenticationerror') !== -1;
+    }
+
     function translateStatusMessage(message) {
         // Attempt to parse JSON strings into objects
         if (typeof message === 'string') {
@@ -950,6 +972,10 @@
             } catch (e) {
                 // Not valid JSON, keep as string
             }
+        }
+
+        if (looksLikeApiKeyRejected(message)) {
+            return i18next.t('errors.API_KEY_REJECTED');
         }
 
         // Support structured error objects: {"code": "XXX", "details": {...}}

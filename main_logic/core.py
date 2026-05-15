@@ -2454,6 +2454,8 @@ class LLMSessionManager:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
             elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
                     or 'authentication' in message_text_lower
+                    or 'incorrect api key' in message_text_lower
+                    or 'invalid_api_key' in message_text_lower
                     or ('invalid' in message_text_lower and 'key' in message_text_lower)):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
             elif 'policy violation' in message_text_lower:
@@ -3221,6 +3223,8 @@ class LLMSessionManager:
                     await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
             elif ('401' in error_str or 'unauthorized' in error_str.lower()
                     or 'authentication' in error_str.lower()
+                    or 'incorrect api key' in error_str.lower()
+                    or 'invalid_api_key' in error_str.lower()
                     or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
             elif '429' in error_str:
@@ -6484,6 +6488,8 @@ class LLMSessionManager:
                                 self._last_tts_error_code = 'API_1008_FALLBACK'
                             elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
                                     or 'authentication' in error_msg_lower
+                                    or 'incorrect api key' in error_msg_lower
+                                    or 'invalid_api_key' in error_msg_lower
                                     or ('invalid' in error_msg_lower and 'key' in error_msg_lower)):
                                 user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_KEY_REJECTED'
