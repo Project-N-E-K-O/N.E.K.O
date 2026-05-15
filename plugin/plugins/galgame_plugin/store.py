@@ -292,6 +292,7 @@ class GalgameStore:
         return {
             "scene_id": str(raw_value.get("scene_id") or "").strip(),
             "game_id": game_id,
+            "session_id": str(raw_value.get("session_id") or "").strip(),
             "route_id": str(raw_value.get("route_id") or "").strip(),
             "summary_seed": str(raw_value.get("summary_seed") or "").strip()[:4000],
             "stable_line_ids": stable_line_ids,
@@ -302,6 +303,7 @@ class GalgameStore:
         self,
         *,
         current_game_id: str = "",
+        current_session_id: str = "",
         max_age_seconds: float = 3600.0,
         require_game_id: bool = True,
     ) -> dict[str, Any]:
@@ -317,6 +319,10 @@ class GalgameStore:
             if not normalized_game_id or saved_game_id != normalized_game_id:
                 return {}
         elif require_game_id:
+            return {}
+        saved_session_id = str(snapshot.get("session_id") or "").strip()
+        normalized_session_id = str(current_session_id or "").strip()
+        if saved_session_id and saved_session_id != normalized_session_id:
             return {}
         try:
             max_age = float(max_age_seconds)
@@ -336,7 +342,14 @@ class GalgameStore:
             return
         self._write(STORE_CONTEXT_SNAPSHOT, payload)
 
-    def clear_context_snapshot(self) -> None:
+    def clear_context_snapshot(self, expected_snapshot: dict[str, Any] | None = None) -> None:
+        if expected_snapshot is not None:
+            expected = self._sanitize_context_snapshot(expected_snapshot)
+            current = self._sanitize_context_snapshot(
+                self._read(STORE_CONTEXT_SNAPSHOT, {})
+            )
+            if expected != current:
+                return
         self._write(STORE_CONTEXT_SNAPSHOT, {})
 
     @staticmethod
