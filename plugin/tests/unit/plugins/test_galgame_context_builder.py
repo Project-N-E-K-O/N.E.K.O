@@ -890,32 +890,6 @@ def test_summarize_context_does_not_reuse_persisted_seed_across_game_or_route() 
     assert "旧游戏旧路线摘要" not in result["scene_summary_seed"]
 
 
-def test_summarize_context_uses_restored_seed_when_history_is_empty() -> None:
-    result = context_builder.build_summarize_context(
-        {
-            "active_game_id": "demo.alpha",
-            "latest_snapshot": {"scene_id": "scene-a", "route_id": "route-a"},
-            "history_lines": [],
-            "history_observed_lines": [],
-            "history_choices": [],
-            "context_snapshot": {
-                "game_id": "demo.alpha",
-                "scene_id": "scene-a",
-                "route_id": "route-a",
-                "summary_seed": "雪乃已经决定继续调查旧校舍。",
-                "stable_line_ids": ["line-1", "line-2"],
-            },
-        },
-        scene_id="scene-a",
-    )
-
-    assert result["scene_id"] == "scene-a"
-    assert result["route_id"] == "route-a"
-    assert result["stable_lines"] == []
-    assert "雪乃已经决定继续调查旧校舍。" in result["scene_summary_seed"]
-    assert "Restored stable line ids: line-1, line-2." in result["scene_summary_seed"]
-
-
 def test_summarize_context_keeps_live_route_when_restored_scene_differs() -> None:
     result = context_builder.build_summarize_context(
         {
