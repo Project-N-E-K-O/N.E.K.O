@@ -29,6 +29,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/yui-guide-steps.js",
     _PROJECT_ROOT / "static/yui-guide-overlay.js",
     _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
+    _PROJECT_ROOT / "static/tutorial-interaction-takeover.js",
     _PROJECT_ROOT / "static/tutorial-skip-controller.js",
     _PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js",
     _PROJECT_ROOT / "static/avatar-performance-stage.js",
