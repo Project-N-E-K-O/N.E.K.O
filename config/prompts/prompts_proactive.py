@@ -3053,23 +3053,23 @@ BEGIN_GENERATE = {
 
 # ---------- 近期搭话记录注入 ----------
 RECENT_PROACTIVE_CHATS_HEADER = {
-    "zh": "======以下为近期搭话记录（你应该避免雷同；想不到新切入点就必须 [PASS]）======\n以下是你最近主动搭话时说过的话。新的搭话务必避免与这些内容雷同（包括话题、句式和语气）。如果只能想到相似内容，必须输出 [PASS]：",
-    "en": "======Below is Recent Proactive Chats (You MUST avoid repetition; output [PASS] if you have no new angle!) ======\nBelow are things you recently said when proactively chatting. Your new message MUST avoid being similar to any of these (topic, phrasing, and tone). If you can only think of something similar, output [PASS]:",
-    "ja": "======以下は最近の自発的発言記録（類似禁止。新しい切り口がなければ必ず [PASS]）======\n以下はあなたが最近自発的に話しかけた内容です。新しい発言はこれらと類似しないように（話題・言い回し・トーンすべて）。似た内容しか思いつかない場合は必ず [PASS] を出力してください：",
-    "ko": "======아래는 최근 주도적 대화 기록 (중복 금지, 새로운 각도가 없으면 반드시 [PASS]) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 새 메시지는 이들과 유사하지 않아야 합니다 (주제, 문체, 톤 모두). 비슷한 내용밖에 떠오르지 않으면 반드시 [PASS]를 출력하세요:",
-    "ru": "======Ниже Недавние проактивные сообщения (НЕ повторяйте; если нет нового ракурса, выводите [PASS]) ======\nНиже — то, что вы недавно говорили при проактивном общении. Новое сообщение НЕ должно быть похоже ни на одно из них (тема, формулировка и тон). Если получается только похожий вариант, выведите [PASS]:",
-    "es": "======Abajo están los chats proactivos recientes (DEBES evitar repetición; responde [PASS] si no hay un ángulo nuevo) ======\nAbajo están cosas que dijiste recientemente al iniciar chats proactivos. Tu nuevo mensaje DEBE evitar parecerse a cualquiera de ellos (tema, redacción y tono). Si solo se te ocurre algo similar, responde [PASS]:",
-    "pt": "======Abaixo estão chats proativos recentes (VOCÊ DEVE evitar repetição; responda [PASS] se não houver ângulo novo) ======\nAbaixo estão coisas que você disse recentemente ao iniciar chats proativos. Sua nova mensagem DEVE evitar semelhança com qualquer uma delas (tema, fraseado e tom). Se só conseguir pensar em algo parecido, responda [PASS]:",
+    "zh": "======以下为近期搭话记录（同角度同句式才算雷同；换角度换情绪换切入口可继续说）======\n以下是你最近主动搭话时说过的话。新搭话避免与这些同角度且同句式地复读；换个角度、情绪或切入口都不算重复，可以继续说。只有真想不出新角度、或这个话题已经重复过太多次，才输出 [PASS]：",
+    "en": "======Below is Recent Proactive Chats (only same-angle AND same-phrasing counts as a repeat; a new angle / emotion / entry point may continue) ======\nBelow are things you recently said when proactively chatting. Avoid repeating these with the same angle AND the same phrasing; a different angle, emotion, or entry point does NOT count as a repeat and may continue. Output [PASS] only when you genuinely have no fresh angle, or this topic has already been worked over too many times:",
+    "ja": "======以下は最近の自発的発言記録（同じ切り口かつ同じ言い回しだけが重複。切り口・感情・入り方を変えれば続けてよい）======\n以下はあなたが最近自発的に話しかけた内容です。これらと同じ切り口かつ同じ言い回しでの繰り返しは避ける。切り口・感情・入り方を変えれば重複ではなく、続けてよい。本当に新しい切り口が思いつかない、またはこの話題をもう何度も繰り返しすぎている場合だけ [PASS] を出力してください：",
+    "ko": "======아래는 최근 주도적 대화 기록 (같은 각도이면서 같은 문체일 때만 중복; 각도·감정·접점을 바꾸면 계속해도 됨) ======\n아래는 최근 주도적으로 대화를 건넨 내용입니다. 이들과 같은 각도이면서 같은 문체로 반복하지 마세요; 각도·감정·접점을 바꾸면 중복이 아니며 계속해도 됩니다. 정말 새 각도가 떠오르지 않거나 이 화제를 이미 너무 여러 번 다뤘을 때만 [PASS]를 출력하세요:",
+    "ru": "======Ниже Недавние проактивные сообщения (повтор — только тот же угол И та же формулировка; новый угол / эмоция / заход можно продолжать) ======\nНиже — то, что вы недавно говорили при проактивном общении. Не повторяйте их под тем же углом И с той же формулировкой; новый угол, эмоция или заход повтором НЕ считаются и могут продолжаться. Выводите [PASS] только когда действительно нет свежего угла или эту тему уже мусолили слишком много раз:",
+    "es": "======Abajo están los chats proactivos recientes (solo mismo ángulo Y misma redacción cuenta como repetición; un ángulo / emoción / entrada nuevo puede continuar) ======\nAbajo están cosas que dijiste recientemente al iniciar chats proactivos. Evita repetirlas con el mismo ángulo Y la misma redacción; un ángulo, emoción o entrada distinta NO cuenta como repetición y puede continuar. Responde [PASS] solo cuando de verdad no tengas un ángulo fresco, o este tema ya se haya tocado demasiadas veces:",
+    "pt": "======Abaixo estão chats proativos recentes (só mesmo ângulo E mesma redação conta como repetição; um ângulo / emoção / entrada novo pode continuar) ======\nAbaixo estão coisas que você disse recentemente ao iniciar chats proativos. Evite repeti-las com o mesmo ângulo E a mesma redação; um ângulo, emoção ou entrada diferente NÃO conta como repetição e pode continuar. Responda [PASS] apenas quando realmente não tiver um ângulo fresco, ou esse tema já tiver sido mexido vezes demais:",
 }
 
 RECENT_PROACTIVE_CHATS_FOOTER = {
-    "zh": "======以上为近期搭话记录（不可重复；雷同则 [PASS]！）======",
-    "en": "======Above is Recent Proactive Chats (Do NOT repeat; use [PASS] for similar content!) ======",
-    "ja": "======以上は最近の自発的発言記録（繰り返し禁止。類似するなら [PASS]！）======",
-    "ko": "======위는 최근 주도적 대화 기록 (반복 금지, 유사하면 [PASS]!) ======",
-    "ru": "======Выше Недавние проактивные сообщения (НЕ повторяйте; при сходстве выводите [PASS]!) ======",
-    "es": "======Arriba están los chats proactivos recientes (NO repitas; usa [PASS] para contenido similar) ======",
-    "pt": "======Acima estão os chats proativos recentes (NÃO repita; use [PASS] para conteúdo similar) ======",
+    "zh": "======以上为近期搭话记录（同角度同句式才算雷同；换角度换情绪换切入口可继续说）======",
+    "en": "======Above is Recent Proactive Chats (only same-angle AND same-phrasing counts as a repeat; a new angle / emotion / entry point may continue) ======",
+    "ja": "======以上は最近の自発的発言記録（同じ切り口かつ同じ言い回しだけが重複。切り口・感情・入り方を変えれば続けてよい）======",
+    "ko": "======위는 최근 주도적 대화 기록 (같은 각도이면서 같은 문체일 때만 중복; 각도·감정·접점을 바꾸면 계속해도 됨) ======",
+    "ru": "======Выше Недавние проактивные сообщения (повтор — только тот же угол И та же формулировка; новый угол / эмоция / заход можно продолжать) ======",
+    "es": "======Arriba están los chats proactivos recientes (solo mismo ángulo Y misma redacción cuenta como repetición; un ángulo / emoción / entrada nuevo puede continuar) ======",
+    "pt": "======Acima estão os chats proativos recentes (só mesmo ângulo E mesma redação conta como repetição; um ângulo / emoção / entrada novo pode continuar) ======",
 }
 
 # ---------- 近期搭话时间/来源标签 ----------
