@@ -1913,7 +1913,20 @@ class GalgamePlugin(NekoPluginBase):
             assign_json("ocr_reader_runtime", payload["ocr_reader_runtime"])
             assign_json_if_live_unchanged("ocr_capture_profiles", payload["ocr_capture_profiles"])
             assign_json_if_live_unchanged("ocr_window_target", payload["ocr_window_target"])
-            assign_json("context_snapshot", payload.get("context_snapshot", state.context_snapshot))
+            context_snapshot = payload.get("context_snapshot", state.context_snapshot)
+            if isinstance(context_snapshot, dict):
+                preserve_private_context = (
+                    context_snapshot
+                    and "summary_seed" not in context_snapshot
+                    and "stable_line_ids" not in context_snapshot
+                )
+                existing_context_snapshot = state.context_snapshot
+                has_private_context = isinstance(existing_context_snapshot, dict) and (
+                    str(existing_context_snapshot.get("summary_seed") or "").strip()
+                    or list(existing_context_snapshot.get("stable_line_ids") or [])
+                )
+                if not (preserve_private_context and has_private_context):
+                    assign_json("context_snapshot", context_snapshot)
             assign("plugin_error", str(payload["plugin_error"]))
             assign_json_if_live_unchanged(
                 "dependency_status",
@@ -2848,7 +2861,9 @@ class GalgamePlugin(NekoPluginBase):
         game_id = str(context.get("game_id") or "").strip()
         if not game_id:
             game_id = self._active_game_id_for_context_persist().strip()
-        if not game_id:
+        if not game_id and bool(
+            getattr(self._cfg, "context_persist_require_game_id", True)
+        ):
             return
         stable_line_ids = [
             str(item.get("line_id") or "").strip()

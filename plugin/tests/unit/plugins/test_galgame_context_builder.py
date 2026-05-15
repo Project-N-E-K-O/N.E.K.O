@@ -616,6 +616,30 @@ def test_importance_compaction_preserves_target_line() -> None:
     assert [item["line_id"] for item in recent] == ["target"]
 
 
+def test_recency_window_preserves_target_line_when_importance_disabled() -> None:
+    target_line = {
+        "speaker": "A",
+        "text": "target",
+        "line_id": "target",
+        "scene_id": "scene-a",
+    }
+    lines = [
+        target_line,
+        {"speaker": "B", "text": "newer", "line_id": "newer", "scene_id": "scene-a"},
+    ]
+
+    _, _, recent = context_builder._global_scene_context_window(
+        lines,
+        [],
+        "scene-a",
+        line_limit=1,
+        target_line=target_line,
+        line_importance_enabled=False,
+    )
+
+    assert [item["line_id"] for item in recent] == ["target"]
+
+
 def test_disabled_importance_keeps_recency_behavior() -> None:
     lines = [
         {
@@ -744,6 +768,34 @@ def test_previous_summary_accepts_context_snapshot_only_for_same_game_and_route(
             state,
             current_game_id="game-a",
             current_route_id="route-b",
+        )
+        == ""
+    )
+
+
+def test_previous_summary_accepts_context_snapshot_when_both_game_ids_missing() -> None:
+    state = {
+        "active_game_id": "",
+        "context_snapshot": {
+            "game_id": "",
+            "route_id": "route-a",
+            "summary_seed": "summary without game id",
+        },
+    }
+
+    assert (
+        context_builder._previous_summary_from_state(
+            state,
+            current_game_id="",
+            current_route_id="route-a",
+        )
+        == "summary without game id"
+    )
+    assert (
+        context_builder._previous_summary_from_state(
+            state,
+            current_game_id="game-a",
+            current_route_id="route-a",
         )
         == ""
     )

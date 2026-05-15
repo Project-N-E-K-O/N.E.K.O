@@ -553,6 +553,11 @@ def _global_scene_context_window(
         )
     else:
         recent_lines = ordered_lines[-line_limit:]
+        recent_lines = _ensure_target_line_present(
+            recent_lines,
+            target_line,
+            limit=line_limit,
+        )
 
     stable_lines = [
         {key: value for key, value in item.items() if key != "_context_source"}
@@ -849,10 +854,11 @@ def _context_snapshot_summary_seed(
 
     snapshot_game_id = str(context_snapshot.get("game_id") or "").strip()
     normalized_game_id = str(current_game_id or local_state.get("active_game_id") or "").strip()
-    if not snapshot_game_id or not normalized_game_id:
-        return ""
-    if snapshot_game_id != normalized_game_id:
-        return ""
+    if snapshot_game_id or normalized_game_id:
+        if not snapshot_game_id or not normalized_game_id:
+            return ""
+        if snapshot_game_id != normalized_game_id:
+            return ""
 
     snapshot_route_id = str(context_snapshot.get("route_id") or "").strip()
     normalized_route_id = str(current_route_id or "").strip()

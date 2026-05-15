@@ -116,6 +116,34 @@ def test_prompt_rendering_strips_line_importance_metadata() -> None:
     assert "_importance_score" not in rendered["recent_lines"][0]
 
 
+def test_prompt_compaction_uses_importance_before_stripping_metadata() -> None:
+    context = {
+        "recent_lines": [
+            {
+                "line_id": "important",
+                "text": "important " + ("x" * 900),
+                "_importance_score": 999,
+            },
+            *[
+                {
+                    "line_id": f"filler-{index}",
+                    "text": "filler " + ("x" * 900),
+                    "_importance_score": 1,
+                }
+                for index in range(19)
+            ],
+        ]
+    }
+
+    result = llm_prompts._context_json_result_for_prompt(context)
+    rendered = json.loads(result.text)
+    line_ids = [line["line_id"] for line in rendered["recent_lines"]]
+
+    assert result.metadata["compression_level"] > 0
+    assert "important" in line_ids
+    assert all("_importance_score" not in line for line in rendered["recent_lines"])
+
+
 def test_token_mode_hard_fallback_trims_excerpt_to_token_budget() -> None:
     context = {"items": [{"text": "日" * 5000, "extra": list(range(100))} for _ in range(50)]}
 

@@ -103,10 +103,22 @@ def _strip_prompt_metadata(value: Any) -> Any:
         return {
             str(key): _strip_prompt_metadata(item)
             for key, item in value.items()
-            if key != "_importance_score" and not str(key).startswith("_condensed_")
+            if not str(key).startswith("_condensed_")
         }
     if isinstance(value, list):
         return [_strip_prompt_metadata(item) for item in value]
+    return value
+
+
+def _strip_importance_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_importance_metadata(item)
+            for key, item in value.items()
+            if key != "_importance_score"
+        }
+    if isinstance(value, list):
+        return [_strip_importance_metadata(item) for item in value]
     return value
 
 
@@ -258,10 +270,11 @@ def _context_json_result_for_prompt(
     config: PromptBudgetConfig | None = None,
 ) -> PromptContextResult:
     context = _strip_prompt_metadata(context)
+    rendered_context = _strip_importance_metadata(context)
     mode, budget = _context_budget(config)
-    raw = _json_dump(context)
+    raw = _json_dump(rendered_context)
     raw_chars = len(raw)
-    raw_tokens = estimate_context_tokens(context)
+    raw_tokens = estimate_context_tokens(rendered_context)
     raw_size = raw_tokens if mode == "token" else raw_chars
     if raw_size <= budget:
         return PromptContextResult(
@@ -288,6 +301,7 @@ def _context_json_result_for_prompt(
         )
         if isinstance(compact, dict):
             compact = {"_prompt_truncated": True, **compact}
+        compact = _strip_importance_metadata(compact)
         rendered = _json_dump(compact)
         compacted_tokens = estimate_context_tokens(compact if isinstance(compact, dict) else {})
         rendered_size = compacted_tokens if mode == "token" else len(rendered)

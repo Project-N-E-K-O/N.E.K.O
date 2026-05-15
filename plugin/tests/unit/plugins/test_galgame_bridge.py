@@ -438,6 +438,104 @@ def test_load_context_snapshot_for_state_falls_back_to_active_game() -> None:
     assert calls == ["game-active"]
 
 
+def test_commit_state_preserves_private_context_snapshot_on_public_poll_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    private_snapshot = {
+        "scene_id": "scene-a",
+        "game_id": "game-a",
+        "route_id": "route-a",
+        "summary_seed": "saved seed",
+        "stable_line_ids": ["line-1", "line-2"],
+        "saved_at": 123.0,
+    }
+
+    with plugin._state_lock:
+        plugin._state.context_snapshot = dict(private_snapshot)
+
+    payload = plugin._snapshot_state(fresh=True)
+    assert "summary_seed" not in payload["context_snapshot"]
+    assert "stable_line_ids" not in payload["context_snapshot"]
+
+    plugin._commit_state(payload)
+
+    with plugin._state_lock:
+        assert plugin._state.context_snapshot["summary_seed"] == "saved seed"
+        assert plugin._state.context_snapshot["stable_line_ids"] == ["line-1", "line-2"]
+
+
+def test_load_context_snapshot_for_state_allows_missing_game_id_when_not_required() -> None:
+    calls: list[str] = []
+
+    class _Persist:
+        def load_context_snapshot(
+            self,
+            *,
+            current_game_id: str,
+            **_: object,
+        ) -> dict[str, object]:
+            calls.append(current_game_id)
+            return {
+                "game_id": "",
+                "summary_seed": "restored without game id",
+                "saved_at": time.time(),
+            }
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_max_age_seconds=3600.0,
+        context_persist_require_game_id=False,
+    )
+    plugin._state = SimpleNamespace(bound_game_id="", active_game_id="")
+    plugin._persist = _Persist()
+
+    assert (
+        plugin._load_context_snapshot_for_state()["summary_seed"]
+        == "restored without game id"
+    )
+    assert calls == [""]
+
+
+def test_persist_context_snapshot_allows_missing_game_id_when_not_required() -> None:
+    saved: list[dict[str, object]] = []
+
+    class _Persist:
+        def persist_context_snapshot(self, snapshot: dict[str, object]) -> None:
+            saved.append(dict(snapshot))
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_require_game_id=False,
+    )
+    plugin._state = SimpleNamespace(active_game_id="", context_snapshot={})
+    plugin._state_lock = threading.Lock()
+    plugin._state_dirty = False
+    plugin._cached_snapshot = {"stale": True}
+    plugin._persist = _Persist()
+
+    plugin._persist_context_snapshot_from_summary(
+        {
+            "game_id": "",
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stable_lines": [{"line_id": "line-1"}],
+        },
+        {"summary": "summary without game id"},
+    )
+
+    assert saved
+    assert saved[0]["game_id"] == ""
+    assert saved[0]["summary_seed"] == "summary without game id"
+    assert plugin._state.context_snapshot["summary_seed"] == "summary without game id"
+    assert plugin._state_dirty is True
+    assert plugin._cached_snapshot is None
+
+
 @pytest.mark.asyncio
 async def test_summarize_scene_treats_context_snapshot_persist_as_best_effort(
     monkeypatch: pytest.MonkeyPatch,
