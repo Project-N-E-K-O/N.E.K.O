@@ -313,11 +313,10 @@ class GalgameStore:
             return {}
         saved_game_id = str(snapshot.get("game_id") or "").strip()
         normalized_game_id = str(current_game_id or "").strip()
-        if require_game_id and not saved_game_id:
-            return {}
-        if require_game_id and not normalized_game_id:
-            return {}
-        if require_game_id and normalized_game_id and saved_game_id != normalized_game_id:
+        if saved_game_id:
+            if not normalized_game_id or saved_game_id != normalized_game_id:
+                return {}
+        elif require_game_id:
             return {}
         try:
             max_age = float(max_age_seconds)

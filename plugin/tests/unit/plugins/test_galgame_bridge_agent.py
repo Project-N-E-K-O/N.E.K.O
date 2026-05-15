@@ -3239,6 +3239,75 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_summary_counts_condensed_stable_lines(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        mode="companion",
+        snapshot=_session_state(
+            speaker="雪乃",
+            text="第 8 句台词。",
+            scene_id="scene-a",
+            line_id="line-8",
+            ts="2026-04-21T08:33:08Z",
+        ),
+    )
+    agent._runtime_loop = asyncio.get_running_loop()
+    agent._op_lock = asyncio.Lock()
+    agent._observed_session_id = str(shared["active_session_id"])
+    agent._observed_scene_id = "scene-a"
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id=str(shared["active_session_id"]),
+        scene_id="scene-a",
+        route_id="",
+        snapshot=dict(shared["latest_snapshot"]),
+        context={
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stable_lines": [
+                {
+                    "line_id": "line-1",
+                    "speaker": "雪乃",
+                    "text": "\n".join(f"第 {index} 句台词。" for index in range(1, 9)),
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "ts": "2026-04-21T08:33:08Z",
+                    "_condensed_count": 8,
+                }
+            ],
+            "observed_lines": [],
+            "recent_choices": [],
+        },
+        trigger="line_count",
+        metadata={
+            "context_type": "galgame_scene_context",
+            "trigger": "line_count",
+            "scheduled_from_event_seq": 0,
+            "last_line_seq": 0,
+        },
+        update_scene_memory=False,
+        scheduled_line_count=8,
+    )
+    await _drain_agent_summary_tasks(agent)
+
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
+    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "line_count"
+    assert ctx.pushed_messages[-1]["metadata"]["stable_line_count"] == 8
+    assert ctx.pushed_messages[-1]["metadata"]["summary_delivery_key"] == "scene-a:0:8"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     tmp_path: Path,
 ) -> None:

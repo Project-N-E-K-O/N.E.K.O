@@ -158,6 +158,7 @@ def _significant_char_count(text: object) -> int:
 def _context_window_bounds(
     config: GalgameLLMConfig | None,
     *,
+    min_floor: int = 1,
     max_floor: int = 1,
 ) -> tuple[int, int, int]:
     try:
@@ -177,8 +178,9 @@ def _context_window_bounds(
         )
     except (TypeError, ValueError):
         target_tokens = _DYNAMIC_WINDOW_DEFAULT_TARGET_TOKENS
-    min_limit = max(1, min_limit)
-    max_limit = max(1, max(max_limit, max_floor))
+    min_floor = max(1, min_floor)
+    min_limit = max(1, min_limit, min_floor)
+    max_limit = max(1, max(max_limit, max_floor, min_floor))
     if min_limit > max_limit:
         min_limit, max_limit = max_limit, min_limit
     return min_limit, max_limit, max(1, target_tokens)
@@ -209,6 +211,22 @@ def _compute_dynamic_line_limit(
         return max_limit
     limit = int(max(1, target_tokens) / average_tokens)
     return max(min_limit, min(max_limit, limit))
+
+
+def _resolve_dynamic_line_limit(
+    local_state: dict[str, Any],
+    config: GalgameLLMConfig | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    history_lines = list(local_state.get("history_lines", []) or [])
+    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
+    min_limit, max_limit, target_tokens = _context_window_bounds(config, max_floor=1)
+    line_limit = _compute_dynamic_line_limit(
+        _recency_ordered_context_lines(history_lines, history_observed_lines),
+        min_limit=min_limit,
+        max_limit=max_limit,
+        target_tokens=target_tokens,
+    )
+    return history_lines, history_observed_lines, line_limit
 
 
 def _recency_ordered_context_lines(
@@ -261,7 +279,7 @@ def _condense_run_key(line: dict[str, Any]) -> tuple[str, str, str, str, str]:
         str(line.get("speaker") or "").strip(),
         str(line.get("scene_id") or ""),
         str(line.get("route_id") or ""),
-        str(line.get("source") or ""),
+        str(line.get("_context_source") or line.get("source") or ""),
         str(line.get("stability") or ""),
     )
 
@@ -318,7 +336,7 @@ def _scene_lines(
     history_lines: list[dict[str, Any]],
     scene_id: str,
     *,
-    limit: int,
+    limit: int | None,
     extra_scene_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if scene_id:
@@ -332,6 +350,8 @@ def _scene_lines(
         ]
     else:
         items = [dict(item) for item in history_lines]
+    if limit is None:
+        return items
     return items[-limit:]
 
 
@@ -481,7 +501,11 @@ def _append_unique_line(
     return merged[-limit:]
 
 
-def _dialogue_context_lines(lines: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+def _dialogue_context_lines(
+    lines: list[dict[str, Any]],
+    *,
+    limit: int | None,
+) -> list[dict[str, Any]]:
     deduped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for item in lines:
@@ -494,7 +518,120 @@ def _dialogue_context_lines(lines: list[dict[str, Any]], *, limit: int) -> list[
         if key not in deduped:
             order.append(key)
         deduped[key] = normalized
-    return [deduped[key] for key in order][-limit:]
+    result = [deduped[key] for key in order]
+    if limit is None:
+        return result
+    return result[-limit:]
+
+
+def _strip_context_source(
+    lines: list[dict[str, Any]],
+    *,
+    preserve_condensed_count: bool = False,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            key: value
+            for key, value in item.items()
+            if key != "_context_source"
+            and key != "_condensed_line_ids"
+            and (preserve_condensed_count or key != "_condensed_count")
+        }
+        for item in lines
+    ]
+
+
+def _condense_context_lines(
+    lines: list[dict[str, Any]],
+    *,
+    preserve_condensed_count: bool = False,
+) -> list[dict[str, Any]]:
+    return _strip_context_source(
+        _condense_dialogue_batch(lines),
+        preserve_condensed_count=preserve_condensed_count,
+    )
+
+
+def _split_context_line_budget(
+    stable_count: int,
+    observed_count: int,
+    line_limit: int,
+) -> tuple[int, int]:
+    if line_limit <= 0:
+        return 0, 0
+    if stable_count <= 0:
+        return 0, line_limit
+    if observed_count <= 0:
+        return line_limit, 0
+    observed_budget = min(observed_count, max(1, line_limit // 3))
+    stable_budget = min(stable_count, max(1, line_limit - observed_budget))
+    remaining = max(0, line_limit - stable_budget - observed_budget)
+    if remaining:
+        observed_budget += min(remaining, max(0, observed_count - observed_budget))
+    remaining = max(0, line_limit - stable_budget - observed_budget)
+    if remaining:
+        stable_budget += min(remaining, max(0, stable_count - stable_budget))
+    return stable_budget, observed_budget
+
+
+def _scene_context_windows(
+    history_lines: list[dict[str, Any]],
+    history_observed_lines: list[dict[str, Any]],
+    scene_id: str,
+    *,
+    line_limit: int,
+    extra_scene_ids: list[str] | None = None,
+    target_line: dict[str, Any] | None = None,
+    dialogue_only: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    stable_candidates = _scene_lines(
+        history_lines,
+        scene_id,
+        limit=None,
+        extra_scene_ids=extra_scene_ids,
+    )
+    observed_candidates = _scene_lines(
+        history_observed_lines,
+        scene_id,
+        limit=None,
+        extra_scene_ids=extra_scene_ids,
+    )
+    if dialogue_only:
+        stable_candidates = _dialogue_context_lines(stable_candidates, limit=None)
+        observed_candidates = _dialogue_context_lines(observed_candidates, limit=None)
+    stable_budget, observed_budget = _split_context_line_budget(
+        len(stable_candidates),
+        len(observed_candidates),
+        line_limit,
+    )
+    stable_candidates = stable_candidates[-stable_budget:] if stable_budget else []
+    observed_candidates = observed_candidates[-observed_budget:] if observed_budget else []
+    tagged_stable = [
+        {**dict(item), "_context_source": "stable"}
+        for item in stable_candidates
+        if isinstance(item, dict)
+    ]
+    tagged_observed = [
+        {**dict(item), "_context_source": "observed"}
+        for item in observed_candidates
+        if isinstance(item, dict)
+    ]
+    recent_lines = _recency_ordered_context_lines(tagged_stable, tagged_observed)
+    if target_line is not None:
+        recent_lines = _append_unique_line(recent_lines, target_line, limit=line_limit)
+    else:
+        recent_lines = recent_lines[-line_limit:]
+    stable_lines = [
+        item for item in recent_lines if item.get("_context_source") == "stable"
+    ]
+    observed_lines = [
+        item for item in recent_lines if item.get("_context_source") == "observed"
+    ]
+    return (
+        _condense_context_lines(stable_lines, preserve_condensed_count=True),
+        _condense_context_lines(observed_lines, preserve_condensed_count=True),
+        _condense_context_lines(recent_lines),
+    )
 
 
 def _global_scene_context_window(
@@ -536,6 +673,21 @@ def _global_scene_context_window(
             observed_candidates,
             limit=max(line_limit, len(observed_candidates)) if line_importance_enabled else line_limit,
         )
+        if (
+            not line_importance_enabled
+            and target_line is None
+            and not any(
+                str(item.get("ts") or "").strip()
+                for item in [*stable_candidates, *observed_candidates]
+            )
+        ):
+            stable_budget, observed_budget = _split_context_line_budget(
+                len(stable_candidates),
+                len(observed_candidates),
+                line_limit,
+            )
+            stable_candidates = stable_candidates[-stable_budget:] if stable_budget else []
+            observed_candidates = observed_candidates[-observed_budget:] if observed_budget else []
 
     ordered_lines = _recency_ordered_context_lines(stable_candidates, observed_candidates)
     if target_line is not None:
@@ -573,6 +725,15 @@ def _global_scene_context_window(
         {key: value for key, value in item.items() if key != "_context_source"}
         for item in recent_lines
     ]
+    should_condense_dialogue = dialogue_only and not any(
+        str(item.get("ts") or "").strip() for item in recent_lines
+    )
+    if should_condense_dialogue:
+        return (
+            _condense_context_lines(stable_lines, preserve_condensed_count=True),
+            _condense_context_lines(observed_lines, preserve_condensed_count=True),
+            _condense_context_lines(scene_lines),
+        )
     return stable_lines, observed_lines, scene_lines
 
 
@@ -959,6 +1120,35 @@ def _snapshot_for_stable_summary_seed(
     return seed_snapshot
 
 
+def _restored_context_snapshot_summary_seed(
+    local_state: dict[str, Any],
+    *,
+    scene_id: str,
+    route_id: str,
+) -> str:
+    restored = local_state.get("context_snapshot")
+    if not isinstance(restored, dict):
+        return ""
+    summary_seed = str(restored.get("summary_seed") or "").strip()
+    if not summary_seed:
+        return ""
+
+    active_game_id = str(local_state.get("active_game_id") or "").strip()
+    restored_game_id = str(restored.get("game_id") or "").strip()
+    if restored_game_id and active_game_id and restored_game_id != active_game_id:
+        return ""
+
+    restored_scene_id = str(restored.get("scene_id") or "").strip()
+    if restored_scene_id and scene_id and restored_scene_id != scene_id:
+        return ""
+
+    restored_route_id = str(restored.get("route_id") or "").strip()
+    if restored_route_id and route_id and restored_route_id != route_id:
+        return ""
+
+    return summary_seed
+
+
 def build_explain_context(
     local_state: dict[str, Any],
     *,
@@ -1092,18 +1282,30 @@ def build_summarize_context(
     """Build the prompt context used by the summarize-scene LLM operation."""
     snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
     effective_line = resolve_effective_current_line(local_state)
-    effective_scene_id = scene_id or str(
-        snapshot.get("scene_id") or (effective_line or {}).get("scene_id") or ""
+    restored = local_state.get("context_snapshot")
+    restored = restored if isinstance(restored, dict) else {}
+    restored_scene_id = str(restored.get("scene_id") or "")
+    restored_route_id = str(restored.get("route_id") or "")
+    live_route_id = str(
+        snapshot.get("route_id")
+        or (effective_line or {}).get("route_id")
+        or ""
     )
-    route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
-    history_lines = list(local_state.get("history_lines", []) or [])
-    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config)
-    line_limit = _compute_dynamic_line_limit(
-        _recency_ordered_context_lines(history_lines, history_observed_lines),
-        min_limit=min_limit,
-        max_limit=max_limit,
-        target_tokens=target_tokens,
+    effective_scene_id = scene_id or str(
+        snapshot.get("scene_id")
+        or (effective_line or {}).get("scene_id")
+        or restored_scene_id
+        or ""
+    )
+    restored_scene_matches = not restored_scene_id or restored_scene_id == effective_scene_id
+    route_id = str(
+        live_route_id
+        or (restored_route_id if restored_scene_matches else "")
+        or ""
+    )
+    history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
+        local_state,
+        config,
     )
     stable_lines, observed_lines, scene_lines = _global_scene_context_window(
         history_lines,
@@ -1127,29 +1329,37 @@ def build_summarize_context(
         line_id=str(snapshot.get("line_id") or ""),
         choice_ids=[str(choice.get("choice_id") or "") for choice in selected_choices],
     )
-    summary_seed = _cumulative_scene_summary(
+    restored_summary_seed = _restored_context_snapshot_summary_seed(
+        local_state,
         scene_id=effective_scene_id,
         route_id=route_id,
-        lines=stable_lines,
-        selected_choices=selected_choices,
-        snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
-        previous_summary=_previous_summary_from_state(
-            local_state,
-            current_game_id=str(local_state.get("active_game_id") or ""),
-            current_route_id=route_id,
-        ),
-        mode=_summary_mode(config),
-        llm_refined_summary=_llm_refined_summary_from_state(local_state),
-        llm_trigger_lines=int(
-            getattr(config, "context_cumulative_llm_trigger_lines", 30) or 30
-        ),
-        trigger_line_count=_scene_history_dialogue_line_count(
-            history_lines,
-            history_observed_lines,
+    )
+    if restored_summary_seed and not stable_lines:
+        summary_seed = restored_summary_seed
+    else:
+        summary_seed = _cumulative_scene_summary(
             scene_id=effective_scene_id,
             route_id=route_id,
-        ),
-    )
+            lines=stable_lines,
+            selected_choices=selected_choices,
+            snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
+            previous_summary=restored_summary_seed or _previous_summary_from_state(
+                local_state,
+                current_game_id=str(local_state.get("active_game_id") or ""),
+                current_route_id=route_id,
+            ),
+            mode=_summary_mode(config),
+            llm_refined_summary=_llm_refined_summary_from_state(local_state),
+            llm_trigger_lines=int(
+                getattr(config, "context_cumulative_llm_trigger_lines", 30) or 30
+            ),
+            trigger_line_count=_scene_history_dialogue_line_count(
+                history_lines,
+                history_observed_lines,
+                scene_id=effective_scene_id,
+                route_id=route_id,
+            ),
+        )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),
         "session_id": str(local_state.get("active_session_id") or ""),
@@ -1161,6 +1371,7 @@ def build_summarize_context(
         "observed_lines": observed_lines,
         "recent_choices": selected_choices,
         "scene_summary_seed": summary_seed,
+        "context_snapshot_summary_seed": restored_summary_seed,
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
