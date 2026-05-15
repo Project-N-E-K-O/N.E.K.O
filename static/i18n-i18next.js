@@ -958,7 +958,16 @@
             text.indexOf('incorect api key') !== -1 ||
             text.indexOf('invalid_api_key') !== -1 ||
             text.indexOf('invalid api key') !== -1 ||
-            text.indexOf('authenticationerror') !== -1;
+            (
+                text.indexOf('authenticationerror') !== -1 &&
+                (
+                    text.indexOf('api key') !== -1 ||
+                    text.indexOf('invalid_api_key') !== -1 ||
+                    text.indexOf('invalid api key') !== -1 ||
+                    text.indexOf('incorrect api key') !== -1 ||
+                    text.indexOf('incorect api key') !== -1
+                )
+            );
     }
 
     function translateStatusMessage(message) {

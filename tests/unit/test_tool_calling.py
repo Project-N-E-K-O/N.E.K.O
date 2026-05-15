@@ -904,6 +904,51 @@ async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(m
     assert status_messages == [{"code": "API_KEY_REJECTED"}]
 
 
+def test_api_key_error_helper_does_not_treat_plain_403_as_invalid_key():
+    from main_logic.omni_offline_client import _is_api_key_rejected_error
+
+    class ForbiddenError(Exception):
+        status_code = 403
+
+    assert _is_api_key_rejected_error(ForbiddenError("model access denied in this region")) is False
+    assert _is_api_key_rejected_error(ForbiddenError("Error 403: Incorrect API key provided")) is True
+    assert _is_api_key_rejected_error(RuntimeError("AuthenticationError: OAuth token expired")) is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_ephemeral_reports_key_error_from_catch_all(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    async def _astream_auth_error(self, messages, **overrides):
+        raise RuntimeError("AuthenticationError: Incorrect API key provided")
+        if False:  # pragma: no cover - keeps this as an async generator
+            yield None
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_auth_error)
+
+    status_messages: list[dict] = []
+
+    async def fake_status(msg):
+        status_messages.append(json.loads(msg))
+
+    async def fake_done(*_args):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._is_responding = False
+    client.on_text_delta = None
+    client.on_response_done = fake_done
+    client.on_status_message = fake_status
+
+    assert await client.prompt_ephemeral("hello") is False
+    assert status_messages == [{"code": "API_KEY_REJECTED"}]
+
+
 @pytest.mark.asyncio
 async def test_stream_text_length_guard_finishes_visible_long_reply_without_discard(monkeypatch):
     """正常长回复已经流式吐到前端时，长度 guard 不应走 discard/recovery。

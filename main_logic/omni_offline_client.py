@@ -53,21 +53,28 @@ _API_KEY_REJECTED_KEYWORDS = (
     "invalid api key",
     "invalid key",
     "api key is invalid",
-    "authenticationerror",
-    "authentication",
-    "unauthorized",
 )
 
 
 def _is_api_key_rejected_error(error: BaseException | str) -> bool:
     """Return True when an upstream error clearly means the API key was rejected."""
     status_code = getattr(error, "status_code", None)
-    if status_code in (401, 403):
-        return True
     text = f"{type(error).__name__}: {error}".lower()
-    if "401" in text or "403" in text:
+    has_api_key_indicator = any(keyword in text for keyword in _API_KEY_REJECTED_KEYWORDS)
+    if status_code == 401:
         return True
-    return any(keyword in text for keyword in _API_KEY_REJECTED_KEYWORDS)
+    if status_code == 403:
+        return has_api_key_indicator
+    if "401" in text:
+        return True
+    if "403" in text:
+        return has_api_key_indicator
+    if has_api_key_indicator:
+        return True
+    return (
+        ("authenticationerror" in text or "authentication" in text or "unauthorized" in text)
+        and "api key" in text
+    )
 
 
 def _truncate_to_last_sentence_end(text: str) -> str:
@@ -1981,6 +1988,12 @@ class OmniOfflineClient:
                     assistant_message = ""
                     return False
         except Exception as e:
+            if _is_api_key_rejected_error(e):
+                logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
+                if self.on_status_message:
+                    await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
+                assistant_message = ""
+                return False
             # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
             # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
             # 语义对偶 —— 都不向前端发 status_message。
