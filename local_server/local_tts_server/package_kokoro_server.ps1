@@ -153,6 +153,7 @@ New-Item -ItemType Directory -Force -Path $packageServerDir | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $scriptDir "server.py") -Destination $packageServerDir -Force
 Copy-Item -LiteralPath (Join-Path $scriptDir "kokoro_cli.py") -Destination $packageServerDir -Force
+Copy-Item -LiteralPath (Join-Path $scriptDir "local_tts_profiles.py") -Destination $packageServerDir -Force
 Copy-Item -LiteralPath (Join-Path $scriptDir "start_kokoro_server.ps1") -Destination $packageServerDir -Force
 Copy-Item -LiteralPath (Join-Path $scriptDir "start_kokoro_server.bat") -Destination $packageServerDir -Force
 

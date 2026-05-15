@@ -16,12 +16,16 @@ from pathlib import Path
 
 import numpy as np
 
+from local_tts_profiles import (
+    DEFAULT_KOKORO_REPO_ID,
+    DEFAULT_KOKORO_VOICE,
+    available_kokoro_voices,
+    find_kokoro_model_file,
+    resolve_kokoro_model_dir,
+    resolve_kokoro_voice_file,
+)
 
-DEFAULT_REPO_ID = "hexgrad/Kokoro-82M-v1.1-zh"
-DEFAULT_VOICE = "zf_001"
 SAMPLE_RATE = 24000
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_LOCAL_REPO = SCRIPT_DIR / "kokoro_models" / "Kokoro-82M-v1.1-zh"
 
 
 def _audio_from_result(result):
@@ -57,40 +61,6 @@ def _speed_callable(base_speed: float):
     return speed_by_len
 
 
-def _resolve_local_model_dir() -> Path | None:
-    raw = os.getenv("LOCAL_TTS_KOKORO_MODEL_DIR", "").strip()
-    if raw:
-        path = Path(raw)
-        return path if path.is_dir() else None
-    return DEFAULT_LOCAL_REPO if DEFAULT_LOCAL_REPO.is_dir() else None
-
-
-def _find_model_file(model_dir: Path) -> Path | None:
-    preferred = model_dir / "kokoro-v1_1-zh.pth"
-    if preferred.is_file():
-        return preferred
-    candidates = sorted(model_dir.glob("*.pth"))
-    return candidates[0] if candidates else None
-
-
-def _resolve_voice(voice: str, model_dir: Path | None) -> str:
-    if not model_dir:
-        return voice
-    if voice.endswith(".pt"):
-        return voice
-    local_voice = model_dir / "voices" / f"{voice}.pt"
-    return str(local_voice) if local_voice.is_file() else voice
-
-
-def _available_local_voices(model_dir: Path | None) -> set[str]:
-    if not model_dir:
-        return set()
-    voices_dir = model_dir / "voices"
-    if not voices_dir.is_dir():
-        return set()
-    return {path.stem for path in voices_dir.glob("*.pt") if path.is_file()}
-
-
 def synthesize(text_path: str, out_path: str, voice: str, speed: float) -> int:
     try:
         import torch
@@ -107,12 +77,12 @@ def synthesize(text_path: str, out_path: str, voice: str, speed: float) -> int:
         print("Empty text file", file=sys.stderr)
         return 1
 
-    model_dir = _resolve_local_model_dir()
-    repo_id = os.getenv("LOCAL_TTS_KOKORO_REPO_ID", DEFAULT_REPO_ID).strip() or DEFAULT_REPO_ID
-    voice = (voice or "").strip() or os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", DEFAULT_VOICE)
-    available_voices = _available_local_voices(model_dir)
+    model_dir = resolve_kokoro_model_dir()
+    repo_id = os.getenv("LOCAL_TTS_KOKORO_REPO_ID", DEFAULT_KOKORO_REPO_ID).strip() or DEFAULT_KOKORO_REPO_ID
+    voice = (voice or "").strip() or os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", DEFAULT_KOKORO_VOICE)
+    available_voices = set(available_kokoro_voices(model_dir))
     if available_voices and voice not in available_voices:
-        fallback_voice = os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", DEFAULT_VOICE).strip() or DEFAULT_VOICE
+        fallback_voice = os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", DEFAULT_KOKORO_VOICE).strip() or DEFAULT_KOKORO_VOICE
         if fallback_voice not in available_voices:
             fallback_voice = sorted(available_voices)[0]
         print(
@@ -120,7 +90,7 @@ def synthesize(text_path: str, out_path: str, voice: str, speed: float) -> int:
             file=sys.stderr,
         )
         voice = fallback_voice
-    pipeline_voice = _resolve_voice(voice, model_dir)
+    pipeline_voice = resolve_kokoro_voice_file(voice, model_dir)
     lang = _infer_lang_code(voice)
     device = os.getenv("LOCAL_TTS_KOKORO_DEVICE", "").strip()
     if not device:
@@ -128,7 +98,7 @@ def synthesize(text_path: str, out_path: str, voice: str, speed: float) -> int:
 
     if model_dir:
         config_path = model_dir / "config.json"
-        model_path = _find_model_file(model_dir)
+        model_path = find_kokoro_model_file(model_dir)
         if not config_path.is_file() or model_path is None:
             print(
                 f"Invalid LOCAL_TTS_KOKORO_MODEL_DIR: {model_dir} "

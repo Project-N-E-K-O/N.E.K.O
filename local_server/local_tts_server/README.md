@@ -68,9 +68,17 @@ These are exposed through command adapters for now. The command must write a
 
 The Kokoro launcher defaults to the Chinese-enhanced
 `hexgrad/Kokoro-82M-v1.1-zh` model and voice `zf_001`.
-If `local_server/local_tts_server/kokoro_models/Kokoro-82M-v1.1-zh` exists,
-the launcher uses that local model directory before falling back to Hugging
-Face cache/download.
+It expects a local model directory under
+`local_server/local_tts_server/kokoro_models/Kokoro-82M-v1.1-zh` or an explicit
+`LOCAL_TTS_KOKORO_MODEL_DIR`. Hugging Face auto-download is disabled by the
+launcher so model provenance stays user-managed.
+
+Kokoro voices are static `.pt` files under the selected model directory. This
+server exposes `/v1/voices` for discovery and the shared
+`/v1/audio/speech/stream` WebSocket for synthesis, but it does not implement
+CosyVoice-style speaker cloning or registration. Calls to
+`/v1/speakers/register` return a clear unsupported response instead of creating
+local voice metadata.
 
 ### Windows examples
 

@@ -38,6 +38,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from local_tts_profiles import (
+    DEFAULT_KOKORO_REPO_ID,
+    DEFAULT_KOKORO_VOICE,
+    VoiceSpec,
+    available_kokoro_voices,
+    find_kokoro_model_file,
+    parse_local_tts_voice,
+    resolve_kokoro_model_dir,
+    resolve_kokoro_voice_file,
+)
+
 
 TARGET_SAMPLE_RATE = 22050
 CHUNK_BYTES = 4096
@@ -92,42 +103,6 @@ class SynthesisResult:
     pcm: bytes
     sample_rate: int
     device: str = "unknown"
-
-
-@dataclass(frozen=True)
-class VoiceSpec:
-    """Parsed voice selector.
-
-    Accepted examples:
-    - "kokoro:zf_xiaobei"
-    - "melotts:zh"
-    - "chattts:default"
-    - "涓枃濂? -> falls back to LOCAL_TTS_DEFAULT_MODEL
-    """
-
-    model: str
-    voice: str
-
-
-def list_kokoro_voices() -> list[str]:
-    model_dir = os.getenv("LOCAL_TTS_KOKORO_MODEL_DIR", "").strip()
-    if model_dir:
-        voices_dir = Path(model_dir) / "voices"
-    else:
-        voices_dir = Path(__file__).resolve().parent / "kokoro_models" / "Kokoro-82M-v1.1-zh" / "voices"
-    if not voices_dir.is_dir():
-        return []
-    return sorted(path.stem for path in voices_dir.glob("*.pt") if path.is_file())
-
-
-def parse_voice(raw_voice: str) -> VoiceSpec:
-    default_model = os.getenv("LOCAL_TTS_DEFAULT_MODEL", "kokoro").strip().lower() or "kokoro"
-    value = (raw_voice or "").strip()
-    if ":" not in value:
-        return VoiceSpec(default_model, value or "default")
-    model, voice = value.split(":", 1)
-    model = model.strip().lower() or default_model
-    return VoiceSpec(model, voice.strip() or "default")
 
 
 def resample_pcm_s16le(pcm: bytes, src_rate: int, dst_rate: int = TARGET_SAMPLE_RATE) -> bytes:
@@ -274,10 +249,10 @@ class KokoroEngine:
         self._loaded = False
         self._torch = None
         self._np = np
-        self._repo_id = os.getenv("LOCAL_TTS_KOKORO_REPO_ID", "hexgrad/Kokoro-82M-v1.1-zh").strip()
+        self._repo_id = os.getenv("LOCAL_TTS_KOKORO_REPO_ID", DEFAULT_KOKORO_REPO_ID).strip()
         if not self._repo_id:
-            self._repo_id = "hexgrad/Kokoro-82M-v1.1-zh"
-        self._model_dir = self._resolve_local_model_dir()
+            self._repo_id = DEFAULT_KOKORO_REPO_ID
+        self._model_dir = resolve_kokoro_model_dir()
         self._disable_hf_download = os.getenv("LOCAL_TTS_KOKORO_DISABLE_HF_DOWNLOAD", "").strip().lower() in {
             "1",
             "true",
@@ -289,36 +264,14 @@ class KokoroEngine:
         self._pipelines: dict[str, object] = {}
         self._en_pipeline = None
 
-    def _resolve_local_model_dir(self) -> Path | None:
-        raw = os.getenv("LOCAL_TTS_KOKORO_MODEL_DIR", "").strip()
-        if raw:
-            path = Path(raw)
-            return path if path.is_dir() else None
-        default_dir = Path(__file__).resolve().parent / "kokoro_models" / "Kokoro-82M-v1.1-zh"
-        return default_dir if default_dir.is_dir() else None
-
     def _find_model_file(self) -> Path | None:
-        if not self._model_dir:
-            return None
-        preferred = self._model_dir / "kokoro-v1_1-zh.pth"
-        if preferred.is_file():
-            return preferred
-        candidates = sorted(self._model_dir.glob("*.pth"))
-        return candidates[0] if candidates else None
+        return find_kokoro_model_file(self._model_dir)
 
     def _available_local_voices(self) -> set[str]:
-        if not self._model_dir:
-            return set()
-        voices_dir = self._model_dir / "voices"
-        if not voices_dir.is_dir():
-            return set()
-        return {path.stem for path in voices_dir.glob("*.pt") if path.is_file()}
+        return set(available_kokoro_voices(self._model_dir))
 
     def _resolve_voice(self, voice: str) -> str:
-        if not self._model_dir or voice.endswith(".pt"):
-            return voice
-        local_voice = self._model_dir / "voices" / f"{voice}.pt"
-        return str(local_voice) if local_voice.is_file() else voice
+        return resolve_kokoro_voice_file(voice, self._model_dir)
 
     @staticmethod
     def _infer_lang_code(voice: str) -> str:
@@ -438,10 +391,10 @@ class KokoroEngine:
         return pipeline
 
     def _normalize_voice(self, voice: str) -> str:
-        voice = (voice or "").strip() or os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", "zf_001")
+        voice = (voice or "").strip() or os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", DEFAULT_KOKORO_VOICE)
         available_voices = self._available_local_voices()
         if available_voices and voice not in available_voices:
-            fallback_voice = os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", "zf_001").strip() or "zf_001"
+            fallback_voice = os.getenv("LOCAL_TTS_KOKORO_DEFAULT_VOICE", DEFAULT_KOKORO_VOICE).strip() or DEFAULT_KOKORO_VOICE
             if fallback_voice not in available_voices:
                 fallback_voice = sorted(available_voices)[0]
             logger.warning("Kokoro voice '%s' not found; falling back to '%s'.", voice, fallback_voice)
@@ -599,8 +552,8 @@ async def warmup_default_kokoro_if_explicitly_requested() -> None:
         logger.info("Kokoro warmup skipped: kokoro engine has no preload hook.")
         return
 
-    voice = os.getenv("LOCAL_TTS_DEFAULT_VOICE", "kokoro:zf_001").strip() or "kokoro:zf_001"
-    spec = parse_voice(voice)
+    voice = os.getenv("LOCAL_TTS_DEFAULT_VOICE", f"kokoro:{DEFAULT_KOKORO_VOICE}").strip() or f"kokoro:{DEFAULT_KOKORO_VOICE}"
+    spec = parse_local_tts_voice(voice)
     if spec.model != "kokoro":
         logger.info("Startup Kokoro warmup skipped: configured voice belongs to %s.", spec.model)
         return
@@ -705,6 +658,7 @@ async def warmup_engine_for_voice(spec: VoiceSpec) -> None:
 
 @app.get("/health")
 async def health():
+    kokoro_voices = await asyncio.to_thread(available_kokoro_voices)
     return {
         "service": "neko-local-tts",
         "status": "ok",
@@ -715,7 +669,7 @@ async def health():
         "warmup": WARMUP_STATUS,
         "engines": sorted(ENGINES.keys()),
         "voices": {
-            "kokoro": list_kokoro_voices(),
+            "kokoro": kokoro_voices,
         },
     }
 
@@ -735,16 +689,34 @@ async def list_models():
 
 @app.get("/v1/voices")
 async def list_voices():
+    kokoro_voices = await asyncio.to_thread(available_kokoro_voices)
     return JSONResponse(
         content={
             "object": "list",
             "data": {
                 "kokoro": [
                     {"id": voice, "voice_id": f"kokoro:{voice}", "name": voice}
-                    for voice in list_kokoro_voices()
+                    for voice in kokoro_voices
                 ],
             },
         }
+    )
+
+
+@app.post("/v1/speakers/register")
+async def register_speaker_not_supported():
+    return JSONResponse(
+        status_code=501,
+        content={
+            "success": False,
+            "code": "LOCAL_TTS_SPEAKER_REGISTER_UNSUPPORTED",
+            "error": "LOCAL_TTS_SPEAKER_REGISTER_UNSUPPORTED",
+            "message": (
+                "Kokoro local TTS uses static local voice files and does not support "
+                "speaker registration. Select an existing kokoro:<voice> from /v1/voices, "
+                "or use the CosyVoice local server for clone/register speaker flows."
+            ),
+        },
     )
 
 
@@ -773,7 +745,7 @@ async def websocket_endpoint(websocket: WebSocket):
             speed = 1.0
 
         logger.info("WS connected: voice=%s speed=%s", voice or "<default>", speed)
-        spec = parse_voice(voice)
+        spec = parse_local_tts_voice(voice)
         await warmup_engine_for_voice(spec)
 
         while True:
