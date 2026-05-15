@@ -5548,7 +5548,7 @@ class LLMSessionManager:
             )
             return
 
-        # Voice mode：直接 conversation.item.create(role=system) + response.create，
+        # Voice mode：直接 conversation.item.create(role=user) + response.create，
         # 让 LLM 立即用本角色嗓音主动回应 proactive callback，不等用户开口。
         #
         # Gate：realtime API 同一时刻只允许一个 active response。如果 user 正在

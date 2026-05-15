@@ -1644,7 +1644,7 @@ class OmniRealtimeClient:
         *,
         on_rejected: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Inject a system-role text item and explicitly trigger a response.
+        """Inject a user-role text item and explicitly trigger a response.
 
         Used by the voice-mode proactive path (agent task callbacks /
         plugin push_message ai_behavior="respond") to surface a rendered
@@ -1667,7 +1667,11 @@ class OmniRealtimeClient:
 
         Provider dispatch:
           - **OpenAI / GLM / Step / free / GPT**: ``conversation.item.create``
-            (role=system, input_text) + ``response.create``.
+            (role=user, input_text) + ``response.create``. Uses user role
+            rather than system to avoid permanent drift of session
+            instruction context — the rendered body already self-identifies
+            as a system notification via its ``======[系统通知]======``
+            header wrapper.
           - **Qwen**: does not accept ``conversation.item.create`` — raises
             ``NotImplementedError`` so the caller can fall back to the
             hot-swap path.
@@ -1693,11 +1697,23 @@ class OmniRealtimeClient:
         if self.ws is None:
             raise RuntimeError("realtime websocket is not connected")
 
+        # Role choice: ``user`` (not ``system``).
+        # OpenAI Realtime persists conversation items as part of session
+        # history. ``role="system"`` items are treated as high-priority
+        # instructions that influence every subsequent turn — accumulating
+        # several proactive callbacks under system role causes prompt
+        # drift (model starts repeating meta-behavior or interpreting
+        # stale callback text as standing orders for unrelated turns).
+        # ``role="user"`` keeps the inject in dialog-weight context, and
+        # ``_build_callback_instruction`` already wraps the body in a
+        # ``======[系统通知] ...======`` header that makes the model
+        # treat it as a one-shot system notification rather than user
+        # speech. Matches the existing ``create_response`` precedent.
         item_event = {
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
-                "role": "system",
+                "role": "user",
                 "content": [
                     {
                         "type": "input_text",
