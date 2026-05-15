@@ -5666,9 +5666,21 @@ class LLMSessionManager:
                 for cb in voice_snapshot
                 if cb.get("_callback_delivery_id")
             }
+            # Object-identity fallback for pending_agent_callbacks: defense
+            # in depth against any future code path that appends a cb
+            # without going through ``enqueue_agent_callback`` (which is
+            # the only stamper of ``_callback_delivery_id``). All current
+            # production callers route through it, but matching by Python
+            # ``id()`` lets us still prune unstamped snapshot entries here
+            # rather than have them re-deliver on every retry. extras dicts
+            # are constructed fresh in ``enqueue_agent_callback`` so there
+            # is no object link from voice_snapshot → extras; extras must
+            # rely on the delivery_id contract.
+            voice_obj_ids = {id(cb) for cb in voice_snapshot}
             self.pending_agent_callbacks = [
                 cb for cb in self.pending_agent_callbacks
                 if cb.get("_callback_delivery_id") not in delivered_ids
+                and id(cb) not in voice_obj_ids
             ]
             self.pending_extra_replies = [
                 extra for extra in self.pending_extra_replies

@@ -337,6 +337,40 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     assert mgr.pending_agent_callbacks == original
 
 
+async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
+    """Defense in depth：production 路径都过 ``enqueue_agent_callback`` 标
+    ``_callback_delivery_id``，但 voice 成功 inject 的 pac 清理还有一条
+    object ``id()`` 兜底，确保任何未来直接 append 没标 id 的 cb 也不会被
+    后续 retry 重复投递。锁死 Codex r3249183511。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+            self.injected: list[str] = []
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
+            self.injected.append(text)
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    # 故意构造没有 _callback_delivery_id 的 cb（模拟绕过 enqueue_agent_callback 的入口）
+    unstamped_cb = {"status": "completed", "summary": "unstamped"}
+    mgr.pending_agent_callbacks = [unstamped_cb]
+    # 这里 extras 用空，因为没走 enqueue → 没配对 entries 是合理状态
+    mgr.pending_extra_replies = []
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert len(sess.injected) == 1
+    # 关键：unstamped cb 也被通过 id() 兜底剔除，下次 retry 不会重投
+    assert mgr.pending_agent_callbacks == []
+
+
 async def test_send_event_preserves_caller_stamped_event_id():
     """``send_event`` 必须保留 caller 显式标的 ``event_id``，不能拿时间戳覆盖。
     这是 ``inject_text_and_request_response`` 的 ``on_rejected`` 路径能工作的
