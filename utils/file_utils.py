@@ -231,32 +231,27 @@ def _normalize_quotes(s: str) -> str:
     return ''.join(out)
 
 
-# 故障指纹：字面量 ``\n`` 紧贴一个 `---` 分隔符行（前后都是字面量换行）。
-# LLM 把 summary 整段 over-escape 后会在 ``body\n\n---\n\nolder``（全字面量）
-# 里留下这个签名。比"无真换行 ∧ 含 \\n"更严格——避开 Windows 路径
-# ``C:\new_folder``、regex meta-char ``\n``、tool args 里有意的字面量 escape
-# 等极其常见的合法场景（那些场景里 ``\n`` 周围不会有 ``---`` 行）。
-_OVERESCAPED_DIVIDER_RE = re.compile(r'(?:\\r\\n|\\r|\\n)[ \t]*-{3,}[ \t]*(?:\\r\\n|\\r|\\n)')
+# 故障指纹：1+ 个字面量换行类 escape + 一个 `---` 分隔符行 + 1+ 个字面量
+# 换行类 escape。匹配到此处时，把这一段 over-escape 的 divider 区域替换成
+# 规范 `\n\n---\n\n`——只动 divider 本身，**不碰**字符串里其它地方的字面量
+# escape。这样即使同字段里同时存在合法的 ``C:\new_folder`` / regex / 代码
+# 片段，它们的 ``\n`` / ``\t`` 字面量也不会被误改。
+_OVERESCAPED_DIVIDER_RE = re.compile(
+    r'(?:\\r\\n|\\r|\\n)+[ \t]*-{3,}[ \t]*(?:\\r\\n|\\r|\\n)+'
+)
 
 
 def _normalize_overescaped_newlines(obj: Any) -> Any:
     """LLM 把 ``\\n`` 在 JSON 源里再转义一遍时，解析后字符串里就是字面量
-    backslash-n（2 字符）而非真换行。这里只在能找到**过度转义的 ``---`` 分隔符
-    指纹**时把这一类 escape 还原成真换行 / 制表——其它含字面量 ``\\n`` 的字符串
-    （Windows 路径、regex、code 片段、tool args）一律不动。
+    backslash-n（2 字符）而非真换行。这里只把**过度转义的 ``---`` 分隔符区域**
+    替换成规范的 ``\\n\\n---\\n\\n``——同字符串里其它位置的字面量 escape
+    （Windows 路径、regex、code 片段、tool args 等）一字不动。
 
-    只处理换行 / 回车 / 制表（``\\n`` / ``\\r\\n`` / ``\\r`` / ``\\t``）——
-    `\\u` 编码、自定义 escape 等不在范围。
+    取舍：如果 body / older 段内部还有字面量段落分隔，本函数不管它们——
+    保留字面量比静默改写合法数据更安全；UI 侧最多就是看到几个 ``\\n`` 字面量。
     """
     if isinstance(obj, str):
-        if _OVERESCAPED_DIVIDER_RE.search(obj):
-            return (
-                obj.replace('\\r\\n', '\n')
-                .replace('\\n', '\n')
-                .replace('\\r', '\n')
-                .replace('\\t', '\t')
-            )
-        return obj
+        return _OVERESCAPED_DIVIDER_RE.sub('\n\n---\n\n', obj)
     if isinstance(obj, dict):
         return {k: _normalize_overescaped_newlines(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -276,14 +271,15 @@ def robust_json_loads(raw: str) -> Any:
     （如 ``"True"`` / ``"x,]"``）静默改坏。
 
     Parse 成功后还会跑一次 ``_normalize_overescaped_newlines`` 后处理：当某条
-    string value **完全没有真换行 ∧ 含字面量 ``\\n``** 时，说明 LLM 把整段
-    over-escape 了，归一化成真换行 / 制表。这条只针对换行类 escape，code/regex
-    里有意的字面量 ``\\n`` 因为伴随真换行而被保留。
+    string value 里出现"过度转义的 ``---`` 分隔符指纹"——即 1+ 字面量换行类
+    escape (``\\n`` / ``\\r\\n`` / ``\\r``) 紧贴 ``---`` 行——就把这一段
+    替换成规范的 ``\\n\\n---\\n\\n``。同字符串里其它位置的字面量 escape
+    （Windows 路径、regex、code 片段等）一字不动。
 
     Handles: unquoted keys, trailing commas, ``{{ }}``, Python ``True/False/None``,
     single-quoted strings (including mixed-quote scenarios), stray hallucinated
     chars between structural tokens (e.g. ``,결{`` → ``,{``), and over-escaped
-    newline / tab in string values.
+    ``---`` memo dividers in string values.
     """
     parsed, ok = _try_json_loads(raw)
     if ok:

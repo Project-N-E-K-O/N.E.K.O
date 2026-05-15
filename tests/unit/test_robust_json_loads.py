@@ -245,58 +245,74 @@ def test_unicode_numeric_prefixes_not_stripped(raw):
         robust_json_loads(raw)
 
 
-# ── over-escaped newlines normalization (divider-fingerprint trigger) ──
-# 触发条件：字符串里出现 ``\n[空白]?---[空白]?\n``（字面量，过度转义的 ``---``
-# 分隔符指纹）。这是 summary 整段 over-escape 时唯一可靠的故障签名——其它含
-# 字面量 ``\n`` 的合法场景（Windows 路径、regex meta-char、tool args 代码）
-# 在 ``\n`` 周围不会出现 ``---``，所以不会被触发。
+# ── over-escaped `---` divider normalization (region-scoped) ───────────
+# 触发：字符串里出现 1+ 字面量换行类 escape (``\n`` / ``\r\n`` / ``\r``)
+# 紧贴 ``---`` 行。匹配到时只把这一段 divider 区域换成规范 ``\n\n---\n\n``——
+# **同字符串里其它位置的字面量 escape 一律不动**，避免误伤 Windows 路径 /
+# regex / code 片段等合法场景。
 
 
 @pytest.mark.unit
-def test_overescaped_divider_normalizes_whole_summary():
-    """LLM 把整段 over-escape 时（JSON 源 ``\\\\n``，解码后字面量 ``\\n``）
-    且 divider 也被波及：归一化整段，恢复真换行。"""
+def test_overescaped_divider_replaced_with_canonical_form():
+    """LLM 把 divider 整体 over-escape：``body\\n\\n---\\n\\nolder`` 全字面量
+    → divider 区域归一化成真 ``\\n\\n---\\n\\n``。"""
     raw = '{"summary": "body\\\\n\\\\n---\\\\n\\\\nolder"}'
     parsed = robust_json_loads(raw)
     assert parsed["summary"] == "body\n\n---\n\nolder"
 
 
 @pytest.mark.unit
-def test_overescaped_divider_normalizes_tab_in_same_string():
-    """指纹命中后，同字符串里的字面量 ``\\t`` 一并归一化——LLM 整段 over-escape
-    通常波及所有控制字符。"""
-    raw = '{"summary": "col1\\\\tcol2\\\\n\\\\n---\\\\n\\\\nolder"}'
-    parsed = robust_json_loads(raw)
-    assert parsed["summary"] == "col1\tcol2\n\n---\n\nolder"
-
-
-@pytest.mark.unit
-def test_overescaped_divider_with_crlf_fingerprint():
-    """`\\r\\n` 形态的 over-escape 也走通。"""
-    # JSON 源 ``"body\\r\\n\\r\\n---\\r\\n\\r\\nolder"`` 解析后字面量
+def test_overescaped_divider_crlf_form():
+    """CRLF over-escape：``\\r\\n\\r\\n---\\r\\n\\r\\n`` 也走通。"""
     raw = '{"summary": "body\\\\r\\\\n\\\\r\\\\n---\\\\r\\\\n\\\\r\\\\nolder"}'
     parsed = robust_json_loads(raw)
+    # divider 区域归一为规范形态
     assert "\n\n---\n\n" in parsed["summary"]
+    # 整段没有残留任何字面量 escape，因为本 case 字符串里只有 divider 区域含 escape
     assert "\\r" not in parsed["summary"]
     assert "\\n" not in parsed["summary"]
 
 
 @pytest.mark.unit
+def test_divider_normalized_but_unrelated_literals_preserved():
+    """关键 P2 反向 case（codex / coderabbit）：同字段里既有 over-escape divider
+    又有合法字面量 escape（Windows 路径里的 ``\\new``）——只动 divider 区域，
+    路径完整保留。"""
+    raw = (
+        '{"summary": "see C:\\\\new_folder for context'
+        '\\\\n\\\\n---\\\\n\\\\nolder content"}'
+    )
+    parsed = robust_json_loads(raw)
+    # divider 部分被规范化
+    assert "\n\n---\n\n" in parsed["summary"]
+    # Windows 路径里的 `\new_folder` 字面量原样保留，**不能**变成 `[NL]ew_folder`
+    assert r"C:\new_folder" in parsed["summary"]
+
+
+@pytest.mark.unit
+def test_divider_normalized_but_tab_literal_preserved():
+    """同字段里既有 divider 又有合法 ``\\t`` 字面量——``\\t`` 保留。"""
+    raw = '{"summary": "header\\\\tdata\\\\n\\\\n---\\\\n\\\\nolder"}'
+    parsed = robust_json_loads(raw)
+    # divider 区域归一化
+    assert "\n\n---\n\n" in parsed["summary"]
+    # `\t` 字面量不被波及
+    assert r"header\tdata" in parsed["summary"]
+
+
+@pytest.mark.unit
 def test_windows_path_with_literal_backslash_n_preserved():
-    """关键反向 case（codex / coderabbit P1）：Windows 路径 ``C:\\new_folder``
-    JSON 源 ``"C:\\\\new_folder"`` 解析后是字面量 ``C:\\new_folder``，
-    含 ``\\n`` 字面量但不是 over-escape，绝不能改成换行。"""
+    """字符串无 divider 指纹：Windows 路径 ``C:\\new_folder`` 完整透传。"""
     raw = r'{"path": "C:\\new_folder\\notes.txt"}'
     parsed = robust_json_loads(raw)
     assert parsed["path"] == r"C:\new_folder\notes.txt"
-    # 字面量 backslash 完整保留
     assert "\n" not in parsed["path"]
 
 
 @pytest.mark.unit
 def test_regex_with_literal_backslash_n_preserved():
-    """另一个反向 case：regex 模式 ``\\n+`` 在 JSON 源里是 ``"\\\\n+"``，
-    解析后字面量 ``\\n+``。LLM 工具调用经常这样传 regex——绝不能动。"""
+    """regex 模式 ``\\n+`` 在 JSON 源里 ``"\\\\n+"`` → 解析后字面量 ``\\n+``。
+    无 divider 指纹，不动。"""
     raw = r'{"pattern": "\\n+"}'
     parsed = robust_json_loads(raw)
     assert parsed["pattern"] == r"\n+"
@@ -304,8 +320,7 @@ def test_regex_with_literal_backslash_n_preserved():
 
 @pytest.mark.unit
 def test_isolated_literal_backslash_n_outside_divider_preserved():
-    """字面量 ``\\n`` 不在 ``---`` 附近时一律不动——指纹保守原则。"""
-    # 含 `\n` 字面量但无 `---`：常见于代码片段、日志行、转义说明等
+    """无 divider 指纹时 ``\\n`` 字面量一律保留——常见于代码片段、日志、文档。"""
     raw = '{"code": "print(\\"hello\\\\nworld\\")"}'
     parsed = robust_json_loads(raw)
     assert parsed["code"] == 'print("hello\\nworld")'
@@ -314,7 +329,7 @@ def test_isolated_literal_backslash_n_outside_divider_preserved():
 
 @pytest.mark.unit
 def test_isolated_literal_backslash_t_preserved():
-    """单独 ``\\t``（不带 divider 指纹）不动——LLM 可能有意保留。"""
+    """单独 ``\\t``（无 divider 指纹）不动。"""
     raw = '{"code": "say\\\\thi"}'
     parsed = robust_json_loads(raw)
     assert parsed["code"] == "say\\thi"
@@ -322,15 +337,13 @@ def test_isolated_literal_backslash_t_preserved():
 
 @pytest.mark.unit
 def test_nested_structures_walked_only_when_fingerprint_matches():
-    """递归访问 dict / list；每个 string 单独看自己的指纹，互不影响。"""
+    """递归 dict / list；每个 string 单独看自己的指纹，互不影响。"""
     raw = (
         '{"summary": "body\\\\n\\\\n---\\\\n\\\\nolder", '
         '"path": "C:\\\\new"}'
     )
     parsed = robust_json_loads(raw)
-    # summary 命中指纹，归一化
     assert parsed["summary"] == "body\n\n---\n\nolder"
-    # path 没命中，保持字面量
     assert parsed["path"] == r"C:\new"
 
 
