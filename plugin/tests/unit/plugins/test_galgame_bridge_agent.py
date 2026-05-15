@@ -1233,7 +1233,7 @@ def test_game_llm_agent_reply_context_bounds_all_history_by_recency_window(
 
 
 @pytest.mark.plugin_unit
-def test_game_llm_agent_reply_context_uses_effective_line_scene_when_snapshot_drops_scene(
+def test_game_llm_agent_reply_context_uses_effective_line_scene_when_snapshot_stale(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1252,7 +1252,12 @@ def test_game_llm_agent_reply_context_uses_effective_line_scene_when_snapshot_dr
         lambda *args, **kwargs: 6,
     )
     shared = _shared_state(
-        snapshot=_session_state(scene_id="", route_id="", line_id="", text=""),
+        snapshot=_session_state(
+            scene_id="scene-stale",
+            route_id="route-stale",
+            line_id="old-stable",
+            text="old scene",
+        ),
         history_lines=[
             {
                 "speaker": "A",

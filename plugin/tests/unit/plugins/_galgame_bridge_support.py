@@ -88,15 +88,6 @@ GameLLMAgent = game_llm_agent_module.GameLLMAgent
 _PLUGIN_FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "galgame_plugin"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_galgame_runtime_root(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
-    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
-
-
 class _Logger:
     def info(self, *args, **kwargs):
         return None
@@ -524,6 +515,15 @@ class _BlockingSummaryGateway(_FakeLLMGateway):
 
 
 def _run_in_new_loop(awaitable):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "_run_in_new_loop cannot run inside an existing event loop; "
+            "await the coroutine directly or use the caller's loop."
+        )
     with asyncio.Runner() as runner:
         return runner.run(awaitable)
 

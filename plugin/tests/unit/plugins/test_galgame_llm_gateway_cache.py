@@ -94,6 +94,32 @@ class _ChoiceBackend:
         return None
 
 
+class _SummarizeBackend:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        assert operation == "summarize_scene"
+        self.calls += 1
+        snapshot = context.get("current_snapshot") or {}
+        return {
+            "summary": f"summary-{self.calls}: {snapshot.get('text') or ''}",
+            "key_points": [
+                {
+                    "type": "plot",
+                    "text": str(snapshot.get("text") or "no current text"),
+                    "line_id": str(snapshot.get("line_id") or ""),
+                    "speaker": str(snapshot.get("speaker") or ""),
+                    "scene_id": str(context.get("scene_id") or ""),
+                    "route_id": str(context.get("route_id") or ""),
+                }
+            ],
+        }
+
+    async def shutdown(self) -> None:
+        return None
+
+
 def _make_config(**overrides: Any) -> SimpleNamespace:
     base = {
         "llm_max_in_flight": 4,
@@ -136,6 +162,29 @@ def _explain_context(
         ],
         "screen_context": screen_context or {},
         "diagnostic": "",
+    }
+
+
+def _summarize_context(*, current_text: str = "current") -> dict[str, Any]:
+    return {
+        "scene_id": "scene-a",
+        "route_id": "route-a",
+        "current_snapshot": {
+            "line_id": "line-100",
+            "speaker": "闆箖",
+            "text": current_text,
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "ts": "volatile",
+        },
+        "stable_lines": [
+            {"line_id": "line-1", "speaker": "闆箖", "text": "stable"},
+        ],
+        "observed_lines": [
+            {"line_id": "line-99", "speaker": "闆箖", "text": "observed"},
+        ],
+        "recent_lines": [],
+        "recent_choices": [],
     }
 
 
@@ -261,6 +310,18 @@ def test_hash_helpers_normalise_inputs() -> None:
     )
 
 
+@pytest.mark.plugin_unit
+def test_near_match_meta_uses_current_snapshot_when_current_line_absent() -> None:
+    cached = _summarize_context(current_text="new snapshot line")
+    meta = LLMGateway._build_near_match_meta(cached)
+
+    assert LLMGateway._validate_near_match(meta, cached) is True
+    assert LLMGateway._validate_near_match(
+        meta,
+        _summarize_context(current_text="different snapshot line"),
+    ) is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_near_match_cache_returns_cached_payload_for_similar_context() -> None:
@@ -321,6 +382,34 @@ async def test_near_match_cache_rejects_different_scene_or_stable_lines() -> Non
     await gateway.shutdown()
 
     assert backend.calls == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_summarize_near_match_cache_rejects_changed_current_snapshot_line() -> None:
+    backend = _SummarizeBackend()
+    config = _make_config(
+        llm_near_match_cache_enabled=True,
+        llm_scene_summary_cache_ttl_seconds=0.0,
+    )
+    gateway = LLMGateway(
+        plugin=SimpleNamespace(plugins=None),
+        logger=_Logger(),
+        config=config,
+        backend=backend,
+    )
+
+    first = await gateway.summarize_scene(
+        _summarize_context(current_text="first on-screen line")
+    )
+    second = await gateway.summarize_scene(
+        _summarize_context(current_text="latest on-screen line")
+    )
+    await gateway.shutdown()
+
+    assert first["summary"] == "summary-1: first on-screen line"
+    assert second["summary"] == "summary-2: latest on-screen line"
+    assert backend.calls == 2
 
 
 @pytest.mark.asyncio

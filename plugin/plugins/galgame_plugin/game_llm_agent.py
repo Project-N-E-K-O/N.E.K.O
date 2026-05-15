@@ -5533,8 +5533,8 @@ class GameLLMAgent:
         history_lines = list(shared.get("history_lines") or [])
         history_observed_lines = list(shared.get("history_observed_lines") or [])
         effective_line = resolve_effective_current_line(shared) or {}
-        scene_id = str(snapshot.get("scene_id") or effective_line.get("scene_id") or "")
-        route_id = str(snapshot.get("route_id") or effective_line.get("route_id") or "")
+        scene_id = str(effective_line.get("scene_id") or snapshot.get("scene_id") or "")
+        route_id = str(effective_line.get("route_id") or snapshot.get("route_id") or "")
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
             min_floor=16,

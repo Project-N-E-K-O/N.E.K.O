@@ -159,6 +159,7 @@ def test_galgame_store_context_snapshot_round_trips_and_checks_game_id(tmp_path:
     snapshot = {
         "scene_id": "scene-a",
         "game_id": "game-a",
+        "session_id": "sess-a",
         "route_id": "route-a",
         "summary_seed": "summary",
         "stable_line_ids": ["line-1", "line-2"],
@@ -167,13 +168,68 @@ def test_galgame_store_context_snapshot_round_trips_and_checks_game_id(tmp_path:
 
     store.persist_context_snapshot(snapshot)
 
-    loaded = store.load_context_snapshot(current_game_id="game-a")
+    loaded = store.load_context_snapshot(
+        current_game_id="game-a",
+        current_session_id="sess-a",
+    )
     mismatch = store.load_context_snapshot(current_game_id="game-b")
 
     assert loaded["scene_id"] == "scene-a"
+    assert loaded["session_id"] == "sess-a"
     assert loaded["summary_seed"] == "summary"
     assert loaded["stable_line_ids"] == ["line-1", "line-2"]
     assert mismatch == {}
+
+
+def test_galgame_store_context_snapshot_rejects_mismatched_session_id(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(
+        {
+            "game_id": "game-a",
+            "session_id": "sess-a",
+            "summary_seed": "summary",
+            "saved_at": time.time(),
+        }
+    )
+
+    assert store.load_context_snapshot(
+        current_game_id="game-a",
+        current_session_id="sess-a",
+    )["summary_seed"] == "summary"
+    assert store.load_context_snapshot(
+        current_game_id="game-a",
+        current_session_id="sess-b",
+    ) == {}
+    assert store.load_context_snapshot(current_game_id="game-a") == {}
+
+
+def test_galgame_store_clear_context_snapshot_checks_expected_snapshot(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    old_snapshot = {
+        "game_id": "game-a",
+        "session_id": "old-session",
+        "summary_seed": "old",
+        "saved_at": time.time(),
+    }
+    current_snapshot = {
+        "game_id": "game-a",
+        "session_id": "new-session",
+        "summary_seed": "new",
+        "saved_at": time.time(),
+    }
+    store.persist_context_snapshot(current_snapshot)
+
+    store.clear_context_snapshot(old_snapshot)
+    assert store.load_context_snapshot(
+        current_game_id="game-a",
+        current_session_id="new-session",
+    )["summary_seed"] == "new"
+
+    store.clear_context_snapshot(current_snapshot)
+    assert store.load_context_snapshot(
+        current_game_id="game-a",
+        current_session_id="new-session",
+    ) == {}
 
 
 def test_galgame_store_context_snapshot_strict_load_rejects_empty_game_id_and_expires(
