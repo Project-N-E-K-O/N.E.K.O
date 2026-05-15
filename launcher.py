@@ -62,18 +62,29 @@ else:
 
 
 def _configure_ssl_cert_bundle() -> None:
-    """让 OpenSSL 找到 certifi 的 CA bundle，避免打包后外网 HTTPS / WSS 全报
-    `certificate verify failed`。
+    """仅在冻结发行版里把 certifi 的 CA bundle 显式喂给 OpenSSL。
 
     Nuitka / PyInstaller 会复制 `libssl`，但其编译期硬编码的 OPENSSLDIR 指向
     构建机路径，用户机上不存在；如果同时没设 SSL_CERT_FILE 环境变量，
     `ssl.create_default_context()` 拿不到任何根证书，所有外部 TLS 一律失败。
     build-desktop.yml 已经把 `certifi/cacert.pem` 当 package data 打进去，
-    这里只是把它显式指给 OpenSSL。源码模式下 certifi.where() 指向 venv 里
-    同一份文件，等价于显式声明默认行为，无副作用。
+    这里只是把它显式指给 OpenSSL。
+
+    源码模式下**不动** SSL_CERT_FILE：系统 Python 的 OpenSSL 默认信任链是
+    OS / venv 在用的那一份，可能挂着企业私有 CA（公司 TLS 中间人代理、
+    内部 PKI 等），certifi 静态 bundle 里没有这些根，硬覆盖会让原本能通
+    的内网 HTTPS 突然报 `certificate verify failed`。打包发行版没这层风险
+    （libssl 的 OPENSSLDIR 本身就指不到任何东西），所以只在 IS_FROZEN
+    分支里兜底。
+
+    用户已显式设过 SSL_CERT_FILE 且文件存在时，无论是否冻结都尊重原值。
     """
     existing = os.environ.get("SSL_CERT_FILE")
     if existing and os.path.isfile(existing):
+        return
+
+    # 源码模式：保持系统默认信任链，不强行换 certifi（避免破坏企业 CA 场景）。
+    if not IS_FROZEN:
         return
 
     ca_path: str | None = None
