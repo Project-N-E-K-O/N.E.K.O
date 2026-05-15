@@ -2881,7 +2881,12 @@ class GalgamePlugin(NekoPluginBase):
     ) -> None:
         if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
             return
-        if bool(payload.get("degraded")):
+        if not isinstance(payload, dict):
+            return
+        fallback_used = bool(payload.get("fallback_used"))
+        if "fallback_used" not in payload:
+            fallback_used = bool(payload.get("degraded"))
+        if fallback_used:
             return
         game_id = str(context.get("game_id") or "").strip()
         session_id = str(context.get("session_id") or "").strip()
@@ -6349,7 +6354,11 @@ class GalgamePlugin(NekoPluginBase):
         local = self._snapshot_state(include_private_context=True)
         context = build_summarize_context(local, scene_id=scene_id.strip(), config=self._cfg)
         snapshot = context.get("current_snapshot") if isinstance(context.get("current_snapshot"), dict) else {}
-        if not list(context.get("recent_lines") or []) and not str(snapshot.get("text") or ""):
+        if (
+            not list(context.get("recent_lines") or [])
+            and not str(snapshot.get("text") or "")
+            and not str(context.get("context_snapshot_summary_seed") or "")
+        ):
             return Ok(
                 build_summarize_degraded_result(
                     context,

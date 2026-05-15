@@ -900,6 +900,21 @@ class GameLLMAgent:
             f"{int(stable_line_count or 0)}"
         )
 
+    @staticmethod
+    def _context_line_count(lines: object) -> int:
+        if not isinstance(lines, list):
+            return 0
+        total = 0
+        for item in lines:
+            if isinstance(item, dict):
+                try:
+                    total += max(1, int(item.get("_condensed_count") or 1))
+                except (TypeError, ValueError):
+                    total += 1
+            else:
+                total += 1
+        return total
+
     def _summary_task_status_debug(self) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
         for task in list(self._summary_tasks):
@@ -5552,6 +5567,7 @@ class GameLLMAgent:
             target_tokens=target_tokens,
         )
         history_choices = list(shared.get("history_choices") or [])
+        scene_id = str(snapshot.get("scene_id") or "")
         if line_limit > 0:
             merged_recent = recency_ordered[-line_limit:]
             stable_lines = [

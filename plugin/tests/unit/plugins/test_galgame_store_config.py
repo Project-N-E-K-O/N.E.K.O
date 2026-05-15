@@ -225,9 +225,31 @@ def test_galgame_store_context_snapshot_can_disable_game_id_requirement(
     )
 
     assert store.load_context_snapshot(
-        current_game_id="",
+        current_game_id="game-a",
         require_game_id=False,
     )["game_id"] == "game-a"
+
+
+def test_load_context_snapshot_rejects_mismatched_game_id_even_when_optional(
+    tmp_path: Path,
+) -> None:
+    store = _make_store(tmp_path)
+    store.persist_context_snapshot(
+        {
+            "game_id": "game-a",
+            "summary_seed": "summary",
+            "saved_at": time.time(),
+        }
+    )
+
+    assert store.load_context_snapshot(
+        current_game_id="game-b",
+        require_game_id=False,
+    ) == {}
+    assert store.load_context_snapshot(
+        current_game_id="",
+        require_game_id=False,
+    ) == {}
 
 
 def test_galgame_snapshot_state_redacts_context_snapshot_by_default() -> None:
