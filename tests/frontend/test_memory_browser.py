@@ -365,8 +365,11 @@ def test_memory_browser_splits_non_canonical_divider_spacing(
     older_ta = mock_page.locator(".memo-textarea--older")
     expect(older_ta).to_have_count(1, timeout=5000)
     body_ta = mock_page.locator(".memo-textarea:not(.memo-textarea--older)")
-    assert _BODY_SENTENCE in body_ta.input_value()
-    assert "-" not in body_ta.input_value(), "body 不应残留任何 dash"
+    body_value = body_ta.input_value()
+    assert _BODY_SENTENCE in body_value
+    # 收紧到只查"≥3 连字符"的分隔符形态——单/双连字符在正文里可能合法
+    # （日期、复合词），不该被这条断言误伤。
+    assert "---" not in body_value, "body 不应残留分隔符"
     assert _OLDER_SENTENCE in older_ta.input_value()
 
 
