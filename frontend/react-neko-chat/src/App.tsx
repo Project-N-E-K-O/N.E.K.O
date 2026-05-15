@@ -1,4 +1,13 @@
-﻿import { useState, useEffect, useMemo, useRef, useCallback, type CSSProperties } from 'react';
+﻿import {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
 import { i18n } from './i18n';
@@ -25,6 +34,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
+  onExportConversationClick?: () => void;
   onTranslateToggle?: () => void;
   onGalgameModeToggle?: () => void;
   onGalgameOptionSelect?: (option: GalgameOption) => void;
@@ -54,8 +64,15 @@ const COMPACT_PREVIEW_MAX_LENGTH = 84;
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
-const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 6;
+const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
+
+type CompactToolWheelPointerState = {
+  id: number;
+  x: number;
+  didRotate: boolean;
+  captureTarget: Element | null;
+};
 
 type CompactMessagePreview = {
   messageId: string;
@@ -741,6 +758,8 @@ export default function App({
   failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   jukeboxButtonLabel = i18n('chat.jukeboxLabel', 'Jukebox'),
   jukeboxButtonAriaLabel = i18n('chat.jukebox', 'Jukebox'),
+  exportConversationButtonLabel = i18n('chat.exportConversation', 'Export Conversation'),
+  exportConversationButtonAriaLabel = i18n('chat.exportConversation', 'Export Conversation'),
   translateEnabled = false,
   translateButtonLabel = i18n('subtitle.enable', 'Subtitle Translation'),
   translateButtonAriaLabel,
@@ -758,6 +777,7 @@ export default function App({
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
+  onExportConversationClick,
   onTranslateToggle,
   onGalgameModeToggle,
   onGalgameOptionSelect,
@@ -793,7 +813,8 @@ export default function App({
   const compactInputShellRef = useRef<HTMLDivElement | null>(null);
   const compactInputToolToggleRef = useRef<HTMLButtonElement | null>(null);
   const compactInputToolFanRef = useRef<HTMLDivElement | null>(null);
-  const compactInputToolWheelPointerRef = useRef<{ id: number; x: number } | null>(null);
+  const compactInputToolWheelPointerRef = useRef<CompactToolWheelPointerState | null>(null);
+  const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
@@ -966,6 +987,7 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
+  const resolvedExportConversationAriaLabel = exportConversationButtonAriaLabel || exportConversationButtonLabel;
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
@@ -1409,6 +1431,37 @@ export default function App({
     ));
   }, []);
 
+  const shouldSuppressCompactToolClick = useCallback(() => {
+    if (!compactInputToolWheelSuppressClickRef.current) {
+      return false;
+    }
+    compactInputToolWheelSuppressClickRef.current = false;
+    return true;
+  }, []);
+
+  const finishCompactToolWheelPointer = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    const pointerState = compactInputToolWheelPointerRef.current;
+    if (!pointerState) return;
+    if (event && pointerState.id !== event.pointerId) return;
+
+    const captureTarget = pointerState.captureTarget;
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(pointerState.id)) {
+          captureTarget.releasePointerCapture(pointerState.id);
+        }
+      } catch (_) {}
+    }
+
+    if (pointerState.didRotate) {
+      compactInputToolWheelSuppressClickRef.current = true;
+      window.setTimeout(() => {
+        compactInputToolWheelSuppressClickRef.current = false;
+      }, 0);
+    }
+    compactInputToolWheelPointerRef.current = null;
+  }, []);
+
   const updateCompactInputToolFanPosition = useCallback(() => {
     const toggleNode = compactInputToolToggleRef.current;
     if (!toggleNode) return;
@@ -1487,6 +1540,12 @@ export default function App({
     effectiveCompactChatState,
     isCompactSurface,
   ]);
+
+  useEffect(() => {
+    if (compactInputToolFanOpen) return;
+    compactInputToolWheelPointerRef.current = null;
+    compactInputToolWheelSuppressClickRef.current = false;
+  }, [compactInputToolFanOpen]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
@@ -2393,8 +2452,22 @@ export default function App({
     </div>
   );
 
-  const compactFanCloseOnAction = (action: (() => void) | undefined) => () => {
+  const compactFanCloseOnAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
+    if (shouldSuppressCompactToolClick()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     closeCompactInputToolFan();
+    action?.();
+  };
+
+  const compactFanToggleOnAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
+    if (shouldSuppressCompactToolClick()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     action?.();
   };
 
@@ -2434,40 +2507,47 @@ export default function App({
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
       style={compactInputToolFanStyle ?? undefined}
       onPointerDown={(event) => {
-        event.preventDefault();
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        const captureTarget = event.target instanceof Element ? event.target : event.currentTarget;
+        compactInputToolWheelSuppressClickRef.current = false;
         compactInputToolWheelPointerRef.current = {
           id: event.pointerId,
           x: event.clientX,
+          didRotate: false,
+          captureTarget,
         };
+        try {
+          captureTarget.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
       }}
       onPointerMove={(event) => {
         const pointerState = compactInputToolWheelPointerRef.current;
         if (!pointerState || pointerState.id !== event.pointerId) return;
+        if (event.pointerType === 'mouse' && event.buttons === 0) {
+          finishCompactToolWheelPointer(event);
+          return;
+        }
         const deltaX = event.clientX - pointerState.x;
-        if (Math.abs(deltaX) < COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD) return;
-        rotateCompactInputToolWheel(deltaX < 0 ? 1 : -1);
-        compactInputToolWheelPointerRef.current = {
-          id: event.pointerId,
-          x: event.clientX,
-        };
+        const stepCount = Math.floor(Math.abs(deltaX) / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD);
+        if (stepCount <= 0) return;
+        event.preventDefault();
+        const direction = deltaX < 0 ? 1 : -1;
+        for (let step = 0; step < stepCount; step += 1) {
+          rotateCompactInputToolWheel(direction);
+        }
+        pointerState.x += direction === 1
+          ? -(stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD)
+          : stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
+        pointerState.didRotate = true;
       }}
       onPointerUp={(event) => {
-        const pointerState = compactInputToolWheelPointerRef.current;
-        if (pointerState?.id === event.pointerId) {
-          compactInputToolWheelPointerRef.current = null;
-        }
+        finishCompactToolWheelPointer(event);
       }}
       onPointerCancel={(event) => {
-        const pointerState = compactInputToolWheelPointerRef.current;
-        if (pointerState?.id === event.pointerId) {
-          compactInputToolWheelPointerRef.current = null;
-        }
+        finishCompactToolWheelPointer(event);
       }}
-      onWheel={(event) => {
-        event.preventDefault();
-        const primaryDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-        if (primaryDelta === 0) return;
-        rotateCompactInputToolWheel(primaryDelta > 0 ? 1 : -1);
+      onLostPointerCapture={(event) => {
+        finishCompactToolWheelPointer(event);
       }}
     >
       <button
@@ -2506,7 +2586,8 @@ export default function App({
         tabIndex={getCompactToolWheelTabIndex(2)}
         aria-hidden={getCompactToolWheelAriaHidden(2)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(2)}
-        onClick={compactFanCloseOnAction(onGalgameModeToggle)}
+        data-compact-tool-active={galgameModeEnabled ? 'true' : 'false'}
+        onClick={compactFanToggleOnAction(onGalgameModeToggle)}
       >
         <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
       </button>
@@ -2520,7 +2601,8 @@ export default function App({
         tabIndex={getCompactToolWheelTabIndex(3)}
         aria-hidden={getCompactToolWheelAriaHidden(3)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(3)}
-        onClick={compactFanCloseOnAction(onTranslateToggle)}
+        data-compact-tool-active={translateEnabled ? 'true' : 'false'}
+        onClick={compactFanToggleOnAction(onTranslateToggle)}
       >
         <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
       </button>
@@ -2537,11 +2619,26 @@ export default function App({
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
       </button>
+      <button
+        className="composer-tool-btn compact-input-tool-item compact-input-tool-item-export"
+        type="button"
+        aria-label={resolvedExportConversationAriaLabel}
+        title={exportConversationButtonLabel}
+        disabled={composerDisabled}
+        tabIndex={getCompactToolWheelTabIndex(5)}
+        aria-hidden={getCompactToolWheelAriaHidden(5)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
+        onClick={compactFanCloseOnAction(onExportConversationClick)}
+      >
+        <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor" aria-hidden="true">
+          <path d="M855.467 501.333c-17.067 0-32 14.934-32 32v198.4c0 70.4-59.734 130.134-130.134 130.134H356.267c-83.2 0-151.467-66.134-151.467-149.334V358.4c0-64 53.333-117.333 117.333-117.333h168.534c17.066 0 32-14.934 32-32s-14.934-32-32-32H322.133c-100.266 0-181.333 81.066-181.333 181.333v352c0 117.333 96 213.333 215.467 213.333h337.066c106.667 0 194.134-87.466 194.134-194.133V533.333c0-17.066-14.934-32-32-32zM680.533 256H761.6L458.667 569.6A30.933 30.933 0 0 0 480 622.933c8.533 0 17.067-4.266 23.467-10.666l305.066-313.6v89.6c0 17.066 14.934 32 32 32s32-14.934 32-32v-147.2c0-27.734-23.466-51.2-51.2-51.2h-140.8c-17.066 0-32 14.933-32 32s14.934 34.133 32 34.133z" />
+        </svg>
+      </button>
       <div
         className="composer-tool-menu compact-input-tool-item compact-input-tool-item-avatar"
         ref={toolMenuRef}
-        aria-hidden={getCompactToolWheelAriaHidden(5)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
+        aria-hidden={getCompactToolWheelAriaHidden(6)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
       >
         <button
           className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
@@ -2551,8 +2648,13 @@ export default function App({
           aria-controls={toolMenuOpen ? 'composer-tool-popover-compact' : undefined}
           aria-expanded={toolMenuOpen}
           disabled={composerDisabled}
-          tabIndex={getCompactToolWheelTabIndex(5)}
-          onClick={() => {
+          tabIndex={getCompactToolWheelTabIndex(6)}
+          onClick={(event) => {
+            if (shouldSuppressCompactToolClick()) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
             if (activeToolItem) {
               clearActiveCursorToolSelection();
               closeCompactInputToolFan();
@@ -2579,6 +2681,11 @@ export default function App({
             disabled={composerDisabled}
             tabIndex={compactInputToolFanOpen ? 0 : -1}
             onClick={(event) => {
+              if (shouldSuppressCompactToolClick()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
               event.stopPropagation();
               setIsCursorInsideHostWindow(true);
               setActiveCursorToolId(null);
@@ -2612,6 +2719,11 @@ export default function App({
                 title={itemLabel}
                 disabled={composerDisabled}
                 onClick={(event) => {
+                  if (shouldSuppressCompactToolClick()) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                  }
                   latestPointerPositionRef.current = {
                     x: event.clientX,
                     y: event.clientY,

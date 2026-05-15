@@ -1885,14 +1885,14 @@ svg {
   min-width: 0;
   min-height: 54px;
   padding: 0 20px;
-  border: 1px solid rgba(255, 255, 255, 0.52);
+  border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.012);
+  background: rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.16),
-    0 8px 16px rgba(8, 22, 40, 0.018);
-  backdrop-filter: blur(8px) saturate(1.08) brightness(1.03);
-  -webkit-backdrop-filter: blur(8px) saturate(1.08) brightness(1.03);
+    0 0 0 1px rgba(208, 233, 255, 0.22),
+    0 8px 16px rgba(8, 22, 40, 0.03);
+  backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
 }
 
 .compact-chat-capsule::before,
@@ -1992,13 +1992,13 @@ svg {
   margin: 0 auto;
   padding: 5px 10px 5px 20px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.012);
+  background: rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.16),
-    0 8px 16px rgba(8, 22, 40, 0.018);
-  backdrop-filter: blur(8px) saturate(1.08) brightness(1.03);
-  -webkit-backdrop-filter: blur(8px) saturate(1.08) brightness(1.03);
-  border: 1px solid rgba(255, 255, 255, 0.52);
+    0 0 0 1px rgba(208, 233, 255, 0.22),
+    0 8px 16px rgba(8, 22, 40, 0.03);
+  backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
+  border: 1px solid rgba(255, 255, 255, 0.6);
 }
 
 .compact-chat-input-shell .composer-input {
@@ -2071,6 +2071,7 @@ svg {
   z-index: 100003;
   overflow: visible;
   touch-action: pan-y;
+  cursor: grab;
   -webkit-app-region: no-drag;
 }
 
@@ -2109,6 +2110,9 @@ svg {
 
 .compact-input-tool-fan .compact-input-tool-item::after {
   inset: 0;
+  width: auto;
+  height: auto;
+  transform: none;
   border-radius: inherit;
   background: var(--compact-tool-button-fill);
   box-shadow: var(--compact-tool-button-shadow);
@@ -2122,6 +2126,7 @@ svg {
 }
 
 .compact-input-tool-fan .compact-input-tool-item > img,
+.compact-input-tool-fan .compact-input-tool-item > svg,
 .compact-input-tool-fan .compact-input-tool-item > .composer-galgame-btn-glyph,
 .compact-input-tool-fan .compact-input-tool-item > .composer-tool-btn {
   position: relative;
@@ -2130,6 +2135,33 @@ svg {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
   pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]:active {
+  cursor: grabbing;
+}
+
+.compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::after {
+  background:
+    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.76) 32%, rgba(205, 239, 255, 0.78) 100%),
+    var(--compact-tool-button-fill);
+  box-shadow:
+    0 0 0 2px rgba(36, 151, 217, 0.34),
+    0 8px 18px rgba(36, 151, 217, 0.2);
+}
+
+.compact-input-tool-fan .compact-input-tool-item[data-compact-tool-active="true"]::before {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgba(255, 255, 255, 0.96);
+  border-radius: 999px;
+  background: #2497d9;
+  box-shadow: 0 2px 6px rgba(36, 151, 217, 0.32);
+  z-index: 3;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item {
@@ -2143,6 +2175,7 @@ svg {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > svg,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-galgame-btn-glyph,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] > .composer-tool-btn {
   -webkit-mask-image: var(--compact-tool-preview-fade-left);
@@ -2179,6 +2212,7 @@ svg {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > img,
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > svg,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-galgame-btn-glyph,
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] > .composer-tool-btn {
   -webkit-mask-image: var(--compact-tool-preview-fade-right);
@@ -2203,6 +2237,10 @@ svg {
 .compact-input-tool-fan .composer-galgame-btn-glyph {
   width: 24px;
   height: 24px;
+}
+
+.compact-input-tool-fan .compact-input-tool-item-export {
+  color: #2497d9;
 }
 
 .compact-input-tool-fan .composer-icon-popover {
@@ -2669,11 +2707,11 @@ svg {
 
 [data-theme="dark"] .compact-chat-capsule,
 [data-theme="dark"] .compact-chat-inline-input {
-  background: rgba(255, 255, 255, 0.012);
+  background: rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.16),
-    0 8px 16px rgba(8, 22, 40, 0.018);
-  border: 1px solid rgba(255, 255, 255, 0.52);
+    0 0 0 1px rgba(208, 233, 255, 0.22),
+    0 8px 16px rgba(8, 22, 40, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.6);
 }
 
 [data-theme="dark"] .compact-chat-capsule-text {

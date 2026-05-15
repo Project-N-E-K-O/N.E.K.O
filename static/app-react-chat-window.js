@@ -904,6 +904,8 @@
             jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
             avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
             avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像'),
+            exportConversationButtonLabel: getI18nText('chat.exportConversation', '导出对话'),
+            exportConversationButtonAriaLabel: getI18nText('chat.exportConversation', '导出对话'),
             chatSurfaceMode: getCurrentChatSurfaceMode(),
             compactChatState: getCurrentCompactChatState(),
             translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
@@ -1036,6 +1038,7 @@
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
+            onExportConversationClick: handleExportConversationClick,
             onTranslateToggle: handleTranslateToggle,
             onGalgameModeToggle: handleGalgameModeToggle,
             onGalgameOptionSelect: handleGalgameOptionSelect,
@@ -1563,6 +1566,23 @@
             captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
+        }
+    }
+
+    function handleExportConversationClick() {
+        try {
+            if (window.appChatExport && typeof window.appChatExport.open === 'function') {
+                window.appChatExport.open();
+                return;
+            }
+            var exportButton = document.getElementById('exportConversationButton');
+            if (exportButton && typeof exportButton.click === 'function') {
+                exportButton.click();
+                return;
+            }
+            showToast(getI18nText('chat.exportPreviewFailed', '导出预览生成失败'), 3000);
+        } finally {
+            dispatchHostEvent('chat-export-click', {});
         }
     }
 
@@ -2494,6 +2514,13 @@
             setMinimized(nextMinimized);
         } else {
             syncChatSurfaceModeUI();
+        }
+
+        if (normalized === 'full' && previousMode === 'compact') {
+            clearCompactSurfaceAnchor();
+            clearCompactMinimizeBallAnchor();
+            restorePosition();
+            scheduleMobileContentLayout();
         }
 
         dispatchHostEvent('chat-surface-mode-change', {

@@ -199,6 +199,8 @@ export const chatWindowPropsSchema = z.object({
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
   avatarGeneratorButtonAriaLabel: z.string().optional(),
+  exportConversationButtonLabel: z.string().optional(),
+  exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
   chatSurfaceMode: chatSurfaceModeSchema.optional(),
@@ -249,6 +251,10 @@ export const chatWindowPropsSchema = z.object({
     .returns(z.void())
     .optional(),
   onAvatarGeneratorClick: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onExportConversationClick: z.function()
     .args()
     .returns(z.void())
     .optional(),
