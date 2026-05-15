@@ -243,6 +243,191 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     expect(mock_page.locator("#save-row")).to_be_visible()
 
 
+@pytest.fixture
+def seed_memory_file_with_older_divider(clean_user_data_dir, running_server):
+    """种子文件：memo 里含 `\\n\\n---\\n\\n` 分界，模拟 LLM 按 SUMMARY_STALE_HINT
+    新规约产出的"主体段 + 较久前段"形态。"""
+    app_root = Path(clean_user_data_dir) / "N.E.K.O"
+    save_storage_policy(
+        None,
+        selected_root=app_root,
+        anchor_root=app_root,
+        selection_source="test",
+    )
+
+    memory_dir = app_root / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    catgirl_dir = memory_dir / "测试猫娘"
+    catgirl_dir.mkdir(parents=True, exist_ok=True)
+
+    memo_text = (
+        "先前对话的备忘录: "
+        "博士正在和小猫娘一起挖铁矿，刚找到一批可以做铁镐。"
+        "\n\n---\n\n"
+        "几天前两人养过一株窗台幼苗，并烤了草莓蛋糕。"
+    )
+    test_data = [
+        {
+            "type": "system",
+            "data": {
+                "content": memo_text,
+                "additional_kwargs": {},
+                "response_metadata": {},
+                "type": "system",
+                "name": None,
+                "id": None,
+                "example": False,
+            },
+        }
+    ]
+
+    memory_file = catgirl_dir / "recent.json"
+    atomic_write_json(memory_file, test_data, ensure_ascii=False, indent=2)
+    return memory_file
+
+
+@pytest.mark.frontend
+def test_memory_browser_renders_older_section_when_divider_present(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file_with_older_divider,
+):
+    """memo 含 `\\n\\n---\\n\\n` 时，前端必须把"较久前"段拆成独立 textarea 渲染，
+    并出现一个 `memo-older-label` 提示。
+
+    这是 SUMMARY_STALE_HINT 硬分隔约定的落地点——LLM 输出端 + 前端识别端
+    之间的契约就靠这条端到端测。
+    """
+    mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file_with_older_divider)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
+    mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
+
+    # 主体 textarea：不包含 `---`，也不包含尾段文本
+    body_ta = mock_page.locator(".memo-textarea:not(.memo-textarea--older)")
+    expect(body_ta).to_have_count(1, timeout=5000)
+    body_value = body_ta.input_value()
+    assert "正在和小猫娘一起挖铁矿" in body_value
+    assert "---" not in body_value, "主体段不应含分隔符——已被 splitter 切掉"
+    assert "草莓蛋糕" not in body_value, "尾段文本应只出现在 older textarea"
+
+    # 较久前 label + 独立 textarea
+    older_label = mock_page.locator(".memo-older-label")
+    expect(older_label).to_have_count(1, timeout=5000)
+    older_ta = mock_page.locator(".memo-textarea--older")
+    expect(older_ta).to_have_count(1, timeout=5000)
+    older_value = older_ta.input_value()
+    assert "草莓蛋糕" in older_value
+    assert "正在和小猫娘一起挖铁矿" not in older_value
+
+
+@pytest.mark.frontend
+def test_memory_browser_saves_memo_with_divider_roundtrip(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file_with_older_divider,
+):
+    """编辑任一 textarea 后保存，发往后端的 payload 必须重新拼回 `\\n\\n---\\n\\n`
+    规范形式——不能漏掉尾段、也不能改用别的分隔符。"""
+    mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
+
+    saved_payloads: list[dict] = []
+
+    app_root = seed_memory_file_with_older_divider.parents[2]
+
+    def handle_bootstrap(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "current_root": str(app_root),
+                "recommended_root": str(app_root),
+                "legacy_sources": [],
+                "selection_required": False,
+                "migration_pending": False,
+                "recovery_required": False,
+                "blocking_reason": "",
+            },
+        )
+
+    def handle_recent_files(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"files": ["recent_测试猫娘.json"]},
+        )
+
+    def handle_current_catgirl(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"current_catgirl": "测试猫娘"},
+        )
+
+    def handle_recent_file(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"content": seed_memory_file_with_older_divider.read_text(encoding="utf-8")},
+        )
+
+    def handle_review_config(route):
+        route.fulfill(status=200, content_type="application/json", json={"enabled": True})
+
+    def handle_save(route):
+        saved_payloads.append(_request_json(route))
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"success": True, "need_refresh": False},
+        )
+
+    mock_page.route("**/api/storage/location/bootstrap", handle_bootstrap)
+    mock_page.route("**/api/memory/recent_files", handle_recent_files)
+    mock_page.route("**/api/characters/current_catgirl", handle_current_catgirl)
+    mock_page.route("**/api/memory/recent_file?**", handle_recent_file)
+    mock_page.route("**/api/memory/review_config", handle_review_config)
+    mock_page.route("**/api/memory/recent_file/save", handle_save)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
+    mock_page.wait_for_selector(".memo-textarea--older", timeout=5000)
+
+    # 改写尾段并 commit（textarea 的 `change` 事件靠 blur 触发）
+    older_ta = mock_page.locator(".memo-textarea--older").first
+    older_ta.fill("几天前的旧事件——已归档。")
+    # 把焦点挪走触发 change
+    mock_page.locator(".memo-textarea:not(.memo-textarea--older)").first.click()
+
+    with mock_page.expect_response(
+        lambda r: "/api/memory/recent_file/save" in r.url
+        and r.request.method == "POST"
+        and r.status == 200
+    ):
+        mock_page.locator("#save-memory-btn").click()
+
+    assert len(saved_payloads) == 1
+    chat = saved_payloads[0]["chat"]
+    system_msgs = [m for m in chat if m.get("role") == "system"]
+    assert len(system_msgs) == 1
+    saved_text = system_msgs[0]["text"]
+
+    # 1) 仍以本地化前缀打头
+    assert saved_text.startswith("先前对话的备忘录: ")
+    # 2) 主体段保留
+    assert "正在和小猫娘一起挖铁矿" in saved_text
+    # 3) 尾段被改写
+    assert "几天前的旧事件——已归档。" in saved_text
+    # 4) 分隔符是规范的 `\n\n---\n\n`
+    assert "\n\n---\n\n" in saved_text
+    # 5) 整段里 `---` 只出现一次
+    assert saved_text.count("\n---\n") == 1
+
+
 @pytest.mark.frontend
 def test_memory_browser_auto_review_toggle(mock_page: Page, running_server: str, seed_memory_file):
     """Test that the auto-review toggle works and persists."""

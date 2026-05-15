@@ -1552,6 +1552,7 @@
         "loadFailed": "로드 실패",
         "noChatContent": "채팅 콘텐츠 없음",
         "previousMemo": "이전 대화 메모:",
+        "olderSection": "이전",
         "memoNone": "없음.",
         "delete": "삭제",
         "me": "나:",

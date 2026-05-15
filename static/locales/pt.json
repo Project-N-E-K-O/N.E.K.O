@@ -1552,6 +1552,7 @@
         "loadFailed": "Falha no carregamento",
         "noChatContent": "Nenhum conteúdo de bate-papo",
         "previousMemo": "Memorando de conversa anterior:",
+        "olderSection": "Antes",
         "memoNone": "Nenhum.",
         "delete": "Excluir",
         "me": "Meu:",

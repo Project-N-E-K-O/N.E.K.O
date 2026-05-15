@@ -1552,6 +1552,7 @@
         "loadFailed": "加載失敗",
         "noChatContent": "無聊天內容",
         "previousMemo": "先前對話的備忘錄: ",
+        "olderSection": "較久前",
         "memoNone": "無。",
         "delete": "刪除",
         "me": "我：",

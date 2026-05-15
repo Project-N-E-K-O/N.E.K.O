@@ -1920,25 +1920,53 @@ def render_past_memory_block(
 
 SUMMARY_STALE_HINT = {
     "zh": """======以下为时间衰减提醒======
-距上次记忆压缩已过去 {GAP} 小时。请在 summary 中，把已过时的内容（已结束的事件、已变化的状态、不再相关的近况）单独放到 summary 文末的"较久前"段落，用"X 时间前曾经..."的中性叙事；当前仍持续或重要的内容保留在 summary 主体。本提醒只影响本次 summary 生成，不进入长期记忆。
+距上次记忆压缩已过去 {GAP} 小时。请在 summary 中，把已过时的内容（已结束的事件、已变化的状态、不再相关的近况）单独放到 summary 文末的"较久前"段落，用"X 时间前曾经..."的中性叙事；当前仍持续或重要的内容保留在 summary 主体。
+
+[格式硬约束] 主体段与"较久前"段之间，必须用单独一行 `---`（三个英文连字符）作分界，前后各空一行。整段 summary 里只能出现这一处 `---`；如果没有过时内容需要写"较久前"段，则**不要**输出 `---`。
+
+本提醒只影响本次 summary 生成，不进入长期记忆。
 ======以上为时间衰减提醒======""",
     "en": """======Below is time decay notice======
-{GAP} hours have passed since the last memory compression. In the summary, move clearly outdated content (ended events, changed states, no-longer-relevant updates) into a separate "older" paragraph at the end of the summary using neutral narration like "some time ago, X used to...". Keep currently ongoing or important content in the summary body. This notice only affects the current summary generation; it does not enter long-term memory.
+{GAP} hours have passed since the last memory compression. In the summary, move clearly outdated content (ended events, changed states, no-longer-relevant updates) into a separate "older" paragraph at the end of the summary using neutral narration like "some time ago, X used to...". Keep currently ongoing or important content in the summary body.
+
+[Format constraint] Between the main body and the "older" paragraph, you MUST insert a single line containing only `---` (three ASCII hyphens), surrounded by blank lines above and below. This `---` may appear at most once in the entire summary; if there is no outdated content to write an "older" paragraph for, do NOT emit `---`.
+
+This notice only affects the current summary generation; it does not enter long-term memory.
 ======Above is time decay notice======""",
     "ja": """======以下は時間経過リマインダー======
-前回のメモリ圧縮から {GAP} 時間が経過しています。summary では明らかに古くなった内容（終了したイベント、変化した状態、関連性の薄れた近況）を summary 末尾の「以前」段落にまとめ、「以前 X だった」のような中立的な語りで記述してください。現在も継続中・重要な内容は summary 本体に残します。この通知は今回の summary 生成にのみ影響し、長期記憶には入りません。
+前回のメモリ圧縮から {GAP} 時間が経過しています。summary では明らかに古くなった内容（終了したイベント、変化した状態、関連性の薄れた近況）を summary 末尾の「以前」段落にまとめ、「以前 X だった」のような中立的な語りで記述してください。現在も継続中・重要な内容は summary 本体に残します。
+
+[フォーマット制約] 本体段落と「以前」段落の間には、必ず単独行 `---`（半角ハイフン3つ）を区切りとして挿入し、その上下を空行で囲んでください。`---` は summary 全体で1回までしか現れません。書くべき「以前」段落がなければ `---` を**出力しないで**ください。
+
+この通知は今回の summary 生成にのみ影響し、長期記憶には入りません。
 ======以上は時間経過リマインダー======""",
     "ko": """======아래는 시간 경과 알림======
-지난 메모리 압축으로부터 {GAP} 시간이 지났습니다. summary에서 명백히 오래된 내용(이미 끝난 사건, 바뀐 상태, 더 이상 관련 없는 근황)은 summary 끝의 "이전" 단락으로 옮기고, "예전에 X였다" 같은 중립적 서술로 작성하세요. 현재 진행 중이거나 중요한 내용은 summary 본문에 남깁니다. 이 알림은 이번 summary 생성에만 영향을 주며, 장기 기억에는 들어가지 않습니다.
+지난 메모리 압축으로부터 {GAP} 시간이 지났습니다. summary에서 명백히 오래된 내용(이미 끝난 사건, 바뀐 상태, 더 이상 관련 없는 근황)은 summary 끝의 "이전" 단락으로 옮기고, "예전에 X였다" 같은 중립적 서술로 작성하세요. 현재 진행 중이거나 중요한 내용은 summary 본문에 남깁니다.
+
+[형식 제약] 본문 단락과 "이전" 단락 사이에는 반드시 `---`(ASCII 하이픈 3개)만 들어간 단독 줄을 구분선으로 넣고, 그 위아래에 빈 줄을 둡니다. 전체 summary 안에서 `---`는 최대 1회만 등장합니다. 작성할 "이전" 단락이 없으면 `---`를 **출력하지 마세요**.
+
+이 알림은 이번 summary 생성에만 영향을 주며, 장기 기억에는 들어가지 않습니다.
 ======위는 시간 경과 알림======""",
     "ru": """======Ниже напоминание о времени======
-С последнего сжатия памяти прошло {GAP} часов. В summary вынесите явно устаревшие пункты (завершившиеся события, изменившиеся состояния, неактуальные новости) в отдельный абзац «ранее» в конце summary, описывая их нейтрально («ранее X было...»). Актуальное и важное оставьте в основной части summary. Это напоминание влияет только на текущую генерацию summary и не попадает в долговременную память.
+С последнего сжатия памяти прошло {GAP} часов. В summary вынесите явно устаревшие пункты (завершившиеся события, изменившиеся состояния, неактуальные новости) в отдельный абзац «ранее» в конце summary, описывая их нейтрально («ранее X было...»). Актуальное и важное оставьте в основной части summary.
+
+[Жёсткий формат] Между основным абзацем и абзацем «ранее» обязательно вставьте отдельную строку, содержащую только `---` (три ASCII-дефиса), с пустыми строками сверху и снизу. Во всём summary `---` может встретиться не более одного раза. Если устаревшего контента для абзаца «ранее» нет, **не выводите** `---`.
+
+Это напоминание влияет только на текущую генерацию summary и не попадает в долговременную память.
 ======Выше напоминание о времени======""",
     "es": """======Abajo aviso de decaimiento temporal======
-Han pasado {GAP} horas desde la última compresión de memoria. En el summary, mueve el contenido claramente obsoleto (eventos terminados, estados cambiados, actualizaciones ya no relevantes) a un párrafo "antes" al final del summary, con narración neutra como "tiempo atrás X solía...". Mantén el contenido actualmente en curso o importante en el cuerpo del summary. Este aviso solo afecta la generación actual del summary; no entra en memoria de largo plazo.
+Han pasado {GAP} horas desde la última compresión de memoria. En el summary, mueve el contenido claramente obsoleto (eventos terminados, estados cambiados, actualizaciones ya no relevantes) a un párrafo "antes" al final del summary, con narración neutra como "tiempo atrás X solía...". Mantén el contenido actualmente en curso o importante en el cuerpo del summary.
+
+[Restricción de formato] Entre el cuerpo principal y el párrafo "antes" debes insertar una línea aislada que contenga únicamente `---` (tres guiones ASCII), rodeada por líneas vacías arriba y abajo. En todo el summary `---` puede aparecer como máximo una vez. Si no hay contenido obsoleto para un párrafo "antes", **no emitas** `---`.
+
+Este aviso solo afecta la generación actual del summary; no entra en memoria de largo plazo.
 ======Arriba aviso de decaimiento temporal======""",
     "pt": """======Abaixo aviso de decaimento temporal======
-Passaram-se {GAP} horas desde a última compressão de memória. No summary, mova o conteúdo claramente desatualizado (eventos terminados, estados alterados, atualizações já irrelevantes) para um parágrafo "antes" no final do summary, com narração neutra como "tempos atrás, X costumava...". Mantenha o conteúdo atualmente em andamento ou importante no corpo do summary. Este aviso afeta apenas a geração atual do summary; não entra na memória de longo prazo.
+Passaram-se {GAP} horas desde a última compressão de memória. No summary, mova o conteúdo claramente desatualizado (eventos terminados, estados alterados, atualizações já irrelevantes) para um parágrafo "antes" no final do summary, com narração neutra como "tempos atrás, X costumava...". Mantenha o conteúdo atualmente em andamento ou importante no corpo do summary.
+
+[Restrição de formato] Entre o corpo principal e o parágrafo "antes" você deve inserir uma linha isolada contendo apenas `---` (três hifens ASCII), cercada por linhas em branco acima e abaixo. Em todo o summary `---` pode aparecer no máximo uma vez. Se não houver conteúdo desatualizado para um parágrafo "antes", **não emita** `---`.
+
+Este aviso afeta apenas a geração atual do summary; não entra na memória de longo prazo.
 ======Acima aviso de decaimento temporal======""",
 }
 

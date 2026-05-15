@@ -1552,6 +1552,7 @@
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
         "previousMemo": "Nota de conversación anterior:",
+        "olderSection": "Antes",
         "memoNone": "Ninguno.",
         "delete": "Borrar",
         "me": "A mí:",

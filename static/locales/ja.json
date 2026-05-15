@@ -1552,6 +1552,7 @@
         "loadFailed": "読み込み失敗",
         "noChatContent": "チャットコンテンツなし",
         "previousMemo": "前回の会話メモ: ",
+        "olderSection": "以前",
         "memoNone": "なし。",
         "delete": "削除",
         "me": "私:",

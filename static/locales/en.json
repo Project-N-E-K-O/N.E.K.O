@@ -1552,6 +1552,7 @@
         "loadFailed": "Load failed",
         "noChatContent": "No chat content",
         "previousMemo": "Previous conversation memo: ",
+        "olderSection": "Earlier",
         "memoNone": "None.",
         "delete": "Delete",
         "me": "Me:",

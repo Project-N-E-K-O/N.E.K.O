@@ -1552,6 +1552,7 @@
         "loadFailed": "Ошибка загрузки",
         "noChatContent": "Нет содержимого чата",
         "previousMemo": "Заметка из предыдущего разговора: ",
+        "olderSection": "Ранее",
         "memoNone": "Нет.",
         "delete": "Удалить",
         "me": "Я:",
