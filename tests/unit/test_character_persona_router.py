@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -62,6 +62,15 @@ def _parse_json_response(response):
         return response
     body = getattr(response, "body", b"") or b"{}"
     return json.loads(body.decode("utf-8"))
+
+
+@pytest.mark.unit
+def test_reload_page_notice_code_distinguishes_character_settings():
+    router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+
+    assert router_module._resolve_reload_page_notice_code("角色设定已更新，页面即将刷新") == "RELOAD_PAGE_CHARACTER_SETTINGS"
+    assert router_module._resolve_reload_page_notice_code("语音已更新，页面即将刷新") == "RELOAD_PAGE_VOICE"
+    assert router_module._resolve_reload_page_notice_code("人格设定已更新，页面即将刷新") == "RELOAD_PAGE_PERSONA"
 
 
 @pytest.mark.unit
@@ -704,6 +713,146 @@ async def test_clear_character_persona_selection_closes_original_session_when_re
             expected_session=old_session_token,
         )
         reconnected_session.end_session.assert_not_awaited()
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_catgirl_profile_fields_refreshes_active_context():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        recent_path = Path(config_manager.memory_dir) / current_name / "recent.json"
+        recent_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(
+            recent_path,
+            [{"type": "ai", "data": {"content": "旧设定下的回复"}}],
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        session_token = object()
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=session_token,
+            end_session=AsyncMock(),
+            reset_session_start_circuit=Mock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                result = await router_module.update_catgirl(
+                    current_name,
+                    _DummyRequest({"档案名": current_name, "性格": "认真可靠"}),
+                )
+
+        assert result["success"] is True
+        assert result["context_refreshed"] is True
+        assert result["recent_history_cleared"] is True
+        assert result["session_restarted"] is True
+        assert result["reload_notified"] is True
+        assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+        reload_notice.assert_awaited_once_with(current_session, "角色设定已更新，页面即将刷新")
+        current_session.end_session.assert_awaited_once_with(
+            by_server=True,
+            expected_session=session_token,
+        )
+        current_session.reset_session_start_circuit.assert_called_once_with()
+        init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_character_card_refreshes_active_context_for_existing_current_card():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        recent_path = Path(config_manager.memory_dir) / current_name / "recent.json"
+        recent_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(
+            recent_path,
+            [{"type": "human", "data": {"content": "旧上下文"}}],
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        session_token = object()
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=session_token,
+            end_session=AsyncMock(),
+            reset_session_start_circuit=Mock(),
+        )
+        role_state = {
+            current_name: SimpleNamespace(session_manager=current_session),
+        }
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state=role_state,
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+            with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                result = await router_module.save_character_card(
+                    _DummyRequest({
+                        "character_card_name": current_name,
+                        "charaData": {
+                            "档案名": current_name,
+                            "性格": "保存后立刻生效",
+                        },
+                    }),
+                )
+
+        assert result["success"] is True
+        assert result["context_refreshed"] is True
+        assert result["recent_history_cleared"] is True
+        assert result["session_restarted"] is True
+        assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+        reload_notice.assert_awaited_once_with(current_session, "角色设定已更新，页面即将刷新")
+        current_session.end_session.assert_awaited_once_with(
+            by_server=True,
+            expected_session=session_token,
+        )
+        current_session.reset_session_start_circuit.assert_called_once_with()
         init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
 
 
