@@ -5615,29 +5615,26 @@ class LLMSessionManager:
             #   2. The eventual hot-swap re-primes the new session with cbs
             #      the AI already spoke about, producing duplicate
             #      announcements.
-            # ``enqueue_agent_callback`` appends both queues in lockstep
-            # (one extras entry per cb), so they're 1:1 at enqueue time.
-            # If a racing caller (``drain_agent_callbacks_for_llm`` /
-            # ``_perform_final_swap_sequence``) bulk-cleared one queue during
-            # our ``await inject_*`` window, alignment is broken — fall back
-            # to id-only drop on ``pending_agent_callbacks`` and leave the
-            # racing caller's view of ``pending_extra_replies`` alone.
-            voice_ids = {id(cb) for cb in voice_snapshot}
-            pac = self.pending_agent_callbacks
-            extras = self.pending_extra_replies
-            if len(pac) == len(extras):
-                new_pac: list[dict] = []
-                new_extras: list[dict] = []
-                for cb, extra in zip(pac, extras):
-                    if id(cb) not in voice_ids:
-                        new_pac.append(cb)
-                        new_extras.append(extra)
-                self.pending_agent_callbacks = new_pac
-                self.pending_extra_replies = new_extras
-            else:
-                self.pending_agent_callbacks = [
-                    cb for cb in pac if id(cb) not in voice_ids
-                ]
+            # Match by the stable ``_callback_delivery_id`` stamped on both
+            # entries by ``enqueue_agent_callback``. Length-based alignment
+            # would be unsafe — ``drain_agent_callbacks_for_llm`` clears
+            # ``pending_agent_callbacks`` while leaving ``pending_extra_replies``
+            # intact, so the queues legitimately drift apart across user turns
+            # and a "queues are aligned iff len matches" check would skip
+            # extras cleanup whenever a drain ran beforehand.
+            delivered_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in voice_snapshot
+                if cb.get("_callback_delivery_id")
+            }
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if cb.get("_callback_delivery_id") not in delivered_ids
+            ]
+            self.pending_extra_replies = [
+                extra for extra in self.pending_extra_replies
+                if extra.get("_callback_delivery_id") not in delivered_ids
+            ]
             logger.info(
                 "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
                 self.lanlan_name, len(voice_snapshot),
@@ -6079,8 +6076,17 @@ class LLMSessionManager:
             # discarded.
             if not summary and not detail and not error_message and not source_name and status == "completed":
                 return
+            # Stable delivery id so the voice inject success path can
+            # precisely drop the matching extras entry from
+            # ``pending_extra_replies``. Length-based alignment is unsafe:
+            # ``drain_agent_callbacks_for_llm`` clears
+            # ``pending_agent_callbacks`` while leaving
+            # ``pending_extra_replies`` intact, so the queues legitimately
+            # drift apart across user turns.
+            delivery_id = callback.setdefault("_callback_delivery_id", uuid4().hex)
             self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
+                "_callback_delivery_id": delivery_id,
                 "origin": origin,
                 "summary": summary,
                 "detail": detail,

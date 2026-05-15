@@ -106,8 +106,8 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
 
     sess = _VoiceSess()
     mgr = _make_mgr(session=sess)
-    cb = {"status": "completed", "summary": "task done"}
-    extra = {"origin": "task_result", "summary": "task done", "status": "completed"}
+    cb = {"_callback_delivery_id": "id-task-done", "status": "completed", "summary": "task done"}
+    extra = {"_callback_delivery_id": "id-task-done", "origin": "task_result", "summary": "task done", "status": "completed"}
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
 
@@ -143,11 +143,23 @@ async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
 
     sess = _VoiceSess()
     mgr = _make_mgr(session=sess)
-    passive_cb = {"status": "completed", "summary": "passive note", "delivery_mode": "passive"}
-    proactive_cb = {"status": "completed", "summary": "ping user now"}
-    passive_extra = {"origin": "event", "summary": "passive note"}
-    proactive_extra = {"origin": "task_result", "summary": "ping user now"}
-    # enqueue_agent_callback appends both queues in lockstep — same order
+    passive_cb = {
+        "_callback_delivery_id": "id-passive",
+        "status": "completed", "summary": "passive note", "delivery_mode": "passive",
+    }
+    proactive_cb = {
+        "_callback_delivery_id": "id-proactive",
+        "status": "completed", "summary": "ping user now",
+    }
+    passive_extra = {
+        "_callback_delivery_id": "id-passive",
+        "origin": "event", "summary": "passive note",
+    }
+    proactive_extra = {
+        "_callback_delivery_id": "id-proactive",
+        "origin": "task_result", "summary": "ping user now",
+    }
+    # enqueue_agent_callback stamps both queues with the same _callback_delivery_id
     mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
     mgr.pending_extra_replies = [passive_extra, proactive_extra]
 
@@ -185,6 +197,45 @@ async def test_voice_mode_busy_defers_cbs_for_retry():
     assert sess.injected == []  # 没 inject
     assert mgr.pending_agent_callbacks == original  # cb 保留
     assert mgr.state.phase is ProactivePhase.IDLE
+
+
+async def test_voice_mode_drop_uses_id_match_not_length_alignment():
+    """Voice 模式：成功 inject 后按 ``_callback_delivery_id`` 精确剔除两队列里
+    匹配的项 —— 即使 ``drain_agent_callbacks_for_llm`` 先前清空了
+    pending_agent_callbacks 把两队列长度搞错位，extras 里 stale 项也必须被清。
+    锁死 CodeRabbit r3248967092：长度相等 != 队列对齐这条不变式。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+            self.injected: list[str] = []
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str) -> None:
+            self.injected.append(text)
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    # 模拟"队列错位"：旧的两条 cb 因为 user turn 走了 drain_agent_callbacks_for_llm
+    # 清空 pending_agent_callbacks，但 pending_extra_replies 仍然保留它们；
+    # 然后一条新的 proactive cb 进来 —— pac=1, extras=3。
+    stale_extra_a = {"_callback_delivery_id": "stale-A", "origin": "task_result", "summary": "old A"}
+    stale_extra_b = {"_callback_delivery_id": "stale-B", "origin": "task_result", "summary": "old B"}
+    new_cb = {"_callback_delivery_id": "new", "status": "completed", "summary": "fresh"}
+    new_extra = {"_callback_delivery_id": "new", "origin": "task_result", "summary": "fresh"}
+    mgr.pending_agent_callbacks = [new_cb]
+    mgr.pending_extra_replies = [stale_extra_a, stale_extra_b, new_extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert len(sess.injected) == 1
+    assert mgr.pending_agent_callbacks == []
+    # 关键：new_extra 必须被清，stale 的两条不归本次 inject 管，保留给 hot-swap
+    assert mgr.pending_extra_replies == [stale_extra_a, stale_extra_b]
 
 
 async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
