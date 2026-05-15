@@ -408,6 +408,8 @@
       };
 
       this._clearFadeTimer();
+      disposeAudio(this.fadingAudio);
+      this.fadingAudio = null;
       const previousAudio = this.currentAudio;
       const nextAudio = this._createAudio(track);
       this.currentAudio = nextAudio;

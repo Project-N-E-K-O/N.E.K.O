@@ -1265,10 +1265,22 @@
       return { key: 'inGame', type: 'bgm', playlist: [] };
     }
 
+    function hasPlayableBgmTarget(type, playlist, loopedConfig) {
+      if (type === 'loopedBgm') return Boolean(loopedConfig?.loop);
+      return Boolean(Array.isArray(playlist) ? playlist.length : playlist);
+    }
+
+    function isCurrentBgmTarget(type, playlist, loopedConfig) {
+      if (!hasPlayableBgmTarget(type, playlist, loopedConfig)) return true;
+      return type === 'loopedBgm'
+        ? audio.isCurrentBgm(loopedConfig)
+        : audio.isCurrentBgm(playlist);
+    }
+
     function sync(reason = 'sync') {
       if (!audio) return;
       const { key: nextKey, type, playlist, config: loopedConfig } = resolvePlaylist();
-      if (nextKey === currentKey) return;
+      if (nextKey === currentKey && isCurrentBgmTarget(type, playlist, loopedConfig)) return;
       currentKey = nextKey;
       if (type === 'loopedBgm') {
         console.log(`[SoccerAudio] 切换循环 BGM=${nextKey} reason=${reason}`);
