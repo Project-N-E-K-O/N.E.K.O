@@ -134,13 +134,32 @@ def _configure_ssl_cert_bundle() -> None:
         )
         return
 
-    # 三个变量统一处理：已存在且有效 → 保留（尊重用户预置的企业 CA 路径）；
-    # 否则 → 覆盖为 ca_path。`setdefault` 不够：继承自打包构建机 / 旧路径的
-    # 失效值会让 requests / curl 仍然报 verify failed，本函数要避免的恰恰
-    # 就是这个症状。
+    # 找用户预置的有效 PEM 文件作为"信任源 fallback"——任何一个变量上的有效
+    # 文件都意味着用户已经为这次部署声明了一份信任的 CA bundle，理应让其它
+    # 失效 / 缺失的变量也用这同一份，而不是被 certifi 覆盖掉。这避免一个
+    # 经典坑：用户在打包发行版上只设了 CURL_CA_BUNDLE=/etc/private-ca.pem，
+    # 但 requests 的查找顺序是 REQUESTS_CA_BUNDLE → CURL_CA_BUNDLE → default，
+    # 如果我们把 REQUESTS_CA_BUNDLE 填成 certifi，requests 反而看不到用户
+    # 那个有效的私有 CA，对企业内网 HTTPS 验证失败。
+    #
+    # 仅考虑 file 路径：REQUESTS_CA_BUNDLE 允许的目录（capath）不能直接喂给
+    # OpenSSL / curl（它们用 SSL_CERT_DIR / CURL_CA_PATH 表达目录），所以
+    # 目录值留给 REQUESTS 自己用，跨变量传播只针对文件。
+    user_file_ca: str | None = None
+    for name in var_names:
+        value = os.environ.get(name)
+        if value and os.path.isfile(value):
+            user_file_ca = value
+            break
+
+    fallback_ca = user_file_ca or ca_path
+
+    # 三个变量统一处理：已存在且有效 → 保留；否则 → 用 fallback_ca 填补。
+    # `setdefault` 不够：继承自打包构建机 / 旧路径的失效值会让 requests /
+    # curl 仍然报 verify failed，本函数要避免的恰恰就是这个症状。
     for name in var_names:
         if not _existing_is_valid(name):
-            os.environ[name] = ca_path
+            os.environ[name] = fallback_ca
 
 
 # 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
