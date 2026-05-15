@@ -39,7 +39,7 @@ from main_logic.tool_calling import (
     ToolResult,
 )
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionStateMachine, SessionEvent
+from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
@@ -5548,14 +5548,74 @@ class LLMSessionManager:
             )
             return
 
-        # Voice mode 走 hot-swap，不进 SM proactive 流水线。Drop only the
-        # proactive cbs from the queue; passive cbs stay for the next drain.
+        # Voice mode：直接 conversation.item.create(role=system) + response.create，
+        # 让 LLM 立即用本角色嗓音主动回应 proactive callback，不等用户开口。
+        #
+        # Gate：realtime API 同一时刻只允许一个 active response。如果 user 正在
+        # 说话（server-VAD 触发 → 自动 response.create）或上一个 response 还
+        # 没结束（含 prompt_ephemeral 走的 fudge response），client 再发
+        # response.create 会被 reject。phase != IDLE 时说明 text-mode proactive
+        # 流水线在跑，也跳。两条都不满足时 callbacks 留在队列，等
+        # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。
         if isinstance(self.session, OmniRealtimeClient):
+            voice_sess = self.session
+            if self.state.phase is not ProactivePhase.IDLE or voice_sess.is_active_response():
+                logger.debug(
+                    "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s); deferring proactive (n=%d)",
+                    self.lanlan_name,
+                    self.state.phase.value,
+                    voice_sess.is_active_response(),
+                    len(proactive_cbs),
+                )
+                return
+
+            _lang = normalize_language_code(self.user_language, format='short')
+            instruction = _build_callback_instruction(
+                proactive_cbs,
+                lang=_lang,
+                lanlan_name=self.lanlan_name,
+                master_name=self.master_name,
+                passive=False,
+            )
+            voice_snapshot = list(proactive_cbs)
+            try:
+                await voice_sess.inject_text_and_request_response(instruction)
+            except NotImplementedError:
+                # Provider doesn't support manual inject (Gemini Live / Qwen).
+                # Fall through to the legacy hot-swap path: drop the proactive
+                # cbs so they don't loop forever, but keep ``pending_extra_replies``
+                # populated for the next user-turn prime_context() drain.
+                voice_ids = {id(cb) for cb in voice_snapshot}
+                self.pending_agent_callbacks = [
+                    cb for cb in self.pending_agent_callbacks
+                    if id(cb) not in voice_ids
+                ]
+                logger.info(
+                    "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
+                    self.lanlan_name, len(voice_snapshot),
+                )
+                return
+            except Exception as exc:
+                # WS error / fatal / response_already_active race — keep cbs in
+                # the queue so the next phase-idle hook retries them.
+                logger.warning(
+                    "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
+                    self.lanlan_name, exc,
+                )
+                return
+
+            # Inject succeeded. Remove just the cbs we delivered — preserve
+            # passive cbs (and any proactive cbs another task enqueued during
+            # the ``await inject_text_and_request_response`` window).
+            voice_ids = {id(cb) for cb in voice_snapshot}
             self.pending_agent_callbacks = [
                 cb for cb in self.pending_agent_callbacks
-                if cb.get("delivery_mode") == "passive"
+                if id(cb) not in voice_ids
             ]
-            logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
+            logger.info(
+                "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
+                self.lanlan_name, len(voice_snapshot),
+            )
             return
 
         _lang = normalize_language_code(self.user_language, format='short')

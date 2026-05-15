@@ -1599,7 +1599,7 @@ class OmniRealtimeClient:
         try:
             # Gemini 使用 send_client_content 发送文本
             from google.genai import types as genai_types
-            
+
             content = genai_types.Content(
                 parts=[genai_types.Part(text=instructions)],
                 role="user"
@@ -1611,6 +1611,75 @@ class OmniRealtimeClient:
             logger.info("Gemini: sent client content, waiting for response")
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
+
+    def is_active_response(self) -> bool:
+        """Return True iff the realtime session is currently producing a response.
+
+        Tracks ``response.created`` → ``response.done`` (OpenAI / GLM / Step /
+        free / GPT) and Gemini's ``turn_complete`` lifecycle via the shared
+        ``_is_responding`` flag, so callers can gate "manual inject + request
+        response" against the realtime API's "one active response at a time"
+        constraint.
+        """
+        return bool(self._is_responding)
+
+    async def inject_text_and_request_response(self, text: str) -> None:
+        """Inject a system-role text item and explicitly trigger a response.
+
+        Used by the voice-mode proactive path (agent task callbacks /
+        plugin push_message ai_behavior="respond") to surface a rendered
+        instruction to the realtime model and have it speak the result
+        immediately — without waiting for the next user turn (which is what
+        the hot-swap pending_extra_replies channel does).
+
+        Caller is responsible for gating against active-response races
+        (see ``is_active_response``) — the realtime API only allows one
+        in-flight response at a time and will reject a second
+        ``response.create`` with ``response_already_active``.
+
+        Provider dispatch:
+          - **OpenAI / GLM / Step / free / GPT**: ``conversation.item.create``
+            (role=system, input_text) + ``response.create``.
+          - **Qwen**: does not accept ``conversation.item.create`` — raises
+            ``NotImplementedError`` so the caller can fall back to the
+            hot-swap path.
+          - **Gemini Live**: protocol does not model a "fire response now
+            without a user turn" primitive cleanly — raises
+            ``NotImplementedError`` so the caller can fall back.
+        """
+        if self._fatal_error_occurred:
+            raise RuntimeError("realtime session has fatal_error_occurred set")
+        if not text or not text.strip():
+            return
+
+        if self._is_gemini:
+            raise NotImplementedError(
+                "Gemini Live does not support proactive inject_text_and_request_response; "
+                "fall back to hot-swap"
+            )
+        if "qwen" in self._model_lower:
+            raise NotImplementedError(
+                "Qwen Realtime does not accept conversation.item.create; "
+                "fall back to hot-swap"
+            )
+        if self.ws is None:
+            raise RuntimeError("realtime websocket is not connected")
+
+        item_event = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": text,
+                    }
+                ],
+            },
+        }
+        await self.send_event(item_event)
+        await self.send_event({"type": "response.create"})
 
     async def prompt_ephemeral(
         self,

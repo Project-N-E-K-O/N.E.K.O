@@ -84,27 +84,116 @@ def _make_mgr(session=None) -> LLMSessionManager:
 # trigger_agent_callbacks
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_voice_mode_does_not_touch_sm():
-    """Voice 模式：清 pending，不 fire SM 任何事件。"""
+async def test_voice_mode_idle_injects_and_drops_cbs():
+    """Voice 模式（idle）：调 inject_text_and_request_response 并清 pending，
+    不 fire SM 任何事件（voice 走 realtime API 直接 inject，不进 SM 流水线）。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     class _VoiceSess(OmniRealtimeClient):
         def __init__(self):
-            pass  # 跳过父类初始化
+            self._is_responding = False
+            self.injected: list[str] = []
 
-    mgr = _make_mgr(session=_VoiceSess())
+        def is_active_response(self) -> bool:
+            return self._is_responding
+
+        async def inject_text_and_request_response(self, text: str) -> None:
+            self.injected.append(text)
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
     mgr.pending_agent_callbacks = [{"status": "completed", "summary": "task done"}]
 
     events: list[SessionEvent] = []
     mgr.state.subscribe(None, lambda ev, p: events.append(ev))
 
     await LLMSessionManager.trigger_agent_callbacks(mgr)
-    # 异步订阅派发 —— 让 event loop 转一圈
     await asyncio.sleep(0)
 
+    assert len(sess.injected) == 1  # 主动 inject 已调
     assert mgr.pending_agent_callbacks == []
     assert mgr.state.phase is ProactivePhase.IDLE
     assert events == []  # 未走 SM 任何事件
+
+
+async def test_voice_mode_busy_defers_cbs_for_retry():
+    """Voice 模式（session 正在回复）：cb 留在队列等下次 response.done 后重试。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = True
+            self.injected: list[str] = []
+
+        def is_active_response(self) -> bool:
+            return self._is_responding
+
+        async def inject_text_and_request_response(self, text: str) -> None:
+            self.injected.append(text)
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    original = [{"status": "completed", "summary": "deferred"}]
+    mgr.pending_agent_callbacks = list(original)
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert sess.injected == []  # 没 inject
+    assert mgr.pending_agent_callbacks == original  # cb 保留
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+
+async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
+    """Voice 模式（Gemini/Qwen 抛 NotImplementedError）：drop proactive cb，
+    走现有 hot-swap 路径（pending_extra_replies 保留供下一 hot-swap 注入）。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str) -> None:
+            raise NotImplementedError("test provider: no manual inject")
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    mgr.pending_agent_callbacks = [{"status": "completed", "summary": "hot-swap fallback"}]
+    mgr.pending_extra_replies = [{"summary": "hot-swap fallback"}]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert mgr.pending_agent_callbacks == []  # proactive cb dropped
+    assert mgr.pending_extra_replies  # hot-swap channel preserved
+
+
+async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
+    """Voice 模式（inject 抛非 NotImplementedError）：cb 留在队列等重试。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str) -> None:
+            raise RuntimeError("ws boom")
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    original = [{"status": "completed", "summary": "retry on ws err"}]
+    mgr.pending_agent_callbacks = list(original)
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert mgr.pending_agent_callbacks == original
 
 
 async def test_text_mode_sm_denied_when_phase_active():
