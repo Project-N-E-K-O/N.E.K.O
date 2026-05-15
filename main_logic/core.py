@@ -2585,16 +2585,32 @@ class LLMSessionManager:
         """``recall_memory`` 的占位 handler —— 总是返回"没有找到相关记忆"。
 
         机制验证用：让模型决定何时调用、我们能拿到 arguments、把固定
-        字符串回喂模型。日志里打 query 方便观察模型在什么场景下会去
-        recall，给后续接真实检索提供取数依据。
+        字符串回喂模型。日志同时记录 lanlan_name / input_mode / 完整
+        arguments / 命中的语言，方便：
+        - 多猫娘并发时按 name 切分 trace
+        - 验证语音（``audio``）和文本（``text``）两条路径都能触发
+        - 模型在 schema 之外塞了别的字段也不会被吞掉
+        - 给后续接真实检索提供取数依据（看模型在什么场景去 recall）。
         """
         _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        args_dict = arguments if isinstance(arguments, dict) else {}
         query = ""
-        if isinstance(arguments, dict):
-            raw_query = arguments.get("query")
-            if isinstance(raw_query, str):
-                query = raw_query.strip()
-        logger.info("[recall_memory] called with query=%r → pseudo empty result", query)
+        raw_query = args_dict.get("query")
+        if isinstance(raw_query, str):
+            query = raw_query.strip()
+        # ``input_mode`` 是 manager 级别状态（start_session 时定型），handler
+        # 拿到时一定是当前 session 的真实模式；type(self.session) 兜一层
+        # 防御性日志，万一 input_mode 没设也能从 client 类型反推。
+        session_kind = type(self.session).__name__ if self.session is not None else "no-session"
+        logger.info(
+            "[recall_memory] name=%s mode=%s session=%s lang=%s args=%s query=%r → pseudo empty result",
+            self.lanlan_name,
+            self.input_mode,
+            session_kind,
+            _lang,
+            args_dict,
+            query,
+        )
         return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
