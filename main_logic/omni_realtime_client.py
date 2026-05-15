@@ -1,6 +1,7 @@
 # -- coding: utf-8 --
 
 import asyncio
+import uuid
 import websockets
 import json
 import base64
@@ -462,6 +463,16 @@ class OmniRealtimeClient:
         # GLM: track response_id+output_index → synthesized call_id since
         # GLM's function_call_arguments.done lacks an explicit call_id field.
         self._glm_tool_index_to_id: Dict[str, str] = {}
+
+        # Proactive inject rejection handlers, keyed by the client-side
+        # event_id we stamp on ``response.create``. When the server rejects
+        # the request (e.g. ``response_already_active`` from a VAD race), it
+        # emits an ``error`` event whose ``error.event_id`` echoes our id —
+        # the message loop pops the matching handler and invokes it so the
+        # caller (core.trigger_agent_callbacks) can re-enqueue the cb that
+        # was optimistically pruned after send. Entries also self-expire to
+        # avoid leaks if the server never acks.
+        self._inject_rejection_handlers: Dict[str, Callable[[str], None]] = {}
 
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
@@ -1623,7 +1634,12 @@ class OmniRealtimeClient:
         """
         return bool(self._is_responding)
 
-    async def inject_text_and_request_response(self, text: str) -> None:
+    async def inject_text_and_request_response(
+        self,
+        text: str,
+        *,
+        on_rejected: Optional[Callable[[str], None]] = None,
+    ) -> None:
         """Inject a system-role text item and explicitly trigger a response.
 
         Used by the voice-mode proactive path (agent task callbacks /
@@ -1636,6 +1652,14 @@ class OmniRealtimeClient:
         (see ``is_active_response``) — the realtime API only allows one
         in-flight response at a time and will reject a second
         ``response.create`` with ``response_already_active``.
+
+        Server-side rejection (e.g. VAD races in between the caller's gate
+        check and our ``response.create``) does not raise here because the
+        server delivers it asynchronously via an ``error`` event. Pass
+        ``on_rejected=cb(error_msg)`` to receive that rejection — the
+        message loop will invoke it when ``error.event_id`` matches the
+        client-side id we stamp on ``response.create``. The caller can use
+        it to put the optimistically-pruned cb back in the queue.
 
         Provider dispatch:
           - **OpenAI / GLM / Step / free / GPT**: ``conversation.item.create``
@@ -1690,11 +1714,49 @@ class OmniRealtimeClient:
             raise RuntimeError(
                 "realtime connection lost after proactive conversation.item.create"
             )
-        await self.send_event({"type": "response.create"})
-        if self._fatal_error_occurred or self.ws is None:
-            raise RuntimeError(
-                "realtime connection lost after proactive response.create"
-            )
+        # Stamp a stable client event_id on response.create so the server's
+        # ``error.event_id`` can be matched back to this specific request if
+        # the realtime API rejects it (e.g. ``response_already_active`` from
+        # a VAD race winning between the caller's gate check and our send).
+        # ``send_event()`` would otherwise overwrite a missing event_id with
+        # its own timestamp-based string — fine for routing but useless for
+        # rejection matching since the caller has no view of it.
+        create_event_id: Optional[str] = None
+        if on_rejected is not None:
+            create_event_id = f"event_inject_{uuid.uuid4().hex}"
+            self._inject_rejection_handlers[create_event_id] = on_rejected
+            # The realtime API echoes our event_id on ``error`` but NOT on
+            # ``response.created`` — so a successful inject leaves the handler
+            # registered with no natural cleanup signal. TTL-expire it after
+            # 3s (well beyond any realistic server round-trip) to keep the
+            # dict from growing one entry per proactive cb over the session.
+            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 3.0))
+        create_event: Dict[str, Any] = {"type": "response.create"}
+        if create_event_id is not None:
+            create_event["event_id"] = create_event_id
+        try:
+            await self.send_event(create_event)
+            if self._fatal_error_occurred or self.ws is None:
+                raise RuntimeError(
+                    "realtime connection lost after proactive response.create"
+                )
+        except Exception:
+            # Send itself blew up — drop the rejection handler so the caller's
+            # synchronous ``except`` path is the single source of truth and we
+            # don't double-fire (re-queue via except AND via a late error
+            # event that arrives after WS recovery).
+            if create_event_id is not None:
+                self._inject_rejection_handlers.pop(create_event_id, None)
+            raise
+
+    async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
+        """TTL-cleanup for the inject rejection handler dict (see
+        ``inject_text_and_request_response``)."""
+        try:
+            await asyncio.sleep(ttl)
+        except asyncio.CancelledError:
+            return
+        self._inject_rejection_handlers.pop(event_id, None)
 
     async def prompt_ephemeral(
         self,
@@ -2064,7 +2126,28 @@ class OmniRealtimeClient:
                 if event_type == "error":
                     error_msg = str(event.get('error', ''))
                     logger.error(f"API Error: {error_msg}")
-                    
+
+                    # If this error is the server rejecting a proactive
+                    # ``response.create`` we stamped with a tracked event_id
+                    # (e.g. ``response_already_active`` from a VAD race),
+                    # invoke the per-inject rejection handler so the caller
+                    # can re-enqueue the optimistically-pruned cb. ``error``
+                    # events normally echo the offending client event_id at
+                    # ``error.event_id``; fall back to the top-level
+                    # ``event_id`` for providers that put it there instead.
+                    err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
+                    err_event_id = err_obj.get('event_id') or event.get('event_id')
+                    if err_event_id:
+                        handler = self._inject_rejection_handlers.pop(err_event_id, None)
+                        if handler is not None:
+                            try:
+                                handler(error_msg)
+                            except Exception as cb_exc:
+                                logger.warning(
+                                    "proactive inject rejection handler raised: %s",
+                                    cb_exc,
+                                )
+
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
                         self._is_throttled = True

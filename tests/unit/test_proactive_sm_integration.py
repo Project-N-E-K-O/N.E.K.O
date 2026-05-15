@@ -101,7 +101,7 @@ async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
         def is_active_response(self) -> bool:
             return self._is_responding
 
-        async def inject_text_and_request_response(self, text: str) -> None:
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             self.injected.append(text)
 
     sess = _VoiceSess()
@@ -138,7 +138,7 @@ async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
         def is_active_response(self) -> bool:
             return False
 
-        async def inject_text_and_request_response(self, text: str) -> None:
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             self.injected.append(text)
 
     sess = _VoiceSess()
@@ -183,7 +183,7 @@ async def test_voice_mode_busy_defers_cbs_for_retry():
         def is_active_response(self) -> bool:
             return self._is_responding
 
-        async def inject_text_and_request_response(self, text: str) -> None:
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             self.injected.append(text)
 
     sess = _VoiceSess()
@@ -214,7 +214,7 @@ async def test_voice_mode_drop_uses_id_match_not_length_alignment():
         def is_active_response(self) -> bool:
             return False
 
-        async def inject_text_and_request_response(self, text: str) -> None:
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             self.injected.append(text)
 
     sess = _VoiceSess()
@@ -238,6 +238,53 @@ async def test_voice_mode_drop_uses_id_match_not_length_alignment():
     assert mgr.pending_extra_replies == [stale_extra_a, stale_extra_b]
 
 
+async def test_voice_mode_server_rejection_re_enqueues_cb():
+    """Voice 模式：``response.create`` 被 server 拒（``response_already_active``
+    等 VAD 抢跑场景）通过 error 事件异步回来，``inject_text_and_request_response``
+    本身已经 return 了。我们注册的 ``on_rejected`` 回调必须把那条已乐观剔除
+    的 cb 重新塞回 ``pending_agent_callbacks``，让 ``_finalize_turn_after_emit``
+    在下一次 response.done 后的 retry 把它捡起来。锁死 Codex r3249012424。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    captured_rejection: list = []
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+            self.injected: list[str] = []
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
+            self.injected.append(text)
+            # 不在这里 fire；测试模拟 inject 已返回，但 cb 尚未在 server 端被处理
+            captured_rejection.append(on_rejected)
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-race", "status": "completed", "summary": "race-cb"}
+    extra = {"_callback_delivery_id": "id-race", "origin": "task_result", "summary": "race-cb"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    # 乐观剔除：两条队列都空
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    assert len(captured_rejection) == 1
+    assert captured_rejection[0] is not None
+
+    # 模拟 server 异步抛回 response_already_active
+    captured_rejection[0]("response_already_active")
+
+    # cb 被 on_rejected 回到 pending_agent_callbacks，等下次 trigger 重投
+    assert len(mgr.pending_agent_callbacks) == 1
+    assert mgr.pending_agent_callbacks[0]["_callback_delivery_id"] == "id-race"
+
+
 async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
     """Voice 模式（Gemini/Qwen 抛 NotImplementedError）：drop proactive cb，
     走现有 hot-swap 路径（pending_extra_replies 保留供下一 hot-swap 注入）。"""
@@ -250,7 +297,7 @@ async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
         def is_active_response(self) -> bool:
             return False
 
-        async def inject_text_and_request_response(self, text: str) -> None:
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             raise NotImplementedError("test provider: no manual inject")
 
     sess = _VoiceSess()
@@ -276,7 +323,7 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
         def is_active_response(self) -> bool:
             return False
 
-        async def inject_text_and_request_response(self, text: str) -> None:
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             raise RuntimeError("ws boom")
 
     sess = _VoiceSess()

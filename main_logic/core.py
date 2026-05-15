@@ -5578,8 +5578,47 @@ class LLMSessionManager:
                 passive=False,
             )
             voice_snapshot = list(proactive_cbs)
+
+            # Server-side rejection of ``response.create`` (e.g.
+            # ``response_already_active`` from a VAD race winning between
+            # our gate check and our send) is delivered asynchronously as
+            # an ``error`` event, not via this call's return value or an
+            # exception. Without a rejection callback, the optimistic prune
+            # below would silently drop the cb. Re-enqueue the snapshot on
+            # rejection so the next ``_finalize_turn_after_emit`` retry
+            # picks it up cleanly.
+            lanlan_name_snapshot = self.lanlan_name
+
+            def _on_voice_inject_rejected(error_msg: str, _snapshot=voice_snapshot, _lanlan=lanlan_name_snapshot) -> None:
+                logger.warning(
+                    "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
+                    _lanlan, error_msg, len(_snapshot),
+                )
+                # Only re-add cbs whose delivery_id is not currently in either
+                # queue — guards against double-add if the caller's exception
+                # branch also restored them (defensive; the inject_*
+                # implementation drops the rejection handler on synchronous
+                # send failure so this path only fires for server-side errors).
+                existing_ids = {
+                    cb.get("_callback_delivery_id")
+                    for cb in self.pending_agent_callbacks
+                    if cb.get("_callback_delivery_id")
+                }
+                existing_ids.update(
+                    extra.get("_callback_delivery_id")
+                    for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id")
+                )
+                for cb in _snapshot:
+                    cb_id = cb.get("_callback_delivery_id")
+                    if cb_id and cb_id in existing_ids:
+                        continue
+                    self.pending_agent_callbacks.append(cb)
+
             try:
-                await voice_sess.inject_text_and_request_response(instruction)
+                await voice_sess.inject_text_and_request_response(
+                    instruction, on_rejected=_on_voice_inject_rejected
+                )
             except NotImplementedError:
                 # Provider doesn't support manual inject (Gemini Live / Qwen).
                 # Fall through to the legacy hot-swap path: drop the proactive
