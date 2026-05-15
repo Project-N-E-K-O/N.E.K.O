@@ -1015,8 +1015,12 @@
     }
 
     function composeMemo(body, older) {
-        const cleanBody = String(body == null ? '' : body).replace(/\s+$/, '');
-        const cleanOlder = String(older == null ? '' : older).replace(/^\s+/, '');
+        // body 的尾部 / older 的首部都只去掉"整行空白"——也就是 trailing blank
+        // lines / leading blank lines——保留段内有意义的前导缩进（用户在 older
+        // textarea 里手写嵌套列表 / 代码片段时不被吃）。
+        // 拼回时再用规范 `\n\n---\n\n` 形式，splitter 端会容忍换行漂移。
+        const cleanBody = String(body == null ? '' : body).replace(/(?:[ \t]*\r?\n)+$/, '');
+        const cleanOlder = String(older == null ? '' : older).replace(/^(?:[ \t]*\r?\n)+/, '');
         if (!cleanOlder) return cleanBody;
         return cleanBody + '\n\n---\n\n' + cleanOlder;
     }

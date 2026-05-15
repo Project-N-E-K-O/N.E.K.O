@@ -475,6 +475,91 @@ def test_memory_browser_saves_memo_with_divider_roundtrip(
 
 
 @pytest.mark.frontend
+def test_memory_browser_preserves_leading_indent_in_older_section(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file_with_older_divider,
+):
+    """Regression for codex review on PR #1358: composeMemo 不能把 older 段首字符
+    的有意义缩进当 noise 削掉——只能削整行空白。比如用户在 older textarea 里
+    手写一个嵌套列表（前导 2 空格 / tab），保存后必须 byte-for-byte 留住。"""
+    mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
+
+    saved_payloads: list[dict] = []
+    app_root = seed_memory_file_with_older_divider.parents[2]
+
+    def handle_bootstrap(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "current_root": str(app_root),
+                "recommended_root": str(app_root),
+                "legacy_sources": [],
+                "selection_required": False,
+                "migration_pending": False,
+                "recovery_required": False,
+                "blocking_reason": "",
+            },
+        )
+
+    def handle_recent_files(route):
+        route.fulfill(status=200, content_type="application/json", json={"files": ["recent_测试猫娘.json"]})
+
+    def handle_current_catgirl(route):
+        route.fulfill(status=200, content_type="application/json", json={"current_catgirl": "测试猫娘"})
+
+    def handle_recent_file(route):
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={"content": seed_memory_file_with_older_divider.read_text(encoding="utf-8")},
+        )
+
+    def handle_review_config(route):
+        route.fulfill(status=200, content_type="application/json", json={"enabled": True})
+
+    def handle_save(route):
+        saved_payloads.append(_request_json(route))
+        route.fulfill(status=200, content_type="application/json", json={"success": True, "need_refresh": False})
+
+    mock_page.route("**/api/storage/location/bootstrap", handle_bootstrap)
+    mock_page.route("**/api/memory/recent_files", handle_recent_files)
+    mock_page.route("**/api/characters/current_catgirl", handle_current_catgirl)
+    mock_page.route("**/api/memory/recent_file?**", handle_recent_file)
+    mock_page.route("**/api/memory/review_config", handle_review_config)
+    mock_page.route("**/api/memory/recent_file/save", handle_save)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
+    mock_page.wait_for_selector(".memo-textarea--older", timeout=5000)
+
+    # 写一段首字符就有 2 空格缩进 + 后续行 4 空格缩进的内容（模拟嵌套列表）
+    indented_older = "  顶层条目一\n    子条目 a\n    子条目 b"
+    older_ta = mock_page.locator(".memo-textarea--older").first
+    older_ta.fill(indented_older)
+    mock_page.locator(".memo-textarea:not(.memo-textarea--older)").first.click()
+
+    with mock_page.expect_response(
+        lambda r: "/api/memory/recent_file/save" in r.url
+        and r.request.method == "POST"
+        and r.status == 200
+    ):
+        mock_page.locator("#save-memory-btn").click()
+
+    assert len(saved_payloads) == 1
+    saved_text = next(
+        m["text"] for m in saved_payloads[0]["chat"] if m.get("role") == "system"
+    )
+
+    # 关键断言：分隔符之后立刻是 `  顶层条目一`，前导 2 空格没有被吃掉
+    assert "\n\n---\n\n  顶层条目一\n    子条目 a\n    子条目 b" in saved_text, (
+        f"older 段前导缩进被吞掉了，实际保存：{saved_text!r}"
+    )
+
+
+@pytest.mark.frontend
 def test_memory_browser_auto_review_toggle(mock_page: Page, running_server: str, seed_memory_file):
     """Test that the auto-review toggle works and persists."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
