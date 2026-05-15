@@ -134,32 +134,47 @@ def _configure_ssl_cert_bundle() -> None:
         )
         return
 
-    # 找用户预置的有效 PEM 文件作为"信任源 fallback"——任何一个变量上的有效
-    # 文件都意味着用户已经为这次部署声明了一份信任的 CA bundle，理应让其它
-    # 失效 / 缺失的变量也用这同一份，而不是被 certifi 覆盖掉。这避免一个
-    # 经典坑：用户在打包发行版上只设了 CURL_CA_BUNDLE=/etc/private-ca.pem，
-    # 但 requests 的查找顺序是 REQUESTS_CA_BUNDLE → CURL_CA_BUNDLE → default，
-    # 如果我们把 REQUESTS_CA_BUNDLE 填成 certifi，requests 反而看不到用户
-    # 那个有效的私有 CA，对企业内网 HTTPS 验证失败。
+    # 每个失效变量按"自身语义最贴近的 fallback 顺序"挑来源，保持各库自己
+    # 的查找语义不变；都没拿到再用 certifi 兜底。
     #
-    # 仅考虑 file 路径：REQUESTS_CA_BUNDLE 允许的目录（capath）不能直接喂给
-    # OpenSSL / curl（它们用 SSL_CERT_DIR / CURL_CA_PATH 表达目录），所以
-    # 目录值留给 REQUESTS 自己用，跨变量传播只针对文件。
-    user_file_ca: str | None = None
-    for name in var_names:
-        value = os.environ.get(name)
-        if value and os.path.isfile(value):
-            user_file_ca = value
-            break
+    # 关键场景：用户故意分流 SSL_CERT_FILE=/etc/openssl.pem 给 OpenSSL、
+    # CURL_CA_BUNDLE=/etc/curl.pem 给 curl/requests，没设 REQUESTS_CA_BUNDLE
+    # 想让 requests 走文档里的 fallback (REQUESTS → CURL → default)。如果
+    # 我们对所有失效变量都 break 在第一个找到的有效文件（顺序为 SSL → REQUESTS
+    # → CURL），REQUESTS_CA_BUNDLE 会被错填成 SSL 的 PEM，requests 看不到
+    # 用户预期的 CURL_CA_BUNDLE，HTTPS 行为偏离文档。
+    #
+    # 偏好顺序设计依据：
+    # - SSL_CERT_FILE: OpenSSL 没 documented fallback，但 REQUESTS / CURL 的
+    #   PEM 都是 OpenSSL 兼容文件，任选其一无大差异；REQUESTS 排前因为更可能
+    #   是用户业务侧的 trust bundle，CURL 排后留给系统级 curl 配置。
+    # - REQUESTS_CA_BUNDLE: requests 文档明确 fallback 到 CURL_CA_BUNDLE，
+    #   所以 CURL 必须排第一；SSL 作为最后兜底（仍是有效 PEM）。
+    # - CURL_CA_BUNDLE: curl 没 documented fallback，按"系统全局信任 → 业务
+    #   信任"的直觉：SSL 排前，REQUESTS 兜底。
+    #
+    # 只看 file：REQUESTS_CA_BUNDLE 允许的目录（capath）不能喂给 OpenSSL /
+    # curl，跨变量传播一律走文件。
+    propagation_sources = {
+        "SSL_CERT_FILE": ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"),
+        "REQUESTS_CA_BUNDLE": ("CURL_CA_BUNDLE", "SSL_CERT_FILE"),
+        "CURL_CA_BUNDLE": ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"),
+    }
 
-    fallback_ca = user_file_ca or ca_path
+    def _pick_fallback(target: str) -> str:
+        for src in propagation_sources[target]:
+            value = os.environ.get(src)
+            if value and os.path.isfile(value):
+                return value
+        return ca_path
 
-    # 三个变量统一处理：已存在且有效 → 保留；否则 → 用 fallback_ca 填补。
-    # `setdefault` 不够：继承自打包构建机 / 旧路径的失效值会让 requests /
-    # curl 仍然报 verify failed，本函数要避免的恰恰就是这个症状。
+    # 三个变量统一处理：已存在且有效 → 保留；否则 → 按 propagation_sources
+    # 顺序找一个有效 PEM 文件填，找不到才用 certifi。`setdefault` 不够：
+    # 继承自打包构建机 / 旧路径的失效值会让 requests / curl 仍然报 verify
+    # failed，本函数要避免的恰恰就是这个症状。
     for name in var_names:
         if not _existing_is_valid(name):
-            os.environ[name] = fallback_ca
+            os.environ[name] = _pick_fallback(name)
 
 
 # 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
