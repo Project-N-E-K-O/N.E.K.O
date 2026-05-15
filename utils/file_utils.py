@@ -231,21 +231,25 @@ def _normalize_quotes(s: str) -> str:
     return ''.join(out)
 
 
+# 故障指纹：字面量 ``\n`` 紧贴一个 `---` 分隔符行（前后都是字面量换行）。
+# LLM 把 summary 整段 over-escape 后会在 ``body\n\n---\n\nolder``（全字面量）
+# 里留下这个签名。比"无真换行 ∧ 含 \\n"更严格——避开 Windows 路径
+# ``C:\new_folder``、regex meta-char ``\n``、tool args 里有意的字面量 escape
+# 等极其常见的合法场景（那些场景里 ``\n`` 周围不会有 ``---`` 行）。
+_OVERESCAPED_DIVIDER_RE = re.compile(r'(?:\\r\\n|\\r|\\n)[ \t]*-{3,}[ \t]*(?:\\r\\n|\\r|\\n)')
+
+
 def _normalize_overescaped_newlines(obj: Any) -> Any:
-    """LLM 偶尔会把 `\\n` 在 JSON 源里再转义一遍，导致解析出来是字面量
-    backslash-n（2 字符）而非真换行。这里递归把 string value 里的过度转义还原。
+    """LLM 把 ``\\n`` 在 JSON 源里再转义一遍时，解析后字符串里就是字面量
+    backslash-n（2 字符）而非真换行。这里只在能找到**过度转义的 ``---`` 分隔符
+    指纹**时把这一类 escape 还原成真换行 / 制表——其它含字面量 ``\\n`` 的字符串
+    （Windows 路径、regex、code 片段、tool args）一律不动。
 
-    保守触发：**完全没有真换行 ∧ 含字面量 ``\\n``**，才动手。
-    - 全字面量是 LLM 整段过度转义的典型故障，归一化绝对安全。
-    - 真换行已存在说明 LLM 知道用 newline 转义，那剩下的字面量 ``\\n`` 可能是
-      它有意为之（罕见但要尊重），不动。
-
-    只处理换行 / 回车 / 制表（``\\n`` / ``\\r\\n`` / ``\\r`` / ``\\t``）—— 其它
-    ``\\X``（如 ``\\u`` 编码、自定义 escape 在 code/regex 字符串里）一律不动，
-    避免误伤 tool call args 等以字面量传递的代码/正则。
+    只处理换行 / 回车 / 制表（``\\n`` / ``\\r\\n`` / ``\\r`` / ``\\t``）——
+    `\\u` 编码、自定义 escape 等不在范围。
     """
     if isinstance(obj, str):
-        if '\n' not in obj and '\\n' in obj:
+        if _OVERESCAPED_DIVIDER_RE.search(obj):
             return (
                 obj.replace('\\r\\n', '\n')
                 .replace('\\n', '\n')
