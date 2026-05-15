@@ -77,13 +77,22 @@ def _configure_ssl_cert_bundle() -> None:
     （libssl 的 OPENSSLDIR 本身就指不到任何东西），所以只在 IS_FROZEN
     分支里兜底。
 
-    用户已显式设过 SSL_CERT_FILE 且文件存在时，无论是否冻结都尊重原值。
+    用户已显式设过任一变量且文件存在时，无论是否冻结都尊重原值；只覆盖
+    那些缺失或指向已不存在路径的变量（比如打包构建机继承下来的失效路径）。
     """
-    existing = os.environ.get("SSL_CERT_FILE")
-    if existing and os.path.isfile(existing):
+    var_names = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+    def _existing_is_valid(name: str) -> bool:
+        value = os.environ.get(name)
+        return bool(value and os.path.isfile(value))
+
+    # 三个变量都已经指向有效文件 → 完全不动。
+    if all(_existing_is_valid(name) for name in var_names):
         return
 
     # 源码模式：保持系统默认信任链，不强行换 certifi（避免破坏企业 CA 场景）。
+    # 即便某个变量目前指向失效路径，源码模式也由用户/上游脚本负责修——我们
+    # 没法区分"用户故意指向坏路径调试"和"误继承坏路径"。
     if not IS_FROZEN:
         return
 
@@ -97,23 +106,47 @@ def _configure_ssl_cert_bundle() -> None:
         ca_path = None
 
     if ca_path is None:
-        # 冻结环境兜底：build-desktop.yml 把 certifi/cacert.pem 落到 bundle_dir 下
+        # 冻结环境兜底：build-desktop.yml 把 certifi/cacert.pem 落到 bundle_dir 下；
+        # PyInstaller onefile 模式下 bundle_dir == sys._MEIPASS（见文件顶部
+        # IS_FROZEN 分支），所以这一份候选覆盖了主流冻结布局。
         candidate = os.path.join(bundle_dir, "certifi", "cacert.pem")
         if os.path.isfile(candidate):
             ca_path = candidate
 
     if ca_path is None:
+        # 冻结环境下找不到任何 CA bundle —— 外网 TLS 注定挂，给运维一个明确的
+        # 根因提示，避免下游只看到二手的 "certificate verify failed"。
+        print(
+            "[Launcher] Warning: failed to locate CA bundle in frozen build "
+            f"(certifi.where() unavailable, no certifi/cacert.pem under {bundle_dir}); "
+            "external HTTPS / WSS will fail with certificate verify failed.",
+            flush=True,
+        )
         return
 
-    os.environ["SSL_CERT_FILE"] = ca_path
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_path)
-    os.environ.setdefault("CURL_CA_BUNDLE", ca_path)
+    # 三个变量统一处理：已存在且有效 → 保留（尊重用户预置的企业 CA 路径）；
+    # 否则 → 覆盖为 ca_path。`setdefault` 不够：继承自打包构建机 / 旧路径的
+    # 失效值会让 requests / curl 仍然报 verify failed，本函数要避免的恰恰
+    # 就是这个症状。
+    for name in var_names:
+        if not _existing_is_valid(name):
+            os.environ[name] = ca_path
 
 
 # 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
 # import 时就会通过 OpenSSL 把默认 verify paths 锁住，之后再设环境变量
 # 对已有 SSLContext 不生效。下面 from utils.* import ... 已经会拉起 httpx /
 # openai SDK 链路，所以这里抢在前面跑。
+#
+# 用显式判断而非 `assert`：`python -O` 会剥离 assert，把检查变成静默通过。
+# 这里希望任何在本函数之前 import ssl 的回归都能被运维直接看到。
+if "ssl" in sys.modules:
+    print(
+        "[Launcher] Warning: `ssl` was imported before _configure_ssl_cert_bundle() ran; "
+        "SSL_CERT_FILE override won't affect the already-initialized default SSLContext. "
+        "Move SSL bootstrap higher in launcher.py.",
+        flush=True,
+    )
 _configure_ssl_cert_bundle()
 
 
