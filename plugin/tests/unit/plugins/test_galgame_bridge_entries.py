@@ -20,70 +20,76 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
 
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
-    startup = await plugin.startup()
-    assert isinstance(startup, Ok)
+    started = False
+    try:
+        startup = await plugin.startup()
+        assert isinstance(startup, Ok)
+        started = True
 
-    entry_ids = sorted(
-        entry_id
-        for entry_id, handler in plugin.collect_entries().items()
-        if handler.meta.event_type == "plugin_entry"
-    )
-    assert entry_ids == [
-        "galgame_agent_command",
-        "galgame_apply_recommended_ocr_capture_profile",
-        "galgame_auto_recalibrate_ocr_dialogue_profile",
-        "galgame_bind_game",
-        "galgame_build_ocr_screen_template_draft",
-        "galgame_continue_auto_advance",
-        "galgame_download_rapidocr_models",
-        "galgame_evaluate_ocr_screen_awareness_model",
-        "galgame_explain_line",
-        "galgame_get_history",
-        "galgame_get_ocr_screen_awareness_snapshot",
-        "galgame_get_snapshot",
-        "galgame_get_status",
-        "galgame_install_textractor",
-        "galgame_list_memory_reader_processes",
-        "galgame_list_ocr_windows",
-        "galgame_open_ui",
-        "galgame_rollback_ocr_capture_profile",
-        "galgame_set_llm_vision",
-        "galgame_set_memory_reader_target",
-        "galgame_set_mode",
-        "galgame_set_ocr_backend",
-        "galgame_set_ocr_capture_profile",
-        "galgame_set_ocr_screen_templates",
-        "galgame_set_ocr_timing",
-        "galgame_set_ocr_window_target",
-        "galgame_set_rapidocr_lang",
-        "galgame_suggest_choice",
-        "galgame_summarize_scene",
-        "galgame_train_ocr_screen_awareness_model",
-        "galgame_validate_ocr_screen_templates",
-    ]
-    for phase1_entry in (
-        "galgame_bind_game",
-        "galgame_get_history",
-        "galgame_get_snapshot",
-        "galgame_get_status",
-        "galgame_open_ui",
-        "galgame_set_mode",
-    ):
-        assert phase1_entry in entry_ids
+        entry_ids = sorted(
+            entry_id
+            for entry_id, handler in plugin.collect_entries().items()
+            if handler.meta.event_type == "plugin_entry"
+        )
+        assert entry_ids == [
+            "galgame_agent_command",
+            "galgame_apply_recommended_ocr_capture_profile",
+            "galgame_auto_recalibrate_ocr_dialogue_profile",
+            "galgame_bind_game",
+            "galgame_build_ocr_screen_template_draft",
+            "galgame_continue_auto_advance",
+            "galgame_download_rapidocr_models",
+            "galgame_evaluate_ocr_screen_awareness_model",
+            "galgame_explain_line",
+            "galgame_get_history",
+            "galgame_get_ocr_screen_awareness_snapshot",
+            "galgame_get_snapshot",
+            "galgame_get_status",
+            "galgame_install_textractor",
+            "galgame_list_memory_reader_processes",
+            "galgame_list_ocr_windows",
+            "galgame_open_ui",
+            "galgame_rollback_ocr_capture_profile",
+            "galgame_set_llm_vision",
+            "galgame_set_memory_reader_target",
+            "galgame_set_mode",
+            "galgame_set_ocr_backend",
+            "galgame_set_ocr_capture_profile",
+            "galgame_set_ocr_screen_templates",
+            "galgame_set_ocr_timing",
+            "galgame_set_ocr_window_target",
+            "galgame_set_rapidocr_lang",
+            "galgame_suggest_choice",
+            "galgame_summarize_scene",
+            "galgame_train_ocr_screen_awareness_model",
+            "galgame_validate_ocr_screen_templates",
+        ]
+        for phase1_entry in (
+            "galgame_bind_game",
+            "galgame_get_history",
+            "galgame_get_snapshot",
+            "galgame_get_status",
+            "galgame_open_ui",
+            "galgame_set_mode",
+        ):
+            assert phase1_entry in entry_ids
 
-    assert plugin.get_list_actions() == [
-        {
-            "id": "open_ui",
-            "kind": "ui",
-            "target": "/plugin/galgame_plugin/ui/",
-            "open_in": "new_tab",
-        }
-    ]
+        assert plugin.get_list_actions() == [
+            {
+                "id": "open_ui",
+                "kind": "ui",
+                "target": "/plugin/galgame_plugin/ui/",
+                "open_in": "new_tab",
+            }
+        ]
 
-    static_ui = plugin.get_static_ui_config()
-    assert static_ui is not None
-    assert static_ui["plugin_id"] == "galgame_plugin"
-    assert Path(str(static_ui["directory"])).name == "static"
+        static_ui = plugin.get_static_ui_config()
+        assert static_ui is not None
+        assert static_ui["plugin_id"] == "galgame_plugin"
+        assert Path(str(static_ui["directory"])).name == "static"
+    finally:
+        if started:
+            await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -221,35 +227,38 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
         ),
     )
 
-    explain = await plugin.galgame_explain_line()
-    summarize = await plugin.galgame_summarize_scene()
-    suggest = await plugin.galgame_suggest_choice()
-    agent_status = await plugin.galgame_agent_command(action="query_status")
-    agent_reply = await plugin.galgame_agent_command(
-        action="query_context",
-        context_query="scene query",
-    )
+    try:
+        explain = await plugin.galgame_explain_line()
+        summarize = await plugin.galgame_summarize_scene()
+        suggest = await plugin.galgame_suggest_choice()
+        agent_status = await plugin.galgame_agent_command(action="query_status")
+        agent_reply = await plugin.galgame_agent_command(
+            action="query_context",
+            context_query="scene query",
+        )
 
-    assert isinstance(explain, Ok)
-    assert explain.value["degraded"] is True
-    assert explain.value["line_id"] == "line-1"
-    assert "gateway_unavailable" in explain.value["diagnostic"]
+        assert isinstance(explain, Ok)
+        assert explain.value["degraded"] is True
+        assert explain.value["line_id"] == "line-1"
+        assert "gateway_unavailable" in explain.value["diagnostic"]
 
-    assert isinstance(summarize, Ok)
-    assert summarize.value["degraded"] is True
-    assert summarize.value["scene_id"] == "scene-a"
+        assert isinstance(summarize, Ok)
+        assert summarize.value["degraded"] is True
+        assert summarize.value["scene_id"] == "scene-a"
 
-    assert isinstance(suggest, Ok)
-    assert suggest.value["degraded"] is True
-    assert suggest.value["choices"] == []
+        assert isinstance(suggest, Ok)
+        assert suggest.value["degraded"] is True
+        assert suggest.value["choices"] == []
 
-    assert isinstance(agent_status, Ok)
-    assert agent_status.value["action"] == "query_status"
-    assert isinstance(agent_status.value["recent_pushes"], list)
+        assert isinstance(agent_status, Ok)
+        assert agent_status.value["action"] == "query_status"
+        assert isinstance(agent_status.value["recent_pushes"], list)
 
-    assert isinstance(agent_reply, Ok)
-    assert agent_reply.value["action"] == "query_context"
-    assert "scene query" in agent_reply.value["result"]
+        assert isinstance(agent_reply, Ok)
+        assert agent_reply.value["action"] == "query_context"
+        assert "scene query" in agent_reply.value["result"]
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -258,27 +267,33 @@ async def test_galgame_continue_auto_advance_sets_choice_advisor_and_resumes_age
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
-    startup = await plugin.startup()
-    assert isinstance(startup, Ok)
+    started = False
+    try:
+        startup = await plugin.startup()
+        assert isinstance(startup, Ok)
+        started = True
 
-    assert plugin._game_agent is not None
-    plugin._game_agent._explicit_standby = True
-    plugin._game_agent._next_actuation_at = 123.0
+        assert plugin._game_agent is not None
+        plugin._game_agent._explicit_standby = True
+        plugin._game_agent._next_actuation_at = 123.0
 
-    result = await plugin.galgame_continue_auto_advance(message="继续推进剧情")
+        result = await plugin.galgame_continue_auto_advance(message="继续推进剧情")
 
-    assert isinstance(result, Ok)
-    assert plugin._state.mode == "choice_advisor"
-    assert plugin._state.push_notifications is True
-    assert result.value["action"] == "continue_auto_advance"
-    assert result.value["mode"] == "choice_advisor"
-    assert result.value["mode_result"]["success"] is True
-    assert result.value["mode_result"]["mode"] == "choice_advisor"
-    assert result.value["agent_result"]["action"] == "send_message"
-    assert "恢复游戏 LLM" in result.value["agent_result"]["result"]
-    assert result.value["status"] == result.value["agent_result"]["status"]
-    assert plugin._game_agent._explicit_standby is False
-    assert plugin._game_agent._next_actuation_at == 0.0
+        assert isinstance(result, Ok)
+        assert plugin._state.mode == "choice_advisor"
+        assert plugin._state.push_notifications is True
+        assert result.value["action"] == "continue_auto_advance"
+        assert result.value["mode"] == "choice_advisor"
+        assert result.value["mode_result"]["success"] is True
+        assert result.value["mode_result"]["mode"] == "choice_advisor"
+        assert result.value["agent_result"]["action"] == "send_message"
+        assert "恢复游戏 LLM" in result.value["agent_result"]["result"]
+        assert result.value["status"] == result.value["agent_result"]["status"]
+        assert plugin._game_agent._explicit_standby is False
+        assert plugin._game_agent._next_actuation_at == 0.0
+    finally:
+        if started:
+            await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -289,41 +304,47 @@ async def test_galgame_continue_auto_advance_preserves_mode_result_schema_when_m
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
     plugin = GalgameBridgePlugin(ctx)
-    startup = await plugin.startup()
-    assert isinstance(startup, Ok)
+    started = False
+    try:
+        startup = await plugin.startup()
+        assert isinstance(startup, Ok)
+        started = True
 
-    assert plugin._game_agent is not None
-    plugin._game_agent._explicit_standby = True
-    plugin._game_agent._next_actuation_at = 123.0
-    with plugin._state_lock:
-        plugin._state.mode = "choice_advisor"
-        plugin._state.push_notifications = True
-        plugin._state.advance_speed = "medium"
+        assert plugin._game_agent is not None
+        plugin._game_agent._explicit_standby = True
+        plugin._game_agent._next_actuation_at = 123.0
+        with plugin._state_lock:
+            plugin._state.mode = "choice_advisor"
+            plugin._state.push_notifications = True
+            plugin._state.advance_speed = "medium"
 
-    result = await plugin.galgame_continue_auto_advance(message="继续推动剧情")
+        result = await plugin.galgame_continue_auto_advance(message="继续推动剧情")
 
-    assert isinstance(result, Ok)
-    assert result.value["action"] == "continue_auto_advance"
-    assert result.value["mode_result"]["success"] is True
-    assert result.value["mode_result"]["mode"] == "choice_advisor"
-    assert result.value["mode_result"]["push_notifications"] is True
-    mode_payload = result.value["mode_result"]["result"]
-    assert mode_payload["mode"] == "choice_advisor"
-    assert mode_payload["push_notifications"] is True
-    assert mode_payload["advance_speed"] == "medium"
-    assert mode_payload["reader_mode"] == plugin._cfg.reader_mode
-    assert mode_payload["summary"] == (
-        "mode=choice_advisor "
-        "push_notifications=True "
-        "advance_speed=medium "
-        f"reader_mode={plugin._cfg.reader_mode}"
-    )
-    assert mode_payload["skipped"] is True
-    assert mode_payload["skip_reason"] == "already_applied"
-    assert result.value["agent_result"]["action"] == "send_message"
-    assert "恢复游戏 LLM" in result.value["agent_result"]["result"]
-    assert plugin._game_agent._explicit_standby is False
-    assert plugin._game_agent._next_actuation_at == 0.0
+        assert isinstance(result, Ok)
+        assert result.value["action"] == "continue_auto_advance"
+        assert result.value["mode_result"]["success"] is True
+        assert result.value["mode_result"]["mode"] == "choice_advisor"
+        assert result.value["mode_result"]["push_notifications"] is True
+        mode_payload = result.value["mode_result"]["result"]
+        assert mode_payload["mode"] == "choice_advisor"
+        assert mode_payload["push_notifications"] is True
+        assert mode_payload["advance_speed"] == "medium"
+        assert mode_payload["reader_mode"] == plugin._cfg.reader_mode
+        assert mode_payload["summary"] == (
+            "mode=choice_advisor "
+            "push_notifications=True "
+            "advance_speed=medium "
+            f"reader_mode={plugin._cfg.reader_mode}"
+        )
+        assert mode_payload["skipped"] is True
+        assert mode_payload["skip_reason"] == "already_applied"
+        assert result.value["agent_result"]["action"] == "send_message"
+        assert "恢复游戏 LLM" in result.value["agent_result"]["result"]
+        assert plugin._game_agent._explicit_standby is False
+        assert plugin._game_agent._next_actuation_at == 0.0
+    finally:
+        if started:
+            await plugin.shutdown()
 
 
 @pytest.mark.asyncio

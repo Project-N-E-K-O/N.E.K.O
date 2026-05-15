@@ -1079,6 +1079,69 @@ def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path)
     assert len(public_context["recent_lines"]) == 3
 
 
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_choice_context_uses_dynamic_window_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    config = SimpleNamespace(
+        context_explain_min_lines=2,
+        context_explain_max_lines=2,
+        context_window_target_tokens=16,
+    )
+    fake_gateway = _FakeLLMGateway(
+        suggest_payload={"degraded": True, "choices": [], "diagnostic": "no choices"}
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+        config=config,
+    )
+    calls: list[object] = []
+
+    def _fake_build_suggest_context(
+        shared: dict[str, object],
+        *,
+        config: object | None = None,
+    ) -> dict[str, object]:
+        calls.append(config)
+        return {
+            "visible_choices": list(
+                ((shared.get("latest_snapshot") or {}).get("choices") or [])
+            ),
+        }
+
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "build_suggest_context",
+        _fake_build_suggest_context,
+    )
+    shared = _shared_state(
+        mode="choice_advisor",
+        snapshot=_session_state(
+            scene_id="scene-a",
+            line_id="line-1",
+            choices=[{"choice_id": "choice-1", "text": "左边", "index": 0}],
+            is_menu_open=True,
+        ),
+    )
+
+    await agent.tick(shared)
+    assert agent._pending_choice_advice is not None
+    agent._pending_choice_advice["requested_at"] = (
+        time.monotonic() - agent._CHOICE_ADVICE_WAIT_TIMEOUT_SECONDS - 0.1
+    )
+    await agent.tick(shared)
+
+    assert calls == [config]
+
+
 @pytest.mark.plugin_unit
 def test_game_llm_agent_reply_context_bounds_all_history_by_recency_window(
     tmp_path: Path,

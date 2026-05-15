@@ -82,6 +82,57 @@ def test_screen_classified_event_updates_snapshot_state() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_load_context_snapshot_for_state_falls_back_to_active_game() -> None:
+    calls: list[str] = []
+
+    class _Persist:
+        def load_context_snapshot(self, *, current_game_id: str, **_: object) -> dict[str, object]:
+            calls.append(current_game_id)
+            if current_game_id == "game-active":
+                return {
+                    "game_id": "game-active",
+                    "summary_seed": "restored",
+                    "saved_at": time.time(),
+                }
+            return {}
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_max_age_seconds=3600.0,
+        context_persist_require_game_id=True,
+    )
+    plugin._state = SimpleNamespace(bound_game_id="", active_game_id="game-active")
+    plugin._persist = _Persist()
+
+    assert plugin._load_context_snapshot_for_state()["summary_seed"] == "restored"
+    assert calls == ["game-active"]
+
+
+@pytest.mark.plugin_unit
+def test_commit_state_skips_json_copy_when_payload_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    cached_snapshot = plugin._snapshot_state()
+    assert plugin._state_dirty is False
+    assert plugin._cached_snapshot is cached_snapshot
+    payload = plugin._snapshot_state(fresh=True)
+
+    def _unexpected_json_copy(value: object) -> object:
+        raise AssertionError(f"json_copy should be skipped for unchanged commit field: {value!r}")
+
+    monkeypatch.setattr(galgame_plugin_module, "json_copy", _unexpected_json_copy)
+
+    plugin._commit_state(payload)
+
+    assert plugin._state_dirty is False
+    assert plugin._cached_snapshot is cached_snapshot
+
+
+@pytest.mark.plugin_unit
 def test_expand_bridge_root_and_read_bom_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     expanded = expand_bridge_root("%LOCALAPPDATA%/N.E.K.O/galgame-bridge")

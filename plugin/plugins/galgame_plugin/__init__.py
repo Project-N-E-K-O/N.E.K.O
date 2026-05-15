@@ -1923,7 +1923,15 @@ class GalgamePlugin(NekoPluginBase):
                     str(existing_context_snapshot.get("summary_seed") or "").strip()
                     or list(existing_context_snapshot.get("stable_line_ids") or [])
                 )
-                if not (preserve_private_context and has_private_context):
+                public_context_unchanged = (
+                    preserve_private_context
+                    and isinstance(existing_context_snapshot, dict)
+                    and context_snapshot == _public_context_snapshot(existing_context_snapshot)
+                )
+                if not (
+                    (preserve_private_context and has_private_context)
+                    or public_context_unchanged
+                ):
                     assign_json("context_snapshot", context_snapshot)
             assign("plugin_error", str(payload["plugin_error"]))
             assign_json_if_live_unchanged(

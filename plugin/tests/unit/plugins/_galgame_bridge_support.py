@@ -87,15 +87,6 @@ from plugin.sdk.plugin import Err, Ok
 _PLUGIN_FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "galgame_plugin"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_galgame_runtime_root(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
-    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
-
-
 class _Logger:
     def info(self, *args, **kwargs):
         return None
