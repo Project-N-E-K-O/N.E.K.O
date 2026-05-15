@@ -998,10 +998,11 @@
         }
     }
     // 备忘录正文里 LLM 按 SUMMARY_STALE_HINT 约定，用 `---` 单独占行的分隔符
-    // 把"较久前"尾段从主体切开。这里识别"前后各空一行 + 仅含三个及以上连字符
-    // 的单行"——容忍 LLM 偶尔多输 / 少输空行 / 多输几个连字符的变体——并切成
-    // body / older 两段；如果整段里出现多次匹配（违反 prompt 约束），只取第一次。
-    const MEMO_DIVIDER_RE = /\r?\n[ \t]*\r?\n[ \t]*-{3,}[ \t]*\r?\n[ \t]*\r?\n/;
+    // 把"较久前"尾段从主体切开。这里识别"`---` 单独成行（前后都换行了）"——
+    // 前后空行数量都不强求，吃下 LLM 漏空行 / 多空行 / 多输几个连字符的常见漂移；
+    // 切成 body / older 两段后 composeMemo 再统一拼回规范 `\n\n---\n\n`。
+    // 整段里出现多次匹配（违反 prompt 约束）只取第一次。
+    const MEMO_DIVIDER_RE = /(?:\r?\n)+[ \t]*-{3,}[ \t]*(?:\r?\n)+/;
 
     function splitMemoOnDivider(text) {
         const src = String(text == null ? '' : text);

@@ -243,10 +243,15 @@ def test_memory_browser_select_file(mock_page: Page, running_server: str, seed_m
     expect(mock_page.locator("#save-row")).to_be_visible()
 
 
-@pytest.fixture
-def seed_memory_file_with_older_divider(clean_user_data_dir, running_server):
-    """种子文件：memo 里含 `\\n\\n---\\n\\n` 分界，模拟 LLM 按 SUMMARY_STALE_HINT
-    新规约产出的"主体段 + 较久前段"形态。"""
+_BODY_SENTENCE = "博士正在和小猫娘一起挖铁矿，刚找到一批可以做铁镐。"
+_OLDER_SENTENCE = "几天前两人养过一株窗台幼苗，并烤了草莓蛋糕。"
+
+
+def _write_memo_seed(clean_user_data_dir, divider: str):
+    """种子一个 recent.json，memo body + 指定形态的 `---` 分隔符 + older。
+
+    `divider` 是 body 与 older 之间的完整分隔片段（包含前后换行），让用例
+    覆盖 LLM 实际可能漂移的几种间距（漏空行 / 多空行 / 多个连字符）。"""
     app_root = Path(clean_user_data_dir) / "N.E.K.O"
     save_storage_policy(
         None,
@@ -260,12 +265,7 @@ def seed_memory_file_with_older_divider(clean_user_data_dir, running_server):
     catgirl_dir = memory_dir / "测试猫娘"
     catgirl_dir.mkdir(parents=True, exist_ok=True)
 
-    memo_text = (
-        "先前对话的备忘录: "
-        "博士正在和小猫娘一起挖铁矿，刚找到一批可以做铁镐。"
-        "\n\n---\n\n"
-        "几天前两人养过一株窗台幼苗，并烤了草莓蛋糕。"
-    )
+    memo_text = f"先前对话的备忘录: {_BODY_SENTENCE}{divider}{_OLDER_SENTENCE}"
     test_data = [
         {
             "type": "system",
@@ -284,6 +284,12 @@ def seed_memory_file_with_older_divider(clean_user_data_dir, running_server):
     memory_file = catgirl_dir / "recent.json"
     atomic_write_json(memory_file, test_data, ensure_ascii=False, indent=2)
     return memory_file
+
+
+@pytest.fixture
+def seed_memory_file_with_older_divider(clean_user_data_dir, running_server):
+    """种子文件：memo 用规范 `\\n\\n---\\n\\n` 分界（LLM 严格遵守 prompt 的形态）。"""
+    return _write_memo_seed(clean_user_data_dir, "\n\n---\n\n")
 
 
 @pytest.mark.frontend
@@ -322,6 +328,46 @@ def test_memory_browser_renders_older_section_when_divider_present(
     older_value = older_ta.input_value()
     assert "草莓蛋糕" in older_value
     assert "正在和小猫娘一起挖铁矿" not in older_value
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    "divider",
+    [
+        pytest.param("\n---\n", id="single_newline_each_side"),
+        pytest.param("\n\n---\n", id="blank_before_only"),
+        pytest.param("\n---\n\n", id="blank_after_only"),
+        pytest.param("\n\n\n---\n\n", id="extra_blank_before"),
+        pytest.param("\n\n----\n\n", id="four_dashes"),
+        pytest.param("\n\n-----\n\n", id="five_dashes"),
+    ],
+)
+def test_memory_browser_splits_non_canonical_divider_spacing(
+    mock_page: Page,
+    running_server: str,
+    clean_user_data_dir,
+    divider,
+):
+    """LLM 实际输出经常漂移：漏空行、多空行、多输连字符——splitter 都得切得开。
+
+    Regression for codex review on PR #1358 catching that the original regex
+    强制要求 `---` 前后各一行空行，少一行就识别不到，导致尾段还是塞回 body
+    textarea。修后正则只要求 `---` 单独成行（前后至少各一个换行）。"""
+    mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
+    memory_file = _write_memo_seed(clean_user_data_dir, divider)
+    _install_ready_memory_browser_routes(mock_page, memory_file)
+
+    mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
+    mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘").first.click()
+    mock_page.wait_for_selector("#memory-chat-edit .chat-item", timeout=5000)
+
+    older_ta = mock_page.locator(".memo-textarea--older")
+    expect(older_ta).to_have_count(1, timeout=5000)
+    body_ta = mock_page.locator(".memo-textarea:not(.memo-textarea--older)")
+    assert _BODY_SENTENCE in body_ta.input_value()
+    assert "-" not in body_ta.input_value(), "body 不应残留任何 dash"
+    assert _OLDER_SENTENCE in older_ta.input_value()
 
 
 @pytest.mark.frontend
