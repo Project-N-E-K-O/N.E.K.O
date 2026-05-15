@@ -4305,14 +4305,24 @@
             if (
                 !point
                 || !this.model
-                || typeof this.model.focus !== 'function'
                 || !Number.isFinite(Number(point.x))
                 || !Number.isFinite(Number(point.y))
             ) {
                 return;
             }
+            this.invokeModelFocus(Number(point.x), Number(point.y));
+        }
+
+        invokeModelFocus(x, y) {
+            if (!this.model) {
+                return;
+            }
+            const focus = this.model['focus'];
+            if (typeof focus !== 'function') {
+                return;
+            }
             try {
-                this.model.focus(Number(point.x), Number(point.y));
+                focus.call(this.model, x, y);
             } catch (_) {}
         }
 
@@ -4559,10 +4569,8 @@
                 : this.computeNeutralPose();
             this.currentPose = this.blendPose(this.currentPose, targetPose, blendWeight);
 
-            if (this.model && typeof this.model.focus === 'function' && this.smoothedPoint) {
-                try {
-                    this.model.focus(this.smoothedPoint.x, this.smoothedPoint.y);
-                } catch (_) {}
+            if (this.model && this.smoothedPoint) {
+                this.invokeModelFocus(this.smoothedPoint.x, this.smoothedPoint.y);
             }
             if (!this.usesTemporaryPoseOverride) {
                 this.applyPose(this.currentPose, 1);

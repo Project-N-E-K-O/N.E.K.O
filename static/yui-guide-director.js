@@ -1,9 +1,6 @@
 (function () {
     'use strict';
 
-    // 最近一次触控事件时间戳，用于识别触控衍生的合成鼠标/点击事件
-    var lastTouchTime = 0;
-
     function translateGuideText(textKey, fallbackText) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
@@ -2473,9 +2470,6 @@
             this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
             this.remoteTerminationRequestHandler = this.onRemoteTerminationRequest.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
-            this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
-            this.interactionGuardHandler = this.onInteractionGuard.bind(this);
-            this.externalizedChatSpotlightKind = '';
             const capabilityApi = window.homeTutorialPlatformCapabilities;
             this.platformCapabilities = capabilityApi && typeof capabilityApi.create === 'function'
                 ? capabilityApi.create()
@@ -2486,12 +2480,42 @@
                     metrics: this.experienceMetrics
                 })
                 : null;
-            this.tutorialFaceForwardLockSnapshot = null;
-            this.enableTutorialFaceForwardLock();
+            this.interactionTakeover = window.TutorialInteractionTakeover
+                && typeof window.TutorialInteractionTakeover.createController === 'function'
+                ? window.TutorialInteractionTakeover.createController({
+                    page: this.page,
+                    overlay: this.overlay,
+                    allowTarget: (target, event) => this.isAllowedTutorialInteractionTarget(target, event),
+                    isSystemDialogTarget: (target, event) => this.isSystemDialogInteractionTarget(target, event),
+                    allowWindowPassthrough: true,
+                    allowTouchPassthrough: (event, controller) => {
+                        return !!(
+                            this.mobileTouchInteractionPassthrough
+                            && controller
+                            && typeof controller.isTouchInteractionEvent === 'function'
+                            && controller.isTouchInteractionEvent(event)
+                            && !this.awaitingIntroActivation
+                            && !this.manualPluginDashboardOpenAllowed
+                        );
+                    },
+                    isDestroyed: () => this.destroyed,
+                    externalizedChatDetector: () => this.isHomeChatExternalized(),
+                    externalChatChannelProvider: () => {
+                        return window.appInterpage && window.appInterpage.nekoBroadcastChannel
+                            ? window.appInterpage.nekoBroadcastChannel
+                            : null;
+                    }
+                })
+                : null;
+            if (this.interactionTakeover && typeof this.interactionTakeover.enableFaceForwardLock === 'function') {
+                this.interactionTakeover.enableFaceForwardLock();
+            }
 
             if (this.page === 'home') {
                 document.body.classList.add('yui-guide-home-driver-hidden');
-                this.setExternalizedChatButtonsDisabled(true);
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatButtonsDisabled === 'function') {
+                    this.interactionTakeover.setExternalizedChatButtonsDisabled(true);
+                }
             }
 
             window.addEventListener('keydown', this.keydownHandler, true);
@@ -2500,23 +2524,18 @@
             window.addEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
-            document.addEventListener('pointerdown', this.interactionGuardHandler, true);
-            document.addEventListener('pointerup', this.interactionGuardHandler, true);
-            document.addEventListener('mousedown', this.interactionGuardHandler, true);
-            document.addEventListener('mouseup', this.interactionGuardHandler, true);
-            document.addEventListener('touchstart', this.interactionGuardHandler, true);
-            document.addEventListener('touchend', this.interactionGuardHandler, true);
-            document.addEventListener('click', this.interactionGuardHandler, true);
-            document.addEventListener('dblclick', this.interactionGuardHandler, true);
-            document.addEventListener('contextmenu', this.interactionGuardHandler, true);
-            document.addEventListener('pointerdown', this.skipButtonClickHandler, true);
-            document.addEventListener('mousedown', this.skipButtonClickHandler, true);
-            document.addEventListener('touchstart', this.skipButtonClickHandler, true);
-            document.addEventListener('click', this.skipButtonClickHandler, true);
         }
 
         isStopping() {
             return !!(this.destroyed || this.angryExitTriggered || this.terminationRequested);
+        }
+
+        setTutorialTakingOver(active) {
+            if (this.interactionTakeover && typeof this.interactionTakeover.setActive === 'function') {
+                this.interactionTakeover.setActive(active === true);
+                return;
+            }
+            this.overlay.setTakingOver(active === true);
         }
 
         shouldReduceTutorialMotion() {
@@ -2543,133 +2562,6 @@
             return pageOrder.filter(function (sceneId) {
                 return typeof sceneId === 'string' && sceneId.indexOf('intro_') === 0;
             });
-        }
-
-        enableTutorialFaceForwardLock() {
-            if (this.tutorialFaceForwardLockSnapshot) {
-                this.applyTutorialFaceForwardLock();
-                return;
-            }
-
-            const live2dManager = window.live2dManager || null;
-            const vrmManager = window.vrmManager || null;
-            const mmdManager = window.mmdManager || null;
-            this.tutorialFaceForwardLockSnapshot = {
-                hadWindowMouseTrackingEnabled: typeof window.mouseTrackingEnabled !== 'undefined',
-                windowMouseTrackingEnabled: window.mouseTrackingEnabled,
-                live2dMouseTrackingEnabled: live2dManager && typeof live2dManager.isMouseTrackingEnabled === 'function'
-                    ? live2dManager.isMouseTrackingEnabled()
-                    : null,
-                vrmMouseTrackingEnabled: vrmManager && typeof vrmManager.isMouseTrackingEnabled === 'function'
-                    ? vrmManager.isMouseTrackingEnabled()
-                    : null,
-                mmdCursorFollowEnabled: mmdManager && mmdManager.cursorFollow
-                    ? mmdManager.cursorFollow.enabled !== false
-                    : null
-            };
-            window.nekoYuiGuideFaceForwardLock = true;
-            window.mouseTrackingEnabled = false;
-            this.applyTutorialFaceForwardLock();
-        }
-
-        applyTutorialFaceForwardLock() {
-            window.nekoYuiGuideFaceForwardLock = true;
-            window.nekoYuiGuideFaceForwardSuppressParamWrite = true;
-            window.mouseTrackingEnabled = false;
-
-            const live2dManager = window.live2dManager || null;
-            if (live2dManager && typeof live2dManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    live2dManager.setMouseTrackingEnabled(false);
-                } catch (error) {
-                    console.warn('[YuiGuide] 锁定 Live2D 正脸失败:', error);
-                }
-            }
-
-            const vrmManager = window.vrmManager || null;
-            if (vrmManager && typeof vrmManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    vrmManager.setMouseTrackingEnabled(false);
-                    if (vrmManager._cursorFollow && typeof vrmManager._cursorFollow._completeDisable === 'function') {
-                        vrmManager._cursorFollow._completeDisable();
-                    }
-                } catch (error) {
-                    console.warn('[YuiGuide] 锁定 VRM 正脸失败:', error);
-                }
-            }
-
-            const mmdCursorFollow = window.mmdManager && window.mmdManager.cursorFollow
-                ? window.mmdManager.cursorFollow
-                : null;
-            if (mmdCursorFollow && typeof mmdCursorFollow.setEnabled === 'function') {
-                try {
-                    mmdCursorFollow.setEnabled(false);
-                } catch (error) {
-                    console.warn('[YuiGuide] 锁定 MMD 正脸失败:', error);
-                }
-            }
-        }
-
-        releaseTutorialFaceForwardLock() {
-            const snapshot = this.tutorialFaceForwardLockSnapshot;
-            if (!snapshot) {
-                return;
-            }
-
-            this.tutorialFaceForwardLockSnapshot = null;
-            window.nekoYuiGuideFaceForwardLock = false;
-            window.nekoYuiGuideFaceForwardSuppressParamWrite = false;
-            if (snapshot.hadWindowMouseTrackingEnabled) {
-                window.mouseTrackingEnabled = snapshot.windowMouseTrackingEnabled;
-            } else {
-                try {
-                    delete window.mouseTrackingEnabled;
-                } catch (_) {
-                    window.mouseTrackingEnabled = undefined;
-                }
-            }
-            const restoredMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
-
-            const live2dManager = window.live2dManager || null;
-            if (live2dManager && typeof live2dManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    live2dManager.setMouseTrackingEnabled(
-                        snapshot.live2dMouseTrackingEnabled !== null
-                            ? snapshot.live2dMouseTrackingEnabled
-                            : restoredMouseTrackingEnabled
-                    );
-                } catch (error) {
-                    console.warn('[YuiGuide] 恢复 Live2D 鼠标跟踪失败:', error);
-                }
-            }
-
-            const vrmManager = window.vrmManager || null;
-            if (vrmManager && typeof vrmManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    vrmManager.setMouseTrackingEnabled(
-                        snapshot.vrmMouseTrackingEnabled !== null
-                            ? snapshot.vrmMouseTrackingEnabled
-                            : restoredMouseTrackingEnabled
-                    );
-                } catch (error) {
-                    console.warn('[YuiGuide] 恢复 VRM 鼠标跟踪失败:', error);
-                }
-            }
-
-            const mmdCursorFollow = window.mmdManager && window.mmdManager.cursorFollow
-                ? window.mmdManager.cursorFollow
-                : null;
-            if (mmdCursorFollow && typeof mmdCursorFollow.setEnabled === 'function') {
-                try {
-                    mmdCursorFollow.setEnabled(
-                        snapshot.mmdCursorFollowEnabled !== null
-                            ? snapshot.mmdCursorFollowEnabled
-                            : restoredMouseTrackingEnabled
-                    );
-                } catch (error) {
-                    console.warn('[YuiGuide] 恢复 MMD 鼠标跟踪失败:', error);
-                }
-            }
         }
 
         getStep(stepId) {
@@ -4420,63 +4312,13 @@
             return overlay.style.display === 'none';
         }
 
-        setExternalizedChatButtonsDisabled(disabled) {
-            if (this.page !== 'home' || !this.isHomeChatExternalized()) {
-                return;
-            }
-
-            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-            if (!channel || typeof channel.postMessage !== 'function') {
-                return;
-            }
-
-            try {
-                channel.postMessage({
-                    action: 'yui_guide_set_chat_buttons_disabled',
-                    disabled: disabled !== false,
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.warn('[YuiGuide] 同步独立聊天窗按钮禁用状态失败:', error);
-            }
-        }
-
-        setExternalizedChatSpotlight(kind) {
-            if (this.page !== 'home' || !this.isHomeChatExternalized()) {
-                return;
-            }
-
-            this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
-
-            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-            if (!channel || typeof channel.postMessage !== 'function') {
-                return;
-            }
-
-            try {
-                channel.postMessage({
-                    action: 'yui_guide_set_chat_spotlight',
-                    kind: typeof kind === 'string' ? kind : '',
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.warn('[YuiGuide] 同步独立聊天窗高亮失败:', error);
-            }
-        }
-
-        clearExternalizedChatFx() {
-            this.externalizedChatSpotlightKind = '';
-            this.setExternalizedChatSpotlight('');
-        }
-
         onExternalChatReady() {
-            if (this.destroyed || this.page !== 'home' || !this.isHomeChatExternalized()) {
+            if (this.destroyed) {
                 return;
             }
 
-            this.setExternalizedChatButtonsDisabled(true);
-            if (this.externalizedChatSpotlightKind) {
-                this.setExternalizedChatSpotlight(this.externalizedChatSpotlightKind);
+            if (this.interactionTakeover && typeof this.interactionTakeover.onExternalChatReady === 'function') {
+                this.interactionTakeover.onExternalChatReady();
             }
         }
 
@@ -4541,7 +4383,9 @@
 
         highlightChatWindow() {
             if (this.isHomeChatExternalized()) {
-                this.setExternalizedChatSpotlight('window');
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                }
                 return;
             }
 
@@ -6049,6 +5893,9 @@
             this.manualPluginDashboardOpenAllowed = true;
             this.manualPluginDashboardOpenTarget = managementButton;
             this.manualPluginDashboardOpenUserClicked = false;
+            if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
+                this.overlay.setInteractionShieldEnabled(false);
+            }
             this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
                 targetPage: 'plugin_dashboard'
             });
@@ -6105,6 +5952,11 @@
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
                 this.manualPluginDashboardOpenUserClicked = false;
+                if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
+                    this.overlay.setInteractionShieldEnabled(
+                        !!(document.body && document.body.classList.contains('yui-taking-over'))
+                    );
+                }
                 if (runId === this.sceneRunId && !this.isStopping()) {
                     this.overlay.hideBubble();
                 }
@@ -6739,6 +6591,13 @@
                 return false;
             }
 
+            const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
+                isCancelled: () => guardFailed()
+            });
+            await this.stopIntroVoiceCursorLookAtPerformance(
+                    ghostCursorLookAtHandle,
+                    'takeover_keyboard_control_complete'
+                );
             await this.stopPersistentGhostCursorLookAtPerformance('takeover_top_peek');
             if (guardFailed()) {
                 return false;
@@ -7508,18 +7367,6 @@
             };
         }
 
-        setPluginDashboardSkipBypassEnabled(enabled) {
-            if (this.page !== 'home') {
-                return;
-            }
-
-            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
-                detail: {
-                    enabled: enabled === true
-                }
-            }));
-        }
-
         async runPluginDashboardPreviewScene(step, runId) {
             this.highlightChatWindow();
             if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
@@ -7585,7 +7432,6 @@
                 let dashboardWindow = launchResult.pluginDashboardWindow;
                 await this.stopPersistentGhostCursorLookAtPerformance('plugin_dashboard_corner_peek');
                 pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId);
-                this.setPluginDashboardSkipBypassEnabled(true);
 
                 this.overlay.clearActionSpotlight();
                 this.overlay.clearPersistentSpotlight();
@@ -7670,7 +7516,6 @@
                 this.overlay.clearActionSpotlight();
             } finally {
                 await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup');
-                this.setPluginDashboardSkipBypassEnabled(false);
                 await rollbackAgentSwitches();
             }
         }
@@ -7703,7 +7548,11 @@
                 if (performance.emotion) {
                     this.applyGuideEmotion(performance.emotion);
                 }
+                const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
+                    isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                });
 
+                try {
                 const waitWithWallClockTimeout = async (promise, timeoutMs, label) => {
                     let timedOut = false;
                     const normalizedTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 1000));
@@ -8057,7 +7906,13 @@
                 this.cleanupTutorialReturnButtons();
                 clearSettingsPeekHighlights();
                 // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
-            await closeSettingsPeekPanel();
+                await closeSettingsPeekPanel();
+                } finally {
+                    await this.stopIntroVoiceCursorLookAtPerformance(
+                    ghostCursorLookAtHandle,
+                    'settings_peek_complete'
+                );
+                }
         }
 
         beginTerminationVisualCleanup() {
@@ -8106,7 +7961,7 @@
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
             this.overlay.setAngry(false);
-            this.overlay.setTakingOver(false);
+            this.setTutorialTakingOver(false);
             this.overlay.clearSpotlight();
             this.collapseCharacterSettingsSidePanel();
             this.closeManagedPanels().catch((error) => {
@@ -8587,7 +8442,9 @@
                 || this.resolveElement('#textInputBox');
 
             if (this.isHomeChatExternalized()) {
-                this.setExternalizedChatSpotlight('window');
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                }
                 return;
             }
 
@@ -8710,11 +8567,17 @@
         }
 
         async startGhostCursorLookAtPerformance(options) {
+            const normalizedOptions = options || {};
+            if (normalizedOptions.preferExistingHandle !== false) {
+                const existingHandle = this.persistentGhostCursorLookAtHandle || this.preTakeoverGhostCursorLookAtHandle;
+                if (existingHandle && typeof existingHandle.stop === 'function') {
+                    return existingHandle;
+                }
+            }
             const api = window.YuiGuideAvatarStage;
             if (!api || typeof api.startIntroVoiceCursorLookAt !== 'function') {
                 return null;
             }
-            const normalizedOptions = options || {};
             const cancelCheck = typeof normalizedOptions.isCancelled === 'function'
                 ? normalizedOptions.isCancelled
                 : () => this.isStopping();
@@ -8967,7 +8830,9 @@
                 return;
             }
 
-            this.applyTutorialFaceForwardLock();
+            if (this.interactionTakeover && typeof this.interactionTakeover.applyFaceForwardLock === 'function') {
+                this.interactionTakeover.applyFaceForwardLock();
+            }
             try {
                 const result = await this.wakeup.run();
                 this.recordExperienceMetric('wakeup_result', {
@@ -9047,7 +8912,7 @@
                     return;
                 }
                 this.overlay.hideBubble();
-                this.overlay.setTakingOver(true);
+                this.setTutorialTakingOver(true);
                 this.cursor.wobble();
                 await wait(280);
             }
@@ -9124,7 +8989,9 @@
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
-            this.setExternalizedChatSpotlight('window');
+            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                this.interactionTakeover.setExternalizedChatSpotlight('window');
+            }
 
             this.enableInterrupts(introStep);
             await this.playIntroGreetingReply();
@@ -9294,7 +9161,7 @@
             }
 
             if (isTakeoverScene) {
-                this.overlay.setTakingOver(true);
+                this.setTutorialTakingOver(true);
             }
 
             const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);
@@ -9574,7 +9441,7 @@
                     if (runId !== this.sceneRunId || this.destroyed) {
                         return;
                     }
-                    this.overlay.setTakingOver(false);
+                    this.setTutorialTakingOver(false);
                     return;
                 }
                 await this.closeManagedPanels();
@@ -9618,7 +9485,7 @@
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
-                this.overlay.setTakingOver(false);
+                this.setTutorialTakingOver(false);
             }
 
             if (!shouldKeepInterruptsEnabled) {
@@ -9971,7 +9838,7 @@
                 ? this.lastPointerPoint
                 : null;
 
-            this.overlay.setTakingOver(true);
+            this.setTutorialTakingOver(true);
             this.overlay.setAngry(true);
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
@@ -10047,10 +9914,16 @@
                 ).catch(() => {});
             }
             this.stopPersistentGhostCursorLookAtPerformance('destroy').catch(() => {});
-            this.releaseTutorialFaceForwardLock();
+            if (this.interactionTakeover && typeof this.interactionTakeover.releaseFaceForwardLock === 'function') {
+                this.interactionTakeover.releaseFaceForwardLock();
+            }
             this.resumeCurrentSceneAfterResistance();
-            this.clearExternalizedChatFx();
-            this.setExternalizedChatButtonsDisabled(false);
+            if (this.interactionTakeover && typeof this.interactionTakeover.clearExternalizedChatFx === 'function') {
+                this.interactionTakeover.clearExternalizedChatFx();
+            }
+            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatButtonsDisabled === 'function') {
+                this.interactionTakeover.setExternalizedChatButtonsDisabled(false);
+            }
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
             }
@@ -10099,7 +9972,10 @@
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
             this.overlay.setAngry(false);
-            this.overlay.setTakingOver(false);
+            this.setTutorialTakingOver(false);
+            if (this.interactionTakeover && typeof this.interactionTakeover.destroy === 'function') {
+                this.interactionTakeover.destroy();
+            }
             this.overlay.destroy();
             window.removeEventListener('keydown', this.keydownHandler, true);
             window.removeEventListener('pagehide', this.pageHideHandler, true);
@@ -10107,19 +9983,6 @@
             window.removeEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
-            document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
-            document.removeEventListener('pointerup', this.interactionGuardHandler, true);
-            document.removeEventListener('mousedown', this.interactionGuardHandler, true);
-            document.removeEventListener('mouseup', this.interactionGuardHandler, true);
-            document.removeEventListener('touchstart', this.interactionGuardHandler, true);
-            document.removeEventListener('touchend', this.interactionGuardHandler, true);
-            document.removeEventListener('click', this.interactionGuardHandler, true);
-            document.removeEventListener('dblclick', this.interactionGuardHandler, true);
-            document.removeEventListener('contextmenu', this.interactionGuardHandler, true);
-            document.removeEventListener('pointerdown', this.skipButtonClickHandler, true);
-            document.removeEventListener('mousedown', this.skipButtonClickHandler, true);
-            document.removeEventListener('touchstart', this.skipButtonClickHandler, true);
-            document.removeEventListener('click', this.skipButtonClickHandler, true);
         }
 
         onKeyDown(event) {
@@ -10159,29 +10022,6 @@
 
             // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
             return !!((coarsePointer || touchCapable) && narrowViewport);
-        }
-
-        isTouchInteractionEvent(event) {
-            if (!event || typeof event.type !== 'string') {
-                return false;
-            }
-
-            if (event.type.indexOf('touch') === 0) {
-                lastTouchTime = Date.now();
-                return true;
-            }
-
-            if (event.pointerType === 'touch') {
-                lastTouchTime = Date.now();
-                return true;
-            }
-
-            // 触控衍生的合成鼠标/点击事件：在触控后的短时间窗口内视为触控交互
-            if (/^(click|mousedown|mouseup)$/.test(event.type) && Date.now() - lastTouchTime < 500) {
-                return true;
-            }
-
-            return false;
         }
 
         isAllowedTutorialInteractionTarget(target) {
@@ -10246,58 +10086,6 @@
                 '.storage-location-completion-card:not([hidden])',
                 '#storage-location-overlay:not([hidden])'
             ].join(', '));
-        }
-
-        onInteractionGuard(event) {
-            if (this.destroyed || this.page !== 'home' || !event || event.isTrusted === false) {
-                return;
-            }
-
-            const isAllowedTarget = this.isAllowedTutorialInteractionTarget(event.target);
-            if (
-                isAllowedTarget
-                || this.isSystemDialogInteractionTarget(event.target)
-            ) {
-                return;
-            }
-
-            // 等待特定目标点击期间不得放行触控事件，否则会破坏 awaitIntroActivation / manualPluginDashboard 的守卫语义
-            if (
-                this.mobileTouchInteractionPassthrough
-                && this.isTouchInteractionEvent(event)
-                && !this.awaitingIntroActivation
-                && !this.manualPluginDashboardOpenAllowed
-            ) {
-                return;
-            }
-
-            if (typeof event.preventDefault === 'function') {
-                event.preventDefault();
-            }
-            if (typeof event.stopImmediatePropagation === 'function') {
-                event.stopImmediatePropagation();
-            }
-            event.stopPropagation();
-        }
-
-        onSkipButtonClick(event) {
-            if (this.destroyed || !event || !event.target || typeof event.target.closest !== 'function') {
-                return;
-            }
-
-            const skipButton = event.target.closest('#neko-tutorial-skip-btn');
-            if (!skipButton) {
-                return;
-            }
-
-            if (typeof event.preventDefault === 'function') {
-                event.preventDefault();
-            }
-            if (typeof event.stopImmediatePropagation === 'function') {
-                event.stopImmediatePropagation();
-            }
-            event.stopPropagation();
-            this.skip('skip', 'skip');
         }
 
         onTutorialEndEvent(event) {
@@ -10444,7 +10232,11 @@
                 if (data.sessionId && handoff.sessionId && data.sessionId !== handoff.sessionId) {
                     return;
                 }
-                this.skip('skip', 'skip');
+                if (this.tutorialManager && typeof this.tutorialManager.handleTutorialSkipRequest === 'function') {
+                    void this.tutorialManager.handleTutorialSkipRequest();
+                } else {
+                    this.skip('skip', 'skip');
+                }
                 return;
             }
 

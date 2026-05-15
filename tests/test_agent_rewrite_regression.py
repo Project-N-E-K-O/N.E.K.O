@@ -383,6 +383,58 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
         assert expected in style_source
 
 
+def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanup():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "this.interactionShield = null;",
+        "createElement('div', 'yui-guide-interaction-shield')",
+        "stage.appendChild(interactionShield);",
+        "this.interactionShieldSuppressed = false;",
+        "setInteractionShieldSuppressed(active)",
+        "setInteractionShieldEnabled(active)",
+        "this.setInteractionShieldEnabled(!!active && !this.interactionShieldSuppressed);",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "allowWindowPassthrough: true,",
+        "this.overlay.setInteractionShieldEnabled(false);",
+        "this.overlay.setInteractionShieldEnabled(",
+        "document.body.classList.contains('yui-taking-over')",
+    ):
+        assert expected in director_source
+
+    for expected in (
+        ".yui-guide-interaction-shield {",
+        "pointer-events: auto;",
+        "background: transparent;",
+    ):
+        assert expected in style_source
+
+
+def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in tutorial_source
+    assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in director_source
+
+    for expected in (
+        "const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';",
+        "const skipButtonScreenRect = await this.getSkipButtonScreenRect();",
+        "skipButtonScreenRect: skipButtonScreenRect,",
+        "if (data.type === PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT) {",
+        "const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'",
+        "skipButtonScreenRect?: ScreenRect | null",
+        "this.homeSkipButtonScreenRect = payload.skipButtonScreenRect",
+    ):
+        assert expected in (director_source + "\n" + plugin_runtime_source)
+
+
 def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
@@ -518,6 +570,7 @@ _YUI_RUNTIME_SCRIPTS = (
     "yui-guide-steps.js",
     "yui-guide-overlay.js",
     "yui-guide-page-handoff.js",
+    "tutorial-interaction-takeover.js",
     "yui-guide-director.js",
 )
 
@@ -528,6 +581,7 @@ _HOME_YUI_RUNTIME_SCRIPTS = (
     "avatar-performance-stage.js",
     "yui-guide-avatar-stage.js",
     "yui-guide-wakeup.js",
+    "tutorial-interaction-takeover.js",
     "yui-guide-director.js",
 )
 
@@ -554,7 +608,12 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
 
     positions = [
         _script_tag_position(source, name)
-        for name in (*_HOME_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        for name in (
+            *_HOME_YUI_RUNTIME_SCRIPTS,
+            "tutorial-skip-controller.js",
+            "tutorial-avatar-reload-controller.js",
+            "universal-tutorial-manager.js",
+        )
     ]
     assert positions == sorted(positions)
 
@@ -570,7 +629,10 @@ def test_home_template_loads_yui_wakeup_before_director():
             "avatar-performance-stage.js",
             "yui-guide-avatar-stage.js",
             "yui-guide-wakeup.js",
+            "tutorial-interaction-takeover.js",
             "yui-guide-director.js",
+            "tutorial-skip-controller.js",
+            "tutorial-avatar-reload-controller.js",
             "universal-tutorial-manager.js",
         )
     ]
@@ -909,7 +971,12 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         source = Path(template_path).read_text(encoding="utf-8")
         positions = [
             _script_tag_position(source, name)
-            for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+            for name in (
+                *_YUI_RUNTIME_SCRIPTS,
+                "tutorial-skip-controller.js",
+                "tutorial-avatar-reload-controller.js",
+                "universal-tutorial-manager.js",
+            )
         ]
         assert positions == sorted(positions), template_path
         _stylesheet_tag_position(source, "yui-guide.css")
@@ -1101,18 +1168,19 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    avatar_reload_source = Path("static/tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
 
-    begin_start = tutorial_source.index("beginTutorialAvatarOverride()")
-    restore_start = tutorial_source.index("restoreTutorialAvatarOverride()")
-    restore_end = tutorial_source.index("/**", restore_start)
-    begin_block = tutorial_source[begin_start:restore_start]
-    restore_block = tutorial_source[restore_start:restore_end]
+    begin_start = avatar_reload_source.index("beginOverride()")
+    restore_start = avatar_reload_source.index("restoreOverride()")
+    restore_end = avatar_reload_source.index("window.TutorialAvatarReloadController", restore_start)
+    begin_block = avatar_reload_source[begin_start:restore_start]
+    restore_block = avatar_reload_source[restore_start:restore_end]
 
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block
-    assert "this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true })" in begin_block
-    assert "live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME" in begin_block
+    assert "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });" in begin_block
+    assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
     assert "suppressInitialIdle: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
@@ -1121,6 +1189,42 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "suppressToast" in interpage_source
     assert "async function _waitForLive2DManagerIdle" in interpage_source
     assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_tutorial_lifecycle_modules_export_reusable_controllers():
+    interaction_source = Path("static/tutorial-interaction-takeover.js").read_text(encoding="utf-8")
+    skip_source = Path("static/tutorial-skip-controller.js").read_text(encoding="utf-8")
+    avatar_reload_source = Path("static/tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "class TutorialInteractionTakeoverController",
+        "window.TutorialInteractionTakeover = {",
+        "createController: function (options)",
+        "setActive(active)",
+        "enableFaceForwardLock()",
+        "setExternalizedChatButtonsDisabled(disabled)",
+    ):
+        assert expected in interaction_source
+
+    for expected in (
+        "class TutorialSkipController",
+        "window.TutorialSkipController = {",
+        "show(options)",
+        "hide()",
+        "destroy()",
+    ):
+        assert expected in skip_source
+
+    for expected in (
+        "class TutorialAvatarReloadController",
+        "window.TutorialAvatarReloadController = {",
+        "beginOverride()",
+        "restoreOverride()",
+        "hasActiveOverride()",
+        "getPendingPromise()",
+        "tutorialModelName",
+    ):
+        assert expected in avatar_reload_source
 
 
 def test_theme_system_preference_does_not_become_saved_user_choice():

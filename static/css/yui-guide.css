@@ -64,6 +64,17 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   height: 100%;
 }
 
+.yui-guide-interaction-shield {
+  position: fixed;
+  inset: 0;
+  pointer-events: auto;
+  background: transparent;
+  cursor: none !important;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .yui-guide-petal-transition {
   position: fixed;
   inset: 0;

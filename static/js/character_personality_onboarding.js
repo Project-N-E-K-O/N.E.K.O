@@ -643,6 +643,7 @@
             window.addEventListener('neko:tutorial-skipped', markHomeTutorialCompleted);
             window.addEventListener('neko:tutorial-completed', resumeIfNeeded);
             window.addEventListener('neko:tutorial-skipped', resumeIfNeeded);
+            window.addEventListener('neko:tutorial-ended-without-completion', resumeIfNeeded);
 
             if (typeof BroadcastChannel === 'function') {
                 try {
