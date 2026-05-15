@@ -2806,8 +2806,11 @@ class GalgamePlugin(NekoPluginBase):
     def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
         if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
             return {}
+        with self._state_lock:
+            current_session_id = str(self._state.active_session_id or "")
         snapshot = self._persist.load_context_snapshot(
             current_game_id=str(current_game_id or ""),
+            current_session_id=current_session_id,
             max_age_seconds=float(getattr(self._cfg, "context_persist_max_age_seconds", 3600.0)),
             require_game_id=bool(getattr(self._cfg, "context_persist_require_game_id", True)),
         )
@@ -2878,6 +2881,7 @@ class GalgamePlugin(NekoPluginBase):
         snapshot = {
             "scene_id": str(context.get("scene_id") or "").strip(),
             "game_id": game_id,
+            "session_id": session_id,
             "route_id": str(context.get("route_id") or "").strip(),
             "summary_seed": summary_seed,
             "stable_line_ids": stable_line_ids[-64:],
@@ -2931,6 +2935,7 @@ class GalgamePlugin(NekoPluginBase):
                 self.logger.warning(
                     "galgame context_snapshot state update skipped: stale summary context"
                 )
+                self._persist.clear_context_snapshot(snapshot)
                 return
             self._state.context_snapshot = json_copy(snapshot)
             self._state_dirty = True

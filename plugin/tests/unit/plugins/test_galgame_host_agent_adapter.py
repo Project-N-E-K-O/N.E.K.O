@@ -43,7 +43,9 @@ async def test_host_agent_adapter_round_trip_and_cancel(monkeypatch: pytest.Monk
         cancelled = await adapter.cancel_task("task-1")
 
     assert availability["ready"] is True
+    assert availability["reasons"] == []
     assert started["task_id"] == "task-1"
+    assert started["instruction"] == "advance once"
     assert task["status"] == "running"
     assert cancelled["status"] == "cancelled"
 
@@ -70,12 +72,14 @@ async def test_host_agent_adapter_rebuilds_client_after_closed_loop_error(monkey
             async def aclose(self):
                 self.is_closed = True
 
-        built_clients = [_BrokenSharedClient(), fallback_client]
+        broken = _BrokenSharedClient()
+        built_clients = [broken, fallback_client]
         monkeypatch.setattr(adapter, "_build_client", lambda: built_clients.pop(0))
         task = await adapter.get_task("task-1")
 
     assert task["status"] == "running"
     assert adapter._client is fallback_client
+    assert broken.is_closed is True
 
 
 @pytest.mark.plugin_unit

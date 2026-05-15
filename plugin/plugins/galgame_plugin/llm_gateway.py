@@ -107,6 +107,23 @@ def _hash_line(line: Any) -> str:
     )
 
 
+def _near_match_current_line(context: dict[str, Any]) -> dict[str, Any]:
+    current_line = context.get("current_line")
+    if isinstance(current_line, dict):
+        return current_line
+    current_snapshot = context.get("current_snapshot")
+    if isinstance(current_snapshot, dict):
+        return current_snapshot
+    top_level = {
+        "speaker": context.get("speaker"),
+        "text": context.get("text"),
+        "line_id": context.get("line_id"),
+    }
+    if any(str(value or "") for value in top_level.values()):
+        return top_level
+    return {}
+
+
 def _line_similarity_signature(observed_lines: Any) -> str:
     if not isinstance(observed_lines, list) or not observed_lines:
         return ""
@@ -439,7 +456,7 @@ class LLMGateway:
     def _build_near_match_meta(context: dict[str, Any]) -> dict[str, Any]:
         return {
             "_stable_lines_hash": _hash_stable_lines(context.get("stable_lines")),
-            "_current_line_hash": _hash_line(context.get("current_line")),
+            "_current_line_hash": _hash_line(_near_match_current_line(context)),
             "_observed_signature": _line_similarity_signature(
                 context.get("observed_lines")
             ),
@@ -454,7 +471,7 @@ class LLMGateway:
         cached_stable_hash = meta.get("_stable_lines_hash")
         if cached_stable_hash != _hash_stable_lines(context.get("stable_lines")):
             return False
-        if meta.get("_current_line_hash") != _hash_line(context.get("current_line")):
+        if meta.get("_current_line_hash") != _hash_line(_near_match_current_line(context)):
             return False
         cached_observed = str(meta.get("_observed_signature") or "")
         current_observed = _line_similarity_signature(context.get("observed_lines"))

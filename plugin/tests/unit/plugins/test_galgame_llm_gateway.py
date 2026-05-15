@@ -452,58 +452,61 @@ async def test_phase2_ocr_reader_provider_rejection_keeps_semantic_flags_and_rea
     ctx.entry_handler = _handler
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    assert plugin._cfg is not None
-    plugin._cfg.ocr_reader_enabled = True
-    plugin._cfg.ocr_reader_trigger_mode = "after_advance"
-    plugin._ocr_reader_manager = SimpleNamespace(
-        update_config=lambda config: None,
-        tick=lambda **kwargs: asyncio.sleep(
-            0,
-            result=SimpleNamespace(
-                warnings=[],
-                should_rescan=False,
-                runtime={
-                    "enabled": True,
-                    "status": "active",
-                    "detail": "fixture_active",
-                    "process_name": "RenPy Demo.exe",
-                    "pid": 5252,
-                    "game_id": game_id,
-                    "session_id": session_id,
-                    "last_seq": 1,
-                    "last_event_ts": "2026-04-21T08:31:00Z",
-                },
+    try:
+        assert plugin._cfg is not None
+        plugin._cfg.ocr_reader_enabled = True
+        plugin._cfg.ocr_reader_trigger_mode = "after_advance"
+        plugin._ocr_reader_manager = SimpleNamespace(
+            update_config=lambda config: None,
+            tick=lambda **kwargs: asyncio.sleep(
+                0,
+                result=SimpleNamespace(
+                    warnings=[],
+                    should_rescan=False,
+                    runtime={
+                        "enabled": True,
+                        "status": "active",
+                        "detail": "fixture_active",
+                        "process_name": "RenPy Demo.exe",
+                        "pid": 5252,
+                        "game_id": game_id,
+                        "session_id": session_id,
+                        "last_seq": 1,
+                        "last_event_ts": "2026-04-21T08:31:00Z",
+                    },
+                ),
             ),
-        ),
-        shutdown=lambda: asyncio.sleep(0, result=None),
-    )
-    await plugin._poll_bridge(force=True)
+            shutdown=lambda: asyncio.sleep(0, result=None),
+        )
+        await plugin._poll_bridge(force=True)
 
-    explain = await plugin.galgame_explain_line()
-    summarize = await plugin.galgame_summarize_scene()
+        explain = await plugin.galgame_explain_line()
+        summarize = await plugin.galgame_summarize_scene()
 
-    assert isinstance(explain, Ok)
-    assert explain.value["degraded"] is True
-    assert explain.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert explain.value["semantic_degraded"] is True
-    assert explain.value["fallback_used"] is True
-    assert explain.value["diagnostic"] == "gateway_unavailable: provider rejected request"
-    assert "ocr_reader_input" not in explain.value["diagnostic"]
-    assert "ocr_reader_input" in explain.value["input_diagnostic"]
-    assert "Lanlan" not in explain.value["explanation"]
-    assert "这是 OCR 读取来的台词。" in explain.value["explanation"]
+        assert isinstance(explain, Ok)
+        assert explain.value["degraded"] is True
+        assert explain.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert explain.value["semantic_degraded"] is True
+        assert explain.value["fallback_used"] is True
+        assert explain.value["diagnostic"] == "gateway_unavailable: provider rejected request"
+        assert "ocr_reader_input" not in explain.value["diagnostic"]
+        assert "ocr_reader_input" in explain.value["input_diagnostic"]
+        assert "Lanlan" not in explain.value["explanation"]
+        assert "这是 OCR 读取来的台词。" in explain.value["explanation"]
 
-    assert isinstance(summarize, Ok)
-    assert summarize.value["degraded"] is True
-    assert summarize.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert summarize.value["semantic_degraded"] is True
-    assert summarize.value["fallback_used"] is True
-    assert summarize.value["diagnostic"].startswith("gateway_unavailable:")
-    assert "provider rejected request" in summarize.value["diagnostic"]
-    assert "ocr_reader_input" not in summarize.value["diagnostic"]
-    assert "ocr_reader_input" in summarize.value["input_diagnostic"]
-    assert "Lanlan" not in summarize.value["summary"]
-    assert summarize.value["summary"].startswith("场景 ocr:scene-a")
+        assert isinstance(summarize, Ok)
+        assert summarize.value["degraded"] is True
+        assert summarize.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert summarize.value["semantic_degraded"] is True
+        assert summarize.value["fallback_used"] is True
+        assert summarize.value["diagnostic"].startswith("gateway_unavailable:")
+        assert "provider rejected request" in summarize.value["diagnostic"]
+        assert "ocr_reader_input" not in summarize.value["diagnostic"]
+        assert "ocr_reader_input" in summarize.value["input_diagnostic"]
+        assert "Lanlan" not in summarize.value["summary"]
+        assert summarize.value["summary"].startswith("场景 ocr:scene-a")
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.plugin_unit

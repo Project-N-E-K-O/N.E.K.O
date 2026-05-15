@@ -157,11 +157,42 @@ def test_persist_context_snapshot_allows_semantic_degraded_summary(tmp_path: Pat
     )
 
     assert plugin._state.context_snapshot["summary_seed"] == "OCR session summary"
+    assert plugin._state.context_snapshot["session_id"] == "sess-a"
     assert plugin._state.context_snapshot["stable_line_ids"] == ["line-1"]
     assert plugin._persist.load_context_snapshot(
         current_game_id="demo.alpha",
+        current_session_id="sess-a",
         require_game_id=True,
     )["summary_seed"] == "OCR session summary"
+
+
+@pytest.mark.plugin_unit
+def test_load_context_snapshot_for_state_rejects_stored_session_mismatch(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(
+        plugin_dir,
+        _make_effective_config(
+            bridge_root,
+            llm={
+                "context_persist_enabled": True,
+                "context_persist_require_game_id": True,
+            },
+        ),
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    plugin._cfg = build_config(ctx._config)
+    plugin._state.active_game_id = "demo.alpha"
+    plugin._state.active_session_id = "live-session"
+    plugin._persist.persist_context_snapshot(
+        {
+            "game_id": "demo.alpha",
+            "session_id": "old-session",
+            "summary_seed": "old summary",
+            "saved_at": time.time(),
+        }
+    )
+
+    assert plugin._load_context_snapshot_for_state() == {}
 
 
 @pytest.mark.plugin_unit

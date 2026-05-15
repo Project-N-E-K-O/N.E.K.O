@@ -574,66 +574,6 @@ def _split_context_line_budget(
     return stable_budget, observed_budget
 
 
-def _scene_context_windows(
-    history_lines: list[dict[str, Any]],
-    history_observed_lines: list[dict[str, Any]],
-    scene_id: str,
-    *,
-    line_limit: int,
-    extra_scene_ids: list[str] | None = None,
-    target_line: dict[str, Any] | None = None,
-    dialogue_only: bool = False,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    stable_candidates = _scene_lines(
-        history_lines,
-        scene_id,
-        limit=None,
-        extra_scene_ids=extra_scene_ids,
-    )
-    observed_candidates = _scene_lines(
-        history_observed_lines,
-        scene_id,
-        limit=None,
-        extra_scene_ids=extra_scene_ids,
-    )
-    if dialogue_only:
-        stable_candidates = _dialogue_context_lines(stable_candidates, limit=None)
-        observed_candidates = _dialogue_context_lines(observed_candidates, limit=None)
-    stable_budget, observed_budget = _split_context_line_budget(
-        len(stable_candidates),
-        len(observed_candidates),
-        line_limit,
-    )
-    stable_candidates = stable_candidates[-stable_budget:] if stable_budget else []
-    observed_candidates = observed_candidates[-observed_budget:] if observed_budget else []
-    tagged_stable = [
-        {**dict(item), "_context_source": "stable"}
-        for item in stable_candidates
-        if isinstance(item, dict)
-    ]
-    tagged_observed = [
-        {**dict(item), "_context_source": "observed"}
-        for item in observed_candidates
-        if isinstance(item, dict)
-    ]
-    recent_lines = _recency_ordered_context_lines(tagged_stable, tagged_observed)
-    if target_line is not None:
-        recent_lines = _append_unique_line(recent_lines, target_line, limit=line_limit)
-    else:
-        recent_lines = recent_lines[-line_limit:]
-    stable_lines = [
-        item for item in recent_lines if item.get("_context_source") == "stable"
-    ]
-    observed_lines = [
-        item for item in recent_lines if item.get("_context_source") == "observed"
-    ]
-    return (
-        _condense_context_lines(stable_lines, preserve_condensed_count=True),
-        _condense_context_lines(observed_lines, preserve_condensed_count=True),
-        _condense_context_lines(recent_lines),
-    )
-
-
 def _global_scene_context_window(
     history_lines: list[dict[str, Any]],
     history_observed_lines: list[dict[str, Any]],
@@ -1179,14 +1119,9 @@ def build_explain_context(
 
     scene_id = str(target_line.get("scene_id") or snapshot.get("scene_id") or "")
     route_id = str(target_line.get("route_id") or snapshot.get("route_id") or "")
-    history_lines = list(local_state.get("history_lines", []) or [])
-    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config)
-    line_limit = _compute_dynamic_line_limit(
-        _recency_ordered_context_lines(history_lines, history_observed_lines),
-        min_limit=min_limit,
-        max_limit=max_limit,
-        target_tokens=target_tokens,
+    history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
+        local_state,
+        config,
     )
     stable_lines, observed_lines, scene_lines = _global_scene_context_window(
         history_lines,
@@ -1388,14 +1323,9 @@ def build_suggest_context(
     visible_choices = [sanitize_choice(item) for item in snapshot.get("choices", [])]
     scene_id = str(snapshot.get("scene_id") or "")
     route_id = str(snapshot.get("route_id") or "")
-    history_lines = list(local_state.get("history_lines", []) or [])
-    history_observed_lines = list(local_state.get("history_observed_lines", []) or [])
-    min_limit, max_limit, target_tokens = _context_window_bounds(config)
-    line_limit = _compute_dynamic_line_limit(
-        _recency_ordered_context_lines(history_lines, history_observed_lines),
-        min_limit=min_limit,
-        max_limit=max_limit,
-        target_tokens=target_tokens,
+    history_lines, history_observed_lines, line_limit = _resolve_dynamic_line_limit(
+        local_state,
+        config,
     )
     stable_lines, observed_lines, scene_lines = _global_scene_context_window(
         history_lines,
