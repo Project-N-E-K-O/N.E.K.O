@@ -322,7 +322,10 @@ class GalgameStore:
             return {}
         saved_session_id = str(snapshot.get("session_id") or "").strip()
         normalized_session_id = str(current_session_id or "").strip()
-        if saved_session_id and saved_session_id != normalized_session_id:
+        if saved_session_id:
+            if saved_session_id != normalized_session_id:
+                return {}
+        elif normalized_session_id:
             return {}
         try:
             max_age = float(max_age_seconds)
