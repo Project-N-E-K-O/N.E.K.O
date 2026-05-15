@@ -308,6 +308,7 @@
     pause() {
       this.pausedByUser = true;
       if (this.currentAudio) this.currentAudio.pause();
+      if (this.fadingAudio) this.fadingAudio.pause();
     }
 
     resume() {
@@ -837,6 +838,7 @@
     pause() {
       this.pausedByUser = true;
       if (this.currentAudio) this.currentAudio.pause();
+      if (this.fadingAudio) this.fadingAudio.pause();
     }
 
     resume() {
