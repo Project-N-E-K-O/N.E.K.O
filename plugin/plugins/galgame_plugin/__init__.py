@@ -2803,14 +2803,20 @@ class GalgamePlugin(NekoPluginBase):
 
         self._apply_config_overrides_from_store()
 
-    def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
+    def _load_context_snapshot_for_game(
+        self,
+        current_game_id: str = "",
+        *,
+        current_session_id: str | None = None,
+    ) -> dict[str, Any]:
         if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
             return {}
-        with self._state_lock:
-            current_session_id = str(self._state.active_session_id or "")
+        if current_session_id is None:
+            with self._state_lock:
+                current_session_id = str(self._state.active_session_id or "")
         snapshot = self._persist.load_context_snapshot(
             current_game_id=str(current_game_id or ""),
-            current_session_id=current_session_id,
+            current_session_id=str(current_session_id or ""),
             max_age_seconds=float(getattr(self._cfg, "context_persist_max_age_seconds", 3600.0)),
             require_game_id=bool(getattr(self._cfg, "context_persist_require_game_id", True)),
         )
@@ -2819,6 +2825,7 @@ class GalgamePlugin(NekoPluginBase):
     def _load_context_snapshot_for_state(self) -> dict[str, Any]:
         bound_game_id = str(self._state.bound_game_id or "")
         active_game_id = str(self._state.active_game_id or "")
+        active_session_id = str(self._state.active_session_id or "")
         require_game_id = bool(getattr(self._cfg, "context_persist_require_game_id", True))
         game_ids: list[str] = []
         for game_id in (bound_game_id, active_game_id):
@@ -2829,7 +2836,10 @@ class GalgamePlugin(NekoPluginBase):
         for game_id in game_ids:
             if require_game_id and not game_id:
                 continue
-            snapshot = self._load_context_snapshot_for_game(game_id)
+            snapshot = self._load_context_snapshot_for_game(
+                game_id,
+                current_session_id=active_session_id,
+            )
             if snapshot:
                 return snapshot
         return {}
@@ -2839,8 +2849,15 @@ class GalgamePlugin(NekoPluginBase):
         snapshot: object,
         *,
         current_game_id: str,
+        current_session_id: str = "",
     ) -> bool:
         if not isinstance(snapshot, dict) or not snapshot:
+            return True
+        normalized_session_id = str(current_session_id or "").strip()
+        if (
+            normalized_session_id
+            and str(snapshot.get("session_id") or "").strip() != normalized_session_id
+        ):
             return True
         if not bool(getattr(self._cfg, "context_persist_require_game_id", True)):
             return False
@@ -2863,9 +2880,9 @@ class GalgamePlugin(NekoPluginBase):
             if isinstance(latest_snapshot, dict)
             else {}
         )
-        if session_id:
-            return session_id == str(getattr(self._state, "active_session_id", "") or "")
         return (
+            (not session_id or session_id == str(getattr(self._state, "active_session_id", "") or ""))
+            and
             (not game_id or game_id == str(getattr(self._state, "active_game_id", "") or ""))
             and (
                 not snapshot["scene_id"]
@@ -4135,10 +4152,12 @@ class GalgamePlugin(NekoPluginBase):
         if self._context_snapshot_needs_reload(
             local.get("context_snapshot"),
             current_game_id=candidate.game_id,
+            current_session_id=session_id,
         ):
             local["context_snapshot"] = await asyncio.to_thread(
                 self._load_context_snapshot_for_game,
                 candidate.game_id,
+                current_session_id=session_id,
             )
 
         if warmup_needed:

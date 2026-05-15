@@ -107,11 +107,11 @@ class _Logger:
 
 class _Ctx:
     plugin_id = "galgame_plugin"
-    metadata = {}
     bus = None
 
     def __init__(self, plugin_dir: Path, effective_config: dict[str, object]) -> None:
         self.logger = _Logger()
+        self.metadata = {}
         self.config_path = plugin_dir / "plugin.toml"
         self._effective_config = {
             "plugin": {"store": {"enabled": True}, "database": {"enabled": False}},

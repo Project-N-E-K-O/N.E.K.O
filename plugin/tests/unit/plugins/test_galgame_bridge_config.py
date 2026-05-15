@@ -17,7 +17,6 @@ from _galgame_test_support import (
     _Ctx,
     _default_bridge_root_raw,
     _event,
-    _isolate_galgame_runtime_root,  # noqa: F401
     _Logger,
     _make_effective_config,
     _make_plugin_dirs,
@@ -160,6 +159,48 @@ def test_persist_context_snapshot_skips_stale_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.plugin_unit
+def test_persist_context_snapshot_skips_stale_scene_even_when_session_matches(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(
+        plugin_dir,
+        _make_effective_config(
+            bridge_root,
+            llm={
+                "context_persist_enabled": True,
+                "context_persist_require_game_id": True,
+            },
+        ),
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    plugin._cfg = build_config(ctx._config)
+    plugin._state.active_game_id = "demo.alpha"
+    plugin._state.active_session_id = "sess-a"
+    plugin._state.latest_snapshot = {
+        "scene_id": "scene-live",
+        "route_id": "route-a",
+    }
+
+    plugin._persist_context_snapshot_from_summary(
+        context={
+            "game_id": "demo.alpha",
+            "session_id": "sess-a",
+            "scene_id": "scene-stale",
+            "route_id": "route-a",
+            "stable_lines": [{"line_id": "line-1"}],
+        },
+        payload={"summary": "stale summary"},
+    )
+
+    assert plugin._state.context_snapshot == {}
+    assert plugin._persist.load_context_snapshot(
+        current_game_id="demo.alpha",
+        current_session_id="sess-a",
+    ) == {}
+
+
+@pytest.mark.plugin_unit
 def test_persist_context_snapshot_allows_semantic_degraded_summary(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(
@@ -235,6 +276,57 @@ def test_load_context_snapshot_for_state_rejects_stored_session_mismatch(tmp_pat
 
     assert plugin._load_context_snapshot_for_state() == {}
 
+
+@pytest.mark.plugin_unit
+def test_context_snapshot_reload_uses_candidate_session(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(
+        plugin_dir,
+        _make_effective_config(
+            bridge_root,
+            llm={
+                "context_persist_enabled": True,
+                "context_persist_require_game_id": True,
+            },
+        ),
+    )
+    plugin = GalgameBridgePlugin(ctx)
+    plugin._cfg = build_config(ctx._config)
+    plugin._state.active_session_id = "old-session"
+    plugin._persist.persist_context_snapshot(
+        {
+            "game_id": "demo.alpha",
+            "session_id": "new-session",
+            "summary_seed": "new summary",
+            "saved_at": time.time(),
+        }
+    )
+
+    assert plugin._context_snapshot_needs_reload(
+        {"game_id": "demo.alpha", "session_id": "old-session"},
+        current_game_id="demo.alpha",
+        current_session_id="new-session",
+    ) is True
+    assert plugin._load_context_snapshot_for_game(
+        "demo.alpha",
+        current_session_id="new-session",
+    )["summary_seed"] == "new summary"
+
+
+@pytest.mark.plugin_unit
+def test_bridge_test_context_metadata_is_instance_scoped(tmp_path: Path) -> None:
+    first_base = tmp_path / "first"
+    second_base = tmp_path / "second"
+    first_base.mkdir()
+    second_base.mkdir()
+    first_dir, first_root = _make_plugin_dirs(first_base)
+    second_dir, second_root = _make_plugin_dirs(second_base)
+    first = _Ctx(first_dir, _make_effective_config(first_root))
+    second = _Ctx(second_dir, _make_effective_config(second_root))
+
+    first.metadata["marker"] = "first"
+
+    assert second.metadata == {}
 
 @pytest.mark.plugin_unit
 def test_expand_bridge_root_and_read_bom_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
