@@ -110,6 +110,36 @@ def test_load_context_snapshot_for_state_falls_back_to_active_game() -> None:
 
 
 @pytest.mark.plugin_unit
+def test_commit_state_preserves_private_context_snapshot_on_public_poll_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    private_snapshot = {
+        "scene_id": "scene-a",
+        "game_id": "game-a",
+        "route_id": "route-a",
+        "summary_seed": "saved seed",
+        "stable_line_ids": ["line-1", "line-2"],
+        "saved_at": 123.0,
+    }
+
+    with plugin._state_lock:
+        plugin._state.context_snapshot = dict(private_snapshot)
+
+    payload = plugin._snapshot_state(fresh=True)
+    assert "summary_seed" not in payload["context_snapshot"]
+    assert "stable_line_ids" not in payload["context_snapshot"]
+
+    plugin._commit_state(payload)
+
+    with plugin._state_lock:
+        assert plugin._state.context_snapshot["summary_seed"] == "saved seed"
+        assert plugin._state.context_snapshot["stable_line_ids"] == ["line-1", "line-2"]
+
+
+@pytest.mark.plugin_unit
 def test_commit_state_skips_json_copy_when_payload_is_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -130,6 +160,36 @@ def test_commit_state_skips_json_copy_when_payload_is_unchanged(
 
     assert plugin._state_dirty is False
     assert plugin._cached_snapshot is cached_snapshot
+
+
+@pytest.mark.plugin_unit
+def test_commit_state_only_copies_changed_mutable_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._snapshot_state()
+    payload = plugin._snapshot_state(fresh=True)
+    payload["last_error"] = {"kind": "warning", "message": "changed"}
+    copied_values: list[object] = []
+
+    def _tracking_json_copy(value: object) -> object:
+        copied_values.append(value)
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, list):
+            return list(value)
+        return value
+
+    monkeypatch.setattr(galgame_plugin_module, "json_copy", _tracking_json_copy)
+
+    plugin._commit_state(payload)
+
+    assert copied_values == [{"kind": "warning", "message": "changed"}]
+    assert plugin._state.last_error == {"kind": "warning", "message": "changed"}
+    assert plugin._state_dirty is True
+    assert plugin._cached_snapshot is None
 
 
 @pytest.mark.plugin_unit
