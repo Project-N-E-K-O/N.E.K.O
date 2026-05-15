@@ -882,6 +882,21 @@ class GameLLMAgent:
             f"{int(stable_line_count or 0)}"
         )
 
+    @staticmethod
+    def _context_line_count(lines: object) -> int:
+        if not isinstance(lines, list):
+            return 0
+        total = 0
+        for item in lines:
+            if isinstance(item, dict):
+                try:
+                    total += max(1, int(item.get("_condensed_count") or 1))
+                except (TypeError, ValueError):
+                    total += 1
+            else:
+                total += 1
+        return total
+
     def _summary_task_status_debug(self) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
         for task in list(self._summary_tasks):
@@ -4617,7 +4632,7 @@ class GameLLMAgent:
             context_payload = dict(context)
             metadata_payload = dict(metadata)
         scheduled_seq = int(metadata_payload.get("scheduled_from_event_seq") or 0)
-        stable_line_count = len(list(context_payload.get("stable_lines") or []))
+        stable_line_count = self._context_line_count(context_payload.get("stable_lines"))
         last_line_seq = int(metadata_payload.get("last_line_seq") or scheduled_seq or 0)
         delivery_key = str(metadata_payload.get("summary_delivery_key") or "")
         if not delivery_key:
@@ -5101,7 +5116,7 @@ class GameLLMAgent:
                 scene_id=scene_id,
                 scheduled_seq=scheduled_seq,
                 last_line_seq=scheduled_seq,
-                stable_line_count=len(stable_lines),
+                stable_line_count=self._context_line_count(stable_lines),
             )
             if delivery_key and delivery_key == self._last_delivered_summary_key:
                 self._summary_debug["last_skip"] = {
@@ -5124,7 +5139,7 @@ class GameLLMAgent:
                 "line_interval": self._scene_summary_push_line_interval,
                 "scheduled_from_event_seq": scheduled_seq,
                 "last_line_seq": scheduled_seq,
-                "stable_line_count": len(stable_lines),
+                "stable_line_count": self._context_line_count(stable_lines),
                 "summary_delivery_key": delivery_key,
                 "current_scene_id_at_schedule": current_scene_id,
             }
@@ -5154,7 +5169,7 @@ class GameLLMAgent:
                     "scheduled_from_event_seq": scheduled_seq,
                     "summary_delivery_key": delivery_key,
                     "current_scene_id_at_schedule": current_scene_id,
-                    "stable_line_count": len(stable_lines),
+                    "stable_line_count": self._context_line_count(stable_lines),
                 }
             )
 
@@ -5509,6 +5524,7 @@ class GameLLMAgent:
             target_tokens=target_tokens,
         )
         history_choices = list(shared.get("history_choices") or [])
+        scene_id = str(snapshot.get("scene_id") or "")
         if line_limit > 0:
             tagged_stable = [
                 {**dict(item), "_reply_context_source": "stable"}
@@ -5547,7 +5563,11 @@ class GameLLMAgent:
                 dict(item)
                 for item in history_choices
                 if isinstance(item, dict)
-                and str(item.get("line_id") or "") in recent_line_ids
+                and (not scene_id or str(item.get("scene_id") or "") == scene_id)
+                and (
+                    not str(item.get("line_id") or "").strip()
+                    or str(item.get("line_id") or "") in recent_line_ids
+                )
             ][-line_limit:]
         else:
             stable_lines = []
