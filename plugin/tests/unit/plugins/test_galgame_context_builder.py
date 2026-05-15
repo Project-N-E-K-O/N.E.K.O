@@ -454,12 +454,12 @@ def test_summarize_context_ignores_restored_context_snapshot_for_other_scene() -
     )
 
     assert result["scene_id"] == "scene-b"
-    assert result["route_id"] == "route-a"
+    assert result["route_id"] == ""
     assert result["context_snapshot_summary_seed"] == ""
     assert result["scene_summary_seed"] != "旧场景总结不应复用。"
 
 
-def test_summarize_context_does_not_apply_current_route_to_restored_other_scene() -> None:
+def test_summarize_context_uses_live_route_when_restored_snapshot_is_for_other_scene() -> None:
     result = context_builder.build_summarize_context(
         {
             "active_game_id": "demo.alpha",
@@ -478,6 +478,6 @@ def test_summarize_context_does_not_apply_current_route_to_restored_other_scene(
     )
 
     assert result["scene_id"] == "scene-b"
-    assert result["route_id"] == "route-a"
+    assert result["route_id"] == "route-b"
     assert result["context_snapshot_summary_seed"] == ""
     assert result["scene_summary_seed"] != "旧场景总结不应复用。"
