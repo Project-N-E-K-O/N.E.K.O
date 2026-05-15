@@ -1158,6 +1158,89 @@ def test_game_llm_agent_reply_context_bounds_all_history_by_recency_window(
 
 
 @pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_uses_effective_line_scene_when_snapshot_drops_scene(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 6,
+    )
+    shared = _shared_state(
+        snapshot=_session_state(scene_id="", route_id="", line_id="", text=""),
+        history_lines=[
+            {
+                "speaker": "A",
+                "text": "old scene",
+                "line_id": "old-stable",
+                "scene_id": "scene-old",
+                "route_id": "route-old",
+                "ts": "2026-04-21T08:30:00Z",
+            },
+            {
+                "speaker": "A",
+                "text": "current stable",
+                "line_id": "current-stable",
+                "scene_id": "scene-current",
+                "route_id": "route-current",
+                "ts": "2026-04-21T08:30:01Z",
+            },
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "B",
+                "text": "current observed",
+                "line_id": "current-observed",
+                "scene_id": "scene-current",
+                "route_id": "route-current",
+                "ts": "2026-04-21T08:30:02Z",
+            }
+        ],
+        history_choices=[
+            {
+                "choice_id": "old-choice",
+                "text": "old",
+                "line_id": "old-stable",
+                "scene_id": "scene-old",
+                "action": "selected",
+            },
+            {
+                "choice_id": "current-choice",
+                "text": "current",
+                "line_id": "current-observed",
+                "scene_id": "scene-current",
+                "action": "selected",
+            },
+        ],
+    )
+
+    context = agent._build_agent_reply_context(shared, prompt="status")
+    public_context = context["public_context"]
+
+    assert context["scene_id"] == "scene-current"
+    assert context["route_id"] == "route-current"
+    assert public_context["current_line"]["line_id"] == "current-observed"
+    assert public_context["current_line"]["scene_id"] == "scene-current"
+    assert [line["line_id"] for line in public_context["recent_lines"]] == [
+        "current-stable",
+        "current-observed",
+    ]
+    assert [choice["choice_id"] for choice in public_context["recent_choices"]] == [
+        "current-choice"
+    ]
+
+
+@pytest.mark.plugin_unit
 def test_game_llm_agent_reply_context_zero_line_limit_omits_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

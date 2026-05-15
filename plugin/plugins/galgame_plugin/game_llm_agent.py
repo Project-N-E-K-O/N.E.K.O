@@ -5513,6 +5513,9 @@ class GameLLMAgent:
         status = self._compute_status(shared)
         history_lines = list(shared.get("history_lines") or [])
         history_observed_lines = list(shared.get("history_observed_lines") or [])
+        effective_line = resolve_effective_current_line(shared) or {}
+        scene_id = str(snapshot.get("scene_id") or effective_line.get("scene_id") or "")
+        route_id = str(snapshot.get("route_id") or effective_line.get("route_id") or "")
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
             max_floor=16,
@@ -5524,17 +5527,24 @@ class GameLLMAgent:
             target_tokens=target_tokens,
         )
         history_choices = list(shared.get("history_choices") or [])
-        scene_id = str(snapshot.get("scene_id") or "")
+
+        def _matches_reply_scene(item: dict[str, Any]) -> bool:
+            item_scene_id = str(item.get("scene_id") or "")
+            if scene_id and item_scene_id and item_scene_id != scene_id:
+                return False
+            item_route_id = str(item.get("route_id") or "")
+            return not route_id or not item_route_id or item_route_id == route_id
+
         if line_limit > 0:
             tagged_stable = [
                 {**dict(item), "_reply_context_source": "stable"}
                 for item in history_lines
-                if isinstance(item, dict)
+                if isinstance(item, dict) and _matches_reply_scene(item)
             ]
             tagged_observed = [
                 {**dict(item), "_reply_context_source": "observed"}
                 for item in history_observed_lines
-                if isinstance(item, dict)
+                if isinstance(item, dict) and _matches_reply_scene(item)
             ]
             merged_recent = _recency_ordered_context_lines(
                 tagged_stable,
@@ -5563,7 +5573,7 @@ class GameLLMAgent:
                 dict(item)
                 for item in history_choices
                 if isinstance(item, dict)
-                and (not scene_id or str(item.get("scene_id") or "") == scene_id)
+                and _matches_reply_scene(item)
                 and (
                     not str(item.get("line_id") or "").strip()
                     or str(item.get("line_id") or "") in recent_line_ids
@@ -5574,7 +5584,6 @@ class GameLLMAgent:
             observed_lines = []
             recent_choices = []
             recent_lines = []
-        effective_line = resolve_effective_current_line(shared) or {}
         latest_line = ""
         if effective_line.get("text"):
             speaker = str(effective_line.get("speaker") or "Narration")
@@ -5587,8 +5596,8 @@ class GameLLMAgent:
                 "speaker": str(effective_line.get("speaker") or ""),
                 "text": str(effective_line.get("text") or ""),
                 "line_id": str(effective_line.get("line_id") or ""),
-                "scene_id": str(effective_line.get("scene_id") or snapshot.get("scene_id") or ""),
-                "route_id": str(effective_line.get("route_id") or snapshot.get("route_id") or ""),
+                "scene_id": str(effective_line.get("scene_id") or scene_id),
+                "route_id": str(effective_line.get("route_id") or route_id),
                 "source": str(effective_line.get("source") or ""),
                 "stability": str(effective_line.get("stability") or ""),
             },
@@ -5598,8 +5607,8 @@ class GameLLMAgent:
             "observed_lines": json_copy(observed_lines),
             "recent_choices": json_copy(recent_choices),
             "scene_summary_seed": build_local_scene_summary(
-                scene_id=str(snapshot.get("scene_id") or ""),
-                route_id=str(snapshot.get("route_id") or ""),
+                scene_id=scene_id,
+                route_id=route_id,
                 lines=recent_lines,
                 selected_choices=recent_choices,
                 snapshot=snapshot,
@@ -5613,8 +5622,8 @@ class GameLLMAgent:
             "prompt": prompt,
             "game_id": str(shared.get("active_game_id") or ""),
             "session_id": str(shared.get("active_session_id") or ""),
-            "scene_id": str(snapshot.get("scene_id") or ""),
-            "route_id": str(snapshot.get("route_id") or ""),
+            "scene_id": scene_id,
+            "route_id": route_id,
             "public_context": public_context,
             "status": status,
             "agent_user_status": self._agent_user_status(shared, status=status),
