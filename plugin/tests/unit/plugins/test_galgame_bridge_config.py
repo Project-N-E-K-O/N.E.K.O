@@ -1,6 +1,47 @@
 from __future__ import annotations
 
-from _galgame_test_support import *
+from _galgame_test_support import (
+    Any,
+    DATA_SOURCE_BRIDGE_SDK,
+    DATA_SOURCE_MEMORY_READER,
+    DATA_SOURCE_OCR_READER,
+    Err,
+    Future,
+    GalgameBridgePlugin,
+    OCR_CAPTURE_PROFILE_STAGE_TITLE,
+    Ok,
+    Path,
+    SimpleNamespace,
+    _copy_bridge_fixture_scenario,
+    _create_game_dir,
+    _Ctx,
+    _default_bridge_root_raw,
+    _event,
+    _isolate_galgame_runtime_root,  # noqa: F401
+    _Logger,
+    _make_effective_config,
+    _make_plugin_dirs,
+    _noop_install_entry_poll,
+    _session,
+    _session_state,
+    _shared_state,
+    _write_events,
+    _write_session,
+    asyncio,
+    build_config,
+    build_explain_context,
+    build_summarize_context,
+    expand_bridge_root,
+    galgame_plugin_module,
+    galgame_service,
+    json,
+    pytest,
+    read_session_json,
+    resolve_effective_current_line,
+    tail_events_jsonl,
+    threading,
+    time,
+)
 
 @pytest.mark.asyncio
 async def test_install_progress_callback_uses_supported_run_update_fields() -> None:
@@ -273,8 +314,10 @@ async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> No
     assert status.value["bound_game_id"] == ""
     assert status.value["active_session_id"] == "sess-b"
     assert status.value["available_game_ids"] == ["demo.alpha", "demo.beta"]
+    assert "bound=demo.beta" in status.value["summary"]
     assert "textractor" in status.value
     assert isinstance(snapshot, Ok)
+    assert snapshot.value["game_id"] == "demo.beta"
     assert snapshot.value["session_id"] == "sess-b"
     assert isinstance(open_ui, Ok)
     assert open_ui.value["available"] is True

@@ -174,20 +174,23 @@ async def test_llm_gateway_lru_cache_is_bounded(tmp_path: Path) -> None:
         "llm_target_entry_ref": "fake_llm:run",
     })())
 
-    for index in range(_LLM_RESPONSE_CACHE_MAX_ITEMS + 5):
-        await gateway.summarize_scene(
-            {
-                "scene_id": f"scene-{index}",
-                "route_id": "",
-                "game_id": "demo.alpha",
-                "session_id": "sess-a",
-                "recent_lines": [],
-                "recent_choices": [],
-                "current_snapshot": _session_state(scene_id=f"scene-{index}", line_id="line-1"),
-            }
-        )
+    try:
+        for index in range(_LLM_RESPONSE_CACHE_MAX_ITEMS + 5):
+            await gateway.summarize_scene(
+                {
+                    "scene_id": f"scene-{index}",
+                    "route_id": "",
+                    "game_id": "demo.alpha",
+                    "session_id": "sess-a",
+                    "recent_lines": [],
+                    "recent_choices": [],
+                    "current_snapshot": _session_state(scene_id=f"scene-{index}", line_id="line-1"),
+                }
+            )
 
-    assert len(gateway._cache) == _LLM_RESPONSE_CACHE_MAX_ITEMS
+        assert len(gateway._cache) == _LLM_RESPONSE_CACHE_MAX_ITEMS
+    finally:
+        await gateway.shutdown()
 
 
 @pytest.mark.asyncio
@@ -219,33 +222,36 @@ async def test_llm_gateway_provider_backoff_throttles_distinct_fingerprints(
         "llm_target_entry_ref": "fake_llm:run",
     })())
 
-    base_context = {
-        "route_id": "",
-        "game_id": "demo.alpha",
-        "session_id": "sess-a",
-        "recent_lines": [],
-        "recent_choices": [],
-    }
-    first = await gateway.summarize_scene(
-        {
-            **base_context,
-            "scene_id": "scene-a",
-            "current_snapshot": _session_state(scene_id="scene-a", line_id="line-1"),
+    try:
+        base_context = {
+            "route_id": "",
+            "game_id": "demo.alpha",
+            "session_id": "sess-a",
+            "recent_lines": [],
+            "recent_choices": [],
         }
-    )
-    second = await gateway.summarize_scene(
-        {
-            **base_context,
-            "scene_id": "scene-b",
-            "current_snapshot": _session_state(scene_id="scene-b", line_id="line-2"),
-        }
-    )
+        first = await gateway.summarize_scene(
+            {
+                **base_context,
+                "scene_id": "scene-a",
+                "current_snapshot": _session_state(scene_id="scene-a", line_id="line-1"),
+            }
+        )
+        second = await gateway.summarize_scene(
+            {
+                **base_context,
+                "scene_id": "scene-b",
+                "current_snapshot": _session_state(scene_id="scene-b", line_id="line-2"),
+            }
+        )
 
-    assert first["degraded"] is True
-    assert first["diagnostic"] == "busy: provider rate limited"
-    assert second["degraded"] is True
-    assert second["diagnostic"] == "busy: provider rate limited"
-    assert calls["count"] == 1
+        assert first["degraded"] is True
+        assert first["diagnostic"] == "busy: provider rate limited"
+        assert second["degraded"] is True
+        assert second["diagnostic"] == "busy: provider rate limited"
+        assert calls["count"] == 1
+    finally:
+        await gateway.shutdown()
 
 
 @pytest.mark.plugin_unit
@@ -294,14 +300,17 @@ async def test_llm_gateway_degrades_on_invalid_result(tmp_path: Path) -> None:
         "llm_target_entry_ref": "fake_llm:run",
     })())
 
-    payload = await gateway.summarize_scene(
-        build_summarize_context(
-            _shared_state(history_lines=[{"line_id": "line-1", "speaker": "雪乃", "text": "台词", "scene_id": "scene-a", "route_id": "", "ts": "2026-04-21T08:31:00Z"}]),
-            scene_id="scene-a",
+    try:
+        payload = await gateway.summarize_scene(
+            build_summarize_context(
+                _shared_state(history_lines=[{"line_id": "line-1", "speaker": "雪乃", "text": "台词", "scene_id": "scene-a", "route_id": "", "ts": "2026-04-21T08:31:00Z"}]),
+                scene_id="scene-a",
+            )
         )
-    )
-    assert payload["degraded"] is True
-    assert "invalid_result" in payload["diagnostic"]
+        assert payload["degraded"] is True
+        assert "invalid_result" in payload["diagnostic"]
+    finally:
+        await gateway.shutdown()
 
 
 @pytest.mark.asyncio
@@ -329,29 +338,32 @@ async def test_llm_gateway_normalizes_provider_rejection_and_uses_local_summary_
         "llm_target_entry_ref": "fake_llm:run",
     })())
 
-    payload = await gateway.summarize_scene(
-        build_summarize_context(
-            _shared_state(
-                history_lines=[
-                    {
-                        "line_id": "line-1",
-                        "speaker": "雪乃",
-                        "text": "台词",
-                        "scene_id": "scene-a",
-                        "route_id": "",
-                        "ts": "2026-04-21T08:31:00Z",
-                    }
-                ]
-            ),
-            scene_id="scene-a",
+    try:
+        payload = await gateway.summarize_scene(
+            build_summarize_context(
+                _shared_state(
+                    history_lines=[
+                        {
+                            "line_id": "line-1",
+                            "speaker": "雪乃",
+                            "text": "台词",
+                            "scene_id": "scene-a",
+                            "route_id": "",
+                            "ts": "2026-04-21T08:31:00Z",
+                        }
+                    ]
+                ),
+                scene_id="scene-a",
+            )
         )
-    )
 
-    assert payload["degraded"] is True
-    assert payload["diagnostic"] == "gateway_unavailable: provider rejected request"
-    assert "Lanlan" not in payload["diagnostic"]
-    assert "Lanlan" not in payload["summary"]
-    assert payload["summary"].startswith("场景 scene-a")
+        assert payload["degraded"] is True
+        assert payload["diagnostic"] == "gateway_unavailable: provider rejected request"
+        assert "Lanlan" not in payload["diagnostic"]
+        assert "Lanlan" not in payload["summary"]
+        assert payload["summary"].startswith("场景 scene-a")
+    finally:
+        await gateway.shutdown()
 
 
 @pytest.mark.asyncio
@@ -373,22 +385,25 @@ async def test_llm_gateway_agent_reply_fallback_is_readable_and_structured(
         "llm_target_entry_ref": "fake_llm:run",
     })())
 
-    payload = await gateway.agent_reply(
-        {
-            "prompt": "summarize the current scene",
-            "scene_id": "scene-a",
-            "route_id": "",
-            "latest_line": "Yukino: Let's keep going.",
-            "recent_lines": [],
-            "recent_choices": [],
-            "current_snapshot": _session_state(scene_id="scene-a", line_id="line-1"),
-        }
-    )
+    try:
+        payload = await gateway.agent_reply(
+            {
+                "prompt": "summarize the current scene",
+                "scene_id": "scene-a",
+                "route_id": "",
+                "latest_line": "Yukino: Let's keep going.",
+                "recent_lines": [],
+                "recent_choices": [],
+                "current_snapshot": _session_state(scene_id="scene-a", line_id="line-1"),
+            }
+        )
 
-    assert payload["degraded"] is True
-    assert "invalid_result" in payload["diagnostic"]
-    assert "Received request" in payload["reply"]
-    assert "Current line:" in payload["reply"]
+        assert payload["degraded"] is True
+        assert "invalid_result" in payload["diagnostic"]
+        assert "Received request" in payload["reply"]
+        assert "Current line:" in payload["reply"]
+    finally:
+        await gateway.shutdown()
 
 
 @pytest.mark.asyncio
@@ -453,58 +468,61 @@ async def test_phase2_ocr_reader_provider_rejection_keeps_semantic_flags_and_rea
     ctx.entry_handler = _handler
     plugin = GalgameBridgePlugin(ctx)
     await plugin.startup()
-    assert plugin._cfg is not None
-    plugin._cfg.ocr_reader_enabled = True
-    plugin._cfg.ocr_reader_trigger_mode = "after_advance"
-    plugin._ocr_reader_manager = SimpleNamespace(
-        update_config=lambda config: None,
-        tick=lambda **kwargs: asyncio.sleep(
-            0,
-            result=SimpleNamespace(
-                warnings=[],
-                should_rescan=False,
-                runtime={
-                    "enabled": True,
-                    "status": "active",
-                    "detail": "fixture_active",
-                    "process_name": "RenPy Demo.exe",
-                    "pid": 5252,
-                    "game_id": game_id,
-                    "session_id": session_id,
-                    "last_seq": 1,
-                    "last_event_ts": "2026-04-21T08:31:00Z",
-                },
+    try:
+        assert plugin._cfg is not None
+        plugin._cfg.ocr_reader_enabled = True
+        plugin._cfg.ocr_reader_trigger_mode = "after_advance"
+        plugin._ocr_reader_manager = SimpleNamespace(
+            update_config=lambda config: None,
+            tick=lambda **kwargs: asyncio.sleep(
+                0,
+                result=SimpleNamespace(
+                    warnings=[],
+                    should_rescan=False,
+                    runtime={
+                        "enabled": True,
+                        "status": "active",
+                        "detail": "fixture_active",
+                        "process_name": "RenPy Demo.exe",
+                        "pid": 5252,
+                        "game_id": game_id,
+                        "session_id": session_id,
+                        "last_seq": 1,
+                        "last_event_ts": "2026-04-21T08:31:00Z",
+                    },
+                ),
             ),
-        ),
-        shutdown=lambda: asyncio.sleep(0, result=None),
-    )
-    await plugin._poll_bridge(force=True)
+            shutdown=lambda: asyncio.sleep(0, result=None),
+        )
+        await plugin._poll_bridge(force=True)
 
-    explain = await plugin.galgame_explain_line()
-    summarize = await plugin.galgame_summarize_scene()
+        explain = await plugin.galgame_explain_line()
+        summarize = await plugin.galgame_summarize_scene()
 
-    assert isinstance(explain, Ok)
-    assert explain.value["degraded"] is True
-    assert explain.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert explain.value["semantic_degraded"] is True
-    assert explain.value["fallback_used"] is True
-    assert explain.value["diagnostic"] == "gateway_unavailable: provider rejected request"
-    assert "ocr_reader_input" not in explain.value["diagnostic"]
-    assert "ocr_reader_input" in explain.value["input_diagnostic"]
-    assert "Lanlan" not in explain.value["explanation"]
-    assert "这是 OCR 读取来的台词。" in explain.value["explanation"]
+        assert isinstance(explain, Ok)
+        assert explain.value["degraded"] is True
+        assert explain.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert explain.value["semantic_degraded"] is True
+        assert explain.value["fallback_used"] is True
+        assert explain.value["diagnostic"] == "gateway_unavailable: provider rejected request"
+        assert "ocr_reader_input" not in explain.value["diagnostic"]
+        assert "ocr_reader_input" in explain.value["input_diagnostic"]
+        assert "Lanlan" not in explain.value["explanation"]
+        assert "这是 OCR 读取来的台词。" in explain.value["explanation"]
 
-    assert isinstance(summarize, Ok)
-    assert summarize.value["degraded"] is True
-    assert summarize.value["input_source"] == DATA_SOURCE_OCR_READER
-    assert summarize.value["semantic_degraded"] is True
-    assert summarize.value["fallback_used"] is True
-    assert summarize.value["diagnostic"].startswith("gateway_unavailable:")
-    assert "provider rejected request" in summarize.value["diagnostic"]
-    assert "ocr_reader_input" not in summarize.value["diagnostic"]
-    assert "ocr_reader_input" in summarize.value["input_diagnostic"]
-    assert "Lanlan" not in summarize.value["summary"]
-    assert summarize.value["summary"].startswith("场景 ocr:scene-a")
+        assert isinstance(summarize, Ok)
+        assert summarize.value["degraded"] is True
+        assert summarize.value["input_source"] == DATA_SOURCE_OCR_READER
+        assert summarize.value["semantic_degraded"] is True
+        assert summarize.value["fallback_used"] is True
+        assert summarize.value["diagnostic"].startswith("gateway_unavailable:")
+        assert "provider rejected request" in summarize.value["diagnostic"]
+        assert "ocr_reader_input" not in summarize.value["diagnostic"]
+        assert "ocr_reader_input" in summarize.value["input_diagnostic"]
+        assert "Lanlan" not in summarize.value["summary"]
+        assert summarize.value["summary"].startswith("场景 ocr:scene-a")
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.plugin_unit
