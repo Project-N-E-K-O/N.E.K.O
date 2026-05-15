@@ -889,6 +889,8 @@
       }
 
       this._clearFadeTimer();
+      disposeAudio(this.fadingAudio);
+      this.fadingAudio = null;
       const previousAudio = this.currentAudio;
       const audio = this._createAudio(track, phase);
       this.currentAudio = audio;
@@ -1025,6 +1027,8 @@
     }
 
     _fadeOutAndDispose(audio, fadeMs) {
+      disposeAudio(this.fadingAudio);
+      this.fadingAudio = audio;
       const startedAt = Date.now();
       const startVolume = Number(audio.volume) || 0;
       this.fadeTimer = window.setInterval(() => {
@@ -1033,6 +1037,7 @@
         this._applyRawVolume(audio, startVolume * (1 - progress));
         if (progress >= 1) {
           this._clearFadeTimer();
+          if (this.fadingAudio === audio) this.fadingAudio = null;
           disposeAudio(audio);
         }
       }, 50);

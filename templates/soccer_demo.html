@@ -4662,7 +4662,8 @@
       });
       const playerWon = Number(state.score.player || 0) > Number(state.score.ai || 0);
       const playerWinBgm = soccerGameAudio.config.bgm.result?.playerWin;
-      if (playerWon && Array.isArray(playerWinBgm) && playerWinBgm.length) {
+      const hasPlayerWinBgm = Array.isArray(playerWinBgm) ? playerWinBgm.length > 0 : Boolean(playerWinBgm);
+      if (playerWon && hasPlayerWinBgm) {
         const started = await soccerGameAudio.playBgm(playerWinBgm, {
           id: 'soccer:result:player-win',
           repeat: false,
