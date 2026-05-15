@@ -1247,30 +1247,42 @@ def build_summarize_context(
         line_id=str(snapshot.get("line_id") or ""),
         choice_ids=[str(choice.get("choice_id") or "") for choice in selected_choices],
     )
-    summary_seed = _cumulative_scene_summary(
-        scene_id=effective_scene_id,
-        route_id=route_id,
-        lines=stable_lines,
-        selected_choices=selected_choices,
-        snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
-        previous_summary=_previous_summary_from_state(
+    seed_snapshot = _snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines)
+    if not stable_lines and restored_context_snapshot:
+        summary_seed = _scene_summary_seed_with_restored_context(
             local_state,
-            current_game_id=str(local_state.get("active_game_id") or ""),
-            current_scene_id=effective_scene_id,
-            current_route_id=route_id,
-        ),
-        mode=_summary_mode(config),
-        llm_refined_summary=_llm_refined_summary_from_state(local_state),
-        llm_trigger_lines=int(
-            getattr(config, "context_cumulative_llm_trigger_lines", 30) or 30
-        ),
-        trigger_line_count=_scene_history_dialogue_line_count(
-            history_lines,
-            history_observed_lines,
             scene_id=effective_scene_id,
             route_id=route_id,
-        ),
-    )
+            lines=stable_lines,
+            selected_choices=selected_choices,
+            snapshot=seed_snapshot,
+            restored_context_snapshot=restored_context_snapshot,
+        )
+    else:
+        summary_seed = _cumulative_scene_summary(
+            scene_id=effective_scene_id,
+            route_id=route_id,
+            lines=stable_lines,
+            selected_choices=selected_choices,
+            snapshot=seed_snapshot,
+            previous_summary=_previous_summary_from_state(
+                local_state,
+                current_game_id=str(local_state.get("active_game_id") or ""),
+                current_scene_id=effective_scene_id,
+                current_route_id=route_id,
+            ),
+            mode=_summary_mode(config),
+            llm_refined_summary=_llm_refined_summary_from_state(local_state),
+            llm_trigger_lines=int(
+                getattr(config, "context_cumulative_llm_trigger_lines", 30) or 30
+            ),
+            trigger_line_count=_scene_history_dialogue_line_count(
+                history_lines,
+                history_observed_lines,
+                scene_id=effective_scene_id,
+                route_id=route_id,
+            ),
+        )
     return {
         "game_id": str(local_state.get("active_game_id") or ""),
         "session_id": str(local_state.get("active_session_id") or ""),
