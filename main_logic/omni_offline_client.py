@@ -1179,15 +1179,20 @@ class OmniOfflineClient:
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
         """
+        # 先快照并清空本轮图片，避免切换视觉模型时后续图片插入到当前用户轮次。
+        pending_images_for_turn = list(self._pending_images)
+        if pending_images_for_turn:
+            self._pending_images.clear()
+
         if not text or not text.strip():
             # If only images without text, use a default prompt
-            if self._pending_images:
+            if pending_images_for_turn:
                 text = "请分析这些图片。"
             else:
                 return
         
         # Check if we need to switch to vision model
-        has_images = len(self._pending_images) > 0
+        has_images = len(pending_images_for_turn) > 0
         
         # Prepare user message content
         if has_images:
@@ -1195,13 +1200,17 @@ class OmniOfflineClient:
             # (cannot switch back because image data remains in conversation history)
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
-                await self.switch_model(self.vision_model, use_vision_config=True)
+                try:
+                    await self.switch_model(self.vision_model, use_vision_config=True)
+                except Exception:
+                    self._pending_images = pending_images_for_turn + self._pending_images
+                    raise
             
             # Multi-modal message: images + text
             content = []
             
             # Add images first
-            for img_b64 in self._pending_images:
+            for img_b64 in pending_images_for_turn:
                 content.append({
                     "type": "image_url",
                     "image_url": {
@@ -1216,10 +1225,7 @@ class OmniOfflineClient:
             })
             
             user_message = HumanMessage(content=content)
-            logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
-            
-            # Clear pending images after using them
-            self._pending_images.clear()
+            logger.info(f"Sending multi-modal message with {len(pending_images_for_turn)} images")
         else:
             # Text-only message
             user_message = HumanMessage(content=text.strip())

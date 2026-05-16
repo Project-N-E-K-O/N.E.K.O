@@ -280,7 +280,7 @@
                 return;
             }
 
-            Promise.allSettled(files.map(mod.importImageFileToPendingList))
+            Promise.allSettled(files.map(mod.prepareImageFileForPendingList))
                 .then(function (results) {
                     var succeeded = 0;
                     var failed = 0;
@@ -290,6 +290,11 @@
                         } else {
                             failed++;
                             console.error('[导入图片] 单张处理失败:', results[i].reason);
+                        }
+                    }
+                    for (var j = 0; j < results.length; j++) {
+                        if (results[j].status === 'fulfilled') {
+                            mod.addScreenshotToList(results[j].value.dataUrl);
                         }
                     }
                     if (succeeded > 0 && failed > 0) {
@@ -318,17 +323,27 @@
         return input;
     };
 
+    mod.prepareImageBlobForPendingList = async function prepareImageBlobForPendingList(blob) {
+        return await normalizeImageBlobForPendingList(blob);
+    };
+
+    mod.prepareImageFileForPendingList = async function prepareImageFileForPendingList(file) {
+        if (!(file instanceof File)) {
+            throw new Error('INVALID_FILE');
+        }
+        return await mod.prepareImageBlobForPendingList(file);
+    };
+
     mod.importImageBlobToPendingList = async function importImageBlobToPendingList(blob) {
-        var normalized = await normalizeImageBlobForPendingList(blob);
+        var normalized = await mod.prepareImageBlobForPendingList(blob);
         mod.addScreenshotToList(normalized.dataUrl);
         return normalized.dataUrl;
     };
 
     mod.importImageFileToPendingList = async function importImageFileToPendingList(file) {
-        if (!(file instanceof File)) {
-            throw new Error('INVALID_FILE');
-        }
-        return await mod.importImageBlobToPendingList(file);
+        var normalized = await mod.prepareImageFileForPendingList(file);
+        mod.addScreenshotToList(normalized.dataUrl);
+        return normalized.dataUrl;
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {

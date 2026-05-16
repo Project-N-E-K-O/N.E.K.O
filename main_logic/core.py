@@ -782,6 +782,7 @@ class LLMSessionManager:
         self.session_ready = False  # Session是否完全就绪
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        self._flushing_pending_input_data = False  # 回放缓存输入时，新非音频输入继续排队
         self.non_audio_stream_lock = asyncio.Lock()  # 串行化图片/文本输入，保证图文同轮顺序
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -3060,8 +3061,20 @@ class LLMSessionManager:
         async with self.input_cache_lock:
             if not self.pending_input_data:
                 return
+            self._flushing_pending_input_data = True
 
-            if self.session and self.is_active:
+        dropped_text_for_voice = 0
+        try:
+            while True:
+                async with self.input_cache_lock:
+                    if not self.pending_input_data:
+                        break
+                    pending_messages = list(self.pending_input_data)
+                    self.pending_input_data.clear()
+
+                if not (self.session and self.is_active):
+                    return
+
                 # 缓存阶段（_stream_data_now）不知道 session 最终是 voice 还是
                 # text。如果最终启好的是 voice session，缓存里的 text 输入若
                 # 直接 flush 进 _process_stream_data_internal，会触发 4977-4995
@@ -3074,31 +3087,33 @@ class LLMSessionManager:
                 # 的合法路径，不能误丢。audio 在 _stream_data_now 缓存阶段已经
                 # 直接 return 不缓存，pending_input_data 不会出现 audio。
                 is_voice_session = isinstance(self.session, OmniRealtimeClient)
-                dropped_text_for_voice = 0
-                for message in self.pending_input_data:
+
+                for message in pending_messages:
                     msg_input_type = message.get("input_type")
                     try:
-                        # 重新调用stream_data处理缓存的数据
-                        # 注意：这里直接处理，不再缓存（因为session_ready已设为True）
+                        # 回放仍走 stream_data，让缓存输入和实时输入共享同一套图文顺序保护。
                         if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
                             if is_voice_session and msg_input_type == "text":
                                 dropped_text_for_voice += 1
                                 continue
-                            await self._process_stream_data_internal(message)
+                            replay_message = dict(message)
+                            replay_message["_pending_replay"] = True
+                            await self.stream_data(replay_message)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break
-                if dropped_text_for_voice:
-                    logger.info(
-                        "[%s] _flush_pending_input_data: dropped %d cached text "
-                        "message(s) because final session is voice mode",
-                        self.lanlan_name, dropped_text_for_voice,
-                    )
+        finally:
+            async with self.input_cache_lock:
+                self._flushing_pending_input_data = False
 
-            # 清空缓存
-            self.pending_input_data.clear()
+        if self.session and self.is_active and dropped_text_for_voice:
+            logger.info(
+                "[%s] _flush_pending_input_data: dropped %d cached text "
+                "message(s) because final session is voice mode",
+                self.lanlan_name, dropped_text_for_voice,
+            )
     
     async def _flush_hot_swap_audio_cache(self):
         """热切换完成后，循环推送缓存的音频数据到新session，直到缓存稳定为空"""
@@ -5735,11 +5750,26 @@ class LLMSessionManager:
         if message.get("input_type") == "audio":
             await self._enqueue_audio_stream_data(message)
             return
-        async with self.non_audio_stream_lock:
-            await self._stream_data_now(message)
+        lock_released = False
+        await self.non_audio_stream_lock.acquire()
 
-    async def _stream_data_now(self, message: dict):
+        def release_non_audio_stream_lock():
+            nonlocal lock_released
+            if not lock_released:
+                self.non_audio_stream_lock.release()
+                lock_released = True
+
+        try:
+            await self._stream_data_now(
+                message,
+                release_non_audio_stream_lock=release_non_audio_stream_lock,
+            )
+        finally:
+            release_non_audio_stream_lock()
+
+    async def _stream_data_now(self, message: dict, release_non_audio_stream_lock=None):
         input_type = message.get("input_type")
+        is_pending_replay = bool(message.get("_pending_replay"))
         
         # 检查session是否就绪
         async with self.input_cache_lock:
@@ -5755,6 +5785,10 @@ class LLMSessionManager:
                     else:
                         logger.debug(f"继续缓存输入数据 (总计: {len(self.pending_input_data)} 条)...")
                     return
+            if input_type != "audio" and self._flushing_pending_input_data and not is_pending_replay:
+                self.pending_input_data.append(message)
+                logger.debug(f"缓存回放中，继续缓存非音频输入 (总计: {len(self.pending_input_data)} 条)...")
+                return
 
         # 在锁外检查是否需要创建新session（不要在锁内创建session，避免死锁）
         if not self.session_ready and self._starting_session_count == 0:
@@ -5777,9 +5811,12 @@ class LLMSessionManager:
                     return
         
         # Session已就绪，直接处理
-        await self._process_stream_data_internal(message)
+        await self._process_stream_data_internal(
+            message,
+            release_non_audio_stream_lock=release_non_audio_stream_lock,
+        )
     
-    async def _process_stream_data_internal(self, message: dict):
+    async def _process_stream_data_internal(self, message: dict, release_non_audio_stream_lock=None):
         """内部方法：实际处理stream_data的逻辑"""
         data = message.get("data")
         input_type = message.get("input_type")
@@ -6000,6 +6037,9 @@ class LLMSessionManager:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
                     self._active_text_request_id = message.get("request_id")
+                    if release_non_audio_stream_lock:
+                        # 图片已进入 pending 队列，文本即将消费它们；此后不再阻塞后续输入等待整轮生成。
+                        release_non_audio_stream_lock()
                     await self.session.stream_text(data)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
