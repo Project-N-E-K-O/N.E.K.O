@@ -18,6 +18,7 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 # Ensure the project root is importable when pytest is invoked from
@@ -699,6 +700,278 @@ async def test_unregister_tool_router_isolates_per_role_failures():
     assert "fake sync failure" in result["failed_roles"][0]["error"]
     # 一个成功 + 一个失败 → ok=True（部分成功）
     assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# 死插件自动驱逐：_remote_dispatch 在同一 plugin source 连续 N 次"连接级"失败
+# 后扫除该 source 的所有工具。覆盖 kill -9 杀插件进程后 main_server registry
+# 里残留死端点工具的场景——优雅 shutdown 走 /api/tools/clear，崩溃没机会触发。
+# ---------------------------------------------------------------------------
+
+
+def _make_eviction_stub_mgr(name: str):
+    """造一个能配合 _evict_dead_plugin_source 的最小 mgr：只需要
+    ``tool_registry`` 和同步版本的 ``clear_tools(source=...)``。后者直接
+    委托给 registry，不 fire session.update task（单测里没 active session）。"""
+    from main_logic.tool_calling import ToolRegistry
+
+    class _StubMgr:
+        def __init__(self, lanlan_name: str):
+            self.lanlan_name = lanlan_name
+            self.tool_registry = ToolRegistry()
+            self.clear_calls: list = []
+
+        def clear_tools(self, *, source=None):
+            n = self.tool_registry.clear(source=source)
+            self.clear_calls.append((source, n))
+            return n
+
+    return _StubMgr(name)
+
+
+@pytest.fixture
+def _reset_eviction_counter():
+    """每个 eviction 测试前后都把模块级失败计数清空，避免跨测试污染。"""
+    from main_routers import tool_router as _tr
+    _tr._consecutive_connect_failures.clear()
+    yield
+    _tr._consecutive_connect_failures.clear()
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_evicts_dead_plugin_after_three_connect_failures(
+    monkeypatch, _reset_eviction_counter,
+):
+    """插件 kill -9 之后，model 连撞 3 次 connect refused → 该 plugin 的
+    所有工具从所有 session manager 的 registry 里清除；builtin 工具不动。
+
+    回归保护：lifecycle 审计发现 plugin 崩溃没有清理路径。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    # 准备一个 stub session_manager，挂两个"角色"，每个 mgr 都有同一个 plugin
+    # 的两个工具（模拟 role=None 的全局注册）和一个 builtin。
+    mgr_a = _make_eviction_stub_mgr("Alpha")
+    mgr_b = _make_eviction_stub_mgr("Beta")
+    for mgr in (mgr_a, mgr_b):
+        mgr.tool_registry.register(ToolDefinition(
+            name="weather", description="", handler=None,
+            metadata={"source": "plugin:dead_foo", "callback_url": "http://127.0.0.1:9999/cb"},
+        ))
+        mgr.tool_registry.register(ToolDefinition(
+            name="search", description="", handler=None,
+            metadata={"source": "plugin:dead_foo", "callback_url": "http://127.0.0.1:9999/cb"},
+        ))
+        mgr.tool_registry.register(ToolDefinition(
+            name="recall_memory", description="", handler=lambda _: "",
+            metadata={"source": "builtin"},
+        ))
+
+    fake_session_manager = {"Alpha": mgr_a, "Beta": mgr_b}
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: fake_session_manager)
+
+    # 让 httpx client 永远 ConnectError —— 模拟插件进程已经死了。
+    class _DeadClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _DeadClient())
+
+    # 模型走 dispatch 3 次（任意角色都会触发 module-level 计数，跨 mgr 共享）。
+    call = ToolCall(name="weather", arguments={}, call_id="c")
+    metadata = {
+        "source": "plugin:dead_foo",
+        "callback_url": "http://127.0.0.1:9999/cb",
+        "timeout_seconds": 5,
+    }
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD):
+        result = await _tr._remote_dispatch(call, metadata)
+        # 单次 dispatch 失败必须仍然回 ToolResult（不抛异常），
+        # 让模型看到结构化错误而不是 client 崩。
+        assert result.is_error is True
+
+    # 阈值后：两个 mgr 上所有 plugin:dead_foo 的工具都该被扫掉，
+    # builtin 工具留下。
+    for mgr in (mgr_a, mgr_b):
+        names = sorted(mgr.tool_registry.names())
+        assert names == ["recall_memory"], (
+            f"mgr {mgr.lanlan_name}: plugin tools should be evicted, "
+            f"builtin should remain; got {names}"
+        )
+        # 每个 mgr 都该被 clear 调用过一次，source 精确指向死插件。
+        assert mgr.clear_calls == [("plugin:dead_foo", 2)], (
+            f"mgr {mgr.lanlan_name}: clear_tools should have been called "
+            f"exactly once with the dead plugin source; got {mgr.clear_calls}"
+        )
+
+    # 计数器在驱逐后清零，避免下次 1 次失败就触发误杀。
+    assert "plugin:dead_foo" not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_business_error_does_not_evict(
+    monkeypatch, _reset_eviction_counter,
+):
+    """插件 callback 业务上返回 ``is_error=True``（或 HTTP 5xx）说明插件是活的，
+    只是工具内部出错——这是工具 bug 不是 lifecycle bug，不能算驱逐计数。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="buggy_tool", description="", handler=None,
+        metadata={"source": "plugin:buggy", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    # 模拟插件活着（200 + is_error=true body）。
+    class _AliveButBuggyResp:
+        status_code = 200
+        text = '{"is_error": true, "error": "tool blew up"}'
+        def json(self):
+            return {"is_error": True, "error": "tool blew up"}
+
+    class _AliveClient:
+        async def post(self, *_a, **_kw):
+            return _AliveButBuggyResp()
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _AliveClient())
+
+    call = ToolCall(name="buggy_tool", arguments={}, call_id="c")
+    metadata = {
+        "source": "plugin:buggy",
+        "callback_url": "http://127.0.0.1:9999/cb",
+        "timeout_seconds": 5,
+    }
+    # 比阈值多调几次。
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD + 2):
+        result = await _tr._remote_dispatch(call, metadata)
+        assert result.is_error is True  # 业务错误透传
+
+    # 工具仍在 registry 里——业务错不是 lifecycle 错。
+    assert mgr.tool_registry.names() == ["buggy_tool"]
+    assert mgr.clear_calls == []
+    # 计数器从未累加（每次成功 HTTP 都清零）。
+    assert "plugin:buggy" not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_success_resets_failure_counter(
+    monkeypatch, _reset_eviction_counter,
+):
+    """连续 2 次 connect failure（还不到阈值）后一次成功 → 计数器清零，
+    后续再失败要从 1 重新计起。防止"偶发 connection refused"长期累积成误杀。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="flaky", description="", handler=None,
+        metadata={"source": "plugin:flaky", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _OkResp:
+        status_code = 200
+        text = '{"output": "ok"}'
+        def json(self): return {"output": "ok"}
+
+    fail_then_ok = [
+        httpx.ConnectError("refused"),
+        httpx.ConnectError("refused"),
+        _OkResp(),
+        httpx.ConnectError("refused"),
+        httpx.ConnectError("refused"),
+    ]
+    class _SwitchingClient:
+        async def post(self, *_a, **_kw):
+            item = fail_then_ok.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _SwitchingClient())
+
+    call = ToolCall(name="flaky", arguments={}, call_id="c")
+    metadata = {"source": "plugin:flaky", "callback_url": "http://127.0.0.1:9999/cb", "timeout_seconds": 5}
+
+    # fail, fail (counter=2), ok (counter=0), fail, fail (counter=2) — 仍未到阈值
+    for _ in range(5):
+        await _tr._remote_dispatch(call, metadata)
+
+    # 工具还在，counter 累计但没超阈值。
+    assert mgr.tool_registry.names() == ["flaky"]
+    assert mgr.clear_calls == []
+    assert _tr._consecutive_connect_failures.get("plugin:flaky") == 2
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_builtin_source_never_evicted(
+    monkeypatch, _reset_eviction_counter,
+):
+    """``source="builtin"`` 永远不进入驱逐计数——builtin 工具是 in-process
+    handler，通常根本不走 _remote_dispatch；万一被错配成 remote，也不能因为
+    "连续失败"就把内置工具扫掉。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    # 病态注册：builtin 但 handler=None，硬走 remote 路径。
+    mgr.tool_registry.register(ToolDefinition(
+        name="recall_memory", description="", handler=None,
+        metadata={"source": "builtin", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _DeadClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _DeadClient())
+
+    call = ToolCall(name="recall_memory", arguments={}, call_id="c")
+    metadata = {"source": "builtin", "callback_url": "http://127.0.0.1:9999/cb", "timeout_seconds": 5}
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD + 3):
+        await _tr._remote_dispatch(call, metadata)
+
+    # 工具仍在 registry，计数器从未被建。
+    assert mgr.tool_registry.names() == ["recall_memory"]
+    assert mgr.clear_calls == []
+    assert "builtin" not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_read_timeout_does_not_evict(
+    monkeypatch, _reset_eviction_counter,
+):
+    """ReadTimeout 表示插件接住了请求但执行慢——是工具实现问题，不是
+    "端点不可达"。只有 ConnectError/ConnectTimeout 才算 lifecycle 失败。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="slow", description="", handler=None,
+        metadata={"source": "plugin:slow", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _SlowClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ReadTimeout("tool ran past deadline")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _SlowClient())
+
+    call = ToolCall(name="slow", arguments={}, call_id="c")
+    metadata = {"source": "plugin:slow", "callback_url": "http://127.0.0.1:9999/cb", "timeout_seconds": 5}
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD + 2):
+        result = await _tr._remote_dispatch(call, metadata)
+        assert result.is_error is True  # 超时仍透传给模型作为错误
+
+    # 工具不动：ReadTimeout 不算 connection-level，counter 也没累加。
+    assert mgr.tool_registry.names() == ["slow"]
+    assert mgr.clear_calls == []
+    assert "plugin:slow" not in _tr._consecutive_connect_failures
 
 
 @pytest.mark.asyncio

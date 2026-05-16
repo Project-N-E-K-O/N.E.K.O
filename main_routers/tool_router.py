@@ -168,6 +168,95 @@ class ToolClearRequest(BaseModel):
 # Remote dispatcher — issued when ToolRegistry.execute() runs a remote tool
 # ---------------------------------------------------------------------------
 
+# 死插件自动驱逐：插件进程崩了之后，main_server 的 registry 里还挂着指向
+# 死端点的工具，model 还能在 schema 里看到它们并调用，每次都会撞 connection
+# refused。优雅 shutdown 走 /api/tools/clear，崩溃（kill -9）没机会触发，
+# 所以这里在 dispatch 路径上做反应式清理：同一个 plugin source 连续
+# ``_EVICTION_FAILURE_THRESHOLD`` 次"连接级"失败 → 把该 source 的所有工具
+# 从所有 session manager 的 registry 里扫掉，并推 fresh session.update 上 wire。
+#
+# 只算"端点不可达"——ReadTimeout（插件慢）、HTTP 4xx/5xx（插件活着但有 bug）、
+# body 解析失败、callback 业务上回 ``is_error=True``，这些都是工具/插件 bug，
+# 不是 lifecycle 问题，不计入也不会触发驱逐。任何一次 HTTP 交换成功（不管
+# 业务结果）就重置该 source 的计数器，所以"偶发 connection refused"不会
+# 在长期里累积成误杀。
+_EVICTION_FAILURE_THRESHOLD = 3
+_consecutive_connect_failures: Dict[str, int] = {}
+
+
+def _is_plugin_source(source: str) -> bool:
+    """只有 ``plugin:<id>`` 形态的 source 会参与自动驱逐。builtin 永远豁免；
+    其它自定义 source（如 agent_server、external）现阶段也不参与——它们的
+    生命周期不一定走 plugin 进程模型，复活机制也不一样。"""
+    return bool(source) and source.startswith("plugin:")
+
+
+def _is_connection_level_failure(exc: BaseException) -> bool:
+    """是否属于"插件端点不可达"。只认 ``ConnectError`` / ``ConnectTimeout``——
+    ``ReadTimeout`` 可能只是工具慢，HTTP 5xx 是插件活着但 bug，都不算
+    lifecycle 失败。"""
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+
+
+def _note_dispatch_outcome(source: str, *, connection_failed: bool) -> None:
+    """更新某 source 的连续连接失败计数。成功一次（任何 HTTP status）就清零；
+    连续达到阈值则触发 ``_evict_dead_plugin_source``。"""
+    if not _is_plugin_source(source):
+        return
+    if not connection_failed:
+        _consecutive_connect_failures.pop(source, None)
+        return
+    cnt = _consecutive_connect_failures.get(source, 0) + 1
+    _consecutive_connect_failures[source] = cnt
+    if cnt >= _EVICTION_FAILURE_THRESHOLD:
+        _evict_dead_plugin_source(source)
+
+
+def _evict_dead_plugin_source(source: str) -> None:
+    """把指定 source 的工具从每个 session manager 的 registry 里扫掉，
+    并触发该 manager 的 session.update 推送，让模型在下次 list_tools()
+    时看不到这些工具。
+
+    注意走 ``mgr.clear_tools(...)`` 而不是直接 ``mgr.tool_registry.clear(...)``：
+    前者会 fire 一次 ``_sync_tools_to_active_session``，把变更推到 wire 上
+    活跃的 OpenAI Realtime / GLM / Qwen session；只动 registry 不推 wire
+    的话，模型还是会看到旧 schema 直到 session 重启。"""
+    _consecutive_connect_failures.pop(source, None)
+    try:
+        session_manager = get_session_manager()
+    except Exception as e:
+        # session_manager 未初始化（极早期 dispatch / 单测裸调用）。
+        # 静默 return —— 没有 manager 就没法 sweep，下次再试。
+        logger.debug(
+            "auto-eviction skipped (session_manager unavailable): %s: %s",
+            type(e).__name__, e,
+        )
+        return
+    total = 0
+    affected: List[str] = []
+    for mgr in list(session_manager.values()):
+        if mgr is None:
+            continue
+        try:
+            n = mgr.clear_tools(source=source)
+        except Exception as e:
+            logger.warning(
+                "auto-eviction sweep on mgr=%s source=%s failed: %s: %s",
+                getattr(mgr, "lanlan_name", "?"), source,
+                type(e).__name__, e,
+            )
+            continue
+        if n:
+            total += n
+            affected.append(getattr(mgr, "lanlan_name", "?"))
+    if total:
+        logger.warning(
+            "auto-evicted %d tool(s) for plugin source %s across roles=%s "
+            "after %d consecutive connect failures — plugin endpoint "
+            "unreachable (process likely crashed without graceful shutdown)",
+            total, source, affected, _EVICTION_FAILURE_THRESHOLD,
+        )
+
 
 async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResult:
     """POST the tool call to the plugin's callback URL and translate the
@@ -176,7 +265,13 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         request body  → {"name": "...", "arguments": {...}, "call_id": "..."}
         response body → {"output": <any JSON>, "is_error": false}
                      or {"error": "...", "is_error": true}
+
+    Also runs the dead-plugin auto-eviction tracker on every outcome:
+    consecutive connection-level failures for a ``plugin:*`` source cross
+    the threshold → the source's tools get swept from every session
+    manager's registry. See ``_note_dispatch_outcome`` for details.
     """
+    source = str(metadata.get("source") or "")
     callback_url = metadata.get("callback_url")
     if not callback_url:
         msg = "remote tool registered without callback_url"
@@ -197,10 +292,15 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
     except Exception as e:
         err = f"remote tool callback HTTP failure: {type(e).__name__}: {e}"
         logger.warning("remote tool '%s' dispatch failed: %s", call.name, err)
+        _note_dispatch_outcome(source, connection_failed=_is_connection_level_failure(e))
         return ToolResult(
             call_id=call.call_id, name=call.name,
             output={"error": err}, is_error=True, error_message=err,
         )
+    # HTTP exchange completed (any status code) → endpoint is reachable,
+    # reset the consecutive-failure counter. Application-level errors
+    # (4xx/5xx or ``is_error=True`` in body) are NOT lifecycle failures.
+    _note_dispatch_outcome(source, connection_failed=False)
     if resp.status_code >= 400:
         err = f"remote tool callback returned HTTP {resp.status_code}: {resp.text[:200]}"
         return ToolResult(
