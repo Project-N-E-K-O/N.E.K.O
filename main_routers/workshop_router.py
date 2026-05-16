@@ -344,6 +344,24 @@ def _all_items_cache_valid(item_ids: list[int]) -> bool:
     return all(_is_item_cache_valid(iid) for iid in item_ids)
 
 
+def _steamworks_method_unavailable(method) -> bool:
+    return bool(getattr(method, '_neko_steamworks_unavailable', False))
+
+
+def _ugc_details_query_supported(steamworks) -> bool:
+    required_methods = (
+        'Workshop_CreateQueryUGCDetailsRequest',
+        'Workshop_SetQueryCompletedCallback',
+        'Workshop_SendQueryUGCRequest',
+        'Workshop_GetQueryUGCResult',
+    )
+    for method_name in required_methods:
+        method = getattr(steamworks, method_name, None)
+        if method is None or _steamworks_method_unavailable(method):
+            return False
+    return True
+
+
 async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries: int = 2) -> dict[int, object]:
     """
     批量查询 UGC 物品详情，带重试逻辑。
@@ -357,6 +375,13 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
         dict: { publishedFileId(int): SteamUGCDetails_t }
     """
     if not item_ids:
+        return {}
+
+    if not _ugc_details_query_supported(steamworks):
+        logger.info(
+            "UGC 批量详情查询不可用：当前 Steamworks wrapper 缺少 Linux UGC query 桥接，"
+            "将保留订阅/安装目录扫描并跳过标题、作者等详情预热"
+        )
         return {}
     
     for attempt in range(max_retries):
