@@ -720,6 +720,17 @@ class GameAgentService:
         now = time.time()
         elapsed = now - self._last_screenshot_push_time
         if elapsed >= self._screenshot_stream_min_interval:
+            # Cancel any pending delayed flush — it would surface an
+            # older frame just after we pushed the fresher one. Tight
+            # race window: a previously-scheduled flush whose sleep
+            # expires in the same event loop tick as this immediate
+            # branch firing would emit its stale ``_pending_screenshot``
+            # right after our push, reversing freshness order at the
+            # dialog LLM.
+            if self._screenshot_flush_task is not None and not self._screenshot_flush_task.done():
+                self._screenshot_flush_task.cancel()
+            self._screenshot_flush_task = None
+            self._pending_screenshot = None
             self._push_screenshot_now(img_bytes, mime)
         else:
             # Window closed — defer. Latest frame wins.
