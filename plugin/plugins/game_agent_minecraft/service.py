@@ -152,8 +152,65 @@ class GameAgentService:
         )
         self._task_finished: bool = True
 
-        # Pacing state for the autonomous loop
+        # Latest known body state (inventory dict from mc-agent's
+        # ``task_finished`` payload). Cached so the autonomous nudge loop
+        # can re-surface it every 5s as a hard grounding signal — without
+        # this, the dialog LLM only sees inventory at task_finished moments
+        # and tends to hallucinate items it doesn't have between those.
+        self._last_inventory: Dict[str, int] = {}
+        self._last_inventory_at: float = 0.0
+
+        # Pacing state for the autonomous loop. Three independent rate
+        # limiters cover the three distinct nudge purposes:
+        #
+        # * ``_last_system_prompt_time`` — generic "here's recent state"
+        #   nudge, fires only when there's actual cache to surface
+        # * ``_last_in_progress_nudge_at`` — when a task has been pending
+        #   ≥10s, periodically prompt the dialog LLM to narrate what it's
+        #   doing in its own voice (so the user gets ongoing engagement
+        #   instead of dead silence during long actions)
+        # * ``_last_keep_going_nudge_at`` — after a task finishes, if no
+        #   new task is dispatched within ~5s, prompt the dialog LLM to
+        #   decide the next concrete action (so the avatar doesn't stand
+        #   still indefinitely waiting for {MASTER_NAME} to drive it).
+        # ``_last_task_finished_at`` is the anchor for the keep-going
+        # branch: time-since-finish must be in [5s, 60s] to fire — too
+        # early and the cue cooldown is still active; too late and the
+        # user has clearly moved on.
         self._last_system_prompt_time: float = 0.0
+        self._last_in_progress_nudge_at: float = 0.0
+        self._last_keep_going_nudge_at: float = 0.0
+        self._last_task_finished_at: float = 0.0
+
+        # Pacing state for inline log push (separate from autonomous nudge).
+        # mc-agent emits a ``log`` frame for each chat-loop turn the in-game
+        # agent takes (every chat reply, every action narration). Surfacing
+        # those to the dialog LLM only via the 5s nudge loop means a turn
+        # can be 5s stale — perceptibly slow in realtime conversation.
+        # Inline push forwards each new log line to the dialog LLM
+        # immediately, but rate-limited so a chatty agent (e.g. multi-step
+        # newAction loops) doesn't spam push_message at packet rate.
+        # ``_inline_log_min_interval`` is the minimum spacing between
+        # consecutive inline pushes; bursts within that window are batched
+        # and delivered as one combined push when the window expires.
+        self._inline_log_min_interval: float = 1.5
+        self._last_inline_log_time: float = 0.0
+        self._inline_log_pending: list[str] = []
+        self._inline_log_flush_task: Optional[asyncio.Task] = None
+
+        # Pacing state for inline screenshot push. mc-agent broadcasts at
+        # 1Hz (configurable on its side via NEKO_AGENT_SCREENSHOT_INTERVAL_MS).
+        # Forwarding every frame to the dialog LLM at that rate burns tokens
+        # fast — 60 image parts/min into the realtime session is wasteful
+        # when the picture changes little. ``_screenshot_stream_min_interval``
+        # caps the push rate; frames that arrive inside the window get
+        # collapsed (we keep only the latest pending and deliver it when
+        # the window opens, so the dialog LLM always sees the most recent
+        # visual rather than a stale one).
+        self._screenshot_stream_min_interval: float = 1.0
+        self._last_screenshot_push_time: float = 0.0
+        self._pending_screenshot: Optional[tuple[bytes, str]] = None
+        self._screenshot_flush_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Configuration / lifecycle
@@ -211,6 +268,12 @@ class GameAgentService:
         self._system_prompt_interval = max(1.0, _f("system_prompt_interval_seconds", 5.0))
         self._skip_when_busy = _b("skip_system_prompt_if_busy", True)
         self._stream_screenshots = _b("stream_screenshots_to_llm", True)
+        # Floor at 0.2s (i.e. 5 fps cap) — below that we're letting the
+        # dialog LLM's context burn at the wire rate of mc-agent and the
+        # rate-limit ceases to function as a throttle.
+        self._screenshot_stream_min_interval = max(
+            0.2, _f("screenshot_stream_min_interval_seconds", 1.0)
+        )
         size = max(1, _i("screenshot_cache_size", 3))
         self._screenshot_cache_size = size
         # ``deque(maxlen=...)`` is immutable post-construction, so swap.
@@ -268,6 +331,7 @@ class GameAgentService:
             on_log=self._on_log,
             on_screenshot=self._on_screenshot,
             on_task_finished=self._on_task_finished,
+            on_alert=self._on_alert,
             reconnect_interval=self._reconnect_interval,
             logger=self.logger,
         )
@@ -334,6 +398,30 @@ class GameAgentService:
                 # client's own error logging.
                 pass
             self._client_task = None
+
+        # Cancel any pending inline-log flush. We don't try to drain it —
+        # the cache is also being cleared right below; sending a final
+        # batch on shutdown would surface character chatter into the
+        # dialog LLM after the plugin's already going away.
+        if self._inline_log_flush_task is not None:
+            self._inline_log_flush_task.cancel()
+            try:
+                await self._inline_log_flush_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._inline_log_flush_task = None
+        self._inline_log_pending.clear()
+
+        # Same reasoning for the deferred screenshot push — drop the
+        # pending frame and tear down the flush task.
+        if self._screenshot_flush_task is not None:
+            self._screenshot_flush_task.cancel()
+            try:
+                await self._screenshot_flush_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._screenshot_flush_task = None
+        self._pending_screenshot = None
 
         self._log_cache.clear()
         self._screenshot_cache.clear()
@@ -543,6 +631,129 @@ class GameAgentService:
         return my_pending.result or {"status": "ok", "query": task}
 
     # ------------------------------------------------------------------
+    # Inline log push — pacing helpers
+    # ------------------------------------------------------------------
+
+    def _schedule_inline_log_push(self, line: str) -> None:
+        """Queue a log line for inline delivery to the dialog LLM.
+
+        Two paths:
+        * Window open (≥ ``_inline_log_min_interval`` since last push) →
+          flush immediately, single-line push.
+        * Window closed → append to the pending buffer; if no flush task
+          is already scheduled, arm one to fire when the window opens.
+          A second log arriving inside the window just appends, riding
+          on the already-scheduled flush.
+
+        The buffer + scheduled flush approach keeps the dialog LLM at
+        most one window-length stale while collapsing high-frequency
+        bursts (newAction loops emit log lines per inner iteration) into
+        one combined push.
+        """
+        self._inline_log_pending.append(line)
+        now = time.time()
+        elapsed = now - self._last_inline_log_time
+        if elapsed >= self._inline_log_min_interval:
+            # Window open — flush now, no delay.
+            self._flush_inline_log_now()
+        else:
+            # Inside the rate-limit window — schedule a delayed flush
+            # if one isn't already pending. ``_inline_log_flush_task``
+            # being non-None means a flush is armed for the end of the
+            # current window, so this new line will go out with it.
+            if self._inline_log_flush_task is None or self._inline_log_flush_task.done():
+                delay = max(0.0, self._inline_log_min_interval - elapsed)
+                self._inline_log_flush_task = asyncio.create_task(
+                    self._delayed_flush_inline_log(delay),
+                    name="game_agent_minecraft.inline_log_flush",
+                )
+
+    async def _delayed_flush_inline_log(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        self._flush_inline_log_now()
+
+    def _flush_inline_log_now(self) -> None:
+        if not self._inline_log_pending:
+            return
+        # Drain buffer atomically; if a new log arrives during the
+        # push_message call below it'll re-arm a fresh flush.
+        lines = self._inline_log_pending
+        self._inline_log_pending = []
+        self._last_inline_log_time = time.time()
+        text = "\n".join(lines)
+        try:
+            # ai_behavior="read" — inject into context, don't force
+            # immediate reply. The dialog LLM will see fresh narration
+            # from the character on its next natural turn.
+            self._push_message(
+                source="game_agent_minecraft",
+                visibility=[],
+                ai_behavior="read",
+                parts=[{"type": "text", "text": text}],
+                priority=4,
+            )
+        except Exception as exc:
+            self._log_error(
+                "inline log push failed: {}: {}", type(exc).__name__, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # Inline screenshot push — pacing helpers (mirror of log path above)
+    # ------------------------------------------------------------------
+
+    def _schedule_screenshot_push(self, img_bytes: bytes, mime: str) -> None:
+        """Rate-limit screenshot delivery to the dialog LLM.
+
+        Unlike log lines (which batch — old lines still useful), old
+        screenshots are obsolete the moment a newer one arrives. So we
+        keep only ``_pending_screenshot`` = latest frame; an incoming
+        frame inside the rate-limit window replaces it instead of
+        queueing alongside.
+        """
+        now = time.time()
+        elapsed = now - self._last_screenshot_push_time
+        if elapsed >= self._screenshot_stream_min_interval:
+            self._push_screenshot_now(img_bytes, mime)
+        else:
+            # Window closed — defer. Latest frame wins.
+            self._pending_screenshot = (img_bytes, mime)
+            if self._screenshot_flush_task is None or self._screenshot_flush_task.done():
+                delay = max(0.0, self._screenshot_stream_min_interval - elapsed)
+                self._screenshot_flush_task = asyncio.create_task(
+                    self._delayed_flush_screenshot(delay),
+                    name="game_agent_minecraft.screenshot_flush",
+                )
+
+    async def _delayed_flush_screenshot(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        pending = self._pending_screenshot
+        self._pending_screenshot = None
+        if pending is not None:
+            self._push_screenshot_now(*pending)
+
+    def _push_screenshot_now(self, img_bytes: bytes, mime: str) -> None:
+        self._last_screenshot_push_time = time.time()
+        try:
+            self._push_message(
+                source="game_agent_minecraft",
+                visibility=[],
+                ai_behavior="read",
+                parts=[{"type": "image", "data": img_bytes, "mime": mime}],
+                priority=3,
+            )
+        except Exception as exc:
+            self._log_error(
+                "push_message screenshot failed: {}: {}",
+                type(exc).__name__, exc,
+            )
+
+    # ------------------------------------------------------------------
     # WebSocket inbound callbacks — invoked from the WS listener task
     # ------------------------------------------------------------------
 
@@ -551,6 +762,14 @@ class GameAgentService:
         if not text_strip:
             return
         self._log_cache.append(text_strip)
+
+        # Inline push to the dialog LLM, rate-limited. The 5s autonomous
+        # nudge loop is still authoritative for "burst the full state
+        # alongside screenshots when nothing else is happening"; this
+        # inline path is for "agent just said something, get it in front
+        # of the dialog LLM now so it can weave into ongoing conversation
+        # without 5s of staleness".
+        self._schedule_inline_log_push(text_strip)
 
         # The original integration sniffed log strings to track agent
         # state because some agent server implementations emit logs
@@ -668,26 +887,59 @@ class GameAgentService:
 
         self._screenshot_cache.append((img_bytes, mime))
 
-        # Stream immediately into the realtime LLM session. push_message
-        # v2 with ``ai_behavior="read"`` translates downstream into
-        # ``session.stream_image`` (see ``main_server.py`` proactive
-        # branch + the v2 changelog for the wire flow).
+        # Stream into the realtime LLM session, rate-limited. The
+        # autonomous nudge loop still bursts the cache at 5s intervals
+        # regardless; this path is for "as fresh as the dialog LLM can
+        # cope with" between nudges. Bursts collapse to "latest only" —
+        # 5 frames within the window become 1 push of the most recent.
         if self._stream_screenshots:
-            try:
-                self._push_message(
-                    source="game_agent_minecraft",
-                    visibility=[],
-                    ai_behavior="read",
-                    parts=[{"type": "image", "data": img_bytes, "mime": mime}],
-                    priority=3,
-                )
-            except Exception as exc:
-                self._log_error(
-                    "push_message screenshot failed: {}: {}",
-                    type(exc).__name__, exc,
-                )
+            self._schedule_screenshot_push(img_bytes, mime)
+
+    async def _on_alert(self, data: Dict[str, Any]) -> None:
+        """High-severity event from mc-agent (HP damage / death / etc.).
+
+        Pushed to the dialog LLM with ``ai_behavior="respond"`` and
+        ``priority=1`` so it can preempt whatever else is queued —
+        the user should hear about a death immediately, not 5s later
+        on the next autonomous nudge tick.
+
+        Severity is informational on the frame; the priority + behavior
+        already encode "act on this now" downstream, but we keep the
+        severity string in the text so the LLM can adjust tone (a
+        ``warn`` doesn't need the same urgency as ``critical``).
+        """
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return
+        severity = str(data.get("severity") or "warn").lower()
+        prefix = "[character alert | critical]" if severity == "critical" else "[character alert]"
+        body = f"{prefix} {text}"
+        try:
+            self._push_message(
+                source="game_agent_minecraft",
+                visibility=[],
+                ai_behavior="respond",
+                parts=[{"type": "text", "text": body}],
+                priority=1,
+            )
+        except Exception as exc:
+            self._log_error(
+                "alert push failed: {}: {}", type(exc).__name__, exc,
+            )
 
     async def _on_task_finished(self, data: Dict[str, Any]) -> None:
+        # Snapshot inventory so the autonomous nudge loop can keep
+        # surfacing it as ground truth between task_finished events
+        # — without this the dialog LLM only sees inventory at
+        # task_finished moments and freely hallucinates items between.
+        inv = data.get("inventory")
+        if isinstance(inv, dict):
+            self._last_inventory = {
+                str(k): int(v) for k, v in inv.items()
+                if isinstance(v, (int, float)) and int(v) > 0
+            }
+            self._last_inventory_at = time.time()
+
         text = str(
             data.get("text") or data.get("data") or data.get("message") or ""
         )
@@ -805,13 +1057,39 @@ class GameAgentService:
             pending.result = result_payload
             pending.event.set()
             self._task_finished = True
+            # Anchor for the keep-going nudge branch in
+            # ``_system_prompt_loop``. After ~5s without a new task
+            # being dispatched, the loop will start poking the dialog
+            # LLM to decide a next concrete action — preventing the
+            # avatar from going idle indefinitely waiting to be driven.
+            self._last_task_finished_at = time.time()
 
     # ------------------------------------------------------------------
     # Autonomous system-prompt loop
     # ------------------------------------------------------------------
 
     async def _system_prompt_loop(self) -> None:
-        """Periodically nudge the LLM with the latest game state.
+        """Periodically nudge the dialog LLM. Three branches, each with
+        its own rate limiter:
+
+        * **In-progress nudge** (highest priority when applicable). Fires
+          when a task has been pending ≥10s and the last in-progress
+          nudge was ≥10s ago. Tells the dialog LLM "your body is still
+          doing X — narrate what you're feeling in your own voice (don't
+          repeat yourself)". Without this branch, long actions (mining,
+          pathfinding) leave the user hearing nothing for 30+ seconds.
+
+        * **Keep-going nudge** (idle, recently finished). Fires when no
+          task is pending, the most recent task_finished is 5–60s ago,
+          and the last keep-going nudge was ≥15s ago. Tells the dialog
+          LLM "your body finished — decide and dispatch the next concrete
+          action". Without this branch, the avatar stands still after
+          each task waiting for the user to drive it.
+
+        * **General catch-all** — original behavior: every
+          ``system_prompt_interval`` seconds (default 5s), if there's
+          actual cache to surface (logs / screenshots), fire the standard
+          state-update prompt.
 
         We don't try to detect "user/model is currently speaking" from
         inside the plugin — main_server's proactive_message handler
@@ -819,23 +1097,56 @@ class GameAgentService:
         only about not flooding main_server with redundant wake-ups,
         not about real-time conversation politeness.
         """
+        # Anchor thresholds chosen to balance "keep the avatar engaged"
+        # vs "don't spam the dialog LLM's context budget":
+        #   in-progress: 10s elapsed + 10s cooldown
+        #   keep-going:  5s post-finish + 15s cooldown, max 60s window
+        _IN_PROGRESS_AFTER = 10.0
+        _IN_PROGRESS_COOLDOWN = 10.0
+        _KEEP_GOING_AFTER = 5.0
+        _KEEP_GOING_COOLDOWN = 15.0
+        _KEEP_GOING_MAX_WINDOW = 60.0
+
         try:
             while True:
-                # 0.5s tick keeps us responsive to ``stop()`` without
-                # busy-looping.
                 await asyncio.sleep(0.5)
-
                 now = time.time()
+
+                # ---- Branch 1: in-progress nudge ----
+                if self._pending is not None and not self._task_finished:
+                    elapsed_pending = now - self._pending.start_time
+                    since_last = now - self._last_in_progress_nudge_at
+                    if elapsed_pending >= _IN_PROGRESS_AFTER and since_last >= _IN_PROGRESS_COOLDOWN:
+                        await self._fire_in_progress_nudge()
+                        self._last_in_progress_nudge_at = now
+                    # When a task is in flight, do NOT also fire the
+                    # general nudge — that would stack two prompts on
+                    # the dialog LLM's queue for the same situation.
+                    continue
+
+                # ---- Branch 2: keep-going nudge (idle, recent finish) ----
+                if (
+                    self._task_finished
+                    and self._pending is None
+                    and self._last_task_finished_at > 0
+                ):
+                    since_finish = now - self._last_task_finished_at
+                    since_last_keep = now - self._last_keep_going_nudge_at
+                    if (
+                        _KEEP_GOING_AFTER <= since_finish <= _KEEP_GOING_MAX_WINDOW
+                        and since_last_keep >= _KEEP_GOING_COOLDOWN
+                    ):
+                        await self._fire_keep_going_nudge()
+                        self._last_keep_going_nudge_at = now
+                        continue
+
+                # ---- Branch 3: general catch-all (original behavior) ----
                 if now - self._last_system_prompt_time < self._system_prompt_interval:
                     continue
                 if self._skip_when_busy and self._pending is not None and not self._task_finished:
-                    # Avoid stacking prompts on top of an in-flight tool
-                    # call — the LLM is already committed to the result.
                     continue
                 if not self._log_cache and not self._screenshot_cache and self._task_finished:
-                    # Nothing happened recently; don't poke the LLM.
                     continue
-
                 await self._fire_system_prompt()
                 self._last_system_prompt_time = time.time()
         except asyncio.CancelledError:
@@ -843,6 +1154,92 @@ class GameAgentService:
         except Exception as exc:
             self._log_error(
                 "system prompt loop failed: {}: {}", type(exc).__name__, exc,
+            )
+
+    async def _fire_in_progress_nudge(self) -> None:
+        """Push a "what are you feeling right now?" prompt + latest
+        screenshot. Goal: the dialog LLM keeps {MASTER_NAME} engaged with
+        live narration during long actions instead of going silent.
+
+        Avoid repetition guidance is in the prompt itself — the dialog
+        LLM is told to use a fresh angle each time, not parrot the same
+        line it already said.
+        """
+        # Pull at most one screenshot so push is cheap; keep cache for
+        # the general nudge to potentially burst more.
+        parts: list[Dict[str, Any]] = []
+        if self._screenshot_cache:
+            img_bytes, img_mime = self._screenshot_cache[-1]
+            parts.append({"type": "image", "data": img_bytes, "mime": img_mime})
+
+        pending_text = self._pending.task_text if self._pending else "(unknown)"
+        elapsed = (time.time() - self._pending.start_time) if self._pending else 0.0
+        sections = [
+            f"你正在做: \"{pending_text[:120]}\"（已经过了 {elapsed:.0f} 秒）。",
+        ]
+        if self._last_inventory:
+            items = sorted(self._last_inventory.items(), key=lambda kv: -kv[1])
+            inv_str = "、".join(f"{n}×{c}" for n, c in items[:15])
+            sections.append(f"【当前持有 ground truth】{inv_str}")
+        sections.append(
+            "用第一人称随口讲一句你此刻看到/感觉到啥——换个新角度"
+            "（吐槽进度慢、形容画面里的奇怪东西、自言自语、跟 {MASTER_NAME} "
+            "瞎扯都行），别复读之前说过的话。"
+            "禁止编造尚未发生的结果（比如别说『快搞定了』、『挖到一半了』）。"
+        )
+        parts.append({"type": "text", "text": "[你正在做事]\n" + "\n".join(sections)})
+
+        try:
+            self._push_message(
+                source="game_agent_minecraft",
+                visibility=[],
+                ai_behavior="respond",
+                parts=parts,
+                priority=2,
+            )
+        except Exception as exc:
+            self._log_error(
+                "in-progress nudge push failed: {}: {}", type(exc).__name__, exc,
+            )
+
+    async def _fire_keep_going_nudge(self) -> None:
+        """Push a "decide the next action" prompt after a task finishes.
+
+        Without this, the conversation drifts after each completion and
+        the avatar stands still indefinitely waiting for {MASTER_NAME} to
+        explicitly drive it. We give the dialog LLM a clear "you are the
+        agent — pick the next concrete action and dispatch it via
+        minecraft_task" cue, plus the latest inventory ground truth so
+        it can ground its next decision.
+        """
+        sections: list[str] = []
+        if self._last_inventory:
+            items = sorted(self._last_inventory.items(), key=lambda kv: -kv[1])
+            inv_str = "、".join(f"{n}×{c}" for n, c in items[:20])
+            sections.append(f"【当前持有 ground truth】{inv_str}")
+        elif self._last_inventory_at > 0:
+            sections.append("【当前持有 ground truth】(空)")
+        sections.append(
+            "你已经停下了，等你挑下一步。基于上面的库存和最近画面，"
+            "随手选一个具体可执行的动作（继续挖某种矿、回基地放东西、"
+            "做某件 craft 都行），用 minecraft_task 派下去——你在玩游戏，"
+            "主动找事做，别站着。如果想停一停跟 {MASTER_NAME} 闲聊"
+            "再继续，就用第一人称随口讲讲刚做完了啥、想接着干啥。"
+        )
+        parts: list[Dict[str, Any]] = [
+            {"type": "text", "text": "[你闲下来了]\n" + "\n".join(sections)}
+        ]
+        try:
+            self._push_message(
+                source="game_agent_minecraft",
+                visibility=[],
+                ai_behavior="respond",
+                parts=parts,
+                priority=2,
+            )
+        except Exception as exc:
+            self._log_error(
+                "keep-going nudge push failed: {}: {}", type(exc).__name__, exc,
             )
 
     async def _fire_system_prompt(self) -> None:
@@ -859,17 +1256,34 @@ class GameAgentService:
             self._log_cache.clear()
 
         sections: list[str] = []
+        # Inventory ground-truth FIRST so it's the most prominent line
+        # the dialog LLM sees on each nudge — see __init__'s prompt
+        # ("尤其【当前持有】行是你的真实库存，绝对不要说出未列出的物品").
+        if self._last_inventory:
+            items = sorted(self._last_inventory.items(), key=lambda kv: -kv[1])
+            inv_str = "、".join(f"{n}×{c}" for n, c in items[:20])
+            sections.append(f"【当前持有 ground truth】{inv_str}")
+        elif self._last_inventory_at > 0:
+            sections.append("【当前持有 ground truth】(空)")
         if self._pending is not None:
-            sections.append(f"正在进行的操作: {self._pending.task_text}")
+            sections.append(f"你正在做: {self._pending.task_text}")
         if log_text:
-            sections.append(f"先前操作的详细日志:\n---\n{log_text}\n---")
+            sections.append(f"你最近发生的事:\n---\n{log_text}\n---")
         if self._task_finished:
+            # Idle — push the dialog LLM to pick the next action
+            # rather than just narrate. The avatar framing requires that
+            # the LLM-as-character is the one deciding what to do next.
             sections.append(
-                "你先前的操作已经完成了。请使用minecraft_task，但不要说出来。"
+                "你现在闲着。基于上面看到的内容，挑一个具体动作用 minecraft_task "
+                "派下去——你在玩游戏，主动找事做，别站着。如果想顺便跟 "
+                "{MASTER_NAME} 唠两句，就用第一人称随口讲讲下一步打算干啥。"
             )
         else:
-            sections.append("你先前的操作仍在进行中，你可以选择性解说。")
-        prompt_text = "GAME_SYSTEM | " + "\n".join(sections)
+            sections.append(
+                "你还在做上一个动作。可以基于画面/反馈用第一人称随口解说一句"
+                "你看到/感觉到的进展。"
+            )
+        prompt_text = "[当前状态]\n" + "\n".join(sections)
 
         # Build the parts list: cached screenshots first (so the LLM
         # has visual context when it reads the prompt), then the
@@ -913,6 +1327,17 @@ class GameAgentService:
             "log_cache_size": len(self._log_cache),
             "screenshot_cache_size": len(self._screenshot_cache),
         }
+
+    def has_pending_task(self) -> bool:
+        """Lock-free read of whether an in-flight task is occupying the
+        pending slot. Used by the plugin facade to short-circuit a new
+        ``minecraft_task`` call with a 'busy' summary instead of letting
+        the detached task drop it on the floor — under fire-and-forget,
+        the dialog LLM would otherwise see the standard 'task dispatched'
+        ack and assume its new action took, when really it was rejected
+        by the pending lock.
+        """
+        return self._pending is not None
 
     # ------------------------------------------------------------------
     # Logging helpers — silently no-op when no logger is supplied.

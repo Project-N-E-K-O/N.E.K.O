@@ -141,15 +141,34 @@ def _format_callback_source(cb: dict, lang: str) -> str:
     return _loc(descriptor, lang).format(name=name)
 
 
-def _render_callback_inner_item(cb: dict, lang: str) -> str:
+def _render_callback_inner_item(
+    cb: dict,
+    lang: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
     """Render one callback as a single inline string for the LLM prompt.
 
     Returns ``""`` when there is genuinely nothing to convey (both summary
     and detail empty); the caller can then drop the line and rely on the
     outer header alone to express that something happened.
+
+    ``{MASTER_NAME}`` and ``{LANLAN_NAME}`` placeholders in plugin-supplied
+    ``summary``/``detail`` are substituted here so plugin authors can write
+    role-aware text without having to learn the live character names. The
+    substitution uses ``str.replace`` rather than ``str.format`` so that
+    other braces in the text (e.g. JSON fragments in detail) don't trigger
+    a KeyError.
     """
     summary = (cb.get("summary") or "").strip()
     detail = (cb.get("detail") or "").strip()
+    if master_name:
+        summary = summary.replace("{MASTER_NAME}", master_name)
+        detail = detail.replace("{MASTER_NAME}", master_name)
+    if lanlan_name:
+        summary = summary.replace("{LANLAN_NAME}", lanlan_name)
+        detail = detail.replace("{LANLAN_NAME}", lanlan_name)
     text = summary or detail
     if not text:
         return ""
@@ -261,7 +280,12 @@ def _build_callback_instruction(
                     name=lanlan_name,
                     master=master_name,
                 )
-        items = [_render_callback_inner_item(cb, lang) for cb in cbs]
+        items = [
+            _render_callback_inner_item(
+                cb, lang, lanlan_name=lanlan_name, master_name=master_name,
+            )
+            for cb in cbs
+        ]
         items = [s for s in items if s]
         if items:
             parts.append(header + "\n".join(items))
@@ -1208,6 +1232,35 @@ class LLMSessionManager:
             # owner/user_sid 并派发订阅者。
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
+
+    async def rotate_speech_id_for_response_done(self):
+        """Lightweight sid rotation for realtime providers without server VAD.
+
+        Triggered at OmniRealtimeClient's response.done event (Gemini's
+        turn_complete透传) when ``_has_server_vad=False`` (lanlan.app+free /
+        livestream). Without server VAD, ``speech_stopped`` never fires, so
+        the canonical ``handle_new_message`` rotation path stays dormant and
+        every turn ends up reusing the initial session sid — TTS upstream
+        silently drops text after the first ``tts.response.done`` closes
+        that sid, and turn 2+ goes silent.
+
+        Why not reuse ``handle_new_message``: that helper rotates sid AND
+        clears the TTS pipeline AND fires USER_INPUT. Both side effects are
+        correct at ``speech_stopped`` (user just spoke, AI hasn't started,
+        leftover TTS belongs to an interrupted prior turn). At
+        ``response.done`` they're wrong — leftover TTS is the trailing audio
+        of the AI turn that just ended; clearing it would clip the last
+        few syllables. ``USER_INPUT`` mischaracterizes the trigger (no user
+        input actually happened — this is end-of-AI-turn, not start-of-user).
+        Resetting ``audio_resampler`` is safe because the next turn's audio
+        is a fresh stream — keeping stale soxr state would only risk a
+        boundary artefact at turn 2's first frame.
+        """
+        if self._takeover_active:
+            return
+        self.audio_resampler.clear()
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
@@ -3065,8 +3118,14 @@ class LLMSessionManager:
         if (
             self._is_free_preset_voice
             and self.core_api_type == 'free'
-            and 'lanlan.tech' in realtime_config.get('base_url', '')
+            and ('lanlan.tech' in realtime_config.get('base_url', '') or self._is_livestream_active())
         ):
+            # livestream 启用后 base_url 被重写成主播自建 server_prefix
+            # （非 lanlan.tech 域），导致原 lanlan.tech 字面量判定失效，会 fallback
+            # 到外部 TTS 流水线。但 livestream 上游同样是 free 路 Gemini 系，
+            # 原生音色（voice_id 由 livestream_config 覆盖成 neon 等）直接走
+            # session config 即可，不需要再开外部 TTS。把 livestream-active
+            # 视为与 lanlan.tech 对偶的免费原生音色路径。
             logger.info(f"{log_prefix}🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
             return False
         if self.voice_id or has_custom_tts_config:
@@ -3694,6 +3753,7 @@ class LLMSessionManager:
                         on_text_delta=self.handle_text_data,
                         on_audio_delta=self.handle_audio_data,
                         on_new_message=self.handle_new_message,
+                        on_sid_rotate=self.rotate_speech_id_for_response_done,
                         on_input_transcript=self.handle_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -4146,6 +4206,7 @@ class LLMSessionManager:
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
+                    on_sid_rotate=self.rotate_speech_id_for_response_done,
                     on_input_transcript=self.handle_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,

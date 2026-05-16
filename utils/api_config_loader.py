@@ -461,7 +461,11 @@ def get_livestream_config() -> Dict[str, Any]:
             with open(standalone_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
-                raw = loaded
+                # 兼容两种 shape：flat（顶层就是 enabled/server_prefix/voice_id）
+                # 与 wrapped（顶层 'livestream_config' 包一层，跟 api_providers.json
+                # 同构）。主播复用 api_providers.json 结构是常见操作，不强求扁平。
+                inner = loaded.get('livestream_config')
+                raw = inner if isinstance(inner, dict) else loaded
         except Exception as e:
             logger.warning(
                 f"读取 {standalone_path.name} 失败，回退到 api_providers.json: {e}"
