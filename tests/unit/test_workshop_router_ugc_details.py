@@ -6,6 +6,9 @@ from main_routers import workshop_router
 
 
 class _FakeWorkshop:
+    def __init__(self, download_info=None):
+        self._download_info = download_info or {}
+
     def GetItemState(self, item_id):
         return workshop_router._ITEM_STATE_SUBSCRIBED
 
@@ -13,7 +16,7 @@ class _FakeWorkshop:
         return {}
 
     def GetItemDownloadInfo(self, item_id):
-        return {}
+        return self._download_info
 
     def GetNumSubscribedItems(self):
         return 1
@@ -41,6 +44,19 @@ async def test_workshop_item_details_reports_unsupported_ugc_details(monkeypatch
     assert response["detailsAvailable"] is False
     assert response["detailsUnavailableReason"] == "ugc_details_query_unsupported"
     assert response["item"]["publishedFileId"] == 123456
+
+
+@pytest.mark.asyncio
+async def test_workshop_item_details_unsupported_uses_download_tuple_order(monkeypatch):
+    steamworks = SimpleNamespace(Workshop=_FakeWorkshop(download_info=(25, 100, 0.25)))
+    monkeypatch.setattr(workshop_router, "get_steamworks", lambda: steamworks)
+
+    response = await workshop_router.get_workshop_item_details("123456")
+
+    progress = response["item"]["downloadProgress"]
+    assert progress["bytesDownloaded"] == 25
+    assert progress["bytesTotal"] == 100
+    assert progress["percentage"] == 25
 
 
 @pytest.mark.asyncio

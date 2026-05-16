@@ -2178,12 +2178,14 @@ def _build_ugc_details_unsupported_item_response(steamworks, item_id_int: int, i
 
     downloaded = 0
     total = 0
+    progress = 0.0
     if isinstance(download_info, dict):
         downloaded = int(download_info.get("downloaded", 0) or 0)
         total = int(download_info.get("total", 0) or 0)
     elif isinstance(download_info, tuple) and len(download_info) >= 3:
-        downloaded = int(download_info[1] or 0)
-        total = int(download_info[2] or 0)
+        downloaded = int(download_info[0] or 0)
+        total = int(download_info[1] or 0)
+        progress = float(download_info[2] or 0.0)
     downloading = total > 0 and downloaded < total
 
     return {
@@ -2220,7 +2222,8 @@ def _build_ugc_details_unsupported_item_response(steamworks, item_id_int: int, i
             "downloadProgress": {
                 "bytesDownloaded": downloaded if downloading else 0,
                 "bytesTotal": total if downloading else 0,
-                "percentage": (downloaded / total * 100) if total > 0 and downloading else 0,
+                "percentage": (progress * 100) if progress > 0 and downloading
+                else ((downloaded / total * 100) if total > 0 and downloading else 0),
             },
         },
     }
