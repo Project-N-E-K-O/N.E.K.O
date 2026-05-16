@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import builtins
+import importlib
 import json
 import re
+import sys
 from pathlib import Path
 
 
@@ -49,6 +53,24 @@ def test_galgame_ui_i18n_zh_tw_route_locale_normalization() -> None:
     assert _normalize_ui_locale("zh-HK") == "zh-TW"
     assert _normalize_ui_locale("zh-MO") == "zh-TW"
     assert _normalize_ui_locale("zh") == "zh-CN"
+
+
+def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monkeypatch) -> None:
+    module_name = "plugin.plugins.galgame_plugin.install_routes"
+    sys.modules.pop(module_name, None)
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "utils.language_utils":
+            raise ImportError("language utils unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    module = importlib.import_module(module_name)
+    response = asyncio.run(module.get_galgame_ui_locale("galgame_plugin"))
+
+    assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
 
 
 def test_galgame_ui_i18n_zh_tw_is_traditional_chinese_not_zh_cn_copy() -> None:

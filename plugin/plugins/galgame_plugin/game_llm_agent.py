@@ -700,6 +700,7 @@ class GameLLMAgent:
         self._planning_started_at = 0.0
         self._actuation: dict[str, Any] | None = None
         self._starting_actuation = False
+        self._start_generation = 0
         self._pending_strategy: dict[str, Any] | None = None
         self._next_actuation_at = 0.0
         self._last_focus_attempt_at = 0.0
@@ -846,6 +847,7 @@ class GameLLMAgent:
         self._planning_choice_signature = ()
         self._planning_started_at = 0.0
         self._starting_actuation = False
+        self._start_generation += 1
 
     @staticmethod
     def _cancel_foreign_task(task: asyncio.Task[Any]) -> None:
@@ -1370,6 +1372,7 @@ class GameLLMAgent:
         cancel_host_task: bool,
         clear_retry: bool,
     ) -> None:
+        self._start_generation += 1
         if self._planning_task is not None:
             self._planning_task.cancel()
             await asyncio.gather(self._planning_task, return_exceptions=True)
@@ -1593,6 +1596,8 @@ class GameLLMAgent:
                 f"strategy_id={str(strategy.get('strategy_id') or '')}"
             )
             return
+        self._start_generation += 1
+        start_generation = self._start_generation
         self._starting_actuation = True
         try:
             try:
@@ -1605,6 +1610,7 @@ class GameLLMAgent:
                 virtual_mouse_candidate_index = -1
             await self._start_actuation(
                 shared,
+                start_generation=start_generation,
                 kind=str(strategy.get("kind") or ""),
                 instruction=str(strategy.get("instruction") or ""),
                 suggestion_reason=str(strategy.get("suggestion_reason") or ""),
@@ -1620,7 +1626,14 @@ class GameLLMAgent:
                 virtual_mouse_candidate_index=virtual_mouse_candidate_index,
             )
         finally:
-            self._starting_actuation = False
+            if start_generation == self._start_generation:
+                self._starting_actuation = False
+
+    def _actuation_start_is_current(self, start_generation: int) -> bool:
+        if start_generation == self._start_generation:
+            return True
+        self._trace_runtime("actuation start discarded: stale generation")
+        return False
 
     def _notify_ocr_after_advance_capture(
         self,
@@ -1652,6 +1665,7 @@ class GameLLMAgent:
         self,
         shared: dict[str, Any],
         *,
+        start_generation: int,
         kind: str,
         instruction: str,
         suggestion_reason: str,
@@ -1700,6 +1714,8 @@ class GameLLMAgent:
             if choice_id and suggestion_reason:
                 self._remember_suggestion_reason(choice_id, suggestion_reason)
             fallback = await self._run_local_input_fallback(shared, actuation=actuation)
+            if not self._actuation_start_is_current(start_generation):
+                return
             if bool(fallback.get("success")):
                 self._clear_hard_error()
                 self._screen_recovery_diagnostic = ""
@@ -1750,6 +1766,8 @@ class GameLLMAgent:
             if choice_id and suggestion_reason:
                 self._remember_suggestion_reason(choice_id, suggestion_reason)
             fallback = await self._run_local_input_fallback(shared, actuation=actuation)
+            if not self._actuation_start_is_current(start_generation):
+                return
             if bool(fallback.get("success")):
                 self._clear_hard_error()
                 self._screen_recovery_diagnostic = ""
@@ -1780,6 +1798,8 @@ class GameLLMAgent:
         try:
             availability = await self._host_adapter.get_computer_use_availability()
         except HostAgentError as exc:
+            if not self._actuation_start_is_current(start_generation):
+                return
             self._trace_runtime(f"actuation blocked by availability error: {exc}")
             if self._pause_screen_recovery_after_input_unavailable(
                 shared,
@@ -1793,6 +1813,8 @@ class GameLLMAgent:
                 return
             self._set_hard_error(str(exc), retryable=True)
             self._next_actuation_at = now + 1.0
+            return
+        if not self._actuation_start_is_current(start_generation):
             return
         if not bool(availability.get("ready")):
             reasons = availability.get("reasons")
@@ -1815,6 +1837,8 @@ class GameLLMAgent:
         try:
             started = await self._host_adapter.run_computer_use_instruction(instruction)
         except HostAgentError as exc:
+            if not self._actuation_start_is_current(start_generation):
+                return
             self._trace_runtime(f"actuation start failed: {exc}")
             if self._pause_screen_recovery_after_input_unavailable(
                 shared,
@@ -1830,6 +1854,8 @@ class GameLLMAgent:
             self._next_actuation_at = now + 1.0
             return
 
+        if not self._actuation_start_is_current(start_generation):
+            return
         task_id = str(started.get("task_id") or "")
         if not task_id:
             self._trace_runtime(f"actuation start failed: invalid task response {started}")

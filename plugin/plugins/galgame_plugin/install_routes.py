@@ -23,7 +23,6 @@ from plugin.plugins.galgame_plugin.install_tasks import (
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from utils.language_utils import get_global_language_full
 
 router = APIRouter(tags=["galgame-install"])
 logger = get_logger("galgame.install_routes")
@@ -44,6 +43,8 @@ class InstallStartPayload(BaseModel):
 async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
     try:
+        from utils.language_utils import get_global_language_full
+
         locale = _normalize_ui_locale(str(get_global_language_full()))
     except Exception:
         locale = "en"
