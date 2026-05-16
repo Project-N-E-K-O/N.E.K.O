@@ -441,6 +441,11 @@ class Live2DManager {
      */
     setTargetFPS(fps) {
         if (this.pixi_app && this.pixi_app.ticker) {
+            if (this._linuxX11FpsRestoreTimer) {
+                clearTimeout(this._linuxX11FpsRestoreTimer);
+                this._linuxX11FpsRestoreTimer = null;
+                this._linuxX11BaseTargetFps = null;
+            }
             this.pixi_app.ticker.maxFPS = fps;
             console.log(`[Live2D Core] 目标帧率设置为 ${fps === 0 ? 'VSync (无限制)' : fps + 'fps'}`);
         }
@@ -452,11 +457,23 @@ class Live2DManager {
 
         const ticker = this.pixi_app.ticker;
         const configured = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
-        const baseFps = Math.max(0, Number(configured) || 0);
-        const boostFps = Math.max(baseFps || 0, LIVE2D_LINUX_X11_INTERACTIVE_FPS);
-        if (!this._linuxX11FpsRestoreTimer) {
-            this._linuxX11BaseTargetFps = baseFps;
+        const configuredFps = Number(configured);
+        if (configuredFps === 0) {
+            if (this._linuxX11FpsRestoreTimer) {
+                clearTimeout(this._linuxX11FpsRestoreTimer);
+                this._linuxX11FpsRestoreTimer = null;
+                this._linuxX11BaseTargetFps = null;
+            }
+            if (ticker.maxFPS !== 0) {
+                ticker.maxFPS = 0;
+            }
+            return;
         }
+
+        const baseFps = Math.max(1, Number.isFinite(configuredFps) ? configuredFps : 60);
+        const boostFps = Math.max(baseFps, LIVE2D_LINUX_X11_INTERACTIVE_FPS);
+        this._linuxX11BaseTargetFps = baseFps;
+        const originalTicker = ticker;
         if (ticker.maxFPS !== boostFps) {
             ticker.maxFPS = boostFps;
         }
@@ -465,12 +482,13 @@ class Live2DManager {
         }
         this._linuxX11FpsRestoreTimer = setTimeout(() => {
             this._linuxX11FpsRestoreTimer = null;
-            const restoreFps = Number.isFinite(this._linuxX11BaseTargetFps)
-                ? this._linuxX11BaseTargetFps
-                : (typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60);
+            const latestConfigured = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : NaN;
+            const restoreFps = Number.isFinite(latestConfigured)
+                ? latestConfigured
+                : (Number.isFinite(this._linuxX11BaseTargetFps) ? this._linuxX11BaseTargetFps : 60);
             this._linuxX11BaseTargetFps = null;
-            if (this.pixi_app && this.pixi_app.ticker) {
-                this.pixi_app.ticker.maxFPS = restoreFps;
+            if (this.pixi_app && this.pixi_app.ticker === originalTicker) {
+                originalTicker.maxFPS = restoreFps;
             }
         }, Math.max(100, Number(durationMs) || LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS));
     }
