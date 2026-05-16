@@ -27,6 +27,7 @@ from websockets import exceptions as ws_exceptions
 OnLog = Callable[[str], Awaitable[None]]
 OnScreenshot = Callable[[str, str], Awaitable[None]]  # (base64_payload, encoding_hint)
 OnTaskFinished = Callable[[dict[str, Any]], Awaitable[None]]
+OnAlert = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class GameAgentClient:
@@ -45,6 +46,7 @@ class GameAgentClient:
         on_log: Optional[OnLog] = None,
         on_screenshot: Optional[OnScreenshot] = None,
         on_task_finished: Optional[OnTaskFinished] = None,
+        on_alert: Optional[OnAlert] = None,
         reconnect_interval: float = 5.0,
         logger: Any = None,
     ):
@@ -52,6 +54,7 @@ class GameAgentClient:
         self.on_log = on_log
         self.on_screenshot = on_screenshot
         self.on_task_finished = on_task_finished
+        self.on_alert = on_alert
         self.reconnect_interval = reconnect_interval
         # Plugin SDK injects a per-plugin loguru logger; fall back to a
         # noop when running outside that environment (unit tests).
@@ -207,6 +210,12 @@ class GameAgentClient:
                     elif msg_type == "task_finished" and self.on_task_finished is not None:
                         await self.on_task_finished(data)
 
+                    elif msg_type == "alert" and self.on_alert is not None:
+                        # Asynchronous event — bot took damage / died /
+                        # other high-priority signal. Service layer
+                        # decides how to surface it to the dialog LLM.
+                        await self.on_alert(data)
+
                     elif msg_type == "agent_status":
                         # Informational status — the original integration
                         # logged this at debug. Keep parity.
@@ -269,4 +278,5 @@ __all__ = [
     "OnLog",
     "OnScreenshot",
     "OnTaskFinished",
+    "OnAlert",
 ]

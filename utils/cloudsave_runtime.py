@@ -4067,10 +4067,13 @@ def _should_preserve_write_blocking_mode(config_manager, root_state: dict[str, A
     if current_mode != ROOT_MODE_MAINTENANCE_READONLY:
         return False
 
-    last_migration_result = str(root_state.get("last_migration_result") or "").strip()
-    if last_migration_result.startswith("restart_pending:"):
-        return True
-
+    # 真相源是 storage_migration.json 的 pending 状态：迁移真在跑就保留 readonly，
+    # 否则视为孤儿态自愈。``last_migration_result`` 字段（含 ``restart_pending:``
+    # 前缀）只是描述上一次操作意图，不该被当作"还在进行中"的硬证据——marker
+    # 在 launcher 接力跑完迁移时才会被覆盖，任何让 launcher 跑不到那一步的事件
+    # （shutdown fire-and-forget 后 launcher 被绕过 / 半途强杀 / 迁移文件已被
+    # 善后删除）都会让 marker 残留，配合旧逻辑就把进程永久钉在 readonly 上、
+    # memory server 所有写盘静默失败。
     try:
         from utils.storage_migration import is_storage_migration_pending, load_storage_migration
 

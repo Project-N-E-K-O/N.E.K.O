@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import logging
 import math
 import re
 from typing import Any
@@ -15,6 +16,9 @@ from .knowledge_quality import (
     KnowledgeQualityStore,
 )
 from .models import json_copy
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _utc_iso() -> str:
@@ -71,6 +75,47 @@ def _verdict_score(verdict: str, score: object = None) -> float:
     try:
         return _clamp(float(score) / 100.0)
     except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _score_percent(value: object) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return number * 100.0 if 0.0 <= number <= 1.0 else number
+
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+
+    letter_scores = {
+        "a+": 98.0,
+        "a": 95.0,
+        "a-": 90.0,
+        "b+": 88.0,
+        "b": 85.0,
+        "b-": 80.0,
+        "c+": 78.0,
+        "c": 75.0,
+        "c-": 70.0,
+        "d": 65.0,
+        "f": 0.0,
+    }
+    lowered = text.lower()
+    if lowered in letter_scores:
+        return letter_scores[lowered]
+
+    try:
+        if "/" in text:
+            numerator_text, denominator_text = text.split("/", 1)
+            numerator = float(numerator_text.strip())
+            denominator = float(denominator_text.strip())
+            return 0.0 if denominator == 0 else (numerator / denominator) * 100.0
+        if text.endswith("%"):
+            return float(text[:-1].strip())
+        number = float(text)
+        return number * 100.0 if 0.0 <= number <= 1.0 else number
+    except (TypeError, ValueError, OverflowError, ZeroDivisionError) as exc:
+        _LOGGER.warning("Failed to parse study evaluation score %r: %s", value, exc)
         return 0.0
 
 
@@ -501,7 +546,6 @@ class KnowledgeTracker:
                 evidence_type=KnowledgeEvidenceType.MENTIONED.value,
                 context={"topic_id": resolved, "mode": eval_result.get("mode") or ""},
             )
-            return resolved
         self.store.ensure_topic(
             topic_id=resolved,
             name=topic_name or resolved,
@@ -606,7 +650,7 @@ class KnowledgeTracker:
     def _rating_from_eval(eval_result: dict[str, Any]) -> StudyFsrsRating:
         verdict = str(eval_result.get("verdict") or "").strip().lower()
         error_type = str(eval_result.get("error_type") or "").strip().lower()
-        score = float(eval_result.get("score") or 0)
+        score = _score_percent(eval_result.get("score"))
         if verdict in {"wrong", "dont_know"} or error_type in {"concept_error", "misconception", "guess", "concept_missing"}:
             return StudyFsrsRating.Again
         if verdict == "partial" or error_type in {"calculation_error", "missing_step", "step_skipped"}:

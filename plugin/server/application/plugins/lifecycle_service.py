@@ -384,6 +384,7 @@ class PluginLifecycleService:
         restore_state: bool = False,
         *,
         refresh_registry: bool = True,
+        persist_user_intent: bool = False,
     ) -> dict[str, object]:
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
@@ -392,6 +393,8 @@ class PluginLifecycleService:
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
             if existing_host_obj.is_alive():
+                if persist_user_intent:
+                    await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
                 _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=current_plugin_id)
                 return {
                     "success": True,
@@ -676,6 +679,8 @@ class PluginLifecycleService:
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id
 
+            if persist_user_intent:
+                await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
                 "success": True,
@@ -739,7 +744,12 @@ class PluginLifecycleService:
                 error_type=type(exc).__name__,
             ) from exc
 
-    async def stop_plugin(self, plugin_id: str) -> dict[str, object]:
+    async def stop_plugin(
+        self,
+        plugin_id: str,
+        *,
+        persist_user_intent: bool = False,
+    ) -> dict[str, object]:
         host_obj = await asyncio.to_thread(_get_plugin_host_sync, plugin_id)
         if host_obj is None:
             raise _to_domain_error(
@@ -781,6 +791,8 @@ class PluginLifecycleService:
                     type(exc).__name__,
                     str(exc),
                 )
+            if persist_user_intent:
+                await asyncio.to_thread(set_runtime_override, plugin_id, False)
             _emit_lifecycle_event(event_type="plugin_stopped", plugin_id=plugin_id)
             return {
                 "success": True,

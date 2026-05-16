@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from plugin.plugins.study_companion.fsrs_bridge import StudyFsrsRating
 from plugin.plugins.study_companion.knowledge_tracker import (
     KnowledgeTracker,
     MasteryTracker,
@@ -121,6 +122,26 @@ def test_status_summary_due_review_count_is_not_limited(tmp_path: Path) -> None:
         store.close()
 
 
+def test_knowledge_tracker_persists_runtime_topic_before_tracking(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        result = tracker.on_answer(
+            topic_id="Runtime Algebra",
+            question={"question": "runtime check", "answer": "x", "topic": "Runtime Algebra", "difficulty": 2},
+            user_answer="x",
+            eval_result={"verdict": "correct", "score": "92/100", "error_type": "none"},
+            mode="interactive",
+        )
+
+        assert store.get_topic("runtime_algebra") is not None
+        assert result["mastery"]["topic_id"] == "runtime_algebra"
+        assert store.get_latest_mastery("runtime_algebra") is not None
+        assert store.get_fsrs_card("runtime_algebra") is not None
+    finally:
+        store.close()
+
+
 def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -153,6 +174,13 @@ def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: 
         assert queue[0]["topic"]["name"] == "Due Beyond 1000"
     finally:
         store.close()
+
+
+def test_rating_from_eval_handles_dirty_score_strings() -> None:
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92/100"}) == StudyFsrsRating.Easy
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92%"}) == StudyFsrsRating.Easy
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "A"}) == StudyFsrsRating.Easy
+    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "n/a"}) == StudyFsrsRating.Good
 
 
 def test_append_only_knowledge_tables_trim_per_key(tmp_path: Path) -> None:
@@ -266,7 +294,7 @@ def test_add_qa_record_trims_unknown_topic_rows(tmp_path: Path) -> None:
         store.close()
 
 
-def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
+def test_runtime_topic_answer_records_are_pruned(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         original_add_qa_record = store.add_qa_record
@@ -280,7 +308,7 @@ def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
         for index in range(3):
             tracker.on_answer(
                 topic_id="",
-                question={"topic": f"runtime topic {index}", "question": f"q{index}", "answer": "a"},
+                question={"topic": "runtime topic", "question": f"q{index}", "answer": "a"},
                 user_answer="a",
                 eval_result={"verdict": "correct", "score": 90},
                 mode="interactive",
@@ -291,12 +319,14 @@ def test_unknown_topic_answer_records_are_pruned(tmp_path: Path) -> None:
                 """
                 SELECT question
                 FROM qa_records
-                WHERE topic_id IS NULL
+                WHERE topic_id = ?
                 ORDER BY id
-                """
+                """,
+                ("runtime_topic",),
             ).fetchall()
 
         questions = [json.loads(row[0])["question"] for row in rows]
+        assert store.get_topic("runtime_topic") is not None
         assert questions == ["q1", "q2"]
     finally:
         store.close()

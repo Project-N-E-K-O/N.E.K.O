@@ -278,7 +278,7 @@ def test_negative_evidence_deprecates_candidate(tmp_path: Path) -> None:
         store.close()
 
 
-def test_discovered_unknown_topic_does_not_enter_formal_topics(tmp_path: Path) -> None:
+def test_answer_tracking_persists_discovered_runtime_topic(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         assert store.get_topic("new_runtime_topic") is None
@@ -289,13 +289,15 @@ def test_discovered_unknown_topic_does_not_enter_formal_topics(tmp_path: Path) -
         assert store.get_topic("new_runtime_topic") is None
 
         tracker = KnowledgeTracker(store)
-        tracker.on_answer(
+        result = tracker.on_answer(
             topic_id="New Runtime Topic",
             question={"question": "Q", "answer": "A", "topic": "New Runtime Topic"},
             user_answer="B",
             eval_result={"verdict": "wrong", "score": 0, "error_type": "misconception"},
             mode="interactive",
         )
-        assert store.find_topic_by_name("New Runtime Topic") is None
+        assert store.find_topic_by_name("New Runtime Topic") is not None
+        assert store.get_topic("new_runtime_topic") is not None
+        assert result["mastery"]["topic_id"] == "new_runtime_topic"
     finally:
         store.close()

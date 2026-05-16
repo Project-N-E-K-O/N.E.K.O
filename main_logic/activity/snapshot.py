@@ -618,16 +618,36 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
     lines.append(f"{snap.state}（{state_label}）→ {propensity_directive}")
 
     # Line 1.5: tone hint (style modifier orthogonal to propensity).
-    # Skip rendering when the state would already be silenced (closed)
-    # or when tone is the safe default ``concise`` — saves a token line
-    # in the common case where there's nothing notable to say about
-    # voice. Renders as a single line: "口吻：{hint}".
-    if snap.propensity != 'closed' and snap.tone != 'concise':
-        tone_hints = ACTIVITY_TONE_HINTS.get(L, ACTIVITY_TONE_HINTS['en'])
-        tone_text = tone_hints.get(snap.tone)
-        if tone_text:
+    # ``closed`` snapshots already returned '' at the top of this
+    # function, so no closed-guard is needed here.
+    #
+    # Each tone slot in ACTIVITY_TONE_HINTS holds a short list of
+    # distinct *angles* on the scene (e.g. competitive gaming → reflex
+    # play-by-play / sideline heckling / short tactical callout). All
+    # angles are rendered as a bullet list so the model sees the full
+    # menu and picks whichever one fits the current round's content —
+    # they are illustrative direction hints, NOT lines to speak and
+    # NOT a sampling pool. The multi-variant header uses
+    # ``tone_menu_label`` (falls back to ``tone_label``), which spells
+    # out that the bullets are references to be performed through the
+    # character's own persona — never copied verbatim and never at
+    # the cost of breaking character.
+    #
+    # Backward compat: if a tone slot still holds a single string
+    # (legacy callers / mirrored tables), we wrap it into a list so
+    # both shapes render to the same output.
+    tone_hints = ACTIVITY_TONE_HINTS.get(L, ACTIVITY_TONE_HINTS['en'])
+    tone_variants = tone_hints.get(snap.tone)
+    if isinstance(tone_variants, str):
+        tone_variants = [tone_variants]
+    if tone_variants:
+        if len(tone_variants) == 1:
             tone_label = labels.get('tone_label', 'tone')
-            lines.append(f"{tone_label}: {tone_text}")
+            lines.append(f"{tone_label}: {tone_variants[0]}")
+        else:
+            tone_label = labels.get('tone_menu_label') or labels.get('tone_label', 'tone')
+            lines.append(f"{tone_label}:")
+            lines.extend(f"- {v}" for v in tone_variants)
 
     # Line 2: rule reasons (skip if empty — happens for unknown states).
     if snap.propensity_reasons:

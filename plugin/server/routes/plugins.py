@@ -41,7 +41,7 @@ async def list_plugins(locale: Optional[str] = Query(default=None)) -> dict[str,
 @router.post("/plugin/{plugin_id}/start")
 async def start_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await lifecycle_service.start_plugin(plugin_id)
+        return await lifecycle_service.start_plugin(plugin_id, persist_user_intent=True)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 
@@ -57,7 +57,7 @@ async def refresh_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dic
 @router.post("/plugin/{plugin_id}/stop")
 async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin) -> dict[str, object]:
     try:
-        return await lifecycle_service.stop_plugin(plugin_id)
+        return await lifecycle_service.stop_plugin(plugin_id, persist_user_intent=True)
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
 

@@ -78,7 +78,6 @@ def _patch_status_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(galgame_service, "inspect_dxcam_installation", lambda: {})
     monkeypatch.setattr(galgame_service, "inspect_textractor_installation", lambda **kwargs: {})
     monkeypatch.setattr(galgame_service, "inspect_rapidocr_installation", lambda **kwargs: {})
-    monkeypatch.setattr(galgame_service, "inspect_tesseract_installation", lambda **kwargs: {})
     monkeypatch.setattr(galgame_service, "_current_process_performance", lambda: {})
 
 
@@ -168,17 +167,98 @@ def test_build_config_reads_context_optimization_fields() -> None:
                 "context_max_tokens": 4096,
                 "context_metrics_enabled": True,
                 "context_counting_mode": "token",
+                "context_semantic_compression": True,
+                "context_explain_min_lines": 3,
+                "context_explain_max_lines": 9,
+                "context_window_target_tokens": 512,
+                "context_scene_summary_mode": "cumulative_light",
+                "context_cumulative_llm_trigger_lines": 12,
+                "context_line_importance_enabled": True,
+                "llm_explain_cache_ttl_seconds": 7,
+                "llm_choice_cache_ttl_seconds": 5,
+                "llm_near_match_cache_enabled": True,
+                "llm_near_match_cache_ttl_seconds": 11,
+                "context_persist_enabled": True,
+                "context_persist_max_age_seconds": 120,
+                "context_persist_require_game_id": False,
+                "llm_repeat_detection_enabled": True,
+                "llm_repeat_similarity_threshold": 0.9,
             }
         }
     )
     invalid = galgame_service.build_config(
-        {"llm": {"context_counting_mode": "words"}}
+        {
+            "llm": {
+                "context_counting_mode": "words",
+                "context_scene_summary_mode": "invalid",
+                "llm_repeat_similarity_threshold": 3,
+            }
+        }
+    )
+    low_threshold = galgame_service.build_config(
+        {"llm": {"llm_repeat_similarity_threshold": -1}}
     )
 
     assert cfg.context_max_tokens == 4096
     assert cfg.context_metrics_enabled is True
     assert cfg.context_counting_mode == "token"
+    assert cfg.context_semantic_compression is True
+    assert cfg.context_explain_min_lines == 3
+    assert cfg.context_explain_max_lines == 9
+    assert cfg.context_window_target_tokens == 512
+    assert cfg.context_scene_summary_mode == "cumulative_light"
+    assert cfg.context_cumulative_llm_trigger_lines == 12
+    assert cfg.context_line_importance_enabled is True
+    assert cfg.llm_explain_cache_ttl_seconds == 7
+    assert cfg.llm_choice_cache_ttl_seconds == 5
+    assert cfg.llm_near_match_cache_enabled is True
+    assert cfg.llm_near_match_cache_ttl_seconds == 11
+    assert cfg.context_persist_enabled is True
+    assert cfg.context_persist_max_age_seconds == 120
+    assert cfg.context_persist_require_game_id is False
+    assert cfg.llm_repeat_detection_enabled is True
+    assert cfg.llm_repeat_similarity_threshold == 0.9
     assert invalid.context_counting_mode == "char"
+    assert invalid.context_scene_summary_mode == "rolling"
+    assert invalid.llm_repeat_similarity_threshold == 1.0
+    assert low_threshold.llm_repeat_similarity_threshold == 0.0
+
+
+def test_build_config_defaults_phase2_context_fields() -> None:
+    cfg = galgame_service.build_config({})
+
+    assert cfg.context_semantic_compression is False
+    assert cfg.context_explain_min_lines == 4
+    assert cfg.context_explain_max_lines == 16
+    assert cfg.context_window_target_tokens == 800
+    assert cfg.context_scene_summary_mode == "rolling"
+    assert cfg.context_cumulative_llm_trigger_lines == 30
+    assert cfg.context_line_importance_enabled is False
+    assert cfg.llm_explain_cache_ttl_seconds == 8.0
+    assert cfg.llm_choice_cache_ttl_seconds == 4.0
+    assert cfg.llm_near_match_cache_enabled is False
+    assert cfg.llm_near_match_cache_ttl_seconds == 15.0
+    assert cfg.context_persist_enabled is False
+    assert cfg.context_persist_max_age_seconds == 3600.0
+    assert cfg.context_persist_require_game_id is True
+    assert cfg.llm_repeat_detection_enabled is False
+    assert cfg.llm_repeat_similarity_threshold == 0.85
+
+
+def test_build_config_normalizes_invalid_phase2_context_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "llm": {
+                "context_explain_min_lines": 12,
+                "context_explain_max_lines": 5,
+                "context_window_target_tokens": 0,
+            }
+        }
+    )
+
+    assert cfg.context_explain_min_lines == 5
+    assert cfg.context_explain_max_lines == 12
+    assert cfg.context_window_target_tokens == 800
 
 
 def test_context_builder_forwards_context_builders_without_behavior_change(
@@ -189,6 +269,7 @@ def test_context_builder_forwards_context_builders_without_behavior_change(
     summarize_result = {"sentinel": "summarize"}
     explain_result = {"sentinel": "explain"}
     suggest_result = {"sentinel": "suggest"}
+    config_sentinel = object()
     calls: dict[str, object] = {}
 
     def fake_build_summarize_context(
@@ -196,20 +277,26 @@ def test_context_builder_forwards_context_builders_without_behavior_change(
         *,
         scene_id: str,
         merge_from_scene_ids: list[str] | None = None,
+        config: object | None = None,
     ) -> dict[str, str]:
-        calls["summarize"] = (received_local_state, scene_id, merge_from_scene_ids)
+        calls["summarize"] = (received_local_state, scene_id, merge_from_scene_ids, config)
         return summarize_result
 
     def fake_build_explain_context(
         received_local_state: dict[str, object],
         *,
         line_id: str,
+        config: object | None = None,
     ) -> dict[str, str]:
-        calls["explain"] = (received_local_state, line_id)
+        calls["explain"] = (received_local_state, line_id, config)
         return explain_result
 
-    def fake_build_suggest_context(received_local_state: dict[str, object]) -> dict[str, str]:
-        calls["suggest"] = (received_local_state,)
+    def fake_build_suggest_context(
+        received_local_state: dict[str, object],
+        *,
+        config: object | None = None,
+    ) -> dict[str, str]:
+        calls["suggest"] = (received_local_state, config)
         return suggest_result
 
     monkeypatch.setattr(
@@ -232,13 +319,23 @@ def test_context_builder_forwards_context_builders_without_behavior_change(
         local_state,
         scene_id="ocr:game:scene-0001",
         merge_from_scene_ids=merge_from_scene_ids,
+        config=config_sentinel,
     ) is summarize_result
-    assert build_explain_context(local_state, line_id="ocr:line-stable") is explain_result
-    assert build_suggest_context(local_state) is suggest_result
+    assert build_explain_context(
+        local_state,
+        line_id="ocr:line-stable",
+        config=config_sentinel,
+    ) is explain_result
+    assert build_suggest_context(local_state, config=config_sentinel) is suggest_result
     assert calls == {
-        "summarize": (local_state, "ocr:game:scene-0001", merge_from_scene_ids),
-        "explain": (local_state, "ocr:line-stable"),
-        "suggest": (local_state,),
+        "summarize": (
+            local_state,
+            "ocr:game:scene-0001",
+            merge_from_scene_ids,
+            config_sentinel,
+        ),
+        "explain": (local_state, "ocr:line-stable", config_sentinel),
+        "suggest": (local_state, config_sentinel),
     }
 
 
@@ -703,6 +800,104 @@ def test_status_payload_snapshot_fast_path_skips_json_copy(monkeypatch: pytest.M
     assert payload["primary_diagnosis"]["title"]
 
 
+def test_status_payload_keeps_last_stable_line_after_new_ocr_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = galgame_service.build_config({})
+    state = _status_state(
+        ocr_reader_runtime={
+            "status": "running",
+            "last_observed_line": {
+                "text": "我患了一种病。",
+                "line_id": "ocr:observed",
+                "stability": "tentative",
+            },
+        },
+        latest_snapshot={
+            "speaker": "",
+            "text": "我患了一种病。",
+            "line_id": "ocr:observed",
+            "scene_id": "ocr:game:scene-0001",
+            "route_id": "ocr",
+            "choices": [],
+            "is_menu_open": False,
+            "stability": "tentative",
+        },
+        history_lines=[
+            {
+                "speaker": "",
+                "text": "上一条已确认台词。",
+                "line_id": "ocr:stable",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "stable",
+                "ts": "2026-05-13T17:39:52Z",
+            }
+        ],
+    )
+    _patch_status_dependencies(monkeypatch)
+
+    payload = galgame_service.build_status_payload(
+        state,
+        config=config,
+        state_is_snapshot=True,
+    )
+
+    assert payload["effective_current_line"]["stability"] == "tentative"
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["text"] == "上一条已确认台词。"
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["source"] == "stable"
+
+
+def test_status_payload_skips_tentative_history_when_backfilling_last_stable_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = galgame_service.build_config({})
+    state = _status_state(
+        ocr_reader_runtime={"status": "running"},
+        latest_snapshot={
+            "speaker": "",
+            "text": "新的候选台词。",
+            "line_id": "ocr:tentative",
+            "scene_id": "ocr:game:scene-0001",
+            "route_id": "ocr",
+            "choices": [],
+            "is_menu_open": False,
+            "stability": "tentative",
+        },
+        history_lines=[
+            {
+                "speaker": "",
+                "text": "上一条已确认台词。",
+                "line_id": "ocr:stable",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "stable",
+                "ts": "2026-05-13T17:39:52Z",
+            },
+            {
+                "speaker": "",
+                "text": "新的候选台词。",
+                "line_id": "ocr:tentative",
+                "scene_id": "ocr:game:scene-0001",
+                "route_id": "ocr",
+                "stability": "tentative",
+                "ts": "2026-05-13T17:40:01Z",
+            },
+        ],
+    )
+    _patch_status_dependencies(monkeypatch)
+
+    payload = galgame_service.build_status_payload(
+        state,
+        config=config,
+        state_is_snapshot=True,
+    )
+
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["text"] == "上一条已确认台词。"
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["line_id"] == "ocr:stable"
+    assert payload["ocr_reader_runtime"]["last_stable_line"]["stability"] == "stable"
+
+
 def test_status_payload_exposes_ocr_decision_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -974,6 +1169,28 @@ def test_status_payload_primary_diagnosis_ignores_stale_self_ui_guard_after_new_
     )
 
     assert diagnosis["title"] != "OCR 抓到了非游戏画面"
+
+
+def test_status_payload_primary_diagnosis_reports_self_ui_guard_as_warning() -> None:
+    diagnosis = galgame_service.build_primary_diagnosis(
+        {
+            "last_error": {
+                "message": "ocr_reader ignored text that looks like the N.E.K.O plugin UI",
+            },
+        }
+    )
+
+    assert diagnosis["severity"] == "warning"
+    assert diagnosis["title"] == "OCR 截到了插件 UI，已忽略"
+    assert diagnosis["title_i18n_key"] == "ui.diag.self_ui_guard.title"
+    assert diagnosis["message_i18n_key"] == "ui.diag.self_ui_guard.body"
+    assert "插件运行出错" not in diagnosis["title"]
+    assert {action["id"] for action in diagnosis["actions"]} == {
+        "focus_game",
+        "select_ocr_window",
+        "refresh_ocr_windows",
+        "debug_details",
+    }
 
 
 def test_status_payload_primary_diagnosis_reports_observed_pending(

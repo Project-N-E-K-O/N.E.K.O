@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 記憶伺服器(端口{{port}})已崩潰。請重啟 memory_server.py",
         "MEMORY_SERVER_COOLDOWN": "🧠 記憶服務正在恢復中，請稍候{{wait_time}}秒",
         "CONNECTION_REFUSED": "💥 伺服器連接被拒絕。請檢查API Key和網路連接。",
-        "API_KEY_REJECTED": "💥 API Key被伺服器拒絕。請檢查API Key是否與所選模型匹配。",
+        "API_KEY_REJECTED": "提供的 API Key 無效，請檢查目前的 API 設定。",
         "API_RATE_LIMIT_SESSION": "💥 API請求頻率過高，請稍後再試。",
         "LLM_CONNECTION_FAILED": "💥 LLM API 連接失敗。請檢查網路連接和API配置。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 連接異常關閉: {{error}}",
@@ -585,7 +585,12 @@
         "TEXT_GEN_ERROR": "💥 文字生成異常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未回傳任何回覆，請檢查API連接和配置",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}正在前往另一個終端...",
-        "RELOAD_PAGE": "語音已更新，頁面即將刷新",
+        "RELOAD_PAGE": "設定已更新，頁面即將刷新",
+        "RELOAD_PAGE_VOICE": "語音已更新，頁面即將刷新",
+        "RELOAD_PAGE_VOICE_STYLE": "音色已更新，頁面即將刷新",
+        "RELOAD_PAGE_PERSONA": "人格設定已更新，頁面即將刷新",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "角色設定已更新，頁面即將刷新",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "來自雲端存檔的角色已更新，頁面即將刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自動關閉鍵鼠控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "已自動關閉瀏覽器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "貓爪 LLM 連接檢查異常",
@@ -1559,6 +1564,7 @@
         "loadFailed": "加載失敗",
         "noChatContent": "無聊天內容",
         "previousMemo": "先前對話的備忘錄: ",
+        "olderSection": "較久前",
         "memoNone": "無。",
         "delete": "刪除",
         "me": "我：",
@@ -3695,7 +3701,7 @@
             "legacyDetected": "偵測到舊版 CosyVoice 音色可能已失效，建議重新克隆語音。"
         },
         "changelog": {
-            "title": "更新內容"
+            "title": "更新資訊"
         }
     },
     "proactive": {

@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -38,18 +39,20 @@ from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
+from plugin.plugins.study_companion.knowledge_contribution import PublicGraphContributionBuilder
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
 from plugin.plugins.study_companion import service as study_service
+from plugin.plugins.study_companion import tesseract_support as study_tesseract_support
 from plugin.plugins.study_companion.screen_classifier import ScreenClassification, classify_screen_from_ocr
 from plugin.plugins.study_companion.service import _available_tesseract_languages
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
-from plugin.plugins.study_companion.ui_api import build_open_ui_payload
+from plugin.plugins.study_companion.ui_api import build_knowledge_map_payload, build_open_ui_payload
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
-from plugin.sdk.plugin import Ok
+from plugin.sdk.plugin import Err, Ok
 
 
 class _Logger:
@@ -124,6 +127,10 @@ class _Ctx:
         return {"items": []}
 
     async def run_update(self, **kwargs):
+        self.run_updates.append(dict(kwargs))
+        return {"ok": True}
+
+    async def run_update_async(self, **kwargs):
         self.run_updates.append(dict(kwargs))
         return {"ok": True}
 
@@ -391,6 +398,26 @@ def test_status_summary_tracked_topic_count_is_not_limited(tmp_path: Path) -> No
         store.close()
 
 
+def test_knowledge_map_related_object_edges_use_topic_ids() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {
+                "id": "quadratic_vertex_form",
+                "name": "Quadratic vertex form",
+                "related": [{"id": "linear_function_kb", "relation": "compare"}],
+            },
+            {"id": "linear_function_kb", "name": "Linear function"},
+        ]
+    )
+
+    assert {
+        "from": "quadratic_vertex_form",
+        "to": "linear_function_kb",
+        "relation": "compare",
+    } in payload["edges"]
+    assert not any(str(edge["to"]).startswith("{") for edge in payload["edges"])
+
+
 def test_build_tutor_payload_preserves_structured_summary() -> None:
     reply = TutorReply(
         operation="summarize_session",
@@ -624,6 +651,42 @@ def test_study_open_ui_payload_returns_message_key() -> None:
     assert "message" not in payload
 
 
+def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {
+                "id": "number_axis",
+                "name": "Number Axis",
+                "prerequisites": [{"id": "real_number_concept", "required_mastery": 0.55}],
+                "related": [{"id": "absolute_value", "relation": "next"}],
+            },
+            {"id": "real_number_concept", "name": "Real Numbers"},
+            {"id": "absolute_value", "name": "Absolute Value"},
+        ]
+    )
+
+    assert {"from": "real_number_concept", "to": "number_axis", "relation": "prerequisite", "required_mastery": 0.55} in payload["edges"]
+    assert {"from": "number_axis", "to": "absolute_value", "relation": "next"} in payload["edges"]
+    assert all(not edge["from"].startswith("{") for edge in payload["edges"])
+
+
+def test_study_knowledge_map_weak_topic_count_matches_visible_nodes() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {"id": "visible_weak", "name": "Visible weak topic"},
+            {"id": "visible_strong", "name": "Visible strong topic"},
+        ],
+        weak_topics=[
+            {"topic_id": "visible_weak", "name": "Visible weak topic"},
+            {"topic_id": "hidden_weak", "name": "Hidden weak topic"},
+        ],
+    )
+
+    assert payload["summary"]["weak_topic_count"] == 1
+    assert [node["id"] for node in payload["nodes"] if node["weak"]] == ["visible_weak"]
+    assert len(payload["weak_topics"]) == 2
+
+
 def test_study_companion_i18n_bundles_are_present() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     locales = ["zh-CN", "en", "ja", "ko", "ru", "zh-TW", "es", "pt"]
@@ -648,6 +711,11 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         "ui.status.screen.summary",
         "ui.error.missing_question",
         "ui.error.missing_answer",
+        "ui.surface.knowledge_map",
+        "ui.surface.knowledge_contribution_settings",
+        "ui.surface.note_exporter",
+        "ui.surface.quickstart",
+        "ui.button.export",
     ]
     bundles: dict[str, dict[str, str]] = {}
     for locale in locales:
@@ -664,6 +732,9 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "status.mode.teaching" in bundle
         assert "ui.status.mode_switching" in bundle
         assert "ui.error.mode_switch_failed" in bundle
+        assert "entries.knowledge_map.name" in bundle
+        assert "entries.set_knowledge_contribution_opt_in.name" in bundle
+        assert "entries.export_notes.name" in bundle
 
     en_bundle = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
     for locale in locales:
@@ -687,6 +758,10 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     surfaces, warnings = _build_surfaces_sync("study_companion", meta)
     assert warnings == []
     assert any(surface["id"] == "study-panel" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "knowledge-map" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "knowledge-contribution-settings" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "note-exporter" and surface["available"] is True for surface in surfaces)
+    assert any(surface["id"] == "quickstart" and surface["available"] is True for surface in surfaces)
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
@@ -847,6 +922,22 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "study-panel__modes" in source
     assert "study_set_mode" in source
     assert "status.mode.companion" in source
+
+
+def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "note_exporter.tsx").read_text(encoding="utf-8")
+
+    assert "DEFAULT_EXPORT_TIMEOUT_MS = 80_000" in source
+    assert "POLL_TIMEOUT_BUFFER_MS = 5_000" in source
+    assert "const timeoutSeconds = Number(entry?.timeout);" in source
+    assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
+    assert "const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);" in source
+    assert "while (Date.now() < deadline)" in source
+    assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
+    assert "}, pollTimeoutMs);" in source
+    assert "for (let attempt = 0; attempt < 40; attempt += 1)" not in source
+    assert "for (let i = 0; i < 40; i += 1)" not in source
 
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
@@ -1240,6 +1331,126 @@ def test_available_tesseract_languages_logs_timeout_and_falls_back(
 
     assert languages == {"eng"}
     assert any("timed out" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_study_install_tesseract_uses_local_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    calls: list[dict[str, object]] = []
+
+    async def _fake_install_tesseract(**kwargs):
+        calls.append(dict(kwargs))
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback is not None:
+            maybe_awaitable = progress_callback(
+                {
+                    "phase": "completed",
+                    "message": "Tesseract is ready",
+                    "progress": 1.0,
+                    "downloaded_bytes": 0,
+                    "total_bytes": 0,
+                    "resume_from": 0,
+                    "asset_name": "",
+                    "release_name": "",
+                }
+            )
+            if hasattr(maybe_awaitable, "__await__"):
+                await maybe_awaitable
+        return {"summary": "Tesseract is ready", "detected_path": "C:/Tesseract/tesseract.exe"}
+
+    monkeypatch.setattr(study_tesseract_support, "install_tesseract", _fake_install_tesseract)
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {
+                "enabled": True,
+                "install_target_dir": str(tmp_path / "Tesseract-OCR"),
+                "languages": "eng",
+            },
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        install_result = await plugin.study_install_tesseract(force=True, _ctx={"run_id": "run-study-install"})
+
+        assert isinstance(install_result, Ok)
+        assert install_result.value["summary"] == "Tesseract is ready"
+        assert calls
+        assert calls[0]["plugin_id"] == "study_companion"
+        assert calls[0]["task_id"] == "run-study-install"
+        assert calls[0]["force"] is True
+        assert ctx.run_updates
+        assert ctx.run_updates[-1]["run_id"] == "run-study-install"
+    finally:
+        await plugin.shutdown()
+
+
+def test_study_ocr_pipeline_uses_local_tesseract_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[dict[str, object]] = []
+
+    class _FakeTesseractBackend:
+        def __init__(self, **kwargs) -> None:
+            created.append(dict(kwargs))
+
+    monkeypatch.setattr(study_tesseract_support, "TesseractOcrBackend", _FakeTesseractBackend)
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            ocr_backend_selection="tesseract",
+            ocr_tesseract_path="C:/Tesseract/tesseract.exe",
+            ocr_install_target_dir="C:/Tesseract",
+            ocr_languages="eng",
+        ),
+    )
+
+    backend = pipeline._resolve_ocr_backend()
+
+    assert isinstance(backend, _FakeTesseractBackend)
+    assert created == [
+        {
+            "tesseract_path": "C:/Tesseract/tesseract.exe",
+            "install_target_dir_raw": "C:/Tesseract",
+            "languages": "eng",
+        }
+    ]
+
+
+def test_study_tesseract_backend_restores_global_tesseract_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "tesseract.exe"
+    executable.write_text("", encoding="utf-8")
+    calls: list[tuple[object, str]] = []
+    fake_pytesseract = SimpleNamespace()
+    fake_pytesseract.pytesseract = SimpleNamespace(tesseract_cmd="original-cmd")
+
+    def image_to_string(candidate: object, *, lang: str, config: str) -> str:
+        calls.append((candidate, fake_pytesseract.pytesseract.tesseract_cmd))
+        return "recognized text"
+
+    fake_pytesseract.image_to_string = image_to_string
+    monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(study_tesseract_support, "_prepare_ocr_image", lambda image: "prepared-image")
+
+    backend = study_tesseract_support.TesseractOcrBackend(
+        tesseract_path=str(executable),
+        languages="eng",
+    )
+
+    assert backend.extract_text("source-image") == "recognized text"
+    assert calls == [
+        ("source-image", str(executable)),
+        ("prepared-image", str(executable)),
+    ]
+    assert fake_pytesseract.pytesseract.tesseract_cmd == "original-cmd"
 
 
 @pytest.mark.asyncio
@@ -2045,9 +2256,15 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "study_ocr_snapshot" in entries
     assert "study_set_mode" in entries
     assert "study_detect_mode_intent" in entries
+    assert "study_export_notes" not in entries
+    assert "study_knowledge_map" in entries
+    assert "study_set_knowledge_contribution_opt_in" in entries
+    disabled_export = await plugin._study_export_notes_entry(fmt="markdown", preview_only=True, title="Default Notes")
+    assert isinstance(disabled_export, Err)
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"
+    assert status.value["is_first_run"] is True
     assert status.value["active_mode"] == MODE_COMPANION
     assert "mode_started_at" in status.value
     assert "recent_mode_switches" in status.value
@@ -2057,6 +2274,172 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     assert "mastery_overview" in status.value
     assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_shutdown_continues_when_dynamic_entry_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    shutdown_called = False
+
+    class _Agent:
+        async def shutdown(self):
+            nonlocal shutdown_called
+            shutdown_called = True
+
+    def _fail_unregister(_entry_id: str) -> None:
+        raise RuntimeError("unregister failed")
+
+    plugin._agent = _Agent()
+    plugin.logger = ctx.logger
+    plugin.unregister_dynamic_entry = _fail_unregister  # type: ignore[method-assign]
+
+    shutdown_result = await plugin.shutdown()
+
+    assert isinstance(shutdown_result, Ok)
+    assert shutdown_called is True
+    assert any("dynamic entry cleanup failed" in str(args[0]) for args, _kwargs in ctx.logger.warnings)
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+            "doc_export": {"enabled": True, "default_style": "compact", "xmind_enabled": False},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        entries = plugin.collect_entries()
+        assert "study_export_notes" in entries
+        properties = entries["study_export_notes"].meta.input_schema["properties"]
+        export_formats = properties["fmt"]["enum"]
+        assert export_formats == ["markdown", "pdf", "docx"]
+        assert "range" not in properties
+        assert properties["style"]["default"] == "compact"
+        assert properties["time_range"]["default"] == "recent"
+        assert properties["recent_limit"]["default"] == 30
+        assert properties["topic_ids"]["default"] == []
+        plugin._store.append_interaction(
+            kind="concept_explain",
+            input_text="derivative",
+            output_text="A derivative is a rate of change.",
+            history_limit=10,
+        )
+
+        exported = await entries["study_export_notes"].handler(fmt="markdown", preview_only=False, title="Unit Notes")
+        assert isinstance(exported, Ok)
+        assert exported.value["filename"] == "unit-notes.md"
+        assert exported.value["format"] == "markdown"
+        assert exported.value["style"] == "compact"
+        assert exported.value["content_base64"]
+        assert "Range: recent" in exported.value["markdown"]
+        assert "derivative" in exported.value["markdown"]
+
+        explicit_style = await entries["study_export_notes"].handler(
+            fmt="markdown",
+            style="academic",
+            preview_only=True,
+            title="Academic Notes",
+        )
+        assert isinstance(explicit_style, Ok)
+        assert explicit_style.value["style"] == "academic"
+
+        knowledge_map = await plugin.study_knowledge_map(limit=10)
+        assert isinstance(knowledge_map, Ok)
+        assert knowledge_map.value["summary"]["topic_count"] >= 0
+        assert isinstance(knowledge_map.value["nodes"], list)
+
+        opt_in = await plugin.study_set_knowledge_contribution_opt_in(opt_in=True)
+        assert isinstance(opt_in, Ok)
+        assert opt_in.value["opt_in"] is True
+        preview = await plugin.study_anonymous_knowledge_preview(limit=10)
+        assert isinstance(preview, Ok)
+        assert preview.value["opt_in"] is True
+        assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is True
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_knowledge_contribution_opt_in_preview_failure_is_atomic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    def _raise_preview(self, *, limit: int = 100):
+        raise RuntimeError("preview failed")
+
+    monkeypatch.setattr(PublicGraphContributionBuilder, "preview", _raise_preview)
+
+    try:
+        result = await plugin.study_set_knowledge_contribution_opt_in(opt_in=True)
+        assert isinstance(result, Err)
+        assert plugin._cfg.knowledge_contribution_opt_in is False
+        assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is False
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_doc_export_schema_includes_xmind_only_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+            "doc_export": {"enabled": True, "xmind_enabled": True},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    try:
+        entries = plugin.collect_entries()
+        export_formats = entries["study_export_notes"].meta.input_schema["properties"]["fmt"]["enum"]
+        assert export_formats == ["markdown", "pdf", "docx", "xmind"]
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio

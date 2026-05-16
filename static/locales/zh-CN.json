@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 记忆服务器(端口{{port}})已崩溃。请重启 memory_server.py",
         "MEMORY_SERVER_COOLDOWN": "🧠 记忆服务正在恢复中，请稍候{{wait_time}}秒",
         "CONNECTION_REFUSED": "💥 服务器连接被拒绝。请检查API Key和网络连接。",
-        "API_KEY_REJECTED": "💥 API Key被服务器拒绝。请检查API Key是否与所选模型匹配。",
+        "API_KEY_REJECTED": "提供的 API Key 无效，请检查当前 API 设置。",
         "API_RATE_LIMIT_SESSION": "💥 API请求频率过高，请稍后再试。",
         "LLM_CONNECTION_FAILED": "💥 LLM API 连接失败。请检查网络连接和API配置。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 连接异常关闭: {{error}}",
@@ -585,7 +585,12 @@
         "TEXT_GEN_ERROR": "💥 文本生成异常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未返回任何回复，请检查API连接和配置",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}正在前往另一个终端...",
-        "RELOAD_PAGE": "语音已更新，页面即将刷新",
+        "RELOAD_PAGE": "设定已更新，页面即将刷新",
+        "RELOAD_PAGE_VOICE": "语音已更新，页面即将刷新",
+        "RELOAD_PAGE_VOICE_STYLE": "音色已更新，页面即将刷新",
+        "RELOAD_PAGE_PERSONA": "人格设定已更新，页面即将刷新",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "角色设定已更新，页面即将刷新",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "云存档角色已更新，页面即将刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自动关闭键鼠控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "已自动关闭浏览器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "猫爪 LLM 连接检查异常",
@@ -1559,6 +1564,7 @@
         "loadFailed": "加载失败",
         "noChatContent": "无聊天内容",
         "previousMemo": "先前对话的备忘录: ",
+        "olderSection": "较久前",
         "memoNone": "无。",
         "delete": "删除",
         "me": "我：",
@@ -3695,7 +3701,7 @@
             "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新信息"
         }
     },
     "proactive": {

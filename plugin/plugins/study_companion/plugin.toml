@@ -66,6 +66,12 @@ auto_optimize_interval_days = 30
 opt_in = false
 min_sample_count = 3
 
+[doc_export]
+enabled = false
+pdf_backend = "reportlab"
+default_style = "neko"
+xmind_enabled = false
+
 [plugin.ui]
 enabled = true
 
@@ -73,6 +79,30 @@ enabled = true
 id = "study-panel"
 title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
+permissions = ["state:read"]
+
+[[plugin.ui.guide]]
+id = "knowledge-map"
+title = "Knowledge Map"
+entry = "surfaces/knowledge_map.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "knowledge-contribution-settings"
+title = "Knowledge Contribution Settings"
+entry = "surfaces/knowledge_contribution_settings.tsx"
+permissions = ["state:read", "action:call", "config:write"]
+
+[[plugin.ui.guide]]
+id = "note-exporter"
+title = "Note Exporter"
+entry = "surfaces/note_exporter.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "Study Companion Quickstart"
+entry = "surfaces/quickstart.tsx"
 permissions = ["state:read"]
 
 [plugin.i18n]

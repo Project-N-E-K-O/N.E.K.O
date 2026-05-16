@@ -3,7 +3,7 @@
 P1.c integration tests: outbox wiring inside memory_server.
 
 Verifies:
-  - _spawn_outbox_extract_facts appends a pending op, runs handler, marks done
+  - _spawn_outbox_post_turn_signals appends a pending op, runs handler, marks done
   - _replay_pending_outbox picks up unfinished ops and re-runs handler
   - Handler not executing (e.g. no registered handler) → op remains pending
 """
@@ -45,7 +45,7 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
     """Handler 成功完成 → outbox pending_ops 为空。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
-    from memory.outbox import OP_EXTRACT_FACTS
+    from memory.outbox import OP_POST_TURN_SIGNALS
 
     calls: list[tuple[str, dict]] = []
 
@@ -54,11 +54,11 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _fake_handler},
+        {OP_POST_TURN_SIGNALS: _fake_handler},
         clear=False,
     ):
         msgs = [HumanMessage(content="喵"), AIMessage(content="mrrp")]
-        task = await memory_server._spawn_outbox_extract_facts("小天", msgs)
+        task = await memory_server._spawn_outbox_post_turn_signals("小天", msgs)
         await task
 
     assert len(calls) == 1
@@ -78,24 +78,24 @@ async def test_handler_failure_keeps_op_pending(tmp_path):
     """Handler raises → op stays pending (next startup replays it)."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
-    from memory.outbox import OP_EXTRACT_FACTS
+    from memory.outbox import OP_POST_TURN_SIGNALS
 
     async def _bad_handler(name: str, payload: dict):
         raise RuntimeError("simulated LLM crash mid-call")
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _bad_handler},
+        {OP_POST_TURN_SIGNALS: _bad_handler},
         clear=False,
     ):
-        task = await memory_server._spawn_outbox_extract_facts(
+        task = await memory_server._spawn_outbox_post_turn_signals(
             "小天", [HumanMessage(content="hi")]
         )
         await task
 
     pending = await ob.apending_ops("小天")
     assert len(pending) == 1
-    assert pending[0]["type"] == OP_EXTRACT_FACTS
+    assert pending[0]["type"] == OP_POST_TURN_SIGNALS
 
 
 @pytest.mark.asyncio
@@ -103,12 +103,12 @@ async def test_replay_reinvokes_pending_handler(tmp_path):
     """模拟进程重启场景：上一跑 outbox 里有 pending，启动 replay 应重跑 handler。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
-    from memory.outbox import OP_EXTRACT_FACTS
+    from memory.outbox import OP_POST_TURN_SIGNALS
     from utils.llm_client import messages_to_dict
 
     # 场景：上一跑在 append_pending 后崩溃，没跑完 handler
     payload = {"messages": messages_to_dict([HumanMessage(content="反驳：不喜欢咖啡")])}
-    await ob.aappend_pending("小天", OP_EXTRACT_FACTS, payload)
+    await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, payload)
 
     replay_calls: list[tuple[str, dict]] = []
 
@@ -117,7 +117,7 @@ async def test_replay_reinvokes_pending_handler(tmp_path):
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _replay_handler},
+        {OP_POST_TURN_SIGNALS: _replay_handler},
         clear=False,
     ):
         # _replay_pending_outbox 直接返回 spawn 的 task 列表，无需扫
@@ -158,11 +158,11 @@ async def test_replay_respects_concurrency_semaphore(tmp_path):
     """启动补跑不应无限 fan-out：_REPLAY_CONCURRENCY=4 应限制同时在飞 handler 数。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
-    from memory.outbox import OP_EXTRACT_FACTS
+    from memory.outbox import OP_POST_TURN_SIGNALS
 
     # 登记 10 个 pending op
     for i in range(10):
-        await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"i": i})
+        await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"i": i})
 
     in_flight = 0
     max_in_flight = 0
@@ -178,7 +178,7 @@ async def test_replay_respects_concurrency_semaphore(tmp_path):
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _slow_handler},
+        {OP_POST_TURN_SIGNALS: _slow_handler},
         clear=False,
     ):
         spawned = await memory_server._replay_pending_outbox()
@@ -194,10 +194,10 @@ async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
     """Codex PR#905 P2: 角色从 config 移除但 outbox 还有 pending → 必须仍补跑。"""
     ob, mock_cm = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
-    from memory.outbox import OP_EXTRACT_FACTS
+    from memory.outbox import OP_POST_TURN_SIGNALS
 
     # 登记一条 pending op（在 "小天" 的 outbox 里）
-    await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"i": 1})
+    await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"i": 1})
 
     # 模拟 config 被改成不再包含小天（但磁盘上的 outbox 还在）
     _empty_characters = {"猫娘": {}, "当前猫娘": None}
@@ -211,7 +211,7 @@ async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _handler},
+        {OP_POST_TURN_SIGNALS: _handler},
         clear=False,
     ):
         spawned = await memory_server._replay_pending_outbox()
@@ -228,7 +228,7 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
     新进程加载 outbox → 重跑 → side effect 最终落盘。"""
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
-    from memory.outbox import OP_EXTRACT_FACTS
+    from memory.outbox import OP_POST_TURN_SIGNALS
 
     # 第一跑：handler 写"fact"到 side-effect 状态但在 append_done 前进程死
     side_effect_log: list[str] = []
@@ -239,10 +239,10 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _handler_run1},
+        {OP_POST_TURN_SIGNALS: _handler_run1},
         clear=False,
     ):
-        await ob.aappend_pending("小天", OP_EXTRACT_FACTS, {"tag": "rebuttal_msg"})
+        await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"tag": "rebuttal_msg"})
         # 直接触发一次 replay 模拟 "崩溃发生在第一次 replay 调用期间"
         spawned = await memory_server._replay_pending_outbox()
         await asyncio.gather(*spawned, return_exceptions=True)
@@ -260,7 +260,7 @@ async def test_end_to_end_kill_then_replay_persists_side_effect(tmp_path):
 
     with patch.dict(
         memory_server._OUTBOX_HANDLERS,
-        {OP_EXTRACT_FACTS: _handler_run2},
+        {OP_POST_TURN_SIGNALS: _handler_run2},
         clear=False,
     ):
         spawned = await memory_server._replay_pending_outbox()
@@ -284,10 +284,10 @@ async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
 
     ob.aappend_pending = _boom  # type: ignore[assignment]
 
-    # 同时 patch _extract_facts_and_check_feedback 成 noop，避免真 LLM 调用
+    # 同时 patch _run_post_turn_signals 成 noop，避免真 LLM 调用
     noop = AsyncMock(return_value=None)
-    with patch("app.memory_server._extract_facts_and_check_feedback", noop):
-        task = await memory_server._spawn_outbox_extract_facts(
+    with patch("app.memory_server._run_post_turn_signals", noop):
+        task = await memory_server._spawn_outbox_post_turn_signals(
             "小天", [HumanMessage(content="hi")]
         )
         await task

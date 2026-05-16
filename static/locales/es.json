@@ -559,7 +559,7 @@
         "MEMORY_SERVER_CRASHED": "🧠 El servidor de memoria (puerto {{port}}) falló. Reinicie Memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 El servicio de memoria se está recuperando, espere {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Conexión del servidor rechazada. Verifique su clave API y su conexión de red.",
-        "API_KEY_REJECTED": "💥 Clave API rechazada por el servidor. Verifique si su clave API coincide con el modelo seleccionado.",
+        "API_KEY_REJECTED": "La API Key proporcionada no es válida. Revisa la configuración actual de la API.",
         "API_RATE_LIMIT_SESSION": "💥 La tasa de solicitudes de API es demasiado alta. Vuelva a intentarlo más tarde.",
         "LLM_CONNECTION_FAILED": "💥 Error en la conexión API de LLM. Verifique su conexión de red y la configuración de API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Conexión cerrada anormalmente: {{error}}",
@@ -585,7 +585,12 @@
         "TEXT_GEN_ERROR": "💥 Error de generación de texto: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM no obtuvo respuesta. Verifique su conexión y configuración de API.",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} se dirige a otra terminal...",
-        "RELOAD_PAGE": "Voz actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE": "Configuración actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_VOICE": "Voz actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_VOICE_STYLE": "Estilo de voz actualizado, la página se actualizará en breve",
+        "RELOAD_PAGE_PERSONA": "Configuración de personalidad actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Configuración del personaje actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Personaje de guardado en la nube actualizado, la página se actualizará en breve",
         "AGENT_AUTO_DISABLED_COMPUTER": "Control de teclado/ratón deshabilitado automáticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Control del navegador deshabilitado automáticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Error de comprobación de conectividad de NekoClaw LLM",
@@ -1559,6 +1564,7 @@
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
         "previousMemo": "Nota de conversación anterior:",
+        "olderSection": "Antes",
         "memoNone": "Ninguno.",
         "delete": "Borrar",
         "me": "A mí:",
@@ -3695,7 +3701,7 @@
             "legacyDetected": "Se detectaron voces antiguas de CosyVoice que es posible que ya no funcionen. Considere volver a clonar sus voces."
         },
         "changelog": {
-            "title": "Qué hay de nuevo"
+            "title": "Información de actualización"
         }
     },
     "proactive": {

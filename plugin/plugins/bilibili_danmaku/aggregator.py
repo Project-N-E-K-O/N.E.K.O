@@ -25,6 +25,48 @@ class DanmakuEntry:
     level: int
     text: str
     timestamp: float = field(default_factory=time.time)
+    # 增强字段（用于评分和排序）
+    medal_level: int = 0
+    guard: int = 0        # 0=无, 1=总督, 2=提督, 3=舰长
+    admin: bool = False   # 是否房管/主播
+    msg_type: int = 1     # 1=弹幕, 2=礼物, 3=进场, ...
+    msg_source: int = 0   # 0=直播, 1=付费, 2=其他
+
+    @classmethod
+    def from_livedanmaku(cls, ld: "LiveDanmaku") -> "DanmakuEntry":
+        """从 LiveDanmaku 创建入口"""
+        return cls(
+            uid=ld.uid,
+            uname=ld.nickname,
+            level=ld.user_level,
+            text=ld.text,
+            timestamp=ld.timeline,
+            medal_level=ld.medal.level if ld.medal else 0,
+            guard=ld.guard_level,
+            admin=1 if ld.admin else 0,
+            msg_type=ld.msg_type.value if hasattr(ld.msg_type, 'value') else ld.msg_type,
+        )
+
+    def get_score(self) -> float:
+        """
+        计算弹幕综合评分（用于降级模式排序择优）
+        权重：guard > admin > medal_level > user_level > text_length
+        """
+        score = 0.0
+        # guard: 总督(1)=3000, 提督(2)=2000, 舰长(3)=1000
+        _guard_score = {1: 3000, 2: 2000, 3: 1000}
+        score += _guard_score.get(self.guard, 0)
+        # admin: 房管/主播 +500
+        if self.admin:
+            score += 500
+        # medal_level: 每级 +10 (20级亲密度 = +200)
+        score += self.medal_level * 10
+        # user_level: 每级 +2 (40级 = +80)
+        score += self.level * 2
+        # text_length: 有内容的弹幕加分（鼓励有意义的发言）
+        text_len = len(self.text.strip())
+        score += min(text_len, 100)
+        return score
 
 
 @dataclass
@@ -57,20 +99,32 @@ class TimeWindowAggregator:
         callback: Callable[[BatchedDanmaku], Awaitable[None]],
         window_size: float = 15.0,
         max_samples: int = 30,
+        scoring_enabled: bool = False,
+        top_n: int = 5,
+        enable_dedup: bool = False,
     ):
         """
         Args:
             callback: 聚合完成后调用的回调函数
             window_size: 时间窗口大小（秒），可由前端动态调整
             max_samples: 最大采样数，超过此数则随机采样
+            scoring_enabled: 是否启用弹幕评分择优（降级模式使用）
+            top_n: 评分后保留的前 N 条弹幕
+            enable_dedup: 是否启用弹幕去重（同一窗口内同 uid+text 只保留一条）
         """
         self.callback = callback
         self._window_size = window_size
         self.max_samples = max_samples
+        self.scoring_enabled = scoring_enabled
+        self.top_n = top_n
+        self.enable_dedup = enable_dedup
 
         # 当前窗口
         self._buffer: List[DanmakuEntry] = []
         self._window_start: float = 0.0
+
+        # 去重集合 (uid, text) -> set
+        self._dedup_set: set[tuple[int, str]] = set()
 
         # 定时器
         self._timer_task: Optional[asyncio.Task] = None
@@ -112,9 +166,20 @@ class TimeWindowAggregator:
         # 刷新剩余弹幕
         await self.flush()
 
-    async def add(self, uid: int, uname: str, level: int, text: str):
+    async def add(self, uid: int, uname: str, level: int, text: str, medal_level: int = 0, guard: int = 0, admin: bool = False):
         """添加一条弹幕到当前窗口"""
-        entry = DanmakuEntry(uid=uid, uname=uname, level=level, text=text)
+        # 去重检查
+        if self.enable_dedup:
+            key = (uid, text.strip().lower())
+            async with self._lock:
+                if key in self._dedup_set:
+                    return  # 已存在，跳过
+                self._dedup_set.add(key)
+
+        entry = DanmakuEntry(
+            uid=uid, uname=uname, level=level, text=text,
+            medal_level=medal_level, guard=guard, admin=admin,
+        )
         async with self._lock:
             self._buffer.append(entry)
             self.total_danmaku_received += 1
@@ -130,13 +195,17 @@ class TimeWindowAggregator:
             window_end = time.time()
             window_start = self._window_start
 
-            # 重置窗口
+            # 重置窗口和去重集
             self._buffer = []
             self._window_start = window_end
+            self._dedup_set.clear()
 
-        # 采样处理（在锁外执行以避免长时间持有锁）
+        # 评分择优（降级模式）：按 score 排序保留 top N
         sampled = False
-        if total > self.max_samples:
+        if self.scoring_enabled and total > self.top_n:
+            entries = sorted(entries, key=lambda e: e.get_score(), reverse=True)[:self.top_n]
+            sampled = True
+        elif total > self.max_samples:
             entries = random.sample(entries, self.max_samples)
             sampled = True
 
@@ -161,6 +230,19 @@ class TimeWindowAggregator:
 
     async def force_flush(self) -> Optional[BatchedDanmaku]:
         """强制刷新（外部调用用）"""
+        return await self.flush()
+
+    async def check_flush(self) -> Optional[BatchedDanmaku]:
+        """
+        检查窗口到期并 flush（供外部 tick 驱动，不启动内部定时器）
+        返回 flush 结果，无过期或无数据返回 None
+        """
+        async with self._lock:
+            if not self._buffer:
+                return None
+            elapsed = time.time() - self._window_start
+            if elapsed < self._window_size:
+                return None
         return await self.flush()
 
     async def _tick_loop(self):
@@ -188,6 +270,9 @@ class TimeWindowAggregator:
             "max_samples": self.max_samples,
             "total_received": self.total_danmaku_received,
             "total_batches": self.total_batches_flushed,
+            "scoring_enabled": self.scoring_enabled,
+            "top_n": self.top_n,
+            "enable_dedup": self.enable_dedup,
         }
 
 
@@ -301,6 +386,8 @@ class GiftAggregator:
                     "gift_name": g.get("gift_name", "未知礼物"),
                     "total_num": 0,
                     "total_coin": 0,
+                    "price_rmb": 0,
+                    "coin_type": "silver",
                     "is_sc": g.get("is_sc", False),
                     "sc_message": g.get("sc_message", ""),
                 }
@@ -308,6 +395,10 @@ class GiftAggregator:
             m = merged[key]
             m["total_num"] += g.get("total_num", g.get("num", 1))
             m["total_coin"] += g.get("total_coin", 0)
+            m["price_rmb"] += g.get("price_rmb", 0)
+            # 只要有一个子项是金瓜子，合并结果就是金瓜子
+            if g.get("coin_type", "silver") == "gold":
+                m["coin_type"] = "gold"
             if g.get("is_sc"):
                 m["is_sc"] = True
                 msg = g.get("sc_message", "")

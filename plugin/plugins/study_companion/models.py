@@ -11,6 +11,8 @@ from .mode_manager import normalize_mode
 
 PLUGIN_ID = "study_companion"
 StudyMode = Literal["companion", "interactive", "teaching"]
+STUDY_EXPORT_FORMATS = ("markdown", "pdf", "docx", "xmind")
+STUDY_EXPORT_STYLES = ("neko", "academic", "compact")
 
 
 class ModeIntentPayload(TypedDict, total=False):
@@ -79,6 +81,26 @@ def utc_now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(slots=True)
+class DocExportConfig:
+    enabled: bool = False
+    pdf_backend: str = "reportlab"
+    default_style: str = "neko"
+    xmind_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+        self.pdf_backend = str(self.pdf_backend or "reportlab").strip() or "reportlab"
+        style = str(self.default_style or "neko").strip().lower() or "neko"
+        self.default_style = style if style in STUDY_EXPORT_STYLES else "neko"
+        self.xmind_enabled = bool(self.xmind_enabled)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass(slots=True)
 class StudyConfig:
     mode: StudyMode = MODE_COMPANION
@@ -107,6 +129,7 @@ class StudyConfig:
     fsrs_auto_optimize_interval_days: int = 30
     knowledge_contribution_opt_in: bool = False
     knowledge_contribution_min_sample_count: int = 3
+    doc_export: DocExportConfig = field(default_factory=DocExportConfig)
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
@@ -126,6 +149,8 @@ class StudyConfig:
             1,
             self._coerce_int(self.knowledge_contribution_min_sample_count, 3),
         )
+        if not isinstance(self.doc_export, DocExportConfig):
+            self.doc_export = DocExportConfig(**self.doc_export) if isinstance(self.doc_export, dict) else DocExportConfig()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -216,6 +241,7 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     rapidocr = raw.get("rapidocr") if isinstance(raw.get("rapidocr"), dict) else {}
     fsrs = raw.get("fsrs") if isinstance(raw.get("fsrs"), dict) else {}
     contribution = raw.get("knowledge_contribution") if isinstance(raw.get("knowledge_contribution"), dict) else {}
+    doc_export = raw.get("doc_export") if isinstance(raw.get("doc_export"), dict) else {}
 
     def _raw(section: dict[str, Any], key: str, default: Any, flat_key: str | None = None) -> Any:
         if key in section:
@@ -318,5 +344,11 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 3,
                 "knowledge_contribution_min_sample_count",
             ),
+        ),
+        doc_export=DocExportConfig(
+            enabled=_bool(doc_export, "enabled", False, "doc_export_enabled"),
+            pdf_backend=_str(doc_export, "pdf_backend", "reportlab", "doc_export_pdf_backend"),
+            default_style=_str(doc_export, "default_style", "neko", "doc_export_default_style"),
+            xmind_enabled=_bool(doc_export, "xmind_enabled", False, "doc_export_xmind_enabled"),
         ),
     )

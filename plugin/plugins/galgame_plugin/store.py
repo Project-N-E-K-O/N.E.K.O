@@ -20,6 +20,7 @@ from .models import (
     OCR_CAPTURE_PROFILE_WINDOW_BUCKETS_KEY,
     STORE_BOUND_GAME_ID,
     STORE_ADVANCE_SPEED,
+    STORE_CONTEXT_SNAPSHOT,
     STORE_DEDUPE_WINDOW,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
@@ -262,6 +263,82 @@ class GalgameStore:
 
     def persist_config_override(self, key: str, value: Any) -> None:
         self._write(key, value)
+
+    @staticmethod
+    def _sanitize_context_snapshot(
+        raw_value: Any,
+        *,
+        require_game_id: bool = False,
+    ) -> dict[str, Any]:
+        if not isinstance(raw_value, dict):
+            return {}
+        game_id = str(raw_value.get("game_id") or "").strip()
+        if require_game_id and not game_id:
+            return {}
+        try:
+            saved_at = float(raw_value.get("saved_at") or 0.0)
+        except (TypeError, ValueError):
+            saved_at = 0.0
+        stable_line_ids_raw = raw_value.get("stable_line_ids")
+        stable_line_ids = (
+            [
+                str(item).strip()
+                for item in stable_line_ids_raw
+                if str(item or "").strip()
+            ][:64]
+            if isinstance(stable_line_ids_raw, list)
+            else []
+        )
+        return {
+            "scene_id": str(raw_value.get("scene_id") or "").strip(),
+            "game_id": game_id,
+            "route_id": str(raw_value.get("route_id") or "").strip(),
+            "summary_seed": str(raw_value.get("summary_seed") or "").strip()[:4000],
+            "stable_line_ids": stable_line_ids,
+            "saved_at": max(0.0, saved_at),
+        }
+
+    def load_context_snapshot(
+        self,
+        *,
+        current_game_id: str = "",
+        max_age_seconds: float = 3600.0,
+        require_game_id: bool = True,
+    ) -> dict[str, Any]:
+        snapshot = self._sanitize_context_snapshot(
+            self._read(STORE_CONTEXT_SNAPSHOT, {}),
+            require_game_id=require_game_id,
+        )
+        if not snapshot:
+            return {}
+        saved_game_id = str(snapshot.get("game_id") or "").strip()
+        normalized_game_id = str(current_game_id or "").strip()
+        if require_game_id and not saved_game_id:
+            return {}
+        if require_game_id and not normalized_game_id:
+            return {}
+        if require_game_id and normalized_game_id and saved_game_id != normalized_game_id:
+            return {}
+        try:
+            max_age = float(max_age_seconds)
+        except (TypeError, ValueError):
+            max_age = 3600.0
+        saved_at = float(snapshot.get("saved_at") or 0.0)
+        if saved_at <= 0:
+            return {}
+        if max_age >= 0 and saved_at > 0 and time.time() - saved_at > max_age:
+            return {}
+        return snapshot
+
+    def persist_context_snapshot(self, snapshot: dict[str, Any]) -> None:
+        payload = self._sanitize_context_snapshot(snapshot)
+        if not payload:
+            self._logger.warning("invalid context snapshot dropped: bad schema")
+            return
+        self._write(STORE_CONTEXT_SNAPSHOT, payload)
+
+    def clear_context_snapshot(self) -> None:
+        self._write(STORE_CONTEXT_SNAPSHOT, {})
 
     @staticmethod
     def _sanitize_ratio_profile(raw_value: Any) -> dict[str, float] | None:

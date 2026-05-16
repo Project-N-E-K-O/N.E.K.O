@@ -65,19 +65,12 @@ from plugin.plugins.galgame_plugin.screen_classifier import (
     _normalized_bounds,
 )
 from plugin.plugins.galgame_plugin.service import build_config
-from plugin.plugins.galgame_plugin.tesseract_support import (
-    DEFAULT_TESSERACT_LANGUAGES,
-    _default_install_manifest,
-    _download_file as _download_tesseract_file,
-    default_tesseract_install_target_raw,
-    inspect_tesseract_installation,
-    resolve_tesseract_install_target,
-)
 
 
 pytestmark = pytest.mark.plugin_unit
 
 TEST_WAIT_TIMEOUT = 1.0
+DEFAULT_OCR_TEST_LANGUAGES = "chi_sim+jpn+eng"
 
 
 class _Logger:
@@ -123,12 +116,13 @@ class _FakeCaptureBackend:
 
 
 class _FakeOcrBackend:
-    def __init__(self, texts: list[str] | None = None) -> None:
+    def __init__(self, texts: list[str] | None = None, *, available: bool = True) -> None:
         self._texts = list(texts or [])
+        self.available = available
         self.calls = 0
 
     def is_available(self) -> bool:
-        return True
+        return self.available
 
     def extract_text(self, image: str) -> str:
         del image
@@ -145,12 +139,11 @@ def _make_config(
     *,
     enabled: bool = True,
     backend_selection: str = "auto",
-    tesseract_path: str = "",
-    install_target_dir: str = "",
+        install_target_dir: str = "",
     poll_interval_seconds: float = 999.0,
     no_text_takeover_after_seconds: float = 30.0,
     background_scene_change_distance: object = 28,
-    languages: str = DEFAULT_TESSERACT_LANGUAGES,
+    languages: str = DEFAULT_OCR_TEST_LANGUAGES,
     rapidocr_enabled: bool = True,
     rapidocr_install_target_dir: str = "",
     llm_vision_enabled: bool = False,
@@ -179,7 +172,6 @@ def _make_config(
             "ocr_reader": {
                 "enabled": enabled,
                 "backend_selection": backend_selection,
-                "tesseract_path": tesseract_path,
                 "install_target_dir": install_target_dir,
                 "poll_interval_seconds": poll_interval_seconds,
                 "no_text_takeover_after_seconds": no_text_takeover_after_seconds,
@@ -207,15 +199,22 @@ def _make_config(
     )
 
 
-def _install_fake_tesseract(root: Path, *, languages: str = DEFAULT_TESSERACT_LANGUAGES) -> Path:
+def _install_fake_ocr_runtime(root: Path, *, languages: str = DEFAULT_OCR_TEST_LANGUAGES) -> Path:
     root.mkdir(parents=True, exist_ok=True)
-    executable = root / "tesseract.exe"
+    executable = root / "ocr-runtime.exe"
     executable.write_text("", encoding="utf-8")
-    tessdata_dir = root / "tessdata"
+    tessdata_dir = root / "ocrdata"
     tessdata_dir.mkdir(parents=True, exist_ok=True)
     for language in [item.strip() for item in languages.split("+") if item.strip()]:
         (tessdata_dir / f"{language}.traineddata").write_text("", encoding="utf-8")
     return executable
+
+
+@pytest.fixture
+def ocr_runtime_root(tmp_path: Path) -> Path:
+    install_root = tmp_path / "OcrRuntime"
+    _install_fake_ocr_runtime(install_root)
+    return install_root
 
 
 def _read_events(events_path: Path) -> list[dict[str, object]]:
@@ -1465,72 +1464,19 @@ def test_ocr_select_target_window_does_not_pick_unrelated_window_when_memory_tar
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_capture_timeout_returns_capture_failed_runtime(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
-
-    class _SlowOcrBackend(_FakeOcrBackend):
-        def extract_text(self, image: str) -> str:
-            del image
-            self.calls += 1
-            time.sleep(0.05)
-            return "雪乃：迟到的台词。"
-
-    monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            bridge_root,
-            install_target_dir=str(install_root),
-            rapidocr_enabled=False,
-        ),
-        time_fn=lambda: 3001.0,
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=102,
-                title="Demo Window",
-                process_name="DemoGame.exe",
-                pid=4243,
-                width=1280,
-                height=720,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_SlowOcrBackend(),
-        writer=OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3001.0),
-    )
-
-    started_at = time.monotonic()
-    result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-    elapsed = time.monotonic() - started_at
-
-    assert elapsed < 2.0
-    assert result.runtime["detail"] == "capture_failed"
-    assert result.runtime["ocr_context_state"] == "capture_failed"
-    assert "timed out" in result.runtime["last_capture_error"]
-    assert any("timed out" in warning for warning in result.warnings)
-
-
-@pytest.mark.asyncio
 async def test_ocr_reader_backpressure_skip_is_not_capture_error(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
             bridge_root,
             install_target_dir=str(install_root),
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         ),
         time_fn=lambda: 3001.0,
         platform_fn=lambda: True,
@@ -1571,12 +1517,12 @@ async def test_ocr_reader_backpressure_skip_is_not_capture_error(
 @pytest.mark.asyncio
 async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     started = threading.Event()
     release = threading.Event()
 
@@ -1597,7 +1543,7 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
         config=_make_config(
             bridge_root,
             install_target_dir=str(install_root),
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         ),
         time_fn=lambda: 3001.0,
         platform_fn=lambda: True,
@@ -1651,12 +1597,12 @@ async def test_ocr_reader_capture_timeout_skips_stuck_worker_immediately(
 @pytest.mark.asyncio
 async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     backend = _FakeOcrBackend(["雪乃：恢复后的台词。"])
     logger = _CapturingLogger()
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
@@ -1665,7 +1611,7 @@ async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
         config=_make_config(
             bridge_root,
             install_target_dir=str(install_root),
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         ),
         time_fn=lambda: 3001.0,
         platform_fn=lambda: True,
@@ -1707,12 +1653,12 @@ async def test_ocr_reader_capture_timeout_recovers_cancellable_worker(
 @pytest.mark.asyncio
 async def test_ocr_reader_capture_timeout_recovery_is_bounded(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     backend = _FakeOcrBackend(["雪乃：不应执行。"])
     logger = _CapturingLogger()
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_CAPTURE_TIMEOUT_SECONDS", 0.01)
@@ -1721,7 +1667,7 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
         config=_make_config(
             bridge_root,
             install_target_dir=str(install_root),
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         ),
         time_fn=lambda: 3001.0,
         platform_fn=lambda: True,
@@ -1866,7 +1812,7 @@ def test_ocr_compat_modules_reexport_reader_implementations() -> None:
     assert galgame_ocr_capture.CAPTURE_BACKEND_AUTO == galgame_ocr_reader._CAPTURE_BACKEND_AUTO
 
     assert galgame_ocr_backends.RapidOcrBackend is galgame_ocr_reader.RapidOcrBackend
-    assert galgame_ocr_backends.TesseractOcrBackend is galgame_ocr_reader.TesseractOcrBackend
+    assert not hasattr(galgame_ocr_backends, "TesseractOcrBackend")
     assert galgame_ocr_backends._rapidocr_inference_lock() is galgame_ocr_reader._RAPIDOCR_INFERENCE_LOCK
 
     assert galgame_ocr_capture.__getattr__("utc_now_iso") is galgame_ocr_reader.utc_now_iso
@@ -1909,49 +1855,6 @@ def test_ocr_line_id_collision_suffix_has_limit(
 
     with pytest.raises(RuntimeError, match="collision limit"):
         writer._line_id_for_text(text)
-
-
-@pytest.mark.asyncio
-async def test_tesseract_download_file_verifies_sha256(tmp_path: Path) -> None:
-    content = b"tesseract payload"
-    destination = tmp_path / "tesseract.exe"
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        del request
-        return httpx.Response(
-            200,
-            content=content,
-            headers={"Content-Length": str(len(content))},
-        )
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
-    try:
-        result = await _download_tesseract_file(
-            client,
-            url="https://example.test/tesseract.exe",
-            destination=destination,
-            timeout_seconds=5.0,
-            expected_sha256=hashlib.sha256(content).hexdigest(),
-        )
-    finally:
-        await client.aclose()
-
-    assert result["sha256_verified"] is True
-    assert destination.read_bytes() == content
-
-
-def test_default_tesseract_install_manifest_includes_sha256() -> None:
-    manifest = _default_install_manifest(DEFAULT_TESSERACT_LANGUAGES)
-
-    assert manifest["installer"]["sha256"]
-    assert all(item.get("sha256") for item in manifest["languages"])
-    assert all("@main" not in item["url"] for item in manifest["languages"])
-
-
-# NOTE: tests for `_rapidocr_package_install_plan` / `_run_pip_install` /
-# `_ensure_pip_available` removed — those helpers were the runtime-pip-install
-# machinery that's been replaced by bundling rapidocr-onnxruntime as a main
-# program dep (see pyproject.toml [dependency-groups] galgame).
 
 
 def test_background_hash_excludes_bottom_dialogue_region() -> None:
@@ -2189,6 +2092,27 @@ def test_mouse_monitor_drains_pending_events_outside_hook_callback(monkeypatch: 
     assert events[1].point_hwnd == 70
     assert events[2].key_code == 0x20
     assert events[2].foreground_hwnd == 900
+
+
+def test_custom_ocr_backend_plan_uses_backend_availability(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    backend = _FakeOcrBackend(available=False)
+    backend.kind = "fake_custom"
+    backend.detail = "dependency_missing"
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        ocr_backend=backend,
+    )
+
+    plan = manager._custom_ocr_backend_plan()
+
+    assert plan.selection == "custom"
+    assert plan.primary.backend is backend
+    assert plan.primary.kind == "fake_custom"
+    assert plan.primary.detail == "dependency_missing"
+    assert plan.primary.available is False
 
 
 def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> None:
@@ -3357,11 +3281,11 @@ def test_stable_text_promotes_distinct_line_without_waiting_for_repeat(
 @pytest.mark.asyncio
 async def test_ocr_reader_runtime_exposes_stable_text_tracker(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -3430,7 +3354,7 @@ def test_ocr_reader_does_not_autostart_foreground_monitor_in_interval_mode(
             bridge_root,
             enabled=True,
             trigger_mode=OCR_TRIGGER_MODE_INTERVAL,
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         ),
         platform_fn=lambda: True,
         window_scanner=_window,
@@ -3473,7 +3397,7 @@ def test_ocr_reader_update_config_stops_foreground_monitor_outside_after_advance
             bridge_root,
             enabled=True,
             trigger_mode=OCR_TRIGGER_MODE_AFTER_ADVANCE,
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         ),
         platform_fn=lambda: True,
         window_scanner=_window,
@@ -3487,7 +3411,7 @@ def test_ocr_reader_update_config_stops_foreground_monitor_outside_after_advance
             bridge_root,
             enabled=True,
             trigger_mode=OCR_TRIGGER_MODE_INTERVAL,
-            rapidocr_enabled=False,
+            rapidocr_enabled=True,
         )
     )
 
@@ -3748,11 +3672,13 @@ def test_ocr_reader_build_runtime_preserves_foreground_advance_diagnostics(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_restarts_session_after_initial_capture_failure(tmp_path: Path) -> None:
+async def test_ocr_reader_restarts_session_after_initial_capture_failure(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 3000.0}
 
     class _FailOnceCaptureBackend(_FakeCaptureBackend):
@@ -4349,31 +4275,6 @@ async def test_rapidocr_auto_lang_session_end_clears_switch_cooldown(
     assert persisted == ["korean", "japan"]
 
 
-def test_inspect_tesseract_installation_reports_custom_install_target(tmp_path: Path) -> None:
-    install_root = tmp_path / "CustomTesseract"
-    executable = _install_fake_tesseract(install_root)
-
-    status = inspect_tesseract_installation(
-        configured_path="",
-        install_target_dir_raw=str(install_root),
-        languages=DEFAULT_TESSERACT_LANGUAGES,
-    )
-
-    assert status["installed"] is True
-    assert status["detected_path"] == str(executable)
-    assert status["target_dir"] == str(install_root)
-    assert status["required_languages"] == ["chi_sim", "jpn", "eng"]
-    assert status["missing_languages"] == []
-
-
-def test_tesseract_default_install_target_matches_neko_programs_root() -> None:
-    raw_target = default_tesseract_install_target_raw()
-
-    assert raw_target == "%LOCALAPPDATA%/Programs/N.E.K.O/Tesseract-OCR"
-    assert resolve_tesseract_install_target("").name == "Tesseract-OCR"
-    assert resolve_tesseract_install_target("").parent.name == "N.E.K.O"
-
-
 def test_rapidocr_default_install_target_uses_app_docs_runtime_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4558,357 +4459,21 @@ def test_install_task_runtime_root_uses_app_docs_dir(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr")
+    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr_models")
 
     assert state_path == (
-        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr-installs" / "run-1.json"
+        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr_models-installs" / "run-1.json"
     )
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_reports_missing_tesseract(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(bridge_root, enabled=True, rapidocr_enabled=False),
-        platform_fn=lambda: True,
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(),
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_tesseract_installation",
-        lambda **kwargs: {
-            "installed": False,
-            "detail": "missing_tesseract",
-            "detected_path": "",
-            "required_languages": ["chi_sim", "jpn", "eng"],
-            "missing_languages": ["chi_sim", "jpn", "eng"],
-        },
-    )
-
-    result = await manager.tick(
-        bridge_sdk_available=False,
-        memory_reader_runtime={},
-    )
-
-    assert result.runtime["status"] == "idle"
-    assert result.runtime["detail"] == "missing_tesseract"
-    assert "Tesseract is missing" in result.warnings[0]
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_auto_reports_rapidocr_first_when_all_backends_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(bridge_root, enabled=True, rapidocr_enabled=True),
-        platform_fn=lambda: True,
-        capture_backend=_FakeCaptureBackend(),
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
-        lambda **kwargs: {
-            "installed": False,
-            "detail": "broken_runtime",
-            "runtime_error": "access denied",
-            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
-            "selected_model": "PP-OCRv5/ch/mobile",
-        },
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_tesseract_installation",
-        lambda **kwargs: {
-            "installed": False,
-            "detail": "missing",
-            "detected_path": "",
-            "required_languages": ["chi_sim", "jpn", "eng"],
-            "missing_languages": ["chi_sim", "jpn", "eng"],
-        },
-    )
-
-    result = await manager.tick(
-        bridge_sdk_available=False,
-        memory_reader_runtime={},
-    )
-
-    assert result.runtime["status"] == "idle"
-    assert result.runtime["backend_kind"] == "rapidocr"
-    assert result.runtime["detail"] == "broken_runtime"
-    assert "RapidOCR is unavailable: broken_runtime" in result.warnings[0]
-    assert any("Tesseract fallback" in warning for warning in result.warnings)
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_reports_missing_languages(tmp_path: Path) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    install_root = tmp_path / "TesseractMissingLangs"
-    install_root.mkdir(parents=True, exist_ok=True)
-    (install_root / "tesseract.exe").write_text("", encoding="utf-8")
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            bridge_root,
-            enabled=True,
-            install_target_dir=str(install_root),
-            rapidocr_enabled=False,
-        ),
-        platform_fn=lambda: True,
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(),
-    )
-
-    result = await manager.tick(
-        bridge_sdk_available=False,
-        memory_reader_runtime={},
-    )
-
-    assert result.runtime["status"] == "idle"
-    assert result.runtime["detail"] == "missing_languages"
-    assert result.runtime["tesseract_path"] == str(install_root / "tesseract.exe")
-    assert result.runtime["languages"] == DEFAULT_TESSERACT_LANGUAGES
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_sets_poll_timestamps_on_early_returns(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def run_case(
-        name: str,
-        *,
-        manager: OcrReaderManager,
-        bridge_sdk_available: bool = False,
-        memory_reader_runtime: dict[str, object] | None = None,
-        expected_detail: str,
-    ) -> None:
-        result = await manager.tick(
-            bridge_sdk_available=bridge_sdk_available,
-            memory_reader_runtime=dict(memory_reader_runtime or {}),
-        )
-        assert result.runtime["detail"] == expected_detail, name
-        _assert_poll_runtime_completed(result.runtime)
-
-    disabled_root = tmp_path / "disabled-bridge"
-    disabled_root.mkdir()
-    await run_case(
-        "disabled_by_config",
-        manager=OcrReaderManager(
-            logger=_Logger(),
-            config=_make_config(disabled_root, enabled=False),
-            platform_fn=lambda: True,
-            capture_backend=_FakeCaptureBackend(),
-            ocr_backend=_FakeOcrBackend(),
-        ),
-        expected_detail="disabled_by_config",
-    )
-
-    unsupported_root = tmp_path / "unsupported-bridge"
-    unsupported_root.mkdir()
-    await run_case(
-        "unsupported_platform",
-        manager=OcrReaderManager(
-            logger=_Logger(),
-            config=_make_config(unsupported_root, enabled=True),
-            platform_fn=lambda: False,
-            capture_backend=_FakeCaptureBackend(),
-            ocr_backend=_FakeOcrBackend(),
-        ),
-        expected_detail="unsupported_platform",
-    )
-
-    missing_backend_root = tmp_path / "missing-backend-bridge"
-    missing_backend_root.mkdir()
-    with monkeypatch.context() as backend_unavailable_patch:
-        backend_unavailable_patch.setattr(
-            "plugin.plugins.galgame_plugin.ocr_reader.inspect_tesseract_installation",
-            lambda **kwargs: {
-                "installed": False,
-                "detail": "missing_tesseract",
-                "detected_path": "",
-                "required_languages": ["chi_sim", "jpn", "eng"],
-                "missing_languages": ["chi_sim", "jpn", "eng"],
-            },
-        )
-        await run_case(
-            "backend_unavailable",
-            manager=OcrReaderManager(
-                logger=_Logger(),
-                config=_make_config(missing_backend_root, enabled=True, rapidocr_enabled=False),
-                platform_fn=lambda: True,
-                capture_backend=_FakeCaptureBackend(),
-                ocr_backend=_FakeOcrBackend(),
-            ),
-            expected_detail="missing_tesseract",
-        )
-
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
-
-    bridge_root = tmp_path / "bridge-sdk-bridge"
-    bridge_root.mkdir()
-    await run_case(
-        "bridge_sdk_available",
-        manager=OcrReaderManager(
-            logger=_Logger(),
-            config=_make_config(bridge_root, enabled=True, install_target_dir=str(install_root)),
-            platform_fn=lambda: True,
-            capture_backend=_FakeCaptureBackend(),
-            ocr_backend=_FakeOcrBackend(),
-        ),
-        bridge_sdk_available=True,
-        expected_detail="bridge_sdk_available",
-    )
-
-    memory_root = tmp_path / "memory-reader-bridge"
-    memory_root.mkdir()
-    await run_case(
-        "memory_reader_active",
-        manager=OcrReaderManager(
-            logger=_Logger(),
-            config=_make_config(memory_root, enabled=True, install_target_dir=str(install_root)),
-            platform_fn=lambda: True,
-            capture_backend=_FakeCaptureBackend(),
-            ocr_backend=_FakeOcrBackend(),
-        ),
-        memory_reader_runtime={
-            "status": "active",
-            "detail": "receiving_text",
-            "game_id": "mem-demo",
-            "session_id": "mem-session",
-            "last_seq": 3,
-            "last_text_seq": 2,
-        },
-        expected_detail="memory_reader_active",
-    )
-
-    waiting_root = tmp_path / "waiting-takeover-bridge"
-    waiting_root.mkdir()
-    clock = {"now": 1000.0}
-    waiting_manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            waiting_root,
-            enabled=True,
-            install_target_dir=str(install_root),
-            no_text_takeover_after_seconds=30.0,
-        ),
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(),
-    )
-    await waiting_manager.tick(
-        bridge_sdk_available=False,
-        memory_reader_runtime={
-            "status": "active",
-            "detail": "receiving_text",
-            "game_id": "mem-demo",
-            "session_id": "mem-session",
-            "last_seq": 2,
-            "last_text_seq": 2,
-        },
-    )
-    clock["now"] += 5.0
-    await run_case(
-        "waiting_for_takeover_window",
-        manager=waiting_manager,
-        memory_reader_runtime={
-            "status": "active",
-            "detail": "attached_idle_after_text",
-            "game_id": "mem-demo",
-            "session_id": "mem-session",
-            "last_seq": 3,
-            "last_text_seq": 2,
-        },
-        expected_detail="waiting_for_takeover_window",
-    )
-
-    capture_root = tmp_path / "capture-unavailable-bridge"
-    capture_root.mkdir()
-    await run_case(
-        "capture_backend_unavailable",
-        manager=OcrReaderManager(
-            logger=_Logger(),
-            config=_make_config(capture_root, enabled=True, install_target_dir=str(install_root)),
-            platform_fn=lambda: True,
-            capture_backend=_FakeCaptureBackend(available=False),
-            ocr_backend=_FakeOcrBackend(),
-        ),
-        expected_detail="capture_backend_unavailable",
-    )
-
-    no_window_root = tmp_path / "no-window-bridge"
-    no_window_root.mkdir()
-    await run_case(
-        "waiting_for_valid_window",
-        manager=OcrReaderManager(
-            logger=_Logger(),
-            config=_make_config(no_window_root, enabled=True, install_target_dir=str(install_root)),
-            platform_fn=lambda: True,
-            window_scanner=lambda: [],
-            capture_backend=_FakeCaptureBackend(),
-            ocr_backend=_FakeOcrBackend(),
-        ),
-        expected_detail="waiting_for_valid_window",
-    )
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_yields_bridge_sdk_and_memory_reader_statuses(tmp_path: Path) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    executable = _install_fake_tesseract(install_root)
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            bridge_root,
-            enabled=True,
-            install_target_dir=str(install_root),
-        ),
-        platform_fn=lambda: True,
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(),
-    )
-
-    bridge_result = await manager.tick(
-        bridge_sdk_available=True,
-        memory_reader_runtime={},
-    )
-    memory_result = await manager.tick(
-        bridge_sdk_available=False,
-        memory_reader_runtime={
-            "status": "active",
-            "detail": "receiving_text",
-            "game_id": "mem-demo",
-            "session_id": "mem-session",
-            "last_seq": 3,
-            "last_text_seq": 2,
-        },
-    )
-
-    assert bridge_result.runtime["detail"] == "bridge_sdk_available"
-    assert bridge_result.runtime["tesseract_path"] == str(executable)
-    assert memory_result.runtime["detail"] == "memory_reader_active"
 
 
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_waits_before_taking_over_after_memory_reader_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1000.0}
     manager = OcrReaderManager(
         logger=_Logger(),
@@ -4955,11 +4520,11 @@ async def test_ocr_reader_manager_waits_before_taking_over_after_memory_reader_t
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_clears_memory_wait_on_new_idle_memory_session(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1000.0}
     capture_backend = _FakeCaptureBackend()
     manager = OcrReaderManager(
@@ -5010,11 +4575,11 @@ async def test_ocr_reader_manager_clears_memory_wait_on_new_idle_memory_session(
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_does_not_treat_memory_reader_heartbeats_as_live_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -5045,12 +4610,12 @@ async def test_ocr_reader_manager_does_not_treat_memory_reader_heartbeats_as_liv
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_prefers_memory_reader_game_window_over_foreground_window(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     windows = [
         DetectedGameWindow(
             hwnd=202,
@@ -5103,12 +4668,12 @@ async def test_ocr_reader_manager_prefers_memory_reader_game_window_over_foregro
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_locks_auto_target_when_user_focuses_other_window(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     game_window = DetectedGameWindow(
         hwnd=101,
         title="哀鸿",
@@ -5176,11 +4741,13 @@ async def test_ocr_reader_manager_locks_auto_target_when_user_focuses_other_wind
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_manager_applies_builtin_aihong_capture_profile(tmp_path: Path) -> None:
+async def test_ocr_reader_manager_applies_builtin_aihong_capture_profile(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -5215,11 +4782,11 @@ async def test_ocr_reader_manager_applies_builtin_aihong_capture_profile(tmp_pat
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_prefers_manual_capture_profile_over_builtin_aihong_profile(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -5264,11 +4831,11 @@ async def test_ocr_reader_manager_prefers_manual_capture_profile_over_builtin_ai
 @pytest.mark.asyncio
 async def test_aihong_menu_stage_accepts_plain_text_choices_after_dialogue_idle_polls(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 3000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5332,11 +4899,11 @@ async def test_aihong_menu_stage_accepts_plain_text_choices_after_dialogue_idle_
 @pytest.mark.asyncio
 async def test_aihong_menu_probe_rejects_dialogue_like_multiline_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 4000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5397,11 +4964,11 @@ async def test_aihong_menu_probe_rejects_dialogue_like_multiline_text(
 @pytest.mark.asyncio
 async def test_aihong_menu_stage_returns_to_dialogue_profile_after_stable_line(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 5000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5466,11 +5033,13 @@ async def test_aihong_menu_stage_returns_to_dialogue_profile_after_stable_line(
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(tmp_path: Path) -> None:
+async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5536,11 +5105,11 @@ async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(tmp_path:
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_reports_capture_diagnostic_after_repeated_no_text(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 1200.0}
     manager = OcrReaderManager(
         logger=_Logger(),
@@ -5576,11 +5145,13 @@ async def test_ocr_reader_manager_reports_capture_diagnostic_after_repeated_no_t
 
 
 @pytest.mark.asyncio
-async def test_ocr_reader_manager_emits_choices_after_stable_menu_detection(tmp_path: Path) -> None:
+async def test_ocr_reader_manager_emits_choices_after_stable_menu_detection(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     clock = {"now": 2000.0}
     writer = OcrReaderBridgeWriter(
         bridge_root=bridge_root,
@@ -5670,12 +5241,12 @@ def test_drop_ocr_chrome_noise_lines_keeps_dialogue() -> None:
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_mode_prefers_rapidocr_when_available(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     monkeypatch.setattr(
         "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
         lambda **kwargs: {
@@ -5713,200 +5284,43 @@ async def test_ocr_reader_manager_auto_mode_prefers_rapidocr_when_available(
     assert second.runtime["ocr_context_state"] == "stable"
 
 
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_auto_mode_falls_back_to_tesseract_when_rapidocr_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_rapidocr_missing_model_files_are_not_marked_available(tmp_path: Path) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
-        lambda **kwargs: {
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            rapidocr_install_target_dir=str(tmp_path / "RapidOCR"),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+    )
+
+    descriptor = manager._rapidocr_descriptor(
+        {
             "installed": False,
-            "detail": "missing",
+            "detail": "missing_model_files",
             "detected_path": "",
             "selected_model": "PP-OCRv5/ch/mobile",
         },
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.TesseractOcrBackend.extract_text",
-        lambda self, image: "雪乃：你好。",
-    )
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            bridge_root,
-            enabled=True,
-            install_target_dir=str(install_root),
-            rapidocr_install_target_dir=str(tmp_path / "RapidOCR"),
-        ),
-        platform_fn=lambda: True,
-        window_scanner=_window,
-        capture_backend=_FakeCaptureBackend(),
+        enabled=True,
     )
 
-    first = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-
-    assert first.runtime["backend_kind"] == "tesseract"
-    assert first.runtime["backend_detail"].startswith("auto_fallback_from_rapidocr")
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_falls_back_to_tesseract_after_rapidocr_runtime_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
-        lambda **kwargs: {
-            "installed": True,
-            "detail": "installed",
-            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
-            "selected_model": "PP-OCRv5/ch/mobile",
-        },
-    )
-
-    def _boom(self, image):
-        raise RuntimeError("rapidocr boom")
-
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.RapidOcrBackend.extract_text",
-        _boom,
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.TesseractOcrBackend.extract_text",
-        lambda self, image: "雪乃：你好。",
-    )
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            bridge_root,
-            enabled=True,
-            install_target_dir=str(install_root),
-            rapidocr_install_target_dir=str(tmp_path / "RapidOCR"),
-        ),
-        platform_fn=lambda: True,
-        window_scanner=_window,
-        capture_backend=_FakeCaptureBackend(),
-    )
-
-    await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-    second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-
-    assert second.runtime["backend_kind"] == "tesseract"
-    assert second.runtime["backend_detail"] == "fallback_after_runtime_error"
-    assert any("rapidocr failed" in warning for warning in second.warnings)
-
-
-def test_extract_text_from_image_falls_back_when_rapidocr_boxes_are_empty(tmp_path: Path) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-
-    class _EmptyRapidOcrBackend(galgame_ocr_reader.RapidOcrBackend):
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def extract_text_with_boxes(self, image):
-            del image
-            self.calls += 1
-            return "", []
-
-    rapidocr = _EmptyRapidOcrBackend()
-    tesseract = _FakeOcrBackend(["雪乃：你好。"])
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(bridge_root, enabled=True),
-        platform_fn=lambda: True,
-        window_scanner=_window,
-        capture_backend=_FakeCaptureBackend(),
-    )
-    plan = SelectedOcrBackendPlan(
-        primary=OcrBackendDescriptor(
-            kind="rapidocr",
-            backend=rapidocr,
-            available=True,
-            detail="selected_primary",
-        ),
-        fallback=OcrBackendDescriptor(
-            kind="tesseract",
-            backend=tesseract,
-            available=True,
-            detail="auto_fallback_from_rapidocr",
-        ),
-    )
-
-    result = manager._extract_text_from_image("image", plan=plan)
-
-    assert result.text == "雪乃：你好。"
-    assert result.backend.kind == "tesseract"
-    assert result.backend_detail == "fallback_after_runtime_error"
-    assert rapidocr.calls == 1
-    assert tesseract.calls == 1
-    assert any("rapidocr returned empty text" in warning for warning in result.warnings)
-
-
-@pytest.mark.asyncio
-async def test_ocr_reader_manager_forced_rapidocr_mode_does_not_fallback_to_tesseract(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bridge_root = tmp_path / "bridge"
-    bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.inspect_rapidocr_installation",
-        lambda **kwargs: {
-            "installed": True,
-            "detail": "installed",
-            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
-            "selected_model": "PP-OCRv5/ch/mobile",
-        },
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.RapidOcrBackend.extract_text",
-        lambda self, image: (_ for _ in ()).throw(RuntimeError("rapidocr boom")),
-    )
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.ocr_reader.TesseractOcrBackend.extract_text",
-        lambda self, image: "不应该被调用",
-    )
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=_make_config(
-            bridge_root,
-            enabled=True,
-            backend_selection="rapidocr",
-            install_target_dir=str(install_root),
-            rapidocr_install_target_dir=str(tmp_path / "RapidOCR"),
-        ),
-        platform_fn=lambda: True,
-        window_scanner=_window,
-        capture_backend=_FakeCaptureBackend(),
-    )
-
-    await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-    second = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-
-    assert second.runtime["backend_kind"] == "rapidocr"
-    assert second.runtime["detail"] == "capture_failed"
+    assert descriptor.available is False
+    assert descriptor.detail == "missing_model_files"
 
 
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_target(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manager = OcrReaderManager(
         logger=_Logger(),
         config=_make_config(
@@ -5942,12 +5356,12 @@ async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_prefers_manual_target_and_rebinds_by_signature(
     tmp_path: Path,
+    ocr_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manual_window = DetectedGameWindow(
         hwnd=777,
         title="Aiyoku no Eustia",
@@ -6014,11 +5428,11 @@ async def test_ocr_reader_manager_prefers_manual_target_and_rebinds_by_signature
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_prefers_memory_reader_target_over_stale_manual_target(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     stale_manual_window = DetectedGameWindow(
         hwnd=777,
         title="TheLamentingGeese",
@@ -6081,11 +5495,11 @@ async def test_ocr_reader_manager_auto_prefers_memory_reader_target_over_stale_m
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_auto_does_not_fall_back_to_stale_manual_when_memory_target_missing(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     stale_manual_window = DetectedGameWindow(
         hwnd=777,
         title="TheLamentingGeese",
@@ -6142,11 +5556,11 @@ async def test_ocr_reader_manager_auto_does_not_fall_back_to_stale_manual_when_m
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_ocr_mode_keeps_manual_target_over_memory_reader_runtime(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     manual_window = DetectedGameWindow(
         hwnd=777,
         title="TheLamentingGeese",
@@ -6204,11 +5618,11 @@ async def test_ocr_reader_manager_ocr_mode_keeps_manual_target_over_memory_reade
 @pytest.mark.asyncio
 async def test_ocr_reader_manager_blocks_text_that_looks_like_neko_plugin_ui(
     tmp_path: Path,
+    ocr_runtime_root: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
-    install_root = tmp_path / "Tesseract"
-    _install_fake_tesseract(install_root)
+    install_root = ocr_runtime_root
     writer = OcrReaderBridgeWriter(bridge_root=bridge_root)
     manager = OcrReaderManager(
         logger=_Logger(),
@@ -6230,8 +5644,8 @@ async def test_ocr_reader_manager_blocks_text_that_looks_like_neko_plugin_ui(
         capture_backend=_FakeCaptureBackend(),
         ocr_backend=_FakeOcrBackend(
             [
-                "RapidOCR install queued task",
-                "RapidOCR install queued task",
+                "RapidOCR model download queued task",
+                "RapidOCR model download queued task",
             ]
         ),
         writer=writer,

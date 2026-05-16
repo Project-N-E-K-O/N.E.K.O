@@ -69,6 +69,11 @@ from config.prompts.prompts_sys import (
     CONTEXT_SUMMARY_EVENT_HEADER, CONTEXT_SUMMARY_EVENT_FOOTER,
     RESULT_PARSER_PHRASES,
 )
+from config.prompts.prompts_memory import (
+    RECALL_MEMORY_TOOL_DESCRIPTION,
+    RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
+    RECALL_MEMORY_TOOL_NO_RESULT,
+)
 
 
 # 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
@@ -141,15 +146,34 @@ def _format_callback_source(cb: dict, lang: str) -> str:
     return _loc(descriptor, lang).format(name=name)
 
 
-def _render_callback_inner_item(cb: dict, lang: str) -> str:
+def _render_callback_inner_item(
+    cb: dict,
+    lang: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
     """Render one callback as a single inline string for the LLM prompt.
 
     Returns ``""`` when there is genuinely nothing to convey (both summary
     and detail empty); the caller can then drop the line and rely on the
     outer header alone to express that something happened.
+
+    ``{MASTER_NAME}`` and ``{LANLAN_NAME}`` placeholders in plugin-supplied
+    ``summary``/``detail`` are substituted here so plugin authors can write
+    role-aware text without having to learn the live character names. The
+    substitution uses ``str.replace`` rather than ``str.format`` so that
+    other braces in the text (e.g. JSON fragments in detail) don't trigger
+    a KeyError.
     """
     summary = (cb.get("summary") or "").strip()
     detail = (cb.get("detail") or "").strip()
+    if master_name:
+        summary = summary.replace("{MASTER_NAME}", master_name)
+        detail = detail.replace("{MASTER_NAME}", master_name)
+    if lanlan_name:
+        summary = summary.replace("{LANLAN_NAME}", lanlan_name)
+        detail = detail.replace("{LANLAN_NAME}", lanlan_name)
     text = summary or detail
     if not text:
         return ""
@@ -261,7 +285,12 @@ def _build_callback_instruction(
                     name=lanlan_name,
                     master=master_name,
                 )
-        items = [_render_callback_inner_item(cb, lang) for cb in cbs]
+        items = [
+            _render_callback_inner_item(
+                cb, lang, lanlan_name=lanlan_name, master_name=master_name,
+            )
+            for cb in cbs
+        ]
         items = [s for s in items if s]
         if items:
             parts.append(header + "\n".join(items))
@@ -426,6 +455,14 @@ from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
+
+# 用户静默达到此阈值 → 后台 loop 主动 end_session，让下一条消息触发
+# start_session(new=False) 重新拉 /new_dialog 注入新鲜时间/长间隔提示/节日
+# 上下文，解决长挂机 session 上下文僵化（"猫娘还停留在前一晚"）的问题。
+# 周期检查间隔故意远小于阈值（粒度 ~1 min），避免静默 30:01 时还要再等
+# 一整轮。
+IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
+IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
@@ -755,6 +792,11 @@ class LLMSessionManager:
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
 
+        # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
+        # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
+        # 单例），无 active session 时 sleep 后继续轮询。
+        self._idle_session_reset_task: Optional[asyncio.Task] = None
+
         # 用户活动 tracker：把窗口/进程/CPU/idle/语音/对话信号聚合成结构化
         # ActivitySnapshot，供 proactive_chat Phase 1/2 决策搭话倾向。
         # 详见 docs/design/user-activity-tracker.md。
@@ -814,6 +856,12 @@ class LLMSessionManager:
         # sync_message_queue 控制消息更原子：meta 与 turn end 事件
         # 同生共死，不会因为两条消息的时序错乱而把 avatar 轮当成 proactive。
         self._pending_turn_meta: Optional[dict] = None
+
+        # 内置 pseudo 工具（目前只有 recall_memory）。在 __init__ 末尾注册
+        # 一份占位，此时 user_language 还可能是 None → 短码兜底回退 'en'；
+        # 真正进 session 前会再 refresh 一次，把 description 对齐到当时
+        # 已知的 user_language。
+        self._register_builtin_tools()
 
     def _fire_task(self, coro):
         """Create a background task with GC protection (prevent Python 3.11+ from collecting it)."""
@@ -1195,6 +1243,43 @@ class LLMSessionManager:
             # owner/user_sid 并派发订阅者。
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
+
+    async def rotate_speech_id_for_response_done(self):
+        """Lightweight sid rotation for realtime providers without server VAD.
+
+        Triggered at OmniRealtimeClient's response.done event (Gemini's
+        turn_complete透传) when ``_has_server_vad=False`` (lanlan.app+free /
+        livestream). Without server VAD, ``speech_stopped`` never fires, so
+        the canonical ``handle_new_message`` rotation path stays dormant and
+        every turn ends up reusing the initial session sid — TTS upstream
+        silently drops text after the first ``tts.response.done`` closes
+        that sid, and turn 2+ goes silent.
+
+        Why not reuse ``handle_new_message``: that helper rotates sid AND
+        clears the TTS pipeline AND fires USER_INPUT. Both side effects are
+        correct at ``speech_stopped`` (user just spoke, AI hasn't started,
+        leftover TTS belongs to an interrupted prior turn). At
+        ``response.done`` they're wrong — leftover TTS is the trailing audio
+        of the AI turn that just ended; clearing it would clip the last
+        few syllables. ``USER_INPUT`` mischaracterizes the trigger (no user
+        input actually happened — this is end-of-AI-turn, not start-of-user).
+        Resetting ``audio_resampler`` is safe because the next turn's audio
+        is a fresh stream — keeping stale soxr state would only risk a
+        boundary artefact at turn 2's first frame.
+        """
+        if self._takeover_active:
+            return
+        self.audio_resampler.clear()
+        # 必须重置这两个 flag，否则下一轮 ``_request_tts_done_locked`` 会因
+        # ``_tts_done_queued_for_turn=True`` 直接 early-return，下一轮的 TTS
+        # flush sentinel 永远不入队，server 拿不到 ``tts.flush`` 句尾音频
+        # 可能挂在 buffer 里、长句 utterance 不会 finalize。``handle_new_message``
+        # 在 speech_stopped 路径也是这样 reset 的（[core.py:1214](main_logic/core.py:1214)），
+        # 这里和它对偶。
+        self._tts_done_queued_for_turn = False
+        self._tts_done_pending_until_ready = False
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
@@ -2441,6 +2526,8 @@ class LLMSessionManager:
                 await self.send_status(json.dumps({"code": "API_RATE_LIMIT"}))
             elif ('401' in message_text_lower or 'unauthorized' in message_text_lower
                     or 'authentication' in message_text_lower
+                    or 'incorrect api key' in message_text_lower
+                    or 'invalid_api_key' in message_text_lower
                     or ('invalid' in message_text_lower and 'key' in message_text_lower)):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
             elif 'policy violation' in message_text_lower:
@@ -2535,6 +2622,72 @@ class LLMSessionManager:
         global and outlives any single session.
         """
         return await self.tool_registry.execute(call)
+
+    # ------------------------------------------------------------------
+    # 内置 pseudo 工具：recall_memory
+    # ------------------------------------------------------------------
+    # 机制层占位：先让 offline / realtime 两条路径都能 register、把
+    # description / parameters 推到 wire、收到模型的 tool call、回 result。
+    # handler 当前固定返回"没有找到相关记忆"，等真实记忆检索接好后只
+    # 替换 ``_handle_recall_memory_call`` 即可，不动注册 / 同步链路。
+
+    def _register_builtin_tools(self) -> None:
+        """Re-register 内置工具，description / parameter doc 走当前
+        ``user_language``。直接调 ``tool_registry.register(replace=True)``
+        而不是公共的 ``register_tool``，避免在 __init__ / start_session 等
+        热路径里 fire 不必要的 ``_sync_tools_to_active_session``——本方法的
+        调用方负责决定要不要 sync。
+        """
+        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        recall_tool = ToolDefinition(
+            name="recall_memory",
+            description=_loc(RECALL_MEMORY_TOOL_DESCRIPTION, _lang),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": _loc(RECALL_MEMORY_TOOL_QUERY_DESCRIPTION, _lang),
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=self._handle_recall_memory_call,
+            metadata={"source": "builtin"},
+        )
+        self.tool_registry.register(recall_tool, replace=True)
+
+    async def _handle_recall_memory_call(self, arguments: dict) -> str:
+        """``recall_memory`` 的占位 handler —— 总是返回"没有找到相关记忆"。
+
+        机制验证用：让模型决定何时调用、我们能拿到 arguments、把固定
+        字符串回喂模型。日志同时记录 lanlan_name / input_mode / 完整
+        arguments / 命中的语言，方便：
+        - 多猫娘并发时按 name 切分 trace
+        - 验证语音（``audio``）和文本（``text``）两条路径都能触发
+        - 模型在 schema 之外塞了别的字段也不会被吞掉
+        - 给后续接真实检索提供取数依据（看模型在什么场景去 recall）。
+        """
+        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        args_dict = arguments if isinstance(arguments, dict) else {}
+        query = ""
+        raw_query = args_dict.get("query")
+        if isinstance(raw_query, str):
+            query = raw_query.strip()
+        # ``input_mode`` 是 manager 级别状态（start_session 时定型），handler
+        # 拿到时一定是当前 session 的真实模式；type(self.session) 兜一层
+        # 防御性日志，万一 input_mode 没设也能从 client 类型反推。
+        session_kind = type(self.session).__name__ if self.session is not None else "no-session"
+        logger.info(
+            "[recall_memory] name=%s mode=%s session=%s lang=%s args=%s query=%r → pseudo empty result",
+            self.lanlan_name,
+            self.input_mode,
+            session_kind,
+            _lang,
+            args_dict,
+            query,
+        )
+        return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """把 registry 当前状态同步给所有活跃的 client。
@@ -3052,8 +3205,14 @@ class LLMSessionManager:
         if (
             self._is_free_preset_voice
             and self.core_api_type == 'free'
-            and 'lanlan.tech' in realtime_config.get('base_url', '')
+            and ('lanlan.tech' in realtime_config.get('base_url', '') or self._is_livestream_active())
         ):
+            # livestream 启用后 base_url 被重写成主播自建 server_prefix
+            # （非 lanlan.tech 域），导致原 lanlan.tech 字面量判定失效，会 fallback
+            # 到外部 TTS 流水线。但 livestream 上游同样是 free 路 Gemini 系，
+            # 原生音色（voice_id 由 livestream_config 覆盖成 neon 等）直接走
+            # session config 即可，不需要再开外部 TTS。把 livestream-active
+            # 视为与 lanlan.tech 对偶的免费原生音色路径。
             logger.info(f"{log_prefix}🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
             return False
         if self.voice_id or has_custom_tts_config:
@@ -3208,6 +3367,8 @@ class LLMSessionManager:
                     await self.send_status(json.dumps({"code": "CONNECTION_REFUSED"}))
             elif ('401' in error_str or 'unauthorized' in error_str.lower()
                     or 'authentication' in error_str.lower()
+                    or 'incorrect api key' in error_str.lower()
+                    or 'invalid_api_key' in error_str.lower()
                     or ('invalid' in error_str.lower() and 'key' in error_str.lower())):
                 await self.send_status(json.dumps({"code": "API_KEY_REJECTED"}))
             elif '429' in error_str:
@@ -3253,6 +3414,78 @@ class LLMSessionManager:
         self.session_start_last_failure_time = None
         self._memory_error_retry_after = 0
 
+    def shutdown(self) -> None:
+        """Manager 级别的关闭——取消 idle reset 后台任务。调用方：main_server 的
+        ``_init_character_resources`` 在用新 manager 替换旧 manager 之前调用。
+
+        必要性：``_idle_session_reset_task`` 是 bound method coroutine，对 ``self``
+        持强引用——配置热重载创建新 LLMSessionManager 替换旧的之后，旧 manager
+        本应被 GC，但残留的 task 每 60s 醒一次（虽然只走 ``is_active==False`` 早
+        退分支），无限延长旧 manager 的生命周期，多次 reload 后会积累 N 份。
+        """
+        task = self._idle_session_reset_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._idle_session_reset_task = None
+
+    def _ensure_idle_session_reset_loop(self) -> None:
+        """Lazily 启动 idle reset 后台任务。idempotent，重复调用安全。"""
+        if self._idle_session_reset_task is not None and not self._idle_session_reset_task.done():
+            return
+        try:
+            self._idle_session_reset_task = asyncio.create_task(self._idle_session_reset_loop())
+        except RuntimeError:
+            # 极端情况：没有 running event loop（不该发生于 start_session 路径）
+            logger.debug("[%s] _ensure_idle_session_reset_loop: no running loop, skip", self.lanlan_name)
+
+    async def _idle_session_reset_loop(self) -> None:
+        """周期检查用户静默时长，超阈值则主动 end_session 让下一条消息触发新鲜
+        /new_dialog 上下文注入。守卫：响应中 / takeover / session 启动中 / 无活动
+        时间戳 → 跳过本轮，下一轮再判。
+        """
+        while True:
+            try:
+                await asyncio.sleep(IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS)
+                if not self.is_active or self.session is None:
+                    continue
+                if self._starting_session_count > 0:
+                    continue
+                if self._takeover_active:
+                    continue
+                if getattr(self.session, '_is_responding', False):
+                    continue
+                last_activity = self.last_user_activity_time
+                if last_activity is None:
+                    continue
+                idle_seconds = time.time() - last_activity
+                if idle_seconds < IDLE_SESSION_RESET_THRESHOLD_SECONDS:
+                    continue
+                # 快照当前 session：传给 end_session 的 expected_session 守卫，
+                # 在 end_session 内部多个 await 期间若用户触发新一轮 start_session
+                # 把 self.session 换掉了，end_session 会早退而不会误清新 session
+                # 或 _starting_session_count guard（参见 end_session 6011-6013 注释）。
+                session_snapshot = self.session
+                logger.info(
+                    "[%s] idle_session_reset: 用户静默 %.0fs ≥ %ds，主动关闭 session 让下一条消息刷新上下文",
+                    self.lanlan_name, idle_seconds, IDLE_SESSION_RESET_THRESHOLD_SECONDS,
+                )
+                try:
+                    # by_server=True：抑制末尾的 CHARACTER_LEFT 状态推送，把本路径
+                    # 与用户主动离开的语义区分开。reset_starting_count=False：
+                    # expected_session 早退已经把 race 兜住了，再叠一层保险防止
+                    # await 期间挤进来的新 start_session guard 被清零。
+                    await self.end_session(
+                        by_server=True,
+                        expected_session=session_snapshot,
+                        reset_starting_count=False,
+                    )
+                except Exception as e:
+                    logger.warning("[%s] idle_session_reset: end_session 失败: %s", self.lanlan_name, e)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
@@ -3281,6 +3514,14 @@ class LLMSessionManager:
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
         self._starting_input_mode = input_mode
+        # 首次 start_session 起算，让 idle reset loop 永久存活
+        self._ensure_idle_session_reset_loop()
+        # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
+        # idle-reset 触发 end_session 后用户再开新 session 时，如不重置就会继承超过
+        # 阈值的旧时间戳，下一轮 sweep 立刻把新 session 当成 30 min idle 再关一次。
+        # 同步刷新 proactive 路径 10s 抑制窗口（prepare_proactive_delivery），避免
+        # session 刚起来就被立刻触发主动搭话。
+        self.last_user_activity_time = time.time()
         # CAS 落败早退标志：True 时禁止 finally 递减 guard，
         # 防止赢家初始化期间第三个协程穿过 guard 浪费 LLM 连接。
         _llm_concurrent_aborted = False
@@ -3561,6 +3802,11 @@ class LLMSessionManager:
             
                 # Create into a LOCAL variable — not self.session yet
                 new_session = None
+                # 在抓快照前先把内置工具的 description 对齐到当前
+                # user_language —— __init__ 时 user_language 可能还是 None
+                # 走的英文占位，这里 user_language 已经定型了，重新注册
+                # 一份覆盖 registry 里的旧描述，再被下面的 snapshot 读走。
+                self._register_builtin_tools()
                 # Snapshot the registry once per session create so the
                 # tools list seen by the wire matches what the registry
                 # held at connect time. ``set_tools`` keeps it live for
@@ -3601,6 +3847,7 @@ class LLMSessionManager:
                         on_text_delta=self.handle_text_data,
                         on_audio_delta=self.handle_audio_data,
                         on_new_message=self.handle_new_message,
+                        on_sid_rotate=self.rotate_speech_id_for_response_done,
                         on_input_transcript=self.handle_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -4013,6 +4260,9 @@ class LLMSessionManager:
             # 根据input_mode创建对应类型的pending session
             # 复用 main session 的 ToolRegistry 状态（registry 是 manager 级，
             # 跨 session 持久），保证热切换前后工具集合保持一致。
+            # 热切换可能跨语言（用户切了 user_language 后再热切换猫娘），
+            # 抓快照前 refresh 一下内置工具的 description。
+            self._register_builtin_tools()
             _pending_tool_defs = self.tool_registry.all()
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
@@ -4053,6 +4303,7 @@ class LLMSessionManager:
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
+                    on_sid_rotate=self.rotate_speech_id_for_response_done,
                     on_input_transcript=self.handle_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -5630,6 +5881,11 @@ class LLMSessionManager:
                 
                 # 文本模式：直接发送文本
                 if isinstance(data, str):
+                    # 更新用户活动时间戳（与 handle_input_transcript / _record_external_user_input
+                    # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
+                    # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
+                    self.last_user_activity_time = time.time()
+
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
                         self.session.update_max_response_length(self._get_text_guard_max_length())
@@ -6152,6 +6408,14 @@ class LLMSessionManager:
             logger.info(f"用户语言已设置为: {normalized_lang}")
 
         # 文本模式下无需额外同步改写提示语言（已移除 rewrite 逻辑）
+
+        # 内置工具的 description / 参数说明是按 user_language 渲染的，
+        # 这里换语言后重新注册一份覆盖 registry 旧描述，并 fire-and-forget
+        # 推到当前 active / pending session 的 wire 上（OmniRealtimeClient
+        # 支持 session.update 携带新 tools；OmniOfflineClient 下次 stream_text
+        # 自动用最新 _tool_definitions）。
+        self._register_builtin_tools()
+        self._fire_task(self._sync_tools_to_active_session())
     
     async def send_status(self, message: str):
         """发送状态消息到前端。message 应为 JSON 字符串 {"code": "XXX", "details": {...}}，前端通过 i18next 翻译。"""
@@ -6386,6 +6650,8 @@ class LLMSessionManager:
                                 self._last_tts_error_code = 'API_1008_FALLBACK'
                             elif ('401' in error_msg_lower or 'unauthorized' in error_msg_lower
                                     or 'authentication' in error_msg_lower
+                                    or 'incorrect api key' in error_msg_lower
+                                    or 'invalid_api_key' in error_msg_lower
                                     or ('invalid' in error_msg_lower and 'key' in error_msg_lower)):
                                 user_msg = json.dumps({"code": "API_KEY_REJECTED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'API_KEY_REJECTED'
