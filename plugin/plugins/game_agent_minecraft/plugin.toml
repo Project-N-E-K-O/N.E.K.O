@@ -20,7 +20,11 @@ locales_dir = "i18n"
 
 [plugin_runtime]
 enabled = true
-auto_start = false
+# auto_start=true so plugin process spawns at NEKO startup and the WS
+# client to mc-agent is already connected by the time the first
+# minecraft_task call lands — saves the 3s lazy-start + WS handshake
+# every fresh-session would otherwise pay.
+auto_start = true
 
 [plugin.store]
 enabled = true
@@ -34,12 +38,18 @@ ws_url = "ws://localhost:48909"
 # Reconnect interval if the WebSocket drops.
 reconnect_interval_seconds = 5.0
 
-# Per-call upper bound on minecraft_task. The handler awaits the agent's
-# task_finished frame; if it doesn't arrive within this window, the LLM
-# sees a {status: "timeout"} result and is free to issue a new task.
-# Capped at 300 server-side; 25s leaves ~5s of buffer below the 30-second
-# default LLM tool ceiling.
-task_timeout_seconds = 25.0
+# Per-call upper bound on the detached task wait for ``task_finished``.
+# Fire-and-forget mode means the dialog LLM never blocks on this — the
+# value only controls how long the service waits before emitting a
+# "timed out" cue. Set very generously (120s) because compound mc-agent
+# chat-loops (craft-then-place-then-recover-from-missing-prereq) are
+# observed to legitimately take 60–90s. Premature timeouts cause two
+# downstream pains: (1) plugin clears _pending → next task overwrites
+# mc-agent's currentTaskId → eventual real completion echoes wrong id;
+# (2) dialog LLM sees a "timeout" cue and decides to re-dispatch the
+# same task, producing the appearance that the action stalled even
+# though mc-agent was actually still working on it.
+task_timeout_seconds = 120.0
 
 # How often the autonomous loop nudges the LLM with the latest game state
 # when there's no pending task. The LLM sees a "GAME_SYSTEM" prompt with
