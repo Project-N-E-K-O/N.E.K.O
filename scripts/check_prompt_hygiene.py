@@ -61,8 +61,9 @@ DEFAULT_PATHS: list[str] = ["."]
 # intentionally use multi-lang strings to exercise the i18n pipeline.
 # frontend/ is TS, not Python.
 EXCLUDE_DIRS = {
-    ".venv", "venv",
+    ".venv", "venv", ".venv-local-tts",
     ".git", "__pycache__", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    ".uv-cache", ".uv-cache-local",
     "dist", "build", "node_modules",
     "frontend", "static", "templates",
     "config", "plugin", "tests",
