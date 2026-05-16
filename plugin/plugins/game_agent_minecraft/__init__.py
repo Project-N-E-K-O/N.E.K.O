@@ -494,17 +494,20 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             connected = await self._ensure_service_started()
             inv = dict(self._service._last_inventory)  # snapshot copy
             inv_at = self._service._last_inventory_at
-            # 三档分支：
-            #   (a) 断连 + 从没拿到过 → 真"未知"
-            #   (b) 断连 + 有过旧 snapshot → 旧 snapshot **+ 过期警告**
-            #       （不能照原值上报，断连期间死亡/掉落/世界变化都看不到，
-            #        把缓存当 truth 等于复述过期事实）
-            #   (c) 已连接 → 当下 snapshot 即 truth
-            if not connected and inv_at == 0:
+            # 四档分支（注意：inv_at==0 永远是"还没收到过任何 snapshot"，
+            # 不论 connected 与否——刚连上但还没跑 task 也会落到这里，这时
+            # 报"背包是空的"是假事实）：
+            #   (a) inv_at==0          → 真"未知"，从没拿到过 snapshot
+            #   (b) 断连 + 有旧 snapshot → 旧 snapshot + 过期警告（断连期间
+            #       死亡 / 掉落 / 被夺走都看不到，照原值上报等于复述过期事实）
+            #   (c) 已连接 + 空 snapshot → 真空背包
+            #   (d) 已连接 + 有 snapshot → 当下 ground truth
+            if inv_at == 0:
                 summary = (
-                    "【背包 ground truth】暂时连不上游戏，看不到你现在的背包。"
-                    "如果用户问到持有的物品，先说一声"
-                    "『现在连不上游戏，等一下再确认』，别凭印象编。"
+                    "【背包 ground truth】"
+                    + ("暂时连不上游戏，" if not connected else "刚连上还没拿到第一份背包快照，")
+                    + "看不到你现在的背包。如果用户问到持有的物品，先说一声"
+                    "『现在还没确认到背包，等一下再说』，别凭印象编。"
                 )
             elif not connected:
                 age_s = max(0, int(time.time() - inv_at))
@@ -522,10 +525,6 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 )
             elif not inv:
                 summary = (
-                    "【背包 ground truth】你当前一无所有——背包是空的。"
-                    "如果你刚才说过『拿到了 X』『有 Y』，那是幻想，立刻自己改口。"
-                    if inv_at == 0
-                    else
                     "【背包 ground truth】你当前背包是空的。如果你刚才说过持有"
                     "任何物品，那是幻想，立刻自己改口。"
                 )
