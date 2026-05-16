@@ -2678,12 +2678,16 @@ class LLMSessionManager:
         """``recall_memory`` 的占位 handler —— 总是返回"没有找到相关记忆"。
 
         机制验证用：让模型决定何时调用、我们能拿到 arguments、把固定
-        字符串回喂模型。日志同时记录 lanlan_name / input_mode / 完整
-        arguments / 命中的语言，方便：
-        - 多猫娘并发时按 name 切分 trace
-        - 验证语音（``audio``）和文本（``text``）两条路径都能触发
-        - 模型在 schema 之外塞了别的字段也不会被吞掉
-        - 给后续接真实检索提供取数依据（看模型在什么场景去 recall）。
+        字符串回喂模型。日志切两层：
+
+        - **INFO**: 只报"哪个猫娘的哪种 session、什么语言 上调了 recall_memory"，
+          *不带任何 query / args 原文*。INFO 持久化到 ``D:/Documents/N.E.K.O/
+          logs/N.E.K.O_Main_<date>.log``，可能被打包外送，原文留在这里有
+          隐私 / 上下文泄露顾虑（query 文本就是模型从对话里抽的，含用户
+          个人信息的概率高）。
+        - **DEBUG**: 才落 query / 完整 args，给本地排查模型在什么场景去 recall
+          提供取数依据；DEBUG 默认 console 不显示，只落到项目目录的
+          ``logs/N.E.K.O_Main_debug_*.log``，不外送。
         """
         _lang = normalize_language_code(self.user_language, format='short') or 'en'
         args_dict = arguments if isinstance(arguments, dict) else {}
@@ -2696,11 +2700,15 @@ class LLMSessionManager:
         # 防御性日志，万一 input_mode 没设也能从 client 类型反推。
         session_kind = type(self.session).__name__ if self.session is not None else "no-session"
         logger.info(
-            "[recall_memory] name=%s mode=%s session=%s lang=%s args=%s query=%r → pseudo empty result",
+            "[recall_memory] called by name=%s mode=%s session=%s lang=%s → pseudo empty result",
             self.lanlan_name,
             self.input_mode,
             session_kind,
             _lang,
+        )
+        # query 原文降到 DEBUG —— 含用户上下文，不进 INFO 持久化日志。
+        logger.debug(
+            "[recall_memory] args=%s query=%r",
             args_dict,
             query,
         )
