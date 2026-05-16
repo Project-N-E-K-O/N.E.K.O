@@ -488,6 +488,15 @@
 
     mod.showReadyToSpeakToast = showReadyToSpeakToast;
 
+    function syncFloatingMicMuteButtonVisibility(manager, isActive) {
+        const muteButtonData = manager._floatingButtons && manager._floatingButtons['mic-mute'];
+        if (muteButtonData && typeof muteButtonData.updateVisibility === 'function') {
+            muteButtonData.updateVisibility(isActive);
+        } else if (muteButtonData && muteButtonData.button) {
+            muteButtonData.button.style.display = isActive ? 'flex' : 'none';
+        }
+    }
+
     // --- syncFloatingMicButtonState ---
     function syncFloatingMicButtonState(isActive) {
         const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
@@ -496,27 +505,21 @@
             if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
                 if (typeof manager.setButtonActive === 'function') {
                     manager.setButtonActive('mic', isActive);
-                    continue;
+                } else {
+                    const { button, imgOff, imgOn } = manager._floatingButtons.mic;
+                    if (button) {
+                        button.dataset.active = isActive ? 'true' : 'false';
+                        if (imgOff && imgOn) {
+                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOn.style.opacity = isActive ? '1' : '0';
+                        }
+                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                            manager.updateSeparatePopupTriggerIcon('mic');
+                        }
+                    }
                 }
 
-                const { button, imgOff, imgOn } = manager._floatingButtons.mic;
-                if (button) {
-                    button.dataset.active = isActive ? 'true' : 'false';
-                    if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
-                        imgOn.style.opacity = isActive ? '1' : '0';
-                    }
-                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                        manager.updateSeparatePopupTriggerIcon('mic');
-                    }
-                }
-
-                const muteButtonData = manager._floatingButtons['mic-mute'];
-                if (muteButtonData && typeof muteButtonData.updateVisibility === 'function') {
-                    muteButtonData.updateVisibility(isActive);
-                } else if (muteButtonData && muteButtonData.button) {
-                    muteButtonData.button.style.display = isActive ? 'flex' : 'none';
-                }
+                syncFloatingMicMuteButtonVisibility(manager, isActive);
             }
         }
     }
@@ -529,15 +532,19 @@
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
-                const { button, imgOff, imgOn } = manager._floatingButtons.screen;
-                if (button) {
-                    button.dataset.active = isActive ? 'true' : 'false';
-                    if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
-                        imgOn.style.opacity = isActive ? '1' : '0';
-                    }
-                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                        manager.updateSeparatePopupTriggerIcon('screen');
+                if (typeof manager.setButtonActive === 'function') {
+                    manager.setButtonActive('screen', isActive);
+                } else {
+                    const { button, imgOff, imgOn } = manager._floatingButtons.screen;
+                    if (button) {
+                        button.dataset.active = isActive ? 'true' : 'false';
+                        if (imgOff && imgOn) {
+                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOn.style.opacity = isActive ? '1' : '0';
+                        }
+                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                            manager.updateSeparatePopupTriggerIcon('screen');
+                        }
                     }
                 }
             }

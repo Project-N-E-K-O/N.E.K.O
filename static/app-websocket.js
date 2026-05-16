@@ -50,13 +50,63 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
-    function resetVoiceUiAfterAutoClose(options) {
+    async function releaseVoiceCaptureResources() {
+        if (S.stream && typeof S.stream.getTracks === 'function') {
+            S.stream.getTracks().forEach(function (track) {
+                if (track && typeof track.stop === 'function') {
+                    try {
+                        track.stop();
+                    } catch (error) {
+                        console.warn('[App] mic track cleanup failed:', error);
+                    }
+                }
+            });
+        }
+        S.stream = null;
+
+        [S.workletNode, S.micGainNode, S.inputAnalyser].forEach(function (node) {
+            if (node && typeof node.disconnect === 'function') {
+                try {
+                    node.disconnect();
+                } catch (_) { }
+            }
+        });
+        S.workletNode = null;
+        S.micGainNode = null;
+        S.inputAnalyser = null;
+
+        if (S.audioContext) {
+            var audioContext = S.audioContext;
+            S.audioContext = null;
+            if (audioContext.state !== 'closed' && typeof audioContext.close === 'function') {
+                try {
+                    await audioContext.close();
+                } catch (error) {
+                    console.warn('[App] audioContext cleanup failed:', error);
+                }
+            }
+        }
+
+        S.isRecording = false;
+        window.isRecording = false;
+    }
+
+    async function resetVoiceUiAfterAutoClose(options) {
         var keepSwitchingMode = !!(options && options.keepSwitchingMode);
 
         if (S._voiceSessionInitialTimer) {
             clearTimeout(S._voiceSessionInitialTimer);
             S._voiceSessionInitialTimer = null;
         }
+
+        if (typeof window.stopMicCapture === 'function') {
+            try {
+                await window.stopMicCapture();
+            } catch (error) {
+                console.warn('[App] auto_close_mic cleanup failed:', error);
+            }
+        }
+        await releaseVoiceCaptureResources();
 
         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
         if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
@@ -2463,19 +2513,12 @@
                     window.isMicStarting = false;
                     showAutoCloseMicToast(response);
 
-                    if (typeof window.stopMicCapture === 'function') {
-                        Promise.resolve(window.stopMicCapture()).then(function () {
-                            resetVoiceUiAfterAutoClose({ keepSwitchingMode: true });
-                            showAutoCloseMicToast(response);
-                        }, function (error) {
-                            console.warn('[App] auto_close_mic cleanup failed:', error);
-                            resetVoiceUiAfterAutoClose({ keepSwitchingMode: true });
-                            showAutoCloseMicToast(response);
-                        });
-                    } else {
-                        resetVoiceUiAfterAutoClose();
+                    Promise.resolve(resetVoiceUiAfterAutoClose({ keepSwitchingMode: true })).then(function () {
                         showAutoCloseMicToast(response);
-                    }
+                    }, function (error) {
+                        console.warn('[App] auto_close_mic cleanup failed:', error);
+                        showAutoCloseMicToast(response);
+                    });
 
                 // -------- music action --------
                 } else if (response.action === 'music') {
