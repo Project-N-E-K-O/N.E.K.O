@@ -489,6 +489,17 @@ class OmniOfflineClient:
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+
+        # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
+        # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
+        # 非 stop 但 content 为空；走 OpenAI-compat 代理时 HTTP 仍是 200，没异常，
+        # 上层只能看到"流跑完了，0 个文本 token"。这里记最后一次 attempt 在 LLM
+        # 这一层看到的 finish_reason / block_reason / prompt_tokens，让 stream_text
+        # 的 "所有重试均未产生文本回复" / prompt_ephemeral 的 delivered=False 兜底
+        # 警告能把"为什么 empty"原样吐出来。
+        self._last_finish_reason: Optional[str] = None
+        self._last_block_reason: Optional[str] = None
+        self._last_prompt_tokens: Optional[int] = None
         
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
@@ -693,9 +704,37 @@ class OmniOfflineClient:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
+                # Empty-completion 诊断：记最新的 finish_reason 和 prompt_tokens，
+                # 给上层 stream_text / prompt_ephemeral 的兜底 warning 用。
+                # usage chunk（terminal）才带 prompt_tokens；前面 text chunk 不带。
+                if chunk.usage_metadata:
+                    pt = chunk.usage_metadata.get("prompt_tokens")
+                    if pt:
+                        self._last_prompt_tokens = pt
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
                 yield chunk
+            # 记录本次 attempt 的最终 finish_reason，供上层 empty-completion
+            # 兜底警告引用（"safety" / "length" / "content_filter" / "stop" 都
+            # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
+            # empty 的关键线索）。
+            self._last_finish_reason = finish_reason
+            if (
+                not streamed_text_buffer
+                and not deltas_per_chunk
+                and finish_reason != "tool_calls"
+            ):
+                # 单独一行 INFO：empty completion 落地证据。tool_iter / model 一起
+                # 打出来，配合上层 warning 可以拼出"哪一轮哪个 attempt 被 safety
+                # 拦了 / 被 length 截了"。getattr 防御：测试桩可能 __new__ 绕过
+                # __init__，所以 model / _last_prompt_tokens 字段都用 getattr 兜底。
+                logger.info(
+                    "OmniOfflineClient(openai): empty completion finish_reason=%s "
+                    "tool_iter=%d model=%s prompt_tokens=%s",
+                    finish_reason, tool_iter,
+                    getattr(self, "model", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                )
             if (
                 finish_reason == "tool_calls"
                 and deltas_per_chunk
@@ -806,13 +845,29 @@ class OmniOfflineClient:
             # 不知道自己已经说过这部分话，可能重复或改口。
             streamed_text_buffer = ""
             usage_emitted = False
+            # Empty-completion 诊断：最后一次见到的 finish_reason 和 prompt_feedback.
+            # block_reason。Gemini 的 SAFETY / RECITATION / MAX_TOKENS 都在这两个
+            # 字段里露出来；OpenAI-compat 那条路径丢这些信息，所以这里直接从 SDK
+            # 原 chunk 读。
+            iter_finish_reason: Optional[str] = None
+            iter_block_reason: Optional[str] = None
 
             try:
                 async for chunk in stream:
+                    # prompt_feedback.block_reason：Gemini 整段 input 被 safety
+                    # 拦掉时填这个，candidate 可能根本没出现。
+                    pf = getattr(chunk, "prompt_feedback", None)
+                    if pf is not None:
+                        br = getattr(pf, "block_reason", None)
+                        if br:
+                            iter_block_reason = str(br)
                     candidates = getattr(chunk, "candidates", None) or []
                     if not candidates:
                         continue
                     cand = candidates[0]
+                    fr = getattr(cand, "finish_reason", None)
+                    if fr:
+                        iter_finish_reason = str(fr)
                     cand_content = getattr(cand, "content", None)
                     parts = getattr(cand_content, "parts", None) or []
                     for part in parts:
@@ -858,6 +913,10 @@ class OmniOfflineClient:
                                 "completion_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
                                 "total_tokens": getattr(usage_meta, "total_token_count", 0) or 0,
                             }
+                            # Empty-completion 诊断：把 prompt_tokens 落进 self，
+                            # 给上层 stream_text 兜底警告引用，跟 OpenAI 路径对偶。
+                            if usage_dict["prompt_tokens"]:
+                                self._last_prompt_tokens = usage_dict["prompt_tokens"]
                             yield LLMStreamChunk(
                                 content="",
                                 usage_metadata=usage_dict,
@@ -885,6 +944,21 @@ class OmniOfflineClient:
                 ):
                     raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
                 raise
+
+            # Empty-completion 诊断：落 self 字段 + 单独 INFO log。和 OpenAI 路径
+            # 对偶；finish_reason / block_reason 两边都有可能填，谁先填就以谁为
+            # 准（stream_text/prompt_ephemeral 的兜底 warning 会读这两个字段）。
+            self._last_finish_reason = iter_finish_reason
+            self._last_block_reason = iter_block_reason
+            if not had_text and not collected_tool_calls:
+                # getattr 防御同 OpenAI 路径；__new__ 绕过 __init__ 的测试桩不会崩。
+                logger.info(
+                    "OmniOfflineClient(genai): empty completion finish_reason=%s "
+                    "block_reason=%s tool_iter=%d model=%s prompt_tokens=%s",
+                    iter_finish_reason, iter_block_reason, tool_iter,
+                    getattr(self, "model", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                )
 
             if collected_tool_calls and self.on_tool_call is not None:
                 # Execute tools, append a unified assistant + tool history (dict shape
@@ -1163,7 +1237,11 @@ class OmniOfflineClient:
         assistant_message_total = ""  # 整轮累计（含 pre-tool），整轮级判定看它
         status_reported = False
         guard_exhausted = False
-        
+        # Empty-completion 诊断字段重置：每轮 turn 独立，否则会读到上一轮的旧值。
+        self._last_finish_reason = None
+        self._last_block_reason = None
+        self._last_prompt_tokens = None
+
         try:
             self._is_responding = True
             reroll_count = 0
@@ -1677,7 +1755,18 @@ class OmniOfflineClient:
             # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
             # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
             if not assistant_message_total and not guard_exhausted and not status_reported:
-                logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
+                # 把最后一次 attempt 的 finish_reason / block_reason / prompt_tokens
+                # 拼进 warning。Gemini-via-OpenAI-compat 静默 empty 时（safety /
+                # recitation / max_tokens / 上下文超限），这条 log 是日志里能拿到
+                # 的唯一"为什么 empty"线索。
+                logger.warning(
+                    "OmniOfflineClient: 所有重试均未产生文本回复 "
+                    "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s)",
+                    getattr(self, "_last_finish_reason", None),
+                    getattr(self, "_last_block_reason", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                    getattr(self, "model", None),
+                )
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
             
@@ -1850,6 +1939,10 @@ class OmniOfflineClient:
         max_retries = 3
         retry_delays = [1, 2]
         assistant_message = ""
+        # Empty-completion 诊断重置：与 stream_text 对偶。
+        self._last_finish_reason = None
+        self._last_block_reason = None
+        self._last_prompt_tokens = None
 
         try:
             self._is_responding = True
@@ -2010,6 +2103,22 @@ class OmniOfflineClient:
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
             content_committed = bool(committed_text)
+            # Empty-completion 诊断：和 stream_text 的兜底 warning 对偶。
+            # 主动搭话语义上是"静默放弃"，所以不发 status_message，但 INFO
+            # 一行 finish_reason 让日志能复盘——上次出问题就是因为没法区分
+            # "trigger_greeting 静默失败 = LLM 被 safety 拦" vs "LLM 真的觉得
+            # 这一轮不该说话"。
+            if not content_committed:
+                logger.info(
+                    "OmniOfflineClient.prompt_ephemeral: 无可提交文本 "
+                    "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s "
+                    "completion_mode=%s)",
+                    getattr(self, "_last_finish_reason", None),
+                    getattr(self, "_last_block_reason", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                    getattr(self, "model", None),
+                    completion_mode,
+                )
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
                 # 防复读 corpus：只录常规 reply（completion_mode == "response"）。
