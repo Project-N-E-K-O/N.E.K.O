@@ -2948,10 +2948,6 @@ details.panel-scroll-wide[open] {
   --dep-accent: #6b7cff;
 }
 
-#dependencyModule .install-card[data-dep="tesseract"] {
-  --dep-accent: var(--accent);
-}
-
 #dependencyModule .install-card[data-dep="textractor"] {
   --dep-accent: var(--warning);
 }

@@ -1401,7 +1401,9 @@
     <script src="/static/libs/driver.min.js"></script>
 
     <!-- 通用教程管理器 -->
-    <script src="/static/universal-tutorial-manager.js?v=15"></script>
+    <script src="/static/tutorial-skip-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/tutorial-avatar-reload-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
+    <script src="/static/universal-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             if (typeof initUniversalTutorialManager === 'function') {

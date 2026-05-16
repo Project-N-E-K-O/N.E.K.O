@@ -24,6 +24,9 @@ from .memory_reader import (
 DEFAULT_TEXTRACTOR_RELEASE_API_URL = (
     "https://api.github.com/repos/Artikash/Textractor/releases/latest"
 )
+# TODO: Add a verified Textractor Baidu pan mirror before enabling mirror install.
+_BAIDU_YUN_TEXTTRACTOR_URL = ""
+_BAIDU_YUN_TEXTTRACTOR_CODE = ""
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 

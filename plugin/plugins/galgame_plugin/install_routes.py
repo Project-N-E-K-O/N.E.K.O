@@ -83,8 +83,8 @@ def _normalize_ui_locale(locale: str) -> str:
 def _install_entry_id(plugin_id: str, galgame_entry_id: str) -> str:
     if plugin_id == "study_companion":
         mapping = {
-            "galgame_install_tesseract": "study_install_tesseract",
             "galgame_download_rapidocr_models": "study_download_rapidocr_models",
+            "study_install_tesseract": "study_install_tesseract",
         }
         return mapping.get(galgame_entry_id, galgame_entry_id)
     return galgame_entry_id
@@ -94,10 +94,12 @@ def _get_install_kind_spec(kind: str, *, plugin_id: str = "galgame_plugin") -> d
     normalized = str(kind or "").strip().lower()
     if plugin_id == "study_companion" and normalized == "textractor":
         raise HTTPException(status_code=404, detail="Textractor install is not supported by study_companion")
+    if plugin_id != "study_companion" and normalized == "tesseract":
+        raise HTTPException(status_code=404, detail="Tesseract install is only supported by study_companion")
     # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
     # now bundled into the main program (see pyproject.toml [dependency-groups]
-    # galgame). textractor + tesseract still need runtime install. rapidocr_models
-    # is a model-pack download (not a package install) for non-bundled (lang,
+    # galgame). textractor still needs runtime install. rapidocr_models is a
+    # model-pack download (not a package install) for non-bundled (lang,
     # version) combos like japan + PP-OCRv4.
     mapping = {
         "textractor": {
@@ -107,18 +109,18 @@ def _get_install_kind_spec(kind: str, *, plugin_id: str = "galgame_plugin") -> d
             "queued_message": "Textractor install queued",
             "entry_timeout": 600.0,
         },
-        "tesseract": {
-            "kind": "tesseract",
-            "entry_id": _install_entry_id(plugin_id, "galgame_install_tesseract"),
-            "label": "Tesseract",
-            "queued_message": "Tesseract install queued",
-            "entry_timeout": 300.0,
-        },
         "rapidocr_models": {
             "kind": "rapidocr_models",
             "entry_id": _install_entry_id(plugin_id, "galgame_download_rapidocr_models"),
             "label": "RapidOCR Models",
             "queued_message": "RapidOCR model download queued",
+            "entry_timeout": 600.0,
+        },
+        "tesseract": {
+            "kind": "tesseract",
+            "entry_id": _install_entry_id(plugin_id, "study_install_tesseract"),
+            "label": "Tesseract",
+            "queued_message": "Tesseract install queued",
             "entry_timeout": 600.0,
         },
     }
@@ -464,38 +466,14 @@ async def galgame_plugin_start_textractor_install(
     )
 
 
-@router.post("/plugin/{plugin_id}/ui-api/tesseract/install")
-async def galgame_plugin_start_tesseract_install(
-    plugin_id: str,
-    payload: InstallStartPayload,
-    request: Request,
-):
-    return await _start_install_task(
-        plugin_id=plugin_id,
-        kind="tesseract",
-        payload=payload,
-        request=request,
-    )
-
-
 @router.get("/plugin/{plugin_id}/ui-api/textractor/install/latest")
 async def galgame_plugin_latest_textractor_install(plugin_id: str):
     return _latest_install_task_payload(plugin_id=plugin_id, kind="textractor")
 
 
-@router.get("/plugin/{plugin_id}/ui-api/tesseract/install/latest")
-async def galgame_plugin_latest_tesseract_install(plugin_id: str):
-    return _latest_install_task_payload(plugin_id=plugin_id, kind="tesseract")
-
-
 @router.get("/plugin/{plugin_id}/ui-api/textractor/install/{task_id}")
 async def galgame_plugin_get_textractor_install(plugin_id: str, task_id: str):
     return _get_install_task_payload(plugin_id=plugin_id, kind="textractor", task_id=task_id)
-
-
-@router.get("/plugin/{plugin_id}/ui-api/tesseract/install/{task_id}")
-async def galgame_plugin_get_tesseract_install(plugin_id: str, task_id: str):
-    return _get_install_task_payload(plugin_id=plugin_id, kind="tesseract", task_id=task_id)
 
 
 @router.get("/plugin/{plugin_id}/ui-api/textractor/install/{task_id}/stream")
@@ -510,6 +488,33 @@ async def galgame_plugin_stream_textractor_install(
         task_id=task_id,
         request=request,
     )
+
+
+# ====== Study Companion Tesseract install endpoints ======
+
+
+@router.post("/plugin/{plugin_id}/ui-api/tesseract/install")
+async def galgame_plugin_start_tesseract_install(
+    plugin_id: str,
+    payload: InstallStartPayload,
+    request: Request,
+):
+    return await _start_install_task(
+        plugin_id=plugin_id,
+        kind="tesseract",
+        payload=payload,
+        request=request,
+    )
+
+
+@router.get("/plugin/{plugin_id}/ui-api/tesseract/install/latest")
+async def galgame_plugin_latest_tesseract_install(plugin_id: str):
+    return _latest_install_task_payload(plugin_id=plugin_id, kind="tesseract")
+
+
+@router.get("/plugin/{plugin_id}/ui-api/tesseract/install/{task_id}")
+async def galgame_plugin_get_tesseract_install(plugin_id: str, task_id: str):
+    return _get_install_task_payload(plugin_id=plugin_id, kind="tesseract", task_id=task_id)
 
 
 @router.get("/plugin/{plugin_id}/ui-api/tesseract/install/{task_id}/stream")
@@ -527,7 +532,7 @@ async def galgame_plugin_stream_tesseract_install(
 
 
 # ====== RapidOCR model-download endpoints ======
-# Mirrors the tesseract/textractor install pattern: POST to start, GET for
+# Mirrors the textractor install pattern: POST to start, GET for
 # latest task, GET {task_id}, GET {task_id}/stream. URL base is
 # `/rapidocr-models` (kebab-case in URL, `rapidocr_models` snake_case as the
 # persisted task kind). The frontend's install task helper builds GET URLs as

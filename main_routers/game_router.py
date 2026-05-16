@@ -86,7 +86,7 @@ _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _SOCCER_QUICK_LINE_KEYS = {
     "goal-scored", "goal-conceded", "own-goal-by-ai", "own-goal-by-player",
     "steal", "stolen", "player-idle", "player-charging-long",
-    "free-ball", "startle", "zoneout",
+    "free-ball", "startle-direct", "startle-graze", "zoneout",
 }
 
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
@@ -5496,16 +5496,22 @@ async def game_quick_lines(game_type: str, request: Request):
 
 
 @router.get("/{game_type}/character")
-async def game_character(game_type: str):
+async def game_character(game_type: str, request: Request):
     """获取当前角色信息（需求 2：角色替换用）。
 
-    返回当前角色的模型类型和路径。足球游戏 AI 侧目前只支持 Live2D，
-    如果当前角色不是 Live2D 类型，前端应回退到默认模型。
+    返回角色的模型类型和路径。足球游戏 AI 侧支持 Live2D / VRM；
+    MMD 仍由前端回退到 Live2D 默认模型。
     """
     try:
         config_manager = get_config_manager()
         characters = await asyncio.to_thread(config_manager.load_characters)
-        current_name = characters.get('当前猫娘', '')
+        requested_name = str(request.query_params.get('lanlan_name') or '').strip()
+        all_nekos = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
+        current_name = (
+            requested_name
+            if requested_name and isinstance(all_nekos, dict) and requested_name in all_nekos
+            else characters.get('当前猫娘', '')
+        )
         neko_data = characters.get('猫娘', {}).get(current_name, {})
 
         # 获取 _reserved.avatar 配置
@@ -5544,7 +5550,9 @@ async def game_character(game_type: str):
             if isinstance(vrm_info, dict):
                 raw = vrm_info.get('model_path', '')
                 if raw:
-                    vrm_path = raw if raw.startswith('/static/') else f'/static/{raw}'
+                    from .config_router import _resolve_vrm_path
+
+                    vrm_path = _resolve_vrm_path(raw, config_manager, current_name)
 
         return {
             'lanlan_name': current_name,

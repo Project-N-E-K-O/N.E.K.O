@@ -138,7 +138,7 @@ class PersonaManager:
         self._alocks: dict[str, asyncio.Lock] = {}
         self._alocks_guard = threading.Lock()
         # 独立的 resolve_corrections 串行锁——只为防多入口（IdleMaint subtask 2
-        # 与 _extract_facts_and_check_feedback）并发触发同名角色的 LLM 重叠
+        # 与 _run_post_turn_signals）并发触发同名角色的 LLM 重叠
         # 应用导致重复处理同一批 corrections。本锁与 _alocks (data lock)
         # 完全分开，所以 LLM 期间 aadd_fact / arecord_mentions / aapply_signal
         # 仍能正常拿 _alocks 推进（不再卡 /process 路径）。
@@ -1581,7 +1581,7 @@ class PersonaManager:
         C4 重构 + thinking：LLM 调用在 data lock 外。data lock 仅在 LLM
         前后短暂借用（load corrections / load persona + apply + save）。
         独立的 _resolve_alock 串行同名角色的 resolve_corrections 调用，
-        防多入口（IdleMaint subtask 2 与 _extract_facts_and_check_feedback）
+        防多入口（IdleMaint subtask 2 与 _run_post_turn_signals）
         并发触发同一批 corrections 被重复处理（特别是 keep_new 没有 dedup
         会导致重复 append）。
 

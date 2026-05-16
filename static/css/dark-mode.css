@@ -1336,6 +1336,16 @@ html #chat-container {
   color: #4aa3df;
 }
 
+[data-theme="dark"] .memo-older-label {
+  color: #6a8a9d;
+}
+
+[data-theme="dark"] .memo-textarea--older {
+  background: #1f1f1f;
+  color: #b8b8b8;
+  border-color: #3a3a3a;
+}
+
 [data-theme="dark"] .chat-time {
   color: #666;
 }

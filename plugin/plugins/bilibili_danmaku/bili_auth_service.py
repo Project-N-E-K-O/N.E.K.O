@@ -25,6 +25,7 @@ class BiliAuthService:
         self._credential_reloader = credential_reloader
         self._cleanup_callback = cleanup_callback
         self._login_session = None
+        self._login_generated_at: float = 0.0
 
     def _require_login_sdk(self):
         try:
@@ -75,6 +76,8 @@ class BiliAuthService:
         QrCodeLogin, _ = self._require_login_sdk()
         self._login_session = QrCodeLogin()
         await self._login_session.generate_qrcode()
+        import time
+        self._login_generated_at = time.time()
         pic = self._login_session.get_qrcode_picture()
         png_bytes = pic.content
         img_base64 = base64.b64encode(png_bytes).decode("utf-8")
@@ -101,6 +104,15 @@ class BiliAuthService:
 
         _, QrCodeLoginEvents = self._require_login_sdk()
         state = await self._login_session.check_state()
+        # 防误报：刚生成二维码时 check_state() 可能立刻返回 SCAN
+        #（bilibili_api 某些版本中 SCAN 枚举值为 0，与"无事件"混淆）
+        import time
+        if state == QrCodeLoginEvents.SCAN and time.time() - self._login_generated_at < 1.0:
+            return {
+                "status": "waiting",
+                "message": "等待扫码...",
+                "next_step": "请用B站App扫描二维码",
+            }
         if state == QrCodeLoginEvents.SCAN:
             return {
                 "status": "scanning",
