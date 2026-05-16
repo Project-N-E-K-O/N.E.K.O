@@ -710,21 +710,26 @@ async def test_unregister_tool_router_isolates_per_role_failures():
 
 
 def _make_eviction_stub_mgr(name: str):
-    """造一个能配合 _evict_dead_plugin_source 的最小 mgr：只需要
-    ``tool_registry`` 和同步版本的 ``clear_tools(source=...)``。后者直接
-    委托给 registry，不 fire session.update task（单测里没 active session）。"""
+    """造一个能配合 _evict_dead_callback_origin 的最小 mgr：暴露
+    ``tool_registry`` + 私有的 ``_fire_task`` / ``_sync_tools_to_active_session``
+    （驱逐通道用它们触发 wire 同步，跟 register_tool / clear_tools 走同一条
+    路径）。``_fire_task`` 直接 close 掉 coro 避免"coroutine was never awaited"
+    告警，单测只需要验证它被调用过了。"""
     from main_logic.tool_calling import ToolRegistry
 
     class _StubMgr:
         def __init__(self, lanlan_name: str):
             self.lanlan_name = lanlan_name
             self.tool_registry = ToolRegistry()
-            self.clear_calls: list = []
+            self.fire_task_count = 0
 
-        def clear_tools(self, *, source=None):
-            n = self.tool_registry.clear(source=source)
-            self.clear_calls.append((source, n))
-            return n
+        async def _sync_tools_to_active_session(self):
+            # 单测里没有 active session，wire 同步是 noop。
+            return None
+
+        def _fire_task(self, coro):
+            self.fire_task_count += 1
+            coro.close()
 
     return _StubMgr(name)
 
@@ -798,14 +803,15 @@ async def test_remote_dispatch_evicts_dead_plugin_after_three_connect_failures(
             f"mgr {mgr.lanlan_name}: plugin tools should be evicted, "
             f"builtin should remain; got {names}"
         )
-        # 每个 mgr 都该被 clear 调用过一次，source 精确指向死插件。
-        assert mgr.clear_calls == [("plugin:dead_foo", 2)], (
-            f"mgr {mgr.lanlan_name}: clear_tools should have been called "
-            f"exactly once with the dead plugin source; got {mgr.clear_calls}"
+        # 驱逐必须 fire 一次 wire 同步，让模型在 schema 上也看不到死工具。
+        assert mgr.fire_task_count >= 1, (
+            f"mgr {mgr.lanlan_name}: eviction must fire session.update sync; "
+            f"got fire_task_count={mgr.fire_task_count}"
         )
 
     # 计数器在驱逐后清零，避免下次 1 次失败就触发误杀。
-    assert "plugin:dead_foo" not in _tr._consecutive_connect_failures
+    dead_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert ("plugin:dead_foo", dead_origin) not in _tr._consecutive_connect_failures
 
 
 @pytest.mark.asyncio
@@ -850,9 +856,10 @@ async def test_remote_dispatch_business_error_does_not_evict(
 
     # 工具仍在 registry 里——业务错不是 lifecycle 错。
     assert mgr.tool_registry.names() == ["buggy_tool"]
-    assert mgr.clear_calls == []
+    assert mgr.fire_task_count == 0
     # 计数器从未累加（每次成功 HTTP 都清零）。
-    assert "plugin:buggy" not in _tr._consecutive_connect_failures
+    buggy_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert ("plugin:buggy", buggy_origin) not in _tr._consecutive_connect_failures
 
 
 @pytest.mark.asyncio
@@ -901,8 +908,9 @@ async def test_remote_dispatch_success_resets_failure_counter(
 
     # 工具还在，counter 累计但没超阈值。
     assert mgr.tool_registry.names() == ["flaky"]
-    assert mgr.clear_calls == []
-    assert _tr._consecutive_connect_failures.get("plugin:flaky") == 2
+    assert mgr.fire_task_count == 0
+    flaky_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert _tr._consecutive_connect_failures.get(("plugin:flaky", flaky_origin)) == 2
 
 
 @pytest.mark.asyncio
@@ -936,8 +944,9 @@ async def test_remote_dispatch_builtin_source_never_evicted(
 
     # 工具仍在 registry，计数器从未被建。
     assert mgr.tool_registry.names() == ["recall_memory"]
-    assert mgr.clear_calls == []
-    assert "builtin" not in _tr._consecutive_connect_failures
+    assert mgr.fire_task_count == 0
+    # builtin source 永远不进 counter dict
+    assert not any(src == "builtin" for src, _origin in _tr._consecutive_connect_failures)
 
 
 @pytest.mark.asyncio
@@ -970,8 +979,102 @@ async def test_remote_dispatch_read_timeout_does_not_evict(
 
     # 工具不动：ReadTimeout 不算 connection-level，counter 也没累加。
     assert mgr.tool_registry.names() == ["slow"]
-    assert mgr.clear_calls == []
-    assert "plugin:slow" not in _tr._consecutive_connect_failures
+    assert mgr.fire_task_count == 0
+    slow_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert ("plugin:slow", slow_origin) not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_endpoint_local_outage_preserves_sibling_endpoints(
+    monkeypatch, _reset_eviction_counter,
+):
+    """同一 plugin source 下若注册的工具指向不同 callback origin（不同 port），
+    单端点不可达只能扫掉该端点的工具，不能把同 source 的其他健康端点工具
+    一起带走。
+
+    回归保护：Codex review on PR #1382——单按 source 聚合会把"一个端点
+    死了"误升级成"整个 plugin 全死"。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    # 同一 plugin source，两个工具指向不同 port。
+    mgr.tool_registry.register(ToolDefinition(
+        name="tool_on_dead_port", description="", handler=None,
+        metadata={"source": "plugin:multi_port", "callback_url": "http://127.0.0.1:9001/cb"},
+    ))
+    mgr.tool_registry.register(ToolDefinition(
+        name="tool_on_live_port", description="", handler=None,
+        metadata={"source": "plugin:multi_port", "callback_url": "http://127.0.0.1:9002/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    # 只有 port 9001 不可达；9002 正常。
+    class _OkResp:
+        status_code = 200
+        text = '{"output": "ok"}'
+        def json(self): return {"output": "ok"}
+
+    class _PortSelectiveClient:
+        async def post(self, url, *_a, **_kw):
+            if ":9001" in url:
+                raise httpx.ConnectError("Connection refused on 9001")
+            return _OkResp()
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _PortSelectiveClient())
+
+    dead_call = ToolCall(name="tool_on_dead_port", arguments={}, call_id="d")
+    dead_metadata = {
+        "source": "plugin:multi_port",
+        "callback_url": "http://127.0.0.1:9001/cb",
+        "timeout_seconds": 5,
+    }
+    # 3 次撞死端口 → 触发驱逐
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD):
+        await _tr._remote_dispatch(dead_call, dead_metadata)
+
+    # 关键断言：只有指向 9001 的工具被扫，9002 的 sibling 工具完好。
+    names = sorted(mgr.tool_registry.names())
+    assert names == ["tool_on_live_port"], (
+        f"endpoint-local outage on 9001 must NOT evict sibling tool on 9002; "
+        f"got remaining={names}"
+    )
+
+    # 活端口的 counter 应当从未建立——它没失败过。
+    live_origin = _tr._callback_origin("http://127.0.0.1:9002/cb")
+    assert ("plugin:multi_port", live_origin) not in _tr._consecutive_connect_failures
+
+    # 健康端点继续可调用、保持 schema 中可见。
+    live_call = ToolCall(name="tool_on_live_port", arguments={}, call_id="L")
+    live_metadata = {
+        "source": "plugin:multi_port",
+        "callback_url": "http://127.0.0.1:9002/cb",
+        "timeout_seconds": 5,
+    }
+    result = await _tr._remote_dispatch(live_call, live_metadata)
+    assert result.is_error is False
+    assert result.output == "ok"
+
+
+def test_callback_origin_normalizes_to_scheme_host_port():
+    """``_callback_origin`` 必须把 (scheme, host, port) 折叠成同一 bucket key——
+    path / query / fragment 不能让同一 server 的不同 URL 被当成不同 endpoint。
+    """
+    from main_routers.tool_router import _callback_origin
+
+    base = _callback_origin("http://127.0.0.1:9000/api/cb")
+    # 同 origin 不同 path / query → 同一 key
+    assert _callback_origin("http://127.0.0.1:9000/api/cb") == base
+    assert _callback_origin("http://127.0.0.1:9000/other/path") == base
+    assert _callback_origin("http://127.0.0.1:9000/api/cb?x=1") == base
+    # 不同 port → 不同 key
+    assert _callback_origin("http://127.0.0.1:9001/api/cb") != base
+    # 默认端口要显式化（http→80, https→443），避免 ``http://h/`` 和
+    # ``http://h:80/`` 被当成两个 endpoint
+    assert _callback_origin("http://127.0.0.1/cb") == "http://127.0.0.1:80"
+    assert _callback_origin("https://127.0.0.1/cb") == "https://127.0.0.1:443"
+    # 异常输入兜底：空 / 不可 parse → 不抛
+    assert _callback_origin("") == "<unknown>"
 
 
 @pytest.mark.asyncio
