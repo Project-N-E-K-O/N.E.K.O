@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
-from plugin.sdk import get_global_language_full
 from plugin.plugins.galgame_plugin.store import GalgameStore
 from plugin.plugins.galgame_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
@@ -24,6 +23,7 @@ from plugin.plugins.galgame_plugin.install_tasks import (
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from utils.language_utils import get_global_language_full
 
 router = APIRouter(tags=["galgame-install"])
 logger = get_logger("galgame.install_routes")

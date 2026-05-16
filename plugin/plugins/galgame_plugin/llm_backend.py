@@ -7,18 +7,16 @@ import logging
 import re
 from typing import Any, Protocol, TYPE_CHECKING
 
-from plugin.sdk import (
-    create_chat_llm,
-    get_config_manager,
-    robust_json_loads,
-    set_call_type,
-)
 from plugin.sdk.plugin import SdkError
+from utils.config_manager import get_config_manager
+from utils.file_utils import robust_json_loads
+from utils.llm_client import create_chat_llm
+from utils.token_tracker import set_call_type
 
 from .llm_prompts import build_prompt_messages_with_metadata
 
 if TYPE_CHECKING:
-    from plugin.sdk import ChatOpenAI
+    from utils.llm_client import ChatOpenAI
 
 _ALLOWED_OPERATIONS = frozenset(
     {"explain_line", "summarize_scene", "suggest_choice", "agent_reply"}

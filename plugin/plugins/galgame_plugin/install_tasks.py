@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from plugin.sdk import get_config_manager
+from utils.config_manager import get_config_manager
 
 
 INSTALL_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled"})
