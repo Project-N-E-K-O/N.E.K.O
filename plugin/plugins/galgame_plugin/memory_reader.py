@@ -252,7 +252,9 @@ def _select_hook_codes_for_engine(
 
 
 def is_windows_platform() -> bool:
-    return os.name == "nt" or sys.platform.startswith("win")
+    from plugin.plugins.galgame_plugin.capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
 
 
 def utc_now_iso(now: float | None = None) -> str:

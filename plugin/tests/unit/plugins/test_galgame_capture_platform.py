@@ -1,0 +1,300 @@
+"""Tests for capture_platform.py — platform detection and dispatch.
+
+These tests are intentionally platform-aware: they verify the dispatch
+contract on whichever platform pytest runs, then use @pytest.mark.skipif
+to gate platform-specific paths.
+"""
+
+from __future__ import annotations
+
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+from plugin.plugins.galgame_plugin import capture_platform as cp
+from plugin.plugins.galgame_plugin.ocr_reader import DetectedGameWindow
+
+
+# ─── Platform detection ──────────────────────────────────────────────────
+
+
+def test_is_windows_returns_bool() -> None:
+    assert isinstance(cp.is_windows(), bool)
+
+
+def test_is_macos_returns_bool() -> None:
+    assert isinstance(cp.is_macos(), bool)
+
+
+def test_is_linux_returns_bool() -> None:
+    assert isinstance(cp.is_linux(), bool)
+
+
+def test_platform_mutually_exclusive_when_known() -> None:
+    """Exactly one of is_windows/is_macos/is_linux is True on supported
+    hosts. On exotic platforms (BSD, etc.) all three may be False; in that
+    case the sum is 0 and platform_name() must say 'unknown'."""
+    flags = [cp.is_windows(), cp.is_macos(), cp.is_linux()]
+    flag_sum = sum(flags)
+    if flag_sum == 0:
+        assert cp.platform_name() == "unknown"
+    else:
+        assert flag_sum == 1
+
+
+def test_platform_name_in_expected_set() -> None:
+    assert cp.platform_name() in ("windows", "macos", "linux", "unknown")
+
+
+def test_platform_supports_dxcam_iff_windows() -> None:
+    assert cp.platform_supports_dxcam() == cp.is_windows()
+
+
+def test_platform_supports_printwindow_iff_windows() -> None:
+    assert cp.platform_supports_printwindow() == cp.is_windows()
+
+
+# ─── Backend kind classification ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("dxcam", True),
+        ("printwindow", True),
+        ("mss", False),
+        ("pyautogui", False),
+        ("electron", False),
+        ("", False),
+        ("unknown", False),
+    ],
+)
+def test_is_win32_only_backend_kind(kind: str, expected: bool) -> None:
+    assert cp.is_win32_only_backend_kind(kind) is expected
+
+
+# ─── scan_windows() dispatch ─────────────────────────────────────────────
+
+
+def test_scan_windows_returns_list() -> None:
+    result = cp.scan_windows()
+    assert isinstance(result, list)
+
+
+def test_scan_windows_elements_are_detected_windows() -> None:
+    """Every element returned by scan_windows must be a DetectedGameWindow.
+
+    The platform-specific scanners run in their actual environment here;
+    on unsupported hosts they return [], which still satisfies the type
+    invariant.
+    """
+    result = cp.scan_windows()
+    for window in result:
+        assert isinstance(window, DetectedGameWindow)
+
+
+def test_scan_windows_unknown_platform_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An exotic platform (none of windows / macos / linux) must return []
+    without raising."""
+    monkeypatch.setattr(cp.sys, "platform", "haiku")
+    assert cp.is_windows() is False
+    assert cp.is_macos() is False
+    assert cp.is_linux() is False
+    assert cp.platform_name() == "unknown"
+    assert cp.scan_windows() == []
+
+
+# ─── Platform-specific scanners (gated) ──────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="linux only")
+def test_linux_window_scanner_returns_list() -> None:
+    from plugin.plugins.galgame_plugin.window_scanner_linux import (
+        _scan_windows_linux,
+    )
+
+    result = _scan_windows_linux()
+    assert isinstance(result, list)
+    for window in result:
+        assert isinstance(window, DetectedGameWindow)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macos only")
+def test_macos_window_scanner_returns_list() -> None:
+    from plugin.plugins.galgame_plugin.window_scanner_macos import (
+        _scan_windows_macos,
+    )
+
+    result = _scan_windows_macos()
+    assert isinstance(result, list)
+    for window in result:
+        assert isinstance(window, DetectedGameWindow)
+
+
+# ─── ElectronCaptureBackend smoke tests ──────────────────────────────────
+
+
+def test_electron_backend_is_available_when_endpoint_down() -> None:
+    """When no Electron HTTP endpoint is reachable, is_available must
+    return False rather than raising."""
+    from plugin.plugins.galgame_plugin.electron_capture import (
+        ElectronCaptureBackend,
+    )
+
+    # Point at a port that is virtually guaranteed to be closed locally.
+    backend = ElectronCaptureBackend(
+        base_url="http://127.0.0.1:1", health_timeout=0.2
+    )
+    assert backend.is_available() is False
+
+
+def test_electron_backend_resolves_default_url_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import electron_capture
+
+    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "65432")
+    url = electron_capture._resolve_default_base_url()
+    assert url == "http://127.0.0.1:65432"
+    # API URL convention: no trailing slash
+    assert not url.endswith("/")
+
+
+def test_electron_backend_kind_is_electron() -> None:
+    from plugin.plugins.galgame_plugin.electron_capture import (
+        ElectronCaptureBackend,
+    )
+
+    backend = ElectronCaptureBackend(base_url="http://127.0.0.1:1")
+    assert backend.kind == "electron"
+
+
+def test_electron_backend_rejects_invalid_target_id() -> None:
+    from plugin.plugins.galgame_plugin.electron_capture import (
+        ElectronCaptureBackend,
+    )
+
+    backend = ElectronCaptureBackend(base_url="http://127.0.0.1:1")
+    target = DetectedGameWindow(
+        hwnd=0,
+        title="Game",
+        process_name="game.exe",
+        pid=123,
+        class_name="",
+        exe_path="",
+        width=640,
+        height=480,
+        area=640 * 480,
+    )
+    with pytest.raises(RuntimeError, match="invalid_target_id"):
+        backend.capture_frame(target, object())
+
+
+def test_electron_backend_redacts_long_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin.electron_capture import (
+        ElectronCaptureBackend,
+    )
+
+    def _fake_request(*args, **kwargs):
+        del args, kwargs
+        return SimpleNamespace(status_code=500, text="secret-token-" + ("x" * 300))
+
+    monkeypatch.setattr("httpx.request", _fake_request)
+    backend = ElectronCaptureBackend(base_url="http://127.0.0.1:1")
+    target = DetectedGameWindow(
+        hwnd=42,
+        title="Game",
+        process_name="game.exe",
+        pid=123,
+        class_name="",
+        exe_path="",
+        width=640,
+        height=480,
+        area=640 * 480,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.capture_frame(target, object())
+
+    message = str(excinfo.value)
+    assert "http_status_500" in message
+    assert len(message) < 180
+
+
+def test_linux_wmctrl_scanner_uses_resolved_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import window_scanner_linux
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(window_scanner_linux.shutil, "which", lambda name: "/usr/bin/wmctrl")
+
+    def _fake_check_output(cmd, *, text, timeout):
+        captured["cmd"] = cmd
+        captured["text"] = text
+        captured["timeout"] = timeout
+        return "0x01200007  0 10 20 640 480 host Game Window\n"
+
+    monkeypatch.setattr(window_scanner_linux.subprocess, "check_output", _fake_check_output)
+
+    result = window_scanner_linux._scan_windows_linux_wmctrl()
+
+    assert captured["cmd"] == ["/usr/bin/wmctrl", "-lG"]
+    assert len(result) == 1
+    assert result[0].hwnd == int("0x01200007", 16)
+
+
+# ─── Win32CaptureBackend filtering on non-Windows ────────────────────────
+
+
+def _make_backend(kind: str):
+    class _Stub:
+        def __init__(self, k: str) -> None:
+            self.kind = k
+
+        def is_available(self) -> bool:  # pragma: no cover - not used here
+            return True
+
+    return _Stub(kind)
+
+
+def test_build_backends_filters_win32_only_on_non_windows() -> None:
+    """On macOS/Linux, _build_backends() must drop dxcam/printwindow."""
+    from plugin.plugins.galgame_plugin import ocr_reader as ocr_reader_mod
+    from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
+
+    backend = Win32CaptureBackend(selection="auto")
+    with patch.object(ocr_reader_mod, "_is_windows_platform", return_value=False), patch(
+        "plugin.plugins.galgame_plugin.capture_platform.is_windows",
+        return_value=False,
+    ), patch(
+        "plugin.plugins.galgame_plugin.capture_platform.is_linux",
+        return_value=False,
+    ):
+        chain = backend._build_backends()
+
+    kinds = {str(getattr(b, "kind", "")) for b in chain}
+    assert "dxcam" not in kinds
+    assert "printwindow" not in kinds
+
+
+def test_build_backends_keeps_win32_only_on_windows() -> None:
+    """On Windows, all four win32 backends remain reachable."""
+    from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
+
+    backend = Win32CaptureBackend(selection="auto")
+    with patch(
+        "plugin.plugins.galgame_plugin.capture_platform.is_windows",
+        return_value=True,
+    ):
+        chain = backend._build_backends()
+    kinds = {str(getattr(b, "kind", "")) for b in chain}
+    # default chain includes dxcam, mss, pyautogui
+    assert "dxcam" in kinds
+    assert "mss" in kinds
+    assert "pyautogui" in kinds
