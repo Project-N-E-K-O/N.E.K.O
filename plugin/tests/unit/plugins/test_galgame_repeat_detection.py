@@ -81,6 +81,31 @@ async def test_repeat_guard_does_not_retry_different_response() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_repeat_guard_respects_disabled_config() -> None:
+    backend = _Backend(
+        [
+            {"reply": "The scene is quiet."},
+            {"reply": "The scene is quiet."},
+            {"reply": "The current line adds new tension."},
+        ]
+    )
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_repeat_detection_enabled=False),
+        backend=backend,
+    )
+
+    await gateway.agent_reply({"prompt": "status", "public_context": {}})
+    result = await gateway.agent_reply({"prompt": "status", "public_context": {}})
+
+    assert result["reply"] == "The scene is quiet."
+    assert len(backend.calls) == 2
+    assert all("_anti_repeat_instruction" not in context for _, context in backend.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_repeat_guard_retry_failure_returns_original_response() -> None:
     backend = _Backend(
         [
