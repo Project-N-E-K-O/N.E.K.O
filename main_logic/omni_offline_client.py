@@ -390,7 +390,7 @@ class OmniOfflineClient:
             ChatOpenAI client for streaming text generation.
         on_text_delta (Callable[[str, bool], Awaitable[None]]):
             Callback for text delta events.
-        on_input_transcript (Callable[[str], Awaitable[None]]):
+        on_input_transcript (Callable[..., Awaitable[None]]):
             Callback for input transcript events (user messages).
         on_output_transcript (Callable[[str, bool], Awaitable[None]]):
             Callback for output transcript events (assistant messages).
@@ -412,7 +412,7 @@ class OmniOfflineClient:
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,  # Unused
         on_interrupt: Optional[Callable[[], Awaitable[None]]] = None,  # Unused
-        on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_input_transcript: Optional[Callable[..., Awaitable[None]]] = None,
         on_output_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_connection_error: Optional[Callable[[str], Awaitable[None]]] = None,
         on_response_done: Optional[Callable[[], Awaitable[None]]] = None,
@@ -1241,7 +1241,14 @@ class OmniOfflineClient:
 
             # 回调展示原始用户输入，纯图片消息保持空文本。
             if self.on_input_transcript:
-                await self.on_input_transcript(user_text)
+                if has_images and not user_text:
+                    await self.on_input_transcript(
+                        user_text,
+                        is_voice_source=False,
+                        count_empty_turn=True,
+                    )
+                else:
+                    await self.on_input_transcript(user_text)
         except Exception:
             if pending_images_for_turn:
                 self._pending_images = pending_images_for_turn + self._pending_images

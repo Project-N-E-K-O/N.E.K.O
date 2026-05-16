@@ -475,6 +475,16 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
     '_proactive_expected_sid', default=None,
 )
 
+# 文本流输出回调使用的 per-task 归属快照。non-audio 锁释放后，新输入可能
+# 覆盖共享的 current_speech_id / _active_text_request_id；流式回调必须继续
+# 使用本轮提交时冻结的 turn/request，避免跨轮串气泡或误清 request_id。
+_text_stream_turn_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    '_text_stream_turn_id', default=None,
+)
+_text_stream_request_id: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    '_text_stream_request_id', default=_REQUEST_ID_UNSET,
+)
+
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
@@ -1327,17 +1337,18 @@ class LLMSessionManager:
         
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
+            effective_speech_id = _text_stream_turn_id.get() or self.current_speech_id
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
-                        self._enqueue_tts_text_chunk(self.current_speech_id, text)
+                        self._enqueue_tts_text_chunk(effective_speech_id, text)
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
                     # TTS未就绪，先缓存（规范化延迟到 _flush_tts_pending_chunks）
-                    self.tts_pending_chunks.append((self.current_speech_id, text))
+                    self.tts_pending_chunks.append((effective_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
@@ -1432,7 +1443,12 @@ class LLMSessionManager:
             self._active_text_request_id = None
             return
 
-        active_request_id = self._active_text_request_id
+        stream_request_id = _text_stream_request_id.get()
+        active_request_id = (
+            stream_request_id
+            if stream_request_id is not _REQUEST_ID_UNSET
+            else self._active_text_request_id
+        )
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
@@ -1877,7 +1893,13 @@ class LLMSessionManager:
         recent_ai_text = getattr(self, "_recent_ai_voice_echo_text", "") or ""
         return _looks_like_recent_ai_echo(transcript_text, recent_ai_text)
 
-    async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
+    async def handle_input_transcript(
+        self,
+        transcript: str,
+        *,
+        is_voice_source: bool = True,
+        count_empty_turn: bool = False,
+    ):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
         ``is_voice_source`` defaults to True for the realtime-client
@@ -1889,6 +1911,8 @@ class LLMSessionManager:
             already called it directly with the input data — calling
             twice would double-bump _conv_seq and add the text to the
             buffer twice)
+        ``count_empty_turn`` 仅用于文本模式纯图片轮次：不展示兜底提示，但仍
+            让 session turn 计数前进，保证归档/刷新阈值不会被图片对话绕过。
         """
         transcript_text = transcript.strip()
         voice_rms_recorded = False
@@ -1960,7 +1984,7 @@ class LLMSessionManager:
             # at `_process_stream_data_internal` has already recorded the
             # user message. We still need the queue/cache plumbing below
             # to work normally, so just bypass the tracker block.
-            if transcript_text:
+            if transcript_text or count_empty_turn:
                 self._session_turn_count += 1
 
         # 推送到同步消息队列
@@ -2075,9 +2099,15 @@ class LLMSessionManager:
             self._current_ai_turn_text += text_clean
             if remember_voice_echo:
                 self._remember_recent_ai_voice_echo(text_clean)
-        effective_turn_id = turn_id or self.current_speech_id
+        stream_turn_id = _text_stream_turn_id.get()
+        stream_request_id = _text_stream_request_id.get()
+        effective_turn_id = turn_id or stream_turn_id or self.current_speech_id
         effective_request_id = (
-            self._active_text_request_id
+            (
+                stream_request_id
+                if stream_request_id is not _REQUEST_ID_UNSET
+                else self._active_text_request_id
+            )
             if request_id is _REQUEST_ID_UNSET
             else request_id
         )
@@ -3091,7 +3121,8 @@ class LLMSessionManager:
                 # 直接 return 不缓存，pending_input_data 不会出现 audio。
                 is_voice_session = isinstance(self.session, OmniRealtimeClient)
 
-                for message in pending_messages:
+                abort_flush = False
+                for index, message in enumerate(pending_messages):
                     msg_input_type = message.get("input_type")
                     try:
                         # 回放直接走内部处理，避免同任务重入 non_audio_stream_lock。
@@ -3106,7 +3137,14 @@ class LLMSessionManager:
                             await self._stream_data_now(replay_message, pending_replay=True)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
+                        async with self.input_cache_lock:
+                            self.pending_input_data = (
+                                pending_messages[index:] + self.pending_input_data
+                            )
+                        abort_flush = True
                         break
+                if abort_flush:
+                    return
         finally:
             async with self.input_cache_lock:
                 self._flushing_pending_input_data = False
@@ -6024,9 +6062,11 @@ class LLMSessionManager:
                     if isinstance(self.session, OmniOfflineClient):
                         pending_images_for_turn = self.session.consume_pending_images_for_turn()
 
-                    self._active_text_request_id = message.get("request_id")
+                    stream_turn_id = new_user_sid
+                    stream_request_id = message.get("request_id")
+                    self._active_text_request_id = stream_request_id
                     if release_non_audio_stream_lock:
-                        # 本轮图片已快照，后续 agent 回调和模型生成不再阻塞新的图文输入。
+                        # 已冻结本轮归属，后续 agent 回调和模型生成不再阻塞新的图文输入。
                         release_non_audio_stream_lock()
 
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
@@ -6038,7 +6078,15 @@ class LLMSessionManager:
                                 # ``ctx`` already includes its own grouped
                                 # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE outer
                                 # headers per (status, source). No extra wrap.
-                                await self.session.prompt_ephemeral(ctx)
+                                callback_sid_token = _proactive_expected_sid.set(stream_turn_id)
+                                callback_turn_token = _text_stream_turn_id.set(stream_turn_id)
+                                callback_request_token = _text_stream_request_id.set(stream_request_id)
+                                try:
+                                    await self.session.prompt_ephemeral(ctx)
+                                finally:
+                                    _text_stream_request_id.reset(callback_request_token)
+                                    _text_stream_turn_id.reset(callback_turn_token)
+                                    _proactive_expected_sid.reset(callback_sid_token)
                                 # prompt_ephemeral 通过 on_proactive_done → handle_proactive_complete
                                 # 发送 (None, None) 并置 _tts_done_queued_for_turn = True。
                                 # 对于 qwen-tts 的 server_commit 模式，需要为主回复生成新的
@@ -6049,10 +6097,17 @@ class LLMSessionManager:
                                         self.current_speech_id = str(uuid4())
                                         self._tts_done_queued_for_turn = False
                                         self._tts_done_pending_until_ready = False
+                                        stream_turn_id = self.current_speech_id
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
-                    await self.session.stream_text(data, pending_images_for_turn=pending_images_for_turn)
+                    stream_turn_token = _text_stream_turn_id.set(stream_turn_id)
+                    stream_request_token = _text_stream_request_id.set(stream_request_id)
+                    try:
+                        await self.session.stream_text(data, pending_images_for_turn=pending_images_for_turn)
+                    finally:
+                        _text_stream_request_id.reset(stream_request_token)
+                        _text_stream_turn_id.reset(stream_turn_token)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
