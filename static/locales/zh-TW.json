@@ -1987,6 +1987,7 @@
         "textChattingShort": "正在文本聊天中",
         "capturing": "正在截圖...",
         "importImageAdded": "已新增 {{count}} 張圖片，發送時會一併帶上",
+        "importImageAddedWithFailures": "已新增 {{count}} 張圖片，{{failed}} 張匯入失敗",
         "importImageFailed": "匯入圖片失敗",
         "screenshotAdded": "截圖已添加，點擊發送一起發送",
         "screenshotFailed": "截圖失敗",

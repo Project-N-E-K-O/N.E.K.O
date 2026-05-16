@@ -31,6 +31,106 @@
         }
     }
 
+    const IMPORT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+    const IMPORT_IMAGE_MAX_BASE64_LENGTH = Math.floor(IMPORT_IMAGE_MAX_BYTES * 4 / 3) + 100;
+    const IMPORT_IMAGE_JPEG_QUALITY_STEPS = [0.82, 0.72, 0.62, 0.52, 0.42, 0.32];
+
+    function getDataUrlBase64Length(dataUrl) {
+        var commaIndex = typeof dataUrl === 'string' ? dataUrl.indexOf(',') : -1;
+        return commaIndex >= 0 ? dataUrl.length - commaIndex - 1 : 0;
+    }
+
+    function getImportedImageTargetSize(width, height, shrinkRatio) {
+        var maxScreenWidth = (C && C.MAX_SCREENSHOT_WIDTH) || 1280;
+        var maxScreenHeight = (C && C.MAX_SCREENSHOT_HEIGHT) || 720;
+        var maxEdge = Math.max(maxScreenWidth, maxScreenHeight);
+        var maxPixels = maxScreenWidth * maxScreenHeight;
+        var scale = 1;
+
+        if (width > maxEdge || height > maxEdge) {
+            scale = Math.min(scale, maxEdge / width, maxEdge / height);
+        }
+        if (width * height > maxPixels) {
+            scale = Math.min(scale, Math.sqrt(maxPixels / (width * height)));
+        }
+        if (shrinkRatio && shrinkRatio > 0 && shrinkRatio < 1) {
+            scale *= shrinkRatio;
+        }
+
+        return {
+            width: Math.max(1, Math.round(width * scale)),
+            height: Math.max(1, Math.round(height * scale))
+        };
+    }
+
+    function loadImageFromBlob(blob) {
+        return new Promise(function (resolve, reject) {
+            var objectUrl = URL.createObjectURL(blob);
+            var img = new Image();
+            img.onload = function () {
+                URL.revokeObjectURL(objectUrl);
+                resolve(img);
+            };
+            img.onerror = function () {
+                URL.revokeObjectURL(objectUrl);
+                reject(new Error('LOAD_IMAGE_FAILED'));
+            };
+            img.src = objectUrl;
+        });
+    }
+
+    async function normalizeImageBlobForPendingList(blob) {
+        if (!(blob instanceof Blob)) {
+            throw new Error('INVALID_FILE');
+        }
+        if (!/^image\//i.test(blob.type || '')) {
+            throw new Error('INVALID_IMAGE_TYPE');
+        }
+
+        var img = await loadImageFromBlob(blob);
+        var sourceWidth = img.naturalWidth || img.width || 0;
+        var sourceHeight = img.naturalHeight || img.height || 0;
+        if (!sourceWidth || !sourceHeight) {
+            throw new Error('INVALID_IMAGE_DIMENSIONS');
+        }
+
+        var shrinkRatio = 1;
+        for (var round = 0; round < 5; round++) {
+            var target = getImportedImageTargetSize(sourceWidth, sourceHeight, shrinkRatio);
+            var canvas = document.createElement('canvas');
+            canvas.width = target.width;
+            canvas.height = target.height;
+            var ctx = canvas.getContext('2d');
+            if (!ctx) {
+                throw new Error('CANVAS_UNAVAILABLE');
+            }
+
+            // 透明 PNG/WebP 转 JPEG 时使用白底，避免透明区域在 JPEG 中变黑。
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, target.width, target.height);
+            ctx.drawImage(img, 0, 0, target.width, target.height);
+
+            for (var i = 0; i < IMPORT_IMAGE_JPEG_QUALITY_STEPS.length; i++) {
+                var dataUrl = canvas.toDataURL('image/jpeg', IMPORT_IMAGE_JPEG_QUALITY_STEPS[i]);
+                if (
+                    dataUrl &&
+                    dataUrl.startsWith('data:image/jpeg;base64,') &&
+                    getDataUrlBase64Length(dataUrl) <= IMPORT_IMAGE_MAX_BASE64_LENGTH
+                ) {
+                    return {
+                        dataUrl: dataUrl,
+                        width: target.width,
+                        height: target.height
+                    };
+                }
+            }
+
+            shrinkRatio *= 0.75;
+        }
+
+        throw new Error('IMAGE_TOO_LARGE_AFTER_COMPRESSION');
+    }
+
     // ======================== Screenshot helpers ========================
 
     /**
@@ -183,14 +283,21 @@
             Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
                     var succeeded = 0;
+                    var failed = 0;
                     for (var i = 0; i < results.length; i++) {
                         if (results[i].status === 'fulfilled') {
                             succeeded++;
                         } else {
+                            failed++;
                             console.error('[导入图片] 单张处理失败:', results[i].reason);
                         }
                     }
-                    if (succeeded > 0) {
+                    if (succeeded > 0 && failed > 0) {
+                        window.showStatusToast(
+                            window.t ? window.t('app.importImageAddedWithFailures', { count: succeeded, failed: failed }) : '已添加 ' + succeeded + ' 张图片，' + failed + ' 张导入失败',
+                            4000
+                        );
+                    } else if (succeeded > 0) {
                         window.showStatusToast(
                             window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
                             3000
@@ -211,32 +318,17 @@
         return input;
     };
 
-    mod.importImageFileToPendingList = function importImageFileToPendingList(file) {
-        return new Promise(function (resolve, reject) {
-            if (!(file instanceof File)) {
-                reject(new Error('INVALID_FILE'));
-                return;
-            }
+    mod.importImageBlobToPendingList = async function importImageBlobToPendingList(blob) {
+        var normalized = await normalizeImageBlobForPendingList(blob);
+        mod.addScreenshotToList(normalized.dataUrl);
+        return normalized.dataUrl;
+    };
 
-            if (!/^image\//i.test(file.type || '')) {
-                reject(new Error('INVALID_IMAGE_TYPE'));
-                return;
-            }
-
-            var reader = new FileReader();
-            reader.onload = function () {
-                try {
-                    mod.addScreenshotToList(String(reader.result || ''));
-                    resolve(reader.result);
-                } catch (error) {
-                    reject(error);
-                }
-            };
-            reader.onerror = function () {
-                reject(reader.error || new Error('READ_IMAGE_FAILED'));
-            };
-            reader.readAsDataURL(file);
-        });
+    mod.importImageFileToPendingList = async function importImageFileToPendingList(file) {
+        if (!(file instanceof File)) {
+            throw new Error('INVALID_FILE');
+        }
+        return await mod.importImageBlobToPendingList(file);
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {
@@ -1751,6 +1843,17 @@
                         mod.syncPendingComposerAttachments();
                     }
 
+                    if (!text && sentImageUrls.length > 0) {
+                        // 纯图片消息仍需一条文本事件触发后端 stream_text；
+                        // 后端在存在 pending_images 时会把空文本转换为默认看图提示。
+                        S.socket.send(JSON.stringify({
+                            action: 'stream_data',
+                            data: '',
+                            input_type: 'text',
+                            request_id: requestId
+                        }));
+                    }
+
                     // Then send text (if any)
                     if (text) {
                         if (!isReactWindowSource && window.appChat && typeof window.appChat.ensureUserDisplayName === 'function') {
@@ -2479,20 +2582,20 @@
                     e.preventDefault();
                     var blob = items[i].getAsFile();
                     if (!blob) continue;
-                    var reader = new FileReader();
-                    reader.onload = function (ev) {
-                        if (ev.target && ev.target.result) {
-                            mod.addScreenshotToList(ev.target.result);
+                    mod.importImageBlobToPendingList(blob)
+                        .then(function () {
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
                                 3000
                             );
-                        }
-                    };
-                    reader.onerror = function () {
-                        console.warn('[粘贴] 读取剪贴板图片失败');
-                    };
-                    reader.readAsDataURL(blob);
+                        })
+                        .catch(function (error) {
+                            console.warn('[粘贴] 处理剪贴板图片失败:', error);
+                            window.showStatusToast(
+                                window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                                4000
+                            );
+                        });
                     break;
                 }
             }

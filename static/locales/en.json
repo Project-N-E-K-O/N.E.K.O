@@ -1987,6 +1987,7 @@
         "textChattingShort": "Text chatting",
         "capturing": "Capturing...",
         "importImageAdded": "Added {{count}} image(s); they will be sent together",
+        "importImageAddedWithFailures": "Added {{count}} image(s); {{failed}} failed to import",
         "importImageFailed": "Failed to import image",
         "screenshotAdded": "Screenshot added, click send to send together",
         "screenshotFailed": "Screenshot failed",

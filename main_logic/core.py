@@ -782,6 +782,7 @@ class LLMSessionManager:
         self.session_ready = False  # Session是否完全就绪
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        self.non_audio_stream_lock = asyncio.Lock()  # 串行化图片/文本输入，保证图文同轮顺序
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
         self.hot_swap_audio_cache = []  # 热切换期间缓存的音频数据: [bytes, ...]
@@ -5734,7 +5735,8 @@ class LLMSessionManager:
         if message.get("input_type") == "audio":
             await self._enqueue_audio_stream_data(message)
             return
-        await self._stream_data_now(message)
+        async with self.non_audio_stream_lock:
+            await self._stream_data_now(message)
 
     async def _stream_data_now(self, message: dict):
         input_type = message.get("input_type")

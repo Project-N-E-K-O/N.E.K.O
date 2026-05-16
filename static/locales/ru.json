@@ -1987,6 +1987,7 @@
         "textChattingShort": "Текстовый чат",
         "capturing": "Захват...",
         "importImageAdded": "Добавлено изображений: {{count}}. Они будут отправлены вместе",
+        "importImageAddedWithFailures": "Добавлено изображений: {{count}}; не удалось импортировать: {{failed}}",
         "importImageFailed": "Не удалось импортировать изображение",
         "screenshotAdded": "Скриншот добавлен, нажмите отправить",
         "screenshotFailed": "Ошибка скриншота",
