@@ -1148,11 +1148,22 @@
                     // can no longer reach segment 1's bubble. Symptom: the
                     // second segment's text fails to render (or briefly
                     // renders and is then evicted) while its audio plays.
+                    //
+                    // Detection signal: compare incoming turn_id against
+                    // `window.realisticGeminiCurrentTurnId`, which is written
+                    // by THIS handler on every chunk (line below) and only
+                    // cleared by character switch / response_discarded — it
+                    // survives ensureAssistantTurnStarted (which nukes
+                    // S.assistantPendingTurnServerId via
+                    // clearPendingAssistantTurnStart the moment seg1's first
+                    // bubble opens, so that field is null by the time seg2
+                    // arrives and is NOT a usable signal here).
                     var normalizedNewTurnId = normalizeAssistantTurnId(response.turn_id);
+                    var normalizedOpenTurnId = normalizeAssistantTurnId(window.realisticGeminiCurrentTurnId);
                     var isMidTurnRestart = isNewMessage
                         && normalizedNewTurnId
-                        && S.assistantPendingTurnServerId
-                        && normalizedNewTurnId === S.assistantPendingTurnServerId
+                        && normalizedOpenTurnId
+                        && normalizedNewTurnId === normalizedOpenTurnId
                         && S.assistantTurnId;
                     if (isNewMessage && !isMidTurnRestart) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
