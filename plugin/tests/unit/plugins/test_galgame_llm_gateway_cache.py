@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -58,6 +59,28 @@ class _Backend:
                 ]
             }
         return {"reply": f"reply-{self.calls}"}
+
+    async def shutdown(self) -> None:
+        return None
+
+
+class _BlockingBackend:
+    def __init__(self) -> None:
+        self.started = 0
+        self.max_active = 0
+        self._active = 0
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.started += 1
+        self._active += 1
+        self.max_active = max(self.max_active, self._active)
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            self._active -= 1
+        if operation == "agent_reply":
+            return {"reply": str(context.get("prompt") or "ok")}
+        return {"summary": "ok", "key_points": []}
 
     async def shutdown(self) -> None:
         return None
@@ -266,3 +289,29 @@ def test_near_match_helpers_hash_and_observed_similarity() -> None:
     )
     assert _observed_similarity(["same current line"], ["same current line."]) >= 0.85
     assert _observed_similarity(["same current line"], ["different plot"]) < 0.85
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_max_in_flight_queues_instead_of_degrading() -> None:
+    backend = _BlockingBackend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_max_in_flight=1, llm_request_cache_ttl_seconds=0),
+        backend=backend,
+    )
+
+    try:
+        first, second = await asyncio.gather(
+            gateway.agent_reply({"prompt": "first"}),
+            gateway.agent_reply({"prompt": "second"}),
+        )
+    finally:
+        await gateway.shutdown()
+
+    assert first["degraded"] is False
+    assert first["reply"] == "first"
+    assert second["degraded"] is False
+    assert second["reply"] == "second"
+    assert backend.started == 2
+    assert backend.max_active == 1

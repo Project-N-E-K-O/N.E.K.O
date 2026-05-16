@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.sdk import get_global_language_full
 from plugin.plugins.galgame_plugin.store import GalgameStore
 from plugin.plugins.galgame_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
@@ -32,7 +33,7 @@ _INSTALL_PLUGIN_IDS = {"galgame_plugin", "study_companion"}
 _STALE_INSTALL_STATUS = "failed"
 _STALE_INSTALL_PHASE = "failed"
 _UI_I18N_DIR = Path(__file__).resolve().parent / "i18n" / "ui"
-_ALLOWED_UI_LOCALES = {"zh-CN", "en", "ja", "ru", "ko"}
+_ALLOWED_UI_LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ru", "ko"}
 
 
 class InstallStartPayload(BaseModel):
@@ -43,8 +44,6 @@ class InstallStartPayload(BaseModel):
 async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
     try:
-        from utils.language_utils import get_global_language_full
-
         locale = _normalize_ui_locale(str(get_global_language_full()))
     except Exception:
         locale = "en"
@@ -67,6 +66,8 @@ async def get_galgame_ui_i18n(plugin_id: str, locale: str) -> Response:
 
 def _normalize_ui_locale(locale: str) -> str:
     normalized = str(locale or "").strip().replace("_", "-").lower()
+    if normalized in {"zh-tw", "zh-hant", "zh-hk", "zh-mo"}:
+        return "zh-TW"
     if normalized == "zh" or normalized.startswith("zh-"):
         return "zh-CN"
     if normalized.startswith("en"):

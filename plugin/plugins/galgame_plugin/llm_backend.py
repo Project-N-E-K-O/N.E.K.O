@@ -5,15 +5,20 @@ from contextvars import ContextVar
 import hashlib
 import logging
 import re
-from typing import Any, Protocol
+from typing import Any, Protocol, TYPE_CHECKING
 
+from plugin.sdk import (
+    create_chat_llm,
+    get_config_manager,
+    robust_json_loads,
+    set_call_type,
+)
 from plugin.sdk.plugin import SdkError
 
 from .llm_prompts import build_prompt_messages_with_metadata
-from utils.config_manager import get_config_manager
-from utils.file_utils import robust_json_loads
-from utils.llm_client import ChatOpenAI, create_chat_llm
-from utils.token_tracker import set_call_type
+
+if TYPE_CHECKING:
+    from plugin.sdk import ChatOpenAI
 
 _ALLOWED_OPERATIONS = frozenset(
     {"explain_line", "summarize_scene", "suggest_choice", "agent_reply"}
@@ -67,28 +72,6 @@ def _api_key_cache_fingerprint(api_key: str) -> str:
     if not api_key:
         return ""
     return f"k:{hash(api_key) & 0xFFFFFFFF:08x}"
-
-
-def _model_supports_vision(model: str) -> bool:
-    normalized = str(model or "").strip().lower()
-    if not normalized:
-        return False
-    return any(
-        marker in normalized
-        for marker in (
-            "gpt-4o",
-            "gpt-4.1",
-            "gpt-4.5",
-            "gpt-5",
-            "vision",
-            "vl",
-            "qwen2.5-vl",
-            "qwen-vl",
-            "gemini",
-            "claude-3",
-            "claude-4",
-        )
-    )
 
 
 def _message_has_image_content(message: dict[str, Any]) -> bool:
@@ -292,6 +275,7 @@ class GalgameLLMBackend:
             raw_text = await self._call_model(
                 operation=operation,
                 messages=correction_messages,
+                tier="correction",
             )
 
         raise SdkError(
@@ -340,30 +324,30 @@ class GalgameLLMBackend:
         *,
         operation: str,
         messages: list[dict[str, Any]],
+        tier: str | None = None,
     ) -> str:
-        model_role = "agent" if operation == "agent_reply" else "summary"
+        model_role = tier or ("agent" if operation == "agent_reply" else "summary")
         api_config = get_config_manager().get_model_api_config(model_role)
         base_url = _as_str(api_config.get("base_url")).strip()
         model = _as_str(api_config.get("model")).strip()
         api_key = _as_str(api_config.get("api_key")).strip()
         if not base_url or not model:
             raise SdkError(f"missing configured {model_role} model")
-        if any(_message_has_image_content(message) for message in messages) and not _model_supports_vision(model):
+        if any(_message_has_image_content(message) for message in messages) and not bool(
+            api_config.get("supports_vision")
+        ):
             messages = _strip_image_content(messages)
 
         cfg = self._config
         if operation == "agent_reply":
-            temperature = float(getattr(cfg, "llm_temperature_agent_reply", 0.2) if cfg else 0.2)
             max_completion_tokens = int(getattr(cfg, "llm_max_tokens_agent_reply", 900) if cfg else 900)
         else:
-            temperature = float(getattr(cfg, "llm_temperature_default", 0.0) if cfg else 0.0)
             max_completion_tokens = int(getattr(cfg, "llm_max_tokens_default", 1200) if cfg else 1200)
         cache_key = (
             model_role,
             base_url,
             _api_key_cache_fingerprint(api_key),
             model,
-            temperature,
             max_completion_tokens,
         )
         llm = await self._get_or_create_llm(
@@ -371,7 +355,6 @@ class GalgameLLMBackend:
             model=model,
             base_url=base_url,
             api_key=api_key,
-            temperature=temperature,
             max_completion_tokens=max_completion_tokens,
         )
         return await self._invoke_llm_with_retry(
@@ -391,7 +374,7 @@ class GalgameLLMBackend:
         last_exc: Exception | None = None
         for attempt in range(_LLM_CALL_MAX_ATTEMPTS):
             try:
-                set_call_type("agent" if model_role == "agent" else "summary")
+                set_call_type(model_role if model_role in {"agent", "correction"} else "summary")
                 if callable(ainvoke):
                     response = await ainvoke(messages)
                 else:
@@ -428,7 +411,6 @@ class GalgameLLMBackend:
         model: str,
         base_url: str,
         api_key: str,
-        temperature: float,
         max_completion_tokens: int,
     ) -> ChatOpenAI:
         async with self._cache_lock():
@@ -439,7 +421,6 @@ class GalgameLLMBackend:
                 model=model,
                 base_url=base_url,
                 api_key=api_key,
-                temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
                 timeout=float(getattr(self._config, "llm_call_timeout_seconds", 30.0) or 30.0) + 0.5,
             )

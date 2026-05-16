@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from utils.config_manager import get_config_manager
+from plugin.sdk import get_config_manager
 
 from .memory_reader import is_windows_platform
 

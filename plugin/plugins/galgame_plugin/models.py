@@ -522,8 +522,6 @@ class GalgameLLMConfig:
     llm_target_entry_ref: str = ""
     llm_vision_enabled: bool = False
     llm_vision_max_image_px: int = 768
-    llm_temperature_agent_reply: float = 0.2
-    llm_temperature_default: float = 0.0
     llm_max_tokens_agent_reply: int = 900
     llm_max_tokens_default: int = 1200
     context_max_tokens: int = 6000
@@ -662,8 +660,6 @@ class GalgameConfig:
         "llm_target_entry_ref": ("llm", "llm_target_entry_ref"),
         "llm_vision_enabled": ("llm", "llm_vision_enabled"),
         "llm_vision_max_image_px": ("llm", "llm_vision_max_image_px"),
-        "llm_temperature_agent_reply": ("llm", "llm_temperature_agent_reply"),
-        "llm_temperature_default": ("llm", "llm_temperature_default"),
         "llm_max_tokens_agent_reply": ("llm", "llm_max_tokens_agent_reply"),
         "llm_max_tokens_default": ("llm", "llm_max_tokens_default"),
         "context_max_tokens": ("llm", "context_max_tokens"),

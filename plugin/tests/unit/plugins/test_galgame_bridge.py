@@ -9359,6 +9359,79 @@ async def test_game_llm_agent_send_message_interrupts_pending_planning(tmp_path:
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_status_not_blocked_by_slow_message_llm(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway(
+        reply_payload={"degraded": False, "reply": "慢回复完成。", "diagnostic": ""},
+        delay=0.3,
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion")
+
+    send_task = asyncio.create_task(agent.send_message(shared, message="慢查询"))
+    try:
+        for _ in range(20):
+            if fake_gateway.reply_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert fake_gateway.reply_calls
+
+        status = await asyncio.wait_for(agent.query_status(shared), timeout=0.1)
+        assert status["action"] == "query_status"
+        assert status["status"] == "active"
+    finally:
+        result = await send_task
+
+    assert result["result"] == "慢回复完成。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_send_message_returns_context_snapshot_status(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway(
+        reply_payload={"degraded": False, "reply": "快照回复。", "diagnostic": ""},
+        delay=0.2,
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion", active_data_source="bridge_sdk")
+
+    send_task = asyncio.create_task(agent.send_message(shared, message="说明当前状态"))
+    try:
+        for _ in range(20):
+            if fake_gateway.reply_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert fake_gateway.reply_calls
+
+        shared["current_connection_state"] = "disconnected"
+        shared["active_data_source"] = "ocr"
+    finally:
+        result = await send_task
+
+    assert result["result"] == "快照回复。"
+    assert result["status"] == "active"
+    assert result["input_source"] == "bridge_sdk"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_retries_dialogue_with_alternate_advance_strategy(
     tmp_path: Path,
 ) -> None:

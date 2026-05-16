@@ -63,6 +63,28 @@ def _as_bool(value, default=False):
     return bool(value)
 
 
+def _model_supports_vision(model: str | None) -> bool:
+    normalized = str(model or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "gpt-4o",
+            "gpt-4.1",
+            "gpt-4.5",
+            "gpt-5",
+            "vision",
+            "vl",
+            "qwen2.5-vl",
+            "qwen-vl",
+            "gemini",
+            "claude-3",
+            "claude-4",
+        )
+    )
+
+
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
     """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
 
@@ -3132,6 +3154,7 @@ class ConfigManager:
                 - 'api_key': API密钥
                 - 'base_url': API端点URL
                 - 'is_custom': 是否使用自定义API配置
+                - 'supports_vision': 当前模型是否支持图像输入
         """
         core_config = self.get_core_config()
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
@@ -3250,6 +3273,7 @@ class ConfigManager:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
+                    'supports_vision': _model_supports_vision(custom_model),
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,
@@ -3266,26 +3290,31 @@ class ConfigManager:
                     'api_key': qwen_api_key,
                     'base_url': qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', '')), # Placeholder only, will be overridden by the actual url
                     'is_custom': False,
+                    'supports_vision': _model_supports_vision(core_config.get(mapping['default_model'], '')),
                 }
 
         # 根据 fallback_type 回退到不同的 API
         if mapping['fallback_type'] == 'core':
             # 回退到核心 API 配置
+            model = core_config.get(mapping['default_model'], '')
             return {
-                'model': core_config.get(mapping['default_model'], ''),
+                'model': model,
                 'api_key': core_config.get('CORE_API_KEY', ''),
                 'base_url': core_config.get('CORE_URL', ''),
                 'is_custom': False,
+                'supports_vision': _model_supports_vision(model),
                 # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
         else:
             # 回退到辅助 API 配置
+            model = core_config.get(mapping['default_model'], '')
             return {
-                'model': core_config.get(mapping['default_model'], ''),
+                'model': model,
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
                 'is_custom': False,
+                'supports_vision': _model_supports_vision(model),
             }
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:

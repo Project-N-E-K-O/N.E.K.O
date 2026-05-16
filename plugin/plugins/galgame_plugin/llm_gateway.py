@@ -256,6 +256,8 @@ class LLMGateway:
         self._backend = backend or GalgameLLMBackend(logger, config)
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
         self._lock: asyncio.Lock | None = None
+        self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore_limit = 0
         self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._cache: OrderedDict[str, tuple[float, dict[str, Any], dict[str, Any]]] = OrderedDict()
         self._near_match_cache: OrderedDict[
@@ -263,7 +265,6 @@ class LLMGateway:
             tuple[float, dict[str, Any], dict[str, Any], dict[str, Any]],
         ] = OrderedDict()
         self._provider_backoff: dict[tuple[str, str], tuple[float, str]] = {}
-        self._active_calls = 0
         self._context_metrics: ContextMetricsCollector | None = None
         self._repeat_guard = ResponseRepeatGuard()
 
@@ -306,19 +307,35 @@ class LLMGateway:
 
     def _ensure_loop_affinity(self) -> None:
         loop = asyncio.get_running_loop()
-        if self._runtime_loop is loop and self._lock is not None:
+        limit = self._max_in_flight()
+        if (
+            self._runtime_loop is loop
+            and self._lock is not None
+            and self._semaphore is not None
+            and self._semaphore_limit == limit
+        ):
             return
         if self._runtime_loop is not None and self._runtime_loop is not loop:
             self._clear_loop_bound_state()
         self._runtime_loop = loop
         self._lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(limit)
+        self._semaphore_limit = limit
 
     def _clear_loop_bound_state(self) -> None:
         for task in self._inflight.values():
             self._cancel_foreign_task(task)
         self._inflight.clear()
         self._provider_backoff.clear()
-        self._active_calls = 0
+        self._semaphore = None
+        self._semaphore_limit = 0
+
+    def _max_in_flight(self) -> int:
+        try:
+            value = int(getattr(self._config, "llm_max_in_flight", 2))
+        except (TypeError, ValueError):
+            value = 2
+        return max(1, value)
 
     @staticmethod
     def _cancel_foreign_task(task: asyncio.Task[dict[str, Any]]) -> None:
@@ -348,7 +365,6 @@ class LLMGateway:
             self._near_match_cache.clear()
             self._provider_backoff.clear()
             self._repeat_guard.clear()
-            self._active_calls = 0
         for task in tasks:
             task.cancel()
         if tasks:
@@ -455,10 +471,6 @@ class LLMGateway:
                 if in_flight is not None:
                     wait_task = in_flight
                 else:
-                    if self._active_calls >= int(self._config.llm_max_in_flight):
-                        return degraded("busy: throttled by llm_max_in_flight")
-
-                    self._active_calls += 1
                     wait_task = asyncio.create_task(
                         self._perform_call(
                             fingerprint=fingerprint,
@@ -635,19 +647,26 @@ class LLMGateway:
         start_time = time.monotonic()
         prompt_metadata: dict[str, Any] = {}
         try:
-            result = await self._call_target(
-                operation=operation,
-                context=context,
-                validate=validate,
-                degraded=degraded,
-            )
-            result = await self._maybe_retry_repeated_response(
-                operation=operation,
-                context=context,
-                result=result,
-                validate=validate,
-                degraded=degraded,
-            )
+            semaphore = self._semaphore
+            if semaphore is None:
+                self._ensure_loop_affinity()
+                semaphore = self._semaphore
+            if semaphore is None:
+                raise RuntimeError("LLM gateway semaphore was not initialized")
+            async with semaphore:
+                result = await self._call_target(
+                    operation=operation,
+                    context=context,
+                    validate=validate,
+                    degraded=degraded,
+                )
+                result = await self._maybe_retry_repeated_response(
+                    operation=operation,
+                    context=context,
+                    result=result,
+                    validate=validate,
+                    degraded=degraded,
+                )
             prompt_metadata = self._consume_backend_prompt_metadata()
             total_time_ms = (time.monotonic() - start_time) * 1000.0
             ttl = self._ttl_for_operation(operation)
@@ -694,7 +713,6 @@ class LLMGateway:
         finally:
             async with self._lock:
                 self._inflight.pop(fingerprint, None)
-                self._active_calls = max(0, self._active_calls - 1)
 
     async def _maybe_retry_repeated_response(
         self,
