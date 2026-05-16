@@ -23,6 +23,7 @@ autonomously when the user is silent.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Dict
 
 from plugin.sdk.plugin import (
@@ -493,15 +494,31 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             connected = await self._ensure_service_started()
             inv = dict(self._service._last_inventory)  # snapshot copy
             inv_at = self._service._last_inventory_at
-            # 断连场景：inv 默认 {}, inv_at 默认 0——这与"真的空背包"在数值上
-            # 同形，但语义完全不同。如果照"空背包"模板返回，dialog LLM 会向
-            # 用户复述一个假事实（"你背包是空的"）。改返回"未知"，让 LLM
-            # 自然引导到"暂时看不到背包"而不是编造库存事实。
+            # 三档分支：
+            #   (a) 断连 + 从没拿到过 → 真"未知"
+            #   (b) 断连 + 有过旧 snapshot → 旧 snapshot **+ 过期警告**
+            #       （不能照原值上报，断连期间死亡/掉落/世界变化都看不到，
+            #        把缓存当 truth 等于复述过期事实）
+            #   (c) 已连接 → 当下 snapshot 即 truth
             if not connected and inv_at == 0:
                 summary = (
                     "【背包 ground truth】暂时连不上游戏，看不到你现在的背包。"
                     "如果用户问到持有的物品，先说一声"
                     "『现在连不上游戏，等一下再确认』，别凭印象编。"
+                )
+            elif not connected:
+                age_s = max(0, int(time.time() - inv_at))
+                if inv:
+                    items = sorted(inv.items(), key=lambda kv: -kv[1])
+                    snippet = "、".join(f"{n}×{c}" for n, c in items)
+                    cache_line = f"上一次看到（{age_s}s 前）背包里是：{snippet}。"
+                else:
+                    cache_line = f"上一次看到（{age_s}s 前）背包是空的。"
+                summary = (
+                    f"【背包 ground truth — ⚠️ 已断连，下列可能过期】{cache_line}"
+                    "中间死过 / 掉落 / 被夺走都看不到，"
+                    "用户问到持有时一定要说『现在连不上游戏，"
+                    "上一次看到的是 ... 但不一定还准』。"
                 )
             elif not inv:
                 summary = (
@@ -521,7 +538,12 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                     "不在你身上。如果你刚才说过的话和这个列表对不上，立刻"
                     "用第一人称自己更正回真实情况。"
                 )
-            return Ok({"summary": summary, "inventory": inv, "snapshot_at": inv_at})
+            return Ok({
+                "summary": summary,
+                "inventory": inv,
+                "snapshot_at": inv_at,
+                "connected": connected,
+            })
         except Exception as exc:
             return Err(f"{type(exc).__name__}: {exc}")
 
