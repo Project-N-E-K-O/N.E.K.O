@@ -1259,6 +1259,14 @@ class LLMSessionManager:
         if self._takeover_active:
             return
         self.audio_resampler.clear()
+        # 必须重置这两个 flag，否则下一轮 ``_request_tts_done_locked`` 会因
+        # ``_tts_done_queued_for_turn=True`` 直接 early-return，下一轮的 TTS
+        # flush sentinel 永远不入队，server 拿不到 ``tts.flush`` 句尾音频
+        # 可能挂在 buffer 里、长句 utterance 不会 finalize。``handle_new_message``
+        # 在 speech_stopped 路径也是这样 reset 的（[core.py:1214](main_logic/core.py:1214)），
+        # 这里和它对偶。
+        self._tts_done_queued_for_turn = False
+        self._tts_done_pending_until_ready = False
         async with self.lock:
             self.current_speech_id = str(uuid4())
 

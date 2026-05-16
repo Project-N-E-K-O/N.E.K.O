@@ -932,17 +932,18 @@ class GameAgentService:
             )
 
     async def _on_task_finished(self, data: Dict[str, Any]) -> None:
-        # Snapshot inventory so the autonomous nudge loop can keep
-        # surfacing it as ground truth between task_finished events
-        # — without this the dialog LLM only sees inventory at
-        # task_finished moments and freely hallucinates items between.
-        inv = data.get("inventory")
-        if isinstance(inv, dict):
-            self._last_inventory = {
-                str(k): int(v) for k, v in inv.items()
+        # Parse inventory but DON'T commit it yet — stale-frame check is below
+        # under the lock. Committing here would let a delayed task_finished
+        # (timed-out / overwritten / agent restart) overwrite the current
+        # task's ground truth with garbage from an abandoned task, and the
+        # nudge loop would surface stale inventory between real updates.
+        raw_inv = data.get("inventory")
+        parsed_inv: Optional[Dict[str, int]] = None
+        if isinstance(raw_inv, dict):
+            parsed_inv = {
+                str(k): int(v) for k, v in raw_inv.items()
                 if isinstance(v, (int, float)) and int(v) > 0
             }
-            self._last_inventory_at = time.time()
 
         text = str(
             data.get("text") or data.get("data") or data.get("message") or ""
@@ -1024,7 +1025,12 @@ class GameAgentService:
                     self._task_finished = True
                 return
             # From here on the frame is being accepted; it's safe to
-            # commit the text + flag updates.
+            # commit the text + flag updates AND the inventory snapshot
+            # (parsed at the top of this method but deliberately held
+            # back to avoid letting stale frames overwrite ground truth).
+            if parsed_inv is not None:
+                self._last_inventory = parsed_inv
+                self._last_inventory_at = time.time()
             if text:
                 self._log_cache.append(text)
             if self._pending is None:
@@ -1058,6 +1064,14 @@ class GameAgentService:
             }
             if text:
                 result_payload["text"] = text
+            # Surface the (just-committed) inventory snapshot to the
+            # completion-cue renderer so the dialog LLM sees both the
+            # agent's free-text outcome AND the current ground truth
+            # in the same cue, instead of having to call query_inventory
+            # right after every minecraft_task. No-op when the frame
+            # didn't carry inventory.
+            if parsed_inv is not None:
+                result_payload["inventory"] = dict(parsed_inv)
             pending.result = result_payload
             pending.event.set()
             self._task_finished = True
