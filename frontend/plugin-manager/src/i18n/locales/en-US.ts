@@ -191,6 +191,11 @@ export default {
         imported: 'Imported',
         market: 'Market',
       },
+      // v2: Market release channel values displayed on SourceDetailRow.
+      channelLabels: {
+        stable: 'Stable',
+        beta: 'Beta',
+      },
       updateAvailable: 'Update available',
       labels: {
         installedAt: 'Installed',
@@ -200,6 +205,7 @@ export default {
         version: 'Version',
         previousVersion: 'Previous',
         latestAvailable: 'Latest available',
+        channel: 'Channel',
       },
     },
     filterPlaceholder: 'Filter plugins with text, pinyin, and is:/type:/has: rules',

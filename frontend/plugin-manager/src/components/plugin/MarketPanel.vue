@@ -696,6 +696,9 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         version: payload.version,
         channel: payload.channel,
         published_at: payload.published_at,
+        // v2 (Option C): 把 Market slug 作为期望的 plugin.toml id，让 bridge
+        // 在 unpack 后做身份一致性校验；不一致不阻塞，只 warn。
+        expected_plugin_toml_id: plugin.slug || null,
         mode: 'install',
         on_conflict: 'rename',
       }),
@@ -755,6 +758,8 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         version: payload.version,
         channel: payload.channel,
         published_at: payload.published_at,
+        // v2 (Option C): 升级路径同样透传 slug 做身份对账
+        expected_plugin_toml_id: plugin.slug || null,
         mode: 'upgrade',
         on_conflict: 'fail',
       }),

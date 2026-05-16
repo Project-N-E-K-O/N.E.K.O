@@ -119,6 +119,15 @@ class MarketInstallRequest(BaseModel):
         default="install",
         description="install=全新安装；upgrade=覆盖旧版本；reinstall=同版本重装",
     )
+    # v2 (Option C): plugin 身份一致性校验 —— Market slug 透传给客户端，
+    # 客户端 unpack 后比对包内 plugin.toml [plugin].id；不一致时附 warning。
+    expected_plugin_toml_id: str | None = Field(
+        default=None,
+        description=(
+            "Market 上的 plugin.slug；客户端 unpack 后会和包内 plugin.toml "
+            "的 id 字段比对。不一致只 warn 不阻塞，给用户审视空间"
+        ),
+    )
     on_conflict: str = Field(default="rename", pattern=r"^(rename|fail)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
@@ -749,6 +758,9 @@ def _build_market_override(
             "package_sha256": (payload.package_sha256 or "").lower(),
             "payload_hash": payload.payload_hash,
             "published_at": payload.published_at or _utc_iso_now(),
+            # v2 (Option C): identity check — passed through to PluginCliService
+            # which compares it against the unpacked plugin.toml id.
+            "expected_plugin_toml_id": payload.expected_plugin_toml_id,
         },
     }
 
@@ -819,40 +831,96 @@ def _post_install_payload_check(
 
 
 async def _safely_is_running(plugin_id: str) -> bool:
-    """Best-effort lifecycle probe.
+    """Probe whether ``plugin_id`` is currently running.
 
-    Currently the plugin server does not expose a stable
-    ``is_plugin_running`` interface to bridge code; treat as "not running"
-    so the upgrade flow does not try to stop / start something it can't
-    manage. When a real interface lands the implementation can swap in
-    here without touching ``_do_upgrade``.
+    Reads the plugin host registry directly (lock-protected) instead of
+    going through the lifecycle service — we just need a snapshot of
+    the running set, not a heavy RPC. Failure modes (registry not yet
+    initialized, weird plugin id) collapse to "not running" so the
+    upgrade flow does not try to stop something that isn't there.
     """
 
-    return False
+    if not plugin_id:
+        return False
+    try:
+        from plugin.server.application.plugins.lifecycle_service import (
+            _plugin_is_running_sync,
+        )
+        return await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "lifecycle is_running probe failed for plugin_id={}: {}",
+            plugin_id,
+            exc,
+        )
+        return False
 
 
 async def _safely_stop(plugin_id: str) -> None:
-    """Best-effort lifecycle stop — see :func:`_safely_is_running`."""
+    """Best-effort lifecycle stop wrapping ``PluginLifecycleService.stop_plugin``.
 
-    return None
+    Bridge upgrade calls this **before** renaming the old plugin
+    directory; failures here aren't necessarily fatal (Linux happily
+    renames a dir even when the process holds open files, Windows
+    won't). We surface any error to bridge so it can choose to abort
+    rather than risk corruption.
+    """
+
+    if not plugin_id:
+        return None
+    from plugin.server.application.plugins import PluginLifecycleService
+    from plugin.server.domain.errors import ServerDomainError
+
+    service = PluginLifecycleService()
+    try:
+        await service.stop_plugin(plugin_id)
+    except ServerDomainError as exc:
+        # PLUGIN_NOT_RUNNING (404) is benign — the plugin was already
+        # stopped between our is_running probe and the stop call.
+        if getattr(exc, "code", None) == "PLUGIN_NOT_RUNNING":
+            logger.debug(
+                "lifecycle stop: plugin already stopped plugin_id={}",
+                plugin_id,
+            )
+            return None
+        logger.error(
+            "lifecycle stop failed for plugin_id={}: {}",
+            plugin_id,
+            exc,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "lifecycle stop unexpected error for plugin_id={}: {}",
+            plugin_id,
+            exc,
+        )
+        raise
 
 
 async def _safely_start(plugin_id: str) -> None:
     """Best-effort lifecycle start; never raises (R5.4).
 
-    Wraps the start hook in a try/except so that a failure here during
-    rollback does not shadow the original error. Currently a no-op
-    stub mirroring :func:`_safely_is_running`.
+    Wraps the start hook in a try/except so that a failure during
+    rollback does not shadow the original error. Logged at ERROR with
+    the underlying cause so the operator can see why the old version
+    didn't come back up.
     """
 
-    try:
+    if not plugin_id:
         return None
-    except Exception as exc:  # pragma: no cover — defensive
+    from plugin.server.application.plugins import PluginLifecycleService
+
+    service = PluginLifecycleService()
+    try:
+        await service.start_plugin(plugin_id)
+    except Exception as exc:
         logger.error(
             "lifecycle start failed for plugin_id={}: {}",
             plugin_id,
             exc,
         )
+        return None
 
 
 def _make_restore_dir_step(

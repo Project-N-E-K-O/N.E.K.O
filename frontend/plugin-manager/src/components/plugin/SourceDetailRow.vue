@@ -35,6 +35,22 @@
           <span class="source-cell__value">{{ marketDetail.version }}</span>
           <span class="source-cell__label">{{ t('plugins.installSource.labels.version') }}</span>
         </div>
+        <!-- v2: Market 渠道 (stable / beta)；空时不显示 -->
+        <div v-if="marketChannelDisplay" class="source-cell">
+          <el-icon class="source-cell__icon" :size="13"><Connection /></el-icon>
+          <span class="source-cell__value">{{ marketChannelDisplay }}</span>
+          <span class="source-cell__label">{{ t('plugins.installSource.labels.channel') }}</span>
+        </div>
+        <!-- v2: Market 实际下载字节的 sha256；v1 entry 为空，故仅在有值时显示 -->
+        <div
+          v-if="marketSha256Short"
+          class="source-cell"
+          :title="marketDetail.package_sha256"
+        >
+          <el-icon class="source-cell__icon" :size="13"><Key /></el-icon>
+          <span class="source-cell__value source-cell__value--mono">{{ marketSha256Short }}</span>
+          <span class="source-cell__label">SHA-256</span>
+        </div>
         <div v-if="marketDetail.previous_version" class="source-cell">
           <el-icon class="source-cell__icon" :size="13"><Back /></el-icon>
           <span class="source-cell__value">{{ marketDetail.previous_version }}</span>
@@ -64,6 +80,7 @@ import {
   Collection,
   Back,
   Top,
+  Connection,
 } from '@element-plus/icons-vue'
 import type {
   PluginInstallSource,
@@ -101,6 +118,23 @@ const marketDetail = computed<PluginInstallSourceDetailMarket>(() => {
 const sha256Short = computed(() => {
   const full = importedDetail.value?.package_sha256 ?? ''
   return full.slice(0, 8) + (full.length > 8 ? '…' : '')
+})
+
+/** v2 (neko-market-version-sync §3.1.1): Market 实际下载字节的 sha256
+ *  缩写；空字符串（v1 entry 升上来的）不显示对应 cell。 */
+const marketSha256Short = computed(() => {
+  const full = marketDetail.value?.package_sha256 ?? ''
+  if (!full) return ''
+  return full.slice(0, 8) + (full.length > 8 ? '…' : '')
+})
+
+/** v2: Market 渠道展示文本；'stable' / 'beta' 走 i18n，未知值原样展示。 */
+const marketChannelDisplay = computed(() => {
+  const ch = marketDetail.value?.channel
+  if (!ch) return ''
+  if (ch === 'stable') return t('plugins.installSource.channelLabels.stable')
+  if (ch === 'beta') return t('plugins.installSource.channelLabels.beta')
+  return ch
 })
 
 /** Parse the backend's canonical timestamp; fall back to raw on malformed

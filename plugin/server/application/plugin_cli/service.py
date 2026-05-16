@@ -263,6 +263,34 @@ class PluginCliService:
                     warnings=warnings,
                 )
 
+            # Step 4b — plugin identity consistency check (soft).
+            # When Market tells us "this is plugin X" by passing
+            # ``expected_plugin_toml_id`` (the Market plugin slug),
+            # the unpacked package's plugin.toml [plugin].id is expected
+            # to match. Mismatch is a soft warning rather than a hard
+            # failure because Market currently does not enforce
+            # ``Plugin.slug == plugin.toml.id``. The lock entry still
+            # records the actual unpacked id; the warning surfaces the
+            # divergence so the user can decide whether to trust the
+            # package.
+            expected_toml_id = market_detail.get("expected_plugin_toml_id")
+            if (
+                isinstance(expected_toml_id, str)
+                and expected_toml_id
+                and target_plugin_id
+                and expected_toml_id != target_plugin_id
+            ):
+                warnings.append(
+                    f"plugin identity mismatch: Market declared "
+                    f"'{expected_toml_id}' but the package contains "
+                    f"plugin id '{target_plugin_id}'; install proceeds "
+                    "but please verify the package source"
+                )
+            # ``expected_plugin_toml_id`` is informational only — drop it
+            # before passing market_detail to ISM so it does not leak into
+            # the lock entry's source_detail.
+            market_detail.pop("expected_plugin_toml_id", None)
+
             # Step 5 — overwrite hash fields with our own freshly-computed
             # values. Mismatches are warnings, not failures (R3.5 says
             # caller's value is informational; the bytes we hashed are what

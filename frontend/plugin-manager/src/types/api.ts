@@ -164,7 +164,18 @@ export type PluginInstallSourceChannel =
 export interface PluginInstallSourceDetailMarket {
   plugin_market_id: string
   version: string
+  /** v2 (neko-market-version-sync §3.1.1):
+   *  Market 的发布渠道，"stable" | "beta"。lock 解析失败时会回退到 "stable"。 */
+  channel?: string
   package_url: string
+  /** v2: Market 上分发的 .neko-plugin 包 sha256（64 hex）。v1 entry
+   *  parser 升上来时为空字符串。 */
+  package_sha256?: string
+  /** v2: 包内 metadata.toml [payload].hash；可能为 null。 */
+  payload_hash?: string | null
+  /** v2: Market 上 latest_version.created_at；v1 entry 升上来时回退到
+   *  entry.installed_at。 */
+  published_at?: string
   previous_version: string | null
 }
 
