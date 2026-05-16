@@ -353,3 +353,32 @@ async def test_llm_gateway_semaphore_wait_is_bounded_by_call_timeout() -> None:
 
     assert second["degraded"] is True
     assert second["diagnostic"] == "timeout: llm semaphore acquire timed out"
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_semaphore_wait_timeout_does_not_poison_provider() -> None:
+    backend = _HeldBackend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_max_in_flight=1, llm_call_timeout_seconds=0.2),
+        backend=backend,
+    )
+    first = asyncio.create_task(gateway.agent_reply({"prompt": "first"}))
+    await backend.started.wait()
+    gateway.update_config(_config(llm_max_in_flight=1, llm_call_timeout_seconds=0.01))
+
+    try:
+        second = await gateway.agent_reply({"prompt": "second"})
+        backend.release.set()
+        first_result = await asyncio.wait_for(first, timeout=1.0)
+        third = await gateway.agent_reply({"prompt": "third"})
+    finally:
+        backend.release.set()
+        await gateway.shutdown()
+
+    assert second["degraded"] is True
+    assert second["diagnostic"] == "timeout: llm semaphore acquire timed out"
+    assert first_result["degraded"] is False
+    assert third["degraded"] is False
+    assert third["reply"] == "third"

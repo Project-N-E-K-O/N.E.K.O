@@ -28,6 +28,7 @@ _LLM_RESPONSE_CACHE_MAX_ITEMS = 50
 _LLM_NEAR_MATCH_CACHE_MAX_ITEMS = 50
 _LLM_PROVIDER_BACKOFF_SECONDS = 2.0
 _LLM_PROVIDER_BACKOFF_CATEGORIES = frozenset({"busy", "gateway_unavailable", "timeout"})
+_LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC = "timeout: llm semaphore acquire timed out"
 _REPEAT_GUARD_MAX_ITEMS = 8
 _NEAR_MATCH_SUPPORTED_OPERATIONS = frozenset(
     {"explain_line", "summarize_scene", "scene_summary"}
@@ -664,7 +665,7 @@ class LLMGateway:
             try:
                 acquired = await self._acquire_call_slot(semaphore, deadline=deadline)
             except asyncio.TimeoutError:
-                result = degraded("timeout: llm semaphore acquire timed out")
+                result = degraded(_LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC)
             else:
                 try:
                     remaining = deadline - time.monotonic()
@@ -959,6 +960,8 @@ class LLMGateway:
             self._clear_provider_backoff_locked(provider_key)
             return
         diagnostic = str(result.get("diagnostic") or "").strip()
+        if diagnostic == _LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC:
+            return
         category = self._provider_backoff_category(diagnostic)
         if category is None:
             return
