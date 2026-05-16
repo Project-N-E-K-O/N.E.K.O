@@ -1173,16 +1173,23 @@ class OmniOfflineClient:
             except Exception as e:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
-    async def stream_text(self, text: str) -> None:
+    def consume_pending_images_for_turn(self) -> List[str]:
+        images = list(self._pending_images)
+        if images:
+            self._pending_images.clear()
+        return images
+
+    async def stream_text(self, text: str, *, pending_images_for_turn: Optional[List[str]] = None) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
         """
-        # 先快照并清空本轮图片，避免切换视觉模型时后续图片插入到当前用户轮次。
-        pending_images_for_turn = list(self._pending_images)
-        if pending_images_for_turn:
-            self._pending_images.clear()
+        if pending_images_for_turn is None:
+            # 先快照并清空本轮图片，避免切换视觉模型时后续图片插入到当前用户轮次。
+            pending_images_for_turn = self.consume_pending_images_for_turn()
+        else:
+            pending_images_for_turn = list(pending_images_for_turn)
 
         if not text or not text.strip():
             # If only images without text, use a default prompt

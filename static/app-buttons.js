@@ -79,11 +79,13 @@
         });
     }
 
-    async function normalizeImageBlobForPendingList(blob) {
+    async function normalizeImageBlobForPendingList(blob, options) {
+        options = options || {};
         if (!(blob instanceof Blob)) {
             throw new Error('INVALID_FILE');
         }
-        if (!/^image\//i.test(blob.type || '')) {
+        var blobType = String(blob.type || '');
+        if ((!blobType && !options.allowEmptyType) || (blobType && !/^image\//i.test(blobType))) {
             throw new Error('INVALID_IMAGE_TYPE');
         }
 
@@ -323,8 +325,8 @@
         return input;
     };
 
-    mod.prepareImageBlobForPendingList = async function prepareImageBlobForPendingList(blob) {
-        return await normalizeImageBlobForPendingList(blob);
+    mod.prepareImageBlobForPendingList = async function prepareImageBlobForPendingList(blob, options) {
+        return await normalizeImageBlobForPendingList(blob, options);
     };
 
     mod.prepareImageFileForPendingList = async function prepareImageFileForPendingList(file) {
@@ -334,8 +336,8 @@
         return await mod.prepareImageBlobForPendingList(file);
     };
 
-    mod.importImageBlobToPendingList = async function importImageBlobToPendingList(blob) {
-        var normalized = await mod.prepareImageBlobForPendingList(blob);
+    mod.importImageBlobToPendingList = async function importImageBlobToPendingList(blob, options) {
+        var normalized = await mod.prepareImageBlobForPendingList(blob, options);
         mod.addScreenshotToList(normalized.dataUrl);
         return normalized.dataUrl;
     };
@@ -2597,7 +2599,7 @@
                     e.preventDefault();
                     var blob = items[i].getAsFile();
                     if (!blob) continue;
-                    mod.importImageBlobToPendingList(blob)
+                    mod.importImageBlobToPendingList(blob, { allowEmptyType: true })
                         .then(function () {
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',

@@ -6020,6 +6020,15 @@ class LLMSessionManager:
                             return
                         logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
 
+                    pending_images_for_turn = None
+                    if isinstance(self.session, OmniOfflineClient):
+                        pending_images_for_turn = self.session.consume_pending_images_for_turn()
+
+                    self._active_text_request_id = message.get("request_id")
+                    if release_non_audio_stream_lock:
+                        # 本轮图片已快照，后续 agent 回调和模型生成不再阻塞新的图文输入。
+                        release_non_audio_stream_lock()
+
                     # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
                     # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
                     if self.pending_agent_callbacks:
@@ -6036,17 +6045,14 @@ class LLMSessionManager:
                                 # speech_id（触发 qwen worker 重建连接、重置 buffer_committed），
                                 # 并重置 done flag 允许 handle_response_complete 正常发送。
                                 async with self.lock:
-                                    self.current_speech_id = str(uuid4())
-                                    self._tts_done_queued_for_turn = False
-                                    self._tts_done_pending_until_ready = False
+                                    if self.current_speech_id == new_user_sid:
+                                        self.current_speech_id = str(uuid4())
+                                        self._tts_done_queued_for_turn = False
+                                        self._tts_done_pending_until_ready = False
                         except Exception as _cb_err:
                             logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
 
-                    self._active_text_request_id = message.get("request_id")
-                    if release_non_audio_stream_lock:
-                        # 图片已进入 pending 队列，文本即将消费它们；此后不再阻塞后续输入等待整轮生成。
-                        release_non_audio_stream_lock()
-                    await self.session.stream_text(data)
+                    await self.session.stream_text(data, pending_images_for_turn=pending_images_for_turn)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
