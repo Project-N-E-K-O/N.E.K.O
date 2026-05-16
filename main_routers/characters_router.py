@@ -71,6 +71,7 @@ from utils.character_memory import (
 )
 from utils.config_manager import (
     delete_reserved,
+    ensure_default_yui_voice_for_free_api,
     flatten_reserved,
     get_reserved,
     set_reserved,
@@ -3508,6 +3509,7 @@ async def clear_voice_ids():
                     cleared_count += 1
 
         await _config_manager.asave_characters(characters)
+        await ensure_default_yui_voice_for_free_api(_config_manager)
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()

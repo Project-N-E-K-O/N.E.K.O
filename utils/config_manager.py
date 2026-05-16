@@ -124,6 +124,113 @@ def set_reserved(data: dict, *path_and_value) -> bool:
     return True
 
 
+DEFAULT_YUI_LIVE2D_MODEL_PATH = "yui-origin/yui-origin.model3.json"
+
+
+def _normalize_live2d_model_path(value) -> str:
+    model_path = str(value or "").strip().replace("\\", "/").lower()
+    if model_path == "yui-origin":
+        return DEFAULT_YUI_LIVE2D_MODEL_PATH
+    return model_path
+
+
+def _is_default_yui_character(character_name: str, character_data: dict) -> bool:
+    if not isinstance(character_data, dict):
+        return False
+
+    name = str(character_name or "").strip().upper()
+    nickname = str(character_data.get("昵称") or "").strip().upper()
+    if name != "YUI" and nickname != "YUI":
+        return False
+
+    model_path = get_reserved(
+        character_data,
+        "avatar",
+        "live2d",
+        "model_path",
+        default="",
+        legacy_keys=("live2d",),
+    )
+    return _normalize_live2d_model_path(model_path) == DEFAULT_YUI_LIVE2D_MODEL_PATH
+
+
+def _get_default_yui_free_voice_id() -> str:
+    from utils.api_config_loader import get_free_voices
+    from utils.language_utils import get_global_language_full
+
+    free_voices = get_free_voices() or {}
+    try:
+        language = str(get_global_language_full() or "").strip().lower().replace("-", "_")
+    except Exception:
+        language = ""
+
+    language_aliases = {
+        "zh": "cn",
+        "zh_cn": "cn",
+        "zh_hans": "cn",
+        "zh_tw": "tw",
+        "zh_hant": "tw",
+    }
+    suffix = language_aliases.get(language, language.split("_", 1)[0] if language else "")
+    keys = []
+    if suffix:
+        keys.append(f"yui_{suffix}")
+    keys.extend(("yui_cn", "cuteGirl"))
+
+    for key in keys:
+        voice_id = str(free_voices.get(key) or "").strip()
+        if voice_id:
+            return voice_id
+    return next((str(voice_id).strip() for voice_id in free_voices.values() if str(voice_id or "").strip()), "")
+
+
+async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict | None = None) -> bool:
+    """Ensure the default YUI card has the free YUI voice when free API is active."""
+    if not isinstance(core_cfg, dict):
+        try:
+            core_cfg = await config_manager.aget_core_config()
+        except Exception:
+            core_cfg = {}
+    if not isinstance(core_cfg, dict):
+        return False
+    if core_cfg.get("coreApi") != "free" and core_cfg.get("assistApi") != "free" and not core_cfg.get("IS_FREE_VERSION"):
+        return False
+
+    characters = await config_manager.aload_characters()
+    if not isinstance(characters, dict):
+        return False
+
+    current_name = str(characters.get("当前猫娘") or "").strip()
+    catgirls = characters.get("猫娘")
+    if not current_name or not isinstance(catgirls, dict):
+        return False
+
+    current_character = catgirls.get(current_name)
+    if not _is_default_yui_character(current_name, current_character):
+        return False
+
+    current_voice_id = str(get_reserved(
+        current_character,
+        "voice_id",
+        default="",
+        legacy_keys=("voice_id",),
+    ) or "").strip()
+    if current_voice_id:
+        return False
+
+    yui_voice_id = _get_default_yui_free_voice_id()
+    if not yui_voice_id:
+        return False
+
+    changed = set_reserved(current_character, "voice_id", yui_voice_id)
+    if not changed:
+        return False
+
+    await config_manager.asave_characters(characters)
+    logger.info("已为 free API 下的默认 YUI 绑定音色: %s", yui_voice_id)
+    return True
+
+
 def delete_reserved(data: dict, *path) -> bool:
     """删除 `_reserved` 下的嵌套字段，并尽量清理空的中间层。"""
     if not isinstance(data, dict) or not path:
