@@ -3094,7 +3094,7 @@ class LLMSessionManager:
                 for message in pending_messages:
                     msg_input_type = message.get("input_type")
                     try:
-                        # 回放仍走 stream_data，让缓存输入和实时输入共享同一套图文顺序保护。
+                        # 回放直接走内部处理，避免同任务重入 non_audio_stream_lock。
                         if msg_input_type == "audio":
                             await self._enqueue_audio_stream_data(message)
                         else:
@@ -3103,7 +3103,7 @@ class LLMSessionManager:
                                 continue
                             replay_message = dict(message)
                             replay_message.pop("_pending_replay", None)
-                            await self.stream_data(replay_message, pending_replay=True)
+                            await self._stream_data_now(replay_message, pending_replay=True)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break

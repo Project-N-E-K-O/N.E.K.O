@@ -1191,57 +1191,66 @@ class OmniOfflineClient:
         else:
             pending_images_for_turn = list(pending_images_for_turn)
 
-        if not text or not text.strip():
-            # If only images without text, use a default prompt
+        user_text = str(text or "").strip()
+        model_input = user_text
+        if not user_text:
+            # 纯图片消息只给模型兜底提示，不把兜底文本显示成用户输入。
             if pending_images_for_turn:
-                text = "请分析这些图片。"
+                model_input = "请分析这些图片。"
             else:
                 return
         
-        # Check if we need to switch to vision model
+        # 判断本轮是否需要视觉模型。
         has_images = len(pending_images_for_turn) > 0
         
-        # Prepare user message content
-        if has_images:
-            # Switch to vision model permanently for this session
-            # (cannot switch back because image data remains in conversation history)
-            if self.vision_model and self.vision_model != self.model:
-                logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
-                try:
-                    await self.switch_model(self.vision_model, use_vision_config=True)
-                except Exception:
-                    self._pending_images = pending_images_for_turn + self._pending_images
-                    raise
-            
-            # Multi-modal message: images + text
-            content = []
-            
-            # Add images first
-            for img_b64 in pending_images_for_turn:
+        user_message = None
+        appended_user_message = False
+        try:
+            # 构造用户消息内容。
+            if has_images:
+                # 多模态消息：图片 + 文本。
+                content = []
+
+                # 图片必须先进入同一个用户轮次。
+                for img_b64 in pending_images_for_turn:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{img_b64}"
+                        }
+                    })
+
+                # 文本使用模型输入，纯图片时是不会展示到前端的兜底提示。
                 content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}"
-                    }
+                    "type": "text",
+                    "text": model_input
                 })
-            
-            # Add text
-            content.append({
-                "type": "text",
-                "text": text.strip()
-            })
-            
-            user_message = HumanMessage(content=content)
-            logger.info(f"Sending multi-modal message with {len(pending_images_for_turn)} images")
-        else:
-            # Text-only message
-            user_message = HumanMessage(content=text.strip())
-        
-        self._conversation_history.append(user_message)
-        
-        # Callback for user input
-        if self.on_input_transcript:
-            await self.on_input_transcript(text.strip())
+
+                user_message = HumanMessage(content=content)
+                logger.info(f"Sending multi-modal message with {len(pending_images_for_turn)} images")
+            else:
+                # 纯文本消息。
+                user_message = HumanMessage(content=model_input)
+
+            self._conversation_history.append(user_message)
+            appended_user_message = True
+
+            if has_images and self.vision_model and self.vision_model != self.model:
+                logger.info(f"Switching to vision model: {self.vision_model} (from {self.model})")
+                await self.switch_model(self.vision_model, use_vision_config=True)
+
+            # 回调展示原始用户输入，纯图片消息保持空文本。
+            if self.on_input_transcript:
+                await self.on_input_transcript(user_text)
+        except Exception:
+            if pending_images_for_turn:
+                self._pending_images = pending_images_for_turn + self._pending_images
+            if appended_user_message and user_message is not None:
+                for index in range(len(self._conversation_history) - 1, -1, -1):
+                    if self._conversation_history[index] is user_message:
+                        del self._conversation_history[index]
+                        break
+            raise
         
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
