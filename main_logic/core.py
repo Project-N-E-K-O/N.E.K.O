@@ -2477,8 +2477,25 @@ class LLMSessionManager:
                 return
             
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                session_for_reason = expected_session or self.session or self.pending_session
+                timeout_api_type = str(
+                    getattr(session_for_reason, "_api_type", "") or getattr(self, "core_api_type", "") or ""
+                ).lower()
+                timeout_model = str(
+                    getattr(session_for_reason, "_model_lower", "")
+                    or getattr(session_for_reason, "model", "")
+                    or ""
+                ).lower()
+                is_free_timeout = timeout_api_type == "free" or "free" in timeout_model
+                timeout_reason_code = (
+                    "free_api_silence_timeout" if is_free_timeout else "silence_timeout"
+                )
+                if is_free_timeout:
+                    await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
                 await self.websocket.send_json({
                     "type": "auto_close_mic",
+                    "reason_code": timeout_reason_code,
+                    "api_type": timeout_api_type,
                     "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
                 })
             
