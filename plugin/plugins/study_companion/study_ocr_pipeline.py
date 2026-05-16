@@ -156,7 +156,7 @@ class StudyOcrPipeline:
             return self._ocr_backend
         selection = str(self._config.ocr_backend_selection or "rapidocr").strip().lower()
         if selection == "tesseract":
-            from plugin.plugins.galgame_plugin.ocr_backends import TesseractOcrBackend
+            from .tesseract_support import TesseractOcrBackend
 
             self._ocr_backend = TesseractOcrBackend(
                 tesseract_path=self._config.ocr_tesseract_path,

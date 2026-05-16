@@ -35,19 +35,6 @@ history_limit = 50
 
 [llm]
 llm_call_timeout_seconds = 30
-# Generic fallback used only when an operation-specific limit is omitted.
-temperature = 0.2
-max_tokens = 900
-temperature_concept_explain = 0.2
-max_tokens_concept_explain = 900
-temperature_question_generate = 0.35
-max_tokens_question_generate = 720
-temperature_answer_evaluate = 0.12
-max_tokens_answer_evaluate = 720
-temperature_knowledge_track = 0.08
-max_tokens_knowledge_track = 480
-temperature_summarize_session = 0.18
-max_tokens_summarize_session = 1200
 
 [ocr_reader]
 enabled = true
@@ -71,6 +58,20 @@ lang_type = "ch"
 model_type = "mobile"
 ocr_version = "PP-OCRv4"
 
+[fsrs]
+retention_target = 0.90
+auto_optimize_interval_days = 30
+
+[knowledge_contribution]
+opt_in = false
+min_sample_count = 3
+
+[doc_export]
+enabled = false
+pdf_backend = "reportlab"
+default_style = "neko"
+xmind_enabled = false
+
 [plugin.ui]
 enabled = true
 
@@ -78,6 +79,30 @@ enabled = true
 id = "study-panel"
 title = "Study Panel"
 entry = "surfaces/study_panel.tsx"
+permissions = ["state:read"]
+
+[[plugin.ui.guide]]
+id = "knowledge-map"
+title = "Knowledge Map"
+entry = "surfaces/knowledge_map.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "knowledge-contribution-settings"
+title = "Knowledge Contribution Settings"
+entry = "surfaces/knowledge_contribution_settings.tsx"
+permissions = ["state:read", "action:call", "config:write"]
+
+[[plugin.ui.guide]]
+id = "note-exporter"
+title = "Note Exporter"
+entry = "surfaces/note_exporter.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "Study Companion Quickstart"
+entry = "surfaces/quickstart.tsx"
 permissions = ["state:read"]
 
 [plugin.i18n]

@@ -8,6 +8,13 @@ Page = playwright_sync_api.Page
 expect = playwright_sync_api.expect
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_UNIVERSAL_TUTORIAL_DEPENDENCIES = (
+    "tutorial-skip-controller.js",
+    "tutorial-avatar-reload-controller.js",
+)
+_YUI_DIRECTOR_DEPENDENCIES = (
+    "tutorial-interaction-takeover.js",
+)
 _PAGE_BOOTSTRAP_TEMPLATE = """
 () => {
     window.safeT = function(key, fallback) {
@@ -59,6 +66,22 @@ __FETCH_JS__
 """
 
 
+def _expand_script_dependencies(script_names: tuple[str, ...]) -> tuple[str, ...]:
+    expanded = []
+    for script_name in script_names:
+        if script_name == "yui-guide-director.js":
+            for dependency in _YUI_DIRECTOR_DEPENDENCIES:
+                if dependency not in expanded:
+                    expanded.append(dependency)
+        if script_name == "universal-tutorial-manager.js":
+            for dependency in _UNIVERSAL_TUTORIAL_DEPENDENCIES:
+                if dependency not in expanded:
+                    expanded.append(dependency)
+        if script_name not in expanded:
+            expanded.append(script_name)
+    return tuple(expanded)
+
+
 def _bootstrap_page(
     mock_page: Page,
     *,
@@ -81,7 +104,7 @@ def _bootstrap_page(
         .replace("__SETUP_JS__", setup_js.strip())
         .replace("__FETCH_JS__", fetch_js.strip())
     )
-    for script_name in script_names:
+    for script_name in _expand_script_dependencies(script_names):
         mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / script_name))
     if init_js:
         mock_page.evaluate(init_js)
@@ -2209,6 +2232,52 @@ def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
         () => {
             window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
                 detail: { page: 'home' },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
+def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
+        """,
+        script_names=("app-react-chat-window.js",),
+    )
+
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: { page: 'home' },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
+                detail: { page: 'home', reason: 'page-changed' },
             }));
         }
         """

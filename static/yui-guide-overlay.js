@@ -172,6 +172,8 @@
             this.document = doc || document;
             this.root = null;
             this.stage = null;
+            this.interactionShield = null;
+            this.interactionShieldSuppressed = false;
             this.backdrop = null;
             this.backdropMask = null;
             this.backdropBase = null;
@@ -238,6 +240,11 @@
                 backdrop.setAttribute('data-yui-cursor-hidden', 'true');
                 backdrop.setAttribute('aria-hidden', 'true');
                 backdrop.setAttribute('preserveAspectRatio', 'none');
+
+                const interactionShield = createElement('div', 'yui-guide-interaction-shield');
+                interactionShield.hidden = true;
+                interactionShield.setAttribute('aria-hidden', 'true');
+                interactionShield.setAttribute('data-yui-cursor-hidden', 'true');
 
                 const defs = createSvgElement('defs');
                 const mask = createSvgElement('mask');
@@ -339,6 +346,7 @@
                 const cursorTrailSvg = this.createCursorTrailLayer();
 
                 stage.appendChild(backdrop);
+                stage.appendChild(interactionShield);
                 stage.appendChild(persistentSpotlightFrame);
                 stage.appendChild(actionSpotlightFrame);
                 stage.appendChild(secondaryActionSpotlightFrame);
@@ -350,6 +358,7 @@
                 this.document.body.appendChild(root);
 
                 this.stage = stage;
+                this.interactionShield = interactionShield;
                 this.backdrop = backdrop;
                 this.backdropMask = mask;
                 this.backdropBase = backdropBase;
@@ -373,6 +382,7 @@
                 this.extraSpotlightEntries = extraSpotlightEntries;
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
+                this.interactionShield = root.querySelector('.yui-guide-interaction-shield');
                 this.backdrop = root.querySelector('.yui-guide-backdrop');
                 this.backdropMask = root.querySelector('mask#' + BACKDROP_MASK_ID);
                 this.backdropBase = root.querySelector('.yui-guide-backdrop-base');
@@ -886,9 +896,27 @@
             this.ensureRoot();
             this.document.body.classList.toggle('yui-taking-over', !!active);
             this.root.classList.toggle('is-taking-over', !!active);
+            this.setInteractionShieldEnabled(!!active && !this.interactionShieldSuppressed);
             var cursorValue = active ? 'none' : '';
             this.document.documentElement.style.cursor = cursorValue;
             this.document.body.style.cursor = cursorValue;
+        }
+
+        setInteractionShieldSuppressed(active) {
+            this.ensureRoot();
+            this.interactionShieldSuppressed = active === true;
+            this.setInteractionShieldEnabled(
+                !!(this.document.body && this.document.body.classList.contains('yui-taking-over'))
+                && !this.interactionShieldSuppressed
+            );
+        }
+
+        setInteractionShieldEnabled(active) {
+            this.ensureRoot();
+            if (!this.interactionShield) {
+                return;
+            }
+            this.interactionShield.hidden = !(active === true && !this.interactionShieldSuppressed);
         }
 
         setAngry(active) {
@@ -1931,6 +1959,7 @@
             }
             this.root = null;
             this.stage = null;
+            this.interactionShield = null;
             this.backdrop = null;
             this.backdropMask = null;
             this.backdropBase = null;

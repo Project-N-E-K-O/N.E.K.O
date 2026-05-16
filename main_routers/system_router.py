@@ -6385,7 +6385,7 @@ async def proactive_chat(request: Request):
                 print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
 
             # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
-            # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
+            # record_mentions 已在 memory_server 的 _run_post_turn_signals 中调用
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
 

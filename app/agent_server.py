@@ -19,7 +19,7 @@ import uuid
 import logging
 import time
 import hashlib
-from typing import Dict, Any, Optional, ClassVar, List
+from typing import Dict, Any, Optional, ClassVar, List, Tuple
 from datetime import datetime, timezone
 import httpx
 
@@ -896,7 +896,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             await _emit_agent_status_update()
             return
 
-        def _probe():
+        def _probe() -> Tuple[bool, str]:
             return adapter.check_connectivity()
 
         # If a real CUA/BU task is currently running, the LLM is demonstrably
@@ -913,7 +913,15 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             return False
 
         try:
-            ok = await asyncio.get_event_loop().run_in_executor(None, _probe)
+            probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)
+            # Tolerate legacy bool returns in case some adapter implementation
+            # hasn't been migrated yet (defense-in-depth: the only real probe
+            # — computer_use.check_connectivity — already returns a tuple).
+            if isinstance(probe_result, tuple):
+                ok, probe_reason = probe_result
+            else:
+                ok = bool(probe_result)
+                probe_reason = "" if ok else "AGENT_LLM_UNREACHABLE"
             cu_in_flight = _has_running("computer_use")
             bu_in_flight = _has_running("browser_use")
 
@@ -927,7 +935,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 await _emit_agent_status_update()
                 return
 
-            reason = "" if ok else "AGENT_LLM_UNREACHABLE"
+            reason = "" if ok else (probe_reason or "AGENT_LLM_UNREACHABLE")
             _set_capability("computer_use", ok, reason)
             bu = Modules.browser_use
             if bu is None:
@@ -1641,7 +1649,18 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
 
 
 async def _on_session_event(event: Dict[str, Any]) -> None:
-    if (event or {}).get("event_type") == "analyze_request":
+    event_type = (event or {}).get("event_type")
+    if event_type == "agent_intent_restore_signal":
+        # First-real-client-session signal from main_server (sent on
+        # ``greeting_check``). Restore persisted agent runtime intent now
+        # — agent_server is fully ready (we're already receiving events),
+        # but we delayed restore to here so we don't trigger LLM probes
+        # and plugin lifecycle startup during the cold-start window
+        # before the user actually opens a session. The restore helper
+        # has its own once-flag, so this is safe to spam.
+        await _maybe_restore_agent_intent()
+        return
+    if event_type == "analyze_request":
         messages = event.get("messages", [])
         lanlan_name = event.get("lanlan_name")
         event_id = event.get("event_id")
@@ -3520,6 +3539,13 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     """
     if not Modules.task_executor:
         raise HTTPException(503, "Task executor not ready")
+    # Master gate first: with the new semantics where set_agent_enabled(False)
+    # no longer wipes sub-flag state, ``user_plugin_enabled`` can legitimately
+    # stay True after the master is turned off. Without this check, requests
+    # would slip through to a plugin lifecycle that ``_ensure_plugin_lifecycle
+    # _stopped`` has already torn down, producing confusing failures.
+    if not Modules.analyzer_enabled:
+        raise HTTPException(403, "Agent master switch is off")
     # 当后端显式关闭用户插件功能时，直接拒绝调用，避免绕过前端开关
     if not Modules.agent_flags.get("user_plugin_enabled", False):
         raise HTTPException(403, "User plugin is disabled")
@@ -4519,31 +4545,41 @@ async def set_agent_flags(payload: Dict[str, Any]):
     bf = (payload or {}).get("browser_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
     nf = (payload or {}).get("openclaw_enabled")
+    # ``_persist_intent`` (default True) gates whether this call writes the
+    # user's intent to ``agent_runtime_intent.json``. The restore path replays
+    # past intents through this same function with ``_persist_intent=False``
+    # so the replay doesn't re-write what it's reading.
+    persist_intent = bool((payload or {}).get("_persist_intent", True))
     # Agent API gate: if any agent sub-feature is being enabled, gate must pass.
     gate = _check_agent_api_gate()
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     of = (payload or {}).get("openfang_enabled")
-    if gate.get("ready") is not True and any(x is True for x in (cf, bf, uf, nf, of)):
+    # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
+    # four LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
+    # the plugin lifecycle (no agent LLM involved) so the gate must not
+    # short-circuit its toggle path — historically this branch reset all five
+    # and early-returned, which silently swallowed legitimate user_plugin
+    # enable/disable requests whenever the user hadn't configured an agent
+    # endpoint. Here we instead cancel just the four LLM-coupled requests by
+    # nullifying them, then fall through to the per-flag handling so uf still
+    # processes normally.
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf, nf, of)):
         _cancel_openclaw_enable_probe()
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
-        Modules.agent_flags["user_plugin_enabled"] = False
         Modules.agent_flags["openclaw_enabled"] = False
         Modules.agent_flags["openfang_enabled"] = False
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
-        _set_capability("user_plugin", False, first_reason)
         _set_capability("openclaw", False, first_reason)
         _set_capability("openfang", False, first_reason)
-        await _ensure_plugin_lifecycle_stopped()
-        Modules.notification = None
-        if Modules.agent_flags != old_flags:
-            _bump_state_revision()
-            await _emit_agent_status_update(lanlan_name=lanlan_name)
-        return {"success": True, "agent_flags": Modules.agent_flags}
+        # Swallow these requests so the per-flag handlers below don't re-toggle
+        # them ON; ``uf`` is intentionally left alone so user_plugin processing
+        # proceeds.
+        cf = bf = nf = of = None
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
     prev_nk = Modules.agent_flags.get("openclaw_enabled", False)
@@ -4729,6 +4765,37 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 except Exception as e:
                     logger.warning("[Agent] OpenFang cancel on disable failed: %s", e)
 
+    # Persist user intent for each explicitly-requested flag.
+    # Rule: a flag is persisted only when the user's request actually took
+    # effect in-memory. If the user requested ON but capability auto-rejected
+    # (LLM unreachable, module not loaded, etc.), the in-memory flag stays
+    # False — we do NOT persist a True intent for that case, because the
+    # toggle visibly didn't take. Disable requests (False) are always
+    # persisted faithfully (no capability check involved).
+    # The capability-auto-disable path inside
+    # ``_fire_agent_llm_connectivity_check`` also intentionally does NOT
+    # touch intent — it flips the in-memory flag but leaves persisted intent
+    # so a transient LLM blip doesn't wipe the user's preference.
+    if persist_intent:
+        try:
+            from app.agent_runtime_intent import set_intent
+            for key, requested in (
+                ("computer_use_enabled", cf),
+                ("browser_use_enabled", bf),
+                ("user_plugin_enabled", uf),
+                ("openclaw_enabled", nf),
+                ("openfang_enabled", of),
+            ):
+                if not isinstance(requested, bool):
+                    continue
+                if requested is False:
+                    set_intent(key, False)
+                elif bool(Modules.agent_flags.get(key, False)):
+                    set_intent(key, True)
+                # else: requested=True but capability rejected → leave intent untouched
+        except Exception as exc:
+            logger.warning("[Agent] Failed to persist agent flag intent: %s", exc)
+
     changed = Modules.agent_flags != old_flags or bool(Modules.analyzer_enabled) != old_analyzer_enabled
     if changed:
         _bump_state_revision()
@@ -4744,6 +4811,12 @@ async def agent_command(payload: Dict[str, Any]):
     lanlan_name = (payload or {}).get("lanlan_name")
     if command == "set_agent_enabled":
         enabled = bool((payload or {}).get("enabled"))
+        # ``_persist_intent`` (default True) gates whether this call writes
+        # the user's intent to ``agent_runtime_intent.json``. The restore
+        # path replays past intents through this same code path with
+        # ``_persist_intent=False`` so the replay doesn't re-write what it's
+        # reading.
+        persist_intent = bool((payload or {}).get("_persist_intent", True))
         gate = _check_agent_api_gate()
         if enabled:
             Modules.analyzer_enabled = True
@@ -4767,15 +4840,27 @@ async def agent_command(payload: Dict[str, Any]):
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
             _cancel_openclaw_enable_probe()
-            Modules.agent_flags["computer_use_enabled"] = False
-            Modules.agent_flags["browser_use_enabled"] = False
-            Modules.agent_flags["user_plugin_enabled"] = False
-            Modules.agent_flags["openclaw_enabled"] = False
-            Modules.agent_flags["openfang_enabled"] = False
+            # NOTE: sub flags are NOT reset here. The master switch is a runtime
+            # gate, not a clear-all command — sub flags carry the user's intent
+            # for each component and must survive a master OFF/ON cycle (so the
+            # user doesn't have to re-tick every sub-toggle after disabling the
+            # master). All analysis / dispatch paths upstream of sub-flag checks
+            # already test ``Modules.analyzer_enabled`` first (see lines ~1653,
+            # 2007, 2056, 3453), so leaving sub flags ON cannot let any
+            # component "secretly keep running". The actual stop is enforced by
+            # ``end_all`` + ``_ensure_plugin_lifecycle_stopped`` + the probe
+            # cancel above; ``intent`` (persistent) is also intentionally left
+            # untouched here for the same reason.
             _set_capability("user_plugin", True, "")
             _set_capability("openclaw", False, "")
             await admin_control({"action": "end_all"})
             await _ensure_plugin_lifecycle_stopped()
+        if persist_intent:
+            try:
+                from app.agent_runtime_intent import set_intent
+                set_intent("analyzer_enabled", enabled)
+            except Exception as exc:
+                logger.warning("[Agent] Failed to persist analyzer_enabled intent: %s", exc)
         _bump_state_revision()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -4805,6 +4890,262 @@ async def agent_command(payload: Dict[str, Any]):
         logger.info("[AgentTiming] request_id=%s command=%s total_ms=%s", request_id, command, total_ms)
         return {"success": True, "request_id": request_id, "snapshot": snapshot, "timing": {"agent_total_ms": total_ms}}
     raise HTTPException(400, "unknown command")
+
+
+# ─── Agent runtime intent restore ───────────────────────────────────────
+#
+# At server start, ``Modules.analyzer_enabled`` and ``Modules.agent_flags``
+# are all False; the user must re-tick every toggle they had on before
+# restart. Restore replays the persisted intent (see ``agent_runtime_intent``
+# module) the first time a real client session enters via
+# ``greeting_check``, so the user's switches "just come back" the way the
+# plugin manager's per-plugin disable already does.
+#
+# The replay walks the same ``set_agent_enabled`` / ``set_agent_flags`` code
+# paths a manual UI toggle would, so capability checks, gate logic, and
+# notifications all behave identically — and ``_persist_intent=False`` makes
+# the replay non-recursive (it doesn't overwrite the intent file it's
+# reading).
+#
+# Failure mode: LLM-dependent flags get a 15s probe window (3 × 4s ping with
+# 5s spacing). Any permanent reason or all-three failure clears that intent
+# to False and surfaces ``AGENT_AUTO_DISABLED_*`` notifications — the goal
+# is to tell the user "your API is dead, fix it" rather than retry forever.
+
+_intent_restore_done = False
+_intent_restore_lock: Optional[asyncio.Lock] = None
+
+# Restore probe budget. Worst-case wall time when probes keep timing out:
+#   3 attempts × 6s timeout + 2 inter-attempt sleeps × 7s = ~32s.
+# In practice the ping resolves in <1s on a healthy connection so users
+# typically see toggles flip back within the first attempt. Tuning rationale:
+# 6s per-call timeout gives cold-start DNS / TLS handshake comfortable room
+# without dragging out the failure path; 7s gap lets a transient burst
+# throttle window expire between attempts.
+_RESTORE_PING_TIMEOUT_S = 6.0
+_RESTORE_PING_INTERVAL_S = 7.0
+_RESTORE_PING_MAX_ATTEMPTS = 3
+
+
+async def _maybe_restore_agent_intent() -> None:
+    """Idempotent restore entry. Safe to call from every greeting_check."""
+    global _intent_restore_done, _intent_restore_lock
+    if _intent_restore_done:
+        return
+    if os.environ.get("NEKO_DISABLE_AGENT_AUTO_RESTORE") == "1":
+        # Escape hatch: if some restore step ever causes server lockup,
+        # the user can launch with this env var to skip restore entirely
+        # and re-toggle manually.
+        _intent_restore_done = True
+        logger.info("[Agent] NEKO_DISABLE_AGENT_AUTO_RESTORE=1, skipping intent restore")
+        return
+    if _intent_restore_lock is None:
+        _intent_restore_lock = asyncio.Lock()
+    async with _intent_restore_lock:
+        if _intent_restore_done:
+            return
+        _intent_restore_done = True
+        try:
+            await _do_restore_agent_intent()
+        except Exception as exc:
+            logger.error("[Agent] Intent restore failed: %s", exc, exc_info=True)
+
+
+async def _do_restore_agent_intent() -> None:
+    from app.agent_runtime_intent import load_intent
+
+    intent = load_intent()
+    if not intent:
+        logger.info("[Agent] No persisted agent intent to restore")
+        return
+    logger.info("[Agent] Restoring agent intent: %s", intent)
+
+    # Master gate is the runtime prerequisite for *any* sub component:
+    # sub-flag intents only matter when the master switch is ON. Since
+    # set_agent_enabled(False) no longer wipes sub-flag intent, it's a
+    # legitimate persisted state to have e.g. ``analyzer_enabled=False``
+    # alongside ``user_plugin_enabled=True`` (the user toggled the master
+    # off but kept their sub-flag preferences). In that case we must NOT
+    # spin up plugin lifecycle / probe LLM / fire openclaw probe — the
+    # user explicitly disabled the master. Sub-flag intents stay in the
+    # file untouched, so the next time the user turns the master back on
+    # those flags will activate via the normal toggle path.
+    master_enabled = bool(intent.get("analyzer_enabled"))
+    if not master_enabled:
+        logger.info(
+            "[Agent] Restore: analyzer_enabled intent is %s, skipping sub-flag restore",
+            intent.get("analyzer_enabled"),
+        )
+        return
+
+    # Master ON — call agent_command directly (plain async fn despite the
+    # FastAPI decorator) with _persist_intent=False so the replay doesn't
+    # re-write what we just read.
+    try:
+        await agent_command({
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "_persist_intent": False,
+        })
+    except Exception as exc:
+        logger.warning("[Agent] Failed to restore analyzer_enabled: %s", exc)
+        # Master gate failed to activate → don't even try sub flags
+        return
+
+    # 2. Two fully-independent parallel tracks. CU/BU are LLM-coupled
+    # (probe-gated). user_plugin runs on its own lifecycle and explicitly
+    # does NOT wait for the LLM — plugins don't depend on the agent model.
+    parallel: List[asyncio.Task] = []
+
+    if intent.get("computer_use_enabled") or intent.get("browser_use_enabled"):
+        t = asyncio.create_task(_restore_llm_dependent_flags(intent))
+        Modules._persistent_tasks.add(t)
+        t.add_done_callback(Modules._persistent_tasks.discard)
+        parallel.append(t)
+
+    if intent.get("user_plugin_enabled"):
+        t = asyncio.create_task(_restore_user_plugin())
+        Modules._persistent_tasks.add(t)
+        t.add_done_callback(Modules._persistent_tasks.discard)
+        parallel.append(t)
+
+    # OpenClaw has its own bounded probe — no separate retry needed,
+    # ``set_agent_flags`` will fire the probe task and we trust that.
+    if intent.get("openclaw_enabled"):
+        try:
+            await set_agent_flags({
+                "openclaw_enabled": True,
+                "_persist_intent": False,
+            })
+        except Exception as exc:
+            logger.warning("[Agent] Failed to restore openclaw_enabled: %s", exc)
+
+    # OpenFang is similar — single capability check on the adapter, fast,
+    # no separate retry needed.
+    if intent.get("openfang_enabled"):
+        try:
+            await set_agent_flags({
+                "openfang_enabled": True,
+                "_persist_intent": False,
+            })
+        except Exception as exc:
+            logger.warning("[Agent] Failed to restore openfang_enabled: %s", exc)
+
+    # We deliberately don't gather() the parallel tasks — they update
+    # capability + flags + intent on their own, and the user sees the
+    # results via the normal status snapshot push. Awaiting here would
+    # block the greeting_check handler for up to 15s.
+
+
+async def _restore_llm_dependent_flags(intent: dict) -> None:
+    """Probe LLM ≤3 times with 5s spacing. On success flip the in-memory
+    CU/BU flags via set_agent_flags; on permanent failure or all-three
+    fail, clear those intents and emit AGENT_AUTO_DISABLED_* notifications."""
+    from app.agent_runtime_intent import set_intent
+    from brain.computer_use import PERMANENT_CONNECTIVITY_REASONS
+
+    adapter = Modules.computer_use
+    if adapter is None:
+        # Module not loaded is permanent — no point retrying.
+        logger.warning("[Agent] Restore: computer_use module not loaded; clearing CU/BU intent")
+        for key, code in (
+            ("computer_use_enabled", "AGENT_AUTO_DISABLED_COMPUTER"),
+            ("browser_use_enabled", "AGENT_AUTO_DISABLED_BROWSER"),
+        ):
+            if intent.get(key):
+                set_intent(key, False)
+                Modules.notification = json.dumps({
+                    "code": code,
+                    "details": {"reason_code": "AGENT_CU_MODULE_NOT_LOADED"},
+                })
+        _bump_state_revision()
+        await _emit_agent_status_update()
+        return
+
+    last_reason = "AGENT_LLM_UNREACHABLE"
+    success = False
+    for attempt in range(_RESTORE_PING_MAX_ATTEMPTS):
+        try:
+            ok, reason = await asyncio.to_thread(
+                adapter.check_connectivity,
+                timeout_s=_RESTORE_PING_TIMEOUT_S,
+            )
+            if ok:
+                success = True
+                last_reason = ""
+                break
+            last_reason = reason or "AGENT_LLM_UNREACHABLE"
+            if last_reason in PERMANENT_CONNECTIVITY_REASONS:
+                logger.info(
+                    "[Agent] Restore: permanent connectivity reason %s after %d/%d attempts; not retrying",
+                    last_reason, attempt + 1, _RESTORE_PING_MAX_ATTEMPTS,
+                )
+                break
+        except Exception as exc:
+            logger.warning(
+                "[Agent] Restore probe attempt %d/%d raised: %s",
+                attempt + 1, _RESTORE_PING_MAX_ATTEMPTS, exc,
+            )
+            last_reason = "AGENT_LLM_UNREACHABLE"
+        if attempt < _RESTORE_PING_MAX_ATTEMPTS - 1:
+            await asyncio.sleep(_RESTORE_PING_INTERVAL_S)
+
+    if success:
+        # Hand off to the regular toggle path so capability cache + UI
+        # snapshot stay consistent with manual toggling.
+        payload: Dict[str, Any] = {"_persist_intent": False}
+        if intent.get("computer_use_enabled"):
+            payload["computer_use_enabled"] = True
+        if intent.get("browser_use_enabled"):
+            payload["browser_use_enabled"] = True
+        if len(payload) > 1:
+            try:
+                await set_agent_flags(payload)
+                logger.info("[Agent] Restored CU/BU flags after successful probe")
+            except Exception as exc:
+                logger.warning("[Agent] Failed to apply CU/BU after probe: %s", exc)
+        return
+
+    # All retries exhausted (or permanent error): tell the user, clear intent.
+    for key, code in (
+        ("computer_use_enabled", "AGENT_AUTO_DISABLED_COMPUTER"),
+        ("browser_use_enabled", "AGENT_AUTO_DISABLED_BROWSER"),
+    ):
+        if intent.get(key):
+            set_intent(key, False)
+            Modules.notification = json.dumps({
+                "code": code,
+                "details": {"reason_code": last_reason},
+            })
+            logger.info(
+                "[Agent] Restore: cleared intent for %s after %d failed probes (reason=%s)",
+                key, _RESTORE_PING_MAX_ATTEMPTS, last_reason,
+            )
+    _bump_state_revision()
+    await _emit_agent_status_update()
+
+
+async def _restore_user_plugin() -> None:
+    """Hand off to the standard /agent/flags path. user_plugin does NOT
+    require the LLM probe to be green — plugins run on their own lifecycle,
+    so we trigger them straight away in parallel. Any startup failure goes
+    through the existing _bg_plugin_enable async path and lazy-init fallback
+    at first ``analyze`` time still covers leftover cases."""
+    try:
+        await set_agent_flags({
+            "user_plugin_enabled": True,
+            "_persist_intent": False,
+        })
+        logger.info("[Agent] Restore: user_plugin_enabled requested")
+    except Exception as exc:
+        logger.warning("[Agent] Failed to restore user_plugin_enabled: %s", exc)
+
+
+def _reset_intent_restore_for_testing() -> None:
+    """Test helper: clear the once-flag so a test can re-run restore."""
+    global _intent_restore_done, _intent_restore_lock
+    _intent_restore_done = False
+    _intent_restore_lock = None
 
 
 @app.get("/computer_use/availability")
@@ -4840,14 +5181,26 @@ async def computer_use_availability():
 async def notify_config_changed():
     """Called by the main server after API-key / model config is saved.
     Rebuilds the CUA adapter with fresh config and kicks off a non-blocking
-    LLM connectivity check — but only when the user actually has Agent on
-    or has a CU/BU flag enabled.  Otherwise a routine voice/chat-model save
-    fires a probe whose transient failure pops a "猫爪预检失败" toast for a
-    feature the user isn't even using."""
+    LLM connectivity check — but only when the user actually has the master
+    switch on AND at least one LLM-dependent sub flag enabled.
+
+    The master gate is required because with the new master-OFF semantics
+    (sub flags carry user intent and survive master cycling),
+    ``computer_use_enabled``/``browser_use_enabled`` can legitimately stay
+    True while the master is off. The old ``or`` condition would otherwise
+    fire a probe on every voice/chat config save and pop a transient
+    "猫爪预检失败" toast for a feature the user has explicitly disabled at
+    the master.
+
+    Sub-flag check still gates probes when the master is on but the user
+    isn't using CU/BU — same rationale as the original docstring: routine
+    config saves shouldn't probe for a feature nobody's using."""
     _try_refresh_computer_use_adapter(force=True)
     _rewire_computer_use_dependents()
     flags = Modules.agent_flags or {}
-    if Modules.analyzer_enabled or flags.get("computer_use_enabled") or flags.get("browser_use_enabled"):
+    if Modules.analyzer_enabled and (
+        flags.get("computer_use_enabled") or flags.get("browser_use_enabled")
+    ):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
         return {"success": True, "message": "CUA adapter refreshed, connectivity check started"}
     return {"success": True, "message": "CUA adapter refreshed; probe skipped (agent idle)"}

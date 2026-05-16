@@ -946,7 +946,7 @@ class FactStore:
         """Stage-1-only backward-compat entry.
 
         Kept for callers that predate the evidence mechanism
-        (memory_server's _extract_facts_and_check_feedback flow transitively
+        (memory_server's _run_post_turn_signals OFF-mode fallback transitively
         calls this, plus outbox replay). Emits only new facts and skips
         signal detection — downstream `_periodic_signal_extraction_loop`
         runs Stage-1+Stage-2 together.
