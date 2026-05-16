@@ -532,6 +532,14 @@
     function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
         options = options || {};
+        // Set by app-websocket.js when an `isNewMessage=true` chunk carries
+        // the same `turn_id` as the still-open turn — i.e. a second/third
+        // response item the realtime LLM emitted within the same dialog
+        // turn. We must still open a fresh bubble (each response item is a
+        // distinct utterance) but must not wipe turn-scoped tracking that
+        // groups all bubbles of the dialog turn together (used by
+        // response_discarded / activity cancel cleanup).
+        var midTurnRestart = !!options.midTurnRestart;
 
         var host = getHost();
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
@@ -549,18 +557,56 @@
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
                 window._turnIsStructured = false;
-                window.currentTurnGeminiBubbles = [];
-                window.currentTurnGeminiAttachments = [];
-                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
-                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
-                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
-                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
-                if (typeof window.beginSubtitleTurn === 'function') {
-                    window.beginSubtitleTurn();
+                // 新轮开始：重置 post-seal 跟踪（详见下方 _geminiTurnEndSealed 注释）
+                window._geminiTurnEndSealed = false;
+                window._geminiPostSealBubbleStart = 0;
+                if (!midTurnRestart) {
+                    // Genuinely new dialog turn → reset turn-scoped tracking.
+                    // For a mid-turn new response item we keep the existing
+                    // bubble refs so the dialog-turn cleanup paths
+                    // (response_discarded, user-activity-cancel) still know
+                    // about every bubble created in this turn.
+                    window.currentTurnGeminiBubbles = [];
+                    window.currentTurnGeminiAttachments = [];
+                    // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
+                    // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
+                    // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
+                    // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                    if (typeof window.beginSubtitleTurn === 'function') {
+                        window.beginSubtitleTurn();
+                    }
                 }
             }
             var prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+
+            // ── Post-seal 续写检测（multi-response-item in same dialog turn）──
+            //
+            // 触发场景：同一 dialog turn 内 LLM 发了 N 段 audio + 文本（典型
+            // case：tool 调用前后两段台词；或 Gemini Live "late continuation"
+            // — turn_complete 后 _ai_recent_activity_window 内又来内容）。
+            // 第 1 段 audio 播完 → main_server 发 turn_end #1（前端把当前气泡
+            // status 置为 'sent'）。然后第 2 段 text deltas 继续过来，但
+            // is_first_chunk 仍是 False（因为服务端不重置它），前端拿到的是
+            // isNewMessage=false → 落进 Scenario B（merge）/ realistic queue。
+            // 老逻辑会把整轮累积文本（段 1+段 2）一起更新到段 1 那个**已封口**
+            // 的气泡，但 React StreamingText 在 status sent→streaming 切换时
+            // 会重 mount，settledLen 复位看上去像段 2 文本闪没了。
+            //
+            // 此处把 turn_end 后的首个 chunk 当作"新气泡的起点"：
+            //   - 清掉 currentGeminiMessage 让 merge Scenario B 落到 Scenario A
+            //     去新建气泡；
+            //   - 记录此时的 _geminiTurnFullText 长度（_geminiPostSealBubbleStart），
+            //     之后 Scenario B 用 _geminiTurnFullText.slice(start) 喂给气泡，
+            //     保证段 2 的气泡只展示段 2 的文本，不和段 1 重复。
+            //   - realistic 模式不受影响：每个句子本来就是独立气泡。
+            // turn_end handler (app-websocket.js) 负责设 _geminiTurnEndSealed。
+            if (window._geminiTurnEndSealed && !isNewMessage) {
+                window._geminiTurnEndSealed = false;
+                window._geminiPostSealBubbleStart = prevFull.length;
+                // 让 merge Scenario B 走到 Scenario A 的新建气泡分支
+                window.currentGeminiMessage = null;
+            }
 
             // 常驻字幕流式写入（adapter 是生产常驻路径；PR #777 漏了这段，导致 React
             // 聊天窗口下字幕只能等 turn_end 才首次出现，视觉上像"一口气显示"）。
@@ -661,8 +707,12 @@
         } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
             var cleanText = cleanMusicFromChunk(text);
 
-            // 场景 A: 本轮尚无气泡
-            if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) {
+            // 场景 A: 本轮尚无气泡，或 post-seal 后 currentGeminiMessage 已被
+            // 清空（adapter 上方 _geminiTurnEndSealed 处理把 currentGeminiMessage
+            // 置 null，逼这里走"新建气泡"分支以避免往封口气泡追加）。
+            // currentTurnGeminiBubbles 可能仍含上一段气泡，所以要看
+            // currentGeminiMessage 而不是数组长度。
+            if (!window.currentGeminiMessage) {
                 if (cleanText.trim() && host) {
                     var newId = nextReactMessageId('assistant');
                     var newTime = getCurrentTimeString();
@@ -683,7 +733,14 @@
             }
             // 场景 B: 气泡已存在，追加更新
             else if (window.currentGeminiMessage && host) {
-                var fullMergeText = (window._geminiTurnFullText || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                // post-seal: 同一 dialog turn 里 turn_end 之后新建的气泡只展示
+                // post-seal 区段，避免和上一个已封口气泡重复。
+                var postSealStart = window._geminiPostSealBubbleStart || 0;
+                var rawTurnText = window._geminiTurnFullText || '';
+                var rawBubbleText = postSealStart > 0 && postSealStart < rawTurnText.length
+                    ? rawTurnText.slice(postSealStart)
+                    : rawTurnText;
+                var fullMergeText = rawBubbleText.replace(/\[play_music:[^\]]*(\]|$)/g, '');
                 var existingId = window.currentGeminiMessage.dataset.reactChatMessageId;
                 var stableTime = window.currentGeminiMessage._stableTime || getCurrentTimeString();
                 var updatedMsg = buildMessage(existingId, 'assistant', getCurrentAssistantName(), stableTime, fullMergeText, 'streaming');

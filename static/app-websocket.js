@@ -1136,7 +1136,25 @@
                         var gameEvent = gameMeta.event || {};
                         console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
                     }
-                    if (isNewMessage) {
+                    // Detect "mid-turn new response item": realtime LLM can emit
+                    // multiple `response.created` within a single dialog turn
+                    // (so `_is_first_text_chunk` flips True again on the server
+                    // and we receive a second `isNewMessage=true` carrying the
+                    // SAME `turn_id` as the still-open turn). Treating that as
+                    // a brand-new dialog turn destructively resets bubble /
+                    // attachment tracking that should span the whole turn —
+                    // segment 2's bubble gets created in isolation, segment 1's
+                    // tracking is orphaned, and `response_discarded` cleanup
+                    // can no longer reach segment 1's bubble. Symptom: the
+                    // second segment's text fails to render (or briefly
+                    // renders and is then evicted) while its audio plays.
+                    var normalizedNewTurnId = normalizeAssistantTurnId(response.turn_id);
+                    var isMidTurnRestart = isNewMessage
+                        && normalizedNewTurnId
+                        && S.assistantPendingTurnServerId
+                        && normalizedNewTurnId === S.assistantPendingTurnServerId
+                        && S.assistantTurnId;
+                    if (isNewMessage && !isMidTurnRestart) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
@@ -1145,8 +1163,13 @@
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
                         S.assistantTurnId = null;
-                        S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
+                        S.assistantPendingTurnServerId = normalizedNewTurnId;
                         S.assistantTurnAwaitingBubble = true;
+                    } else if (isMidTurnRestart) {
+                        logAssistantLifecycle('ws:gemini_response:mid_turn_restart', {
+                            turnId: normalizedNewTurnId,
+                            clientTurnId: S.assistantTurnId
+                        });
                     }
                     if (!S.assistantTurnId
                             && S.assistantTurnAwaitingBubble
@@ -1155,7 +1178,12 @@
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
-                        createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
+                        createdVisibleBubble = window.appendMessage(
+                            response.text,
+                            'gemini',
+                            isNewMessage,
+                            { midTurnRestart: !!isMidTurnRestart }
+                        ) === true;
                     }
                     if (createdVisibleBubble && response.request_id) {
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
@@ -1977,6 +2005,8 @@
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
+                        // 同 'turn end' 路径：标记封口，让后续 chunk 在 adapter 里新建气泡
+                        window._geminiTurnEndSealed = true;
                         window._pendingMusicCommand = '';
                         if (window._structuredGeminiStreaming) {
                             window._realisticGeminiBuffer = '';
@@ -2065,6 +2095,13 @@
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
+                        // 标记本气泡已封口：若同一 dialog turn 内还有后续 chunk
+                        // （Gemini Live late-continuation 或 tool 后续段台词），
+                        // app-chat-adapter.js 的 appendMessage 会据此新建一个气泡，
+                        // 而不是继续往封口气泡追加（封口气泡的 React StreamingText
+                        // 会在 status sent→streaming 切换时重 mount，导致追加文字
+                        // 视觉丢失）。详见 adapter 里的 _geminiTurnEndSealed 注释。
+                        window._geminiTurnEndSealed = true;
                         window._pendingMusicCommand = '';
                         if (window._structuredGeminiStreaming) {
                             window._realisticGeminiBuffer = '';
