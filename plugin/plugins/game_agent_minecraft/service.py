@@ -408,6 +408,8 @@ class GameAgentService:
             try:
                 await self._inline_log_flush_task
             except (asyncio.CancelledError, Exception):
+                # Cancellation we just asked for, or a flush-time error
+                # already logged by the task itself — nothing to recover.
                 pass
             self._inline_log_flush_task = None
         self._inline_log_pending.clear()
@@ -419,6 +421,8 @@ class GameAgentService:
             try:
                 await self._screenshot_flush_task
             except (asyncio.CancelledError, Exception):
+                # Cancellation we just asked for, or a flush-time error
+                # already logged by the task itself — nothing to recover.
                 pass
             self._screenshot_flush_task = None
         self._pending_screenshot = None

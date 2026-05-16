@@ -490,10 +490,20 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
     )
     async def query_inventory(self, **_):
         try:
-            await self._ensure_service_started()
+            connected = await self._ensure_service_started()
             inv = dict(self._service._last_inventory)  # snapshot copy
             inv_at = self._service._last_inventory_at
-            if not inv:
+            # 断连场景：inv 默认 {}, inv_at 默认 0——这与"真的空背包"在数值上
+            # 同形，但语义完全不同。如果照"空背包"模板返回，dialog LLM 会向
+            # 用户复述一个假事实（"你背包是空的"）。改返回"未知"，让 LLM
+            # 自然引导到"暂时看不到背包"而不是编造库存事实。
+            if not connected and inv_at == 0:
+                summary = (
+                    "【背包 ground truth】暂时连不上游戏，看不到你现在的背包。"
+                    "如果用户问到持有的物品，先说一声"
+                    "『现在连不上游戏，等一下再确认』，别凭印象编。"
+                )
+            elif not inv:
                 summary = (
                     "【背包 ground truth】你当前一无所有——背包是空的。"
                     "如果你刚才说过『拿到了 X』『有 Y』，那是幻想，立刻自己改口。"
