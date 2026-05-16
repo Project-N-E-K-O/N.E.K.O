@@ -63,79 +63,6 @@ def _as_bool(value, default=False):
     return bool(value)
 
 
-def _model_vision_override(model: str | None, overrides=None) -> bool | None:
-    normalized = str(model or "").strip().lower()
-    if not normalized:
-        return None
-
-    def _lookup(source) -> bool | None:
-        if isinstance(source, dict):
-            for key, value in source.items():
-                if str(key or "").strip().lower() == normalized:
-                    return _as_bool(value, default=False)
-        if isinstance(source, (list, tuple, set)):
-            for item in source:
-                if str(item or "").strip().lower() == normalized:
-                    return True
-        return None
-
-    configured = _lookup(overrides)
-    if configured is not None:
-        return configured
-
-    raw_env = os.getenv("MODEL_VISION_OVERRIDES", "").strip()
-    if not raw_env:
-        return None
-    try:
-        parsed_env = json.loads(raw_env)
-    except (TypeError, ValueError):
-        parsed_env = None
-    configured = _lookup(parsed_env)
-    if configured is not None:
-        return configured
-
-    pairs: dict[str, bool] = {}
-    for item in re.split(r"[,;]", raw_env):
-        item = item.strip()
-        if not item:
-            continue
-        if "=" in item:
-            name, value = item.split("=", 1)
-        elif ":" in item:
-            name, value = item.split(":", 1)
-        else:
-            name, value = item, "true"
-        name = name.strip()
-        if name:
-            pairs[name] = _as_bool(value, default=True)
-    return _lookup(pairs)
-
-
-def _model_supports_vision(model: str | None, overrides=None) -> bool:
-    configured = _model_vision_override(model, overrides)
-    if configured is not None:
-        return configured
-    normalized = str(model or "").strip().lower()
-    if not normalized:
-        return False
-    return any(
-        marker in normalized
-        for marker in (
-            "gpt-4o",
-            "gpt-4.1",
-            "gpt-4.5",
-            "gpt-5",
-            "vision",
-            "vl",
-            "qwen2.5-vl",
-            "qwen-vl",
-            "gemini",
-            "claude-3",
-            "claude-4",
-        )
-    )
-
-
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
     """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
 
@@ -3083,16 +3010,6 @@ class ConfigManager:
                 config['TEXT_GUARD_MAX_LENGTH'] = 300
         except (TypeError, ValueError):
             config['TEXT_GUARD_MAX_LENGTH'] = 300
-
-        model_vision_overrides = core_cfg.get(
-            'modelVisionOverrides',
-            core_cfg.get('MODEL_VISION_OVERRIDES', {}),
-        )
-        config['MODEL_VISION_OVERRIDES'] = (
-            model_vision_overrides
-            if isinstance(model_vision_overrides, (dict, list, tuple, set))
-            else {}
-        )
         
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
@@ -3215,7 +3132,6 @@ class ConfigManager:
                 - 'api_key': API密钥
                 - 'base_url': API端点URL
                 - 'is_custom': 是否使用自定义API配置
-                - 'supports_vision': 当前模型是否支持图像输入
         """
         core_config = self.get_core_config()
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
@@ -3304,7 +3220,6 @@ class ConfigManager:
             raise ValueError(f"Unknown model_type: {model_type}. Valid types: {list(model_type_mapping.keys())}")
         
         mapping = model_type_mapping[model_type]
-        vision_overrides = core_config.get('MODEL_VISION_OVERRIDES', {})
         
         # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
         # 但 is_custom 仅在 enableCustomApi 开启时为 True。
@@ -3335,7 +3250,6 @@ class ConfigManager:
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
                     'is_custom': treat_as_custom,
-                    'supports_vision': _model_supports_vision(custom_model, vision_overrides),
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,
@@ -3352,34 +3266,26 @@ class ConfigManager:
                     'api_key': qwen_api_key,
                     'base_url': qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', '')), # Placeholder only, will be overridden by the actual url
                     'is_custom': False,
-                    'supports_vision': _model_supports_vision(
-                        core_config.get(mapping['default_model'], ''),
-                        vision_overrides,
-                    ),
                 }
 
         # 根据 fallback_type 回退到不同的 API
         if mapping['fallback_type'] == 'core':
             # 回退到核心 API 配置
-            model = core_config.get(mapping['default_model'], '')
             return {
-                'model': model,
+                'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('CORE_API_KEY', ''),
                 'base_url': core_config.get('CORE_URL', ''),
                 'is_custom': False,
-                'supports_vision': _model_supports_vision(model, vision_overrides),
                 # 对于 realtime 模型，回退到核心API时使用配置的 CORE_API_TYPE
                 'api_type': core_config.get('CORE_API_TYPE', '') if model_type == 'realtime' else None,
             }
         else:
             # 回退到辅助 API 配置
-            model = core_config.get(mapping['default_model'], '')
             return {
-                'model': model,
+                'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
                 'is_custom': False,
-                'supports_vision': _model_supports_vision(model, vision_overrides),
             }
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
