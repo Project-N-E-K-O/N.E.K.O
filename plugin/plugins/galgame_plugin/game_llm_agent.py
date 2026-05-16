@@ -699,6 +699,7 @@ class GameLLMAgent:
         self._planning_candidates: list[dict[str, Any]] = []
         self._planning_started_at = 0.0
         self._actuation: dict[str, Any] | None = None
+        self._starting_actuation = False
         self._pending_strategy: dict[str, Any] | None = None
         self._next_actuation_at = 0.0
         self._last_focus_attempt_at = 0.0
@@ -748,6 +749,7 @@ class GameLLMAgent:
         self._last_delivered_summary_key = ""
         self._last_delivered_summary_seq = 0
         self._last_delivered_summary_scene_id = ""
+        self._agent_reply_lock: asyncio.Lock | None = None
 
     @property
     def _scene_memory(self) -> list[dict[str, Any]]:
@@ -824,12 +826,17 @@ class GameLLMAgent:
 
     def _ensure_loop_affinity(self) -> None:
         loop = asyncio.get_running_loop()
-        if self._runtime_loop is loop and self._op_lock is not None:
+        if (
+            self._runtime_loop is loop
+            and self._op_lock is not None
+            and self._agent_reply_lock is not None
+        ):
             return
         if self._runtime_loop is not None and self._runtime_loop is not loop:
             self._clear_loop_bound_state()
         self._runtime_loop = loop
         self._op_lock = asyncio.Lock()
+        self._agent_reply_lock = asyncio.Lock()
 
     def _clear_loop_bound_state(self) -> None:
         if self._planning_task is not None:
@@ -838,6 +845,7 @@ class GameLLMAgent:
         self._planning_candidates = []
         self._planning_choice_signature = ()
         self._planning_started_at = 0.0
+        self._starting_actuation = False
 
     @staticmethod
     def _cancel_foreign_task(task: asyncio.Task[Any]) -> None:
@@ -1081,6 +1089,7 @@ class GameLLMAgent:
         self._scene_state = self._build_empty_scene_state()
         self._last_status = AGENT_STATUS_STANDBY
         self._last_trace_message = ""
+        self._last_push_ts = 0.0
         self._pending_merge_primary = ""
         self._pending_merge_scene_ids = None
         self._pending_cross_scene_primary = ""
@@ -1100,6 +1109,7 @@ class GameLLMAgent:
         if status == AGENT_STATUS_ACTIVE and not self._should_actuate(shared):
             if (
                 self._actuation is not None
+                or self._starting_actuation
                 or self._planning_task is not None
                 or self._pending_strategy is not None
             ):
@@ -1116,6 +1126,14 @@ class GameLLMAgent:
         if self._actuation is not None:
             await self._progress_actuation(shared, now)
             self._last_status = self._compute_status(shared)
+            return
+
+        if self._starting_actuation:
+            self._trace_runtime(
+                "tick skipped: actuation start already in progress "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
+            )
+            self._last_status = status
             return
 
         if self._planning_task is not None:
@@ -1368,6 +1386,7 @@ class GameLLMAgent:
                 except Exception as exc:
                     self._logger.warning("galgame host task cancellation failed: {}", exc)
             self._actuation = None
+        self._starting_actuation = False
 
         if clear_retry:
             self._pending_strategy = None
@@ -1567,30 +1586,41 @@ class GameLLMAgent:
         strategy: dict[str, Any],
         now: float,
     ) -> None:
-        try:
-            virtual_mouse_candidate_index = int(
-                strategy.get("virtual_mouse_candidate_index")
-                if strategy.get("virtual_mouse_candidate_index") is not None
-                else -1
+        if self._actuation is not None or self._starting_actuation:
+            self._trace_runtime(
+                "actuation start skipped: another start is already active "
+                f"kind={str(strategy.get('kind') or '')} "
+                f"strategy_id={str(strategy.get('strategy_id') or '')}"
             )
-        except (TypeError, ValueError):
-            virtual_mouse_candidate_index = -1
-        await self._start_actuation(
-            shared,
-            kind=str(strategy.get("kind") or ""),
-            instruction=str(strategy.get("instruction") or ""),
-            suggestion_reason=str(strategy.get("suggestion_reason") or ""),
-            now=now,
-            choice_id=str(strategy.get("choice_id") or ""),
-            strategy_family=str(strategy.get("strategy_family") or ""),
-            strategy_id=str(strategy.get("strategy_id") or ""),
-            instruction_variant=int(strategy.get("instruction_variant") or 0),
-            candidate_choices=list(strategy.get("candidate_choices") or []),
-            candidate_index=int(strategy.get("candidate_index") or 0),
-            retry_reason=str(strategy.get("retry_reason") or ""),
-            virtual_mouse_target_id=str(strategy.get("virtual_mouse_target_id") or ""),
-            virtual_mouse_candidate_index=virtual_mouse_candidate_index,
-        )
+            return
+        self._starting_actuation = True
+        try:
+            try:
+                virtual_mouse_candidate_index = int(
+                    strategy.get("virtual_mouse_candidate_index")
+                    if strategy.get("virtual_mouse_candidate_index") is not None
+                    else -1
+                )
+            except (TypeError, ValueError):
+                virtual_mouse_candidate_index = -1
+            await self._start_actuation(
+                shared,
+                kind=str(strategy.get("kind") or ""),
+                instruction=str(strategy.get("instruction") or ""),
+                suggestion_reason=str(strategy.get("suggestion_reason") or ""),
+                now=now,
+                choice_id=str(strategy.get("choice_id") or ""),
+                strategy_family=str(strategy.get("strategy_family") or ""),
+                strategy_id=str(strategy.get("strategy_id") or ""),
+                instruction_variant=int(strategy.get("instruction_variant") or 0),
+                candidate_choices=list(strategy.get("candidate_choices") or []),
+                candidate_index=int(strategy.get("candidate_index") or 0),
+                retry_reason=str(strategy.get("retry_reason") or ""),
+                virtual_mouse_target_id=str(strategy.get("virtual_mouse_target_id") or ""),
+                virtual_mouse_candidate_index=virtual_mouse_candidate_index,
+            )
+        finally:
+            self._starting_actuation = False
 
     def _notify_ocr_after_advance_capture(
         self,
@@ -4278,7 +4308,8 @@ class GameLLMAgent:
             )
             raise
         try:
-            payload = await self._llm_gateway.agent_reply(reply_context)
+            async with self._agent_reply_lock:
+                payload = await self._llm_gateway.agent_reply(reply_context)
         except Exception as exc:
             self._mark_message(
                 message,
@@ -4393,7 +4424,8 @@ class GameLLMAgent:
                 or input_source_snapshot is None
             ):
                 raise RuntimeError("send_message reached LLM call without a reply context")
-            payload = await self._llm_gateway.agent_reply(reply_context)
+            async with self._agent_reply_lock:
+                payload = await self._llm_gateway.agent_reply(reply_context)
         except Exception as exc:
             self._mark_message(
                 inbound,

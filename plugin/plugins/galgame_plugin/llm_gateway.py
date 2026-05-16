@@ -258,6 +258,7 @@ class LLMGateway:
         self._lock: asyncio.Lock | None = None
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_limit = 0
+        self._semaphore_acquired = 0
         self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._cache: OrderedDict[str, tuple[float, dict[str, Any], dict[str, Any]]] = OrderedDict()
         self._near_match_cache: OrderedDict[
@@ -312,8 +313,11 @@ class LLMGateway:
             self._runtime_loop is loop
             and self._lock is not None
             and self._semaphore is not None
-            and self._semaphore_limit == limit
         ):
+            if limit > self._semaphore_limit:
+                for _ in range(limit - self._semaphore_limit):
+                    self._semaphore.release()
+            self._semaphore_limit = limit
             return
         if self._runtime_loop is not None and self._runtime_loop is not loop:
             self._clear_loop_bound_state()
@@ -321,6 +325,7 @@ class LLMGateway:
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(limit)
         self._semaphore_limit = limit
+        self._semaphore_acquired = 0
 
     def _clear_loop_bound_state(self) -> None:
         for task in self._inflight.values():
@@ -329,6 +334,7 @@ class LLMGateway:
         self._provider_backoff.clear()
         self._semaphore = None
         self._semaphore_limit = 0
+        self._semaphore_acquired = 0
 
     def _max_in_flight(self) -> int:
         try:
@@ -653,20 +659,30 @@ class LLMGateway:
                 semaphore = self._semaphore
             if semaphore is None:
                 raise RuntimeError("LLM gateway semaphore was not initialized")
-            async with semaphore:
-                result = await self._call_target(
-                    operation=operation,
-                    context=context,
-                    validate=validate,
-                    degraded=degraded,
-                )
-                result = await self._maybe_retry_repeated_response(
-                    operation=operation,
-                    context=context,
-                    result=result,
-                    validate=validate,
-                    degraded=degraded,
-                )
+            call_timeout = self._safe_config_float("llm_call_timeout_seconds", 30.0)
+            deadline = time.monotonic() + call_timeout
+            try:
+                acquired = await self._acquire_call_slot(semaphore, deadline=deadline)
+            except asyncio.TimeoutError:
+                result = degraded("timeout: llm semaphore acquire timed out")
+            else:
+                try:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    result = await asyncio.wait_for(
+                        self._call_and_maybe_retry_repeated_response(
+                            operation=operation,
+                            context=context,
+                            validate=validate,
+                            degraded=degraded,
+                        ),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    result = degraded("timeout: llm request exceeded llm_call_timeout_seconds")
+                finally:
+                    self._release_call_slot(acquired)
             prompt_metadata = self._consume_backend_prompt_metadata()
             total_time_ms = (time.monotonic() - start_time) * 1000.0
             ttl = self._ttl_for_operation(operation)
@@ -713,6 +729,61 @@ class LLMGateway:
         finally:
             async with self._lock:
                 self._inflight.pop(fingerprint, None)
+
+    async def _call_and_maybe_retry_repeated_response(
+        self,
+        *,
+        operation: str,
+        context: dict[str, Any],
+        validate: Callable[[dict[str, Any]], dict[str, Any]],
+        degraded: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = await self._call_target(
+            operation=operation,
+            context=context,
+            validate=validate,
+            degraded=degraded,
+        )
+        return await self._maybe_retry_repeated_response(
+            operation=operation,
+            context=context,
+            result=result,
+            validate=validate,
+            degraded=degraded,
+        )
+
+    async def _acquire_call_slot(
+        self,
+        semaphore: asyncio.Semaphore,
+        *,
+        deadline: float,
+    ) -> asyncio.Semaphore:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError("llm semaphore acquire timed out")
+            try:
+                await asyncio.wait_for(semaphore.acquire(), timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                raise asyncio.TimeoutError("llm semaphore acquire timed out") from exc
+            acquired_slot = False
+            try:
+                async with self._lock:
+                    self._ensure_loop_affinity()
+                    if self._semaphore is not semaphore:
+                        continue
+                    if self._semaphore_acquired < self._semaphore_limit:
+                        self._semaphore_acquired += 1
+                        acquired_slot = True
+                        return semaphore
+            finally:
+                if not acquired_slot:
+                    semaphore.release()
+            await asyncio.sleep(0)
+
+    def _release_call_slot(self, semaphore: asyncio.Semaphore) -> None:
+        self._semaphore_acquired = max(0, self._semaphore_acquired - 1)
+        semaphore.release()
 
     async def _maybe_retry_repeated_response(
         self,

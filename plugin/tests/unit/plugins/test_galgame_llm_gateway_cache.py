@@ -86,6 +86,20 @@ class _BlockingBackend:
         return None
 
 
+class _HeldBackend:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.started.set()
+        await self.release.wait()
+        return {"reply": str(context.get("prompt") or "ok")}
+
+    async def shutdown(self) -> None:
+        self.release.set()
+
+
 def _config(**overrides: Any) -> SimpleNamespace:
     values = {
         "llm_target_entry_ref": "",
@@ -315,3 +329,27 @@ async def test_llm_gateway_max_in_flight_queues_instead_of_degrading() -> None:
     assert second["reply"] == "second"
     assert backend.started == 2
     assert backend.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_semaphore_wait_is_bounded_by_call_timeout() -> None:
+    backend = _HeldBackend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_max_in_flight=1, llm_call_timeout_seconds=0.2),
+        backend=backend,
+    )
+    first = asyncio.create_task(gateway.agent_reply({"prompt": "first"}))
+    await backend.started.wait()
+    gateway.update_config(_config(llm_max_in_flight=1, llm_call_timeout_seconds=0.01))
+
+    try:
+        second = await gateway.agent_reply({"prompt": "second"})
+    finally:
+        backend.release.set()
+        await first
+        await gateway.shutdown()
+
+    assert second["degraded"] is True
+    assert second["diagnostic"] == "timeout: llm semaphore acquire timed out"

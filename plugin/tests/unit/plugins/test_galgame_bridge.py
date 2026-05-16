@@ -774,6 +774,23 @@ class _FakeLLMGateway:
         return dict(self.summarize_payload)
 
 
+class _SerialProbeLLMGateway(_FakeLLMGateway):
+    def __init__(self) -> None:
+        super().__init__(reply_payload={"degraded": False, "reply": "ok", "diagnostic": ""})
+        self.active_replies = 0
+        self.max_active_replies = 0
+
+    async def agent_reply(self, context: dict[str, object]):
+        self.reply_calls.append(dict(context))
+        self.active_replies += 1
+        self.max_active_replies = max(self.max_active_replies, self.active_replies)
+        try:
+            await asyncio.sleep(0.02)
+            return {"degraded": False, "reply": str(context.get("prompt") or "ok"), "diagnostic": ""}
+        finally:
+            self.active_replies -= 1
+
+
 class _BlockingSummaryGateway(_FakeLLMGateway):
     def __init__(self) -> None:
         super().__init__()
@@ -10955,6 +10972,95 @@ async def test_game_llm_agent_set_standby_cancels_inflight_actuation_and_keeps_q
     assert fake_host.cancelled == ["task-1"]
     assert query_result["status"] == "standby"
     assert query_result["result"] == "待机中，当前台词是「当前台词」。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_serializes_overlapping_agent_replies(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _SerialProbeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state()
+
+    query, sent = await asyncio.gather(
+        agent.query_context(shared, context_query="讲讲当前场景"),
+        agent.send_message(shared, message="补充说明当前状态"),
+    )
+
+    assert query["message"]["status"] == "completed"
+    assert sent["message"]["status"] == "completed"
+    assert len(fake_gateway.reply_calls) == 2
+    assert fake_gateway.max_active_replies == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_actuation_start_guard_skips_concurrent_duplicate(
+    tmp_path: Path,
+) -> None:
+    class _SlowStartHostAdapter(_FakeHostAdapter):
+        async def run_computer_use_instruction(self, instruction: str, *, lanlan_name: str = "", timeout: float = 5.0):
+            await asyncio.sleep(0.02)
+            return await super().run_computer_use_instruction(
+                instruction,
+                lanlan_name=lanlan_name,
+                timeout=timeout,
+            )
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_host = _SlowStartHostAdapter()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=fake_host,
+    )
+    shared = _shared_state()
+    strategy = {
+        "kind": "advance",
+        "instruction": "press Enter exactly once",
+        "strategy_id": "advance_enter",
+    }
+
+    await asyncio.gather(
+        agent._start_actuation_from_strategy(shared, strategy=strategy, now=time.monotonic()),
+        agent._start_actuation_from_strategy(shared, strategy=strategy, now=time.monotonic()),
+    )
+
+    assert len(fake_host.started) == 1
+    assert agent._actuation is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_shutdown_clears_last_push_timestamp(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._last_push_ts = 123.0
+
+    await agent.shutdown()
+
+    assert agent._last_push_ts == 0.0
 
 
 @pytest.mark.asyncio

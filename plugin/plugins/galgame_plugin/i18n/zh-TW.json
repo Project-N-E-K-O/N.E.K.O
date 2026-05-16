@@ -22,7 +22,7 @@
   "entries.galgame_set_llm_vision.name": "設定 LLM 視覺輔助",
   "entries.galgame_set_llm_vision.description": "切換 OCR Agent 低置信度場景的截圖直傳，並設定圖片最大邊長。",
   "entries.galgame_set_ocr_screen_templates.name": "設定 OCR 螢幕模板",
-  "entries.galgame_set_ocr_screen_templates.description": "儲存 OCR 螢幕分類别範本；模板僅影響 OCR Reader，不影響 Bridge SDK / Memory Reader。",
+  "entries.galgame_set_ocr_screen_templates.description": "儲存 OCR 螢幕分類別範本；模板僅影響 OCR Reader，不影響 Bridge SDK / Memory Reader。",
   "entries.galgame_build_ocr_screen_template_draft.name": "生成 OCR 螢幕模板草稿",
   "entries.galgame_build_ocr_screen_template_draft.description": "根據目前 OCR 執行時、視窗資訊和最近識別文字生成可編輯的螢幕模板草稿。",
   "entries.galgame_validate_ocr_screen_templates.name": "驗證 OCR 螢幕模板",
