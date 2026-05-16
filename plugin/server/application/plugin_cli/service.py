@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.public import (
@@ -12,6 +15,12 @@ from plugin.neko_plugin_cli.public import (
     pack_bundle,
     pack_plugin,
     unpack_package,
+)
+from plugin.server.application.install_source import (
+    InstallSourceError,
+    InstallSourceManager,
+    classify_plugin_path,
+    get_install_source_manager,
 )
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import (
@@ -145,6 +154,354 @@ class PluginCliService:
             "upload": save_result,
             "unpack": unpack_result,
         }
+
+    async def upload_and_install(
+        self,
+        *,
+        filename: str,
+        content: bytes,
+        on_conflict: str = "rename",
+        install_source_override: dict[str, Any] | None = None,
+    ) -> dict[str, object]:
+        """Upload, unpack, and atomically record the install source (design §3.3).
+
+        ``install_source_override`` lets the caller pin the lock entry to
+        ``channel="market"`` and mode (``install`` / ``upgrade`` / ``reinstall``)
+        in a single call. When ``None`` this method is exactly equivalent to
+        :meth:`upload_and_unpack` (no lock write).
+
+        ``install_source_override`` schema (design §3.3.1):
+
+        ```
+        {
+            "channel": "market",
+            "mode": "install" | "upgrade" | "reinstall",
+            "market_detail": {
+                "plugin_market_id": str,
+                "version": str,
+                "package_url": str,
+                "channel": str,            # "stable" | "beta"
+                "package_sha256": str,     # 64-hex from caller; we re-verify
+                "payload_hash": str | None,
+                "published_at": str,       # ISO 8601
+            },
+        }
+        ```
+
+        Returns a dict with ``upload`` / ``unpack`` / ``install`` keys; the
+        ``install`` dict mirrors :class:`SourceDetailMarket` fields. When
+        warnings accrue (e.g. mismatched sha256, missing market_detail
+        keys, fall back to imported channel) they are joined into an
+        ``install_source_warning`` string in the return value (Req 3.4 / R10.5).
+
+        Failure semantics (Req 3.6 / design §10.1):
+
+        * Any exception from the save / unpack / record steps cleans up
+          the saved package file and the unpacked directory before
+          re-raising. The lock is never left with a half-written entry.
+        * ``record_market_*`` raising :class:`InstallSourceError` with
+          ``code="lock_write_failed"`` propagates verbatim so the caller
+          (Bridge ``_execute_install``) can map it to the right user-facing
+          error code.
+        """
+
+        if install_source_override is None:
+            return await self.upload_and_unpack(
+                filename=filename, content=content, on_conflict=on_conflict
+            )
+
+        channel = install_source_override.get("channel")
+        if channel != "market":
+            raise ValueError(
+                f"unsupported install_source_override channel: {channel!r}"
+            )
+
+        warnings: list[str] = []
+        saved: dict[str, object] | None = None
+        unpack_result: dict[str, object] | None = None
+        unpacked_target_dir: Path | None = None
+
+        try:
+            # Step 1 — save uploaded bytes.
+            saved = await self.save_uploaded_package(
+                filename=filename, content=content
+            )
+
+            # Step 2 — re-compute SHA256 in case the caller's value was stale
+            # or the bytes were tampered with in transit.
+            actual_sha256 = hashlib.sha256(content).hexdigest().lower()
+
+            # Step 3 — unpack.
+            saved_path = str(saved["path"])
+            unpack_result = await self.unpack(
+                package=saved_path, on_conflict=on_conflict
+            )
+            target_dir, target_plugin_id = self._extract_unpack_target(
+                unpack_result
+            )
+            unpacked_target_dir = target_dir
+
+            # Step 4 — degrade to imported when market_detail is incomplete.
+            market_detail_raw = install_source_override.get("market_detail") or {}
+            market_detail = dict(market_detail_raw)
+            required_keys = ("plugin_market_id", "version", "package_url")
+            missing = [k for k in required_keys if not market_detail.get(k)]
+            if missing:
+                warnings.append(
+                    f"market_detail missing required fields ({', '.join(missing)}); "
+                    "falling back to imported channel"
+                )
+                install_dict = await self._record_imported_for_unpack(
+                    target_dir=target_dir,
+                    saved_filename=str(saved["name"]),
+                    actual_sha256=actual_sha256,
+                )
+                return self._compose_install_result(
+                    saved=saved,
+                    unpack_result=unpack_result,
+                    install_dict=install_dict,
+                    warnings=warnings,
+                )
+
+            # Step 5 — overwrite hash fields with our own freshly-computed
+            # values. Mismatches are warnings, not failures (R3.5 says
+            # caller's value is informational; the bytes we hashed are what
+            # actually landed on disk).
+            caller_sha = (market_detail.get("package_sha256") or "").lower()
+            if caller_sha and caller_sha != actual_sha256:
+                warnings.append(
+                    f"package_sha256 mismatch: market={caller_sha!r}, "
+                    f"actual={actual_sha256!r}; recording actual"
+                )
+            market_detail["package_sha256"] = actual_sha256
+
+            unpacked_payload_hash = unpack_result.get("payload_hash")
+            if isinstance(unpacked_payload_hash, str) and unpacked_payload_hash:
+                caller_payload = market_detail.get("payload_hash")
+                if (
+                    isinstance(caller_payload, str)
+                    and caller_payload
+                    and caller_payload.lower() != unpacked_payload_hash.lower()
+                ):
+                    warnings.append(
+                        "payload_hash mismatch between market and unpacked package"
+                    )
+                market_detail["payload_hash"] = unpacked_payload_hash
+
+            # Step 6 — record into ISM with the right semantic.
+            mgr = self._require_install_source_manager()
+            root_id, directory_name = classify_plugin_path(
+                target_dir,
+                builtin_root=mgr.builtin_root,
+                user_root=mgr.user_root,
+            )
+
+            mode = install_source_override.get("mode") or "install"
+            if mode in ("upgrade", "reinstall"):
+                entry, ism_warnings = mgr.record_market_upgrade(
+                    root_id=root_id,
+                    directory_name=directory_name,
+                    plugin_id=target_plugin_id,
+                    market_detail=market_detail,
+                )
+            else:
+                entry, ism_warnings = mgr.record_market_install(
+                    root_id=root_id,
+                    directory_name=directory_name,
+                    plugin_id=target_plugin_id,
+                    market_detail=market_detail,
+                )
+            warnings.extend(ism_warnings)
+
+            install_dict: dict[str, Any] = {
+                "channel": entry.channel,
+                "directory_name": entry.directory_name,
+                "plugin_id": entry.plugin_id,
+            }
+            if entry.source_detail is not None and hasattr(
+                entry.source_detail, "version"
+            ):
+                # Mirror SourceDetailMarket fields for the API response.
+                install_dict.update(
+                    {
+                        "version": getattr(entry.source_detail, "version", ""),
+                        "package_sha256": getattr(
+                            entry.source_detail, "package_sha256", ""
+                        ),
+                        "payload_hash": getattr(
+                            entry.source_detail, "payload_hash", None
+                        ),
+                        "published_at": getattr(
+                            entry.source_detail, "published_at", ""
+                        ),
+                        "previous_version": getattr(
+                            entry.source_detail, "previous_version", None
+                        ),
+                    }
+                )
+
+            return self._compose_install_result(
+                saved=saved,
+                unpack_result=unpack_result,
+                install_dict=install_dict,
+                warnings=warnings,
+            )
+
+        except InstallSourceError:
+            # Lock write failed — fs cleanup still runs, but propagate the
+            # structured error so Bridge can map it to ``lock_write_failed``.
+            self._cleanup_after_failure(
+                saved=saved, unpacked_target_dir=unpacked_target_dir
+            )
+            raise
+        except Exception:
+            self._cleanup_after_failure(
+                saved=saved, unpacked_target_dir=unpacked_target_dir
+            )
+            raise
+
+    @staticmethod
+    def _extract_unpack_target(
+        unpack_result: dict[str, object],
+    ) -> tuple[Path, str]:
+        """Pull the unpacked plugin's target dir + plugin id from a dump.
+
+        The CLI returns potentially many ``unpacked_plugins`` for bundles,
+        but Market only ships single-plugin packages so we expect exactly
+        one entry. Empty / multi-entry results are programmer errors at
+        this layer.
+        """
+
+        unpacked_plugins = unpack_result.get("unpacked_plugins")
+        if not isinstance(unpacked_plugins, list) or not unpacked_plugins:
+            raise ValueError("unpack returned no plugins")
+        first = unpacked_plugins[0]
+        if not isinstance(first, dict):
+            raise ValueError("unpack returned malformed unpacked_plugins entry")
+        target_dir_raw = first.get("target_dir")
+        if not isinstance(target_dir_raw, str) or not target_dir_raw:
+            raise ValueError("unpack returned no target_dir for plugin")
+        target_plugin_id = str(first.get("target_plugin_id", "")) or ""
+        return Path(target_dir_raw), target_plugin_id
+
+    def _compose_install_result(
+        self,
+        *,
+        saved: dict[str, object],
+        unpack_result: dict[str, object],
+        install_dict: dict[str, Any],
+        warnings: list[str],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "upload": saved,
+            "unpack": unpack_result,
+            "install": install_dict,
+        }
+        if warnings:
+            result["install_source_warning"] = "; ".join(warnings)
+        return result
+
+    async def _record_imported_for_unpack(
+        self,
+        *,
+        target_dir: Path,
+        saved_filename: str,
+        actual_sha256: str,
+    ) -> dict[str, Any]:
+        """Fall back to recording the install as ``channel="imported"``.
+
+        Used when ``market_detail`` lacks the required keys; the user
+        still gets a working plugin and we still record source-truth, just
+        without the Market-side evidence.
+        """
+
+        mgr = self._require_install_source_manager()
+
+        def _record() -> None:
+            mgr.record_import(
+                directory_path=target_dir,
+                package_filename=saved_filename,
+                package_sha256=actual_sha256,
+            )
+
+        await asyncio.to_thread(_record)
+        # Build a minimal install_dict mirroring the imported entry shape
+        # (no version / channel for imported channel by design).
+        return {
+            "channel": "imported",
+            "directory_name": target_dir.name,
+            "plugin_id": target_dir.name,
+            "package_filename": saved_filename,
+            "package_sha256": actual_sha256,
+        }
+
+    def _cleanup_after_failure(
+        self,
+        *,
+        saved: dict[str, object] | None,
+        unpacked_target_dir: Path | None,
+    ) -> None:
+        """Best-effort fs cleanup on upload_and_install failure (R3.6).
+
+        Order is important: we delete the unpacked directory first (so a
+        partial extract doesn't get adopted by the next reconcile pass)
+        and then the saved archive. Both calls swallow OSError because
+        the original exception is what we care about — cleanup failures
+        get logged but don't shadow the real error.
+        """
+
+        if unpacked_target_dir is not None:
+            self._cleanup_failed_unpack(unpacked_target_dir)
+        if saved is not None:
+            saved_path_raw = saved.get("path")
+            if isinstance(saved_path_raw, str) and saved_path_raw:
+                try:
+                    Path(saved_path_raw).unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(
+                        "upload_and_install: failed to clean up saved package "
+                        "{}: {}",
+                        saved_path_raw,
+                        exc,
+                    )
+
+    @staticmethod
+    def _cleanup_failed_unpack(target_dir: Path) -> None:
+        """Recursively remove ``target_dir`` ignoring missing-path errors.
+
+        Does NOT touch the lock file — fs rollback only. The caller is
+        responsible for ensuring no partial lock entry exists (we never
+        write one before unpack completes).
+        """
+
+        try:
+            shutil.rmtree(target_dir, ignore_errors=True)
+        except OSError as exc:  # pragma: no cover — ignore_errors=True suppresses
+            logger.warning(
+                "upload_and_install: _cleanup_failed_unpack({}) failed: {}",
+                target_dir,
+                exc,
+            )
+
+    @staticmethod
+    def _require_install_source_manager() -> InstallSourceManager:
+        """Resolve the global manager or raise a clear configuration error.
+
+        The manager is published by ``StartupReconciler`` during FastAPI
+        lifespan startup; if a caller hits the market install path before
+        that has run we want a meaningful error rather than ``AttributeError``
+        on ``None.record_market_install``.
+        """
+
+        mgr = get_install_source_manager()
+        if mgr is None:
+            raise ServerDomainError(
+                code="INSTALL_SOURCE_NOT_READY",
+                message="install source manager is not initialised",
+                status_code=503,
+                details={"hint": "wait for FastAPI lifespan startup to complete"},
+            )
+        return mgr
 
     def resolve_download_path(self, package: str) -> Path:
         """Resolve and validate a package path for download.

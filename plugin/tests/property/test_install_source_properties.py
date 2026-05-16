@@ -55,12 +55,35 @@ def _ts_strategy():
 
 def _source_detail_market_strategy():
     return st.builds(
-        lambda pmid, ver, url: SourceDetailMarket(
-            plugin_market_id=pmid, version=ver, package_url=url, previous_version=None,
+        lambda pmid, ver, url, sha, ph, ch, pa: SourceDetailMarket(
+            plugin_market_id=pmid,
+            version=ver,
+            package_url=url,
+            package_sha256=sha,
+            payload_hash=ph,
+            channel=ch,
+            published_at=pa,
+            previous_version=None,
         ),
         st.text(min_size=1, max_size=10),
         st.text(min_size=1, max_size=10),
         st.text(min_size=1, max_size=30),
+        st.text(
+            alphabet=st.characters(
+                min_codepoint=ord("0"), max_codepoint=ord("f"),
+                whitelist_categories=["Nd", "Ll"],
+            ),
+            min_size=64,
+            max_size=64,
+        ),
+        st.one_of(st.none(), st.text(min_size=1, max_size=64)),
+        st.sampled_from(["stable", "beta"]),
+        st.builds(
+            lambda secs: (datetime(2024, 1, 1, tzinfo=UTC) + timedelta(seconds=secs)).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"
+            ),
+            st.integers(min_value=0, max_value=10**9),
+        ),
     )
 
 

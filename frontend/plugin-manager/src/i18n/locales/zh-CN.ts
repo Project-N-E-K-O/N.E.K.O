@@ -93,7 +93,23 @@ export default {
     sortNewest: '最新',
     sortMostDownloads: '下载量',
     sortTopRated: '评分',
-    sortName: '名称'
+    sortName: '名称',
+    upgrading: '升级中...',
+    upgradeTo: '升级到 v{version}',
+    upgradeSuccess: '升级成功: {name}',
+    yanked: '已撤回',
+    yankedDefault: '该版本已被作者撤回',
+    noVersionAvailable: '暂无可用版本',
+    upgradeRollback: '升级失败，已回滚到旧版本',
+    upgradeAlreadyAtTarget: '当前已是目标版本',
+    pluginNotInstalled: '该插件未安装，无法升级',
+    lockWriteFailed: '安装记录写入失败'
+  },
+  settings: {
+    channel: '更新渠道',
+    channelStable: '稳定版',
+    channelBeta: '测试版',
+    channelHint: '切换后所有插件列表将按所选渠道刷新；不影响已安装插件运行'
   },
   auth: {
     unauthorized: '未授权访问',

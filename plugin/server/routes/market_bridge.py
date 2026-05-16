@@ -10,22 +10,32 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import os
 import secrets
+import shutil
 import time
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from plugin.logging_config import get_logger
+from plugin.server.application.install_source import (
+    InstallSourceError,
+    InstallSourceManager,
+    LockEntry,
+    SourceDetailMarket,
+    get_install_source_manager,
+)
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.settings import MARKET_URL
+from plugin.settings import MARKET_URL, USER_PLUGIN_CONFIG_ROOT
 
 router = APIRouter(prefix="/market", tags=["market-bridge"])
 logger = get_logger("server.routes.market_bridge")
@@ -81,7 +91,12 @@ class MarketStatusResponse(BaseModel):
 
 
 class MarketInstallRequest(BaseModel):
-    """从 Market 触发安装的请求。"""
+    """从 Market 触发安装的请求。
+
+    v2 (design §3.4.1) 在原有字段之上新增 ``mode`` / ``channel`` /
+    ``published_at``，让客户端区分 install / upgrade / reinstall 三种
+    语义并把 Market 已知的发布证据透传到 lock entry 上。
+    """
     package_url: str = Field(..., description="插件包下载 URL")
     package_sha256: str | None = Field(
         default=None,
@@ -90,6 +105,20 @@ class MarketInstallRequest(BaseModel):
     payload_hash: str | None = Field(None, description="可选的 payload hash 二次校验")
     plugin_id: str | None = Field(None, description="Market 侧的插件标识")
     version: str | None = Field(None, description="版本号")
+    # v2: stable / beta channel 透传给客户端，让 lock entry 携带完整证据
+    channel: str | None = Field(
+        default=None,
+        description="Market 上 latest_version.channel；None 时按 'stable' 处理",
+    )
+    published_at: str | None = Field(
+        default=None,
+        description="Market 上 latest_version.created_at；None 时由客户端兜底为当前时间",
+    )
+    # v2: install / upgrade / reinstall mode 选择；旧客户端不传 mode 则默认 install
+    mode: Literal["install", "upgrade", "reinstall"] = Field(
+        default="install",
+        description="install=全新安装；upgrade=覆盖旧版本；reinstall=同版本重装",
+    )
     on_conflict: str = Field(default="rename", pattern=r"^(rename|fail)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
@@ -106,7 +135,10 @@ class MarketTaskStatus(BaseModel):
     progress: float = 0.0  # 0.0 ~ 1.0
     message: str = ""
     result: dict[str, Any] | None = None
+    # v2 (R10.1 / R10.2): error 字段保留 message 以便旧前端展示；新增 error_code
+    # 让前端识别稳定错误码（upgrade_rollback_completed / version_already_at_target / ...）。
     error: str | None = None
+    error_code: str | None = None
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
@@ -115,6 +147,10 @@ class MarketTaskStatus(BaseModel):
 class MarketInstalledPlugin(BaseModel):
     plugin_id: str
     path: str
+    # v2 (R6.1 / R6.6 / design §3.5): 让前端在不二次请求的前提下展示 yank /
+    # channel / 版本对比信息。仅 channel="market" 的 entry 投影；非 market /
+    # 没有 lock entry 时为 None。
+    latest_install_source: dict[str, Any] | None = None
 
 
 class MarketInstalledResponse(BaseModel):
@@ -166,8 +202,28 @@ async def market_install(
 
     流程：下载包 → 校验 SHA256 → 调用 install_package → 返回任务 ID。
     安装是异步的，前端通过 /market/tasks/{task_id} 轮询进度。
+
+    v2 (design §3.4.2): mode 字段决定走 install / upgrade / reinstall 三条
+    分支；upgrade / reinstall 在 bridge 内部协调 lifecycle stop → rename
+    旧目录 → unpack → record → start，失败时按 rollback steps 逆序回滚。
     """
     _verify_token(token)
+
+    # mode=upgrade 立即校验 lock entry 存在性（R5.5）；reinstall 同样需要
+    # 已装才能"重装"，install 不要求。
+    if payload.mode in ("upgrade", "reinstall"):
+        mgr = get_install_source_manager()
+        if mgr is None or mgr.find_active_market_entry(payload.plugin_id or "") is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "plugin_not_installed_for_upgrade",
+                    "message": (
+                        f"plugin {payload.plugin_id!r} has no active market lock "
+                        "entry; cannot upgrade / reinstall"
+                    ),
+                },
+            )
 
     task_id = secrets.token_urlsafe(16)
     _tasks[task_id] = {
@@ -177,6 +233,7 @@ async def market_install(
         "message": "任务已创建",
         "result": None,
         "error": None,
+        "error_code": None,
         "created_at": time.time(),
         "completed_at": None,
     }
@@ -213,29 +270,76 @@ async def market_task_status(
 async def market_installed(
     token: str = Query(..., description="Bridge token"),
 ):
-    """查询本地已安装的插件列表。"""
+    """查询本地已安装的插件列表。
+
+    v2 (design §3.5): 把 lock 上 ``channel="market"`` 的 entry 投影成
+    ``latest_install_source`` 一并返回，前端不再需要二次请求即可拿到
+    版本号 / channel / sha256 / payload_hash 用于 upgrade 与 yank 判定。
+    """
     _verify_token(token)
 
     try:
         result = await _cli_service.list_local_plugins()
         plugins = result.get("plugins", [])
-        # 构建已安装列表
+        # 一次性拿全量 lock 索引
+        mgr = get_install_source_manager()
+        snapshot = mgr.snapshot() if mgr is not None else None
+        entries_by_pid: dict[str, LockEntry] = {}
+        if snapshot is not None:
+            entries_by_pid = {
+                e.plugin_id: e
+                for e in snapshot.entries
+                if not e.removed and e.plugin_id
+            }
+
         from plugin.settings import PLUGIN_CONFIG_ROOTS
-        installed = []
+        installed: list[MarketInstalledPlugin] = []
         for plugin_id in plugins:
             # 查找插件实际路径
+            plugin_dir: Path | None = None
             for root in PLUGIN_CONFIG_ROOTS:
-                plugin_dir = root / plugin_id
-                if plugin_dir.is_dir():
-                    installed.append(MarketInstalledPlugin(
-                        plugin_id=plugin_id,
-                        path=str(plugin_dir),
-                    ))
+                candidate = root / plugin_id
+                if candidate.is_dir():
+                    plugin_dir = candidate
                     break
+            if plugin_dir is None:
+                continue
+            installed.append(MarketInstalledPlugin(
+                plugin_id=plugin_id,
+                path=str(plugin_dir),
+                latest_install_source=_project_market_source_detail(
+                    entries_by_pid.get(plugin_id)
+                ),
+            ))
         return MarketInstalledResponse(installed=installed, count=len(installed))
     except Exception as exc:
         logger.warning("Failed to list installed plugins: {}", exc)
         return MarketInstalledResponse(installed=[], count=0)
+
+
+def _project_market_source_detail(
+    entry: LockEntry | None,
+) -> dict[str, Any] | None:
+    """Project a LockEntry's market source_detail to the API view (design §3.5).
+
+    Returns None for entries that are missing, soft-removed, non-market,
+    or carry a non-market source_detail (defensive — should not happen
+    after parser validation but keeps the projection total).
+    """
+
+    if entry is None or entry.removed or entry.channel != "market":
+        return None
+    detail = entry.source_detail
+    if not isinstance(detail, SourceDetailMarket):
+        return None
+    return {
+        "channel": detail.channel,
+        "version": detail.version,
+        "package_sha256": detail.package_sha256,
+        "payload_hash": detail.payload_hash,
+        "package_url": detail.package_url,
+        "published_at": detail.published_at,
+    }
 
 
 @router.post("/token-exchange", response_model=MarketTokenExchangeResponse)
@@ -282,106 +386,557 @@ def _verify_token(token: str) -> None:
 
 
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
-    """异步执行下载 + 校验 + 安装流程。"""
+    """异步执行下载 + 校验 + 安装 / 升级流程（design §3.4）。
+
+    根据 ``payload.mode`` 走 ``_do_install`` / ``_do_upgrade`` 之一；后者
+    再细分为 ``upgrade`` (版本号必须前进) / ``reinstall`` (允许相同版本号)。
+    所有结构化错误都收敛到 :class:`_TaskError`，最终落到 task dict 的
+    ``error_code`` 字段供前端识别。
+    """
+
     task = _tasks[task_id]
+    started_at = time.monotonic()
+    log_ctx: dict[str, Any] = {
+        "task_id": task_id,
+        "mode": payload.mode,
+        "plugin_id": payload.plugin_id or "",
+        "version": payload.version or "",
+        "package_sha256_check": "skipped",
+    }
 
     try:
-        # 1. 下载
-        task["status"] = "downloading"
-        task["progress"] = 0.1
-        task["message"] = f"正在下载: {payload.package_url}"
-
-        content = await _download_package(payload.package_url, task)
-
-        # 2. 校验 SHA256（可选）
-        expected_hash = (payload.package_sha256 or "").strip().lower()
-        skip_hash_check = (
-            not expected_hash
-            or expected_hash == "0" * 64
-            or len(expected_hash) != 64
-            or not all(c in "0123456789abcdef" for c in expected_hash)
+        if payload.mode == "install":
+            await _do_install(task, payload, log_ctx)
+        elif payload.mode == "upgrade":
+            await _do_upgrade(task, payload, log_ctx)
+        elif payload.mode == "reinstall":
+            await _do_upgrade(task, payload, log_ctx, allow_same_version=True)
+        else:  # pragma: no cover — Pydantic Literal already enforces this
+            raise _TaskError(
+                code="invalid_mode",
+                message=f"unknown mode: {payload.mode}",
+            )
+        _finalize_task_success(task, started_at, log_ctx)
+    except _TaskError as exc:
+        _finalize_task_failure(task, exc, started_at, log_ctx)
+    except Exception as exc:
+        logger.exception(
+            "Market install task {} hit unexpected error: {}",
+            task_id,
+            exc,
+        )
+        _finalize_task_failure(
+            task,
+            _TaskError(code="internal_error", message=str(exc)),
+            started_at,
+            log_ctx,
         )
 
-        if skip_hash_check:
-            logger.warning(
-                "Market install skipping SHA256 verification for {} "
-                "(no hash provided by Market)",
-                payload.plugin_id or payload.package_url,
-            )
-            task["message"] = "跳过 SHA256 校验（Market 未提供）"
-        else:
-            task["status"] = "verifying"
-            task["progress"] = 0.7
-            task["message"] = "正在校验文件完整性..."
 
-            actual_hash = hashlib.sha256(content).hexdigest().lower()
-            if actual_hash != expected_hash:
-                raise ValueError(
-                    f"SHA256 校验失败\n"
-                    f"  期望: {expected_hash}\n"
-                    f"  实际: {actual_hash}"
-                )
+# ─── Task error / finalisers ─────────────────────────────────────────
 
-        # 3. 安装
-        task["status"] = "installing"
-        task["progress"] = 0.8
-        task["message"] = "正在安装插件..."
 
-        # 推断文件名
-        filename = _extract_filename(payload.package_url)
+@dataclasses.dataclass
+class _TaskError(Exception):
+    """Bridge-internal structured error.
 
-        # Fix 8 — single-write market: tell upload_and_install to record
-        # this install directly as channel="market" rather than first
-        # writing "imported" and then overriding. This removes the
-        # intermediate state (observable on crash / concurrent read)
-        # and also makes installed_at align with the first market
-        # write instead of the transient imported write.
-        market_override: dict[str, Any] = {
-            "channel": "market",
-            "market_detail": {
-                "plugin_market_id": payload.plugin_id or "",
-                "version": payload.version or "",
-                "package_url": payload.package_url,
-            },
-        }
+    Carries a stable ``code`` so the front-end can reliably switch on
+    error type (R10.1) plus a human-readable ``message`` to surface in
+    Chinese UI. ``http_status`` is currently unused but kept for the
+    rare case where a synchronous endpoint wants to translate the same
+    error to an HTTP response.
+    """
 
+    code: str
+    message: str
+    http_status: int | None = None
+
+    def __post_init__(self) -> None:
+        super().__init__(self.code, self.message)
+
+
+def _finalize_task_success(
+    task: dict[str, Any],
+    started_at: float,
+    log_ctx: dict[str, Any],
+) -> None:
+    """Mark task completed and emit one structured info log line."""
+
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    task["status"] = "completed"
+    task["progress"] = 1.0
+    task["completed_at"] = time.time()
+    if not task.get("message"):
+        task["message"] = "完成"
+    logger.info(
+        "market_install_task outcome=success task_id={} mode={} plugin_id={} "
+        "version={} duration_ms={} package_sha256_check={}",
+        log_ctx.get("task_id", ""),
+        log_ctx.get("mode", ""),
+        log_ctx.get("plugin_id", ""),
+        log_ctx.get("version", ""),
+        duration_ms,
+        log_ctx.get("package_sha256_check", "skipped"),
+    )
+
+
+def _finalize_task_failure(
+    task: dict[str, Any],
+    err: _TaskError,
+    started_at: float,
+    log_ctx: dict[str, Any],
+) -> None:
+    """Mark task failed and emit one structured error log line."""
+
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    task["status"] = "failed"
+    task["progress"] = task.get("progress", 0.0)
+    task["error"] = err.message
+    task["error_code"] = err.code
+    task["completed_at"] = time.time()
+    task["message"] = _human_message_for(err.code) or err.message
+    logger.error(
+        "market_install_task outcome=failed task_id={} mode={} plugin_id={} "
+        "version={} duration_ms={} error_code={} package_sha256_check={} message={}",
+        log_ctx.get("task_id", ""),
+        log_ctx.get("mode", ""),
+        log_ctx.get("plugin_id", ""),
+        log_ctx.get("version", ""),
+        duration_ms,
+        err.code,
+        log_ctx.get("package_sha256_check", "skipped"),
+        err.message,
+    )
+
+
+_HUMAN_MESSAGES: dict[str, str] = {
+    "upgrade_rollback_completed": "升级失败，已回滚到旧版本",
+    "plugin_not_installed_for_upgrade": "该插件未安装，无法升级",
+    "version_already_at_target": "当前已是目标版本",
+    "lock_write_failed": "安装记录写入失败",
+    "market_list_fetch_failed": "无法连接到 Market",
+}
+
+
+def _human_message_for(code: str) -> str:
+    return _HUMAN_MESSAGES.get(code, "")
+
+
+# ─── install / upgrade flows ─────────────────────────────────────────
+
+
+async def _do_install(
+    task: dict[str, Any],
+    payload: MarketInstallRequest,
+    log_ctx: dict[str, Any],
+) -> None:
+    """Install a fresh market plugin (mode=install).
+
+    Reuses the original download → verify → ``upload_and_install`` path
+    but threads the v2 fields (``channel`` / ``published_at``) through
+    to the lock record.
+    """
+
+    task["status"] = "downloading"
+    task["progress"] = 0.1
+    task["message"] = f"正在下载: {payload.package_url}"
+
+    content = await _download_package(payload.package_url, task)
+
+    sha_check = _verify_sha256(content, payload.package_sha256, task)
+    log_ctx["package_sha256_check"] = sha_check
+
+    task["status"] = "installing"
+    task["progress"] = 0.8
+    task["message"] = "正在安装插件..."
+
+    filename = _extract_filename(payload.package_url)
+    market_override = _build_market_override(payload, content, mode="install")
+
+    try:
         result = await _cli_service.upload_and_install(
             filename=filename,
             content=content,
             on_conflict=payload.on_conflict,
             install_source_override=market_override,
         )
+    except InstallSourceError as exc:
+        if exc.code == "lock_write_failed":
+            raise _TaskError(code="lock_write_failed", message=str(exc.message)) from exc
+        raise _TaskError(code="internal_error", message=str(exc.message)) from exc
 
-        # 4. 可选：校验 payload_hash
-        if payload.payload_hash:
-            install_result = result.get("install", {})
-            installed_payload_hash = install_result.get("payload_hash", "")
-            if installed_payload_hash and installed_payload_hash.lower() != payload.payload_hash.lower():
-                logger.warning(
-                    "Payload hash mismatch after install: expected={}, got={}",
-                    payload.payload_hash,
-                    installed_payload_hash,
-                )
-                # 不阻断安装，只记录警告
+    _post_install_payload_check(payload, result)
 
-        # 5. 完成
-        task["status"] = "completed"
+    task["progress"] = 1.0
+    task["message"] = "安装成功"
+    task["result"] = result
+
+    if isinstance(result, dict) and "install_source_warning" in result:
+        task["install_source_warning"] = result["install_source_warning"]
+
+
+async def _do_upgrade(
+    task: dict[str, Any],
+    payload: MarketInstallRequest,
+    log_ctx: dict[str, Any],
+    *,
+    allow_same_version: bool = False,
+) -> None:
+    """Upgrade an installed market plugin (design §3.4.3).
+
+    Steps (numbered to match design):
+      1. find active market entry; reject if missing
+      2. compare versions; reject if equal (unless reinstall)
+      3. lifecycle stop (if running) — currently a no-op stub since the
+         plugin loader does not expose a stable stop/start API at this
+         layer. We keep the hook so downstream wiring can implement it
+         without touching this control flow.
+      4. rename existing dir → ``<dir>.bak.<utc_micro_ts>``
+      5. download + verify sha256
+      6. unpack to original directory + record_market_upgrade
+      7. lifecycle start (if was running)
+      8. async cleanup of backup dir
+    """
+
+    plugin_id = payload.plugin_id or ""
+    target_version = payload.version or ""
+
+    # Step 1: probe active lock entry.
+    mgr = get_install_source_manager()
+    if mgr is None:
+        raise _TaskError(
+            code="plugin_not_installed_for_upgrade",
+            message="install source manager not initialised",
+        )
+
+    entry = mgr.find_active_market_entry(plugin_id)
+    if entry is None:
+        raise _TaskError(
+            code="plugin_not_installed_for_upgrade",
+            message=f"plugin {plugin_id!r} has no active market lock entry",
+            http_status=400,
+        )
+
+    # Step 2: version-equality short-circuit (skipped for reinstall).
+    current_version = ""
+    if isinstance(entry.source_detail, SourceDetailMarket):
+        current_version = entry.source_detail.version
+    if not allow_same_version and current_version == target_version:
+        raise _TaskError(
+            code="version_already_at_target",
+            message=(
+                f"plugin {plugin_id!r} is already at version {target_version!r}"
+            ),
+        )
+
+    plugin_dir = (USER_PLUGIN_CONFIG_ROOT / entry.directory_name).resolve()
+    backup_dir = plugin_dir.with_name(
+        f"{entry.directory_name}.bak.{_utc_micro_ts()}"
+    )
+    rollback_steps: list[Callable[[], Awaitable[None]]] = []
+    was_running = await _safely_is_running(plugin_id)
+
+    # Step 3: lifecycle stop.
+    if was_running:
+        task["message"] = "正在停止旧版本插件..."
+        await _safely_stop(plugin_id)
+
+    # Step 4: rename old dir → backup.
+    try:
+        await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
+    except OSError as exc:
+        if was_running:
+            await _safely_start(plugin_id)
+        raise _TaskError(
+            code="upgrade_rollback_completed",
+            message=f"无法备份旧目录: {exc}",
+        ) from exc
+    rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
+
+    try:
+        # Step 5: download + verify sha256.
+        task["status"] = "downloading"
+        task["progress"] = 0.1
+        task["message"] = "正在下载新版本..."
+        content = await _download_package(payload.package_url, task)
+        sha_check = _verify_sha256(content, payload.package_sha256, task)
+        log_ctx["package_sha256_check"] = sha_check
+
+        # Step 6: unpack + record_market_upgrade (single atomic call).
+        task["status"] = "installing"
+        task["progress"] = 0.8
+        task["message"] = "正在升级插件..."
+
+        market_override = _build_market_override(
+            payload,
+            content,
+            mode="reinstall" if allow_same_version else "upgrade",
+        )
+
+        try:
+            result = await _cli_service.upload_and_install(
+                filename=_extract_filename(payload.package_url),
+                content=content,
+                on_conflict="fail",  # backup already moved aside
+                install_source_override=market_override,
+            )
+        except InstallSourceError as exc:
+            if exc.code == "lock_write_failed":
+                raise _TaskError(
+                    code="lock_write_failed",
+                    message=str(exc.message),
+                ) from exc
+            raise _TaskError(
+                code="upgrade_rollback_completed",
+                message=str(exc.message),
+            ) from exc
+
+        rollback_steps.append(_make_remove_dir_step(plugin_dir))
+
+        # Step 7: lifecycle start.
+        if was_running:
+            task["message"] = "正在启动新版本..."
+            await _safely_start(plugin_id)
+
+        # Step 8: async cleanup of backup.
+        asyncio.create_task(
+            _async_remove_dir(backup_dir),
+            name=f"market-upgrade-cleanup-{plugin_id}",
+        )
+
         task["progress"] = 1.0
-        task["message"] = "安装成功"
+        task["message"] = "升级成功"
         task["result"] = result
-        task["completed_at"] = time.time()
 
-        # Req 10.8: surface any install_source_warning back to the client.
         if isinstance(result, dict) and "install_source_warning" in result:
             task["install_source_warning"] = result["install_source_warning"]
 
+    except _TaskError:
+        # _TaskError already carries a stable code; just roll back fs.
+        await _run_rollback(rollback_steps, was_running, plugin_id)
+        raise
     except Exception as exc:
-        task["status"] = "failed"
-        task["progress"] = 0.0
-        task["error"] = str(exc)
-        task["message"] = f"安装失败: {exc}"
-        task["completed_at"] = time.time()
-        logger.error("Market install task {} failed: {}", task_id, exc)
+        # Other (network / sha256 / unpack) failures collapse into one code.
+        await _run_rollback(rollback_steps, was_running, plugin_id)
+        raise _TaskError(
+            code="upgrade_rollback_completed",
+            message=f"升级失败已回滚: {exc}",
+        ) from exc
+
+
+def _build_market_override(
+    payload: MarketInstallRequest,
+    content: bytes,
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    """Construct the ``install_source_override`` dict for upload_and_install.
+
+    Caller's ``package_sha256`` is passed through verbatim — the CLI
+    service will re-hash and overwrite it with the actual value, but
+    for v1 lock entries that legitimately omit the field we want the
+    caller-provided value to win when present.
+    """
+
+    return {
+        "channel": "market",
+        "mode": mode,
+        "market_detail": {
+            "plugin_market_id": payload.plugin_id or "",
+            "version": payload.version or "",
+            "package_url": payload.package_url,
+            "channel": payload.channel or "stable",
+            "package_sha256": (payload.package_sha256 or "").lower(),
+            "payload_hash": payload.payload_hash,
+            "published_at": payload.published_at or _utc_iso_now(),
+        },
+    }
+
+
+def _verify_sha256(
+    content: bytes,
+    expected_hash: str | None,
+    task: dict[str, Any],
+) -> Literal["passed", "skipped", "mismatch"]:
+    """Verify sha256 if present; raise ValueError on mismatch.
+
+    Returns the structured-log status string for ``log_ctx``.
+    """
+
+    raw = (expected_hash or "").strip().lower()
+    skip = (
+        not raw
+        or raw == "0" * 64
+        or len(raw) != 64
+        or not all(c in "0123456789abcdef" for c in raw)
+    )
+    if skip:
+        logger.warning(
+            "Market install skipping SHA256 verification (no hash provided)"
+        )
+        task["message"] = "跳过 SHA256 校验（Market 未提供）"
+        return "skipped"
+
+    task["status"] = "verifying"
+    task["progress"] = 0.7
+    task["message"] = "正在校验文件完整性..."
+
+    actual = hashlib.sha256(content).hexdigest().lower()
+    if actual != raw:
+        raise ValueError(
+            f"SHA256 校验失败\n  期望: {raw}\n  实际: {actual}"
+        )
+    return "passed"
+
+
+def _post_install_payload_check(
+    payload: MarketInstallRequest,
+    result: Any,
+) -> None:
+    """Best-effort payload_hash double-check after a successful install.
+
+    Mismatch is logged but does not fail the install — Market's
+    ``payload_hash`` may legitimately drift from the unpacked
+    ``[payload].hash`` under archive normalisation.
+    """
+
+    if not payload.payload_hash or not isinstance(result, dict):
+        return
+    install_block = result.get("install") or {}
+    installed_payload_hash = install_block.get("payload_hash") or ""
+    if (
+        installed_payload_hash
+        and installed_payload_hash.lower() != payload.payload_hash.lower()
+    ):
+        logger.warning(
+            "Payload hash mismatch after install: expected={}, got={}",
+            payload.payload_hash,
+            installed_payload_hash,
+        )
+
+
+# ─── lifecycle / rollback helpers ─────────────────────────────────────
+
+
+async def _safely_is_running(plugin_id: str) -> bool:
+    """Best-effort lifecycle probe.
+
+    Currently the plugin server does not expose a stable
+    ``is_plugin_running`` interface to bridge code; treat as "not running"
+    so the upgrade flow does not try to stop / start something it can't
+    manage. When a real interface lands the implementation can swap in
+    here without touching ``_do_upgrade``.
+    """
+
+    return False
+
+
+async def _safely_stop(plugin_id: str) -> None:
+    """Best-effort lifecycle stop — see :func:`_safely_is_running`."""
+
+    return None
+
+
+async def _safely_start(plugin_id: str) -> None:
+    """Best-effort lifecycle start; never raises (R5.4).
+
+    Wraps the start hook in a try/except so that a failure here during
+    rollback does not shadow the original error. Currently a no-op
+    stub mirroring :func:`_safely_is_running`.
+    """
+
+    try:
+        return None
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.error(
+            "lifecycle start failed for plugin_id={}: {}",
+            plugin_id,
+            exc,
+        )
+
+
+def _make_restore_dir_step(
+    backup_dir: Path,
+    target_dir: Path,
+) -> Callable[[], Awaitable[None]]:
+    """Build a rollback step that renames ``backup_dir`` back to ``target_dir``."""
+
+    async def _step() -> None:
+        if not backup_dir.exists():
+            return
+        # Make sure target is clear before rename so we don't EEXIST.
+        if target_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        await asyncio.to_thread(os.rename, backup_dir, target_dir)
+
+    return _step
+
+
+def _make_remove_dir_step(target_dir: Path) -> Callable[[], Awaitable[None]]:
+    """Build a rollback step that removes a directory, ignoring missing.
+
+    Used for the *new* directory after upload_and_install succeeds; if a
+    later step (lifecycle start) fails we rmtree the new dir to make room
+    for the backup-restore step to rename the old one back.
+    """
+
+    async def _step() -> None:
+        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+
+    return _step
+
+
+async def _async_remove_dir(target_dir: Path) -> None:
+    """Async best-effort rmtree for backup cleanup."""
+
+    try:
+        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+    except Exception as exc:  # pragma: no cover — ignore_errors=True swallows
+        logger.warning("backup cleanup failed for {}: {}", target_dir, exc)
+
+
+async def _run_rollback(
+    rollback_steps: list[Callable[[], Awaitable[None]]],
+    was_running: bool,
+    plugin_id: str,
+) -> None:
+    """Execute rollback steps in reverse order, then re-start old plugin.
+
+    Each step is wrapped in try/except so one failure does not stop the
+    rest from running. ``_safely_start`` itself is non-throwing.
+    """
+
+    for step in reversed(rollback_steps):
+        try:
+            await step()
+        except Exception as exc:
+            logger.error(
+                "rollback step failed plugin_id={} err={}",
+                plugin_id,
+                exc,
+            )
+    if was_running:
+        await _safely_start(plugin_id)
+
+
+def _utc_micro_ts() -> str:
+    """Generate a microsecond-precision UTC timestamp suitable for filenames.
+
+    Format: ``YYYYMMDDTHHMMSS_uuuuuu`` (no colons / slashes so it works on
+    every OS we support). Backup directory names are derived from this
+    so concurrent upgrades on the same plugin can be distinguished —
+    though the InstallSourceManager lock already serialises lock writes,
+    so concurrent upgrades hitting the *same* timestamp are bounded by
+    bridge-level scheduling.
+    """
+
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%f")
+
+
+def _utc_iso_now() -> str:
+    """Current UTC time in ISO 8601 with microsecond precision and ``Z`` suffix."""
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 async def _download_package(url: str, task: dict[str, Any]) -> bytes:

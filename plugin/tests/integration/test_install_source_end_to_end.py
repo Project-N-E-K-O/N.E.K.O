@@ -60,7 +60,9 @@ async def test_first_startup_migration(tmp_path: Path) -> None:
 
     assert lock_path.exists()
     doc = json.loads(lock_path.read_bytes())
-    assert doc["schema_version"] == 1
+    # v2 lock layout: schema_version pinned to 2 by _serialize_lock per
+    # design §3.1.4 / Req 2.4 (lazy migration on first write).
+    assert doc["schema_version"] == 2
     assert "created_at" in doc
     entries_by_key = {(e["root_id"], e["directory_name"]): e for e in doc["entries"]}
     assert entries_by_key[("builtin", "core")]["channel"] == "builtin"

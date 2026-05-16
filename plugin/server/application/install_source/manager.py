@@ -382,25 +382,104 @@ _DEFAULT_INSTALL_SOURCE: dict[str, Any] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Source-detail v2 coercion helpers (design §3.1.2 / Req 2.2)
+# ---------------------------------------------------------------------------
+# These four helpers normalize the v2 ``SourceDetailMarket`` fields when
+# parsing a lock entry from disk. They are tolerant by contract: a v1 lock
+# (or a hand-edited / partially-written v2 lock) may have any of the new
+# keys missing, ``None``, wrong type, or invalid in shape. Each helper
+# returns a sane default rather than raising — ``_parse_source_detail``
+# relies on this to never fail a parse over a single bad sub-field.
+
+_HEX_CHARS = frozenset("0123456789abcdef")
+
+
+def _coerce_sha256(value: Any) -> str:
+    """Pass-through 64-char lowercase hex; ``""`` for anything else (Req 2.2).
+
+    Empty string is a legitimate "unknown" sentinel — v1 lock entries have
+    no SHA stored, and the resulting ``""`` can be replaced once the
+    package is downloaded (see :class:`InstallSourceManager.record_market_install`).
+    """
+
+    if not isinstance(value, str) or len(value) != 64:
+        return ""
+    if not all(c in _HEX_CHARS for c in value):
+        return ""
+    return value
+
+
+def _coerce_optional_str(value: Any) -> str | None:
+    """Pass-through non-empty str; ``None`` otherwise (Req 2.2)."""
+
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _coerce_channel(value: Any) -> str:
+    """Pass-through ``"stable"`` / ``"beta"``; default ``"stable"`` (Req 2.2)."""
+
+    if isinstance(value, str) and value in ("stable", "beta"):
+        return value
+    return "stable"
+
+
+def _coerce_published_at(value: Any, *, fallback: str, now: str) -> str:
+    """Normalize a published-at timestamp; on failure use ``fallback``.
+
+    Wraps :func:`_normalize_ts`: if ``value`` is parseable as ISO 8601 the
+    result is the normalized canonical form; otherwise the v1 lock had no
+    such field and we fall back to the entry's ``installed_at`` (which
+    semantically means "I've had this plugin since at least the install
+    date" — a reasonable lower-bound for ``published_at``).
+
+    ``now`` is the per-parse anchor used inside :func:`_normalize_ts` for
+    its own deepest fallback path; we prefer ``fallback`` (i.e. installed_at)
+    when the input is missing or unparseable, so a non-string / empty input
+    short-circuits to ``fallback`` without going through ``_normalize_ts``.
+    """
+
+    if not isinstance(value, str) or not value:
+        return fallback
+    normalized = _normalize_ts(value, now=now)
+    # _normalize_ts returns ``now`` on parse failure; that's a worse fallback
+    # than the entry's own installed_at. Detect that case and prefer the
+    # caller-provided ``fallback``.
+    if normalized == now and value != now:
+        return fallback
+    return normalized
+
+
 def _parse_source_detail(
     channel: str,
     raw: Any,
     *,
     key: tuple[str, str],
+    installed_at: str,
+    now: str,
 ) -> SourceDetail:
     """Parse the ``source_detail`` field for a single entry.
 
     Per Req 3.20 / design §3.3 the interpretation is channel-driven:
 
-    * ``market`` → :class:`SourceDetailMarket`, with unknown sub-keys landing
-      in its ``extra_fields``.
-    * ``imported`` → :class:`SourceDetailImported`, same unknown-field policy.
+    * ``market`` → :class:`SourceDetailMarket`. v2 (design §3.1.2) adds
+      four sub-fields — ``package_sha256`` / ``payload_hash`` / ``channel``
+      / ``published_at`` — that fall back to safe defaults when missing or
+      malformed via :func:`_coerce_sha256` / :func:`_coerce_optional_str`
+      / :func:`_coerce_channel` / :func:`_coerce_published_at` (with
+      ``fallback=installed_at`` so a v1 row gets ``published_at`` ≈ when
+      the plugin was first installed).
+    * ``imported`` → :class:`SourceDetailImported`.
     * ``builtin`` / ``manual`` / anything else → ``None``. Any inbound
       ``source_detail`` for these channels is silently dropped because Req
       3.20 pins the on-disk value to JSON ``null`` for them.
 
     Malformed input (non-dict, missing required keys) falls back to ``None``
-    with a WARN — consistent with Req 14's tolerant posture.
+    with a WARN — consistent with Req 14's tolerant posture. Unknown sub-keys
+    are silently dropped so a forward-compatible writer (a v3 lock with
+    extra fields) doesn't fail this parser.
     """
 
     if raw is None:
@@ -418,6 +497,12 @@ def _parse_source_detail(
                 plugin_market_id=str(raw.get("plugin_market_id", "")),
                 version=str(raw.get("version", "")),
                 package_url=str(raw.get("package_url", "")),
+                package_sha256=_coerce_sha256(raw.get("package_sha256")),
+                payload_hash=_coerce_optional_str(raw.get("payload_hash")),
+                channel=_coerce_channel(raw.get("channel")),
+                published_at=_coerce_published_at(
+                    raw.get("published_at"), fallback=installed_at, now=now,
+                ),
                 previous_version=raw.get("previous_version"),
             )
         except Exception as exc:  # pragma: no cover — defensive
@@ -566,8 +651,14 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     # —— removed flag ——
     removed = bool(raw.get("removed", False))
 
-    # —— source_detail ——
-    source_detail = _parse_source_detail(channel, raw.get("source_detail"), key=key)
+    # —— source_detail (depends on installed_at as v2 published_at fallback per Req 2.2) ——
+    source_detail = _parse_source_detail(
+        channel,
+        raw.get("source_detail"),
+        key=key,
+        installed_at=installed_at,
+        now=now,
+    )
 
     return LockEntry(
         root_id=root_id,
@@ -653,10 +744,12 @@ def _parse_lock(raw: bytes) -> LockFile:
         )
         schema_version = 1
 
-    # —— Step 5: schema_version > 1 → WARN, keep going (Req 2.7) ——
-    if schema_version > 1:
+    # —— Step 5: schema_version > 2 → WARN, keep going (Req 2.7) ——
+    # v1 (default) and v2 are both legitimate inputs to this parser; only
+    # truly unknown future versions get the WARN best-effort treatment.
+    if schema_version > 2:
         logger.warning(
-            "install_source: schema_version=%d is newer than 1, attempting best-effort parse",
+            "install_source: schema_version=%d is newer than 2, attempting best-effort parse",
             schema_version,
         )
 
@@ -731,10 +824,18 @@ def _serialize_source_detail_for_json(detail: SourceDetail) -> dict[str, Any] | 
         return None
 
     if isinstance(detail, SourceDetailMarket):
+        # Field order is contractually fixed by design §3.1.3 / Req 2.3 so
+        # P1 round-trip can byte-equal the same logical entry across writes.
+        # Python 3.7+ dict literals preserve insertion order, and json.dumps
+        # honors that order; do not reach for OrderedDict.
         return {
             "plugin_market_id": detail.plugin_market_id,
             "version": detail.version,
+            "channel": detail.channel,
             "package_url": detail.package_url,
+            "package_sha256": detail.package_sha256,
+            "payload_hash": detail.payload_hash,
+            "published_at": detail.published_at,
             "previous_version": detail.previous_version,
         }
 
@@ -795,10 +896,18 @@ def _serialize_lock(lock: LockFile) -> bytes:
     so identical input produces identical output regardless of in-memory
     iteration order.
 
+    The on-disk ``schema_version`` is pinned to ``2`` regardless of the
+    in-memory ``LockFile.schema_version`` (Req 2.4): once we write through
+    this function the v2 layout is the truth on disk. Reading a v1 lock
+    and immediately serializing it (no other writes) is a no-op for
+    structural fields — only ``schema_version`` flips and the market
+    ``source_detail`` sub-object gains its v2 fields with default values.
+    This is the lazy migration path described in design §3.1.5.
+
     Pure function; safe to call from property tests without a manager.
     """
 
-    out: dict[str, Any] = {"schema_version": lock.schema_version}
+    out: dict[str, Any] = {"schema_version": 2}
     # created_at only written when set (First_Startup emits it initially;
     # subsequent writes preserve whatever was parsed).
     if lock.created_at is not None:
@@ -1456,6 +1565,14 @@ class InstallSourceManager:
                 plugin_market_id=plugin_market_id,
                 version=version,
                 package_url=package_url,
+                # v2 defaults: legacy record_market is kept for back-compat
+                # with the old test surface; production callers should use
+                # record_market_install / record_market_upgrade which carry
+                # the full evidence (sha256, payload_hash, channel, published_at).
+                package_sha256="",
+                payload_hash=None,
+                channel="stable",
+                published_at=now,
                 previous_version=previous_version,
             )
 
@@ -1495,6 +1612,275 @@ class InstallSourceManager:
             )
             self._current = new_lock
             self.save()
+
+    # ------------------------------------------------------------------
+    # Write path: record_market_install / record_market_upgrade (design §3.2)
+    # ------------------------------------------------------------------
+
+    def _build_market_detail_with_warnings(
+        self,
+        market_detail: dict[str, Any],
+        *,
+        previous_version: str | None,
+        now: str,
+    ) -> tuple[SourceDetailMarket, list[str]]:
+        """Build a ``SourceDetailMarket`` from a v2 ``market_detail`` dict.
+
+        Required keys: ``plugin_market_id`` / ``version`` / ``package_url`` —
+        callers should validate these before invoking; we read defensively
+        here too. v2 fields that are missing or invalid get the same defaults
+        as :func:`_parse_source_detail` (Req 2.2). Returns the dataclass plus
+        a list of human-readable warning strings (currently only emitted
+        when ``package_sha256`` is missing or invalid; per Req 4.6 the lock
+        still writes ``""`` and the caller surfaces an
+        ``install_source_warning`` to the user).
+        """
+
+        warnings: list[str] = []
+
+        sha = _coerce_sha256(market_detail.get("package_sha256"))
+        if not sha:
+            # Empty package_sha256 is a legitimate v1 / partial-write case
+            # but the user deserves to know we couldn't pin the package.
+            warnings.append(
+                "lock entry written with empty package_sha256 — "
+                "package integrity cannot be verified offline"
+            )
+
+        published_at = _coerce_published_at(
+            market_detail.get("published_at"),
+            fallback=now,
+            now=now,
+        )
+
+        return (
+            SourceDetailMarket(
+                plugin_market_id=str(market_detail.get("plugin_market_id", "")),
+                version=str(market_detail.get("version", "")),
+                package_url=str(market_detail.get("package_url", "")),
+                package_sha256=sha,
+                payload_hash=_coerce_optional_str(market_detail.get("payload_hash")),
+                channel=_coerce_channel(market_detail.get("channel")),
+                published_at=published_at,
+                previous_version=previous_version,
+            ),
+            warnings,
+        )
+
+    def _record_market_common(
+        self,
+        *,
+        root_id: RootId,
+        directory_name: str,
+        plugin_id: str,
+        market_detail: dict[str, Any],
+        is_upgrade: bool,
+    ) -> tuple[LockEntry, list[str]]:
+        """Shared body of :meth:`record_market_install` / :meth:`record_market_upgrade`.
+
+        Difference: ``is_upgrade`` controls whether the prior entry's
+        ``version`` is captured into the new entry's ``previous_version``
+        and whether ``installed_at`` is preserved (upgrade) or refreshed
+        (install).
+        """
+
+        # Builtin guard mirrors :meth:`record_market` — builtin entries
+        # cannot be promoted to ``channel="market"`` (Req 5.2 / Fix 12).
+        if root_id == "builtin":
+            logger.error(
+                "InstallSourceManager.record_market_%s: builtin channel is locked "
+                "(directory=%s, plugin_id=%r)",
+                "upgrade" if is_upgrade else "install",
+                directory_name,
+                plugin_id,
+            )
+            raise InstallSourceError(
+                "BUILTIN_CHANNEL_LOCKED",
+                f"builtin plugin {directory_name} cannot be set to channel=market",
+                details={
+                    "directory_name": directory_name,
+                    "plugin_id": plugin_id,
+                    "target_channel": "market",
+                },
+            )
+
+        with self._lock:
+            old_lock = self._current
+            now = self._now_iso()
+            existing = self._find_entry(old_lock, root_id, directory_name)
+
+            previous_version: str | None = None
+            installed_at = now
+            if existing is not None:
+                # Per design §3.2.2, upgrade preserves installed_at as
+                # "I've had this directory since at least…"; install
+                # refreshes it because the semantic is "fresh install".
+                # When existing entry has been soft-removed we still
+                # treat it as if it never existed for installed_at
+                # purposes — a brand-new install gets ``now``.
+                if is_upgrade and not existing.removed:
+                    installed_at = existing.installed_at
+                    if isinstance(existing.source_detail, SourceDetailMarket):
+                        previous_version = existing.source_detail.version
+
+            detail, warnings = self._build_market_detail_with_warnings(
+                market_detail,
+                previous_version=previous_version,
+                now=now,
+            )
+
+            new_entry = LockEntry(
+                root_id=root_id,
+                directory_name=directory_name,
+                plugin_id=plugin_id,
+                channel="market",
+                reason="user_requested",
+                installed_at=installed_at,
+                updated_at=now,
+                last_seen_at=now,
+                removed=False,
+                removed_at=None,
+                source_detail=detail,
+            )
+
+            try:
+                new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
+                self._current = new_lock
+                self.save()
+            except Exception as exc:
+                # Roll back the in-memory snapshot so a failed write
+                # doesn't leak a phantom entry to readers.
+                self._current = old_lock
+                raise InstallSourceError(
+                    "lock_write_failed",
+                    f"failed to write lock for {plugin_id} "
+                    f"{'upgrade' if is_upgrade else 'install'}: {exc}",
+                    details={
+                        "plugin_id": plugin_id,
+                        "root_id": root_id,
+                        "directory_name": directory_name,
+                    },
+                ) from exc
+
+            return new_entry, warnings
+
+    def record_market_install(
+        self,
+        *,
+        root_id: RootId,
+        directory_name: str,
+        plugin_id: str,
+        market_detail: dict[str, Any],
+    ) -> tuple[LockEntry, list[str]]:
+        """Record a fresh ``channel="market"`` install (design §3.2 / Req 4).
+
+        Always sets ``previous_version=None`` and refreshes ``installed_at``
+        to the current clock value — the semantic is "this directory is
+        being installed fresh" even when an old entry exists at the same
+        primary key (in which case the old entry is overwritten so it
+        doesn't leave a zombie behind, but its version is *not* recorded
+        as ``previous_version`` because that's the upgrade story).
+
+        ``market_detail`` schema (design §3.2.1):
+
+        - ``plugin_market_id`` *(required)*
+        - ``version`` *(required)*
+        - ``package_url`` *(required)*
+        - ``channel`` *(optional, defaults to "stable")*
+        - ``package_sha256`` *(optional, defaults to "" with warning)*
+        - ``payload_hash`` *(optional, defaults to None)*
+        - ``published_at`` *(optional, defaults to now)*
+
+        Returns the newly written ``LockEntry`` plus a list of warning
+        messages the caller should attach to its API response (currently
+        only "missing package_sha256" — Req 4.6).
+
+        Raises :class:`InstallSourceError` with code:
+
+        - ``"BUILTIN_CHANNEL_LOCKED"`` if ``root_id == "builtin"`` (Req 5.2)
+        - ``"lock_write_failed"`` if serialization or atomic write fails (Req 10.4)
+
+        This method **does not** start or stop the plugin lifecycle — that
+        is the caller's responsibility (R4.8 / design §3.2.3).
+        """
+
+        return self._record_market_common(
+            root_id=root_id,
+            directory_name=directory_name,
+            plugin_id=plugin_id,
+            market_detail=market_detail,
+            is_upgrade=False,
+        )
+
+    def record_market_upgrade(
+        self,
+        *,
+        root_id: RootId,
+        directory_name: str,
+        plugin_id: str,
+        market_detail: dict[str, Any],
+    ) -> tuple[LockEntry, list[str]]:
+        """Record a ``channel="market"`` upgrade (design §3.2 / Req 4).
+
+        When an active (non-removed) entry already exists at the same
+        primary key:
+
+        - if its ``source_detail`` is :class:`SourceDetailMarket`,
+          ``new_entry.source_detail.previous_version`` captures
+          ``old.source_detail.version``;
+        - regardless of channel, ``new_entry.installed_at`` is preserved
+          from the old entry ("I've had this directory since at least…");
+        - ``updated_at`` and ``last_seen_at`` are bumped to the current clock.
+
+        When no active old entry exists (no entry, or only a soft-removed
+        one), this method is *equivalent* to :meth:`record_market_install`:
+        ``previous_version=None`` and ``installed_at=now``.
+
+        ``market_detail`` schema and error codes are identical to
+        :meth:`record_market_install`.
+        """
+
+        return self._record_market_common(
+            root_id=root_id,
+            directory_name=directory_name,
+            plugin_id=plugin_id,
+            market_detail=market_detail,
+            is_upgrade=True,
+        )
+
+    def find_active_market_entry(self, plugin_id: str) -> LockEntry | None:
+        """Return the active (non-removed) market entry for ``plugin_id``, if any.
+
+        Used by Bridge ``_do_upgrade`` to discover the current install state
+        before kicking off the rename → unpack → record sequence (design §3.4.3).
+        Returns ``None`` if the plugin is not installed via Market or has
+        been soft-removed since.
+
+        Linear scan over ``_current.entries``: same complexity argument as
+        :meth:`_find_entry`. Lock-free read.
+        """
+
+        if not plugin_id:
+            return None
+        for entry in self._current.entries:
+            if entry.removed:
+                continue
+            if entry.channel != "market":
+                continue
+            if entry.plugin_id == plugin_id:
+                return entry
+        return None
+
+    def snapshot(self) -> LockFile:
+        """Return the current in-memory :class:`LockFile` snapshot.
+
+        Used by Bridge ``/market/installed`` to project a per-plugin
+        ``latest_install_source`` view (design §3.5.2). Lock-free; the
+        returned object is frozen so the caller can iterate without
+        risking a torn read.
+        """
+
+        return self._current
 
     # ------------------------------------------------------------------
     # Write path: mark_removed (delete-hook)

@@ -93,7 +93,23 @@ export default {
     sortNewest: 'Newest',
     sortMostDownloads: 'Downloads',
     sortTopRated: 'Top rated',
-    sortName: 'Name'
+    sortName: 'Name',
+    upgrading: 'Upgrading...',
+    upgradeTo: 'Upgrade to v{version}',
+    upgradeSuccess: 'Upgraded: {name}',
+    yanked: 'Yanked',
+    yankedDefault: 'This version has been yanked by its author',
+    noVersionAvailable: 'No release available',
+    upgradeRollback: 'Upgrade failed; rolled back to previous version',
+    upgradeAlreadyAtTarget: 'Already at the target version',
+    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
+    lockWriteFailed: 'Failed to write install record'
+  },
+  settings: {
+    channel: 'Update channel',
+    channelStable: 'Stable',
+    channelBeta: 'Beta',
+    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
   },
   auth: {
     unauthorized: 'Unauthorized access',

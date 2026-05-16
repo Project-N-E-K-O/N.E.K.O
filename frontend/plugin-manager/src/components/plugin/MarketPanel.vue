@@ -17,6 +17,38 @@
         <span class="market-panel__heading-hint">{{ t('market.subtitle') }}</span>
       </div>
       <div class="market-panel__heading-actions">
+        <!-- v2 (R7.2): channel 切换 popover —— 决定 Market 列表按 stable/beta 拉取。 -->
+        <el-popover
+          placement="bottom-end"
+          :width="240"
+          trigger="click"
+          popper-class="market-panel__channel-popover"
+        >
+          <template #reference>
+            <button
+              class="market-panel__icon-btn"
+              :title="t('settings.channel')"
+            >
+              <el-icon><Setting /></el-icon>
+            </button>
+          </template>
+          <div class="market-panel__channel-form">
+            <div class="market-panel__channel-label">
+              {{ t('settings.channel') }}
+            </div>
+            <el-radio-group v-model="userPref.channel" size="small">
+              <el-radio-button value="stable">
+                {{ t('settings.channelStable') }}
+              </el-radio-button>
+              <el-radio-button value="beta">
+                {{ t('settings.channelBeta') }}
+              </el-radio-button>
+            </el-radio-group>
+            <p class="market-panel__channel-hint">
+              {{ t('settings.channelHint') }}
+            </p>
+          </div>
+        </el-popover>
         <button
           v-if="marketBaseUrl"
           class="market-panel__icon-btn"
@@ -111,8 +143,12 @@
               :plugin="item"
               :installed="isInstalled(item)"
               :installing="installingId === item.id"
+              :local-version="getLocalInstalledVersion(item)"
+              :yanked="isYanked(item)"
+              :upgrading="upgradingId === item.id"
               @click="handlePluginClick(item)"
               @install="handleInstall(item)"
+              @upgrade="handleUpgrade(item)"
             />
           </template>
         </GridSection>
@@ -136,7 +172,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ShoppingCart, Close, Link } from '@element-plus/icons-vue'
+import { ShoppingCart, Close, Link, Setting } from '@element-plus/icons-vue'
 import MarketPluginCard from '@/components/plugin/MarketPluginCard.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -160,6 +196,7 @@ import type {
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
+import { useUserPreferenceStore } from '@/stores/userPreference'
 
 interface Props {
   embedded?: boolean
@@ -176,6 +213,7 @@ defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
 const pluginStore = usePluginStore()
+const userPref = useUserPreferenceStore()
 
 const loading = ref(false)
 const marketAvailable = ref(false)
@@ -185,9 +223,29 @@ const currentPage = ref(1)
 const pageSize = props.embedded ? 8 : 12
 const totalCount = ref(0)
 const installingId = ref<string | null>(null)
+const upgradingId = ref<string | number | null>(null)
 const bridgeToken = ref('')
 const sortBy = ref<'created_at' | 'download_count' | 'rating_average' | 'name'>('created_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
+
+// 已装插件 (plugin_id → installed version + latest_install_source) 索引，
+// 由 /market/installed 拉回。yank 检测和 upgrade 按钮判定都从这里读。
+interface InstalledMarketEntry {
+  plugin_id: string
+  installed_version: string
+  channel: string
+  package_url: string
+}
+const installedByPid = ref<Map<string, InstalledMarketEntry>>(new Map())
+// pluginId → 当前装的版本是否已被作者撤回（v2 yank 检测）
+const yankedMap = ref<Record<string, boolean>>({})
+
+// 5 分钟内存缓存：避免每次渲染都打 Market versions 接口
+const yankCache = new Map<
+  string,
+  { fetchedAt: number; yankedVersions: Set<string> }
+>()
+const YANK_TTL_MS = 5 * 60 * 1000
 
 // ─── 本地插件对比：用 slug/id/name 三路兜底 ────────────────────────
 const localPluginKeys = computed(() => {
@@ -335,6 +393,8 @@ async function loadPlugins() {
       page_size: pageSize,
       sort_by: sortBy.value,
       sort_order: sortOrder.value,
+      // v2 (R7.3): 全局 channel 偏好透传给 Market；切换后 watcher 会触发重载
+      channel: userPref.channel,
     }
     const q = extractServerQuery(filterText.value)
     if (q) params.search = q
@@ -357,6 +417,85 @@ async function loadPlugins() {
   }
 }
 
+// ─── Installed snapshot + yank detection (R8) ────────────────────────
+
+interface MarketInstalledItem {
+  plugin_id: string
+  path: string
+  latest_install_source: {
+    channel: string
+    version: string
+    package_sha256: string
+    payload_hash: string | null
+    package_url: string
+    published_at: string
+  } | null
+}
+
+async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[]> {
+  const token = await ensureBridgeToken()
+  if (!token) return []
+  try {
+    const res = await fetch(
+      `/market/installed?token=${encodeURIComponent(token)}`,
+    )
+    if (!res.ok) return []
+    const data = await res.json()
+    return Array.isArray(data?.installed) ? data.installed : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 拉一遍 /market/installed，更新 installedByPid 与 yankedMap。
+ *
+ * yank 检测策略（R8.1 / R8.5 / R8.6）：
+ *   - 同 (plugin_id, channel) 五分钟内复用缓存；
+ *   - Market 不可达 / 拉版本失败时静默不更新（不闪红，不抛错）；
+ *   - 仅对"已装且 latest_install_source 非空"的条目执行版本表查询。
+ */
+async function yankSweep() {
+  if (!marketAvailable.value) return
+  const installed = await fetchInstalledFromBridge()
+  const newIndex = new Map<string, InstalledMarketEntry>()
+  for (const item of installed) {
+    if (!item.latest_install_source) continue
+    newIndex.set(item.plugin_id, {
+      plugin_id: item.plugin_id,
+      installed_version: item.latest_install_source.version,
+      channel: item.latest_install_source.channel,
+      package_url: item.latest_install_source.package_url,
+    })
+  }
+  installedByPid.value = newIndex
+
+  const channel = userPref.channel
+  for (const entry of newIndex.values()) {
+    const cacheKey = `${entry.plugin_id}::${channel}`
+    const cached = yankCache.get(cacheKey)
+    let yankedVersions: Set<string>
+
+    if (cached && Date.now() - cached.fetchedAt < YANK_TTL_MS) {
+      yankedVersions = cached.yankedVersions
+    } else {
+      const versions = await fetchMarketPluginVersions(entry.plugin_id, {
+        channel,
+        include_yanked: true,
+      })
+      if (!versions) continue // R8.5: 失败静默
+      yankedVersions = new Set(
+        versions
+          .filter((v) => v.yanked_at !== null && v.yanked_at !== undefined)
+          .map((v) => v.version),
+      )
+      yankCache.set(cacheKey, { fetchedAt: Date.now(), yankedVersions })
+    }
+
+    yankedMap.value[entry.plugin_id] = yankedVersions.has(entry.installed_version)
+  }
+}
+
 // ─── 交互：分页、搜索 debounce、排序、分组切换 ────────────────────
 
 let searchDebounceTimer: number | null = null
@@ -373,6 +512,18 @@ watch(useRegex, () => {
   currentPage.value = 1
   loadPlugins()
 })
+
+// v2 (R7.5): 切换全局 channel 立即重载列表 + 重新跑 yank sweep
+watch(
+  () => userPref.channel,
+  () => {
+    currentPage.value = 1
+    yankCache.clear()
+    yankedMap.value = {}
+    loadPlugins()
+    yankSweep()
+  },
+)
 
 watch(activeGroupId, () => {
   currentPage.value = 1
@@ -411,26 +562,48 @@ interface ResolvedInstallPayload {
   package_sha256: string | null
   payload_hash: string | null
   version: string
+  channel: string | null
+  published_at: string | null
 }
 
 async function resolveInstallPayload(
   plugin: MarketWorkbenchItem,
 ): Promise<ResolvedInstallPayload | null> {
-  const fallbackUrl = plugin.download_url || plugin.github_repo || ''
-  let packageUrl = fallbackUrl
+  // v2: Market 接口已经把 latest_version 嵌套对象的所有字段一次性给出，
+  // 优先直接用 plugin 上的派生字段；只在数据缺失时才回退到二次拉取
+  // /plugins/{id}/versions 拿权威 release 行。
+  if (plugin.has_release && plugin.download_url) {
+    return {
+      package_url: plugin.download_url,
+      package_sha256: plugin.latest_package_sha256 || null,
+      payload_hash: plugin.latest_payload_hash ?? null,
+      version: plugin.version,
+      channel: plugin.latest_channel || null,
+      published_at: plugin.latest_published_at || null,
+    }
+  }
+
+  // 兜底：从 /plugins/{id}/versions 拿一行匹配 plugin.version 的版本
+  let packageUrl = plugin.download_url || ''
   let packageSha256: string | null = null
   let payloadHash: string | null = null
   let version = plugin.version
+  let channel: string | null = plugin.latest_channel || null
+  let publishedAt: string | null = plugin.latest_published_at || null
 
   try {
-    const versions = await fetchMarketPluginVersions(plugin.rawId)
+    const versions = await fetchMarketPluginVersions(plugin.rawId, {
+      channel: userPref.channel,
+    })
     if (versions && versions.length > 0) {
-      const matched = versions.find((v) => v.version === plugin.version) ?? versions[0]
+      const matched =
+        versions.find((v) => v.version === plugin.version) ?? versions[0]
       if (matched) {
-        packageUrl = matched.package_url || matched.download_url || fallbackUrl
+        packageUrl = matched.package_url || packageUrl
         packageSha256 = matched.package_sha256 || null
-        payloadHash = matched.payload_hash || null
+        payloadHash = matched.payload_hash ?? null
         version = matched.version || version
+        channel = matched.channel || channel
       }
     }
   } catch {
@@ -438,10 +611,21 @@ async function resolveInstallPayload(
   }
 
   if (!packageUrl) return null
-  return { package_url: packageUrl, package_sha256: packageSha256, payload_hash: payloadHash, version }
+  return {
+    package_url: packageUrl,
+    package_sha256: packageSha256,
+    payload_hash: payloadHash,
+    version,
+    channel,
+    published_at: publishedAt,
+  }
 }
 
-async function pollInstallTask(taskId: string, pluginName: string): Promise<boolean> {
+async function pollInstallTask(
+  taskId: string,
+  pluginName: string,
+  options: { mode?: 'install' | 'upgrade' | 'reinstall' } = {},
+): Promise<boolean> {
   const token = await ensureBridgeToken()
   const deadline = Date.now() + 3 * 60 * 1000
   while (Date.now() < deadline) {
@@ -450,13 +634,30 @@ async function pollInstallTask(taskId: string, pluginName: string): Promise<bool
       if (res.ok) {
         const task = await res.json()
         if (task.status === 'completed') {
-          ElMessage.success(t('market.installSuccess', { name: pluginName }))
-          // 安装后同步本地注册表，让 isInstalled 立即生效
+          ElMessage.success(
+            options.mode === 'upgrade' || options.mode === 'reinstall'
+              ? t('market.upgradeSuccess', { name: pluginName })
+              : t('market.installSuccess', { name: pluginName }),
+          )
+          // 装/升后同步本地注册表，让 isInstalled 立即生效；同时刷新 yank
           pluginStore.syncRegistryAndFetch().catch(() => {})
+          yankSweep().catch(() => {})
           return true
         }
         if (task.status === 'failed') {
-          ElMessage.error(task.error || task.message || t('market.installFailed'))
+          // v2 (R10.1): 优先识别稳定 error_code，给出针对性的中文文案
+          const code: string = task.error_code || ''
+          if (code === 'version_already_at_target') {
+            ElMessage.info(t('market.upgradeAlreadyAtTarget'))
+          } else if (code === 'plugin_not_installed_for_upgrade') {
+            ElMessage.error(t('market.pluginNotInstalled'))
+          } else if (code === 'upgrade_rollback_completed') {
+            ElMessage.error(t('market.upgradeRollback'))
+          } else if (code === 'lock_write_failed') {
+            ElMessage.error(t('market.lockWriteFailed'))
+          } else {
+            ElMessage.error(task.message || task.error || t('market.installFailed'))
+          }
           return false
         }
       }
@@ -470,6 +671,10 @@ async function pollInstallTask(taskId: string, pluginName: string): Promise<bool
 }
 
 async function handleInstall(plugin: MarketWorkbenchItem) {
+  if (!plugin.has_release) {
+    ElMessage.warning(t('market.noVersionAvailable'))
+    return
+  }
   const payload = await resolveInstallPayload(plugin)
   if (!payload) {
     ElMessage.warning(t('market.noDownloadUrl'))
@@ -489,6 +694,9 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         payload_hash: payload.payload_hash,
         plugin_id: String(plugin.rawId),
         version: payload.version,
+        channel: payload.channel,
+        published_at: payload.published_at,
+        mode: 'install',
         on_conflict: 'rename',
       }),
     })
@@ -513,12 +721,89 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   }
 }
 
+/**
+ * v2 (R9): 升级已装插件到 Market 的最新版本。
+ *
+ * 与 install 路径区别：
+ *   - mode = 'upgrade' 让 bridge 走 _do_upgrade 分支（rename 旧目录 →
+ *     unpack 新包 → record_market_upgrade）；
+ *   - on_conflict = 'fail'：旧目录已 rename 走，新目录不该撞名；
+ *   - 错误码识别在 pollInstallTask 内统一处理。
+ */
+async function handleUpgrade(plugin: MarketWorkbenchItem) {
+  if (!plugin.has_release) {
+    ElMessage.warning(t('market.noVersionAvailable'))
+    return
+  }
+  const payload = await resolveInstallPayload(plugin)
+  if (!payload) {
+    ElMessage.warning(t('market.noDownloadUrl'))
+    return
+  }
+
+  upgradingId.value = plugin.id
+  try {
+    const token = await ensureBridgeToken()
+    const res = await fetch(`/market/install?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        package_url: payload.package_url,
+        package_sha256: payload.package_sha256,
+        payload_hash: payload.payload_hash,
+        plugin_id: String(plugin.rawId),
+        version: payload.version,
+        channel: payload.channel,
+        published_at: payload.published_at,
+        mode: 'upgrade',
+        on_conflict: 'fail',
+      }),
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      if (data.task_id) {
+        await pollInstallTask(data.task_id, plugin.name, { mode: 'upgrade' })
+      }
+    } else if (res.status === 400) {
+      const err = await res.json().catch(() => ({}))
+      const code = err?.detail?.code || ''
+      if (code === 'plugin_not_installed_for_upgrade') {
+        ElMessage.error(t('market.pluginNotInstalled'))
+      } else {
+        ElMessage.error(err?.detail?.message || t('market.installFailed'))
+      }
+    } else if (res.status === 403) {
+      ElMessage.warning(t('market.pairRequired'))
+    } else {
+      const err = await res.json().catch(() => ({}))
+      ElMessage.error(err.detail || t('market.installFailed'))
+    }
+  } finally {
+    upgradingId.value = null
+  }
+}
+
+/**
+ * 当前 plugin 已装 + 本地版本 < Market latest 时返回本地版本。
+ * 用作 MarketPluginCard 的 :local-version prop，让 card 内部走 semver 比较。
+ */
+function getLocalInstalledVersion(plugin: MarketWorkbenchItem): string | undefined {
+  const entry = installedByPid.value.get(String(plugin.rawId))
+  return entry?.installed_version
+}
+
+function isYanked(plugin: MarketWorkbenchItem): boolean {
+  return Boolean(yankedMap.value[String(plugin.rawId)])
+}
+
 async function initialize() {
   marketAvailable.value = await isMarketAvailable()
   marketBaseUrl.value = await getMarketUrl()
   await ensureBridgeToken()
   if (marketAvailable.value) {
     await loadPlugins()
+    yankSweep().catch(() => {})
   }
   if (pluginStore.pluginsWithStatus.length === 0) {
     pluginStore.fetchPlugins().catch(() => {})
@@ -654,5 +939,24 @@ watch(
   font-size: 13px;
   color: var(--el-text-color-secondary);
   margin-top: 8px;
+}
+
+.market-panel__channel-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.market-panel__channel-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.market-panel__channel-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--el-text-color-secondary);
 }
 </style>

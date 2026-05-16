@@ -23,11 +23,37 @@ Reason = Literal["user_requested", "auto_dependency"]
 
 @dataclass(frozen=True)
 class SourceDetailMarket:
-    """``source_detail`` for ``channel="market"`` entries."""
+    """``source_detail`` for ``channel="market"`` entries.
+
+    v2 schema (design §3.1.1): the lock entry carries the same evidence
+    Market is already distributing — channel, sha256, payload hash, and
+    publish timestamp — so a lock file alone is enough to identify which
+    package is on disk and on which release channel it was installed.
+
+    Field order intentionally matches the on-disk serialization order
+    defined in design §3.1.3 (``plugin_market_id`` → ``version`` →
+    ``channel`` → ``package_url`` → ``package_sha256`` → ``payload_hash``
+    → ``published_at`` → ``previous_version``). The serializer writes
+    fields in this declaration order via Python 3.7+ dict insertion
+    ordering, so reordering this dataclass changes the on-disk byte
+    layout — keep it stable.
+    """
 
     plugin_market_id: str
     version: str
     package_url: str
+    # v2 (R2.1, R2.9): Market-distributed evidence baked into the lock.
+    # ``package_sha256``: 64-char lowercase hex; ``""`` when unknown
+    # (legacy v1 row promoted via _parse_source_detail).
+    package_sha256: str
+    # ``payload_hash``: SHA-256 of unpacked metadata.toml [payload].hash;
+    # may be None when the package omits it.
+    payload_hash: str | None
+    # ``channel``: "stable" | "beta"; default "stable" when missing.
+    channel: str
+    # ``published_at``: Market-side ``latest_version.created_at``;
+    # falls back to ``LockEntry.installed_at`` on legacy rows.
+    published_at: str
     # Captured on upgrade (old version before the current write); None on
     # first install and on no-op same-version re-calls.
     previous_version: str | None = None
