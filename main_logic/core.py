@@ -907,6 +907,8 @@ class LLMSessionManager:
         logger.debug("[%s] audio stream worker cancelled reason=%s", self.lanlan_name, reason)
 
     async def _enqueue_audio_stream_data(self, message: dict):
+        message = dict(message or {})
+        message.pop("_pending_replay", None)
         self._ensure_audio_stream_worker()
         if self._audio_stream_queue.full():
             try:
@@ -3099,8 +3101,8 @@ class LLMSessionManager:
                                 dropped_text_for_voice += 1
                                 continue
                             replay_message = dict(message)
-                            replay_message["_pending_replay"] = True
-                            await self.stream_data(replay_message)
+                            replay_message.pop("_pending_replay", None)
+                            await self.stream_data(replay_message, pending_replay=True)
                     except Exception as e:
                         logger.error(f"💥 发送缓存的输入数据失败: {e}")
                         break
@@ -5746,7 +5748,10 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
     
-    async def stream_data(self, message: dict):  # 向Core API发送Media数据
+    async def stream_data(self, message: dict, *, pending_replay: bool = False):  # 向Core API发送Media数据
+        message = dict(message or {})
+        # 内部回放标记只能来自函数参数，忽略客户端同名字段。
+        message.pop("_pending_replay", None)
         if message.get("input_type") == "audio":
             await self._enqueue_audio_stream_data(message)
             return
@@ -5763,13 +5768,13 @@ class LLMSessionManager:
             await self._stream_data_now(
                 message,
                 release_non_audio_stream_lock=release_non_audio_stream_lock,
+                pending_replay=pending_replay,
             )
         finally:
             release_non_audio_stream_lock()
 
-    async def _stream_data_now(self, message: dict, release_non_audio_stream_lock=None):
+    async def _stream_data_now(self, message: dict, release_non_audio_stream_lock=None, *, pending_replay: bool = False):
         input_type = message.get("input_type")
-        is_pending_replay = bool(message.get("_pending_replay"))
         
         # 检查session是否就绪
         async with self.input_cache_lock:
@@ -5785,7 +5790,7 @@ class LLMSessionManager:
                     else:
                         logger.debug(f"继续缓存输入数据 (总计: {len(self.pending_input_data)} 条)...")
                     return
-            if input_type != "audio" and self._flushing_pending_input_data and not is_pending_replay:
+            if input_type != "audio" and self._flushing_pending_input_data and not pending_replay:
                 self.pending_input_data.append(message)
                 logger.debug(f"缓存回放中，继续缓存非音频输入 (总计: {len(self.pending_input_data)} 条)...")
                 return
