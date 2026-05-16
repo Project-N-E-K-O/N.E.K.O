@@ -4806,3 +4806,214 @@ def test_game_llm_agent_standby_and_query_survive_loop_switch_with_inflight_actu
     assert fake_host.cancelled == ["task-1"]
     assert context["status"] == "standby"
     assert context["result"] == "待机已生效，查询仍可用。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_status_not_blocked_by_slow_message_llm(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway(
+        reply_payload={"degraded": False, "reply": "慢回复完成。", "diagnostic": ""},
+        delay=0.3,
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion")
+
+    send_task = asyncio.create_task(agent.send_message(shared, message="慢查询"))
+    try:
+        for _ in range(20):
+            if fake_gateway.reply_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert fake_gateway.reply_calls
+
+        status = await asyncio.wait_for(agent.query_status(shared), timeout=2.0)
+        assert status["action"] == "query_status"
+        assert status["status"] == "active"
+    finally:
+        result = await asyncio.wait_for(send_task, timeout=2.0)
+
+    assert result["result"] == "慢回复完成。"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_send_message_returns_context_snapshot_status(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway(
+        reply_payload={"degraded": False, "reply": "快照回复。", "diagnostic": ""},
+        delay=0.2,
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion", active_data_source="bridge_sdk")
+
+    send_task = asyncio.create_task(agent.send_message(shared, message="说明当前状态"))
+    try:
+        for _ in range(20):
+            if fake_gateway.reply_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert fake_gateway.reply_calls
+
+        shared["current_connection_state"] = "disconnected"
+        shared["active_data_source"] = "ocr"
+    finally:
+        result = await asyncio.wait_for(send_task, timeout=2.0)
+
+    assert result["result"] == "快照回复。"
+    assert result["status"] == "active"
+    assert result["input_source"] == "bridge_sdk"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_serializes_overlapping_agent_replies(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _SerialProbeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state()
+
+    query, sent = await asyncio.gather(
+        agent.query_context(shared, context_query="讲讲当前场景"),
+        agent.send_message(shared, message="补充说明当前状态"),
+    )
+
+    assert query["message"]["status"] == "completed"
+    assert sent["message"]["status"] == "completed"
+    assert len(fake_gateway.reply_calls) == 2
+    assert fake_gateway.max_active_replies == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_actuation_start_guard_skips_concurrent_duplicate(
+    tmp_path: Path,
+) -> None:
+    class _SlowStartHostAdapter(_FakeHostAdapter):
+        async def run_computer_use_instruction(self, instruction: str, *, lanlan_name: str = "", timeout: float = 5.0):
+            await asyncio.sleep(0.02)
+            return await super().run_computer_use_instruction(
+                instruction,
+                lanlan_name=lanlan_name,
+                timeout=timeout,
+            )
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_host = _SlowStartHostAdapter()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=fake_host,
+    )
+    shared = _shared_state()
+    strategy = {
+        "kind": "advance",
+        "instruction": "press Enter exactly once",
+        "strategy_id": "advance_enter",
+    }
+
+    await asyncio.gather(
+        agent._start_actuation_from_strategy(shared, strategy=strategy, now=time.monotonic()),
+        agent._start_actuation_from_strategy(shared, strategy=strategy, now=time.monotonic()),
+    )
+
+    assert len(fake_host.started) == 1
+    assert agent._actuation is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_drops_stale_actuation_start_after_reset(
+    tmp_path: Path,
+) -> None:
+    class _BlockedStartHostAdapter(_FakeHostAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started_wait = asyncio.Event()
+            self.release_start = asyncio.Event()
+
+        async def run_computer_use_instruction(self, instruction: str, *, lanlan_name: str = "", timeout: float = 5.0):
+            self.started_wait.set()
+            await self.release_start.wait()
+            return await super().run_computer_use_instruction(
+                instruction,
+                lanlan_name=lanlan_name,
+                timeout=timeout,
+            )
+
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_host = _BlockedStartHostAdapter()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=fake_host,
+    )
+    shared = _shared_state()
+    strategy = {
+        "kind": "advance",
+        "instruction": "press Enter exactly once",
+        "strategy_id": "advance_enter",
+    }
+
+    start_task = asyncio.create_task(
+        agent._start_actuation_from_strategy(shared, strategy=strategy, now=time.monotonic())
+    )
+    await asyncio.wait_for(fake_host.started_wait.wait(), timeout=2.0)
+    await agent._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+    fake_host.release_start.set()
+    await asyncio.wait_for(start_task, timeout=2.0)
+
+    assert agent._actuation is None
+    assert agent._starting_actuation is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_shutdown_clears_last_push_timestamp(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._last_push_ts = 123.0
+
+    await agent.shutdown()
+
+    assert agent._last_push_ts == 0.0
