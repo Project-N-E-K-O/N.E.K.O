@@ -590,7 +590,7 @@
         "RELOAD_PAGE_VOICE_STYLE": "音色已更新，頁面即將刷新",
         "RELOAD_PAGE_PERSONA": "人格設定已更新，頁面即將刷新",
         "RELOAD_PAGE_CHARACTER_SETTINGS": "角色設定已更新，頁面即將刷新",
-        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "雲端存檔角色已更新，頁面即將刷新",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "來自雲端存檔的角色已更新，頁面即將刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自動關閉鍵鼠控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "已自動關閉瀏覽器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "貓爪 LLM 連接檢查異常",

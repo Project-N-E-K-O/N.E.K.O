@@ -12,7 +12,7 @@ import pytest
 from main_routers.shared_state import init_shared_state
 from utils.file_utils import atomic_write_json
 from utils.config_manager import ConfigManager
-from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+from utils.cloudsave_runtime import MaintenanceModeError, bootstrap_local_cloudsave_environment
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -854,6 +854,109 @@ async def test_save_character_card_refreshes_active_context_for_existing_current
         )
         current_session.reset_session_start_circuit.assert_called_once_with()
         init_one_catgirl.assert_awaited_once_with(current_name, is_new=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refresh_catgirl_context_returns_partial_failure_if_recent_clear_fails():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        current_session = SimpleNamespace(
+            is_active=True,
+            websocket=object(),
+            session=object(),
+            end_session=AsyncMock(),
+            reset_session_start_circuit=Mock(),
+        )
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={current_name: SimpleNamespace(session_manager=current_session)},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+
+            async def _boom(*args, **kwargs):
+                raise OSError("recent write failed")
+
+            with patch.object(router_module, "_clear_character_recent_history", _boom):
+                with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice:
+                    result = await router_module._refresh_catgirl_context_after_profile_change(
+                        config_manager,
+                        current_name,
+                        config_manager.load_characters(),
+                    )
+
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["context_refreshed"] is False
+        assert result["recent_history_cleared"] is False
+        assert result["context_refresh_failed"] is True
+        assert result["recent_history_clear_error_type"] == "OSError"
+        assert result["recent_history_clear_error"] == "recent write failed"
+        assert result["session_reset_skipped"] is True
+        assert result["init_skipped"] is True
+        reload_notice.assert_not_awaited()
+        current_session.end_session.assert_not_awaited()
+        current_session.reset_session_start_circuit.assert_not_called()
+        init_one_catgirl.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refresh_catgirl_context_reraises_maintenance_mode_error():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        current_name = config_manager.load_characters()["当前猫娘"]
+        init_one_catgirl = AsyncMock()
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=init_one_catgirl,
+                remove_one_catgirl=_noop,
+            )
+
+            router_module = importlib.reload(importlib.import_module("main_routers.characters_router"))
+
+            async def _maintenance(*args, **kwargs):
+                raise MaintenanceModeError("maintenance_readonly", operation="save", target="recent.json")
+
+            with patch.object(router_module, "_clear_character_recent_history", _maintenance):
+                with pytest.raises(MaintenanceModeError):
+                    await router_module._refresh_catgirl_context_after_profile_change(
+                        config_manager,
+                        current_name,
+                        config_manager.load_characters(),
+                    )
+
+        init_one_catgirl.assert_not_awaited()
 
 
 @pytest.mark.unit

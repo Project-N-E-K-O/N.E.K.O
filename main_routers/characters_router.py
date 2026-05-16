@@ -775,8 +775,24 @@ async def _refresh_catgirl_context_after_profile_change(
     try:
         await _clear_character_recent_history(config_manager, name)
         result["recent_history_cleared"] = True
+    except MaintenanceModeError:
+        raise
     except Exception as exc:
-        logger.warning("清理角色近期上下文失败: name=%s err=%s", name, exc)
+        logger.warning("清理角色近期上下文失败: name=%s err=%s", name, exc, exc_info=True)
+        result.update({
+            "success": False,
+            "partial_success": True,
+            "context_refreshed": False,
+            "context_refresh_failed": True,
+            "recent_history_clear_failed": True,
+            "recent_history_clear_error": str(exc),
+            "recent_history_clear_error_type": type(exc).__name__,
+            "recent_history_clear_target": f"memory/{name}/recent.json",
+            "session_reset_skipped": True,
+            "init_skipped": True,
+            "error": "角色设定已保存，但近期上下文清理失败，设定未完全刷新",
+        })
+        return result
 
     session_manager = get_session_manager()
     is_current_catgirl = name == (characters or {}).get('当前猫娘', '')
@@ -5103,6 +5119,8 @@ async def save_character_card(request: Request):
             result["pending_mark_failed"] = True
             result["pending_mark_error"] = pending_mark_error
         return result
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存角色卡到characters.json失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)

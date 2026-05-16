@@ -588,7 +588,7 @@
         "RELOAD_PAGE": "設定が更新されました。ページがまもなく更新されます",
         "RELOAD_PAGE_VOICE": "音声が更新されました。ページがまもなく更新されます",
         "RELOAD_PAGE_VOICE_STYLE": "音色が更新されました。ページがまもなく更新されます",
-        "RELOAD_PAGE_PERSONA": "人格設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_PERSONA": "性格設定が更新されました。ページがまもなく更新されます",
         "RELOAD_PAGE_CHARACTER_SETTINGS": "キャラクター設定が更新されました。ページがまもなく更新されます",
         "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "クラウドセーブのキャラクターが更新されました。ページがまもなく更新されます",
         "AGENT_AUTO_DISABLED_COMPUTER": "キーボード/マウス制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
