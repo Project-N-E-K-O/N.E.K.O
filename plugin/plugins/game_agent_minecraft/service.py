@@ -429,6 +429,13 @@ class GameAgentService:
 
         self._log_cache.clear()
         self._screenshot_cache.clear()
+        # Inventory snapshot belongs to the WS session that just ended.
+        # game_agent_reload_config（ws_url 切换）/ 重启场景下，下一个 WS
+        # 可能连到完全不同的世界，沿用旧 ``_last_inventory`` 会让
+        # query_inventory 把旧世界的库存当新世界 ground truth 上报。
+        # 清空 = "回到 inv_at==0 未知"分支，由下一个 task_finished 重建。
+        self._last_inventory = {}
+        self._last_inventory_at = 0.0
         self._task_finished = True
         self._log_info("stopped")
 
