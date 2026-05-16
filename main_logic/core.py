@@ -3070,6 +3070,7 @@ class LLMSessionManager:
             while True:
                 async with self.input_cache_lock:
                     if not self.pending_input_data:
+                        self._flushing_pending_input_data = False
                         break
                     pending_messages = list(self.pending_input_data)
                     self.pending_input_data.clear()
