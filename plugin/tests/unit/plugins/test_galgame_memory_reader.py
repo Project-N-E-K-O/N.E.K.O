@@ -20,6 +20,7 @@ from plugin.plugins.galgame_plugin.reader import read_session_json, tail_events_
 from plugin.plugins.galgame_plugin.service import build_config
 from plugin.plugins.galgame_plugin.textractor_support import (
     TextractorInstallError,
+    _candidate_assets,
     _download_file,
     inspect_textractor_installation,
     install_textractor,
@@ -61,6 +62,33 @@ class _CapturingLogger(_Logger):
     def debug(self, *args, **kwargs):
         del kwargs
         self.messages.append(("debug", args))
+
+
+def test_textractor_candidate_assets_keep_renamed_unsigned_zip() -> None:
+    release_payload = {
+        "assets": [
+            {
+                "name": "Source code.zip",
+                "browser_download_url": "https://example.test/source.zip",
+            },
+            {
+                "name": "Textractor-vNext-win-portable.zip",
+                "browser_download_url": "https://example.test/Textractor-vNext-win-portable.zip",
+            },
+            {
+                "name": "notes.txt",
+                "browser_download_url": "https://example.test/notes.txt",
+            },
+        ]
+    }
+
+    assert _candidate_assets(release_payload) == [
+        {
+            "name": "Textractor-vNext-win-portable.zip",
+            "url": "https://example.test/Textractor-vNext-win-portable.zip",
+            "sha256": "",
+        }
+    ]
 
 
 class _FakeTextractorHandle:
@@ -1365,16 +1393,29 @@ async def test_install_textractor_asset_download_failure_sets_failed_phase(
 
 
 @pytest.mark.asyncio
-async def test_install_textractor_rejects_unsigned_release_asset(
+async def test_install_textractor_accepts_renamed_unsigned_release_asset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    install_root = tmp_path / "TextractorInstalled"
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    archive_path = archive_root / "Textractor.zip"
+    inner_dir = archive_root / "Textractor"
+    inner_dir.mkdir()
+    (inner_dir / "TextractorCLI.exe").write_text("stub", encoding="utf-8")
+
+    import zipfile
+
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.write(inner_dir / "TextractorCLI.exe", arcname="Textractor/TextractorCLI.exe")
+
     release_payload = {
         "name": "Textractor v1.0.0",
         "assets": [
             {
-                "name": "Textractor-x64.zip",
-                "browser_download_url": "https://example.test/Textractor-x64.zip",
+                "name": "Textractor-vNext-win-portable.zip",
+                "browser_download_url": "https://example.test/Textractor-vNext-win-portable.zip",
             }
         ],
     }
@@ -1382,41 +1423,29 @@ async def test_install_textractor_rejects_unsigned_release_asset(
     def _handler(request: httpx.Request) -> httpx.Response:
         if str(request.url) == "https://api.github.com/repos/Artikash/Textractor/releases/latest":
             return httpx.Response(200, json=release_payload)
+        if str(request.url) == "https://example.test/Textractor-vNext-win-portable.zip":
+            return httpx.Response(200, content=archive_path.read_bytes())
         raise AssertionError(f"unexpected request: {request.url}")
-
-    updates: list[dict[str, object]] = []
-
-    def _capture_update(task_id: str, **changes):
-        del task_id
-        updates.append(dict(changes))
-        return dict(changes)
-
-    monkeypatch.setattr(
-        galgame_textractor_support,
-        "update_install_task_state",
-        _capture_update,
-    )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     try:
-        with pytest.raises(TextractorInstallError) as excinfo:
-            await install_textractor(
-                logger=_Logger(),
-                configured_path="",
-                install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
-                release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
-                timeout_seconds=5.0,
-                force=True,
-                platform_fn=lambda: True,
-                client_factory=lambda: client,
-                task_id="task-unsigned",
-            )
+        result = await install_textractor(
+            logger=_Logger(),
+            configured_path="",
+            install_target_dir_raw=str(install_root),
+            release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
+            timeout_seconds=5.0,
+            force=True,
+            platform_fn=lambda: True,
+            client_factory=lambda: client,
+        )
     finally:
         await client.aclose()
 
-    assert excinfo.value.failed_phase == "fetch_release"
-    assert "no Textractor zip assets" in str(excinfo.value)
-    assert updates[-1]["status"] == "failed"
+    assert result["installed"] is True
+    assert result["asset_name"] == "Textractor-vNext-win-portable.zip"
+    assert result["detected_path"] == str(install_root / "TextractorCLI.exe")
+    assert (install_root / "TextractorCLI.exe").is_file()
 
 
 @pytest.mark.asyncio

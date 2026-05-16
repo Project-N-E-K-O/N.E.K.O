@@ -282,8 +282,6 @@ def _candidate_assets(release_payload: dict[str, Any]) -> list[dict[str, str]]:
         if not name or not url or not name.lower().endswith(".zip"):
             continue
         expected_sha256 = _asset_sha256(asset)
-        if not expected_sha256:
-            continue
         entry = {"name": name, "url": url, "sha256": expected_sha256}
         lowered = name.lower()
         if "source code" in lowered:

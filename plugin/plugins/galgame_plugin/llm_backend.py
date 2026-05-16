@@ -72,6 +72,34 @@ def _api_key_cache_fingerprint(api_key: str) -> str:
     return f"k:{hash(api_key) & 0xFFFFFFFF:08x}"
 
 
+def _model_supports_vision(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "gpt-4o",
+            "gpt-4.1",
+            "gpt-4.5",
+            "gpt-5",
+            "vision",
+            "vl",
+            "qwen2.5-vl",
+            "qwen-vl",
+            "gemini",
+            "claude-3",
+            "claude-4",
+        )
+    )
+
+
+def _api_config_supports_vision(api_config: dict[str, Any], model: str) -> bool:
+    if "supports_vision" in api_config:
+        return bool(api_config.get("supports_vision"))
+    return _model_supports_vision(model)
+
+
 def _message_has_image_content(message: dict[str, Any]) -> bool:
     content = message.get("content")
     if not isinstance(content, list):
@@ -332,7 +360,7 @@ class GalgameLLMBackend:
         if not base_url or not model:
             raise SdkError(f"missing configured {model_role} model")
         if any(_message_has_image_content(message) for message in messages) and not bool(
-            api_config.get("supports_vision")
+            _api_config_supports_vision(api_config, model)
         ):
             messages = _strip_image_content(messages)
 

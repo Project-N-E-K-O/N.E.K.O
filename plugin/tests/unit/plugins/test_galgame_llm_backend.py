@@ -308,6 +308,51 @@ async def test_llm_backend_attaches_vision_image_when_requested(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_llm_backend_keeps_vision_image_when_config_omits_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_messages: list[list[dict[str, object]]] = []
+
+    class _Config:
+        def get_model_api_config(self, role: str) -> dict[str, str]:
+            assert role == "agent"
+            return {
+                "base_url": "https://llm.example.test",
+                "model": "gpt-4o-mini",
+                "api_key": "sk-test",
+            }
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured_messages.append(messages)
+            return type("Response", (), {"content": '{"reply": "ok"}'})()
+
+    async def _fake_get_or_create_llm(**kwargs):
+        del kwargs
+        return _FakeLLM()
+
+    backend = GalgameLLMBackend(_Logger())
+    monkeypatch.setattr(galgame_llm_backend, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(backend, "_get_or_create_llm", _fake_get_or_create_llm)
+
+    result = await backend.invoke(
+        operation="agent_reply",
+        context={
+            "prompt": "what is on screen?",
+            "public_context": {},
+            "vision_enabled": True,
+            "vision_image_base64": "abc123",
+        },
+    )
+
+    content = captured_messages[0][-1]["content"]
+    assert result["reply"] == "ok"
+    assert isinstance(content, list)
+    assert content[1]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_llm_backend_strips_vision_image_for_non_vision_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
