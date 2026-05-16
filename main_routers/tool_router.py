@@ -191,20 +191,25 @@ _consecutive_connect_failures: Dict[Tuple[str, str], int] = {}
 
 def _callback_origin(url: str) -> str:
     """把 ``callback_url`` 归一为 ``scheme://host:port`` 作为驱逐 bucket key。
-    parse 不出来就回退到原字符串，保证 counter key 在异常输入下也稳定
-    （不会让 key collision 把一个 key 当多个 key）。"""
+    parse 不出来或 port 不合法（``http://127.0.0.1:abc/cb`` 之类的畸形 URL
+    会让 ``ParseResult.port`` 抛 ``ValueError``——loopback validator 没管端口
+    语法）就回退到原字符串，保证：
+    - counter key 在异常输入下不抛，dispatch 路径仍然能返回结构化 ToolResult
+    - 同一畸形 URL 始终映射到同一 key（驱逐计数仍然能累加，不会因为
+      每次重新尝试 parse 又失败而 key collision 退化）
+    （Codex review on PR #1382: malformed callback URLs.）"""
     if not url:
         return "<unknown>"
     try:
         parsed = urlparse(url)
-    except Exception:
+        if not parsed.scheme or not parsed.hostname:
+            return url
+        port = parsed.port  # 可能抛 ValueError（非数字端口）
+        if port is None:
+            port = 443 if parsed.scheme == "https" else 80
+        return f"{parsed.scheme}://{parsed.hostname}:{port}"
+    except (ValueError, TypeError):
         return url
-    if not parsed.scheme or not parsed.hostname:
-        return url
-    port = parsed.port
-    if port is None:
-        port = 443 if parsed.scheme == "https" else 80
-    return f"{parsed.scheme}://{parsed.hostname}:{port}"
 
 
 def _is_plugin_source(source: str) -> bool:

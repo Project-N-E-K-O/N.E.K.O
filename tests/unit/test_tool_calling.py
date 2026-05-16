@@ -1075,6 +1075,56 @@ def test_callback_origin_normalizes_to_scheme_host_port():
     assert _callback_origin("https://127.0.0.1/cb") == "https://127.0.0.1:443"
     # 异常输入兜底：空 / 不可 parse → 不抛
     assert _callback_origin("") == "<unknown>"
+    # 畸形端口（非数字）会让 ParseResult.port 抛 ValueError——
+    # loopback validator 没拦端口语法，所以 dispatch 路径必须自己兜住，
+    # 否则会破坏 ToolResult 结构化错误 + 驱逐 bookkeeping。
+    # （Codex review on PR #1382）
+    bad_port = "http://127.0.0.1:abc/cb"
+    assert _callback_origin(bad_port) == bad_port  # 回退到原串、不抛
+    # 同一畸形 URL 必须映射到同一 key——不然失败计数会因为 key collision
+    # 退化，永远到不了阈值。
+    assert _callback_origin(bad_port) == _callback_origin(bad_port)
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_survives_malformed_callback_url(
+    monkeypatch, _reset_eviction_counter,
+):
+    """``ToolRegisterRequest`` 的 loopback validator 不管端口语法，畸形
+    端口（``http://127.0.0.1:abc/cb``）可以通过注册。``_callback_origin``
+    必须不抛——否则 dispatch 路径会被破坏：原本应该返回结构化 ToolResult
+    error，结果上抛到 ToolRegistry.execute 的兜底 catch，错误消息丢精度。
+
+    回归保护：Codex review on PR #1382."""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    bad_url = "http://127.0.0.1:abc/cb"
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="malformed_tool", description="", handler=None,
+        metadata={"source": "plugin:malformed", "callback_url": bad_url},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _DeadClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _DeadClient())
+
+    call = ToolCall(name="malformed_tool", arguments={}, call_id="c")
+    metadata = {"source": "plugin:malformed", "callback_url": bad_url, "timeout_seconds": 5}
+
+    # 不能抛——必须每次回结构化 ToolResult(is_error=True)。
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD):
+        result = await _tr._remote_dispatch(call, metadata)
+        assert result.is_error is True
+        assert "HTTP failure" in result.error_message
+
+    # 即使 URL 畸形，eviction bookkeeping 仍应正常工作——3 次后扫掉。
+    assert mgr.tool_registry.names() == []
+    assert mgr.fire_task_count >= 1
 
 
 @pytest.mark.asyncio
