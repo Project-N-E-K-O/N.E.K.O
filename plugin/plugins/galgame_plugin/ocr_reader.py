@@ -7732,11 +7732,15 @@ class OcrReaderManager:
         memory_reader_runtime: dict[str, Any],
         result: OcrReaderTickResult,
     ) -> _TickTargetContext:
-        foreground_hwnd_for_scan = _foreground_window_handle()
+        use_windows_foreground_api = bool(self._platform_fn())
+        foreground_hwnd_for_scan = (
+            _foreground_window_handle() if use_windows_foreground_api else 0
+        )
         force_window_scan = (
             self._last_selection.selection_detail == "locked_target_unavailable"
             or (
                 self._attached_window is not None
+                and use_windows_foreground_api
                 and foreground_hwnd_for_scan > 0
                 and not _foreground_matches_target(
                     foreground_hwnd_for_scan,

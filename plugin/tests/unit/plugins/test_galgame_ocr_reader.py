@@ -4075,6 +4075,58 @@ def test_ocr_window_inventory_preserves_non_windows_scanner_foreground(
         manager._shutdown_capture_worker()
 
 
+@pytest.mark.asyncio
+async def test_ocr_reader_tick_skips_win32_foreground_probe_on_non_windows(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    game_window = DetectedGameWindow(
+        hwnd=501,
+        title="Foreground Game",
+        process_name="Game.exe",
+        pid=7501,
+        width=1280,
+        height=720,
+        area=1280 * 720,
+        is_foreground=True,
+    )
+
+    def fail_windows_foreground_api() -> int:
+        raise AssertionError("Windows foreground API should not run off Windows")
+
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_foreground_window_handle",
+        fail_windows_foreground_api,
+    )
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: False,
+        window_scanner=lambda: [game_window],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    try:
+        result = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        assert result.runtime["status"] == "active"
+        assert result.runtime["process_name"] == "Game.exe"
+        assert result.runtime["target_is_foreground"] is True
+    finally:
+        manager._shutdown_capture_worker()
+
+
 def test_rapidocr_runtime_cache_reuses_loaded_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
