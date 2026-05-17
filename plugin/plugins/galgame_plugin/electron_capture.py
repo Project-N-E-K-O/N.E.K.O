@@ -29,7 +29,6 @@ _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT_FALLBACK = 48911  # MAIN_SERVER_PORT default
 _DEFAULT_HEALTH_PATH = "/api/capture/health"
 _DEFAULT_SCREENSHOT_PATH = "/api/capture/screenshot"
-_MAX_ERROR_BODY_CHARS = 120
 _TARGET_TITLE_MAX_CHARS = 512
 _SAFE_TITLE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
@@ -171,10 +170,7 @@ class ElectronCaptureBackend:
             raise RuntimeError(f"electron: http_request_failed: {exc}") from exc
 
         if resp.status_code != 200:
-            detail = (resp.text or "").strip().replace("\n", " ")
-            detail = _SAFE_TITLE_RE.sub("", detail)[:_MAX_ERROR_BODY_CHARS]
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"electron: http_status_{resp.status_code}{suffix}")
+            raise RuntimeError(f"electron: http_status_{resp.status_code}")
 
         try:
             data = resp.json()

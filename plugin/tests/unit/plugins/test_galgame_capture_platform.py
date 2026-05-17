@@ -284,6 +284,19 @@ def test_linux_target_window_rect_closes_xlib_display_on_match(
     assert created_displays[0].closed is True
 
 
+def test_linux_target_window_rect_fails_when_geometry_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import ocr_reader
+
+    monkeypatch.setitem(sys.modules, "Xlib", None)
+    monkeypatch.setattr(ocr_reader.shutil, "which", lambda _name: None)
+    target = DetectedGameWindow(hwnd=222, width=640, height=480)
+
+    with pytest.raises(RuntimeError, match="linux_target_window_rect_unavailable"):
+        ocr_reader._target_window_rect_linux(target)
+
+
 # ─── ElectronCaptureBackend smoke tests ──────────────────────────────────
 
 
@@ -379,6 +392,7 @@ def test_electron_backend_redacts_long_error_body(
 
     message = str(excinfo.value)
     assert "http_status_500" in message
+    assert "secret-token" not in message
     assert len(message) < 180
 
 
@@ -473,19 +487,20 @@ def _make_backend(kind: str):
     return _Stub(kind)
 
 
-def test_build_backends_filters_win32_only_on_non_windows() -> None:
+@pytest.mark.parametrize("is_linux_host", [False, True])
+def test_build_backends_filters_win32_only_on_non_windows(is_linux_host: bool) -> None:
     """On macOS/Linux, _build_backends() must drop dxcam/printwindow."""
     from plugin.plugins.galgame_plugin import ocr_reader as ocr_reader_mod
     from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
 
-    backend = Win32CaptureBackend(selection="auto")
     with patch.object(ocr_reader_mod, "_is_windows_platform", return_value=False), patch(
         "plugin.plugins.galgame_plugin.capture_platform.is_windows",
         return_value=False,
     ), patch(
         "plugin.plugins.galgame_plugin.capture_platform.is_linux",
-        return_value=False,
+        return_value=is_linux_host,
     ):
+        backend = Win32CaptureBackend(selection="auto")
         chain = backend._build_backends()
 
     kinds = {str(getattr(b, "kind", "")) for b in chain}
@@ -494,7 +509,7 @@ def test_build_backends_filters_win32_only_on_non_windows() -> None:
 
 
 def test_build_backends_keeps_win32_only_on_windows() -> None:
-    """On Windows, all four win32 backends remain reachable."""
+    """On Windows, the default three-backend win32 chain remains reachable."""
     from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
 
     backend = Win32CaptureBackend(selection="auto")

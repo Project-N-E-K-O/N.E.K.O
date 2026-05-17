@@ -2525,9 +2525,10 @@ def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int
 
     Translates X11 relative coordinates to absolute screen coordinates
     by walking up the window tree. Falls back to wmctrl subprocess and
-    finally to (0, 0, width, height) — the capture backend then does a
-    full-screen grab and the caller crops by OcrCaptureProfile ratios.
-    On pure Wayland both X11 paths fail naturally and the fallback wins.
+    raises if neither source can resolve the real absolute window bounds.
+    Returning a synthetic (0, 0, width, height) rectangle would be treated as
+    screen coordinates by pixel-based backends and silently capture the wrong
+    region for non-origin windows.
     """
     logger = logging.getLogger(__name__)
     try:
@@ -2568,7 +2569,7 @@ def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int
 
         wmctrl_path = shutil.which("wmctrl")
         if not wmctrl_path:
-            return (0, 0, int(target.width), int(target.height))
+            raise RuntimeError("wmctrl_not_available")
         output = subprocess.check_output(
             [wmctrl_path, "-lG"], text=True, timeout=5
         )
@@ -2591,7 +2592,7 @@ def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int
     except Exception as exc:
         logger.debug("linux wmctrl target rect lookup failed: %s", exc)
 
-    return (0, 0, int(target.width), int(target.height))
+    raise RuntimeError("linux_target_window_rect_unavailable")
 
 
 def _valid_screen_rect(rect: tuple[int, int, int, int]) -> bool:
