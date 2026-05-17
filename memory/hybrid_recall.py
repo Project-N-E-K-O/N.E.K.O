@@ -392,9 +392,24 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
 def _tag_tier(items: list[dict], tier: str) -> list[dict]:
     """Shallow-copy each item and stamp ``_tier`` + ``target_type`` for
     downstream hard_filter + result formatting. Doesn't mutate originals.
+
+    Skip non-dict rows defensively：facts.json / reflections.json /
+    facts_archive.json 理论上 schema 都是 list[dict]，但 manual edit /
+    老格式残留 / 迁移 bug 可能让 list 里混进 non-dict（string / int /
+    list）。``dict(it)`` 对这些会 TypeError / ValueError，单条坏行就把
+    整个 _tag_tier 挂掉 → 整次 hybrid_recall abort，违背"单坏行 skip
+    其余正常返回"的设计。Codex review on PR #1385。
     """
     out: list[dict] = []
     for it in items:
+        if not isinstance(it, dict):
+            # 不打 WARNING 防止 malformed 连续命中刷屏；交给后端排查时
+            # 看 DEBUG 即可。``id`` 字段都没法读出来，只能 log 类型。
+            logger.debug(
+                "[hybrid_recall] _tag_tier: skipping non-dict %s entry (type=%s)",
+                tier, type(it).__name__,
+            )
+            continue
         d = dict(it)
         d['_tier'] = tier
         # MemoryRecallReranker._hard_filter looks at target_type='reflection'

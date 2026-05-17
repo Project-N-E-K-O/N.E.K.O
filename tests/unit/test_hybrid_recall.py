@@ -199,6 +199,23 @@ class TestTagTier(unittest.TestCase):
         # reflection terminal statuses)
         self.assertNotIn("target_type", out[0])
 
+    def test_skip_non_dict_entries(self):
+        """Regression for codex review on commit d3880f9c9：facts.json
+        如果混进 non-dict 行（manual edit / 老格式 / 迁移 bug），
+        ``dict(it)`` 会 TypeError/ValueError 把整个 _tag_tier 挂掉，
+        升级成 whole-query 失败。修正后单条 skip，其余继续。"""
+        items = [
+            {"id": "good", "text": "valid entry"},
+            "this is a malformed string row",  # 非 dict
+            ["nested", "list", "row"],         # 非 dict
+            12345,                              # 非 dict
+            {"id": "also_good", "text": "another valid entry"},
+        ]
+        out = _tag_tier(items, "fact")
+        # 两条好 entry 都该出来，三条坏 entry 被 skip
+        self.assertEqual(len(out), 2)
+        self.assertEqual({d["id"] for d in out}, {"good", "also_good"})
+
 
 # ── end-to-end hybrid_recall ─────────────────────────────────────────
 
