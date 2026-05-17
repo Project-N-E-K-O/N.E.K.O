@@ -261,6 +261,47 @@ def test_import_rejects_canvas_data_url_encode_fallback(
 
 
 @pytest.mark.frontend
+def test_import_rejects_canvas_encode_throw(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
+            const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+            const file = new File([bytes], 'tiny-image', { type: '' });
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            let rejected = false;
+            let errorMessage = '';
+            try {
+                HTMLCanvasElement.prototype.toDataURL = function () {
+                    throw new Error('canvas encode exploded');
+                };
+                await window.appButtons.importImageFileToPendingList(file);
+            } catch (error) {
+                rejected = true;
+                errorMessage = String(error && error.message ? error.message : error);
+            } finally {
+                HTMLCanvasElement.prototype.toDataURL = originalToDataURL;
+            }
+            const state = window.reactChatWindowHost.getState();
+            return {
+                rejected,
+                errorMessage,
+                attachmentCount: state.composerAttachments.length
+            };
+        }"""
+    )
+
+    assert result["rejected"] is True
+    assert result["errorMessage"] == "IMAGE_ENCODE_FAILED"
+    assert result["attachmentCount"] == 0
+
+
+@pytest.mark.frontend
 def test_import_jpeg_under_limit_keeps_original_data(
     mock_page: Page,
     running_server: str,
@@ -295,6 +336,78 @@ def test_import_jpeg_under_limit_keeps_original_data(
 
     assert result["attachmentCount"] == 1
     assert result["imported"] == result["original"]
+
+
+@pytest.mark.frontend
+def test_import_jpeg_over_limit_compresses_attachment(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const limitBytes = 10 * 1024 * 1024;
+            const dataUrlBytes = (dataUrl) => {
+                const b64 = String(dataUrl || '').split(',')[1] || '';
+                const padding = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0);
+                return Math.max(0, Math.floor(b64.length * 3 / 4) - padding);
+            };
+            const makeNoisyJpeg = (size) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const context = canvas.getContext('2d');
+                const imageData = context.createImageData(size, size);
+                const pixels = imageData.data;
+                for (let y = 0; y < size; y += 1) {
+                    for (let x = 0; x < size; x += 1) {
+                        const offset = (y * size + x) * 4;
+                        const value = (x * 17 + y * 31 + ((x ^ y) * 13)) & 255;
+                        pixels[offset] = value;
+                        pixels[offset + 1] = (value * 7 + x) & 255;
+                        pixels[offset + 2] = (value * 13 + y) & 255;
+                        pixels[offset + 3] = 255;
+                    }
+                }
+                context.putImageData(imageData, 0, 0);
+                return canvas.toDataURL('image/jpeg', 1);
+            };
+
+            let original = makeNoisyJpeg(3072);
+            if (dataUrlBytes(original) <= limitBytes) {
+                original = makeNoisyJpeg(4096);
+            }
+            const originalBytes = dataUrlBytes(original);
+            if (originalBytes <= limitBytes) {
+                throw new Error(`Expected source JPEG to exceed 10MB, got ${originalBytes}`);
+            }
+
+            const response = await fetch(original);
+            const blob = await response.blob();
+            const file = new File([blob], 'big.jpg', { type: 'image/jpeg' });
+            await window.appButtons.importImageFileToPendingList(file);
+            const state = window.reactChatWindowHost.getState();
+            if (state.composerAttachments.length !== 1) {
+                throw new Error(`Expected one composer attachment, got ${state.composerAttachments.length}`);
+            }
+            const imported = state.composerAttachments[0] && state.composerAttachments[0].url;
+            return {
+                attachmentCount: state.composerAttachments.length,
+                originalBytes,
+                importedBytes: dataUrlBytes(imported),
+                importedChanged: imported !== original,
+                importedIsJpeg: String(imported || '').startsWith('data:image/jpeg;base64,')
+            };
+        }"""
+    )
+
+    assert result["attachmentCount"] == 1
+    assert result["originalBytes"] > 10 * 1024 * 1024
+    assert result["importedBytes"] <= 10 * 1024 * 1024
+    assert result["importedChanged"] is True
+    assert result["importedIsJpeg"] is True
 
 
 @pytest.mark.frontend
