@@ -1098,6 +1098,14 @@ PERSONA_VERSION_HISTORY_MAX = 5
   的 merge/modify append 后裁到最近 K 个，防长期运行无限累积。
 - 老版本直接丢；version_history 是审计而非数据，超过 5 条价值极低。"""
 
+MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
+"""所有 memory 后台 LLM 调用的硬上限 timeout（秒）。
+- 上游转发服务器 hard timeout 120s；client 必须留 ≥10s margin，否则会被
+  转发层先 timeout 截断，连 response 都拿不到。**不能超过 110**。
+- 覆盖：reflection synthesis / persona correction / memory_refine /
+  recent review_history 等所有后台跑的 LLM 调用。
+- 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
+
 # ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
 # 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
 # REFLECTION_REFINE 两条 cron 上。fact 不可变（只能作 merge/modify
@@ -1847,6 +1855,7 @@ __all__ = [
     'PERSONA_MERGE_POOL_MAX_TOKENS',
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',
+    'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
     'MEMORY_REFINE_CLUSTER_SIZE_MAX',

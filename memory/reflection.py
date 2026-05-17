@@ -712,17 +712,19 @@ class ReflectionEngine:
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=120: 开 thinking 后输出多字段 JSON ontology（reflection
-            # text + entity + relation_type + temporal_scope + subject）+ 思考
-            # 过程，比简单分类长。LLM 在锁外，不阻塞同角色其他 reflection 写。
+            # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS 注释（上游转发
+            # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
+            # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外
+            # 不阻塞同角色其他 reflection 写。
             # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
             # try/except 兜底返回 []）。
             # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
             # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
+            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=120, max_retries=0,
+                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
                 extra_body=None,
             )
             try:

@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
 from config import (
+    MEMORY_LLM_HARD_TIMEOUT_SECONDS,
     MEMORY_REFINE_CLUSTER_SIZE_MAX,
     MEMORY_REFINE_CLUSTERS_PER_PASS,
     MEMORY_REFINE_COSINE_THRESHOLD,
@@ -359,9 +360,7 @@ class MemoryRefineEngine:
             api_config['model'],
             api_config['base_url'],
             api_config['api_key'],
-            timeout=110,  # 上游转发服务器 hard timeout 120s，client 必须
-                          # 给 10s margin 否则会被转发层先 timeout 截断（连
-                          # response 都拿不到）。不能超过 110。
+            timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
             max_retries=0,
             extra_body=None,  # 显式开 thinking（同 correction）
         )

@@ -1644,16 +1644,19 @@ class PersonaManager:
                 from utils.llm_client import create_chat_llm
                 set_call_type("memory_correction")
                 api_config = self._config_manager.get_model_api_config('correction')
-                # timeout=120: 开 thinking 后批量决策（每对 keep_old/keep_new/
-                # keep_both/replace + 重写 merged_text）值得思考——后果不可逆
-                # （persona pollution）。LLM 在 data lock 外，可放宽 timeout
-                # 不阻塞 /process 路径上的 arecord_mentions / aapply_signal。
+                # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发
+                # 120s hard cap，必须 ≤110）。批量决策（每对 keep_old/
+                # keep_new/keep_both/merge + 重写 merged_text）值得吃满
+                # thinking——后果不可逆（persona pollution）。LLM 在 data
+                # lock 外，不阻塞 /process 路径上的 arecord_mentions /
+                # aapply_signal。
                 # max_retries=0: 禁 SDK 自动重试（这里没业务 retry，单次即终态）。
                 # extra_body=None: 显式开 thinking。
+                from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
                 llm = create_chat_llm(
                     api_config['model'],
                     api_config['base_url'], api_config['api_key'],
-                    timeout=120, max_retries=0,
+                    timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
                     extra_body=None,
                 )
                 try:
