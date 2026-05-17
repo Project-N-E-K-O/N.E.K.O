@@ -1445,16 +1445,21 @@ class LLMSessionManager:
             return
 
         stream_request_id = _text_stream_request_id.get()
+        stream_turn_id = _text_stream_turn_id.get()
         active_request_id = (
             stream_request_id
             if stream_request_id is not _REQUEST_ID_UNSET
             else self._active_text_request_id
         )
+        active_speech_id = stream_turn_id or self.current_speech_id
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
-                await self._request_tts_done_for_turn("handle_response_complete")
+                await self._request_tts_done_for_turn(
+                    "handle_response_complete",
+                    expected_speech_id=active_speech_id,
+                )
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败: {e}")
         try:
@@ -1993,8 +1998,12 @@ class LLMSessionManager:
             if transcript_text or count_empty_turn:
                 self._session_turn_count += 1
 
-        # 推送到同步消息队列
-        self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
+        # 推送到同步消息队列。纯图片轮次没有可展示文本，但需要给
+        # cross_server 一个内部标记，避免 memory sync 把它当主动搭话。
+        sync_user_data = {"input_type": "transcript", "data": transcript.strip()}
+        if count_empty_turn and not transcript_text:
+            sync_user_data["counts_as_user_input"] = True
+        self.sync_message_queue.put({"type": "user", "data": sync_user_data})
         
         # 只在语音模式（OmniRealtimeClient）下发送到前端显示用户转录
         # 文本模式下前端会自己显示，无需后端发送，避免重复

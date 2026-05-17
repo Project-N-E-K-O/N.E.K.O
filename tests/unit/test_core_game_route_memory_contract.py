@@ -765,6 +765,32 @@ async def test_no_takeover_non_voice_transcript_reuse_keeps_existing_ordinary_fl
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_image_only_empty_transcript_marks_user_input_for_sync():
+    mgr = _make_transcript_manager()
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "",
+        is_voice_source=False,
+        count_empty_turn=True,
+    )
+
+    assert mgr._activity_tracker.voice_rms_count == 0
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {
+            "input_type": "transcript",
+            "data": "",
+            "counts_as_user_input": True,
+        },
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_takeover_dispatcher_does_not_intercept_non_voice_transcript_reuse():
     mgr = _make_transcript_manager()
 
@@ -833,6 +859,43 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_complete_uses_stream_turn_id_for_tts_done():
+    mgr = _make_manager()
+    mgr.use_tts = True
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.current_speech_id = "sid-newer"
+    done_calls = []
+    emitted_turn_ends = []
+
+    async def _request_tts_done_for_turn(source, expected_speech_id=None):
+        done_calls.append((source, expected_speech_id))
+        return "queued"
+
+    async def _emit_turn_end(active_request_id):
+        emitted_turn_ends.append(active_request_id)
+
+    async def _finalize_turn_after_emit():
+        return None
+
+    mgr._request_tts_done_for_turn = _request_tts_done_for_turn
+    mgr._emit_turn_end = _emit_turn_end
+    mgr._finalize_turn_after_emit = _finalize_turn_after_emit
+
+    turn_token = core_module._text_stream_turn_id.set("sid-older")
+    request_token = core_module._text_stream_request_id.set("req-older")
+    try:
+        await core_module.LLMSessionManager.handle_response_complete(mgr)
+    finally:
+        core_module._text_stream_request_id.reset(request_token)
+        core_module._text_stream_turn_id.reset(turn_token)
+
+    assert done_calls == [("handle_response_complete", "sid-older")]
+    assert emitted_turn_ends == ["req-older"]
+    assert mgr._active_text_request_id is None
 
 
 @pytest.mark.unit

@@ -566,6 +566,7 @@ async def run_sync_connector(
     text_output_request_id = None
     current_turn = 'user'
     had_user_input_this_turn = False  # 当前 turn 是否有用户输入（False = 主动搭话）
+    pending_user_input_marker = False  # 纯图片等无文本输入也算用户发起轮次
     current_turn_start_index = 0
     last_screen = None
     pending_user_images: list = []
@@ -598,10 +599,11 @@ async def run_sync_connector(
                                 )
                                 continue
                             if current_turn == 'user':  # assistant new message starts
-                                had_user_input_this_turn = bool(user_input_cache)
+                                had_user_input_this_turn = bool(user_input_cache) or pending_user_input_marker
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
                                     user_input_cache = ''
+                                pending_user_input_marker = False
                                 current_turn = 'assistant'
                                 text_output_request_id = message["data"].get("request_id")
                                 current_turn_start_index = len(chat_history)
@@ -642,9 +644,13 @@ async def run_sync_connector(
                         data = message["data"].get("data")
                         input_type = message["data"].get("input_type")
                         if input_type == "transcript": # 暂时只处理语音，后续还需要记录图片
-                            if user_input_cache == '':
+                            counts_as_user_input = bool(message["data"].get("counts_as_user_input"))
+                            if counts_as_user_input:
+                                pending_user_input_marker = True
+                            if user_input_cache == '' and (data or counts_as_user_input):
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})  # 用于打断前端声音播放
-                            user_input_cache += data
+                            if data:
+                                user_input_cache += data
                             # 发送用户转录到 monitor 供副终端显示
                             if data:
                                 await _try_send_json(sync_slot, {'type': 'user_transcript', 'text': data})
