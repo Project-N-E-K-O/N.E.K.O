@@ -62,6 +62,7 @@ import json
 import math
 import os
 import time
+from collections import Counter
 from typing import Any
 
 from config import (
@@ -154,8 +155,12 @@ def _bm25_rank(
             df[t] = df.get(t, 0) + 1
 
     query_unique = set(query_terms)
+    # 预算每个 doc 的词频表：替代 inner loop 里的 O(N) ``doc_terms.count(q_term)``。
+    # Pool 量级 ≤ 几百时 perf 差别可忽略，但 Counter 查表是 O(1) + 标准模式更干净。
+    doc_tf_list: list[Counter] = [Counter(terms) for terms in doc_terms_list]
+
     scored: list[tuple[dict, float]] = []
-    for doc, doc_terms in zip(pool, doc_terms_list):
+    for doc, doc_terms, doc_tf in zip(pool, doc_terms_list, doc_tf_list):
         if not doc_terms:
             continue
         dl = len(doc_terms)
@@ -169,7 +174,7 @@ def _bm25_rank(
             idf = math.log((n_docs - n + 0.5) / (n + 0.5) + 1.0)
             if idf <= 0:
                 continue
-            tf = doc_terms.count(q_term)
+            tf = doc_tf[q_term]
             if tf == 0:
                 continue
             score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
