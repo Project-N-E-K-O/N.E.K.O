@@ -228,3 +228,20 @@ async def test_discard_reflection_removes_it(tmp_path):
     assert applied == 1
     refls = await engine.aload_reflections("小天")
     assert all(r.get('id') != 'r1' for r in refls)
+
+
+@pytest.mark.asyncio
+async def test_empty_actions_still_stamps_cluster_reflections(tmp_path):
+    """Codex P1 修复：LLM 返回 [] (no-op) 也必须 stamp 整个 cluster
+    内的 reflection（fact 跳过），否则下轮 cron 重复审视。"""
+    engine = _install(str(tmp_path))
+    r1 = await _seed_refl(engine, "小天", id='r_a', text='one')
+    r2 = await _seed_refl(engine, "小天", id='r_b', text='two')
+    cluster = [_annot_refl(r1), _annot_refl(r2), _annot_fact('f_ctx')]
+    applied = await engine.apply_refine_actions("小天", "master", cluster, [], 'h_noop')
+    assert applied == 0
+    refls = await engine.aload_reflections("小天")
+    by_id = {r.get('id'): r for r in refls}
+    assert by_id['r_a']['last_refine_cluster_hash'] == 'h_noop'
+    assert by_id['r_b']['last_refine_cluster_hash'] == 'h_noop'
+    assert by_id['r_a']['last_refine_at'] and by_id['r_b']['last_refine_at']

@@ -202,25 +202,44 @@ class MemoryRecallReranker:
         These are the same exclusions the render path already uses,
         consolidated into one function so callers don't duplicate the
         list.
+
+        Per-entry try/except：observations 通常来自 JSON 文件
+        （facts.json / reflections.json / persona.json），走 serialize/
+        deserialize 边界。理论上写盘是我们自己代码做的所以 shape 应该
+        正确，但 manual edit / 老格式残留 / 迁移 bug 都可能让 ``text``
+        是 list/int（``.strip()`` 挂）或 ``score`` 是字符串（``< 0`` 比较
+        挂）。单条坏行不该带挂整个 filter——已用的 caller（hybrid_recall
+        和 Stage-2 signal detection）都受益。Codex review on PR #1385。
         """
         out: list[dict] = []
         for o in observations:
             if not isinstance(o, dict):
                 continue
-            score = o.get('score')
-            if score is not None and score < 0:
-                continue
-            if o.get('suppress') or o.get('suppressed'):
-                continue
-            if o.get('protected'):
-                continue
-            target_type = o.get('target_type')
-            status = o.get('status')
-            if (target_type == 'reflection'
-                    and status in MemoryRecallReranker._REFLECTION_DROP_STATUSES):
-                continue
-            text = o.get('text', '')
-            if not text or not text.strip():
+            try:
+                score = o.get('score')
+                if score is not None and score < 0:
+                    continue
+                if o.get('suppress') or o.get('suppressed'):
+                    continue
+                if o.get('protected'):
+                    continue
+                target_type = o.get('target_type')
+                status = o.get('status')
+                if (target_type == 'reflection'
+                        and status in MemoryRecallReranker._REFLECTION_DROP_STATUSES):
+                    continue
+                text = o.get('text', '')
+                if not text or not text.strip():
+                    continue
+            except (TypeError, AttributeError) as exc:
+                # 单条 entry 字段类型不对（list/int/etc.）→ skip 这一行，
+                # 继续过滤其余。仅 log 到 DEBUG 不刷屏（malformed 通常会
+                # 连续命中很多条）。
+                logger.debug(
+                    "MemoryRecallReranker._hard_filter: skipping malformed "
+                    "entry id=%r: %s: %s",
+                    o.get('id'), type(exc).__name__, exc,
+                )
                 continue
             out.append(o)
         return out

@@ -1187,15 +1187,16 @@ class ReflectionEngine:
                     consumed.add(src_id)
                     applied += 1
 
-            if applied == 0:
-                return 0
-
+            # NOTE: applied 可能为 0（LLM 返回 [] 的合法 no-op），仍需 stamp
+            # 整个 cluster —— 否则下轮 cron 形成同 cluster 时 hash skip 命不
+            # 中，再次送 LLM 又返回 []，cluster_hash skip 失效（Codex P1 #1392）。
             new_reflections = [
                 r for r in reflections
                 if not (isinstance(r, dict) and r.get('id') in consumed)
             ]
             new_reflections.extend(produced)
 
+            stamped = 0
             for r in new_reflections:
                 if not isinstance(r, dict):
                     continue
@@ -1203,12 +1204,16 @@ class ReflectionEngine:
                 if rid in cluster_refl_ids and rid not in consumed:
                     r['last_refine_cluster_hash'] = cluster_hash
                     r['last_refine_at'] = now_iso
+                    stamped += 1
+
+            if applied == 0 and stamped == 0:
+                return 0
 
             await self.asave_reflections(name, new_reflections)
             logger.info(
                 f"[Reflection] {name} entity={entity}: refine 应用 {applied} action "
-                f"(cluster_hash={cluster_hash}, +{len(produced)} produced, "
-                f"-{len(consumed)} consumed)"
+                f"(cluster_hash={cluster_hash}, stamped={stamped}, "
+                f"+{len(produced)} produced, -{len(consumed)} consumed)"
             )
         return applied
 

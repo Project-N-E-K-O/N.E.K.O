@@ -175,6 +175,25 @@ class TestCustomApiToggle:
         assert cfg['CONVERSATION_MODEL_API_KEY'] == 'sk-custom-conv'
 
     @pytest.mark.unit
+    def test_model_vision_override_marks_custom_model_capability(self, config_manager):
+        """Explicit modelVisionOverrides should win before model-name sniffing."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'conversationModelUrl': 'https://custom.example.com/v1',
+            'conversationModelId': 'local-multimodal',
+            'conversationModelApiKey': 'sk-custom-conv',
+            'modelVisionOverrides': {'local-multimodal': True},
+        })
+
+        cfg = config_manager.get_model_api_config('conversation')
+
+        assert cfg['model'] == 'local-multimodal'
+        assert cfg['supports_vision'] is True
+
+    @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
         """enableCustomApi=true → all 8 model types can be overridden."""
         model_types = [

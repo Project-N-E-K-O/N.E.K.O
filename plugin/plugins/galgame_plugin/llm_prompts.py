@@ -204,7 +204,7 @@ def _condense_context(
             "semantic_lines_after": after,
         }
     except Exception:
-        logger.warning("Context compression failed, falling back to uncompressed", exc_info=True)
+        logger.warning("Prompt compression failed, falling back to uncompressed", exc_info=True)
         return dict(context), {
             "semantic_compression_enabled": False,
             "semantic_compression_fallback": True,

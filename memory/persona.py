@@ -1977,15 +1977,17 @@ class PersonaManager:
                     consumed.add(src_id)
                     applied += 1
 
-            if applied == 0:
-                return 0
-
+            # NOTE: applied 可能为 0（LLM 返回 [] 的合法 no-op），仍需 stamp
+            # 整个 cluster —— 否则下一轮 cron 形成同 cluster 时 hash skip 命不
+            # 中（成员未 stamp），再次送 LLM 又返回 []，造成无限重复审视，
+            # cluster_hash skip 机制完全失效（Codex P1 #1392）。
             new_section = [
                 e for e in section
                 if not (isinstance(e, dict) and e.get('id') in consumed)
             ]
             new_section.extend(produced)
 
+            stamped = 0
             for e in new_section:
                 if not isinstance(e, dict):
                     continue
@@ -1993,13 +1995,19 @@ class PersonaManager:
                 if eid in cluster_ids and eid not in consumed:
                     e['last_refine_cluster_hash'] = cluster_hash
                     e['last_refine_at'] = now_iso
+                    stamped += 1
+
+            if applied == 0 and stamped == 0:
+                # cluster 成员都已不在（被并发删除等罕见情况），无可 stamp，
+                # 也无须落盘，直接返回。
+                return 0
 
             section[:] = new_section
             await self.asave_persona(name, persona)
             logger.info(
                 f"[Persona] {name} entity={entity}: refine 应用 {applied} action "
-                f"(cluster_hash={cluster_hash}, +{len(produced)} produced, "
-                f"-{len(consumed)} consumed)"
+                f"(cluster_hash={cluster_hash}, stamped={stamped}, "
+                f"+{len(produced)} produced, -{len(consumed)} consumed)"
             )
         return applied
 

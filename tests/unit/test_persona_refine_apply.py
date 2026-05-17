@@ -188,3 +188,21 @@ async def test_survivor_gets_cluster_hash_stamp(tmp_path):
     )
     assert survivor['last_refine_cluster_hash'] == 'h007'
     assert survivor['last_refine_at']
+
+
+@pytest.mark.asyncio
+async def test_empty_actions_still_stamps_cluster_members(tmp_path):
+    """Codex P1 修复：LLM 返回 [] (no-op) 也必须 stamp 整个 cluster，
+    否则下轮 cron 重复审视同 cluster，cluster_hash skip 失效。"""
+    pm = _install(str(tmp_path))
+    s1 = await _seed(pm, "小天", "entry one", id='p_one')
+    s2 = await _seed(pm, "小天", "entry two", id='p_two')
+    cluster = [_annotate(s1), _annotate(s2)]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, [], 'h_noop')
+    assert applied == 0
+    persona = await pm.aensure_persona("小天")
+    e1 = next(e for e in pm._get_section_facts(persona, "master") if e.get('id') == 'p_one')
+    e2 = next(e for e in pm._get_section_facts(persona, "master") if e.get('id') == 'p_two')
+    assert e1['last_refine_cluster_hash'] == 'h_noop'
+    assert e2['last_refine_cluster_hash'] == 'h_noop'
+    assert e1['last_refine_at'] and e2['last_refine_at']

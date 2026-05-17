@@ -19,11 +19,10 @@ Embedding 不可用 / 候选不足 → 整 pass no-op，不报错。
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 from config import (
     MEMORY_REFINE_CLUSTER_SIZE_MAX,

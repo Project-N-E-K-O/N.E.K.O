@@ -106,8 +106,8 @@ async def test_llm_backend_json_correction_prompt_preserves_invalid_reply() -> N
     backend = GalgameLLMBackend(_Logger())
     calls: list[list[dict[str, str]]] = []
 
-    async def _fake_call_model(*, operation: str, messages):
-        calls.append(messages)
+    async def _fake_call_model(*, operation: str, messages, tier: str | None = None):
+        calls.append((messages, tier))
         if len(calls) == 1:
             return "not-json"
         return '{"reply": "ok"}'
@@ -124,9 +124,11 @@ async def test_llm_backend_json_correction_prompt_preserves_invalid_reply() -> N
 
     assert raw_text == '{"reply": "ok"}'
     assert len(calls) == 2
-    assert calls[1][-2] == {"role": "assistant", "content": "not-json"}
-    assert calls[1][-1]["role"] == "user"
-    assert "JSON" in calls[1][-1]["content"]
+    assert calls[0][1] is None
+    assert calls[1][1] == "correction"
+    assert calls[1][0][-2] == {"role": "assistant", "content": "not-json"}
+    assert calls[1][0][-1]["role"] == "user"
+    assert "JSON" in calls[1][0][-1]["content"]
 
 
 @pytest.mark.asyncio
@@ -222,7 +224,91 @@ async def test_llm_backend_retries_transient_model_call_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_llm_backend_create_chat_llm_does_not_receive_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Config:
+        def get_model_api_config(self, role: str) -> dict[str, object]:
+            assert role == "summary"
+            return {
+                "base_url": "https://llm.example.test",
+                "model": "demo-model",
+                "api_key": "sk-test",
+                "supports_vision": False,
+            }
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            del messages
+            return type("Response", (), {"content": "{}"})()
+
+    def _fake_create_chat_llm(**kwargs):
+        captured.update(kwargs)
+        return _FakeLLM()
+
+    backend = GalgameLLMBackend(_Logger())
+    monkeypatch.setattr(galgame_llm_backend, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(galgame_llm_backend, "create_chat_llm", _fake_create_chat_llm)
+
+    assert await backend._call_model(
+        operation="explain_line",
+        messages=[{"role": "user", "content": "{}"}],
+    ) == "{}"
+    assert "temperature" not in captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_llm_backend_attaches_vision_image_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_messages: list[list[dict[str, object]]] = []
+
+    class _Config:
+        def get_model_api_config(self, role: str) -> dict[str, str]:
+            assert role == "agent"
+            return {
+                "base_url": "https://llm.example.test",
+                "model": "gpt-4o-mini",
+                "api_key": "sk-test",
+                "supports_vision": True,
+            }
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured_messages.append(messages)
+            return type("Response", (), {"content": '{"reply": "ok"}'})()
+
+    async def _fake_get_or_create_llm(**kwargs):
+        del kwargs
+        return _FakeLLM()
+
+    backend = GalgameLLMBackend(_Logger())
+    monkeypatch.setattr(galgame_llm_backend, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(backend, "_get_or_create_llm", _fake_get_or_create_llm)
+
+    result = await backend.invoke(
+        operation="agent_reply",
+        context={
+            "prompt": "what is on screen?",
+            "public_context": {},
+            "vision_enabled": True,
+            "vision_image_base64": "abc123",
+        },
+    )
+
+    content = captured_messages[0][-1]["content"]
+    assert result["reply"] == "ok"
+    assert isinstance(content, list)
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] == "data:image/png;base64,abc123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_llm_backend_keeps_vision_image_when_config_omits_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_messages: list[list[dict[str, object]]] = []
@@ -263,7 +349,6 @@ async def test_llm_backend_attaches_vision_image_when_requested(
     assert result["reply"] == "ok"
     assert isinstance(content, list)
     assert content[1]["type"] == "image_url"
-    assert content[1]["image_url"]["url"] == "data:image/png;base64,abc123"
 
 
 @pytest.mark.asyncio
@@ -280,6 +365,7 @@ async def test_llm_backend_strips_vision_image_for_non_vision_model(
                 "base_url": "https://llm.example.test",
                 "model": "text-only-model",
                 "api_key": "sk-test",
+                "supports_vision": False,
             }
 
     class _FakeLLM:
@@ -315,7 +401,8 @@ async def test_llm_backend_explain_line_parses_fenced_json() -> None:
     backend = GalgameLLMBackend(_Logger())
     captured: list[str] = []
 
-    async def _fake_call_model(*, operation: str, messages):
+    async def _fake_call_model(*, operation: str, messages, tier: str | None = None):
+        del tier
         captured.append(operation)
         return """```json
         {
@@ -354,7 +441,8 @@ async def test_llm_backend_explain_line_parses_fenced_json() -> None:
 async def test_llm_backend_suggest_choice_filters_invalid_items_and_renumbers() -> None:
     backend = GalgameLLMBackend(_Logger())
 
-    async def _fake_call_model(*, operation: str, messages):
+    async def _fake_call_model(*, operation: str, messages, tier: str | None = None):
+        del tier
         return """{
           "choices": [
             {"choice_id": "ghost", "text": "不存在", "rank": 1, "reason": "无效"},
@@ -397,7 +485,8 @@ async def test_llm_backend_agent_reply_retries_once_when_first_reply_is_not_json
     backend = GalgameLLMBackend(_Logger())
     calls = {"count": 0}
 
-    async def _fake_call_model(*, operation: str, messages):
+    async def _fake_call_model(*, operation: str, messages, tier: str | None = None):
+        del tier
         calls["count"] += 1
         if calls["count"] == 1:
             return "这不是 JSON"

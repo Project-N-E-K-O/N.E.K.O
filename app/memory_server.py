@@ -3118,7 +3118,10 @@ async def get_recent_history(lanlan_name: str):
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
 async def get_memory(query: str, lanlan_name: str):
-    """语义记忆已退环境，返回空结果占位。"""
+    """**Deprecated** — 旧 GET 端点保留只为不破坏老调用方；新调用方走
+    POST ``/query_memory/{lanlan_name}`` 拿结构化结果。本端点继续返回
+    占位文字以避免老路径回流（语义召回早就在这条 GET 上下线了）。
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = get_global_language()
     return (
@@ -3128,6 +3131,59 @@ async def get_memory(query: str, lanlan_name: str):
         + _loc(MEMORY_RESULTS_HEADER, _lang).format(name=lanlan_name)
         + "\n（语义记忆已下线，暂无相关记忆片段。）"
     )
+
+
+class QueryMemoryRequest(BaseModel):
+    query: str
+
+
+@app.post("/query_memory/{lanlan_name}")
+async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
+    """混合检索 entry point —— BM25 + cosine embedding 并行召回 + RRF 融合。
+
+    POST body: ``{"query": "<自然语言查询>"}``
+
+    返回 ``hybrid_recall`` 的结构化结果（见 ``memory.hybrid_recall``
+    docstring）。``main_server`` 的 ``recall_memory`` 工具 handler 调
+    本端点拿结果，再格式化给模型看。
+
+    ⚠️ 候选范围、阈值、budget 都在 ``config.HYBRID_RECALL_*`` 里配置；
+    persona 整段不入池（已经常态渲染进 system prompt），facts +
+    reflections 走全路径，facts_archive 只入 BM25 池。
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if fact_store is None or reflection_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    try:
+        # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
+        # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
+        # 直接 500 把 tool call 整死。
+        from memory.hybrid_recall import hybrid_recall
+        return await hybrid_recall(
+            lanlan_name=lanlan_name,
+            query=req.query or "",
+            fact_store=fact_store,
+            reflection_engine=reflection_engine,
+            config_manager=_config_manager,
+        )
+    except Exception as exc:
+        # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
+        # 那边的 handler 会把空 results 翻译成 "没有找到相关记忆"，模型可以
+        # 正常继续。完整 traceback 落 logger.exception（含 type + msg），
+        # 响应体只回稳定 error_code，避免把内部细节（异常消息可能夹带敏感
+        # 上下文）通过 HTTP body 泄出去。
+        logger.exception(
+            "[hybrid_recall] %s: 召回失败，返回空结果占位: %s: %s",
+            lanlan_name, type(exc).__name__, exc,
+        )
+        return {
+            "results": [], "query": req.query or "",
+            "candidates_total": 0, "elapsed_ms": 0.0,
+            "error_code": "hybrid_recall_failed",
+        }
 
 @app.get("/get_settings/{lanlan_name}")
 async def get_settings(lanlan_name: str):
