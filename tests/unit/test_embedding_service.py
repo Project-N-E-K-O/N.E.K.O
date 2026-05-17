@@ -202,6 +202,39 @@ def test_detect_avx_vnni_arm64_linux_checks_asimddp(monkeypatch):
     assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
+def test_detect_avx_vnni_arm64_linux_proc_cpuinfo_fallback(monkeypatch):
+    """Linux ARM falls back to /proc/cpuinfo when py-cpuinfo is
+    unavailable. Unlike x86 which uses ``flags``, ARM Linux exposes the
+    feature list under a capital-F ``Features`` line — make sure the
+    parser hits that branch and reads asimddp/dotprod correctly."""
+    from unittest.mock import mock_open
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+
+    class _BrokenCpuinfo:
+        @staticmethod
+        def get_cpu_info():
+            raise RuntimeError("simulated cpuinfo failure")
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _BrokenCpuinfo)
+
+    proc_modern = (
+        "processor\t: 0\n"
+        "Features\t: fp asimd evtstrm aes pmull sha2 crc32 asimddp\n"
+    )
+    monkeypatch.setattr("builtins.open", mock_open(read_data=proc_modern))
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    proc_old = (
+        "processor\t: 0\n"
+        "Features\t: fp asimd evtstrm aes pmull sha2 crc32\n"  # pre-dotprod
+    )
+    monkeypatch.setattr("builtins.open", mock_open(read_data=proc_old))
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
 def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
     """Codex review PR #1147: ``parse_dim_from_model_id`` must anchor on
     the trailing ``-<dim>d-<quant>`` segment that ``build_model_id``
