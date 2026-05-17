@@ -359,9 +359,9 @@ class MemoryRefineEngine:
             api_config['model'],
             api_config['base_url'],
             api_config['api_key'],
-            timeout=180,  # 比 correction 的 120 略宽：cluster 内多类型
-                          # 混合（reflection + fact）+ 四件套决策比 pair-wise
-                          # correction 更费 thinking
+            timeout=110,  # 上游转发服务器 hard timeout 120s，client 必须
+                          # 给 10s margin 否则会被转发层先 timeout 截断（连
+                          # response 都拿不到）。不能超过 110。
             max_retries=0,
             extra_body=None,  # 显式开 thinking（同 correction）
         )
