@@ -57,14 +57,13 @@ def _build_client() -> TestClient:
 
 def test_capture_bridge_renderer_ignores_placeholder_target_id_before_source_match():
     source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
-    placeholder_guard = (
-        "if (targetId === '0' || targetId === '<target_id>') {\n"
-        "                                targetId = '';"
-    )
-    guard_index = source.index(placeholder_guard)
-    match_index = source.index("if (targetId) {", guard_index)
+    placeholder_guard = ("targetId === '0'", "targetId === '<target_id>'")
+    guard_index = source.index(placeholder_guard[0])
+    placeholder_index = source.index(placeholder_guard[1], guard_index)
+    reset_index = source.index("targetId = '';", placeholder_index)
+    match_index = source.index("if (targetId) {", reset_index)
 
-    assert guard_index < match_index
+    assert guard_index < placeholder_index < reset_index < match_index
 
 
 class _DummyWebSocket:
