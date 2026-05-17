@@ -148,7 +148,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       { title: "3. 开 MC 世界并 Open to LAN", body: "进入单人世界 → ESC → Open to LAN → 选游戏模式 → 开放。MC 会在聊天框显示「Local game hosted on port XXXXX」，记下这个端口号。" },
       { title: "4. 在管理面板里把 MC 端口改成你抄下的那个", body: "点上面「打开管理面板」按钮 → 找到 bot 配置 → 修改 port 字段 → 保存。bot 会自动重启用新端口连进 MC 世界。" },
       { title: "5. 验证 bot 进游戏了", body: "MC 聊天框会看到「Kuro joined the game」。看不到就刷新本页状态，或者看「启动mc-agent.bat」那个黑窗口报什么错。" },
-      { title: "6. 跟猫娘说话", body: "对猫娘说「帮我去砍 10 块橡木」之类的具体任务，她会自动派给 bot 执行，过程画面会实时传回来让她解说。" },
+      { title: "6. 跟猫娘说话", body: "你可以和猫娘一边聊天一边玩耍，她会根据你的要求和她自己的想法行动。" },
     ],
     portsTitle: "端口说明",
     ports: [
@@ -201,7 +201,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       { title: "3. Open a world to LAN", body: "Single player → ESC → Open to LAN → pick game mode → Start. MC will print \"Local game hosted on port XXXXX\" in chat. Note the port number." },
       { title: "4. Change MC port via admin panel", body: "Click \"Open admin panel\" above → find your bot config → change the port field to the number you wrote down → save. The bot will restart and join your world." },
       { title: "5. Confirm the bot joined", body: "You should see \"Kuro joined the game\" in MC chat. If not, refresh status here or check the 启动mc-agent.bat console window for errors." },
-      { title: "6. Talk to neko-chan", body: "Give her concrete tasks like \"go chop 10 oak logs\". She'll dispatch them to the bot, and the bot's POV will stream back so she can narrate." },
+      { title: "6. Talk to neko-chan", body: "Chat and play with neko-chan — she'll act on what you ask and on her own ideas." },
     ],
     portsTitle: "Ports",
     ports: [
@@ -254,7 +254,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       { title: "3. ワールドを LAN 公開", body: "シングルプレイ → ESC → LAN 公開 → モード選択 → 開始。チャットに「Local game hosted on port XXXXX」と出るのでポート番号を控える。" },
       { title: "4. 管理パネルで MC ポートを書き換え", body: "上の「管理パネルを開く」→ ボット設定 → port を控えた番号に変更 → 保存。ボットが再起動して新ポートでワールドに参加。" },
       { title: "5. ボットの参加を確認", body: "MC のチャットに「Kuro joined the game」と出れば成功。出なければ本ページの状態を更新、または「启动mc-agent.bat」の黒い窓のエラーを確認。" },
-      { title: "6. 猫娘に話しかける", body: "「樫の木を 10 個切ってきて」など具体的タスクを依頼。bot に派遣され、視界がストリーミングされて猫娘が実況。" },
+      { title: "6. 猫娘に話しかける", body: "猫娘とおしゃべりしながら一緒に遊べる。リクエストと猫娘自身の判断で動く。" },
     ],
     portsTitle: "ポート一覧",
     ports: [
@@ -307,7 +307,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       { title: "3. 월드를 LAN 공개", body: "싱글 플레이 → ESC → LAN 공개 → 게임 모드 선택 → 시작. 채팅창에 「Local game hosted on port XXXXX」가 표시되니 포트 번호 기록." },
       { title: "4. 관리 패널에서 MC 포트 변경", body: "위「관리 패널 열기」클릭 → 봇 설정 → port 필드를 기록한 번호로 변경 → 저장. 봇이 재시작되어 새 포트로 월드에 참가." },
       { title: "5. 봇 참가 확인", body: "MC 채팅에「Kuro joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 「启动mc-agent.bat」 콘솔 창의 에러 확인." },
-      { title: "6. 고양이에게 말 걸기", body: "「떡갈나무 10개 베어와」 같은 구체적 작업 요청. 봇이 파견되고 시야가 실시간 스트리밍되어 고양이가 중계." },
+      { title: "6. 고양이에게 말 걸기", body: "고양이와 대화하면서 함께 놀 수 있어. 네 요청과 고양이 본인의 생각에 따라 움직여." },
     ],
     portsTitle: "포트 안내",
     ports: [
@@ -360,7 +360,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       { title: "3. Открой мир в LAN", body: "Одиночная игра → ESC → Открыть для сети → выбери режим → Старт. MC напишет в чате «Local game hosted on port XXXXX». Запомни порт." },
       { title: "4. Поменяй MC-порт в админ-панели", body: "Жми «Открыть админ-панель» сверху → найди конфиг бота → измени port на записанный номер → сохрани. Бот перезапустится и зайдёт в твой мир." },
       { title: "5. Подтверди вход бота", body: "В чате MC появится «Kuro joined the game». Если нет — обнови статус здесь или посмотри ошибки в чёрном окне 启动mc-agent.bat." },
-      { title: "6. Поговори с нэко-тян", body: "Дай ей конкретную задачу: «нарубай 10 дубовых брёвен». Она передаст боту, и его обзор будет транслироваться обратно для комментариев." },
+      { title: "6. Поговори с нэко-тян", body: "Болтай с нэко-тян и играй вместе — она будет действовать по твоим просьбам и по собственным идеям." },
     ],
     portsTitle: "Порты",
     ports: [
