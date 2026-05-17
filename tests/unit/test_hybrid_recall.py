@@ -100,6 +100,25 @@ class TestBM25Rank(unittest.TestCase):
         # All score 0 — nothing returned
         self.assertEqual(ranked, [])
 
+    def test_tf_preserved_so_heavy_repeat_outranks_brief(self):
+        """Regression for codex review #1 (commit fd2b75fc4 之前)：
+        ``_extract_keywords`` 返回 set，单 doc 内重复 token 被 dedupe，
+        BM25 的 TF 信号死掉。修正后 ``_tokenize`` 返回 list 保留 multiplicity，
+        同一 term 出现 N 次的 doc 应当显著高于只出现 1 次的 doc。"""
+        pool = [
+            {"id": "heavy", "text": "博士博士博士博士博士最爱博士的游戏"},
+            {"id": "brief", "text": "今天博士跟我说了别的事"},
+        ]
+        ranked = _bm25_rank("博士", pool, stop_names=[])
+        ids = [d["id"] for d, _ in ranked]
+        # heavy 出现 "博士" 多次 → BM25 TF 项给高分；brief 只出现 1 次
+        # → 同样的 IDF 但低 TF。heavy 必须排第一，分数也得明显更高。
+        self.assertEqual(ids[0], "heavy")
+        heavy_score = next(s for d, s in ranked if d["id"] == "heavy")
+        brief_score = next(s for d, s in ranked if d["id"] == "brief")
+        self.assertGreater(heavy_score, brief_score * 1.3,
+                           f"TF 应放大 heavy 优势：heavy={heavy_score:.3f} brief={brief_score:.3f}")
+
 
 # ── RRF fusion ────────────────────────────────────────────────────────
 

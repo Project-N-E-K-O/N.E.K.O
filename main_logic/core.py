@@ -2781,7 +2781,12 @@ class LLMSessionManager:
         for i, r in enumerate(results, start=1):
             tier = r.get("tier") or "?"
             entity = r.get("entity") or "-"
-            text = (r.get("text") or "").strip()
+            # str() coerce 防 malformed memory entry：facts/reflections.json
+            # 走 JSON 序列化往返，理论上 text 应是 str，但 manual edit /
+            # 老格式残留 / 迁移 bug 都可能让 text 变 list / int 等 truthy
+            # non-string。codex review #2: 不 coerce → ``.strip()`` crash
+            # → 整条 tool call 翻 is_error，模型反而不能正常往下走。
+            text = str(r.get("text") or "").strip()
             created_at = (r.get("created_at") or "")[:10]  # YYYY-MM-DD
             date_suffix = f"  ({created_at})" if created_at else ""
             lines.append(f"{i}. [{tier}/{entity}] {text}{date_suffix}")

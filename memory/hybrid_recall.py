@@ -89,30 +89,71 @@ _BM25_B = 0.75
 
 
 def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
-    """Wrap ``memory.persona._extract_keywords``. Returns list (not set)
-    so BM25 can count term frequency per doc.
+    """BM25-friendly tokenize：与 ``memory.persona._extract_keywords``
+    **共享同款 _SPLIT_RE + CJK n-gram + Latin 词切分规则**，但 *保留
+    multiplicity*（list with duplicates，不去重）。
 
-    stop_names: strip 主人/猫娘 etc. from text before tokenize, so the
-    omnipresent entity names don't pollute BM25 with high-DF noise.
+    为啥不复用 ``_extract_keywords``：那个返回 ``set[str]``，单 doc 内
+    重复词被 dedupe → BM25 的 TF 信号死掉（"博士"出现 5 次和 1 次得分
+    一样，BM25 退化成 BM1）。``_extract_keywords`` 的 set 语义是给
+    ``_is_mentioned`` / ``anti_repeat`` 这两个用例用的（"是否出现过"，不
+    care 出现几次），跟检索 BM25 的目标不一样。所以本模块本地实现一份
+    list-语义的 tokenize，分词规则严格对齐 persona 那份（共用 _SPLIT_RE
+    + 同样的 CJK 阈值 + 2/3-gram + Latin 整段切），未来 persona 那边改
+    分词规则要同步过来。
+
+    Codex review #1 (commit fd2b75fc4): 之前 ``Counter`` 优化其实没生效
+    —— set 输入下每个 key 计数都是 1。这版让 multiplicity 真的传到 BM25。
+
+    stop_names: strip 主人/猫娘 等 from text before tokenize，避免高频
+    实体名污染 BM25 IDF。
     """
+    # Lazy import: 跟着 _extract_keywords 一起借 _SPLIT_RE 和 strip_stop_names，
+    # 不要硬依赖 import-time —— persona 在某些 entrypoint（memory-only test）
+    # 可能没加载。
     try:
-        from memory.persona import _extract_keywords
-        return list(_extract_keywords(text or "", stop_names=stop_names or []))
+        from memory.persona import _SPLIT_RE, strip_stop_names
     except Exception as exc:
-        # Defensive fallback — memory.persona depends on config_manager and
-        # could fail at import time in stripped test contexts. Degrade to
-        # whitespace split so BM25 still produces *something* for Latin
-        # text. CJK text in this fallback collapses to whole-segment
-        # tokens (poor recall) — but the alternative is a hard crash.
-        # str() coerce defends against malformed memory entries where
-        # ``text`` slipped through as int / list / etc. (codex review):
-        # this is already the unhappy path — second crash on ``.split()``
-        # would defeat the whole try/except.
         logger.warning(
             "[hybrid_recall] tokenize fallback to whitespace split: %s",
             exc,
         )
+        # str() coerce 防 malformed entry 里 text 是 int / list 等 truthy
+        # non-string（codex review #1 之前那条）。
         return [t for t in str(text or "").split() if len(t) >= 2]
+
+    raw_text = text or ""
+    if stop_names:
+        try:
+            raw_text = strip_stop_names(raw_text, stop_names)
+        except Exception:
+            # strip_stop_names 内部就是字符串替换，理论上不会挂；保险起见
+            # 不挂 BM25 主流程。
+            pass
+
+    out: list[str] = []
+    for seg in _SPLIT_RE.split(raw_text):
+        seg = seg.strip()
+        if not seg:
+            continue
+        # CJK 占比阈值 = 与 persona._extract_keywords 完全一致（汉字 +
+        # 假名 + 谚文 = U+4E00-9FFF + U+3040-30FF + U+AC00-D7AF）。
+        cjk_count = sum(
+            1 for ch in seg
+            if '一' <= ch <= '鿿'
+            or '぀' <= ch <= 'ヿ'
+            or '가' <= ch <= '힯'
+        )
+        if cjk_count > len(seg) // 2:
+            # CJK 段：2-gram + 3-gram 滑窗，**append 不去重**，留 TF。
+            for n in (2, 3):
+                for i in range(len(seg) - n + 1):
+                    out.append(seg[i:i + n])
+        else:
+            # Latin 段：整段做一个 token（len >= 2 才要），同样 append。
+            if len(seg) >= 2:
+                out.append(seg)
+    return out
 
 
 # ── BM25 retrieval ────────────────────────────────────────────────────
