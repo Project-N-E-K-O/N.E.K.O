@@ -657,6 +657,8 @@ def test_build_backends_prefers_electron_on_linux_wayland_auto_modes(
 
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.setattr(
         electron_capture,
         "ElectronCaptureBackend",
@@ -666,6 +668,31 @@ def test_build_backends_prefers_electron_on_linux_wayland_auto_modes(
     backend = Win32CaptureBackend(selection=selection)
 
     assert [str(getattr(b, "kind", "")) for b in backend._backends] == ["electron"]
+
+
+def test_build_backends_keeps_x11_chain_when_xwayland_display_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import electron_capture
+    from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(
+        electron_capture,
+        "ElectronCaptureBackend",
+        _StubElectronCaptureBackend,
+    )
+
+    backend = Win32CaptureBackend(selection="auto")
+
+    assert [str(getattr(b, "kind", "")) for b in backend._backends] == [
+        "mss",
+        "pyautogui",
+        "electron",
+    ]
 
 
 def test_build_backends_keeps_electron_tail_fallback_on_linux_x11(

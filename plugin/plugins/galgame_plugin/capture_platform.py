@@ -32,9 +32,9 @@ def is_linux_wayland_session() -> bool:
     if not is_linux():
         return False
     session_type = str(os.environ.get("XDG_SESSION_TYPE") or "").strip().lower()
-    if session_type == "wayland":
-        return True
-    return bool(os.environ.get("WAYLAND_DISPLAY")) and not bool(os.environ.get("DISPLAY"))
+    has_wayland = session_type == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+    has_x11_display = bool(os.environ.get("DISPLAY"))
+    return has_wayland and not has_x11_display
 
 
 def platform_name() -> str:

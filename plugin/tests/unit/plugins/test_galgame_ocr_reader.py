@@ -2217,6 +2217,31 @@ def test_smart_capture_backend_non_windows_background_fails_without_window_backe
         backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
 
 
+def test_smart_capture_backend_macos_background_allows_pixel_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PixelBackend:
+        kind = "mss"
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):
+            return "mss-frame"
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [_PixelBackend()]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "mss-frame"
+    assert backend.last_backend_kind == "mss"
+
+
 def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

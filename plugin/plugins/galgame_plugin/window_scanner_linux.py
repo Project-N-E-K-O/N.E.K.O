@@ -236,17 +236,17 @@ def _linux_process_name_from_pid(pid: int) -> str:
     if pid <= 0:
         return ""
     try:
-        with open(f"/proc/{pid}/comm", "r", encoding="utf-8") as fh:
-            name = fh.read().strip()
-            if name:
-                return name
-    except OSError:
-        pass
-    try:
         exe_path = os.readlink(f"/proc/{pid}/exe")
         name = os.path.basename(exe_path).strip()
         if name:
             return name
+    except OSError:
+        pass
+    try:
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8") as fh:
+            name = fh.read().strip()
+            if name:
+                return name
     except OSError:
         pass
     return ""

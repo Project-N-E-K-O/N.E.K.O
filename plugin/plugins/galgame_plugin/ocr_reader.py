@@ -3333,9 +3333,10 @@ class Win32CaptureBackend:
         return _filter([self._dxcam_backend, self._mss_backend, self._pyautogui_backend])
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
-        from .capture_platform import is_windows  # noqa: PLC0415
+        from .capture_platform import is_linux, is_windows  # noqa: PLC0415
 
         is_windows_host = is_windows()
+        is_linux_host = is_linux()
         window_level_backends = [
             backend
             for backend in self._backends
@@ -3370,6 +3371,8 @@ class Win32CaptureBackend:
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if not is_windows_host:
+            if not is_linux_host:
+                return window_level_backends + pixel_backends
             if bool(getattr(target, "is_foreground", False)):
                 return window_level_backends + pixel_backends
             if window_level_backends:
