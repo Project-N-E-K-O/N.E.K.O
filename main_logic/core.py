@@ -74,6 +74,7 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
     RECALL_MEMORY_TOOL_NO_RESULT,
+    RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
 
 
@@ -2687,19 +2688,21 @@ class LLMSessionManager:
         self.tool_registry.register(recall_tool, replace=True)
 
     async def _handle_recall_memory_call(self, arguments: dict) -> str:
-        """``recall_memory`` 的占位 handler —— 总是返回"没有找到相关记忆"。
+        """``recall_memory`` 的 handler —— HTTP 调 memory_server 的
+        ``/query_memory/{lanlan_name}`` 跑混合 BM25 + cosine 召回，把
+        结果格式化成 markdown bullets 返回给模型。
 
-        机制验证用：让模型决定何时调用、我们能拿到 arguments、把固定
-        字符串回喂模型。日志切两层：
+        日志切两层（隐私）：
+        - **INFO**: 只报 name / mode / session / lang / 命中条数 / 用时 ms。
+          *不带 query 原文 / 不带召回 text 原文*。
+          INFO 持久化到 ``D:/Documents/N.E.K.O/logs/N.E.K.O_Main_<date>.log``，
+          可能被打包外送，记忆原文（含用户隐私）不该出现在这里。
+        - **DEBUG**: 才落 query 原文 / 召回 id 列表 / 完整 args。
+          DEBUG 默认 console 不显示，只落项目目录 _debug_ 文件，不外送。
 
-        - **INFO**: 只报"哪个猫娘的哪种 session、什么语言 上调了 recall_memory"，
-          *不带任何 query / args 原文*。INFO 持久化到 ``D:/Documents/N.E.K.O/
-          logs/N.E.K.O_Main_<date>.log``，可能被打包外送，原文留在这里有
-          隐私 / 上下文泄露顾虑（query 文本就是模型从对话里抽的，含用户
-          个人信息的概率高）。
-        - **DEBUG**: 才落 query / 完整 args，给本地排查模型在什么场景去 recall
-          提供取数依据；DEBUG 默认 console 不显示，只落到项目目录的
-          ``logs/N.E.K.O_Main_debug_*.log``，不外送。
+        返回失败兜底：HTTP 任何阶段挂掉 → 当作空结果返回 "没有找到相关记忆"，
+        让模型继续走对话流。不抛异常给上游 wire，否则一次 tool call 失败
+        会让模型整轮卡住。
         """
         _lang = normalize_language_code(self.user_language, format='short') or 'en'
         args_dict = arguments if isinstance(arguments, dict) else {}
@@ -2707,24 +2710,74 @@ class LLMSessionManager:
         raw_query = args_dict.get("query")
         if isinstance(raw_query, str):
             query = raw_query.strip()
-        # ``input_mode`` 是 manager 级别状态（start_session 时定型），handler
-        # 拿到时一定是当前 session 的真实模式；type(self.session) 兜一层
-        # 防御性日志，万一 input_mode 没设也能从 client 类型反推。
         session_kind = type(self.session).__name__ if self.session is not None else "no-session"
+
+        # 空 query 早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次 HTTP。
+        if not query:
+            logger.info(
+                "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
+                "→ empty query, no fetch",
+                self.lanlan_name, self.input_mode, session_kind, _lang,
+            )
+            logger.debug("[recall_memory] empty-query args=%s", args_dict)
+            return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
+
+        # POST 到 memory_server
+        result_payload: dict = {}
+        try:
+            from utils.internal_http_client import get_internal_http_client
+            client = get_internal_http_client()
+            resp = await client.post(
+                f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
+                json={"query": query},
+                timeout=5.0,
+            )
+            if not resp.is_success:
+                logger.warning(
+                    "[recall_memory] memory_server returned %s: %s",
+                    resp.status_code, resp.text[:200],
+                )
+            else:
+                result_payload = resp.json()
+        except Exception as exc:
+            logger.warning(
+                "[recall_memory] memory_server call failed (%s: %s); "
+                "returning empty result",
+                type(exc).__name__, exc,
+            )
+
+        results = result_payload.get("results") if isinstance(result_payload, dict) else None
+        results = results if isinstance(results, list) else []
+        elapsed_ms = result_payload.get("elapsed_ms", 0) if isinstance(result_payload, dict) else 0
+
         logger.info(
-            "[recall_memory] called by name=%s mode=%s session=%s lang=%s → pseudo empty result",
-            self.lanlan_name,
-            self.input_mode,
-            session_kind,
-            _lang,
+            "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
+            "→ hits=%d elapsed=%.0fms",
+            self.lanlan_name, self.input_mode, session_kind, _lang,
+            len(results), elapsed_ms,
         )
-        # query 原文降到 DEBUG —— 含用户上下文，不进 INFO 持久化日志。
         logger.debug(
-            "[recall_memory] args=%s query=%r",
-            args_dict,
-            query,
+            "[recall_memory] args=%s query=%r ids=%s",
+            args_dict, query,
+            [r.get("id") for r in results],
         )
-        return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
+
+        if not results:
+            return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
+
+        # 渲染：首行 i18n 总览 + 每条 markdown bullet
+        # 格式: ``1. [tier/entity] text  (created_at)``
+        # tier/entity 是英文 enum 不翻译；text 是原始记忆原文不翻译
+        # （按用户拍板）。created_at 取首 10 位日期部分省噪音。
+        lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
+        for i, r in enumerate(results, start=1):
+            tier = r.get("tier") or "?"
+            entity = r.get("entity") or "-"
+            text = (r.get("text") or "").strip()
+            created_at = (r.get("created_at") or "")[:10]  # YYYY-MM-DD
+            date_suffix = f"  ({created_at})" if created_at else ""
+            lines.append(f"{i}. [{tier}/{entity}] {text}{date_suffix}")
+        return "\n".join(lines)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """把 registry 当前状态同步给所有活跃的 client。

@@ -2712,3 +2712,16 @@ RECALL_MEMORY_TOOL_NO_RESULT = {
     "es": "No se encontró ninguna memoria relevante.",
     "pt": "Nenhuma memória relevante encontrada.",
 }
+
+# 召回到 N 条记忆时的总览首句；后面接渲染条目，每条按
+# ``[tier/entity] text  (created_at)`` 格式（tier/entity 是英文 enum，
+# 不翻译；text 是原始记忆内容，按用户拍板"不翻译"）。
+RECALL_MEMORY_TOOL_FOUND_HEADER = {
+    "zh": "找到 {n} 条相关记忆：",
+    "en": "Found {n} relevant memories:",
+    "ja": "関連する記憶を {n} 件見つけました：",
+    "ko": "관련된 기억 {n} 건을 찾았습니다:",
+    "ru": "Найдено {n} релевантных воспоминаний:",
+    "es": "Se encontraron {n} memorias relevantes:",
+    "pt": "Foram encontradas {n} memórias relevantes:",
+}
