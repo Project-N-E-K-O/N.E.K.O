@@ -1,7 +1,7 @@
 [plugin]
 id = "game_agent_minecraft"
 name = "Minecraft 游戏代理"
-description = "桥接本地 Minecraft Agent (WebSocket)，让 AI 通过 minecraft_task 工具下达指令并实时观看游戏画面进行解说。"
+description = "桥接本地 Minecraft Agent，可查询游戏状态、查询库存、热更配置。"
 short_description = "Minecraft autonomous gameplay with voice commentary."
 keywords = ["minecraft", "game-agent", "autonomous"]
 version = "0.1.0"
