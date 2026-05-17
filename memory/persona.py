@@ -1888,21 +1888,35 @@ class PersonaManager:
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
                         continue
+                    # 先过滤 valid，再按实际 split_count 分摊 evidence
+                    valid_produce = [
+                        p for p in produce
+                        if isinstance(p, dict) and str(p.get('text', '')).strip()
+                    ]
+                    if len(valid_produce) < 2:
+                        continue
+                    split_n = len(valid_produce)
+                    # 继承 evidence（Codex P1 #1392）：可分配的 counters 按
+                    # 1/N 等分（保留累积 evidence，不让 split 静默清零评分/
+                    # 衰减信号）；天数 / 时间戳 / 溯源直接继承 src。
+                    src_rein = float(src.get('reinforcement', 0) or 0)
+                    src_disp = float(src.get('disputation', 0) or 0)
+                    src_user_cnt = int(src.get('user_fact_reinforce_count', 0) or 0)
                     new_entries = []
-                    for p in produce:
-                        if not isinstance(p, dict):
-                            continue
+                    for p in valid_produce:
                         text = str(p.get('text', '')).strip()
-                        if not text:
-                            continue
                         ne = self._normalize_entry(text)
-                        # 必须给唯一 id —— 否则 section_by_id 折叠所有
-                        # 空 id 条目，cluster_hash skip / 归档都会坏掉
                         ne['id'] = self._refine_persona_id(text)
                         ne['source'] = src.get('source', 'unknown')
+                        ne['source_id'] = src.get('source_id')
+                        ne['reinforcement'] = src_rein / split_n
+                        ne['disputation'] = src_disp / split_n
+                        ne['user_fact_reinforce_count'] = src_user_cnt // split_n
+                        ne['rein_last_signal_at'] = src.get('rein_last_signal_at')
+                        ne['disp_last_signal_at'] = src.get('disp_last_signal_at')
+                        ne['sub_zero_days'] = int(src.get('sub_zero_days', 0) or 0)
+                        ne['sub_zero_last_increment_date'] = src.get('sub_zero_last_increment_date')
                         new_entries.append(ne)
-                    if len(new_entries) < 2:
-                        continue
                     produced.extend(new_entries)
                     consumed.add(src_id)
                     applied += 1

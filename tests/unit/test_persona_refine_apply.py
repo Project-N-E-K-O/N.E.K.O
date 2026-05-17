@@ -102,6 +102,49 @@ async def test_split_consumes_source_and_produces_multiple(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_split_carries_forward_evidence_proportionally(tmp_path):
+    """Codex P1 修复：split 不能默默清零 evidence。可分配 counters 按
+    1/N 分摊，时间戳/天数/溯源直接继承。"""
+    pm = _install(str(tmp_path))
+    src = await _seed(
+        pm, "小天", "主人喜欢咖啡且早起",
+        id='p_mixed',
+        reinforcement=6.0,
+        disputation=2.0,
+        user_fact_reinforce_count=4,
+        sub_zero_days=3,
+        rein_last_signal_at='2026-04-01T10:00:00',
+        disp_last_signal_at='2026-04-02T10:00:00',
+        sub_zero_last_increment_date='2026-04-03',
+    )
+    cluster = [_annotate(src)]
+    actions = [{
+        'action': 'split',
+        'source_id': 'p_mixed',
+        'produce': [
+            {'text': '主人喜欢咖啡'},
+            {'text': '主人早起'},
+        ],
+    }]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h_split_ev')
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    section = pm._get_section_facts(persona, "master")
+    produced = [e for e in section if e.get('text') in ('主人喜欢咖啡', '主人早起')]
+    assert len(produced) == 2
+    for e in produced:
+        # 等分：reinforcement 6/2=3.0, disputation 2/2=1.0, user_count 4//2=2
+        assert e['reinforcement'] == pytest.approx(3.0)
+        assert e['disputation'] == pytest.approx(1.0)
+        assert e['user_fact_reinforce_count'] == 2
+        # 时间戳 / 天数 / 溯源直接继承（不分摊）
+        assert e['rein_last_signal_at'] == '2026-04-01T10:00:00'
+        assert e['disp_last_signal_at'] == '2026-04-02T10:00:00'
+        assert e['sub_zero_days'] == 3
+        assert e['sub_zero_last_increment_date'] == '2026-04-03'
+
+
+@pytest.mark.asyncio
 async def test_modify_keeps_id_appends_version_history(tmp_path):
     pm = _install(str(tmp_path))
     src = await _seed(pm, "小天", "主人住在东京", id='p_loc_1')
