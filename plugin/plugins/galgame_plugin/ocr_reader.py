@@ -2467,14 +2467,18 @@ def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int
     window cannot be identified — the capture backend then does a
     full-screen grab and the caller crops by profile ratios.
     """
+    fallback_rect = (0, 0, int(target.width), int(target.height))
     try:
         import Quartz  # type: ignore[import-not-found]
     except ImportError:
-        return (0, 0, int(target.width), int(target.height))
+        return fallback_rect
 
     window_list = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
     )
+    if not window_list:
+        return fallback_rect
+
     target_window_id = max(0, int(getattr(target, "hwnd", 0) or 0))
     target_pid = max(0, int(getattr(target, "pid", 0) or 0))
     target_title = _normalize_window_title(getattr(target, "title", "") or "")
@@ -2513,7 +2517,7 @@ def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int
         if rect is not None:
             return rect
 
-    return (0, 0, int(target.width), int(target.height))
+    return fallback_rect
 
 
 def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int, int]:

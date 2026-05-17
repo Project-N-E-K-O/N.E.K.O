@@ -133,6 +133,24 @@ def test_macos_window_scanner_returns_list() -> None:
         assert isinstance(window, DetectedGameWindow)
 
 
+def test_macos_window_scanner_returns_empty_when_quartz_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin.window_scanner_macos import (
+        _scan_windows_macos,
+    )
+
+    fake_quartz = SimpleNamespace(
+        kCGWindowListOptionOnScreenOnly=1,
+        kCGWindowListExcludeDesktopElements=2,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_args: None,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    assert _scan_windows_macos() == []
+
+
 def test_macos_target_window_rect_prefers_window_number_over_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -165,6 +183,22 @@ def test_macos_target_window_rect_prefers_window_number_over_pid(
     target = DetectedGameWindow(hwnd=22, title="Game", pid=123, width=800, height=600)
 
     assert ocr_reader._target_window_rect_macos(target) == (100, 200, 900, 800)
+
+
+def test_macos_target_window_rect_falls_back_when_quartz_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import ocr_reader
+
+    fake_quartz = SimpleNamespace(
+        kCGWindowListOptionOnScreenOnly=1,
+        kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda *_args: None,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+    target = DetectedGameWindow(hwnd=22, title="Game", pid=123, width=800, height=600)
+
+    assert ocr_reader._target_window_rect_macos(target) == (0, 0, 800, 600)
 
 
 def test_macos_target_window_rect_falls_back_to_pid_and_title(

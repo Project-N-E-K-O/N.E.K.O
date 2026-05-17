@@ -35,6 +35,8 @@ def _scan_windows_macos() -> list["DetectedGameWindow"]:
         | Quartz.kCGWindowListExcludeDesktopElements,
         Quartz.kCGNullWindowID,
     )
+    if not window_list:
+        return []
 
     results: list[DetectedGameWindow] = []
     for window in window_list:
