@@ -117,7 +117,7 @@ def mark_capture_client(lanlan_name: str, websocket: Any, payload: dict[str, Any
         payload = {}
 
     if not _coerce_bool(payload.get("available")):
-        unmark_capture_client(lanlan_name)
+        unmark_capture_client(lanlan_name, expected_websocket=websocket)
         return
 
     existing = _clients.get(lanlan_name)
@@ -125,19 +125,30 @@ def mark_capture_client(lanlan_name: str, websocket: Any, payload: dict[str, Any
         # different socket -- old registration is dead.
         _drop_client_pendings(lanlan_name, reason="was replaced by new renderer")
 
+    registered_at = time.time()
+    if existing is not None:
+        registered_at = max(registered_at, existing.registered_at + 1e-6)
+
     _clients[lanlan_name] = _CaptureClient(
         lanlan_name=lanlan_name,
         websocket=websocket,
         capabilities=_build_capabilities(payload),
-        registered_at=time.time(),
+        registered_at=registered_at,
     )
     _pending_by_client.setdefault(lanlan_name, {})
     logger.info("[capture_bridge] renderer registered: lanlan_name=%s", lanlan_name)
 
 
-def unmark_capture_client(lanlan_name: str) -> None:
+def unmark_capture_client(lanlan_name: str, *, expected_websocket: Any | None = None) -> None:
     """Unregister an Electron renderer and resolve its pending futures."""
     if not isinstance(lanlan_name, str) or not lanlan_name:
+        return
+    existing = _clients.get(lanlan_name)
+    if (
+        expected_websocket is not None
+        and existing is not None
+        and existing.websocket is not expected_websocket
+    ):
         return
     had_client = _clients.pop(lanlan_name, None) is not None
     _drop_client_pendings(lanlan_name, reason="disconnected")
@@ -147,7 +158,7 @@ def unmark_capture_client(lanlan_name: str) -> None:
 
 def has_capture_client() -> bool:
     """True iff at least one Electron renderer is registered and ready."""
-    return any(client is not None for client in _clients.values())
+    return bool(_clients)
 
 
 def _pick_client() -> _CaptureClient | None:

@@ -14,6 +14,7 @@ Covers the contracts from
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -73,6 +74,32 @@ def test_unmark_clears_registry():
 
 
 @pytest.mark.unit
+def test_unmark_with_stale_websocket_does_not_clear_new_registration():
+    old_sock = _Sock()
+    new_sock = _Sock()
+    capture_bridge.mark_capture_client("neko", old_sock, _payload(True))
+    capture_bridge.mark_capture_client("neko", new_sock, _payload(True))
+
+    capture_bridge.unmark_capture_client("neko", expected_websocket=old_sock)
+
+    assert capture_bridge.has_capture_client() is True
+    assert capture_bridge._clients["neko"].websocket is new_sock
+
+
+@pytest.mark.unit
+def test_mark_unavailable_from_stale_websocket_does_not_clear_new_registration():
+    old_sock = _Sock()
+    new_sock = _Sock()
+    capture_bridge.mark_capture_client("neko", old_sock, _payload(True))
+    capture_bridge.mark_capture_client("neko", new_sock, _payload(True))
+
+    capture_bridge.mark_capture_client("neko", old_sock, _payload(False))
+
+    assert capture_bridge.has_capture_client() is True
+    assert capture_bridge._clients["neko"].websocket is new_sock
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_unmark_resolves_pending_futures_with_error():
     sock = _Sock()
@@ -109,12 +136,15 @@ async def test_semaphore_serialises_concurrent_requests():
         )
 
     tasks = [asyncio.create_task(_one("a")), asyncio.create_task(_one("b"))]
+    started_at = time.monotonic()
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    elapsed = time.monotonic() - started_at
     # Both expected to time out (no renderer replies), but they must not run
     # concurrently — sock.sent should only contain 1 payload at any given time.
     # The total number of sends equals the number of tasks that managed to
     # get past the semaphore before being cancelled by timeout.
     assert len(sock.sent) == 2
+    assert elapsed >= 0.35
     assert all(isinstance(r, capture_bridge.CaptureBridgeError) for r in results)
 
 
@@ -137,10 +167,13 @@ def test_duplicate_mark_refreshes_timestamp():
     sock = _Sock()
     capture_bridge.mark_capture_client("neko", sock, _payload(True))
     snap1 = capture_bridge._snapshot_for_tests()
+    previous_registered_at = capture_bridge._clients["neko"].registered_at
     capture_bridge.mark_capture_client("neko", sock, _payload(True))
     snap2 = capture_bridge._snapshot_for_tests()
+    current_registered_at = capture_bridge._clients["neko"].registered_at
     assert snap1["clients"] == ["neko"]
     assert snap2["clients"] == ["neko"]
+    assert current_registered_at > previous_registered_at
     # Internal registered_at must have advanced. Re-fetch via private field
     # since snapshot doesn't expose timestamp.
     client = capture_bridge._clients["neko"]

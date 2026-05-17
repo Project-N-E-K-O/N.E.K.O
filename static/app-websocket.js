@@ -1184,15 +1184,17 @@
             try {
                 var dc = window.electronDesktopCapturer;
                 var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
-                S.socket.send(JSON.stringify({
-                    action: 'capture_bridge_status',
-                    available: available,
-                    capabilities: {
-                        getSources: !!(dc && dc.getSources),
-                        captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
-                        captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
-                    }
-                }));
+                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'capture_bridge_status',
+                        available: available,
+                        capabilities: {
+                            getSources: !!(dc && dc.getSources),
+                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                        }
+                    }));
+                }
             } catch (_capErr) {
                 // capture bridge is best-effort; never block the rest of onopen
             }
@@ -2093,11 +2095,27 @@
                 } else if (response.type === 'capture_bridge_request') {
                     (async function () {
                         var requestId = response.request_id || '';
+                        var responseSocket = _thisSocket;
                         var sendResp = function (payload) {
-                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
                             payload.action = 'capture_bridge_response';
                             payload.request_id = requestId;
-                            S.socket.send(JSON.stringify(payload));
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        var sourcePidMatches = function (source, pidValue) {
+                            if (!source || !pidValue) return false;
+                            var expected = String(pidValue);
+                            var directPid = source.pid || source.processId || source.ownerPid;
+                            if (directPid !== undefined && directPid !== null && String(directPid) === expected) {
+                                return true;
+                            }
+                            var sourceId = String(source.id || '');
+                            if (sourceId === expected) return true;
+                            var tokens = sourceId.split(/[^0-9A-Za-z]+/);
+                            for (var idx = 0; idx < tokens.length; idx++) {
+                                if (tokens[idx] === expected) return true;
+                            }
+                            return false;
                         };
                         try {
                             var dc = window.electronDesktopCapturer;
@@ -2106,7 +2124,10 @@
                                 return;
                             }
                             var targetId = typeof response.target_id === 'string'
-                                ? response.target_id : '';
+                                ? response.target_id.trim() : '';
+                            if (targetId === '0' || targetId === '<target_id>') {
+                                targetId = '';
+                            }
                             var pid = typeof response.pid === 'number' ? response.pid : 0;
                             var title = typeof response.title === 'string' ? response.title : '';
                             var pidStr = pid > 0 ? String(pid) : '';
@@ -2125,7 +2146,7 @@
                                 sendResp({ success: false, error: 'source_not_found' });
                                 return;
                             }
-                            // Match priority: target_id substring > pid substring > title substring.
+                            // Match priority: target_id substring > exact pid/token > title substring.
                             // Never blindly pick the first window.
                             var matched = null;
                             if (targetId) {
@@ -2138,7 +2159,7 @@
                             }
                             if (!matched && pidStr) {
                                 for (var j = 0; j < sources.length; j++) {
-                                    if (sources[j].id && sources[j].id.indexOf(pidStr) !== -1) {
+                                    if (sourcePidMatches(sources[j], pidStr)) {
                                         matched = sources[j];
                                         break;
                                     }

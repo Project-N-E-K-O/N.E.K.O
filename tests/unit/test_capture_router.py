@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -29,6 +30,7 @@ from main_routers import capture_bridge, capture_router as capture_router_module
 
 CAPTURE_HEALTH = "/api/capture/health"
 CAPTURE_SHOT = "/api/capture/screenshot"
+APP_WEBSOCKET_JS = Path(__file__).resolve().parents[2] / "static" / "app-websocket.js"
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +53,18 @@ def _build_client() -> TestClient:
     app = FastAPI()
     app.include_router(capture_router_module.router)
     return TestClient(app)
+
+
+def test_capture_bridge_renderer_ignores_placeholder_target_id_before_source_match():
+    source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
+    placeholder_guard = (
+        "if (targetId === '0' || targetId === '<target_id>') {\n"
+        "                                targetId = '';"
+    )
+    guard_index = source.index(placeholder_guard)
+    match_index = source.index("if (targetId) {", guard_index)
+
+    assert guard_index < match_index
 
 
 class _DummyWebSocket:

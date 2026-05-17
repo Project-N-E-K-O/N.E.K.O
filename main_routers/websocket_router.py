@@ -320,7 +320,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 让 /api/capture/health 立即返回 503。
         try:
             from main_routers.capture_bridge import unmark_capture_client
-            unmark_capture_client(lanlan_name)
+            unmark_capture_client(lanlan_name, expected_websocket=websocket)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[capture_bridge] unmark on disconnect failed: %s", exc)
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
