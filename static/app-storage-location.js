@@ -60,6 +60,7 @@
         banner: null,
         recommendedPath: null,
         currentPath: null,
+        recommendedButton: null,
         customInput: null,
         pickFolderButton: null,
         useOtherButton: null,
@@ -674,6 +675,12 @@
             state.recommendedPath.textContent = recommendedRoot;
             state.recommendedPath.title = recommendedRoot;
         }
+        if (state.recommendedButton) {
+            var recommendedDisabled = !String(recommendedRoot || '').trim();
+            state.recommendedButton.dataset.forceDisabled = recommendedDisabled ? '1' : '';
+            state.recommendedButton.disabled = state.submitting || recommendedDisabled;
+            state.recommendedButton.title = recommendedDisabled ? '' : recommendedRoot;
+        }
 
         if (state.bootstrap.migration_pending) {
             state.banner.hidden = false;
@@ -823,7 +830,7 @@
         }
 
         try {
-            var result = await host.openPath(normalizedPath);
+            var result = await host.openPath({ path: normalizedPath });
             if (result && result.ok === false) {
                 throw new Error(result.error || 'openPath failed');
             }
@@ -1687,7 +1694,12 @@
 
     function continueWithRecommendedPath() {
         if (!state.bootstrap) return;
-        submitSelection(state.bootstrap.recommended_root || '', 'recommended');
+        var recommendedRoot = String(state.bootstrap.recommended_root || '').trim();
+        if (!recommendedRoot) {
+            updateSelectionSummary();
+            return;
+        }
+        submitSelection(recommendedRoot, 'recommended');
     }
 
     function useOtherPath() {
@@ -1767,6 +1779,7 @@
         );
         recommendedButton.type = 'button';
         recommendedButton.addEventListener('click', continueWithRecommendedPath);
+        state.recommendedButton = recommendedButton;
         actions.appendChild(recommendedButton);
 
         var currentButton = registerActionButton(
@@ -2078,6 +2091,7 @@
         state.banner = null;
         state.recommendedPath = null;
         state.currentPath = null;
+        state.recommendedButton = null;
         state.customInput = null;
         state.pickFolderButton = null;
         state.useOtherButton = null;
