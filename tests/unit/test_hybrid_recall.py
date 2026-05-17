@@ -301,6 +301,32 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         res = await self._run("完全不相关的 query", facts, [])
         self.assertEqual(res["results"], [])
 
+    async def test_malformed_entries_dont_kill_whole_query(self):
+        """Regression for codex review on commit 47d0d191f: 单条 malformed
+        entry (text 是 list / score 是 string 等) 不该带挂整个 hybrid_recall
+        → 应只 skip 那一行，其余好的 entry 继续返回。
+
+        修在 ``MemoryRecallReranker._hard_filter`` 加 try/except per-entry。
+        """
+        facts = [
+            # 正常 entry
+            {"id": "good_1", "text": "博士最喜欢的游戏是 The Witness", "score": 1.0},
+            # 坏 entry: text 是 list（manual edit / 老格式残留）
+            {"id": "bad_text", "text": ["this", "is", "wrong"], "score": 1.0},
+            # 坏 entry: score 是 string（无法和 0 比较）
+            {"id": "bad_score", "text": "博士的游戏", "score": "high"},
+            # 正常 entry
+            {"id": "good_2", "text": "博士最爱的游戏 The Witness", "score": 1.0},
+        ]
+        # 不该抛任何异常，good_1 / good_2 都应该被召回
+        res = await self._run("博士 游戏", facts, [])
+        ids = [r["id"] for r in res["results"]]
+        self.assertIn("good_1", ids)
+        self.assertIn("good_2", ids)
+        # 坏 entry 自然不出现
+        self.assertNotIn("bad_text", ids)
+        self.assertNotIn("bad_score", ids)
+
     async def test_reflection_tagged_as_reflection_tier(self):
         reflections = [
             {"id": "r1", "text": "博士对长尾敏感", "score": 1.0, "status": "confirmed"},
