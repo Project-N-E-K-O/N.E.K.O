@@ -2194,7 +2194,7 @@ def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
     assert backend.last_backend_detail == "selected"
 
 
-def test_smart_capture_backend_non_windows_background_fails_without_window_backend(
+def test_smart_capture_backend_linux_wayland_background_fails_without_window_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _PixelBackend:
@@ -2207,6 +2207,8 @@ def test_smart_capture_backend_non_windows_background_fails_without_window_backe
             raise AssertionError("pixel backend should not capture background target")
 
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.delenv("DISPLAY", raising=False)
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
     backend._backends = [_PixelBackend()]
 
@@ -2215,6 +2217,40 @@ def test_smart_capture_backend_non_windows_background_fails_without_window_backe
 
     with pytest.raises(RuntimeError, match="background_capture_requires_window_backend"):
         backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+
+def test_smart_capture_backend_linux_x11_background_allows_pixel_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool) -> None:
+            self.kind = kind
+            self.available = available
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, target, profile):
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [
+        _Backend("electron", available=False),
+        _Backend("mss", available=True),
+    ]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "mss-frame"
+    assert backend.last_backend_kind == "mss"
+    assert backend.last_backend_detail == "electron_unavailable_fallback"
 
 
 def test_smart_capture_backend_macos_background_allows_pixel_backend(

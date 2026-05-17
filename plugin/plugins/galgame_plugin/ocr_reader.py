@@ -3333,10 +3333,11 @@ class Win32CaptureBackend:
         return _filter([self._dxcam_backend, self._mss_backend, self._pyautogui_backend])
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
-        from .capture_platform import is_linux, is_windows  # noqa: PLC0415
+        from .capture_platform import is_linux, is_linux_wayland_session, is_windows  # noqa: PLC0415
 
         is_windows_host = is_windows()
         is_linux_host = is_linux()
+        is_wayland_host = is_linux_wayland_session() if is_linux_host else False
         window_level_backends = [
             backend
             for backend in self._backends
@@ -3374,6 +3375,8 @@ class Win32CaptureBackend:
             if not is_linux_host:
                 return window_level_backends + pixel_backends
             if bool(getattr(target, "is_foreground", False)):
+                return window_level_backends + pixel_backends
+            if not is_wayland_host:
                 return window_level_backends + pixel_backends
             if window_level_backends:
                 return window_level_backends
