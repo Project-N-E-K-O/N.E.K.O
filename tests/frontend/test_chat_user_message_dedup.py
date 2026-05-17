@@ -193,6 +193,60 @@ def test_react_composer_text_submit_uses_single_stable_user_message(
 
 
 @pytest.mark.frontend
+def test_import_image_without_mime_converts_to_jpeg_attachment(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+
+    attachment_url = mock_page.evaluate(
+        """async () => {
+            const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
+            const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+            const file = new File([bytes], 'tiny-image', { type: '' });
+            await window.appButtons.importImageFileToPendingList(file);
+            const state = window.reactChatWindowHost.getState();
+            return state.composerAttachments[0] && state.composerAttachments[0].url;
+        }"""
+    )
+
+    assert attachment_url.startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.frontend
+def test_import_jpeg_under_limit_keeps_original_data(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2;
+            canvas.height = 2;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#336699';
+            context.fillRect(0, 0, 2, 2);
+            const original = canvas.toDataURL('image/jpeg', 0.92);
+            const b64 = original.split(',')[1];
+            const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+            const file = new File([bytes], 'tiny.jpg', { type: 'image/jpeg' });
+            await window.appButtons.importImageFileToPendingList(file);
+            const state = window.reactChatWindowHost.getState();
+            return {
+                original,
+                imported: state.composerAttachments[0] && state.composerAttachments[0].url
+            };
+        }"""
+    )
+
+    assert result["imported"] == result["original"]
+
+
+@pytest.mark.frontend
 def test_react_composer_text_and_screenshot_submit_keeps_single_combined_message(
     mock_page: Page,
     running_server: str,
@@ -236,8 +290,14 @@ def test_react_composer_text_and_screenshot_submit_keeps_single_combined_message
                 textBlocks: message && Array.isArray(message.blocks)
                     ? message.blocks.filter((block) => block.type === 'text').map((block) => block.text)
                     : [],
+                imageBlocks: message && Array.isArray(message.blocks)
+                    ? message.blocks.filter((block) => block.type === 'image').map((block) => block.url)
+                    : [],
                 composerAttachmentCount: state.composerAttachments.length,
-                userDomRows: document.querySelectorAll('article[data-message-role="user"]').length
+                userDomRows: document.querySelectorAll('article[data-message-role="user"]').length,
+                sentImages: window.__chatTest.sentPayloads
+                    .filter((payload) => payload.action === 'stream_data' && payload.input_type === 'screen')
+                    .map((payload) => payload.data)
             };
         }"""
     )
@@ -247,6 +307,10 @@ def test_react_composer_text_and_screenshot_submit_keeps_single_combined_message
     assert snapshot["author"] == "Alice"
     assert snapshot["blockTypes"] == ["text", "image"]
     assert snapshot["textBlocks"] == ["Look at this"]
+    assert len(snapshot["imageBlocks"]) == 1
+    assert snapshot["imageBlocks"][0].startswith("data:image/jpeg;base64,")
+    assert len(snapshot["sentImages"]) == 1
+    assert snapshot["sentImages"][0].startswith("data:image/jpeg;base64,")
     assert snapshot["composerAttachmentCount"] == 0
     assert snapshot["userDomRows"] == 1
 
