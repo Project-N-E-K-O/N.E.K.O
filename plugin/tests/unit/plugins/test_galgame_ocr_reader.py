@@ -16,6 +16,8 @@ import pytest
 
 from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
+from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
+from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
 from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
 from plugin.plugins.galgame_plugin import install_tasks as galgame_install_tasks
@@ -1841,6 +1843,7 @@ def test_ocr_line_id_collision_suffix_has_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_LINE_ID_MAX_COLLISION_SUFFIX", 2)
+    monkeypatch.setattr(galgame_ocr_bridge_writer, "_OCR_LINE_ID_MAX_COLLISION_SUFFIX", 2)
     writer = OcrReaderBridgeWriter(bridge_root=tmp_path)
     text = "same normalized line"
     normalized = galgame_ocr_reader.normalize_text(text)
@@ -4140,6 +4143,7 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         return runtime, {}
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
+    monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
     cache_key = (
         install_target_dir,
         "onnxruntime",
@@ -4185,6 +4189,7 @@ def test_rapidocr_runtime_cache_reloads_after_idle_timeout(
         return runtimes[len(load_calls) - 1], {}
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
+    monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
     monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: now["value"])
     cache_key = (
         install_target_dir,
@@ -4224,6 +4229,7 @@ def test_rapidocr_runtime_cache_key_normalizes_case_and_whitespace(
         return runtime, {}
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
+    monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
     cache_key = (
         install_target_dir,
         "onnxruntime",
