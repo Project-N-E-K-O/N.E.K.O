@@ -630,14 +630,11 @@ class OmniRealtimeClient:
     
     async def clear_audio_buffer(self):
         """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
-        # TEMP: 临时禁用 input_audio_buffer.clear 发送，测试不主动清空服务端缓存的效果。
-        # 注释覆盖所有调用点（静音自动清 + prompt_ephemeral 注入 abort）。
-        # clear_event = {
-        #     "type": "input_audio_buffer.clear"
-        # }
-        # await self.send_event(clear_event)
-        # logger.debug("📤 已发送 input_audio_buffer.clear 事件")
-        return
+        if self._is_gemini:
+            logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
+            return
+        await self.send_event({"type": "input_audio_buffer.clear"})
+        logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
