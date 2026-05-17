@@ -128,6 +128,15 @@ class GameAgentService:
         # overwrites.
         self._dispatched_history: "collections.OrderedDict[str, str]" = collections.OrderedDict()
         self._dispatched_history_max: int = 32
+        # One-way latch: flips True the first time mc-agent echoes a
+        # task_id on task_finished. Used by ``_on_task_finished`` to
+        # disable the FIFO fallback once we know the agent is modern —
+        # an id-less frame from a modern agent is anomalous, not a
+        # legacy-protocol completion, and FIFO-routing it onto current
+        # pending under overwrite races can resolve task B with task A's
+        # stale payload (Codex review on PR #1395). Stays False forever
+        # for genuinely legacy agents, preserving FIFO compat.
+        self._seen_task_id_echo: bool = False
         # Bounded ring buffer of agent log lines. Without a cap this
         # would grow without bound when the autonomous loop is gated
         # off (e.g. ``skip_system_prompt_if_busy=True`` and a long
@@ -450,6 +459,10 @@ class GameAgentService:
         # would only cause spurious "retroactive completion" cues if a
         # later frame happened to repeat a stale id.
         self._dispatched_history.clear()
+        # The next WS session might land on a different mc-agent version
+        # (legacy or modern). Reset the latch so we re-learn from the
+        # first task_finished frame.
+        self._seen_task_id_echo = False
         self._task_finished = True
         self._log_info("stopped")
 
@@ -1152,6 +1165,11 @@ class GameAgentService:
         echoed_task_id = data.get("task_id")
         if not isinstance(echoed_task_id, str) or not echoed_task_id:
             echoed_task_id = None
+        else:
+            # One-way latch — once we've seen mc-agent echo a task_id,
+            # we know the agent speaks the modern protocol and any
+            # later id-less frame is anomalous, not a legacy fallback.
+            self._seen_task_id_echo = True
         self._log_info("task_finished: status={}, text={}", status, text[:80])
 
         # Outcome of the in-lock classification, drained outside so
@@ -1181,8 +1199,18 @@ class GameAgentService:
                     historical_text = self._dispatched_history.get(echoed_task_id)
                 else:
                     bucket = "unknown"
+            elif pending is not None and not self._seen_task_id_echo:
+                # Legacy agent that has never echoed task_id → FIFO it
+                # onto current pending. We're conservative about flipping
+                # into this branch: once any frame has carried task_id
+                # (``_seen_task_id_echo`` latched True), an id-less
+                # frame is anomalous and routes to ``stray`` instead —
+                # otherwise an out-of-order/stale completion from a
+                # task we already overwrote could silently resolve the
+                # new pending with the old payload.
+                bucket = "fifo"
             else:
-                bucket = "fifo" if pending is not None else "stray"
+                bucket = "stray"
 
             # Only commit the inventory snapshot for frames we accept as
             # belonging to a task we actually dispatched. unknown / stray

@@ -926,6 +926,80 @@ async def test_no_pending_no_id_marks_idle():
     assert service._task_finished is True
 
 
+@pytest.mark.asyncio
+async def test_idless_frame_after_seen_id_drops_to_stray():
+    """Modern mc-agent always echoes task_id. Once we've latched on
+    that fact (``_seen_task_id_echo``), an id-less ``task_finished``
+    is anomalous (e.g. stale completion from a task we already
+    overwrote) and must NOT FIFO-resolve the current pending — doing
+    so would silently misroute the stale payload onto a newer task.
+    """
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # First task: A, completes with task_id → latches _seen_task_id_echo.
+    runner_a = asyncio.create_task(service.execute_minecraft_task(task="A"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("task A never claimed pending slot")
+    a_id = service._pending.task_id
+    await service._on_task_finished({"status": "ok", "task_id": a_id})
+    await asyncio.wait_for(runner_a, timeout=2.0)
+    assert service._seen_task_id_echo is True
+
+    # Second task: B is now in flight (legitimately claimed pending).
+    runner_b = asyncio.create_task(service.execute_minecraft_task(task="B"))
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == "B":
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("task B never claimed pending slot")
+    b_id = service._pending.task_id
+
+    # A stale id-less completion arrives (would have FIFO-resolved B
+    # under the old fallback). With the latch, this routes to stray.
+    await service._on_task_finished({"status": "ok", "text": "stale!"})
+    assert service._pending is not None
+    assert service._pending.task_id == b_id
+    assert not runner_b.done(), \
+        "id-less frame after seen task_id echo must not resolve pending"
+
+    # B's real completion still resolves cleanly.
+    await service._on_task_finished({"status": "ok", "task_id": b_id})
+    out = await asyncio.wait_for(runner_b, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_idless_frame_legacy_agent_still_uses_fifo():
+    """Genuine legacy mc-agent that never echoes task_id keeps the
+    FIFO fallback — without ``_seen_task_id_echo`` ever latching,
+    an id-less ``task_finished`` correctly resolves the current
+    pending so legacy users aren't stuck on a 120s timeout."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner = asyncio.create_task(service.execute_minecraft_task(task="legacy"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("legacy task never claimed pending slot")
+
+    # Legacy agent reply: no task_id. Latch is still False.
+    assert service._seen_task_id_echo is False
+    await service._on_task_finished({"status": "ok", "text": "done"})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
 # ---------------------------------------------------------------------------
 # Cancellation cleanup — when the outer SDK timeout cancels the handler,
 # self._pending must not be left dangling.

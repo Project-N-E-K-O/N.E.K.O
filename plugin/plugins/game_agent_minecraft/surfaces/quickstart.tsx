@@ -48,10 +48,22 @@ const DOWNLOAD_LINKS = {
 // when running in a real browser (e.g. plugin dev preview). The
 // `electronShell` global is exposed by the host preload script (same
 // contract used in static/app-proactive.js for url-card / meme links).
+//
+// Promise.resolve + .catch normalizes both ipcRenderer.invoke (returns
+// Promise<void>) and ipcRenderer.send (returns void) preload shapes
+// and swallows the unhandled rejection that would otherwise fire on
+// IPC failure. We deliberately do NOT fall back to window.open on
+// Electron-path rejection: in Electron, window.open IS the trapped
+// inner webview behavior this helper exists to avoid. Same shape as
+// frontend/react-neko-chat/src/openExternal.ts and
+// frontend/plugin-manager/src/utils/openExternal.ts.
 function openExternalUrl(url: string): void {
   const shell = (window as any).electronShell
   if (shell && typeof shell.openExternal === "function") {
-    shell.openExternal(url)
+    Promise.resolve(shell.openExternal(url)).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.warn("[openExternalUrl] electronShell.openExternal failed:", err)
+    })
     return
   }
   window.open(url, "_blank", "noopener,noreferrer")
