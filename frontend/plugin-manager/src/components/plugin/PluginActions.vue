@@ -34,7 +34,7 @@
     <!-- 普通插件操作按钮 -->
     <el-button-group v-else>
       <el-button
-        v-if="status !== 'running' && status !== 'disabled'"
+        v-if="status !== 'running'"
         type="success"
         :icon="VideoPlay"
         @click="handleStart"
@@ -56,7 +56,6 @@
         :icon="Refresh"
         @click="handleReload"
         :loading="loading"
-        :disabled="status === 'disabled'"
       >
         {{ t('plugins.reload') }}
       </el-button>
@@ -91,7 +90,6 @@ const currentPlugin = computed(() => {
 
 const status = computed(() => currentPlugin.value?.status || 'stopped')
 const isExtension = computed(() => currentPlugin.value?.type === 'extension')
-const isDisabled = computed(() => status.value === 'disabled')
 const uiAction = computed(() => {
   return currentPlugin.value?.list_actions?.find((action) => action.kind === 'ui') || null
 })
@@ -176,10 +174,6 @@ async function handleOpenUi() {
 }
 
 async function handleStart() {
-  if (isDisabled.value) {
-    ElMessage.warning(t('messages.pluginDisabled'))
-    return
-  }
   try {
     loading.value = true
     await pluginStore.start(props.pluginId)
@@ -192,10 +186,6 @@ async function handleStart() {
 }
 
 async function handleStop() {
-  if (isDisabled.value) {
-    ElMessage.warning(t('messages.pluginDisabled'))
-    return
-  }
   try {
     await ElMessageBox.confirm(t('messages.confirmStop'), t('common.confirm'), {
       type: 'warning'
@@ -213,10 +203,6 @@ async function handleStop() {
 }
 
 async function handleReload() {
-  if (isDisabled.value) {
-    ElMessage.warning(t('messages.pluginDisabled'))
-    return
-  }
   try {
     await ElMessageBox.confirm(t('messages.confirmReload'), t('common.confirm'), {
       type: 'warning'

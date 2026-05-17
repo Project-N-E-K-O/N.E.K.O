@@ -12,10 +12,7 @@
             <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
             <h3 class="plugin-list-row-card__name">{{ pluginName }}</h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
-            <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
-              {{ t('plugins.disabled') }}
-            </el-tag>
-            <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
+            <el-tag v-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
               {{ t('plugins.manualStart') }}
             </el-tag>
           </div>

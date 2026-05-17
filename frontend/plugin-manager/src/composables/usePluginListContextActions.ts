@@ -38,12 +38,12 @@ export function usePluginListContextActions() {
   const pluginStore = usePluginStore()
   const { t, locale } = useI18n()
 
+  // status === 'disabled' 现在只出现在 extension 上（extension 仍由
+  // enable_extension / disable_extension 两个按钮显式切换）。非 extension
+  // 的 runtime_enabled=false 已不再被前端提升成 disabled 状态，统一显示成
+  // stopped —— 详见 stores/plugin.ts pluginsWithStatus。
   function isRunning(plugin: PluginListContextPlugin): boolean {
     return plugin.status === 'running'
-  }
-
-  function isDisabled(plugin: PluginListContextPlugin): boolean {
-    return plugin.status === 'disabled'
   }
 
   function resolveBuiltinActions(plugin: PluginListContextPlugin): PluginListAction[] {
@@ -73,7 +73,7 @@ export function usePluginListContextActions() {
       return actions
     }
 
-    if (!isRunning(plugin) && !isDisabled(plugin)) {
+    if (!isRunning(plugin)) {
       actions.push({
         id: 'start',
         kind: 'builtin',
@@ -89,7 +89,6 @@ export function usePluginListContextActions() {
     actions.push({
       id: 'reload',
       kind: 'builtin',
-      disabled: isDisabled(plugin),
     })
     actions.push(
       {
@@ -150,9 +149,6 @@ export function usePluginListContextActions() {
       return true
     }
     if (action.requires_running && !isRunning(plugin)) {
-      return true
-    }
-    if (action.id === 'reload' && isDisabled(plugin)) {
       return true
     }
     return false
