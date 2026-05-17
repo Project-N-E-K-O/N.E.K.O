@@ -1244,6 +1244,11 @@ def test_prompts_have_all_seven_locales():
     from non-EN users."""
     from plugin.plugins.game_agent_minecraft import prompts
 
+    # Pin the expected locale set so the "seven locales" promise can't
+    # be silently regressed by editing SUPPORTED_LANGS down to six.
+    assert set(prompts.SUPPORTED_LANGS) == {
+        "zh", "en", "ja", "ko", "ru", "es", "pt",
+    }
     missing: list[str] = []
     for key, bundle in prompts.PROMPTS.items():
         for lang in prompts.SUPPORTED_LANGS:
