@@ -741,6 +741,8 @@ async def websocket_endpoint(websocket: WebSocket):
         voice = str(config.get("voice") or "").strip()
         try:
             speed = float(config.get("speed") or 1.0)
+            if not math.isfinite(speed) or speed <= 0.0:
+                speed = 1.0
         except (TypeError, ValueError):
             speed = 1.0
 
@@ -757,11 +759,11 @@ async def websocket_endpoint(websocket: WebSocket):
             else:
                 raw = await websocket.receive_text()
             msg = json.loads(raw)
-            chunk_count += 1
-            if chunk_count > MAX_WS_TEXT_CHUNKS:
-                raise RuntimeError(f"WS text chunk limit exceeded: {MAX_WS_TEXT_CHUNKS}")
             text_chunk = msg.get("text")
             if isinstance(text_chunk, str) and text_chunk:
+                chunk_count += 1
+                if chunk_count > MAX_WS_TEXT_CHUNKS:
+                    raise RuntimeError(f"WS text chunk limit exceeded: {MAX_WS_TEXT_CHUNKS}")
                 received_chars += len(text_chunk)
                 if received_chars > MAX_WS_TEXT_CHARS:
                     raise RuntimeError(f"WS text size limit exceeded: {MAX_WS_TEXT_CHARS}")
