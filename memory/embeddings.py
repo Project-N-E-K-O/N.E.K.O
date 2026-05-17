@@ -268,20 +268,11 @@ def detect_total_ram_gb() -> float | None:
         return None
 
 
-def detect_avx_vnni_details() -> tuple[bool, bool]:
-    """Return ``(has_vnni, vnni_absence_confirmed)``.
+def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
+    """x86 INT8 fast path = AVX-VNNI (or AVX512-VNNI).
 
-    When ``vnni_absence_confirmed`` is False we could not read CPU flags
-    (should be rare now that ``py-cpuinfo`` is a required dependency).
-    ``auto`` quantization
-    still selects INT8 in that case — we only skip vectors when we are
-    *confident* the CPU lacks AVX-VNNI (INT8 would be slow and FP32 weights
-    are not shipped).
-
-    Detection priority:
-      1. ``py-cpuinfo``
-      2. ``/proc/cpuinfo`` on Linux
-      3. Otherwise inconclusive → ``(False, False)``
+    Returns ``(has_vnni, absence_confirmed)``. ``absence_confirmed=False``
+    means we could not read CPU flags (rare with py-cpuinfo as a hard dep).
     """
     try:
         import cpuinfo  # type: ignore
@@ -289,8 +280,7 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
         # Empty flags (e.g. some virtualised hosts) is *not* a confirmed
         # absence — fall through so /proc/cpuinfo can have a try.
         if flags:
-            has = any("vnni" in f for f in flags)
-            return has, True
+            return any("vnni" in f for f in flags), True
     except Exception:
         pass
 
@@ -305,6 +295,68 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
             return False, False
 
     return False, False
+
+
+def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
+    """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
+
+    Apple Silicon (M1+) and Windows-on-ARM (Snapdragon X / 8cx) ship
+    exclusively with dotprod-capable cores, so we short-circuit those
+    platforms to ``(True, True)``. On Linux we still scrutinise the
+    feature flag because the ARM SBC ecosystem includes plenty of
+    Cortex-A53/A57/A72 cores that predate dotprod — being optimistic
+    there would have us silently run the slow path on a Raspberry Pi 3.
+    """
+    system = platform.system()
+    if system in ("Darwin", "Windows"):
+        return True, True
+
+    if system == "Linux":
+        try:
+            import cpuinfo  # type: ignore
+            flags = cpuinfo.get_cpu_info().get("flags", []) or []
+            if flags:
+                # py-cpuinfo surfaces ARM features under the same "flags" key.
+                return any(f in ("asimddp", "dotprod") for f in flags), True
+        except Exception:
+            pass
+        try:
+            # ARM Linux /proc/cpuinfo uses "Features" (capital F), not "flags".
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("Features") and (
+                        "asimddp" in line or "dotprod" in line
+                    ):
+                        return True, True
+            return False, True
+        except Exception:
+            return False, False
+
+    # Unknown OS on ARM64 — modern ARM64 almost certainly has dotprod,
+    # but we can't confirm. Inconclusive lets ``auto`` still pick int8
+    # without claiming a definitive answer.
+    return True, False
+
+
+def detect_avx_vnni_details() -> tuple[bool, bool]:
+    """Return ``(has_int8_fast_path, absence_confirmed)``.
+
+    The name keeps the historical ``vnni`` spelling for backward compat,
+    but semantically this answers "does the CPU have a fast INT8 dot
+    product?" — what the quantization picker actually needs. The fast
+    path is architecture-specific:
+
+      * x86 → AVX-VNNI / AVX512-VNNI
+      * ARM64 → ARMv8.2-A NEON sdot/udot (``asimddp`` feature)
+
+    ``absence_confirmed=False`` means detection was inconclusive. For
+    ``auto`` quantization, INT8 is still selected in that case — we only
+    skip vectors when we are *confident* the CPU lacks the fast path
+    (INT8 would be slow and FP32 weights are not shipped).
+    """
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        return _detect_int8_fast_path_arm()
+    return _detect_int8_fast_path_x86()
 
 
 def detect_avx_vnni() -> bool:

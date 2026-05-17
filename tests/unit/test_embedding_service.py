@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 
 import pytest
 
@@ -124,6 +125,51 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
         _resolve_quantization("garbage", has_vnni=False, vnni_absence_confirmed=False)
         == "int8"
     )
+
+
+def test_detect_avx_vnni_arm64_apple_and_windows_short_circuit(monkeypatch):
+    """Apple Silicon and Windows-on-ARM ship only dotprod-capable cores,
+    so detection must claim the INT8 fast path without inspecting flags.
+    Without this, M-series Macs fall into the "VNNI required for int8"
+    disable branch even though INT8 inference runs fine on them.
+    """
+    from memory import embeddings as emb_mod
+
+    # macOS arm64
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Darwin")
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    # Windows ARM64 (platform.machine() reports "ARM64" capitalized)
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+
+def test_detect_avx_vnni_arm64_linux_checks_asimddp(monkeypatch):
+    """Linux ARM must verify the ``asimddp`` feature flag — old Cortex-A53
+    / A57 / A72 cores are aarch64 but predate ARMv8.2-A dotprod, so being
+    optimistic would silently run the slow path on a Raspberry Pi 3."""
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+
+    class _FakeCpuinfoModern:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["fp", "asimd", "asimddp", "sha2"]}
+
+    class _FakeCpuinfoOld:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["fp", "asimd", "sha2"]}  # pre-dotprod
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _FakeCpuinfoModern)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _FakeCpuinfoOld)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
 def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
