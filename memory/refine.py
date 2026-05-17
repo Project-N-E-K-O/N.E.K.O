@@ -349,15 +349,21 @@ class MemoryRefineEngine:
             .replace('{CLUSTER}', cluster_text)
         )
 
+        # refine 跟 persona correction 同性质：后果不可逆（split/merge/
+        # modify/discard 直接改 persona/reflection 写盘），值得用 correction
+        # tier + thinking + 长 timeout。对齐 PersonaManager.resolve_corrections
+        # 的调用配置。
         set_call_type("memory_refine")
-        api_config = self._cm.get_model_api_config('summary')
+        api_config = self._cm.get_model_api_config('correction')
         llm = create_chat_llm(
             api_config['model'],
             api_config['base_url'],
             api_config['api_key'],
-            timeout=120,
+            timeout=180,  # 比 correction 的 120 略宽：cluster 内多类型
+                          # 混合（reflection + fact）+ 四件套决策比 pair-wise
+                          # correction 更费 thinking
             max_retries=0,
-            extra_body=None,
+            extra_body=None,  # 显式开 thinking（同 correction）
         )
         try:
             resp = await llm.ainvoke(prompt)
