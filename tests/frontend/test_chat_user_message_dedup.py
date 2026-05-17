@@ -220,6 +220,47 @@ def test_import_image_without_mime_converts_to_jpeg_attachment(
 
 
 @pytest.mark.frontend
+def test_import_rejects_canvas_data_url_encode_fallback(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
+            const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+            const file = new File([bytes], 'tiny-image', { type: '' });
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            let rejected = false;
+            let errorMessage = '';
+            try {
+                HTMLCanvasElement.prototype.toDataURL = function () {
+                    return 'data:,';
+                };
+                await window.appButtons.importImageFileToPendingList(file);
+            } catch (error) {
+                rejected = true;
+                errorMessage = String(error && error.message ? error.message : error);
+            } finally {
+                HTMLCanvasElement.prototype.toDataURL = originalToDataURL;
+            }
+            const state = window.reactChatWindowHost.getState();
+            return {
+                rejected,
+                errorMessage,
+                attachmentCount: state.composerAttachments.length
+            };
+        }"""
+    )
+
+    assert result["rejected"] is True
+    assert result["errorMessage"] == "IMAGE_ENCODE_FAILED"
+    assert result["attachmentCount"] == 0
+
+
+@pytest.mark.frontend
 def test_import_jpeg_under_limit_keeps_original_data(
     mock_page: Page,
     running_server: str,

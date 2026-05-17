@@ -105,7 +105,11 @@
         context.fillStyle = '#fff';
         context.fillRect(0, 0, width, height);
         context.drawImage(image, 0, 0, width, height);
-        return canvas.toDataURL('image/jpeg', quality);
+        var dataUrl = canvas.toDataURL('image/jpeg', quality);
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) {
+            throw new Error('IMAGE_ENCODE_FAILED');
+        }
+        return dataUrl;
     }
 
     function getDataUrlEncodedBytes(dataUrl) {
