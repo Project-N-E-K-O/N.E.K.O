@@ -328,8 +328,15 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
             import ctypes
             # PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43 — the canonical
             # Win32 feature constant for ARMv8.2 dotprod instructions.
-            has = bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(43))
-            return has, True
+            if ctypes.windll.kernel32.IsProcessorFeaturePresent(43):
+                return True, True
+            # 0 from this API is ambiguous: the CPU truly lacks dotprod
+            # OR the running Windows build predates feature 43 and
+            # returns 0 for every unrecognised constant. Stay
+            # inconclusive so we don't false-disable embeddings on a
+            # capable Snapdragon X running an older Win10 ARM build
+            # (Codex P1 review on PR #1394).
+            return False, False
         except Exception:
             # ctypes call failed on a non-standard runtime — be
             # inconclusive rather than wrong in either direction.

@@ -168,9 +168,12 @@ def test_detect_avx_vnni_arm64_windows_uses_processor_feature(monkeypatch):
     monkeypatch.setattr(ctypes, "windll", _FakeWindll(present=1), raising=False)
     assert emb_mod.detect_avx_vnni_details() == (True, True)
 
-    # First-gen WoA Snapdragon 835 — no dotprod.
+    # API returning 0 is ambiguous (could be Snapdragon 835 lacking
+    # dotprod, could be an older Win10 ARM build that doesn't know
+    # feature 43). Stay inconclusive rather than false-disabling on
+    # capable hardware — Codex P1 on PR #1394.
     monkeypatch.setattr(ctypes, "windll", _FakeWindll(present=0), raising=False)
-    assert emb_mod.detect_avx_vnni_details() == (False, True)
+    assert emb_mod.detect_avx_vnni_details() == (False, False)
 
 
 def test_detect_avx_vnni_arm64_linux_checks_asimddp(monkeypatch):
