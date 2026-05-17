@@ -261,6 +261,65 @@ async def test_galgame_accepts_dict_shaped_options(model_output, expected, monke
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_galgame_duplicate_labeled_entry_does_not_leak_to_other_labels(monkeypatch):
+    """A labeled entry whose slot is already filled must NOT be reused as positional
+    fill for a different label — the model intended that text for one specific style,
+    re-attributing it would mislabel the user-visible option."""
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+
+    class DupLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "A": "top",
+                        "options": [{"label": "A", "text": "dup"}],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **kw: DupLLM())
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "What do you think?"}],
+                "language": "en",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["partial"] is True
+    assert data["missing_labels"] == ["B", "C"]
+    texts = _option_texts(data)
+    fb = get_galgame_fallback_options("en")
+    assert texts[0] == "top"
+    # Critical: "dup" was labeled A — it must NEVER appear at B or C.
+    assert "dup" not in texts[1]
+    assert "dup" not in texts[2]
+    # Missing labels should be filled from the canonical fallback set.
+    assert texts[1] == fb[1]
+    assert texts[2] == fb[2]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_galgame_partial_options_filled_from_fallback(monkeypatch):
     """Model returned only A and B — C must be filled from fallback, not the whole batch discarded."""
     config_manager = FakeConfigManager(

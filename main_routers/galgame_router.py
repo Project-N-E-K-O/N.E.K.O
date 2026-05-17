@@ -180,10 +180,17 @@ def _normalize_options(parsed: Any) -> dict[str, str]:
             if not text:
                 continue
             normalized_label = str(label).strip().upper() if label else ''
-            if normalized_label in GALGAME_OPTION_LABELS and normalized_label not in by_label:
-                by_label[normalized_label] = text
-            else:
-                leftover.append(text)
+            if normalized_label in GALGAME_OPTION_LABELS:
+                # Recognised label. Take it only if no stronger source
+                # (top-level / nested map / earlier list entry) already
+                # provided this slot. Never push a labeled-but-duplicate
+                # entry into leftover — the model intended this text for
+                # one specific style, and reusing it as a positional fill
+                # for a different label mis-attributes that style.
+                if normalized_label not in by_label:
+                    by_label[normalized_label] = text
+                continue
+            leftover.append(text)
 
         for label in GALGAME_OPTION_LABELS:
             if label in by_label or not leftover:
