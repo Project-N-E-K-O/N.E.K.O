@@ -144,7 +144,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "完整流程",
     setupSteps: [
       { title: "1. 装 Minecraft Java Edition", body: "推荐 v1.21.1（1.21.x 系列都行）。自己选择正版 / 离线启动器。" },
-      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到任意目录。双击里面的「启动mc-agent.bat」启动它（会开一个命令行黑窗口，别关）。N.E.K.O 这边会自动连上。" },
+      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到任意目录。首次启动前：进 src/ 目录，把 keys.example.json 复制成 keys.json，填上你的 OPENAI_API_KEY（或其他 LLM 提供商的 key）。然后双击外层「启动mc-agent.bat」启动它（会开一个命令行黑窗口，别关）。N.E.K.O 这边会自动连上。" },
       { title: "3. 开 MC 世界并 Open to LAN", body: "进入单人世界 → ESC → Open to LAN → 选游戏模式 → 开放。MC 会在聊天框显示「Local game hosted on port XXXXX」，记下这个端口号。" },
       { title: "4. 在管理面板里把 MC 端口改成你抄下的那个", body: "点上面「打开管理面板」按钮 → 找到 bot 配置 → 修改 port 字段 → 保存。bot 会自动重启用新端口连进 MC 世界。" },
       { title: "5. 验证 bot 进游戏了", body: "MC 聊天框会看到「Kuro joined the game」。看不到就刷新本页状态，或者看「启动mc-agent.bat」那个黑窗口报什么错。" },
@@ -197,7 +197,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Full setup flow",
     setupSteps: [
       { title: "1. Install Minecraft Java Edition", body: "v1.21.1 recommended (any 1.21.x is fine). Pick any launcher (official, MultiMC, Prism, etc.)." },
-      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, extract anywhere. Double-click 启动mc-agent.bat inside (it opens a black console window — don't close it). N.E.K.O. will auto-connect." },
+      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, extract anywhere. First-time setup: open the src/ folder, copy keys.example.json to keys.json, and fill in your OPENAI_API_KEY (or another LLM provider's key). Then double-click 启动mc-agent.bat at the top level (it opens a black console window — don't close it). N.E.K.O. will auto-connect." },
       { title: "3. Open a world to LAN", body: "Single player → ESC → Open to LAN → pick game mode → Start. MC will print \"Local game hosted on port XXXXX\" in chat. Note the port number." },
       { title: "4. Change MC port via admin panel", body: "Click \"Open admin panel\" above → find your bot config → change the port field to the number you wrote down → save. The bot will restart and join your world." },
       { title: "5. Confirm the bot joined", body: "You should see \"Kuro joined the game\" in MC chat. If not, refresh status here or check the 启动mc-agent.bat console window for errors." },
@@ -250,7 +250,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "セットアップ全体",
     setupSteps: [
       { title: "1. Minecraft Java 版をインストール", body: "v1.21.1 推奨（1.21.x なら何でも）。公式 / MultiMC / Prism いずれでも。" },
-      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから mc-agent.zip を取得し、任意の場所に解凍。中の「启动mc-agent.bat」をダブルクリックして起動（黒いコンソール窓が開く、閉じないこと）。N.E.K.O が自動で接続。" },
+      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから mc-agent.zip を取得し、任意の場所に解凍。初回起動の前に：src/ フォルダに入り、keys.example.json を keys.json にコピーして OPENAI_API_KEY（または他の LLM プロバイダの key）を書き込む。そのあと外側の「启动mc-agent.bat」をダブルクリックして起動（黒いコンソール窓が開く、閉じないこと）。N.E.K.O が自動で接続。" },
       { title: "3. ワールドを LAN 公開", body: "シングルプレイ → ESC → LAN 公開 → モード選択 → 開始。チャットに「Local game hosted on port XXXXX」と出るのでポート番号を控える。" },
       { title: "4. 管理パネルで MC ポートを書き換え", body: "上の「管理パネルを開く」→ ボット設定 → port を控えた番号に変更 → 保存。ボットが再起動して新ポートでワールドに参加。" },
       { title: "5. ボットの参加を確認", body: "MC のチャットに「Kuro joined the game」と出れば成功。出なければ本ページの状態を更新、または「启动mc-agent.bat」の黒い窓のエラーを確認。" },
@@ -303,7 +303,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "전체 설정 흐름",
     setupSteps: [
       { title: "1. Minecraft Java 에디션 설치", body: "v1.21.1 권장 (1.21.x 모두 가능). 공식 / MultiMC / Prism 등 원하는 런처." },
-      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 mc-agent.zip을 받아 임의 폴더에 압축 해제. 안의 「启动mc-agent.bat」을 더블클릭해 실행 (검은 콘솔 창이 열림, 닫지 말 것). N.E.K.O가 자동 연결." },
+      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 mc-agent.zip을 받아 임의 폴더에 압축 해제. 첫 실행 전: src/ 폴더로 들어가 keys.example.json을 keys.json으로 복사하고 OPENAI_API_KEY (또는 다른 LLM 제공자의 key)를 채워 넣어. 그다음 바깥쪽의 「启动mc-agent.bat」을 더블클릭해 실행 (검은 콘솔 창이 열림, 닫지 말 것). N.E.K.O가 자동 연결." },
       { title: "3. 월드를 LAN 공개", body: "싱글 플레이 → ESC → LAN 공개 → 게임 모드 선택 → 시작. 채팅창에 「Local game hosted on port XXXXX」가 표시되니 포트 번호 기록." },
       { title: "4. 관리 패널에서 MC 포트 변경", body: "위「관리 패널 열기」클릭 → 봇 설정 → port 필드를 기록한 번호로 변경 → 저장. 봇이 재시작되어 새 포트로 월드에 참가." },
       { title: "5. 봇 참가 확인", body: "MC 채팅에「Kuro joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 「启动mc-agent.bat」 콘솔 창의 에러 확인." },
@@ -356,7 +356,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Полный путь настройки",
     setupSteps: [
       { title: "1. Установи Minecraft Java Edition", body: "v1.21.1 рекомендуется (любой 1.21.x подойдёт). Любой лаунчер: официальный, MultiMC, Prism." },
-      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше скачай mc-agent.zip, распакуй в любую папку. Дважды кликни 启动mc-agent.bat внутри (откроется чёрное окно консоли — не закрывай). N.E.K.O автоматически подключится." },
+      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше скачай mc-agent.zip, распакуй в любую папку. Перед первым запуском: зайди в папку src/, скопируй keys.example.json как keys.json и впиши свой OPENAI_API_KEY (или ключ другого LLM-провайдера). Затем дважды кликни 启动mc-agent.bat в корне (откроется чёрное окно консоли — не закрывай). N.E.K.O автоматически подключится." },
       { title: "3. Открой мир в LAN", body: "Одиночная игра → ESC → Открыть для сети → выбери режим → Старт. MC напишет в чате «Local game hosted on port XXXXX». Запомни порт." },
       { title: "4. Поменяй MC-порт в админ-панели", body: "Жми «Открыть админ-панель» сверху → найди конфиг бота → измени port на записанный номер → сохрани. Бот перезапустится и зайдёт в твой мир." },
       { title: "5. Подтверди вход бота", body: "В чате MC появится «Kuro joined the game». Если нет — обнови статус здесь или посмотри ошибки в чёрном окне 启动mc-agent.bat." },
