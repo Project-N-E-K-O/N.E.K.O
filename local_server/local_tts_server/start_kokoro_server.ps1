@@ -21,9 +21,20 @@ function Get-UvExe {
         return $script:uvExe
     }
 
+    $bundledUvCandidates = @(
+        (Join-Path $repoRoot "bin\uv.exe"),
+        (Join-Path $scriptDir "bin\uv.exe")
+    )
+    foreach ($candidate in $bundledUvCandidates) {
+        if (Test-Path $candidate) {
+            $script:uvExe = $candidate
+            return $script:uvExe
+        }
+    }
+
     $cmd = Get-Command uv -ErrorAction SilentlyContinue
     if (-not $cmd) {
-        throw "uv is required to create or repair the local TTS environment. This package can run without uv only when .venv-local-tts is already bundled and complete."
+        throw "uv is required to create or repair the local TTS environment. This package can run without system uv only when a bundled runtime is already complete or bin\uv.exe is included."
     }
 
     $script:uvExe = $cmd.Source
@@ -193,7 +204,8 @@ if (-not $env:LOCAL_TTS_PORT) {
 }
 
 $localTtsVenv = if ($env:LOCAL_TTS_VENV_DIR) { $env:LOCAL_TTS_VENV_DIR } else { Join-Path $repoRoot ".venv-local-tts" }
-$venvPython = Join-Path $localTtsVenv "Scripts\python.exe"
+$runtimePythonOverride = if ($env:LOCAL_TTS_PYTHON) { $env:LOCAL_TTS_PYTHON } else { "" }
+$venvPython = if ($runtimePythonOverride) { $runtimePythonOverride } else { Join-Path $localTtsVenv "Scripts\python.exe" }
 $cudaInstallFailedMarker = Join-Path $localTtsVenv ".cuda_torch_install_failed"
 
 function Invoke-UvChecked {
@@ -259,7 +271,14 @@ function Test-NvidiaGpuAvailable {
     }
 }
 
-function Ensure-LocalTtsVenv {
+function Ensure-LocalTtsRuntime {
+    if ($runtimePythonOverride) {
+        if (-not (Test-Path $venvPython)) {
+            throw "LOCAL_TTS_PYTHON points to a missing Python runtime: $venvPython"
+        }
+        return
+    }
+
     if (-not (Test-Path $venvPython)) {
         Write-Host "Creating uv isolated local TTS venv: $localTtsVenv" -ForegroundColor Yellow
         $created = Invoke-UvChecked @("venv", $localTtsVenv, "--python", "3.11")
@@ -336,7 +355,7 @@ function Ensure-CudaTorchIfNeeded {
     }
 }
 
-Ensure-LocalTtsVenv
+Ensure-LocalTtsRuntime
 Ensure-CudaTorchIfNeeded
 Ensure-LocalTtsCommonDeps
 
@@ -499,7 +518,11 @@ Write-Host "Voice     : $env:LOCAL_TTS_DEFAULT_VOICE"
 Write-Host "Mode      : $env:LOCAL_TTS_SYNTHESIS_MODE"
 Write-Host "Device    : $env:LOCAL_TTS_KOKORO_DEVICE"
 Write-Host "Warmup    : on_connect=$env:LOCAL_TTS_WARMUP_ON_CONNECT startup=$env:LOCAL_TTS_STARTUP_WARMUP"
-Write-Host "Runtime   : uv isolated venv at $localTtsVenv"
+if ($runtimePythonOverride) {
+    Write-Host "Runtime   : bundled Python at $venvPython"
+} else {
+    Write-Host "Runtime   : uv isolated venv at $localTtsVenv"
+}
 Write-Host "Launcher  : $launcherPython"
 Write-Host "UV Cache  : $env:UV_CACHE_DIR"
 Write-Host "WS URL    : $wsUrl"

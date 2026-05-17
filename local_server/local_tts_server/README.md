@@ -104,3 +104,51 @@ export LOCAL_TTS_CHATTTS_CMD='python /opt/tts_wrappers/chattts_cli.py --text-fil
 
 ChatTTS is AGPL-3.0. Keep it as an optional external backend unless the product
 licensing story is settled.
+
+## One-Click Kokoro Package
+
+The recommended user-facing distribution is a NEKO-owned Kokoro runtime package:
+it bundles this server, the Kokoro runtime dependencies, launcher scripts, and
+local model files. The package is only responsible for providing the Kokoro
+environment; NEKO still talks to the same WebSocket server documented above.
+
+Prepare local Kokoro model files first:
+
+```text
+local_server/local_tts_server/kokoro_models/Kokoro-82M-v1.1-zh/config.json
+local_server/local_tts_server/kokoro_models/Kokoro-82M-v1.1-zh/*.pth
+local_server/local_tts_server/kokoro_models/Kokoro-82M-v1.1-zh/voices/*.pt
+```
+
+Build a CPU package:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File local_server\local_tts_server\package_kokoro_server.ps1 -PackageName neko-kokoro-local-tts-windows-cpu -RuntimeMode portable-python -TorchVariant cpu
+```
+
+Build a CUDA package:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File local_server\local_tts_server\package_kokoro_server.ps1 -PackageName neko-kokoro-local-tts-windows-cuda -RuntimeMode portable-python -TorchVariant cuda
+```
+
+The generated package starts NEKO's own Kokoro-compatible server with:
+
+```text
+start_kokoro_local_tts.bat
+```
+
+Users should configure NEKO with:
+
+```text
+ws://127.0.0.1:50000
+```
+
+For advanced users who already have a third-party Kokoro runtime, keep the NEKO
+server as the protocol boundary and point it at that runtime explicitly:
+
+```powershell
+set LOCAL_TTS_PYTHON=D:\KokoroPackage\python.exe
+set LOCAL_TTS_KOKORO_MODEL_DIR=D:\KokoroPackage\models\Kokoro-82M-v1.1-zh
+powershell -NoProfile -ExecutionPolicy Bypass -File local_server\local_tts_server\start_kokoro_server.ps1 -ServerOnly
+```
