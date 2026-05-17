@@ -2530,26 +2530,32 @@ def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int
         from Xlib import display as xdisplay  # type: ignore[import-not-found]  # noqa: PLC0415
 
         d = xdisplay.Display()
-        root = d.screen().root
-        net_client_list = d.intern_atom("_NET_CLIENT_LIST")
-        raw = root.get_full_property(net_client_list, 0)
-        window_ids = raw.value if raw else []
-        for wid in window_ids:
-            if int(wid) == int(target.hwnd):
-                window = d.create_resource_object("window", wid)
-                geom = window.get_geometry()
-                child = window
-                abs_x, abs_y = 0, 0
-                while child is not None:
-                    g = child.get_geometry()
-                    abs_x += g.x
-                    abs_y += g.y
-                    parent = child.query_tree().parent
-                    child = parent if parent != root else None
-                w = max(0, int(geom.width))
-                h = max(0, int(geom.height))
-                if w > 0 and h > 0:
-                    return (abs_x, abs_y, abs_x + w, abs_y + h)
+        try:
+            root = d.screen().root
+            net_client_list = d.intern_atom("_NET_CLIENT_LIST")
+            raw = root.get_full_property(net_client_list, 0)
+            window_ids = raw.value if raw else []
+            for wid in window_ids:
+                if int(wid) == int(target.hwnd):
+                    window = d.create_resource_object("window", wid)
+                    geom = window.get_geometry()
+                    child = window
+                    abs_x, abs_y = 0, 0
+                    while child is not None:
+                        g = child.get_geometry()
+                        abs_x += g.x
+                        abs_y += g.y
+                        parent = child.query_tree().parent
+                        child = parent if parent != root else None
+                    w = max(0, int(geom.width))
+                    h = max(0, int(geom.height))
+                    if w > 0 and h > 0:
+                        return (abs_x, abs_y, abs_x + w, abs_y + h)
+        finally:
+            try:
+                d.close()
+            except Exception as exc:
+                logger.debug("linux xlib display close failed: %s", exc)
     except Exception as exc:
         logger.debug("linux xlib target rect lookup failed: %s", exc)
 

@@ -201,6 +201,55 @@ def test_macos_target_window_rect_falls_back_to_pid_and_title(
     assert ocr_reader._target_window_rect_macos(target) == (40, 50, 680, 530)
 
 
+def test_linux_target_window_rect_closes_xlib_display_on_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import ocr_reader
+
+    class _FakeRoot:
+        def get_full_property(self, *_args):
+            return SimpleNamespace(value=[222])
+
+    root = _FakeRoot()
+
+    class _FakeWindow:
+        def get_geometry(self):
+            return SimpleNamespace(x=12, y=34, width=640, height=480)
+
+        def query_tree(self):
+            return SimpleNamespace(parent=root)
+
+    created_displays: list["_FakeDisplay"] = []
+
+    class _FakeDisplay:
+        def __init__(self) -> None:
+            self.closed = False
+            created_displays.append(self)
+
+        def screen(self):
+            return SimpleNamespace(root=root)
+
+        def intern_atom(self, name: str) -> str:
+            return name
+
+        def create_resource_object(self, _kind: str, _wid: int):
+            return _FakeWindow()
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Xlib",
+        SimpleNamespace(display=SimpleNamespace(Display=_FakeDisplay)),
+    )
+    target = DetectedGameWindow(hwnd=222, width=640, height=480)
+
+    assert ocr_reader._target_window_rect_linux(target) == (12, 34, 652, 514)
+    assert created_displays
+    assert created_displays[0].closed is True
+
+
 # ─── ElectronCaptureBackend smoke tests ──────────────────────────────────
 
 
