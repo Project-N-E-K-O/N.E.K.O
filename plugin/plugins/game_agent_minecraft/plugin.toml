@@ -20,11 +20,8 @@ locales_dir = "i18n"
 
 [plugin_runtime]
 enabled = true
-# auto_start=true so plugin process spawns at NEKO startup and the WS
-# client to mc-agent is already connected by the time the first
-# minecraft_task call lands — saves the 3s lazy-start + WS handshake
-# every fresh-session would otherwise pay.
-auto_start = true
+# 手动启动，避免用户插件开启时默认拉起 Minecraft 代理。
+auto_start = false
 
 [plugin.store]
 enabled = true
