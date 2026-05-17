@@ -38,6 +38,21 @@ const DOWNLOAD_LINKS = {
   baidu: "https://pan.baidu.com/s/1i_a6IUQDz-GpEaWGvIcnqw?pwd=kuro",
 }
 
+// Route external links through the system browser when running inside
+// Electron — the embedded Chromium webview spawned by window.open has
+// no close affordance and traps users. Falls back to plain window.open
+// when running in a real browser (e.g. plugin dev preview). The
+// `electronShell` global is exposed by the host preload script (same
+// contract used in static/app-proactive.js for url-card / meme links).
+function openExternalUrl(url: string): void {
+  const shell = (window as any).electronShell
+  if (shell && typeof shell.openExternal === "function") {
+    shell.openExternal(url)
+    return
+  }
+  window.open(url, "_blank", "noopener,noreferrer")
+}
+
 type StatusCopy = {
   title: string
   refresh: string
@@ -486,7 +501,7 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
             </Button>
             <Button
               tone="primary"
-              onClick={() => window.open(ADMIN_PANEL_URL, "_blank", "noopener")}
+              onClick={() => openExternalUrl(ADMIN_PANEL_URL)}
             >
               {status.openAdmin}
             </Button>
@@ -502,24 +517,14 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
             <ButtonGroup>
               <Button
                 tone="primary"
-                onClick={() =>
-                  window.open(DOWNLOAD_LINKS.quark, "_blank", "noopener")
-                }
+                onClick={() => openExternalUrl(DOWNLOAD_LINKS.quark)}
               >
                 {copy.download.quark}
               </Button>
-              <Button
-                onClick={() =>
-                  window.open(DOWNLOAD_LINKS.gdrive, "_blank", "noopener")
-                }
-              >
+              <Button onClick={() => openExternalUrl(DOWNLOAD_LINKS.gdrive)}>
                 {copy.download.gdrive}
               </Button>
-              <Button
-                onClick={() =>
-                  window.open(DOWNLOAD_LINKS.baidu, "_blank", "noopener")
-                }
-              >
+              <Button onClick={() => openExternalUrl(DOWNLOAD_LINKS.baidu)}>
                 {copy.download.baidu}
               </Button>
             </ButtonGroup>
