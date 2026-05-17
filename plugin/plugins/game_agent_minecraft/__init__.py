@@ -35,7 +35,6 @@ from plugin.sdk.plugin import (
     llm_tool,
     neko_plugin,
     plugin_entry,
-    timer_interval,
 )
 
 from .service import GameAgentService
@@ -223,33 +222,35 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             self._service_lazy_started = False
         return Ok({"status": "shutdown"})
 
-    @timer_interval(
-        id="_eager_start_loop",
-        seconds=999999,  # never re-fires; we hold the tick open forever
-        auto_start=True,
-    )
-    async def _eager_start_loop(self, **_):
-        """Eager-start the WS service the moment the plugin process is
-        alive, instead of waiting for the first ``minecraft_task`` / entry
-        trigger.
+    async def _on_command_loop_start(self) -> None:
+        """Eager-start the WS service on the host's long-lived command
+        loop, the moment the plugin process is alive — instead of
+        waiting for the first ``minecraft_task`` / entry trigger.
 
-        Why this exists as a timer hack: the plugin SDK invokes
-        ``@lifecycle("startup")`` via a transient ``asyncio.run()`` that
-        kills any background tasks the moment the handler returns, so
-        ``service.start()`` (which spawns the WS client + nudge loop)
-        can't run there. ``@timer_interval`` ticks ALSO run in transient
-        ``asyncio.run`` calls — *but* the timer's driver thread is
-        long-lived, so if a single tick never returns, its asyncio loop
-        stays open and the tasks created inside survive. We exploit that
-        by booting the service once and then sleeping forever inside the
-        tick.
+        The plugin SDK invokes this hook from inside
+        ``_async_command_loop`` ([plugin/core/host.py:1216-1225]) before
+        the command dispatch loop starts pumping messages. That loop is
+        the SAME long-lived asyncio loop that later executes every
+        ``@plugin_entry`` / ``@llm_tool`` handler, so the WS client task,
+        nudge loop, locks and Events created here all bind to the loop
+        the handlers will eventually run on — no cross-loop access risk.
 
-        Without this, user-reported symptom: 75+s of dead air between
-        "go chop trees" → dialog LLM chats but doesn't call
-        ``minecraft_task`` → plugin process never wakes service →
-        nudge loop never starts → no self-prompt → Kuro stands still
-        until the user prods her into a second turn and analyzer
-        finally lands on ``game_agent_status``.
+        Earlier iteration of this fix used ``@timer_interval`` + a
+        forever-blocking ``asyncio.Event().wait()`` to hold the tick
+        open. That worked in the sense that the service tasks survived,
+        but the tasks were bound to the timer's per-tick loop in a
+        separate thread; the next ``minecraft_task`` call from the
+        command loop would then hit ``RuntimeError: ... bound to a
+        different event loop`` the moment it touched any of the
+        service's asyncio primitives. Codex review on PR #1395 caught
+        this — using the command-loop hook is the correct primitive.
+
+        Without eager-start at all, user-reported symptom: 75+s of dead
+        air between "go chop trees" → dialog LLM chats but doesn't call
+        ``minecraft_task`` → plugin process never wakes service → nudge
+        loop never starts → no self-prompt → Kuro stands still until
+        the user prods her into a second turn and analyzer finally
+        lands on ``game_agent_status``.
         """
         try:
             await self._ensure_service_started()
@@ -258,10 +259,6 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 "[eager-start] service start failed; lazy-start fallback remains — {}: {}",
                 type(exc).__name__, exc,
             )
-        # Hold the timer's transient asyncio loop open so the WS client
-        # + nudge loop tasks created by ``service.start()`` don't get
-        # cancelled on tick return.
-        await asyncio.Event().wait()
 
     # ------------------------------------------------------------------
     # LLM-callable tool
