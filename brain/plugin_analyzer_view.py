@@ -121,8 +121,13 @@ def sanitize_plugins_for_analyzer(raw_plugins: Any) -> List[Dict[str, Any]]:
        system prompt (``USER_PLUGIN_SYSTEM_PROMPT``) carries the
        behavioral rule explaining how the LLM should treat the marker.
 
-    The result is a fresh list of fresh dicts — callers may mutate
-    further without disturbing the input payload.
+    The result is a fresh list of shallow per-plugin dict copies with
+    ``entries`` rebuilt as a fresh list; other nested values (metadata
+    blocks, schema dicts, etc.) may still share references with the
+    input payload. Today's only caller — the HTTP plugin provider —
+    consumes the projection read-only, so a full deep copy is not
+    worth the cost; if a future caller needs to mutate nested fields,
+    it should clone those itself.
     """
     sanitized: List[Dict[str, Any]] = []
     for p in raw_plugins or []:

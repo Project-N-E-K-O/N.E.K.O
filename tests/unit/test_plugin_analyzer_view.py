@@ -268,7 +268,7 @@ def test_build_plugin_desc_lines_never_yields_callable_llm_tool_entry():
     # entry as ``{id}: {desc}`` so the unambiguous tell-tale is
     # ``minecraft_task`` appearing at the *start* of a ``;``-separated
     # chunk inside the ``entries: [ ... ]`` segment.
-    entries_segment = rendered.split("entries:", 1)[1]
+    entries_segment = rendered.split("| entries:", 1)[1]
     callable_chunks = [c.strip() for c in entries_segment.lstrip(" [").split(";")]
     assert not any(c.startswith("minecraft_task") for c in callable_chunks), (
         f"minecraft_task leaked as a callable entry: {callable_chunks}"
