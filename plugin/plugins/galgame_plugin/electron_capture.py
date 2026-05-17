@@ -144,10 +144,10 @@ class ElectronCaptureBackend:
         Uses target.hwnd (CGWindowID on macOS / X11 Window ID / Windows hWnd)
         as the cross-platform window identifier. The Electron side maps it
         back to a desktopCapturer source. We deliberately do NOT pass a
-        rect — Electron returns the full window image, and the caller
-        crops by OcrCaptureProfile ratios. This sidesteps the HiDPI /
-        multi-monitor coordinate mismatch between Chromium physical pixels
-        and X11 logical coordinates.
+        rect — Electron returns the full window image, so this backend
+        applies OcrCaptureProfile ratios against the decoded image's own
+        pixel dimensions. This sidesteps the HiDPI / multi-monitor coordinate
+        mismatch between Chromium physical pixels and X11 logical coordinates.
         """
         try:
             import httpx  # type: ignore[import-not-found]  # noqa: PLC0415
@@ -194,6 +194,17 @@ class ElectronCaptureBackend:
             raise RuntimeError(f"electron: base64_decode_failed: {exc}") from exc
 
         try:
-            return Image.open(io.BytesIO(png_bytes)).convert("RGB")
+            image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
         except Exception as exc:
             raise RuntimeError(f"electron: pil_decode_failed: {exc}") from exc
+
+        from .ocr_reader import _crop_window_image  # noqa: PLC0415
+
+        width, height = image.size
+        return _crop_window_image(
+            image,
+            window_rect=(0, 0, int(width), int(height)),
+            profile=profile,
+            backend_kind=self.kind,
+            backend_detail="selected",
+        )

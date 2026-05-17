@@ -348,6 +348,58 @@ def test_electron_backend_redacts_long_error_body(
     assert len(message) < 180
 
 
+def test_electron_backend_applies_capture_profile_crop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+    import io
+
+    from PIL import Image
+
+    from plugin.plugins.galgame_plugin.electron_capture import (
+        ElectronCaptureBackend,
+    )
+    from plugin.plugins.galgame_plugin.ocr_reader import OcrCaptureProfile
+
+    source = Image.new("RGB", (100, 80), "white")
+    buffer = io.BytesIO()
+    source.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    def _fake_request(*args, **kwargs):
+        del args, kwargs
+        return SimpleNamespace(status_code=200, json=lambda: {"image": encoded})
+
+    monkeypatch.setattr("httpx.request", _fake_request)
+    backend = ElectronCaptureBackend(base_url="http://127.0.0.1:1")
+    target = DetectedGameWindow(
+        hwnd=42,
+        title="Game",
+        process_name="game.exe",
+        pid=123,
+        width=100,
+        height=80,
+        area=100 * 80,
+    )
+    profile = OcrCaptureProfile(
+        left_inset_ratio=0.10,
+        right_inset_ratio=0.20,
+        top_ratio=0.25,
+        bottom_inset_ratio=0.25,
+    )
+
+    cropped = backend.capture_frame(target, profile)
+
+    assert cropped.size == (70, 40)
+    assert cropped.info["galgame_capture_backend_kind"] == "electron"
+    assert cropped.info["galgame_capture_rect"] == {
+        "left": 10.0,
+        "top": 20.0,
+        "right": 80.0,
+        "bottom": 60.0,
+    }
+
+
 def test_linux_wmctrl_scanner_uses_resolved_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
