@@ -17,6 +17,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from utils.language_utils import get_global_language
 from utils.tokenize import acount_tokens
 from config import (
+    MEMORY_LLM_HARD_TIMEOUT_SECONDS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -261,7 +262,6 @@ class CompressedRecentHistoryManager:
         模型按其默认行为响应（thinking 模式开启）。
         max_retries=0 同上：禁 SDK 自动重试，由业务层 retry 兜底。
         """
-        from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
         api_config = self._config_manager.get_model_api_config('correction')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],

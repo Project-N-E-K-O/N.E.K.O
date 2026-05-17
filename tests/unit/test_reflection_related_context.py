@@ -95,6 +95,7 @@ async def test_happy_path_renders_watermarked_block():
         {"id": "f1", "text": "absorbed fact text", "importance": 7},
     ])
     with patch("memory.embeddings.get_embedding_service", return_value=_enabled_service()), \
+         patch("memory.embeddings.is_cached_embedding_valid", return_value=True), \
          patch("memory.recall.MemoryRecallReranker", return_value=mock_reranker):
         block = await engine._build_related_context_block(
             "小天", [{"id": "f2", "text": "new query"}]
@@ -105,6 +106,22 @@ async def test_happy_path_renders_watermarked_block():
     assert "======以上为相关历史背景======" in block
     # 末尾 \n\n 是 RELATED_CONTEXT_BLOCK 与下游 ====以下为事实==== 自然分隔的依据
     assert block.endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_returns_empty_when_all_absorbed_facts_lack_valid_embedding():
+    """Codex P2 #1392：fact 没 valid embedding 时 reranker 会 fallback 到
+    evidence_score 排序，fact 又没 score 字段 → 注入近随机的历史 fact 当
+    相关背景。必须 pre-filter，pool 为空就 early return。"""
+    engine = _make_engine([
+        {"id": "f1", "text": "absorbed fact", "absorbed": True, "importance": 5},
+    ])
+    with patch("memory.embeddings.get_embedding_service", return_value=_enabled_service()), \
+         patch("memory.embeddings.is_cached_embedding_valid", return_value=False):
+        block = await engine._build_related_context_block(
+            "小天", [{"id": "f2", "text": "query"}]
+        )
+    assert block == ""
 
 
 @pytest.mark.asyncio

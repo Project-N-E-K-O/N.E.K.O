@@ -880,13 +880,19 @@ class ReflectionEngine:
         改造前等价）。远期 fact 仅作参考，不进 source_fact_ids、不
         mark_absorbed —— 幂等性由 unabsorbed 集合的 rid hash 保证。"""
         try:
-            from memory.embeddings import get_embedding_service
+            from memory.embeddings import (
+                get_embedding_service,
+                is_cached_embedding_valid,
+            )
             # 同时检查 is_disabled (sticky 关闭) 和 is_available (READY) ——
             # INIT/LOADING 状态下 is_disabled=False 但 is_available=False，
             # 若只看前者，reranker 会降级到 evidence-only 排序，把无关历史
             # fact 当 "相关背景" 塞进 prompt（Codex P2 #1392）。
             service = get_embedding_service()
             if service.is_disabled() or not service.is_available():
+                return ""
+            model_id = service.model_id()
+            if not model_id:
                 return ""
         except Exception:
             return ""
@@ -902,9 +908,17 @@ class ReflectionEngine:
             logger.warning(f"[Reflection] related context load_facts 失败: {e}")
             return ""
 
+        # Codex P2 #1392：必须 pre-filter 出有 valid embedding 的 fact 才能
+        # 进 reranker。fact 没 evidence `score` 字段，若放进 rerank=False 的
+        # coarse_rank 而 embedding 又是 stale/missing（model-id 切换后 / backfill
+        # 前），fallback 路径会按 evidence_score=0 排序 → 顺序近似随机 →
+        # 把任意 fact 当 "相关背景" 注入 prompt。这里先 filter，pool 为空就
+        # early return，宁可没 RELATED_CONTEXT 也不要塞无关历史。
         absorbed_pool = [
             f for f in all_facts
-            if f.get('absorbed') and f.get('id') not in unabsorbed_ids
+            if f.get('absorbed')
+            and f.get('id') not in unabsorbed_ids
+            and is_cached_embedding_valid(f, f.get('text', ''), model_id)
         ]
         if not absorbed_pool:
             return ""
