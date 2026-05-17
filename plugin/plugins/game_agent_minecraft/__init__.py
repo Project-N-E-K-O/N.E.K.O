@@ -37,6 +37,7 @@ from plugin.sdk.plugin import (
     plugin_entry,
 )
 
+from . import prompts
 from .service import GameAgentService
 
 # JSON Schema reused by the @llm_tool decorator below. Pulled into a
@@ -118,6 +119,13 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._cfg: Dict[str, Any] = {}
+        # User-language short code for prompt resolution. Set tentatively
+        # here (EN fallback so __init__ never throws), then upgraded in
+        # ``startup`` once we can call into utils.language_utils. Both
+        # the facade (this class) and the service consult the same value;
+        # the service receives it via ``set_lang`` so its push_message
+        # cues match the user's locale.
+        self._lang: str = prompts.DEFAULT_LANG
         self._service = GameAgentService(
             logger=self.logger,
             push_message_fn=self.push_message,
@@ -206,6 +214,12 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             if isinstance(cfg.get("game_agent"), dict)
             else {}
         )
+        # Resolve user language now (it reads Steam / system locale via
+        # ``utils.language_utils.get_global_language``, which lazy-inits
+        # on first call) and propagate to the service so its autonomous
+        # nudge loop and task_finished cues match the user's locale.
+        self._lang = prompts.user_lang()
+        self._service.set_lang(self._lang)
         self._service.configure(self._cfg)
         return Ok({"status": "ready", "result": self._service.get_status()})
 
@@ -289,11 +303,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # ---- schema validation ----
         if not isinstance(task, str) or not task.strip():
             return {
-                "summary": (
-                    "调用没成功——缺了具体的动作描述。"
-                    "想清楚你这次想干啥（比如 'mine 4 oak logs nearby'、"
-                    "'walk to 120 64 -50'），再重新调用。"
-                )
+                "summary": prompts.t("TASK_SCHEMA_ERROR", lang=self._lang),
             }
         task_text = task.strip()
         # Some LLMs pass ``"true"`` / ``"1"`` / ``1`` as overwrite. Strict
@@ -312,9 +322,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         connected = await self._ensure_service_started()
         if not connected:
             return {
-                "summary": (
-                    "你刚连上游戏还没就位，没法立刻动。稍等再来一次。"
-                )
+                "summary": prompts.t("TASK_NOT_CONNECTED", lang=self._lang),
             }
 
         # Atomic claim. Splitting "check + claim" from "run" lets the
@@ -331,17 +339,14 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             task_text, overwrite=overwrite_flag
         )
         if claimed is None:
-            current = self._service.current_task_text() or "(刚结束)"
+            current = (
+                self._service.current_task_text()
+                or prompts.t("PLACEHOLDER_JUST_FINISHED", lang=self._lang)
+            )
             return {
-                "summary": (
-                    f"你还在做上一个动作：「{current[:80]}」——新动作没派出去。"
-                    "\n**如果 {MASTER_NAME} 正在纠正你**（比如『别 X』、『换成 Y』、"
-                    "『不要再 Z』、『改用 W』），**立刻在同一回合用 overwrite=true "
-                    "重新调一次**，别等。如果只是普通对话或闲聊，那就等当前动作"
-                    "跑完再说。在那之前不要假装新动作已经在跑。"
-                    "\n**别给 {MASTER_NAME} 播报内部状态**——『连接』『系统』"
-                    "『minecraft_task』『工具』『tool』一律不准说出口。"
-                )
+                "summary": prompts.t(
+                    "TASK_BUSY_HINT", lang=self._lang, current=current[:80]
+                ),
             }
 
         # Fire-and-forget: run the claimed task in the background. The
@@ -354,14 +359,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         )
         detached.add_done_callback(self._on_detached_task_done)
         return {
-            "summary": (
-                "刚开始动——结果还没出现，新画面和反馈会在接下来 1-30 秒陆续到。"
-                "在看到之前不要描述任何具体成果（不要说『搞定了』、『拿到了 X』、"
-                "『已经到 Y 了』），想说就只说『我去试试……』之类的第一人称。"
-                "**别给 {MASTER_NAME} 播报内部状态**——『连接』『任务空闲』"
-                "『系统』『minecraft_task』『工具』『tool』一律不准说出口，"
-                "用第一人称讲游戏里的事。"
-            )
+            "summary": prompts.t("TASK_DISPATCHED_ACK", lang=self._lang),
         }
 
     # ------------------------------------------------------------------
@@ -451,9 +449,17 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             output_err = result["output"].get("error")
             if output_err and not detail:
                 detail = str(output_err)
+        # Re-label transport/blocked statuses into localized phrases the
+        # dialog LLM can paraphrase. The "received status string" stays
+        # the surface text the LLM sees; routing logic below still keys
+        # off the original ``ok`` / ``受阻`` sentinel values via the
+        # same-language label, so the three-way branch survives
+        # localization without growing brittle "if any locale of 受阻"
+        # checks.
+        blocked_label = prompts.t("STATUS_LABEL_BLOCKED", lang=self._lang)
         if status == "AGENT_DISCONNECTED" or "not connected" in detail.lower():
-            status = "暂时连不上游戏"
-            detail = "和游戏的连接刚断了一下，稍后会自动恢复。"
+            status = prompts.t("STATUS_LABEL_DISCONNECTED", lang=self._lang)
+            detail = prompts.t("STATUS_DETAIL_DISCONNECTED", lang=self._lang)
         # mc-agent quirk: chat-loop returns ``status="ok"`` even when the
         # in-game action was blocked (mineflayer couldn't resolve target,
         # missing tool, path obstructed, etc.) — the failure is buried in
@@ -470,10 +476,10 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             )
             d_lower = detail.lower()
             if any(m in d_lower for m in blocked_markers):
-                status = "受阻"
+                status = blocked_label
 
         inv = result.get("inventory")
-        inv_snippet = ""
+        inv_line = ""
         if isinstance(inv, dict) and inv:
             items = sorted(
                 ((str(k), int(v)) for k, v in inv.items() if int(v) > 0),
@@ -481,51 +487,47 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             )
             if items:
                 pieces = "、".join(f"{name}×{count}" for name, count in items[:20])
-                inv_snippet = f"\n当前背包：{pieces}"
+                inv_line = prompts.t(
+                    "COMPLETION_INV_CURRENT_LINE", lang=self._lang, items=pieces
+                )
         elif isinstance(inv, dict):
-            inv_snippet = "\n当前背包：空"
+            inv_line = prompts.t("COMPLETION_INV_CURRENT_EMPTY", lang=self._lang)
 
         # Three-way: actual success ("ok", case-insensitive), rebadged
-        # success-but-blocked ("受阻"), or anything else (disconnect,
-        # timeout, interrupted, error, "unknown", arbitrary is_error
-        # strings). The else branch previously cue'd everything that
-        # wasn't 受阻 as "做完 ... 派下一步" which told the dialog LLM the
-        # action succeeded when it actually disconnected / timed out /
-        # crashed — Codex review on PR #1395 caught this. Whitelist
-        # "ok" as success instead of trying to enumerate every failure.
-        is_blocked = status == "受阻"
+        # success-but-blocked (status == blocked_label), or anything
+        # else (disconnect, timeout, interrupted, error, "unknown",
+        # arbitrary is_error strings). The else branch previously cue'd
+        # everything that wasn't 受阻 as "做完 ... 派下一步" which told
+        # the dialog LLM the action succeeded when it actually
+        # disconnected / timed out / crashed — Codex review on PR
+        # #1395 caught this. Whitelist "ok" as success instead of
+        # trying to enumerate every failure.
+        is_blocked = status == blocked_label
         is_success = status.lower() == "ok"
         if is_blocked:
-            head_verb = "受阻于"
+            head_verb = prompts.t("HEAD_VERB_BLOCKED", lang=self._lang)
         elif is_success:
-            head_verb = "做完"
+            head_verb = prompts.t("HEAD_VERB_SUCCESS", lang=self._lang)
         else:
-            head_verb = "没做成"
-        lines = [f"刚{head_verb}「{query[:100]}」，结果 {status}。"]
+            head_verb = prompts.t("HEAD_VERB_FAILED", lang=self._lang)
+        lines = [prompts.t(
+            "COMPLETION_HEAD_LINE", lang=self._lang,
+            head_verb=head_verb, query=query[:100], status=status,
+        )]
         if detail:
-            lines.append(f"反馈：{detail[:240]}")
-        if inv_snippet:
-            lines.append(inv_snippet.strip())
+            lines.append(prompts.t(
+                "COMPLETION_FEEDBACK_LINE", lang=self._lang, detail=detail[:240]
+            ))
+        if inv_line:
+            lines.append(inv_line)
         if is_blocked:
-            lines.append(
-                "上面的反馈说明这次没真做成——换思路再派新任务（比如改坐标、"
-                "用真名而不是中文称呼、换个目标）。"
-            )
+            lines.append(prompts.t("COMPLETION_FOLLOWUP_BLOCKED", lang=self._lang))
         elif is_success:
-            lines.append(
-                "心里有数即可，别复读上面的字面。要继续动作就直接派下一步。"
-            )
+            lines.append(prompts.t("COMPLETION_FOLLOWUP_SUCCESS", lang=self._lang))
         else:
-            lines.append(
-                "这次没真做成——先根据上面的反馈想清楚原因再决定要不要重试或改派下一步，"
-                "别直接说『搞定了』。"
-            )
-        lines.append(
-            "**不要给 {MASTER_NAME} 播报内部状态**——『连接』『任务空闲』"
-            "『系统』『minecraft_task』『工具』『tool』一律不准说出口，"
-            "用第一人称讲游戏里的事。"
-        )
-        return "[你刚做完一段动作]\n" + "\n".join(lines)
+            lines.append(prompts.t("COMPLETION_FOLLOWUP_FAILED", lang=self._lang))
+        lines.append(prompts.t("INTERNAL_STATE_GAG", lang=self._lang))
+        return prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Diagnostic plugin entries (callable from the plugin UI / CLI)
@@ -546,10 +548,16 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             # connected=False forever even though the WS endpoint is up.
             await self._ensure_service_started()
             status = self._service.get_status()
-            connected = "connected" if status.get("connected") else "disconnected"
-            pending = status.get("pending_task") or "(idle)"
+            connected_label = prompts.t(
+                "LABEL_CONNECTED" if status.get("connected") else "LABEL_DISCONNECTED",
+                lang=self._lang,
+            )
+            pending = (
+                status.get("pending_task")
+                or prompts.t("PLACEHOLDER_IDLE", lang=self._lang)
+            )
             status["summary"] = (
-                f"ws={status.get('ws_url')} | {connected} | task={pending}"
+                f"ws={status.get('ws_url')} | {connected_label} | task={pending}"
             )
             return Ok(status)
         except Exception as exc:
@@ -594,24 +602,23 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             # version had her quoting "【ground truth — 完整且唯一】"
             # verbatim like a robot.
             if inv_at == 0:
-                summary = "现在还没收到背包数据。用户问到的话就说一声『等我看一下』，别凭印象编。"
+                summary = prompts.t("INV_NO_DATA", lang=self._lang)
             elif source == "live" and inv:
                 items = sorted(inv.items(), key=lambda kv: -kv[1])
                 pieces = "、".join(f"{n}×{c}" for n, c in items)
-                summary = f"现在背包：{pieces}。心里有数即可，别复读这行字。"
+                summary = prompts.t("INV_LIVE_NONEMPTY", lang=self._lang, pieces=pieces)
             elif source == "live":
-                summary = "现在背包是空的。心里有数即可。"
+                summary = prompts.t("INV_LIVE_EMPTY", lang=self._lang)
             elif inv:  # cached + has items
                 age_s = max(0, int(time.time() - inv_at))
                 items = sorted(inv.items(), key=lambda kv: -kv[1])
                 pieces = "、".join(f"{n}×{c}" for n, c in items)
-                summary = (
-                    f"{age_s}s 前的背包：{pieces}（mc-agent 没及时回，"
-                    "可能已经变了——别说得太肯定）。"
+                summary = prompts.t(
+                    "INV_CACHED_NONEMPTY", lang=self._lang, age_s=age_s, pieces=pieces
                 )
             else:  # cached + empty
                 age_s = max(0, int(time.time() - inv_at))
-                summary = f"{age_s}s 前背包是空的（不一定还准）。"
+                summary = prompts.t("INV_CACHED_EMPTY", lang=self._lang, age_s=age_s)
 
             return Ok({
                 "summary": summary,

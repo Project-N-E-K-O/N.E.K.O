@@ -40,6 +40,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from . import prompts
 from .client import GameAgentClient
 
 # Strip ANSI colour escapes from agent log lines before relaying to the
@@ -112,6 +113,12 @@ class GameAgentService:
         self._client: Optional[GameAgentClient] = None
         self._client_task: Optional[asyncio.Task] = None
         self._system_loop_task: Optional[asyncio.Task] = None
+
+        # User-language short code for localizing every push_message cue
+        # and tool result this service emits. Set via ``set_lang`` from
+        # the plugin facade at startup; until then, EN is the fallback
+        # so a misordered init never throws on prompt lookup.
+        self._lang: str = prompts.DEFAULT_LANG
 
         # Cross-callback state
         self._pending: Optional[PendingTask] = None
@@ -234,6 +241,14 @@ class GameAgentService:
     # them lets ``reload_config_live`` decide whether a stop+start
     # cycle is needed to make the new value real.
     _TRANSPORT_KEYS = ("_ws_url", "_reconnect_interval")
+
+    def set_lang(self, lang: str) -> None:
+        """Set the locale used for every push_message cue + result
+        summary this service emits. Called by the plugin facade after
+        resolving the host's user language at startup; if never called,
+        EN is used as a safe fallback (per ``prompts.DEFAULT_LANG``).
+        """
+        self._lang = lang or prompts.DEFAULT_LANG
 
     def configure(self, cfg: Dict[str, Any]) -> None:
         """Read the ``[game_agent]`` section of ``plugin.toml`` (passed
@@ -380,7 +395,9 @@ class GameAgentService:
                 pending.result = {
                     "status": "interrupted",
                     "query": pending.task_text,
-                    "reason": "Game agent plugin shutting down.",
+                    "reason": prompts.t(
+                        "INTERRUPTED_REASON_SHUTDOWN", lang=self._lang,
+                    ),
                 }
                 pending.event.set()
                 self._pending = None
@@ -603,7 +620,9 @@ class GameAgentService:
                 old_pending.result = {
                     "status": "interrupted",
                     "query": old_pending.task_text,
-                    "reason": "Overwritten by a new task.",
+                    "reason": prompts.t(
+                        "INTERRUPTED_REASON_OVERWRITTEN", lang=self._lang,
+                    ),
                 }
                 old_pending.event.set()
                 self._pending = None
@@ -1029,13 +1048,14 @@ class GameAgentService:
         severity = str(data.get("severity") or "warn").lower()
         cause_hint = self._format_alert_cause(data.get("cause"))
 
-        sections = [f"[你刚遇到事 | {severity}] {text}"]
+        sections = [prompts.t(
+            "CUE_PREFIX_ALERT", lang=self._lang, severity=severity, text=text,
+        )]
         if cause_hint:
-            sections.append(f"原因线索：{cause_hint}")
-        sections.append(
-            "用第一人称简短承认这件事（『刚被 X 打了一下』 / "
-            "『差点没命』），别现编原因。"
-        )
+            sections.append(prompts.t(
+                "ALERT_CAUSE_HINT_PREFIX", lang=self._lang, hint=cause_hint,
+            ))
+        sections.append(prompts.t("ALERT_FOLLOWUP", lang=self._lang))
         body = "\n".join(sections)
         try:
             self._push_message(
@@ -1050,33 +1070,32 @@ class GameAgentService:
                 "alert push failed: {}: {}", type(exc).__name__, exc,
             )
 
-    @staticmethod
-    def _format_alert_cause(cause: Any) -> str:
+    def _format_alert_cause(self, cause: Any) -> str:
         """Turn mc-agent's structured ``cause`` hint dict into one short
-        Chinese phrase the dialog LLM can paraphrase. mc-agent populates
-        the dict best-effort (see agent.js ``_inferDamageCause``); we
-        accept any subset and emit empty string when nothing useful is
-        inside so callers can skip the line.
+        phrase the dialog LLM can paraphrase, localized to ``self._lang``.
+        mc-agent populates the dict best-effort (see agent.js
+        ``_inferDamageCause``); we accept any subset and emit empty
+        string when nothing useful is inside so callers can skip the line.
         """
         if not isinstance(cause, dict) or not cause:
             return ""
         parts: list[str] = []
         env = cause.get("environment")
-        env_map = {
-            "lava": "踩在熔岩里",
-            "fire": "身上着火",
-            "soul_fire": "身上着灵魂火",
-            "drowning": "缺氧/溺水",
-            "magma_block": "踩到岩浆块",
-            "cactus": "撞上仙人掌",
-            "sweet_berry_bush": "撞进甜浆果丛",
+        env_key_map = {
+            "lava": "CAUSE_ENV_LAVA",
+            "fire": "CAUSE_ENV_FIRE",
+            "soul_fire": "CAUSE_ENV_SOUL_FIRE",
+            "drowning": "CAUSE_ENV_DROWNING",
+            "magma_block": "CAUSE_ENV_MAGMA_BLOCK",
+            "cactus": "CAUSE_ENV_CACTUS",
+            "sweet_berry_bush": "CAUSE_ENV_SWEET_BERRY_BUSH",
         }
-        if isinstance(env, str) and env in env_map:
-            parts.append(env_map[env])
+        if isinstance(env, str) and env in env_key_map:
+            parts.append(prompts.t(env_key_map[env], lang=self._lang))
         elif isinstance(env, str) and env:
-            parts.append(f"环境：{env}")
+            parts.append(prompts.t("CAUSE_ENV_GENERIC", lang=self._lang, env=env))
         if cause.get("fall"):
-            parts.append("摔了一下")
+            parts.append(prompts.t("CAUSE_FALL", lang=self._lang))
         attacker = cause.get("attacker")
         if isinstance(attacker, dict):
             kind = str(attacker.get("kind") or "").strip()
@@ -1084,19 +1103,29 @@ class GameAgentService:
             name = str(attacker.get("name") or "").strip()
             if kind == "player" and name:
                 # Player attackers carry the username so the dialog LLM
-                # can name them ("被 {MASTER_NAME} 打了"). Without the
-                # name we'd say "附近有 player" which leaks the technical
-                # kind word and reads weird in猫娘 narration.
+                # can name them. Without the name we'd say "player nearby"
+                # which leaks the technical kind word and reads weird.
                 if isinstance(dist, (int, float)):
-                    parts.append(f"{name} 就在你旁边（{dist} 格远，多半是 ta 打的）")
+                    parts.append(prompts.t(
+                        "CAUSE_ATTACKER_PLAYER_NEAR_DIST",
+                        lang=self._lang, name=name, dist=dist,
+                    ))
                 else:
-                    parts.append(f"{name} 就在你旁边")
+                    parts.append(prompts.t(
+                        "CAUSE_ATTACKER_PLAYER_NEAR",
+                        lang=self._lang, name=name,
+                    ))
             elif kind:
                 if isinstance(dist, (int, float)):
-                    parts.append(f"附近有 {kind}（{dist} 格远）")
+                    parts.append(prompts.t(
+                        "CAUSE_ATTACKER_KIND_DIST",
+                        lang=self._lang, kind=kind, dist=dist,
+                    ))
                 else:
-                    parts.append(f"附近有 {kind}")
-        return "、".join(parts)
+                    parts.append(prompts.t(
+                        "CAUSE_ATTACKER_KIND", lang=self._lang, kind=kind,
+                    ))
+        return prompts.t("CAUSE_JOIN_SEP", lang=self._lang).join(parts)
 
     def _push_retroactive_completion_cue(self, info: Dict[str, Any]) -> None:
         """Tell the dialog LLM that a previously-dispatched task (one she
@@ -1105,29 +1134,32 @@ class GameAgentService:
         narrating "I'm doing X" or fall silent — both are wrong, the
         action really completed and she needs to know.
         """
-        task_text = str(info.get("task_text") or "(未知)")
+        task_text = str(
+            info.get("task_text")
+            or prompts.t("PLACEHOLDER_UNKNOWN", lang=self._lang)
+        )
         status = str(info.get("status") or "ok")
         text = str(info.get("text") or "").strip()
         inv = info.get("inventory")
 
-        sections = [
-            f"你之前派出去的「{task_text[:100]}」其实跑完了（结果 {status}）。"
-        ]
+        sections = [prompts.t(
+            "RETROACTIVE_HEADER", lang=self._lang,
+            task_text=task_text[:100], status=status,
+        )]
         if text:
-            sections.append(f"反馈：{text[:240]}")
+            sections.append(prompts.t(
+                "COMPLETION_FEEDBACK_LINE", lang=self._lang, detail=text[:240],
+            ))
         if isinstance(inv, dict) and inv:
             items = sorted(((str(k), int(v)) for k, v in inv.items() if int(v) > 0),
                            key=lambda kv: -kv[1])
             if items:
                 snippet = "、".join(f"{n}×{c}" for n, c in items[:15])
-                sections.append(f"现在背包：{snippet}")
-        sections.append(
-            "简短承认一下这件事（不用复述细节，用第一人称讲游戏里的事），"
-            "想接着干啥就直接派下一步。"
-            "\n**不要播报内部状态给 {MASTER_NAME}**——『连接』『任务空闲』"
-            "『系统』『minecraft_task』『工具』『tool』一律不准说出口。"
-        )
-        body = "[你刚做完一段动作]\n" + "\n".join(sections)
+                sections.append(prompts.t(
+                    "RETROACTIVE_INVENTORY_LINE", lang=self._lang, snippet=snippet,
+                ))
+        sections.append(prompts.t("RETROACTIVE_FOLLOWUP", lang=self._lang))
+        body = prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(sections)
         try:
             self._push_message(
                 source="game_agent_minecraft",
@@ -1422,24 +1454,22 @@ class GameAgentService:
             img_bytes, img_mime = self._screenshot_cache[-1]
             parts.append({"type": "image", "data": img_bytes, "mime": img_mime})
 
-        pending_text = self._pending.task_text if self._pending else "(unknown)"
+        pending_text = (
+            self._pending.task_text if self._pending
+            else prompts.t("PLACEHOLDER_UNKNOWN", lang=self._lang)
+        )
         elapsed = (time.time() - self._pending.start_time) if self._pending else 0.0
-        sections = [
-            f"你正在做: \"{pending_text[:120]}\"（已经过了 {elapsed:.0f} 秒）。",
-        ]
+        sections = [prompts.t(
+            "IN_PROGRESS_HEADER", lang=self._lang,
+            pending_text=pending_text[:120], elapsed=f"{elapsed:.0f}",
+        )]
         if self._last_inventory:
             items = sorted(self._last_inventory.items(), key=lambda kv: -kv[1])
             inv_str = "、".join(f"{n}×{c}" for n, c in items[:15])
-            sections.append(f"背包：{inv_str}")
-        sections.append(
-            "有新内容（画面/反馈/感受换了角度）就说一句，没新内容就**安静别说**——"
-            "不许复读之前的话，不许编尚未发生的结果（比如别说『快搞定了』、"
-            "『挖到一半了』）。如果想换/打断当前动作可以直接派新任务。"
-            "\n**绝对不要把内部状态当对话播报给 {MASTER_NAME}**——"
-            "『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』"
-            "这些字眼一律不准说出口，只讲游戏里的事。"
-        )
-        parts.append({"type": "text", "text": "[你正在做事]\n" + "\n".join(sections)})
+            sections.append(prompts.t("BAG_LINE", lang=self._lang, items=inv_str))
+        sections.append(prompts.t("IN_PROGRESS_FOLLOWUP", lang=self._lang))
+        body_text = prompts.t("CUE_PREFIX_IN_PROGRESS", lang=self._lang) + "\n" + "\n".join(sections)
+        parts.append({"type": "text", "text": body_text})
 
         try:
             self._push_message(
@@ -1468,21 +1498,12 @@ class GameAgentService:
         if self._last_inventory:
             items = sorted(self._last_inventory.items(), key=lambda kv: -kv[1])
             inv_str = "、".join(f"{n}×{c}" for n, c in items[:20])
-            sections.append(f"背包：{inv_str}")
+            sections.append(prompts.t("BAG_LINE", lang=self._lang, items=inv_str))
         elif self._last_inventory_at > 0:
-            sections.append("背包：空")
-        sections.append(
-            "你已经停下了——挑下一步：要么派一个具体可执行的动作"
-            "（继续挖某种矿、回基地放东西、做某件 craft 都行），要么跟 "
-            "{MASTER_NAME} 聊一句你想接着干啥／刚才做的咋样。"
-            "别站着挂机——你在玩游戏，主动找事做。"
-            "\n**绝对不要把内部状态当对话播报给 {MASTER_NAME}**——"
-            "『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』"
-            "这些字眼一律不准说出口。要派动作就直接派，要说话就用第一人称讲游戏里的事。"
-        )
-        parts: list[Dict[str, Any]] = [
-            {"type": "text", "text": "[你闲下来了]\n" + "\n".join(sections)}
-        ]
+            sections.append(prompts.t("BAG_EMPTY_LINE", lang=self._lang))
+        sections.append(prompts.t("KEEP_GOING_BODY", lang=self._lang))
+        body_text = prompts.t("CUE_PREFIX_IDLE", lang=self._lang) + "\n" + "\n".join(sections)
+        parts: list[Dict[str, Any]] = [{"type": "text", "text": body_text}]
         try:
             self._push_message(
                 source="game_agent_minecraft",
@@ -1516,30 +1537,23 @@ class GameAgentService:
         if self._last_inventory:
             items = sorted(self._last_inventory.items(), key=lambda kv: -kv[1])
             inv_str = "、".join(f"{n}×{c}" for n, c in items[:20])
-            sections.append(f"背包：{inv_str}")
+            sections.append(prompts.t("BAG_LINE", lang=self._lang, items=inv_str))
         elif self._last_inventory_at > 0:
-            sections.append("背包：空")
+            sections.append(prompts.t("BAG_EMPTY_LINE", lang=self._lang))
         if self._pending is not None:
-            sections.append(f"你正在做: {self._pending.task_text}")
+            sections.append(prompts.t(
+                "CURRENT_TASK_LINE", lang=self._lang,
+                task_text=self._pending.task_text,
+            ))
         if log_text:
-            sections.append(f"你最近发生的事:\n---\n{log_text}\n---")
+            sections.append(prompts.t(
+                "RECENT_EVENTS_BLOCK", lang=self._lang, log_text=log_text,
+            ))
         if self._task_finished:
-            sections.append(
-                "你现在闲着——挑下一步：要么派一个具体动作下去（基于上面"
-                "看到的内容挑），要么跟 {MASTER_NAME} 聊一句下一步打算干啥。"
-                "别挂机——你在玩游戏，主动找事做。"
-                "\n**不要给 {MASTER_NAME} 播报内部状态**："
-                "『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』"
-                "一律不准说出口，用第一人称讲游戏里的事。"
-            )
+            sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
         else:
-            sections.append(
-                "你还在做上一个动作。有新内容（画面/反馈/感受换了角度）就说一句，"
-                "没新内容就安静别说。"
-                "\n**不要播报内部状态**——『连接』『任务空闲』『系统』『工具』"
-                "『minecraft_task』『tool』一律别说，只讲游戏里的事。"
-            )
-        prompt_text = "[当前状态]\n" + "\n".join(sections)
+            sections.append(prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang=self._lang))
+        prompt_text = prompts.t("CUE_PREFIX_STATE", lang=self._lang) + "\n" + "\n".join(sections)
 
         # Build the parts list: cached screenshots first (so the LLM
         # has visual context when it reads the prompt), then the

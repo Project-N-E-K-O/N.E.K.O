@@ -499,9 +499,12 @@ async def test_overwrite_interrupts_old_task_with_status():
     )
     assert service._pending is not None  # still the new task
     assert service._pending.task_id == new_id
-    # The retroactive cue should have fired.
+    # The retroactive cue should have fired. Match locale-agnostically:
+    # the cue is localized via prompts.t() (depends on service._lang),
+    # but the task_text is interpolated raw and therefore stable across
+    # locales.
     assert any(
-        "你之前派出去的「old task」" in (p.get("text") or "")
+        "old task" in (p.get("text") or "")
         for call in push_calls
         for p in (call.get("parts") or [])
     ), "retroactive completion cue was not pushed for the old task"
@@ -900,8 +903,10 @@ async def test_historical_task_id_emits_retroactive_cue():
     # must never accidentally event.set() the current pending slot.
     assert not runner2.done(), "historical task_id must not resolve current runner"
     # And a retroactive cue was pushed referencing the first task.
+    # Match locale-agnostically — the cue is localized, but task_text
+    # is interpolated raw and stable across locales.
     assert any(
-        "你之前派出去的「first」" in (p.get("text") or "")
+        "first" in (p.get("text") or "")
         for call in push_calls
         for p in (call.get("parts") or [])
     ), "retroactive cue was not pushed for the historical task"
@@ -1224,3 +1229,49 @@ async def test_reload_config_live_no_restart_for_pure_data_keys():
     })
     assert restarted is False
     assert start_calls == []
+
+
+# ---------------------------------------------------------------------------
+# i18n: every prompt key is fully translated across all 7 supported locales.
+# Catches forgotten translations + drift between locale tables.
+# ---------------------------------------------------------------------------
+
+
+def test_prompts_have_all_seven_locales():
+    """Every entry in PROMPTS must carry a non-empty translation for
+    each supported language (zh, en, ja, ko, ru, es, pt). Missing keys
+    would otherwise silently fall back to EN and hide translation gaps
+    from non-EN users."""
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    missing: list[str] = []
+    for key, bundle in prompts.PROMPTS.items():
+        for lang in prompts.SUPPORTED_LANGS:
+            if not bundle.get(lang):
+                missing.append(f'{key}[{lang}]')
+    assert not missing, (
+        'Missing/empty translations in PROMPTS: ' + ', '.join(missing)
+    )
+
+
+def test_prompts_t_formats_placeholders():
+    r"""prompts.t() must accept \*\*fmt and substitute via str.format,
+    while leaving {{MASTER_NAME}} escaped for downstream main_server
+    substitution."""
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    out_en = prompts.t('TASK_BUSY_HINT', lang='en', current='mine stone')
+    assert 'mine stone' in out_en
+    # Downstream placeholder must survive str.format intact.
+    assert '{MASTER_NAME}' in out_en
+    assert '{{MASTER_NAME}}' not in out_en
+
+
+def test_prompts_t_falls_back_to_english_on_missing_locale():
+    """Unknown locales must resolve to EN, not raise."""
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    out = prompts.t('TASK_NOT_CONNECTED', lang='xx-NOSUCH')
+    en = prompts.t('TASK_NOT_CONNECTED', lang='en')
+    assert out == en
+
