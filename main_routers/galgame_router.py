@@ -43,8 +43,8 @@ logger = get_module_logger(__name__, "GalGame")
 
 GALGAME_MAX_HISTORY = 8
 GALGAME_MAX_TEXT_PER_TURN = 240
-GALGAME_OPTION_MAX_TOKENS = 360
-GALGAME_OPTION_TIMEOUT_SECONDS = 5.0
+GALGAME_OPTION_MAX_TOKENS = 600
+GALGAME_OPTION_TIMEOUT_SECONDS = 10.0
 GALGAME_OPTION_LABELS = ("A", "B", "C")
 
 
@@ -109,13 +109,20 @@ def _strip_code_fence(text: str) -> str:
     return text.strip()
 
 
-def _normalize_options(parsed: Any) -> list[dict[str, str]]:
+def _normalize_options(parsed: Any) -> dict[str, str]:
+    """Best-effort parse: return whatever label→text mappings the model produced.
+
+    Returns an empty dict if nothing salvageable, otherwise a 1-3 entry dict
+    keyed by canonical labels (A/B/C). Callers fill missing labels from
+    fallback rather than throwing the whole batch away — preserves any
+    on-style replies the model did manage to generate.
+    """
     if isinstance(parsed, dict):
         candidates = parsed.get('options') or parsed.get('candidates') or parsed.get('replies')
     else:
         candidates = parsed
     if not isinstance(candidates, list):
-        return []
+        return {}
 
     by_label: dict[str, str] = {}
     leftover: list[str] = []
@@ -139,15 +146,11 @@ def _normalize_options(parsed: Any) -> list[dict[str, str]]:
         else:
             leftover.append(text)
 
-    options: list[dict[str, str]] = []
     for label in GALGAME_OPTION_LABELS:
-        text = by_label.get(label)
-        if text is None and leftover:
-            text = leftover.pop(0)
-        if text is None:
-            return []
-        options.append({'label': label, 'text': text})
-    return options
+        if label in by_label or not leftover:
+            continue
+        by_label[label] = leftover.pop(0)
+    return by_label
 
 
 def _fallback_options(lang: str) -> list[dict[str, str]]:
@@ -257,19 +260,52 @@ async def generate_galgame_options(request: Request):
 
     raw_text = (getattr(result, 'content', '') or '').strip()
     cleaned = _strip_code_fence(raw_text)
-    options: list[dict[str, str]] = []
+    parsed_map: dict[str, str] = {}
+    parse_error: str | None = None
     if cleaned:
         try:
             parsed = robust_json_loads(cleaned)
-            options = _normalize_options(parsed)
-        except Exception:
-            options = []
-    if not options:
-        logger.info("GalGame model output unparseable, using fallback")
+            parsed_map = _normalize_options(parsed)
+        except Exception as exc:
+            parse_error = type(exc).__name__
+
+    if not parsed_map:
+        # Log a single-line head of the raw output so future failures can be
+        # diagnosed without forcing DEBUG. Truncate to keep PII / long output
+        # out of the log file.
+        snippet = re.sub(r'\s+', ' ', raw_text)[:200]
+        logger.info(
+            "GalGame model output unparseable, using fallback "
+            "(parse_error=%s raw_head=%r raw_len=%d)",
+            parse_error, snippet, len(raw_text),
+        )
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
             "fallback": True,
+        })
+
+    fallback_texts = get_galgame_fallback_options(lang)
+    options: list[dict[str, str]] = []
+    missing_labels: list[str] = []
+    for label, fb_text in zip(GALGAME_OPTION_LABELS, fallback_texts):
+        text = parsed_map.get(label)
+        if text:
+            options.append({'label': label, 'text': text})
+        else:
+            options.append({'label': label, 'text': fb_text})
+            missing_labels.append(label)
+
+    if missing_labels:
+        logger.info(
+            "GalGame partial parse: model returned %d/3 options; filled %s from fallback",
+            3 - len(missing_labels), missing_labels,
+        )
+        return JSONResponse({
+            "success": True,
+            "options": options,
+            "partial": True,
+            "missing_labels": missing_labels,
         })
 
     return JSONResponse({"success": True, "options": options})

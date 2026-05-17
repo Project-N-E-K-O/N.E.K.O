@@ -174,6 +174,98 @@ async def test_galgame_option_generation_timeout_returns_fallback(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_galgame_partial_options_filled_from_fallback(monkeypatch):
+    """Model returned only A and B — C must be filled from fallback, not the whole batch discarded."""
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+
+    class PartialLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "options": [
+                            {"label": "A", "text": "先确认你刚才说的重点。"},
+                            {"label": "B", "text": "我在这里陪你慢慢说。"},
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **kw: PartialLLM())
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
+                "language": "zh-CN",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["partial"] is True
+    assert data["missing_labels"] == ["C"]
+    fb = get_galgame_fallback_options("zh")
+    assert _option_texts(data) == ["先确认你刚才说的重点。", "我在这里陪你慢慢说。", fb[2]]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_unparseable_output_returns_fallback(monkeypatch):
+    """Garbage output → full fallback, and the warning carries a raw_head snippet."""
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+
+    class GarbageLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content="抱歉，我不太理解你的问题。")
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **kw: GarbageLLM())
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
+                "language": "zh-CN",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["fallback"] is True
+    assert _option_texts(data) == list(get_galgame_fallback_options("zh"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_galgame_missing_model_base_url_returns_fallback(monkeypatch):
     monkeypatch.setattr(
         galgame_router,
