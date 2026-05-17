@@ -86,9 +86,15 @@ def _info(msg: str) -> None:
 
 
 def _ensure_windows() -> None:
+    # 该脚本拉的是 win-x64 Node zip + 假定 node.exe / npm.cmd 这套打包布局，
+    # 在非 Windows 上跑出来的 bundle 不能用。早 fail 比让用户跑到 npm ci
+    # 阶段才报错要清晰得多。
     if sys.platform != "win32":
-        _info("WARNING: this script targets Windows. Node binaries on other "
-              "platforms will be the wrong arch and mc-agent will not run.")
+        raise SystemExit(
+            "[vendor-mc-agent] Windows-only: this script bundles a portable "
+            "win-x64 Node and the node.exe / npm.cmd launch scripts; running "
+            "it on other platforms produces a broken bundle."
+        )
 
 
 def _download_portable_node(dest_node_root: Path, *, force: bool) -> Path:

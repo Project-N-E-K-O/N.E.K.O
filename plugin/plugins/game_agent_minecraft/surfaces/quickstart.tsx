@@ -14,6 +14,7 @@ import {
   Tip,
   Warning,
   useEffect,
+  useRef,
   useState,
 } from "@neko/plugin-ui"
 import type { PluginSurfaceProps, Tone } from "@neko/plugin-ui"
@@ -435,10 +436,19 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
     error: "",
   })
 
+  // game_agent_status 走 plugin call → 后端起一个 run，慢链路下可能比
+  // STATUS_REFRESH_INTERVAL_MS 还久。没有 in-flight guard 会触发并发
+  // run、setState 乱序、卸载后写 state 等问题，加两个 ref 防住。
+  const refreshingRef = useRef(false)
+  const unmountedRef = useRef(false)
+
   const refresh = async () => {
+    if (refreshingRef.current || unmountedRef.current) return
+    refreshingRef.current = true
     setState((prev) => ({ ...prev, loading: true, error: "" }))
     try {
       const data = await callPlugin("game_agent_status")
+      if (unmountedRef.current) return
       setState({
         loading: false,
         connected: Boolean(data.connected),
@@ -447,19 +457,25 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
         error: "",
       })
     } catch (exc: any) {
+      if (unmountedRef.current) return
       setState((prev) => ({
         ...prev,
         loading: false,
         connected: false,
         error: String(exc?.message || exc),
       }))
+    } finally {
+      refreshingRef.current = false
     }
   }
 
   useEffect(() => {
     refresh()
     const timer = window.setInterval(refresh, STATUS_REFRESH_INTERVAL_MS)
-    return () => window.clearInterval(timer)
+    return () => {
+      unmountedRef.current = true
+      window.clearInterval(timer)
+    }
   }, [])
 
   const tone: Tone =

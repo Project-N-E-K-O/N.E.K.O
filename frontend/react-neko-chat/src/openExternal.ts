@@ -12,12 +12,32 @@
 // mobile / chat.html in Electron). In the two browser contexts the
 // electronShell global is absent and the fallback gives normal new-tab
 // behavior; in Electron the IPC bridge dispatches to the system browser.
+//
+// Two safety steps before handing the URL to either path:
+//
+// 1. Absolutize relative inputs against window.location.href. Markdown
+//    in chat usually carries absolute URLs but the contract should be
+//    forgiving — URL() constructor handles both forms uniformly, and
+//    shell.openExternal can't resolve relative paths on its own
+//    (passes the string straight to ShellExecute / xdg-open).
+// 2. Whitelist http / https / mailto. shell.openExternal is a known
+//    sharp edge (file:// could open arbitrary local content, javascript:
+//    is a non-starter, data: is unsupported by most OS handlers) — only
+//    schemes a sane new-tab/browser would accept get through.
 export function openExternalUrl(url: string): void {
   if (!url) return;
-  const shell = (window as unknown as { electronShell?: { openExternal?: (u: string) => void } }).electronShell;
-  if (shell && typeof shell.openExternal === 'function') {
-    shell.openExternal(url);
+  let normalized: URL;
+  try {
+    normalized = new URL(url, window.location.href);
+  } catch {
     return;
   }
-  window.open(url, '_blank', 'noopener,noreferrer');
+  if (!['http:', 'https:', 'mailto:'].includes(normalized.protocol)) return;
+  const href = normalized.toString();
+  const shell = (window as unknown as { electronShell?: { openExternal?: (u: string) => void } }).electronShell;
+  if (shell && typeof shell.openExternal === 'function') {
+    shell.openExternal(href);
+    return;
+  }
+  window.open(href, '_blank', 'noopener,noreferrer');
 }

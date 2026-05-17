@@ -853,6 +853,8 @@ async def test_historical_task_id_emits_retroactive_cue():
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("first task never claimed pending slot")
     first_id = service._pending.task_id
     await service._on_task_finished({"status": "ok", "task_id": first_id})
     await asyncio.wait_for(runner1, timeout=2.0)
@@ -863,6 +865,8 @@ async def test_historical_task_id_emits_retroactive_cue():
         if service._pending is not None and service._pending.task_text == "second":
             break
         await asyncio.sleep(0.01)
+    else:
+        pytest.fail("second task never claimed pending slot")
     second_id = service._pending.task_id
 
     push_calls.clear()

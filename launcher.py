@@ -997,8 +997,8 @@ def _stop_mc_agent(graceful_timeout: float = 5.0) -> None:
     if _MC_AGENT_LOG_HANDLE is not None:
         try:
             _MC_AGENT_LOG_HANDLE.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[Launcher] mc-agent: log close failed (non-fatal): {exc}", flush=True)
         _MC_AGENT_LOG_HANDLE = None
 
 
@@ -1142,6 +1142,11 @@ def run_merged_servers() -> int:
                 "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
             },
         })
+
+        # 合并模式同样要拉 mc-agent —— 打包分发默认走合并，漏掉这步等于
+        # 冻结版用户永远启动不了 MC bridge。多进程路径的 _try_start_mc_agent
+        # 调用在主入口 line ~2280。
+        _try_start_mc_agent()
 
         # 等所有 server 退出（收到 should_exit 后各自触发 FastAPI shutdown 事件）
         await asyncio.gather(*tasks)
