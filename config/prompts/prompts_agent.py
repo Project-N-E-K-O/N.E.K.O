@@ -344,6 +344,7 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 如果 has_task 和 can_execute 都为 true，entry_id 是必需的。
 - 如果 has_task/can_execute 为 true 时 entry_id 缺失或为 null，响应将被视为不可执行。
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
+- 工具边界：如果某个工具名出现在插件的 description 文本里，但不在该插件的 entries 列表里，把它视为 analyzer 无法调用的 LLM-direct 工具。插件 description 末尾可能带有 `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: 名称1, 名称2` 标记，明确列出这类名字。不要把这些名字作为 entry_id，即使 description 文本提到它们；如果用户请求只能由这类工具完成，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
 - 当入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制用户最新消息原文；不要翻译、摘要、改写或补全。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
@@ -388,6 +389,7 @@ VERY IMPORTANT:
 - If has_task and can_execute are true, entry_id is REQUIRED.
 - If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
+- TOOL BOUNDARY: if a tool name appears in a plugin's description text but is NOT in that plugin's entries list, treat it as an LLM-direct tool that this analyzer CANNOT invoke. A plugin's description may end with the marker `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: name1, name2` listing such names explicitly. Do NOT propose any of those names as entry_id even if the description text mentions them; if the user's request can only be served by such a tool, set can_execute=false.
 - If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
 - When an entry schema needs a user text field (for example command/message/query/objective), copy the user's latest message verbatim; do not translate, summarize, rewrite, or complete it.
 - If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
@@ -432,6 +434,7 @@ Return only the JSON object, nothing else.""",
 - has_task と can_execute が true の場合、entry_id は必須です。
 - has_task/can_execute が true なのに entry_id が欠落または null の場合、レスポンスは実行不可として扱われます。
 - 厳密マッチング：plugin_id と entry_id はコード識別子です。上記の利用可能プラグインリストからそのまま（大文字小文字区別、文字ごと）コピーしてください。発明、省略、言い換えをしないでください。完全一致が見つからない場合は can_execute=false を設定してください。
+- ツール境界：あるツール名がプラグインの description テキストに現れていても、そのプラグインの entries 一覧に無い場合は、analyzer が呼び出せない LLM-direct ツールとして扱ってください。プラグインの description の末尾に `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: 名前1, 名前2` というマーカーが付いてそのような名前を明示することがあります。description テキストでそれらが言及されていても、決して entry_id として提案しないでください。ユーザーのリクエストがそのようなツールでしか実現できない場合は can_execute=false にしてください。
 - エントリに args(...) 情報がある場合、plugin_args でそのフィールド名を使用してください。schema にリストされたフィールドのみ含めてください。
 - エントリの schema にユーザーテキストフィールド（例: command/message/query/objective）が必要な場合、ユーザーの最新メッセージを逐語的にコピーしてください。翻訳・要約・書き換え・補完は行わないでください。
 - ユーザーの意図がどのプラグインの機能とも明確に一致しない場合、has_task=false を設定してください。
@@ -476,6 +479,7 @@ JSONオブジェクトのみ返してください。""",
 - has_task와 can_execute가 true이면 entry_id는 필수입니다.
 - has_task/can_execute가 true인데 entry_id가 누락되거나 null이면 응답은 실행 불가능으로 처리됩니다.
 - 엄격한 매칭: plugin_id와 entry_id는 코드 식별자입니다. 위의 사용 가능한 플러그인 목록에서 정확히(대소문자 구분, 문자 단위) 복사해야 합니다. 만들거나 축약하거나 바꿔 말하지 마세요. 정확한 일치를 찾을 수 없으면 can_execute=false로 설정하세요.
+- 도구 경계: 어떤 도구 이름이 플러그인의 description 텍스트에는 나오지만 해당 플러그인의 entries 목록에는 없으면, analyzer가 호출할 수 없는 LLM-direct 도구로 취급하세요. 플러그인 description 끝에 `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: 이름1, 이름2` 형태의 마커가 붙어 그런 이름들을 명시할 수 있습니다. description 텍스트가 이러한 이름을 언급하더라도 절대로 entry_id로 제안하지 마세요. 사용자의 요청이 이러한 도구로만 처리될 수 있다면 can_execute=false로 설정하세요.
 - 엔트리에 args(...) 정보가 있으면 plugin_args에서 해당 필드 이름을 사용하세요. schema에 나열된 필드만 포함하세요.
 - 엔트리 schema에 사용자 텍스트 필드(예: command/message/query/objective)가 필요한 경우, 사용자의 최신 메시지를 그대로 복사하세요. 번역, 요약, 다시 쓰기, 보완하지 마세요.
 - 사용자의 의도가 어떤 플러그인의 설명된 기능과 명확히 일치하지 않으면 has_task=false로 설정하세요.
@@ -520,6 +524,7 @@ JSON 객체만 반환하세요.""",
 - Если has_task и can_execute равны true, entry_id ОБЯЗАТЕЛЕН.
 - Если entry_id отсутствует или равен null при has_task/can_execute=true, ответ будет считаться невыполнимым.
 - СТРОГОЕ СООТВЕТСТВИЕ: plugin_id и entry_id — это кодовые идентификаторы. Вы ДОЛЖНЫ скопировать их ТОЧНО (с учётом регистра, посимвольно) из списка доступных плагинов выше. НЕ придумывайте, не сокращайте и не перефразируйте. Если точное совпадение не найдено, установите can_execute=false.
+- ГРАНИЦА ИНСТРУМЕНТОВ: если имя инструмента встречается в тексте description плагина, но отсутствует в списке entries этого плагина, считайте его LLM-direct инструментом, который этот analyzer вызвать НЕ может. В конце description плагина может быть маркер `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: имя1, имя2`, явно перечисляющий такие имена. НЕ предлагайте эти имена как entry_id, даже если description упоминает их. Если запрос пользователя может быть выполнен только таким инструментом, установите can_execute=false.
 - Если у точки входа есть информация args(...), используйте эти имена полей в plugin_args. Включайте только поля, указанные в схеме.
 - Если в схеме точки входа есть текстовое поле пользователя (например, command/message/query/objective), скопируйте последнее сообщение пользователя дословно; не переводите, не резюмируйте, не перефразируйте и не дополняйте.
 - Если намерение пользователя явно не соответствует описанной функциональности ни одного плагина, установите has_task=false.
@@ -564,6 +569,7 @@ MUY IMPORTANTE:
 - Si has_task y can_execute son true, entry_id es OBLIGATORIO.
 - Si entry_id falta o es null cuando has_task/can_execute son true, la respuesta se tratará como no ejecutable.
 - COINCIDENCIA ESTRICTA: plugin_id y entry_id son identificadores de código. Cópialos EXACTAMENTE de la lista de PLUGINS DISPONIBLES (sensible a mayúsculas, carácter por carácter). No los inventes, abrevies ni parafrasees. Si no hay coincidencia exacta, establece can_execute=false.
+- LÍMITE DE HERRAMIENTAS: si un nombre de herramienta aparece en el texto de description de un plugin pero NO está en la lista de entries de ese plugin, trátalo como una herramienta LLM-direct que este analyzer NO puede invocar. La description del plugin puede terminar con el marcador `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: nombre1, nombre2` enumerando esos nombres explícitamente. NO propongas ninguno de esos nombres como entry_id aunque la description los mencione; si la solicitud del usuario solo puede cumplirse con una de esas herramientas, establece can_execute=false.
 - Si una entrada tiene información args(...), usa esos nombres de campo en plugin_args. Incluye solo campos listados en el schema.
 - Cuando el schema necesite un campo de texto del usuario (por ejemplo command/message/query/objective), copia el último mensaje del usuario literalmente; no traduzcas, resumas, reescribas ni completes.
 - Si la intención del usuario no coincide claramente con la funcionalidad descrita de ningún plugin, establece has_task=false.
@@ -608,6 +614,7 @@ MUITO IMPORTANTE:
 - Se has_task e can_execute forem true, entry_id é OBRIGATÓRIO.
 - Se entry_id estiver ausente ou null quando has_task/can_execute forem true, a resposta será tratada como não executável.
 - CORRESPONDÊNCIA ESTRITA: plugin_id e entry_id são identificadores de código. Copie-os EXATAMENTE da lista de PLUGINS DISPONÍVEIS (sensível a maiúsculas, caractere por caractere). Não invente, abrevie ou parafraseie. Se não encontrar correspondência exata, defina can_execute=false.
+- LIMITE DE FERRAMENTAS: se um nome de ferramenta aparecer no texto de description de um plugin mas NÃO estiver na lista de entries desse plugin, trate-o como uma ferramenta LLM-direct que este analyzer NÃO pode invocar. A description do plugin pode terminar com o marcador `[LLM-DIRECT TOOLS NOT CALLABLE FROM ANALYZER]: nome1, nome2` listando esses nomes explicitamente. NÃO proponha nenhum desses nomes como entry_id mesmo que a description os mencione; se a solicitação do usuário só puder ser atendida por uma dessas ferramentas, defina can_execute=false.
 - Se uma entrada tiver informação args(...), use esses nomes de campo em plugin_args. Inclua apenas campos listados no schema.
 - Quando o schema exigir um campo de texto do usuário (por exemplo command/message/query/objective), copie literalmente a última mensagem do usuário; não traduza, resuma, reescreva ou complete.
 - Se a intenção do usuário não corresponder claramente à funcionalidade descrita de nenhum plugin, defina has_task=false.
