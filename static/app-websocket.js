@@ -2117,6 +2117,12 @@
                             }
                             return false;
                         };
+                        var normalizeCaptureBridgeImage = function (result) {
+                            if (typeof result === 'string') return result || null;
+                            if (!result || typeof result !== 'object') return null;
+                            if (result.success === false) return null;
+                            return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
+                        };
                         try {
                             var dc = window.electronDesktopCapturer;
                             if (!dc || !dc.getSources) {
@@ -2179,16 +2185,19 @@
                                 return;
                             }
                             var dataUrl = null;
+                            var captureResult = null;
                             if (typeof dc.captureSourceWithoutNeko === 'function') {
                                 try {
-                                    dataUrl = await dc.captureSourceWithoutNeko(matched.id);
+                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_woNekoErr) {
                                     dataUrl = null;
                                 }
                             }
                             if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
                                 try {
-                                    dataUrl = await dc.captureSourceAsDataUrl(matched.id);
+                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_dataUrlErr) {
                                     dataUrl = null;
                                 }

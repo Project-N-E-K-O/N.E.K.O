@@ -66,6 +66,32 @@ def test_capture_bridge_renderer_ignores_placeholder_target_id_before_source_mat
     assert guard_index < placeholder_index < reset_index < match_index
 
 
+def test_capture_bridge_renderer_normalises_structured_capture_results_before_response():
+    source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
+    normalizer_index = source.index("var normalizeCaptureBridgeImage = function")
+    string_branch_index = source.index("typeof result === 'string'", normalizer_index)
+    object_branch_index = source.index("result.dataUrl", string_branch_index)
+    without_neko_index = source.index("dc.captureSourceWithoutNeko", object_branch_index)
+    without_neko_normalize_index = source.index(
+        "dataUrl = normalizeCaptureBridgeImage(captureResult);",
+        without_neko_index,
+    )
+    fallback_index = source.index(
+        "if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function')",
+        without_neko_normalize_index,
+    )
+    direct_capture_index = source.index("dc.captureSourceAsDataUrl", fallback_index)
+    direct_normalize_index = source.index(
+        "dataUrl = normalizeCaptureBridgeImage(captureResult);",
+        direct_capture_index,
+    )
+    send_image_index = source.index("image: dataUrl", direct_normalize_index)
+
+    assert normalizer_index < string_branch_index < object_branch_index
+    assert without_neko_index < without_neko_normalize_index < fallback_index
+    assert direct_capture_index < direct_normalize_index < send_image_index
+
+
 class _DummyWebSocket:
     """Minimal WebSocket double for capture_bridge.send_text()."""
 
