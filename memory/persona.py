@@ -777,6 +777,14 @@ class PersonaManager:
             'embedding': None,
             'embedding_text_sha256': None,
             'embedding_model_id': None,
+            # MemoryRefineEngine cluster_hash skip 状态（Phase A-3）。
+            # cluster_hash = sha1(sorted(member_ids))；refine 跑完后所有
+            # 存活成员都 stamp 上当前 cluster 的 hash + timestamp。下次
+            # 同 cluster 再形成时，全员 hash 命中 + 未超 REVISIT_AFTER_DAYS
+            # → 直接 skip（不送 LLM）。任一成员被 merge/split/modify/discard
+            # 后新条目无 stamp，cluster member set 变化 → hash 自然 invalidate。
+            'last_refine_cluster_hash': None,
+            'last_refine_at': None,
         }
         if isinstance(entry, str):
             d = dict(defaults)
@@ -1709,7 +1717,7 @@ class PersonaManager:
             new_text = item.get('new_text', '')
             section_facts = self._get_section_facts(persona, entity)
 
-            if action == 'replace':
+            if action == 'merge':
                 # `replace` means "new observation is an update/correction to
                 # the old memory" — semantically an in-place edit, not a
                 # fresh insertion. We update `text` + extend the version
@@ -1733,9 +1741,12 @@ class PersonaManager:
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text:
                         if isinstance(existing, dict):
+                            from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
                             existing['text'] = merged_text
-                            existing['version_history'] = list(prior_history) + [history_entry]
+                            existing['version_history'] = (
+                                list(prior_history) + [history_entry]
+                            )[-_VH_MAX:]
                             # Text changed → invalidate the derived
                             # caches so the next render recomputes
                             # against the new text instead of serving
@@ -1797,6 +1808,200 @@ class PersonaManager:
                                           indent=2, ensure_ascii=False)
             logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾，剩余 {len(remaining)} 条")
         return resolved
+
+    # ── refine apply (Phase A-3 MemoryRefineEngine) ──────────────────
+
+    async def apply_refine_actions(
+        self,
+        name: str,
+        entity: str,
+        cluster: list[dict],
+        actions: list[dict],
+        cluster_hash: str,
+    ) -> int:
+        """Apply MemoryRefineEngine 输出的四件套 actions 到 persona。
+
+        Lock 内：reload → validate → apply → stamp survivors → save。
+        cluster 内只有 persona 条目（refine engine 不会把 fact 混进
+        persona pool），protected entries 已在采集阶段过滤；这里再加
+        防御性 `protected` 检查，挡住对 protected 误作 split/discard/
+        modify 的 action（merge 也排除 protected 作 source）。
+
+        新产生的 entry 故意不 stamp —— 它们会在下一轮 cron 形成新
+        cluster 时被重新审视，自然触发 hash invalidation。
+
+        Returns: 成功应用的 action 数。"""
+        from memory.refine import VALID_REFINE_ACTIONS
+
+        async with self._get_alock(name):
+            # asyncio.Lock 不可重入：在锁内必须用 _aensure_persona_locked
+            # 而不是 aensure_persona（后者自己 acquire 同把锁 → 死锁）
+            persona = await self._aensure_persona_locked(name)
+            section = self._get_section_facts(persona, entity)
+            section_by_id = {
+                e.get('id'): e for e in section
+                if isinstance(e, dict) and e.get('id')
+            }
+            cluster_ids = {
+                e.get('id') for e in cluster
+                if isinstance(e, dict) and e.get('id')
+            }
+
+            consumed: set[str] = set()  # split / merge / discard 的源 id
+            produced: list[dict] = []
+            applied = 0
+            now_iso = datetime.now().isoformat()
+
+            for act_obj in actions:
+                if not isinstance(act_obj, dict):
+                    continue
+                act = act_obj.get('action')
+                if act not in VALID_REFINE_ACTIONS:
+                    logger.warning(f"[Refine apply] persona: 非法 action {act!r}")
+                    continue
+
+                if act == 'split':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_ids or src_id in consumed:
+                        continue
+                    src = section_by_id.get(src_id)
+                    if not src or src.get('protected'):
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, list) or len(produce) < 2:
+                        continue
+                    new_entries = []
+                    for p in produce:
+                        if not isinstance(p, dict):
+                            continue
+                        text = str(p.get('text', '')).strip()
+                        if not text:
+                            continue
+                        ne = self._normalize_entry(text)
+                        ne['source'] = src.get('source', 'unknown')
+                        new_entries.append(ne)
+                    if len(new_entries) < 2:
+                        continue
+                    produced.extend(new_entries)
+                    consumed.add(src_id)
+                    applied += 1
+
+                elif act == 'merge':
+                    src_ids_raw = act_obj.get('source_ids') or []
+                    if not isinstance(src_ids_raw, list):
+                        continue
+                    valid_ids = [
+                        sid for sid in src_ids_raw
+                        if sid in cluster_ids
+                        and sid in section_by_id
+                        and sid not in consumed
+                        and not section_by_id[sid].get('protected')
+                    ]
+                    if len(valid_ids) < 2:
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, dict):
+                        continue
+                    text = str(produce.get('text', '')).strip()
+                    if not text:
+                        continue
+                    merged = self._normalize_entry(text)
+                    history = []
+                    max_rein = 0.0
+                    max_user_count = 0
+                    inherited_source = None
+                    inherited_source_id = None
+                    for sid in valid_ids:
+                        src = section_by_id[sid]
+                        history.append({
+                            'text': src.get('text', ''),
+                            'replaced_at': now_iso,
+                            'reason': 'refine_merge',
+                            'source_fact_id': None,
+                        })
+                        max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
+                        max_user_count = max(
+                            max_user_count,
+                            int(src.get('user_fact_reinforce_count', 0) or 0),
+                        )
+                        if inherited_source is None:
+                            inherited_source = src.get('source')
+                            inherited_source_id = src.get('source_id')
+                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                    merged['version_history'] = history[-_VH_MAX:]
+                    merged['reinforcement'] = max_rein
+                    merged['user_fact_reinforce_count'] = max_user_count
+                    merged['source'] = inherited_source or 'unknown'
+                    merged['source_id'] = inherited_source_id
+                    produced.append(merged)
+                    consumed.update(valid_ids)
+                    applied += 1
+
+                elif act == 'modify':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_ids or src_id in consumed:
+                        continue
+                    src = section_by_id.get(src_id)
+                    if not src or src.get('protected'):
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, dict):
+                        continue
+                    new_text = str(produce.get('text', '')).strip()
+                    if not new_text:
+                        continue
+                    reason = str(act_obj.get('reason') or 'refine_modify')
+                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                    old_text = src.get('text', '')
+                    prior_history = src.get('version_history') or []
+                    src['text'] = new_text
+                    src['version_history'] = (
+                        list(prior_history) + [{
+                            'text': old_text,
+                            'replaced_at': now_iso,
+                            'reason': reason,
+                            'source_fact_id': None,
+                        }]
+                    )[-_VH_MAX:]
+                    self._invalidate_token_count_cache(src)
+                    self._invalidate_embedding_cache(src)
+                    applied += 1
+
+                elif act == 'discard':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_ids or src_id in consumed:
+                        continue
+                    src = section_by_id.get(src_id)
+                    if not src or src.get('protected'):
+                        continue
+                    consumed.add(src_id)
+                    applied += 1
+
+            if applied == 0:
+                return 0
+
+            new_section = [
+                e for e in section
+                if not (isinstance(e, dict) and e.get('id') in consumed)
+            ]
+            new_section.extend(produced)
+
+            for e in new_section:
+                if not isinstance(e, dict):
+                    continue
+                eid = e.get('id')
+                if eid in cluster_ids and eid not in consumed:
+                    e['last_refine_cluster_hash'] = cluster_hash
+                    e['last_refine_at'] = now_iso
+
+            section[:] = new_section
+            await self.asave_persona(name, persona)
+            logger.info(
+                f"[Persona] {name} entity={entity}: refine 应用 {applied} action "
+                f"(cluster_hash={cluster_hash}, +{len(produced)} produced, "
+                f"-{len(consumed)} consumed)"
+            )
+        return applied
 
     # ── 提及疲劳：记录 + 更新 suppress ───────────────────────────
 

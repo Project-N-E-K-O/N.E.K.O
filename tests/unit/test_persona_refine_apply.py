@@ -1,0 +1,190 @@
+# -*- coding: utf-8 -*-
+"""Phase A-3 — PersonaManager.apply_refine_actions: 四件套 + protected 兜底。"""
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+def _mock_cm(tmpdir: str):
+    cm = MagicMock()
+    cm.memory_dir = tmpdir
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人", "system": "SYS"}, {}, {}, {}, {},
+    ))
+    cm.get_model_api_config = MagicMock(return_value={
+        "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
+    })
+    return cm
+
+
+def _install(tmpdir: str):
+    from memory.event_log import EventLog
+    from memory.persona import PersonaManager
+    cm = _mock_cm(tmpdir)
+    with patch("memory.event_log.get_config_manager", return_value=cm), \
+         patch("memory.persona.get_config_manager", return_value=cm):
+        event_log = EventLog()
+        event_log._config_manager = cm
+        pm = PersonaManager(event_log=event_log)
+        pm._config_manager = cm
+    return pm
+
+
+async def _seed(pm, name, text, **overrides):
+    persona = await pm.aensure_persona(name)
+    entry = pm._normalize_entry(text)
+    entry.update(overrides)
+    pm._get_section_facts(persona, "master").append(entry)
+    await pm.asave_persona(name, persona)
+    persona = await pm.aensure_persona(name)
+    return next(
+        e for e in pm._get_section_facts(persona, "master")
+        if isinstance(e, dict) and e.get("text") == text
+    )
+
+
+def _annotate(entry, entity='master'):
+    from memory.refine import annotate_entry
+    return annotate_entry(entry, type_='persona', entity=entity)
+
+
+@pytest.mark.asyncio
+async def test_merge_consumes_sources_and_produces_new_entry(tmp_path):
+    pm = _install(str(tmp_path))
+    s1 = await _seed(pm, "小天", "主人喜欢咖啡", id='p_coffee_1')
+    s2 = await _seed(pm, "小天", "主人早上要靠咖啡因开机", id='p_coffee_2')
+    cluster = [_annotate(s1), _annotate(s2)]
+    actions = [{
+        'action': 'merge',
+        'source_ids': ['p_coffee_1', 'p_coffee_2'],
+        'produce': {'text': '主人对咖啡有强依赖性'},
+    }]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h001')
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    section = pm._get_section_facts(persona, "master")
+    texts = [e.get('text') for e in section if isinstance(e, dict)]
+    assert "主人喜欢咖啡" not in texts
+    assert "主人早上要靠咖啡因开机" not in texts
+    assert "主人对咖啡有强依赖性" in texts
+    merged = next(e for e in section if e.get('text') == '主人对咖啡有强依赖性')
+    assert len(merged.get('version_history') or []) == 2
+
+
+@pytest.mark.asyncio
+async def test_split_consumes_source_and_produces_multiple(tmp_path):
+    pm = _install(str(tmp_path))
+    src = await _seed(pm, "小天", "主人喜欢咖啡且早起", id='p_mixed_1')
+    cluster = [_annotate(src)]
+    actions = [{
+        'action': 'split',
+        'source_id': 'p_mixed_1',
+        'produce': [
+            {'text': '主人喜欢咖啡'},
+            {'text': '主人早起'},
+        ],
+    }]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h002')
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    texts = [
+        e.get('text') for e in pm._get_section_facts(persona, "master")
+        if isinstance(e, dict)
+    ]
+    assert "主人喜欢咖啡且早起" not in texts
+    assert "主人喜欢咖啡" in texts
+    assert "主人早起" in texts
+
+
+@pytest.mark.asyncio
+async def test_modify_keeps_id_appends_version_history(tmp_path):
+    pm = _install(str(tmp_path))
+    src = await _seed(pm, "小天", "主人住在东京", id='p_loc_1')
+    cluster = [_annotate(src)]
+    actions = [{
+        'action': 'modify',
+        'source_id': 'p_loc_1',
+        'produce': {'text': '主人最近搬到了大阪'},
+        'reason': '基于近期 fact_xyz',
+    }]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h003')
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    target = next(
+        e for e in pm._get_section_facts(persona, "master")
+        if e.get('id') == 'p_loc_1'
+    )
+    assert target['text'] == '主人最近搬到了大阪'
+    history = target.get('version_history') or []
+    assert history and history[-1]['text'] == '主人住在东京'
+    assert history[-1]['reason'] == '基于近期 fact_xyz'
+
+
+@pytest.mark.asyncio
+async def test_discard_removes_entry(tmp_path):
+    pm = _install(str(tmp_path))
+    src = await _seed(pm, "小天", "obsolete entry", id='p_old_1')
+    cluster = [_annotate(src)]
+    actions = [{
+        'action': 'discard', 'source_id': 'p_old_1', 'reason': '已被证伪',
+    }]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h004')
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    ids = [e.get('id') for e in pm._get_section_facts(persona, "master")]
+    assert 'p_old_1' not in ids
+
+
+@pytest.mark.asyncio
+async def test_discard_rejected_for_protected_entry(tmp_path):
+    """protected (character-card) entry 不可被 discard，即使采集层漏检也兜住。"""
+    pm = _install(str(tmp_path))
+    src = await _seed(pm, "小天", "character card item", id='p_card_1', protected=True)
+    cluster = [_annotate(src)]
+    actions = [{
+        'action': 'discard', 'source_id': 'p_card_1', 'reason': 'x',
+    }]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h005')
+    assert applied == 0
+    persona = await pm.aensure_persona("小天")
+    ids = [e.get('id') for e in pm._get_section_facts(persona, "master")]
+    assert 'p_card_1' in ids
+
+
+@pytest.mark.asyncio
+async def test_invalid_action_ignored_but_others_still_apply(tmp_path):
+    pm = _install(str(tmp_path))
+    src = await _seed(pm, "小天", "x", id='p1')
+    cluster = [_annotate(src)]
+    actions = [
+        {'action': 'invent_an_action', 'source_id': 'p1'},
+        {'action': 'discard', 'source_id': 'p1', 'reason': 'cleanup'},
+    ]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h006')
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    ids = [e.get('id') for e in pm._get_section_facts(persona, "master")]
+    assert 'p1' not in ids
+
+
+@pytest.mark.asyncio
+async def test_survivor_gets_cluster_hash_stamp(tmp_path):
+    """未被 consume 的 cluster 成员应 stamp 上 cluster_hash + last_refine_at。"""
+    pm = _install(str(tmp_path))
+    s1 = await _seed(pm, "小天", "kept entry", id='p_keep')
+    s2 = await _seed(pm, "小天", "to discard", id='p_drop')
+    cluster = [_annotate(s1), _annotate(s2)]
+    actions = [{'action': 'discard', 'source_id': 'p_drop', 'reason': 'x'}]
+    await pm.apply_refine_actions("小天", "master", cluster, actions, 'h007')
+    persona = await pm.aensure_persona("小天")
+    survivor = next(
+        e for e in pm._get_section_facts(persona, "master")
+        if e.get('id') == 'p_keep'
+    )
+    assert survivor['last_refine_cluster_hash'] == 'h007'
+    assert survivor['last_refine_at']
