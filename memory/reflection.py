@@ -949,13 +949,22 @@ class ReflectionEngine:
         return f"ref_{hashlib.sha1(f'{text}|{salt}'.encode('utf-8')).hexdigest()[:16]}"
 
     def _build_split_reflection(
-        self, src: dict, produce_item: dict, entity: str, now: datetime,
+        self,
+        src: dict,
+        produce_item: dict,
+        entity: str,
+        now: datetime,
+        *,
+        split_count: int,
     ) -> dict:
         """构造 split 产出的新 reflection；继承 src 的 source_fact_ids、
-        ontology、event_when。reinforcement 减半（分散到 N 条产物）。"""
+        ontology、event_when。reinforcement 按实际 split_count 等分
+        （Codex P2 #1392：原本硬编码 /2，N>2 时低估了每条强度）。
+        split_count 至少 2（caller 在 len(produce)<2 时已跳过）。"""
         text = str(produce_item.get('text', '')).strip()
         rel_type = produce_item.get('relation_type') or src.get('relation_type')
         temporal = produce_item.get('temporal_scope') or src.get('temporal_scope')
+        denom = max(int(split_count), 2)
         return self._normalize_reflection({
             'id': self._refine_reflection_id(text),
             'text': text,
@@ -963,7 +972,7 @@ class ReflectionEngine:
             'status': src.get('status') or 'pending',
             'source_fact_ids': list(src.get('source_fact_ids') or []),
             'created_at': now.isoformat(),
-            'reinforcement': float(src.get('reinforcement', 0) or 0) / 2,
+            'reinforcement': float(src.get('reinforcement', 0) or 0) / denom,
             'relation_type': rel_type,
             'temporal_scope': temporal,
             'subject': src.get('subject'),
@@ -1091,18 +1100,19 @@ class ReflectionEngine:
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
                         continue
-                    new_entries = []
-                    for p in produce:
-                        if not isinstance(p, dict):
-                            continue
-                        text = str(p.get('text', '')).strip()
-                        if not text:
-                            continue
-                        new_entries.append(
-                            self._build_split_reflection(src, p, entity, now)
-                        )
-                    if len(new_entries) < 2:
+                    # 先过滤出有效 produce items，再以实际数量作 split_count
+                    valid_produce = [
+                        p for p in produce
+                        if isinstance(p, dict) and str(p.get('text', '')).strip()
+                    ]
+                    if len(valid_produce) < 2:
                         continue
+                    new_entries = [
+                        self._build_split_reflection(
+                            src, p, entity, now, split_count=len(valid_produce),
+                        )
+                        for p in valid_produce
+                    ]
                     produced.extend(new_entries)
                     consumed.add(src_id)
                     applied += 1
