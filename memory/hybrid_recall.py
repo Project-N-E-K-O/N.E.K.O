@@ -122,7 +122,11 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
         # non-string（codex review #1 之前那条）。
         return [t for t in str(text or "").split() if len(t) >= 2]
 
-    raw_text = text or ""
+    # str() coerce 同 fallback 路径——malformed memory entry 里 text 可能
+    # 是 list / int 等 truthy non-string，传给 _SPLIT_RE.split 会 TypeError
+    # 把整条 hybrid_recall abort（应该只 skip 这一行，不该带挂全 query）。
+    # codex review (3rd round): normal path 之前漏 coerce，只在 fallback 做。
+    raw_text = str(text or "")
     if stop_names:
         try:
             raw_text = strip_stop_names(raw_text, stop_names)

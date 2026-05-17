@@ -100,6 +100,20 @@ class TestBM25Rank(unittest.TestCase):
         # All score 0 — nothing returned
         self.assertEqual(ranked, [])
 
+    def test_tokenize_coerces_non_string_text(self):
+        """Regression for codex review (3rd round): normal-path _tokenize 之前
+        漏了 str() coerce，遇到 malformed entry 里 text=list/int 等 truthy
+        non-string 时，``_SPLIT_RE.split`` 抛 TypeError 把整条 hybrid_recall
+        abort（应只 skip 单行）。"""
+        # 不该抛任何异常，return [] (list 走 str() 后变 "[1, 2, 3]" → 一个 Latin token)
+        result = _tokenize([1, 2, 3], [])
+        self.assertIsInstance(result, list)
+        # 应不挂；具体输出无所谓
+        result = _tokenize(12345, [])
+        self.assertIsInstance(result, list)
+        # None 早就 OK
+        self.assertEqual(_tokenize(None, []), [])
+
     def test_tf_preserved_so_heavy_repeat_outranks_brief(self):
         """Regression for codex review #1 (commit fd2b75fc4 之前)：
         ``_extract_keywords`` 返回 set，单 doc 内重复 token 被 dedupe，
