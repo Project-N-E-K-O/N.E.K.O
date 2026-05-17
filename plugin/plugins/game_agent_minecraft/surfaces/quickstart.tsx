@@ -26,6 +26,18 @@ type LocaleKey = "zh-CN" | "en" | "ja" | "ko" | "ru"
 const ADMIN_PANEL_URL = "http://localhost:8765"
 const STATUS_REFRESH_INTERVAL_MS = 5000
 
+// mc-agent is distributed as a zip on three netdisks (China-friendly +
+// global). End users pick whichever one is fastest from their network,
+// download, and unzip into data/mc-agent/. We do NOT ship mc-agent
+// inside the N.E.K.O. installer so non-MC users don't carry a ~200 MB
+// node_modules + portable Node tax.
+const DOWNLOAD_LINKS = {
+  quark: "https://pan.quark.cn/s/b662424f7f34",
+  gdrive:
+    "https://drive.google.com/drive/folders/1DSx_y1MsTEvc5ljsjURNJ0aP1ax3RoN-?usp=drive_link",
+  baidu: "https://pan.baidu.com/s/1i_a6IUQDz-GpEaWGvIcnqw?pwd=kuro",
+}
+
 type StatusCopy = {
   title: string
   refresh: string
@@ -41,11 +53,20 @@ type StatusCopy = {
   errorPrefix: string
 }
 
+type DownloadCopy = {
+  title: string
+  hint: string
+  quark: string
+  gdrive: string
+  baidu: string
+}
+
 type GuideCopy = {
   title: string
   subtitle: string
   cards: Array<{ title: string; badge: string; body: string }>
   status: StatusCopy
+  download: DownloadCopy
   setupTitle: string
   setupSteps: Array<{ title: string; body: string }>
   portsTitle: string
@@ -82,10 +103,17 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       adminHint: "改 MC 端口、bot 名字、profile 都去管理面板（mindserver UI）。",
       errorPrefix: "查询失败：",
     },
+    download: {
+      title: "下载 mc-agent",
+      hint: "三个网盘任选其一，下载完解压到 N.E.K.O 安装目录下的 data/mc-agent/，重启 N.E.K.O 即可。",
+      quark: "夸克网盘",
+      gdrive: "Google Drive",
+      baidu: "百度网盘（提取码 kuro）",
+    },
     setupTitle: "完整流程",
     setupSteps: [
       { title: "1. 装 Minecraft Java Edition", body: "推荐 v1.21.1（1.21.x 系列都行）。自己选择正版 / 离线启动器。" },
-      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "从 N.E.K.O 项目主页拿 mc-agent zip，解压到 N.E.K.O 安装目录下的 data/mc-agent/。重启 N.E.K.O 后会自动拉起。" },
+      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到 N.E.K.O 安装目录下的 data/mc-agent/。重启 N.E.K.O 后会自动拉起。" },
       { title: "3. 开 MC 世界并 Open to LAN", body: "进入单人世界 → ESC → Open to LAN → 选游戏模式 → 开放。MC 会在聊天框显示「Local game hosted on port XXXXX」，记下这个端口号。" },
       { title: "4. 在管理面板里把 MC 端口改成你抄下的那个", body: "点上面「打开管理面板」按钮 → 找到 bot 配置 → 修改 port 字段 → 保存。bot 会自动重启用新端口连进 MC 世界。" },
       { title: "5. 验证 bot 进游戏了", body: "MC 聊天框会看到「Kuro joined the game」。看不到就刷新本页状态，或者看 logs/mc-agent.log。" },
@@ -128,10 +156,17 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       adminHint: "Change MC port, bot name, or profile via the admin panel (mindserver UI).",
       errorPrefix: "Query failed: ",
     },
+    download: {
+      title: "Download mc-agent",
+      hint: "Pick whichever drive is fastest from your network. Unzip into data/mc-agent/ under the N.E.K.O. install directory, then restart N.E.K.O.",
+      quark: "Quark Drive (CN)",
+      gdrive: "Google Drive",
+      baidu: "Baidu Pan (code: kuro)",
+    },
     setupTitle: "Full setup flow",
     setupSteps: [
       { title: "1. Install Minecraft Java Edition", body: "v1.21.1 recommended (any 1.21.x is fine). Pick any launcher (official, MultiMC, Prism, etc.)." },
-      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Grab the mc-agent zip from the N.E.K.O. project page, extract into data/mc-agent/ under your N.E.K.O. install directory. Restart N.E.K.O. to auto-spawn it." },
+      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, and extract into data/mc-agent/ under your N.E.K.O. install directory. Restart N.E.K.O. to auto-spawn it." },
       { title: "3. Open a world to LAN", body: "Single player → ESC → Open to LAN → pick game mode → Start. MC will print \"Local game hosted on port XXXXX\" in chat. Note the port number." },
       { title: "4. Change MC port via admin panel", body: "Click \"Open admin panel\" above → find your bot config → change the port field to the number you wrote down → save. The bot will restart and join your world." },
       { title: "5. Confirm the bot joined", body: "You should see \"Kuro joined the game\" in MC chat. If not, refresh status here or check logs/mc-agent.log." },
@@ -174,10 +209,17 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       adminHint: "MC ポート、ボット名、プロファイルは管理パネル（mindserver UI）で変更。",
       errorPrefix: "問い合わせ失敗: ",
     },
+    download: {
+      title: "mc-agent をダウンロード",
+      hint: "回線に合うものを選んで DL し、N.E.K.O インストール先の data/mc-agent/ に解凍 → N.E.K.O を再起動。",
+      quark: "Quark Drive（中国）",
+      gdrive: "Google Drive",
+      baidu: "百度网盘（パスワード kuro）",
+    },
     setupTitle: "セットアップ全体",
     setupSteps: [
       { title: "1. Minecraft Java 版をインストール", body: "v1.21.1 推奨（1.21.x なら何でも）。公式 / MultiMC / Prism いずれでも。" },
-      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "N.E.K.O プロジェクトページから mc-agent の zip を取得し、インストール先の data/mc-agent/ に解凍。N.E.K.O を再起動すると自動起動。" },
+      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから 3 つのドライブのいずれかで mc-agent.zip を取得し、インストール先の data/mc-agent/ に解凍。N.E.K.O を再起動すると自動起動。" },
       { title: "3. ワールドを LAN 公開", body: "シングルプレイ → ESC → LAN 公開 → モード選択 → 開始。チャットに「Local game hosted on port XXXXX」と出るのでポート番号を控える。" },
       { title: "4. 管理パネルで MC ポートを書き換え", body: "上の「管理パネルを開く」→ ボット設定 → port を控えた番号に変更 → 保存。ボットが再起動して新ポートでワールドに参加。" },
       { title: "5. ボットの参加を確認", body: "MC のチャットに「Kuro joined the game」と出れば成功。出なければ本ページの状態を更新、または logs/mc-agent.log を確認。" },
@@ -220,10 +262,17 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       adminHint: "MC 포트, 봇 이름, 프로필은 관리 패널(mindserver UI)에서 변경.",
       errorPrefix: "조회 실패: ",
     },
+    download: {
+      title: "mc-agent 다운로드",
+      hint: "네트워크에 맞는 드라이브를 골라 다운로드 후, N.E.K.O 설치 디렉터리의 data/mc-agent/에 압축 해제 → N.E.K.O 재시작.",
+      quark: "Quark Drive (중국)",
+      gdrive: "Google Drive",
+      baidu: "百度网盘 (비밀번호 kuro)",
+    },
     setupTitle: "전체 설정 흐름",
     setupSteps: [
       { title: "1. Minecraft Java 에디션 설치", body: "v1.21.1 권장 (1.21.x 모두 가능). 공식 / MultiMC / Prism 등 원하는 런처." },
-      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "N.E.K.O 프로젝트 페이지에서 mc-agent zip 다운로드 후 설치 디렉터리의 data/mc-agent/에 압축 해제. N.E.K.O 재시작 시 자동 시작." },
+      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 세 드라이브 중 하나로 mc-agent.zip을 받아 설치 디렉터리의 data/mc-agent/에 압축 해제. N.E.K.O 재시작 시 자동 시작." },
       { title: "3. 월드를 LAN 공개", body: "싱글 플레이 → ESC → LAN 공개 → 게임 모드 선택 → 시작. 채팅창에 「Local game hosted on port XXXXX」가 표시되니 포트 번호 기록." },
       { title: "4. 관리 패널에서 MC 포트 변경", body: "위「관리 패널 열기」클릭 → 봇 설정 → port 필드를 기록한 번호로 변경 → 저장. 봇이 재시작되어 새 포트로 월드에 참가." },
       { title: "5. 봇 참가 확인", body: "MC 채팅에「Kuro joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 logs/mc-agent.log 확인." },
@@ -266,10 +315,17 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       adminHint: "Меняй MC-порт, имя бота, профиль через админ-панель (mindserver UI).",
       errorPrefix: "Ошибка запроса: ",
     },
+    download: {
+      title: "Скачать mc-agent",
+      hint: "Выбери диск, до которого быстрее всего достучаться, распакуй в data/mc-agent/ в каталоге установки N.E.K.O., затем перезапусти N.E.K.O.",
+      quark: "Quark Drive (Китай)",
+      gdrive: "Google Drive",
+      baidu: "Baidu Pan (код kuro)",
+    },
     setupTitle: "Полный путь настройки",
     setupSteps: [
       { title: "1. Установи Minecraft Java Edition", body: "v1.21.1 рекомендуется (любой 1.21.x подойдёт). Любой лаунчер: официальный, MultiMC, Prism." },
-      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Скачай zip mc-agent со страницы проекта N.E.K.O. и распакуй в data/mc-agent/ в каталоге установки. Перезапусти N.E.K.O. для автозапуска." },
+      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше выбери любой из трёх дисков, скачай mc-agent.zip и распакуй в data/mc-agent/ в каталоге установки N.E.K.O. Перезапусти N.E.K.O. — оно подхватит автоматически." },
       { title: "3. Открой мир в LAN", body: "Одиночная игра → ESC → Открыть для сети → выбери режим → Старт. MC напишет в чате «Local game hosted on port XXXXX». Запомни порт." },
       { title: "4. Поменяй MC-порт в админ-панели", body: "Жми «Открыть админ-панель» сверху → найди конфиг бота → измени port на записанный номер → сохрани. Бот перезапустится и зайдёт в твой мир." },
       { title: "5. Подтверди вход бота", body: "В чате MC появится «Kuro joined the game». Если нет — обнови статус здесь или загляни в logs/mc-agent.log." },
@@ -438,6 +494,38 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
           <Text>{status.adminHint}</Text>
         </Stack>
       </Card>
+
+      {state.connected !== true ? (
+        <Card title={copy.download.title}>
+          <Stack>
+            <Text>{copy.download.hint}</Text>
+            <ButtonGroup>
+              <Button
+                tone="primary"
+                onClick={() =>
+                  window.open(DOWNLOAD_LINKS.quark, "_blank", "noopener")
+                }
+              >
+                {copy.download.quark}
+              </Button>
+              <Button
+                onClick={() =>
+                  window.open(DOWNLOAD_LINKS.gdrive, "_blank", "noopener")
+                }
+              >
+                {copy.download.gdrive}
+              </Button>
+              <Button
+                onClick={() =>
+                  window.open(DOWNLOAD_LINKS.baidu, "_blank", "noopener")
+                }
+              >
+                {copy.download.baidu}
+              </Button>
+            </ButtonGroup>
+          </Stack>
+        </Card>
+      ) : null}
 
       <Grid cols={3}>
         {copy.cards.map((card) => (
