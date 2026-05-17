@@ -824,10 +824,23 @@ async def test_unknown_task_id_with_pending_does_not_resolve_pending():
         pytest.fail("_pending was never set")
     b_id = service._pending.task_id
 
+    # Seed a known-good inventory snapshot from before the ghost frame
+    # arrives, so we can assert the ghost doesn't overwrite it.
+    service._last_inventory = {"dirt": 5}
+    service._last_inventory_at = 1234.0
+
     # Frame echoing some other id — not in history, doesn't match pending.
-    await service._on_task_finished({"status": "ok", "task_id": "ghost-id"})
+    # It carries inventory but that inventory belongs to whatever session
+    # produced the ghost id, not ours. Must not leak into our cache.
+    await service._on_task_finished({
+        "status": "ok", "task_id": "ghost-id", "inventory": {"diamond": 99},
+    })
     assert service._pending is not None
     assert service._pending.task_text == "B"
+    # Cache untouched — ghost frame's inventory must not have overwritten
+    # the seed we set above.
+    assert service._last_inventory == {"dirt": 5}
+    assert service._last_inventory_at == 1234.0
 
     # Real B completion still resolves the runner.
     await service._on_task_finished({"status": "ok", "task_id": b_id})

@@ -1160,21 +1160,7 @@ class GameAgentService:
         retroactive: Optional[Dict[str, Any]] = None
 
         async with self._pending_lock:
-            # Commit inventory snapshot upfront. The race-window worry
-            # that justified dropping stale frames in the old design
-            # ("delayed frame from abandoned task overwrites current
-            # ground truth") is gone now that ``try_claim_pending``
-            # serializes claim+dispatch under the same lock — under
-            # ``overwrite=False`` you simply can't have an abandoned
-            # task in flight competing for ``_pending``. The remaining
-            # case (``overwrite=True`` overwrote an in-flight task)
-            # still produces a delayed frame, but its inventory is
-            # *more* recent than what we have, not less.
-            if parsed_inv is not None:
-                self._last_inventory = parsed_inv
-                self._last_inventory_at = time.time()
-
-            # Three classification buckets:
+            # Four classification buckets:
             #   (a) echoed matches current pending → wake the handler
             #   (b) echoed in dispatched history → retroactive cue
             #       (an earlier task — usually one we overwrote — really
@@ -1197,6 +1183,18 @@ class GameAgentService:
                     bucket = "unknown"
             else:
                 bucket = "fifo" if pending is not None else "stray"
+
+            # Only commit the inventory snapshot for frames we accept as
+            # belonging to a task we actually dispatched. unknown / stray
+            # frames could be from a ghost task_id (mc-agent leftover
+            # from a prior session, restart crossover, another client
+            # sharing the same WS endpoint) — letting them overwrite
+            # `_last_inventory` would poison query_inventory and nudge
+            # ground truth with state from an unrelated context.
+            # Per Codex review on PR #1395.
+            if parsed_inv is not None and bucket in ("current", "fifo", "retroactive"):
+                self._last_inventory = parsed_inv
+                self._last_inventory_at = time.time()
 
             if bucket == "current":
                 self._pending = None

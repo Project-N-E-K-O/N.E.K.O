@@ -485,20 +485,40 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         elif isinstance(inv, dict):
             inv_snippet = "\n当前背包：空"
 
-        head_verb = "受阻于" if status == "受阻" else "做完"
+        # Three-way: actual success ("ok", case-insensitive), rebadged
+        # success-but-blocked ("受阻"), or anything else (disconnect,
+        # timeout, interrupted, error, "unknown", arbitrary is_error
+        # strings). The else branch previously cue'd everything that
+        # wasn't 受阻 as "做完 ... 派下一步" which told the dialog LLM the
+        # action succeeded when it actually disconnected / timed out /
+        # crashed — Codex review on PR #1395 caught this. Whitelist
+        # "ok" as success instead of trying to enumerate every failure.
+        is_blocked = status == "受阻"
+        is_success = status.lower() == "ok"
+        if is_blocked:
+            head_verb = "受阻于"
+        elif is_success:
+            head_verb = "做完"
+        else:
+            head_verb = "没做成"
         lines = [f"刚{head_verb}「{query[:100]}」，结果 {status}。"]
         if detail:
             lines.append(f"反馈：{detail[:240]}")
         if inv_snippet:
             lines.append(inv_snippet.strip())
-        if status == "受阻":
+        if is_blocked:
             lines.append(
                 "上面的反馈说明这次没真做成——换思路再派新任务（比如改坐标、"
                 "用真名而不是中文称呼、换个目标）。"
             )
-        else:
+        elif is_success:
             lines.append(
                 "心里有数即可，别复读上面的字面。要继续动作就直接派下一步。"
+            )
+        else:
+            lines.append(
+                "这次没真做成——先根据上面的反馈想清楚原因再决定要不要重试或改派下一步，"
+                "别直接说『搞定了』。"
             )
         lines.append(
             "**不要给 {MASTER_NAME} 播报内部状态**——『连接』『任务空闲』"
@@ -562,6 +582,12 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             inv = snapshot.get("inventory") or {}
             inv_at = snapshot.get("snapshot_at") or 0
             source = snapshot.get("source") or "cached"
+            # `connected` was sampled before the 2s live-query window;
+            # if the handshake completed inside that window and gave us
+            # a live snapshot, the WS is provably connected even if the
+            # pre-snapshot check said otherwise. Reconcile so the result
+            # dict doesn't return source="live" + connected=False.
+            connected = connected or source == "live"
 
             # Short, fact-only summaries. The dialog LLM only needs to
             # *know* the inventory, not复述 a long preamble — the old
