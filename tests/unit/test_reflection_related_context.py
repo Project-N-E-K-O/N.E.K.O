@@ -30,12 +30,25 @@ def _make_engine(facts_on_disk: list[dict]):
 def _disabled_service():
     svc = MagicMock()
     svc.is_disabled = MagicMock(return_value=True)
+    svc.is_available = MagicMock(return_value=False)
     return svc
 
 
 def _enabled_service():
     svc = MagicMock()
     svc.is_disabled = MagicMock(return_value=False)
+    svc.is_available = MagicMock(return_value=True)
+    return svc
+
+
+def _loading_service():
+    """INIT/LOADING 中间态：未 sticky disable，但还没 ready。
+    _build_related_context_block 必须把这视为 unavailable
+    （Codex P2 #1392），否则 reranker 会降级 evidence-only 把无关
+    fact 塞进 RELATED_CONTEXT_BLOCK。"""
+    svc = MagicMock()
+    svc.is_disabled = MagicMock(return_value=False)
+    svc.is_available = MagicMock(return_value=False)
     return svc
 
 
@@ -92,3 +105,17 @@ async def test_happy_path_renders_watermarked_block():
     assert "======以上为相关历史背景======" in block
     # 末尾 \n\n 是 RELATED_CONTEXT_BLOCK 与下游 ====以下为事实==== 自然分隔的依据
     assert block.endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_returns_empty_when_embedding_loading_not_ready():
+    """INIT/LOADING：is_disabled=False 但 is_available=False → 仍要返回
+    空，否则 reranker 降级 evidence-only 会注入无关 fact（Codex P2 #1392）。"""
+    engine = _make_engine([
+        {"id": "f1", "text": "absorbed fact text", "absorbed": True, "importance": 7},
+    ])
+    with patch("memory.embeddings.get_embedding_service", return_value=_loading_service()):
+        block = await engine._build_related_context_block(
+            "小天", [{"id": "f2", "text": "new query"}]
+        )
+    assert block == ""

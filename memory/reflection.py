@@ -879,7 +879,12 @@ class ReflectionEngine:
         mark_absorbed —— 幂等性由 unabsorbed 集合的 rid hash 保证。"""
         try:
             from memory.embeddings import get_embedding_service
-            if get_embedding_service().is_disabled():
+            # 同时检查 is_disabled (sticky 关闭) 和 is_available (READY) ——
+            # INIT/LOADING 状态下 is_disabled=False 但 is_available=False，
+            # 若只看前者，reranker 会降级到 evidence-only 排序，把无关历史
+            # fact 当 "相关背景" 塞进 prompt（Codex P2 #1392）。
+            service = get_embedding_service()
+            if service.is_disabled() or not service.is_available():
                 return ""
         except Exception:
             return ""

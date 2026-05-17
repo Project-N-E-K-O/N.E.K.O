@@ -2076,12 +2076,14 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         annotate_entry,
     )
 
-    re = reflection_engine
+    # 用 `engine_ref` 而不是 `re` —— 后者遮蔽 Python 内置 `re` 模块
+    # （CodeRabbit nitpick #1392）。
+    engine_ref = reflection_engine
     fs = fact_store
-    if re is None or fs is None:
+    if engine_ref is None or fs is None:
         return
 
-    refls = await re.aload_reflections(character, include_archived=False)
+    refls = await engine_ref.aload_reflections(character, include_archived=False)
     if not refls:
         return
     facts = await fs.aload_facts(character)
