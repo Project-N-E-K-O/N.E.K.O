@@ -127,23 +127,50 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
     )
 
 
-def test_detect_avx_vnni_arm64_apple_and_windows_short_circuit(monkeypatch):
-    """Apple Silicon and Windows-on-ARM ship only dotprod-capable cores,
+def test_detect_avx_vnni_arm64_apple_short_circuits(monkeypatch):
+    """Apple Silicon ships only dotprod-capable cores (M1+ universally),
     so detection must claim the INT8 fast path without inspecting flags.
     Without this, M-series Macs fall into the "VNNI required for int8"
     disable branch even though INT8 inference runs fine on them.
     """
     from memory import embeddings as emb_mod
 
-    # macOS arm64
     monkeypatch.setattr(emb_mod.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(emb_mod.platform, "system", lambda: "Darwin")
     assert emb_mod.detect_avx_vnni_details() == (True, True)
 
-    # Windows ARM64 (platform.machine() reports "ARM64" capitalized)
+
+def test_detect_avx_vnni_arm64_windows_uses_processor_feature(monkeypatch):
+    """Windows-on-ARM must call ``IsProcessorFeaturePresent`` rather than
+    assuming support — first-gen WoA (Snapdragon 835, 2017) is ARMv8-A
+    without dotprod, so hard-coding True would silently enable a slow
+    INT8 path on that hardware (Codex review on PR #1394)."""
+    import ctypes
+    from memory import embeddings as emb_mod
+
     monkeypatch.setattr(emb_mod.platform, "machine", lambda: "ARM64")
     monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+
+    class _FakeKernel32:
+        def __init__(self, present: int) -> None:
+            self._present = present
+
+        def IsProcessorFeaturePresent(self, feature: int) -> int:  # noqa: N802
+            # 43 == PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
+            assert feature == 43
+            return self._present
+
+    class _FakeWindll:
+        def __init__(self, present: int) -> None:
+            self.kernel32 = _FakeKernel32(present)
+
+    # Modern Snapdragon X / 8cx — kernel reports dotprod present.
+    monkeypatch.setattr(ctypes, "windll", _FakeWindll(present=1), raising=False)
     assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    # First-gen WoA Snapdragon 835 — no dotprod.
+    monkeypatch.setattr(ctypes, "windll", _FakeWindll(present=0), raising=False)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
 def test_detect_avx_vnni_arm64_linux_checks_asimddp(monkeypatch):

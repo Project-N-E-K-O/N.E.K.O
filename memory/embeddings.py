@@ -300,16 +300,40 @@ def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
 def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
     """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
 
-    Apple Silicon (M1+) and Windows-on-ARM (Snapdragon X / 8cx) ship
-    exclusively with dotprod-capable cores, so we short-circuit those
-    platforms to ``(True, True)``. On Linux we still scrutinise the
-    feature flag because the ARM SBC ecosystem includes plenty of
-    Cortex-A53/A57/A72 cores that predate dotprod — being optimistic
-    there would have us silently run the slow path on a Raspberry Pi 3.
+    Per-OS strategy:
+
+      * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
+        never shipped an ARM Mac without it, so we short-circuit to
+        ``(True, True)``.
+      * Windows — use the canonical
+        ``IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE)``
+        kernel API. Modern Snapdragon X / 8cx have dotprod, but first-gen
+        Windows-on-ARM (Snapdragon 835, ~2017) is ARMv8-A and lacks it —
+        assuming support there would silently enable a slow INT8 path.
+      * Linux — check the ``asimddp`` / ``dotprod`` feature flag (cpuinfo
+        first, ``/proc/cpuinfo`` ``Features`` line as fallback). The ARM
+        SBC ecosystem still includes plenty of Cortex-A53 / A57 / A72
+        cores that predate dotprod (Raspberry Pi 3 class).
+
+    Returns ``(has_dotprod, absence_confirmed)``. Inconclusive cases let
+    ``auto`` quantization still pick int8 without claiming a definitive
+    answer.
     """
     system = platform.system()
-    if system in ("Darwin", "Windows"):
+    if system == "Darwin":
         return True, True
+
+    if system == "Windows":
+        try:
+            import ctypes
+            # PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43 — the canonical
+            # Win32 feature constant for ARMv8.2 dotprod instructions.
+            has = bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(43))
+            return has, True
+        except Exception:
+            # ctypes call failed on a non-standard runtime — be
+            # inconclusive rather than wrong in either direction.
+            return True, False
 
     if system == "Linux":
         try:
@@ -333,8 +357,7 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
             return False, False
 
     # Unknown OS on ARM64 — modern ARM64 almost certainly has dotprod,
-    # but we can't confirm. Inconclusive lets ``auto`` still pick int8
-    # without claiming a definitive answer.
+    # but we can't confirm.
     return True, False
 
 
