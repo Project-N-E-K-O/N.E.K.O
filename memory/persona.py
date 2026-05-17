@@ -1811,6 +1811,21 @@ class PersonaManager:
 
     # ── refine apply (Phase A-3 MemoryRefineEngine) ──────────────────
 
+    @staticmethod
+    def _refine_persona_id(text: str) -> str:
+        """Stable salted id for split/merge produced persona entries.
+
+        Mirrors `ReflectionEngine._refine_reflection_id` — salted so
+        split-into-N pieces with shared underlying source get distinct
+        ids. Without this, `_normalize_entry(text)` returns `id=''`,
+        making `section_by_id` collapse all newly produced entries
+        and cluster_hash skip / archive paths break (CodeRabbit
+        Major #1392).
+        """
+        import hashlib
+        salt = datetime.now().isoformat()
+        return f"per_{hashlib.sha1(f'{text}|{salt}'.encode('utf-8')).hexdigest()[:16]}"
+
     async def apply_refine_actions(
         self,
         name: str,
@@ -1878,6 +1893,9 @@ class PersonaManager:
                         if not text:
                             continue
                         ne = self._normalize_entry(text)
+                        # 必须给唯一 id —— 否则 section_by_id 折叠所有
+                        # 空 id 条目，cluster_hash skip / 归档都会坏掉
+                        ne['id'] = self._refine_persona_id(text)
                         ne['source'] = src.get('source', 'unknown')
                         new_entries.append(ne)
                     if len(new_entries) < 2:
@@ -1906,9 +1924,21 @@ class PersonaManager:
                     if not text:
                         continue
                     merged = self._normalize_entry(text)
+                    # 唯一 id（同 split），否则 section_by_id 会折叠
+                    merged['id'] = self._refine_persona_id(text)
                     history = []
+                    # 继承所有 evidence 状态 —— 不能只复制 reinforcement
+                    # 和 user_fact_reinforce_count，否则 disputation /
+                    # rein_last_signal_at / disp_last_signal_at /
+                    # sub_zero_days 会被默认值清零，掩盖反证和归档倒计时
+                    # （CodeRabbit Major #1392）。
                     max_rein = 0.0
+                    max_disp = 0.0
                     max_user_count = 0
+                    max_sub_zero_days = 0
+                    latest_rein_signal_at: str | None = None
+                    latest_disp_signal_at: str | None = None
+                    latest_sub_zero_increment: str | None = None
                     inherited_source = None
                     inherited_source_id = None
                     for sid in valid_ids:
@@ -1920,17 +1950,41 @@ class PersonaManager:
                             'source_fact_id': None,
                         })
                         max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
+                        max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
                         max_user_count = max(
                             max_user_count,
                             int(src.get('user_fact_reinforce_count', 0) or 0),
                         )
+                        max_sub_zero_days = max(
+                            max_sub_zero_days,
+                            int(src.get('sub_zero_days', 0) or 0),
+                        )
+                        # ISO timestamp 字符串比较即时间序；取最新
+                        for key, current in (
+                            ('rein_last_signal_at', latest_rein_signal_at),
+                            ('disp_last_signal_at', latest_disp_signal_at),
+                            ('sub_zero_last_increment_date', latest_sub_zero_increment),
+                        ):
+                            v = src.get(key)
+                            if v and (current is None or v > current):
+                                if key == 'rein_last_signal_at':
+                                    latest_rein_signal_at = v
+                                elif key == 'disp_last_signal_at':
+                                    latest_disp_signal_at = v
+                                else:
+                                    latest_sub_zero_increment = v
                         if inherited_source is None:
                             inherited_source = src.get('source')
                             inherited_source_id = src.get('source_id')
                     from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                     merged['version_history'] = history[-_VH_MAX:]
                     merged['reinforcement'] = max_rein
+                    merged['disputation'] = max_disp
                     merged['user_fact_reinforce_count'] = max_user_count
+                    merged['sub_zero_days'] = max_sub_zero_days
+                    merged['rein_last_signal_at'] = latest_rein_signal_at
+                    merged['disp_last_signal_at'] = latest_disp_signal_at
+                    merged['sub_zero_last_increment_date'] = latest_sub_zero_increment
                     merged['source'] = inherited_source or 'unknown'
                     merged['source_id'] = inherited_source_id
                     produced.append(merged)

@@ -2112,7 +2112,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
              if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
             'master',
         )
-        await re.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
+        await engine_ref.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
 
     result = await engine.refine_pass(
         candidates_by_entity,
