@@ -214,6 +214,7 @@
         var normalized = await mod.normalizeImageDataUrlForPendingList(img.src);
         if (normalized && normalized !== img.src) {
             img.src = normalized;
+            delete item.dataset.avatarPosition;
         }
         return normalized;
     };
@@ -231,6 +232,7 @@
             var normalized = await mod.normalizePendingAttachmentItem(items[i]);
             urls.push(normalized);
             if (before && normalized && before !== normalized) {
+                delete items[i].dataset.avatarPosition;
                 changed = true;
             }
         }

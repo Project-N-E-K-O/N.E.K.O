@@ -200,17 +200,22 @@ def test_import_image_without_mime_converts_to_jpeg_attachment(
     _open_react_chat_page(mock_page, running_server)
     _install_chat_send_harness(mock_page)
 
-    attachment_url = mock_page.evaluate(
+    import_result = mock_page.evaluate(
         """async () => {
             const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
             const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
             const file = new File([bytes], 'tiny-image', { type: '' });
             await window.appButtons.importImageFileToPendingList(file);
             const state = window.reactChatWindowHost.getState();
-            return state.composerAttachments[0] && state.composerAttachments[0].url;
+            return {
+                attachmentCount: state.composerAttachments.length,
+                attachmentUrl: state.composerAttachments[0] && state.composerAttachments[0].url
+            };
         }"""
     )
 
+    assert import_result["attachmentCount"] == 1
+    attachment_url = import_result["attachmentUrl"]
     assert attachment_url.startswith("data:image/jpeg;base64,")
 
 
@@ -236,14 +241,52 @@ def test_import_jpeg_under_limit_keeps_original_data(
             const file = new File([bytes], 'tiny.jpg', { type: 'image/jpeg' });
             await window.appButtons.importImageFileToPendingList(file);
             const state = window.reactChatWindowHost.getState();
+            if (state.composerAttachments.length !== 1) {
+                throw new Error(`Expected one composer attachment, got ${state.composerAttachments.length}`);
+            }
             return {
                 original,
+                attachmentCount: state.composerAttachments.length,
                 imported: state.composerAttachments[0] && state.composerAttachments[0].url
             };
         }"""
     )
 
+    assert result["attachmentCount"] == 1
     assert result["imported"] == result["original"]
+
+
+@pytest.mark.frontend
+def test_normalized_pending_image_clears_stale_avatar_position(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page)
+
+    result = mock_page.evaluate(
+        """async () => {
+            window.appButtons.addScreenshotToList(
+                'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=',
+                { left: 10, top: 20, width: 30, height: 40 }
+            );
+            const item = document.querySelector('#screenshots-list').children[0];
+            const hadAvatarPositionBefore = Object.prototype.hasOwnProperty.call(item.dataset, 'avatarPosition');
+            await window.appButtons.normalizeAllPendingComposerAttachments();
+            const state = window.reactChatWindowHost.getState();
+            return {
+                attachmentCount: state.composerAttachments.length,
+                hadAvatarPositionBefore,
+                hasAvatarPositionAfter: Object.prototype.hasOwnProperty.call(item.dataset, 'avatarPosition'),
+                attachmentUrl: state.composerAttachments[0] && state.composerAttachments[0].url
+            };
+        }"""
+    )
+
+    assert result["attachmentCount"] == 1
+    assert result["hadAvatarPositionBefore"] is True
+    assert result["hasAvatarPositionAfter"] is False
+    assert result["attachmentUrl"].startswith("data:image/jpeg;base64,")
 
 
 @pytest.mark.frontend
