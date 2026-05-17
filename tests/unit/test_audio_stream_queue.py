@@ -29,14 +29,61 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
     mgr.input_cache_lock = asyncio.Lock()
     mgr.session = object()
     mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
     mgr._enqueue_audio_stream_data = AsyncMock()
     mgr._process_stream_data_internal = AsyncMock()
 
     await LLMSessionManager._flush_pending_input_data(mgr)
 
     mgr._enqueue_audio_stream_data.assert_awaited_once_with(audio_msg)
-    mgr._process_stream_data_internal.assert_awaited_once_with(text_msg)
+    mgr._process_stream_data_internal.assert_awaited_once_with(
+        text_msg,
+        release_non_audio_stream_lock=None,
+    )
     assert mgr.pending_input_data == []
+
+
+async def test_flush_pending_input_data_retries_after_first_replay_error():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    first_msg = {"input_type": "text", "data": "first"}
+    second_msg = {"input_type": "text", "data": "second"}
+    third_msg = {"input_type": "text", "data": "third"}
+    mgr.pending_input_data = [first_msg, second_msg]
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.session = object()
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr._flushing_pending_input_data = False
+    mgr._pending_input_flush_retry_task = None
+    mgr._bg_tasks = set()
+    calls = []
+
+    async def _process_stream_data_internal(message, **_kwargs):
+        calls.append(message["data"])
+        if calls == ["first"]:
+            raise RuntimeError("transient replay error")
+
+    mgr._process_stream_data_internal = _process_stream_data_internal
+
+    await LLMSessionManager._flush_pending_input_data(mgr)
+
+    assert calls == ["first"]
+    assert mgr.pending_input_data == [first_msg, second_msg]
+    assert mgr._flushing_pending_input_data is True
+    retry_task = mgr._pending_input_flush_retry_task
+    assert retry_task is not None
+
+    await LLMSessionManager._stream_data_now(mgr, third_msg)
+
+    assert mgr.pending_input_data == [first_msg, second_msg, third_msg]
+    await asyncio.wait_for(retry_task, timeout=1)
+
+    assert calls == ["first", "first", "second", "third"]
+    assert mgr.pending_input_data == []
+    assert mgr._flushing_pending_input_data is False
+    assert mgr._pending_input_flush_retry_task is None
 
 
 async def test_audio_stream_queue_drops_oldest_when_full():

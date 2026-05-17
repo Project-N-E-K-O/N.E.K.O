@@ -793,6 +793,7 @@ class LLMSessionManager:
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         self._flushing_pending_input_data = False  # 回放缓存输入时，新非音频输入继续排队
+        self._pending_input_flush_retry_task: Optional[asyncio.Task] = None  # 缓存回放失败后的后台重试任务
         self.non_audio_stream_lock = asyncio.Lock()  # 串行化图片/文本输入，保证图文同轮顺序
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
@@ -1558,11 +1559,16 @@ class LLMSessionManager:
         """
         处理响应被丢弃的通知：清空 TTS 管线 + 前端输出，必要时发送 turn end
         """
-        # 快照本轮的 request_id，函数末尾只在仍等于快照时才清空——
-        # 防止用户在本轮 turn end 发出前就提交下一条文本时，新轮的
-        # request_id 被旧 discard 回调误抹掉（前端 rollback / clearPending
-        # rollback 会跨轮串掉）。
-        active_request_id = self._active_text_request_id
+        # 优先使用 stream-local request_id；同一方法会在模型生成前释放
+        # non_audio_stream_lock，多轮文本可以重叠，不能再从共享字段回读。
+        # 函数末尾只在共享字段仍等于快照时才清空，避免旧 discard 回调
+        # 误抹掉新轮 request_id。
+        stream_request_id = _text_stream_request_id.get()
+        active_request_id = (
+            stream_request_id
+            if stream_request_id is not _REQUEST_ID_UNSET
+            else self._active_text_request_id
+        )
         logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
 
         # 检测是否为 RESPONSE_TOO_LONG 最终丢弃 / RESPONSE_LENGTH_TRUNCATED 截断恢复
@@ -3087,6 +3093,37 @@ class LLMSessionManager:
                 status = self._request_tts_done_locked()
                 if status == "queued":
                     logger.debug("_flush_tts_pending_chunks: pending 文本已刷出，补发 TTS done 信号")
+
+    def _schedule_pending_input_flush_retry(self, delay_seconds: float = 0.1) -> None:
+        """缓存输入回放失败后，安排一次后台重试。"""
+        existing_task = getattr(self, "_pending_input_flush_retry_task", None)
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if existing_task and not existing_task.done() and existing_task is not current_task:
+            return
+
+        retry_task: Optional[asyncio.Task] = None
+
+        async def _retry_pending_input_flush() -> None:
+            nonlocal retry_task
+            try:
+                if delay_seconds > 0:
+                    await asyncio.sleep(delay_seconds)
+                async with self.input_cache_lock:
+                    has_pending = bool(self.pending_input_data)
+                if has_pending and self.session and self.is_active:
+                    await self._flush_pending_input_data()
+            finally:
+                if getattr(self, "_pending_input_flush_retry_task", None) is retry_task:
+                    self._pending_input_flush_retry_task = None
+
+        if hasattr(self, "_bg_tasks"):
+            retry_task = self._fire_task(_retry_pending_input_flush())
+        else:
+            retry_task = asyncio.create_task(_retry_pending_input_flush())
+        self._pending_input_flush_retry_task = retry_task
     
     async def _flush_pending_input_data(self):
         """将缓存的输入数据发送到session"""
@@ -3096,6 +3133,7 @@ class LLMSessionManager:
             self._flushing_pending_input_data = True
 
         dropped_text_for_voice = 0
+        retry_flush_needed = False
         try:
             while True:
                 async with self.input_cache_lock:
@@ -3141,13 +3179,26 @@ class LLMSessionManager:
                             self.pending_input_data = (
                                 pending_messages[index:] + self.pending_input_data
                             )
+                        retry_flush_needed = True
                         abort_flush = True
                         break
                 if abort_flush:
                     return
         finally:
+            should_schedule_retry = False
             async with self.input_cache_lock:
-                self._flushing_pending_input_data = False
+                if (
+                    retry_flush_needed
+                    and self.pending_input_data
+                    and self.session
+                    and self.is_active
+                ):
+                    self._flushing_pending_input_data = True
+                    should_schedule_retry = True
+                else:
+                    self._flushing_pending_input_data = False
+            if should_schedule_retry:
+                self._schedule_pending_input_flush_retry()
 
         if self.session and self.is_active and dropped_text_for_voice:
             logger.info(

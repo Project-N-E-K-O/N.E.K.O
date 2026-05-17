@@ -55,6 +55,21 @@ class _FakeQueue:
         return self.messages.pop(0)
 
 
+class _ConnectedState:
+    @property
+    def CONNECTED(self):
+        return self
+
+
+class _FakeWebSocket:
+    def __init__(self):
+        self.client_state = _ConnectedState()
+        self.messages = []
+
+    async def send_json(self, message):
+        self.messages.append(message)
+
+
 class _FakeActivityTracker:
     def __init__(self):
         self.voice_rms_count = 0
@@ -818,3 +833,35 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_discarded_uses_stream_local_request_id_when_turns_overlap():
+    mgr = _make_manager()
+    mgr.websocket = _FakeWebSocket()
+    mgr._active_text_request_id = "req-newer"
+
+    async def _clear_tts_pipeline():
+        return None
+
+    mgr._clear_tts_pipeline = _clear_tts_pipeline
+    token = core_module._text_stream_request_id.set("req-older")
+    try:
+        await core_module.LLMSessionManager.handle_response_discarded(
+            mgr,
+            "guard",
+            1,
+            2,
+            True,
+        )
+    finally:
+        core_module._text_stream_request_id.reset(token)
+
+    assert mgr.websocket.messages[0]["type"] == "response_discarded"
+    assert mgr.websocket.messages[0]["request_id"] == "req-older"
+    assert mgr._active_text_request_id == "req-newer"
+    assert mgr.sync_message_queue.messages == [{
+        "type": "system",
+        "data": "response_discarded_clear",
+    }]
