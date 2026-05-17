@@ -38,9 +38,21 @@ export function openExternalUrl(url: string): void {
   }
   if (!['http:', 'https:', 'mailto:'].includes(normalized.protocol)) return
   const href = normalized.toString()
-  const shell = (window as unknown as { electronShell?: { openExternal?: (u: string) => void } }).electronShell
+  const shell = (window as unknown as {
+    electronShell?: { openExternal?: (u: string) => void | Promise<unknown> }
+  }).electronShell
   if (shell && typeof shell.openExternal === 'function') {
-    shell.openExternal(href)
+    // The preload bridge may be backed by ipcRenderer.invoke (Promise<void>)
+    // or ipcRenderer.send (void) — we don't control which side it's on.
+    // Promise.resolve normalizes both; .catch swallows the unhandled
+    // rejection that would otherwise fire if invoke rejects. We deliberately
+    // do NOT fall back to window.open here: in Electron context window.open
+    // is exactly the trapped-inner-webview behavior this helper exists to
+    // avoid, so silently failing is the lesser evil than re-triggering the
+    // bug.
+    Promise.resolve(shell.openExternal(href)).catch((err) => {
+      console.warn('[openExternalUrl] electronShell.openExternal failed:', err)
+    })
     return
   }
   window.open(href, '_blank', 'noopener,noreferrer')
