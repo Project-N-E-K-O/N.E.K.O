@@ -133,20 +133,94 @@ def test_macos_window_scanner_returns_list() -> None:
         assert isinstance(window, DetectedGameWindow)
 
 
+def test_macos_target_window_rect_prefers_window_number_over_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import ocr_reader
+
+    windows = [
+        {
+            "kCGWindowNumber": 11,
+            "kCGWindowOwnerPID": 123,
+            "kCGWindowName": "Launcher",
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 300, "Height": 200},
+        },
+        {
+            "kCGWindowNumber": 22,
+            "kCGWindowOwnerPID": 123,
+            "kCGWindowName": "Game",
+            "kCGWindowBounds": {"X": 100, "Y": 200, "Width": 800, "Height": 600},
+        },
+    ]
+    fake_quartz = SimpleNamespace(
+        kCGWindowListOptionOnScreenOnly=1,
+        kCGNullWindowID=0,
+        kCGWindowNumber="kCGWindowNumber",
+        kCGWindowOwnerPID="kCGWindowOwnerPID",
+        kCGWindowName="kCGWindowName",
+        kCGWindowBounds="kCGWindowBounds",
+        CGWindowListCopyWindowInfo=lambda *_args: windows,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+    target = DetectedGameWindow(hwnd=22, title="Game", pid=123, width=800, height=600)
+
+    assert ocr_reader._target_window_rect_macos(target) == (100, 200, 900, 800)
+
+
+def test_macos_target_window_rect_falls_back_to_pid_and_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import ocr_reader
+
+    windows = [
+        {
+            "kCGWindowNumber": 11,
+            "kCGWindowOwnerPID": 123,
+            "kCGWindowName": "Settings",
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 300, "Height": 200},
+        },
+        {
+            "kCGWindowNumber": 33,
+            "kCGWindowOwnerPID": 123,
+            "kCGWindowName": "  GAME  ",
+            "kCGWindowBounds": {"X": 40, "Y": 50, "Width": 640, "Height": 480},
+        },
+    ]
+    fake_quartz = SimpleNamespace(
+        kCGWindowListOptionOnScreenOnly=1,
+        kCGNullWindowID=0,
+        kCGWindowNumber="kCGWindowNumber",
+        kCGWindowOwnerPID="kCGWindowOwnerPID",
+        kCGWindowName="kCGWindowName",
+        kCGWindowBounds="kCGWindowBounds",
+        CGWindowListCopyWindowInfo=lambda *_args: windows,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+    target = DetectedGameWindow(hwnd=0, title="game", pid=123, width=640, height=480)
+
+    assert ocr_reader._target_window_rect_macos(target) == (40, 50, 680, 530)
+
+
 # ─── ElectronCaptureBackend smoke tests ──────────────────────────────────
 
 
-def test_electron_backend_is_available_when_endpoint_down() -> None:
+def test_electron_backend_is_available_when_endpoint_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When no Electron HTTP endpoint is reachable, is_available must
     return False rather than raising."""
+    import httpx
+
     from plugin.plugins.galgame_plugin.electron_capture import (
         ElectronCaptureBackend,
     )
 
-    # Point at a port that is virtually guaranteed to be closed locally.
-    backend = ElectronCaptureBackend(
-        base_url="http://127.0.0.1:1", health_timeout=0.2
-    )
+    def _raise_connect_error(*args, **kwargs):
+        del args, kwargs
+        raise httpx.ConnectError("endpoint down")
+
+    monkeypatch.setattr(httpx, "request", _raise_connect_error)
+    backend = ElectronCaptureBackend(base_url="http://127.0.0.1:1")
     assert backend.is_available() is False
 
 
@@ -234,10 +308,11 @@ def test_linux_wmctrl_scanner_uses_resolved_binary(
 
     monkeypatch.setattr(window_scanner_linux.shutil, "which", lambda name: "/usr/bin/wmctrl")
 
-    def _fake_check_output(cmd, *, text, timeout):
+    def _fake_check_output(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("cmd")
         captured["cmd"] = cmd
-        captured["text"] = text
-        captured["timeout"] = timeout
+        captured["text"] = kwargs.get("text")
+        captured["timeout"] = kwargs.get("timeout")
         return "0x01200007  0 10 20 640 480 host Game Window\n"
 
     monkeypatch.setattr(window_scanner_linux.subprocess, "check_output", _fake_check_output)

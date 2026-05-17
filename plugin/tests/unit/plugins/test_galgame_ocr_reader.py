@@ -2147,6 +2147,78 @@ def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> No
     assert backend.last_backend_detail == "printwindow_unavailable_fallback"
 
 
+def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnavailableBackend:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+
+        def is_available(self) -> bool:
+            return False
+
+        def capture_frame(self, target, profile):  # pragma: no cover
+            raise AssertionError(f"{self.kind} should not capture")
+
+    class _ElectronBackend:
+        kind = "electron"
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):
+            return "electron-frame"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._printwindow_backend = _UnavailableBackend("printwindow")
+    backend._backends = [_UnavailableBackend("mss"), _ElectronBackend()]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "electron-frame"
+    assert backend.last_backend_kind == "electron"
+    assert backend.last_backend_detail == "mss_unavailable_fallback"
+
+
+def test_smart_capture_backend_windows_background_keeps_printwindow_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool = True) -> None:
+            self.kind = kind
+            self.available = available
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, target, profile):
+            self.calls += 1
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    printwindow = _Backend("printwindow")
+    dxcam = _Backend("dxcam")
+    backend._printwindow_backend = printwindow
+    backend._dxcam_backend = dxcam
+    backend._backends = [dxcam, _Backend("mss"), _Backend("pyautogui"), printwindow]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "printwindow-frame"
+    assert printwindow.calls == 1
+    assert dxcam.calls == 0
+    assert backend.last_backend_kind == "printwindow"
+
+
 def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
     camera = object()
     calls = 0

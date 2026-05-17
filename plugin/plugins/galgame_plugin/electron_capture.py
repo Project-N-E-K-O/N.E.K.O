@@ -14,10 +14,12 @@ backend appears in the chain only as a tail fallback there.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import io
 import os
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from .ocr_reader import DetectedGameWindow, OcrCaptureProfile
@@ -46,8 +48,28 @@ def _resolve_default_base_url() -> str:
         port_int = int(port) if port else _DEFAULT_PORT_FALLBACK
     except (TypeError, ValueError):
         port_int = _DEFAULT_PORT_FALLBACK
+    if not 1 <= port_int <= 65535:
+        port_int = _DEFAULT_PORT_FALLBACK
     # API URLs intentionally have no trailing slash per project convention.
     return f"http://{_DEFAULT_HOST}:{port_int}"
+
+
+def _is_loopback_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _normalize_loopback_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not _is_loopback_host(parsed.hostname):
+        raise ValueError("electron capture base_url must use a loopback host")
+    return base_url.rstrip("/")
 
 
 class ElectronCaptureBackend:
@@ -64,10 +86,16 @@ class ElectronCaptureBackend:
         health_timeout: float = 2.0,
     ) -> None:
         self._logger = logger
-        self._base_url = (base_url or _resolve_default_base_url()).rstrip("/")
+        self._base_url = _normalize_loopback_base_url(
+            base_url or _resolve_default_base_url()
+        )
         self._request_timeout = float(request_timeout)
         self._health_timeout = float(health_timeout)
         self._available_cached: bool | None = None
+
+    def _validated_base_url(self) -> str:
+        self._base_url = _normalize_loopback_base_url(self._base_url)
+        return self._base_url
 
     def is_available(self) -> bool:
         """Probe the Electron bridge endpoint with a short timeout.
@@ -84,7 +112,7 @@ class ElectronCaptureBackend:
         try:
             resp = httpx.request(
                 "GET",
-                f"{self._base_url}{_DEFAULT_HEALTH_PATH}",
+                f"{self._validated_base_url()}{_DEFAULT_HEALTH_PATH}",
                 timeout=self._health_timeout,
             )
             return resp.status_code == 200
@@ -131,10 +159,11 @@ class ElectronCaptureBackend:
             raise RuntimeError("electron: pillow_not_installed") from exc
 
         payload = self._target_payload(target)
+        base_url = self._validated_base_url()
         try:
             resp = httpx.request(
                 "POST",
-                f"{self._base_url}{_DEFAULT_SCREENSHOT_PATH}",
+                f"{base_url}{_DEFAULT_SCREENSHOT_PATH}",
                 json=payload,
                 timeout=self._request_timeout,
             )

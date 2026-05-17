@@ -2464,7 +2464,7 @@ def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int
     Uses kCGWindowListOptionOnScreenOnly to avoid stale coordinates from
     windows on inactive Spaces (consistent with _scan_windows_macos).
     Falls back to (0, 0, width, height) if Quartz is unavailable or the
-    window cannot be found by PID — the capture backend then does a
+    window cannot be identified — the capture backend then does a
     full-screen grab and the caller crops by profile ratios.
     """
     try:
@@ -2475,16 +2475,44 @@ def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int
     window_list = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
     )
+    target_window_id = max(0, int(getattr(target, "hwnd", 0) or 0))
+    target_pid = max(0, int(getattr(target, "pid", 0) or 0))
+    target_title = _normalize_window_title(getattr(target, "title", "") or "")
+    pid_matches: list[Any] = []
+
+    def _window_rect(window: Any) -> tuple[int, int, int, int] | None:
+        bounds = window.get(Quartz.kCGWindowBounds)
+        if not isinstance(bounds, dict):
+            return None
+        x = int(bounds.get("X", 0))
+        y = int(bounds.get("Y", 0))
+        w = int(bounds.get("Width", target.width))
+        h = int(bounds.get("Height", target.height))
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, x + w, y + h)
+
     for window in window_list:
-        if window.get(Quartz.kCGWindowOwnerPID) == int(target.pid):
-            bounds = window.get(Quartz.kCGWindowBounds)
-            if isinstance(bounds, dict):
-                x = int(bounds.get("X", 0))
-                y = int(bounds.get("Y", 0))
-                w = int(bounds.get("Width", target.width))
-                h = int(bounds.get("Height", target.height))
-                if w > 0 and h > 0:
-                    return (x, y, x + w, y + h)
+        window_id = max(0, int(window.get(Quartz.kCGWindowNumber, 0) or 0))
+        if target_window_id and window_id == target_window_id:
+            rect = _window_rect(window)
+            if rect is not None:
+                return rect
+        if target_pid and window.get(Quartz.kCGWindowOwnerPID) == target_pid:
+            pid_matches.append(window)
+
+    for window in pid_matches:
+        name = _normalize_window_title(window.get(Quartz.kCGWindowName, "") or "")
+        if target_title and name == target_title:
+            rect = _window_rect(window)
+            if rect is not None:
+                return rect
+
+    if not target_window_id and len(pid_matches) == 1:
+        rect = _window_rect(pid_matches[0])
+        if rect is not None:
+            return rect
+
     return (0, 0, int(target.width), int(target.height))
 
 
@@ -3285,7 +3313,14 @@ class Win32CaptureBackend:
         return _filter([self._dxcam_backend, self._mss_backend, self._pyautogui_backend])
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
+        from .capture_platform import is_windows  # noqa: PLC0415
+
+        is_windows_host = is_windows()
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
+            if not (
+                is_windows_host and self._printwindow_backend in self._backends
+            ):
+                return list(self._backends)
             # Explicit PrintWindow selection: user is opting into the only
             # backend that can capture occluded / background windows. If we
             # silently fell through to dxcam/mss/pyautogui on a background
@@ -3304,8 +3339,19 @@ class Win32CaptureBackend:
             return list(self._backends)
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
+        if not is_windows_host:
+            return list(self._backends)
         if bool(getattr(target, "is_foreground", False)):
-            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+            foreground_backends = {
+                id(self._dxcam_backend),
+                id(self._mss_backend),
+                id(self._pyautogui_backend),
+            }
+            return [
+                backend
+                for backend in self._backends
+                if id(backend) in foreground_backends
+            ]
         # Background target: PrintWindow is the only backend that can plausibly
         # capture occluded windows (others read screen pixels and would grab
         # the overlapping window). Quality is unreliable; ocr_reader emits

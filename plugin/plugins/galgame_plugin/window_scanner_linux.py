@@ -50,59 +50,65 @@ def _scan_windows_linux_xlib() -> list["DetectedGameWindow"]:
     from .ocr_reader import DetectedGameWindow  # noqa: PLC0415
 
     d = xdisplay.Display()
-    root = d.screen().root
-
-    net_client_list = d.intern_atom("_NET_CLIENT_LIST")
-    net_wm_name = d.intern_atom("_NET_WM_NAME")
-    net_wm_pid = d.intern_atom("_NET_WM_PID")
-    net_wm_visible_name = d.intern_atom("_NET_WM_VISIBLE_NAME")
-
     try:
-        raw = root.get_full_property(net_client_list, X.AnyPropertyType)
-        window_ids = raw.value if raw else []
-    except Exception:
-        return []
+        root = d.screen().root
 
-    results: list[DetectedGameWindow] = []
-    for wid in window_ids:
+        net_client_list = d.intern_atom("_NET_CLIENT_LIST")
+        net_wm_name = d.intern_atom("_NET_WM_NAME")
+        net_wm_pid = d.intern_atom("_NET_WM_PID")
+        net_wm_visible_name = d.intern_atom("_NET_WM_VISIBLE_NAME")
+
         try:
-            window = d.create_resource_object("window", wid)
-            geom = window.get_geometry()
+            raw = root.get_full_property(net_client_list, X.AnyPropertyType)
+            window_ids = raw.value if raw else []
+        except Exception:
+            return []
 
-            title = _x11_get_window_title(window, net_wm_name, net_wm_visible_name)
-            pid = _x11_get_window_pid(window, net_wm_pid)
+        results: list[DetectedGameWindow] = []
+        for wid in window_ids:
+            try:
+                window = d.create_resource_object("window", wid)
+                geom = window.get_geometry()
 
-            if not title or len(str(title)) < 2:
-                continue
+                title = _x11_get_window_title(window, net_wm_name, net_wm_visible_name)
+                pid = _x11_get_window_pid(window, net_wm_pid)
 
-            width = max(0, int(geom.width))
-            height = max(0, int(geom.height))
-            area = width * height
-            if area <= 0:
-                continue
+                if not title or len(str(title)) < 2:
+                    continue
 
-            results.append(
-                DetectedGameWindow(
-                    hwnd=int(wid),
-                    title=str(title),
-                    process_name="",
-                    pid=int(pid) if pid else 0,
-                    class_name="",
-                    exe_path="",
-                    width=width,
-                    height=height,
-                    area=area,
-                    is_foreground=False,
-                    is_minimized=False,
-                    score=float(area),
+                width = max(0, int(geom.width))
+                height = max(0, int(geom.height))
+                area = width * height
+                if area <= 0:
+                    continue
+
+                results.append(
+                    DetectedGameWindow(
+                        hwnd=int(wid),
+                        title=str(title),
+                        process_name="",
+                        pid=int(pid) if pid else 0,
+                        class_name="",
+                        exe_path="",
+                        width=width,
+                        height=height,
+                        area=area,
+                        is_foreground=False,
+                        is_minimized=False,
+                        score=float(area),
+                    )
                 )
-            )
-        except Exception as exc:
-            _LOGGER.debug("linux xlib window entry skipped: %s", exc)
-            continue
+            except Exception as exc:
+                _LOGGER.debug("linux xlib window entry skipped: %s", exc)
+                continue
 
-    results.sort(key=lambda w: w.area, reverse=True)
-    return results
+        results.sort(key=lambda w: w.area, reverse=True)
+        return results
+    finally:
+        try:
+            d.close()
+        except Exception as exc:
+            _LOGGER.debug("linux xlib display close failed: %s", exc)
 
 
 def _x11_get_window_title(
