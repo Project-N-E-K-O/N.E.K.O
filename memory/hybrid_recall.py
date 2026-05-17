@@ -103,11 +103,15 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
         # whitespace split so BM25 still produces *something* for Latin
         # text. CJK text in this fallback collapses to whole-segment
         # tokens (poor recall) — but the alternative is a hard crash.
+        # str() coerce defends against malformed memory entries where
+        # ``text`` slipped through as int / list / etc. (codex review):
+        # this is already the unhappy path — second crash on ``.split()``
+        # would defeat the whole try/except.
         logger.warning(
             "[hybrid_recall] tokenize fallback to whitespace split: %s",
             exc,
         )
-        return [t for t in (text or "").split() if len(t) >= 2]
+        return [t for t in str(text or "").split() if len(t) >= 2]
 
 
 # ── BM25 retrieval ────────────────────────────────────────────────────
@@ -209,41 +213,48 @@ async def _cosine_rank(
     if model_id is None:
         return []
 
-    query_vectors = await service.embed_batch([query])
-    if not query_vectors or query_vectors[0] is None:
-        return []
-    qvec = query_vectors[0]
-
+    # Wrap the entire embed + score loop in try/except so a cosine-path
+    # failure（embed_batch 抛 / numpy 缺 / 单条 doc 解码崩）不把已经算出
+    # 的 BM25 结果一起埋了。上游 ``hybrid_recall`` await 这条 task 时
+    # 如果异常就丢 BM25 → 退化为空召回，违背 hybrid 的初衷。
     try:
+        query_vectors = await service.embed_batch([query])
+        if not query_vectors or query_vectors[0] is None:
+            return []
+        qvec = query_vectors[0]
+
         import numpy as np
-    except ImportError:
-        logger.warning("[hybrid_recall] numpy unavailable; skipping cosine")
+
+        qarr = np.asarray(qvec, dtype=np.float32)
+        qnorm = float(np.linalg.norm(qarr))
+        if qnorm <= 0:
+            return []
+
+        target_dim = parse_dim_from_model_id(model_id) or int(qarr.size)
+
+        scored: list[tuple[dict, float]] = []
+        for doc in pool:
+            text = doc.get('text', '') or ''
+            if not is_cached_embedding_valid(doc, text, model_id):
+                continue
+            cvec = decode_embedding(doc.get('embedding'))
+            if cvec is None or cvec.size != target_dim:
+                continue
+            carr = np.asarray(cvec, dtype=np.float32)
+            cnorm = float(np.linalg.norm(carr))
+            if cnorm <= 0:
+                continue
+            cos = float(np.dot(qarr, carr) / (qnorm * cnorm))
+            scored.append((doc, cos))
+
+        scored.sort(key=lambda p: p[1], reverse=True)
+        return scored
+    except Exception as exc:
+        logger.warning(
+            "[hybrid_recall] cosine path failed; falling back to BM25-only: %s: %s",
+            type(exc).__name__, exc,
+        )
         return []
-
-    qarr = np.asarray(qvec, dtype=np.float32)
-    qnorm = float(np.linalg.norm(qarr))
-    if qnorm <= 0:
-        return []
-
-    target_dim = parse_dim_from_model_id(model_id) or int(qarr.size)
-
-    scored: list[tuple[dict, float]] = []
-    for doc in pool:
-        text = doc.get('text', '') or ''
-        if not is_cached_embedding_valid(doc, text, model_id):
-            continue
-        cvec = decode_embedding(doc.get('embedding'))
-        if cvec is None or cvec.size != target_dim:
-            continue
-        carr = np.asarray(cvec, dtype=np.float32)
-        cnorm = float(np.linalg.norm(carr))
-        if cnorm <= 0:
-            continue
-        cos = float(np.dot(qarr, carr) / (qnorm * cnorm))
-        scored.append((doc, cos))
-
-    scored.sort(key=lambda p: p[1], reverse=True)
-    return scored
 
 
 # ── RRF fusion ────────────────────────────────────────────────────────

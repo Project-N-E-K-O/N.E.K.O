@@ -2733,9 +2733,17 @@ class LLMSessionManager:
                 timeout=5.0,
             )
             if not resp.is_success:
+                # WARNING 只带 status + body 长度（非敏感元数据）；body 原文
+                # 含跨进程边界返回的字符串，可能夹带 query 回显 / 错误细节
+                # 等含上下文内容，按 PR #1384 立的隐私分层规矩落 DEBUG。
+                body_text = resp.text or ""
                 logger.warning(
-                    "[recall_memory] memory_server returned %s: %s",
-                    resp.status_code, resp.text[:200],
+                    "[recall_memory] memory_server returned status=%s body_len=%d",
+                    resp.status_code, len(body_text),
+                )
+                logger.debug(
+                    "[recall_memory] non-success response body=%r",
+                    body_text[:500],
                 )
             else:
                 result_payload = resp.json()

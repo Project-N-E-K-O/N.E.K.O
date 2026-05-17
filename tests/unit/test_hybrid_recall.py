@@ -17,7 +17,6 @@ tests; we exercise the cosine code only via stubbing.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import tempfile

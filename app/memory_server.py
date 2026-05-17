@@ -2984,8 +2984,11 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             status_code=503,
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
-    from memory.hybrid_recall import hybrid_recall
     try:
+        # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
+        # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
+        # 直接 500 把 tool call 整死。
+        from memory.hybrid_recall import hybrid_recall
         return await hybrid_recall(
             lanlan_name=lanlan_name,
             query=req.query or "",
@@ -2996,7 +2999,9 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
         # 那边的 handler 会把空 results 翻译成 "没有找到相关记忆"，模型可以
-        # 正常继续。同时记一条 ERROR 给后端排查。
+        # 正常继续。完整 traceback 落 logger.exception（含 type + msg），
+        # 响应体只回稳定 error_code，避免把内部细节（异常消息可能夹带敏感
+        # 上下文）通过 HTTP body 泄出去。
         logger.exception(
             "[hybrid_recall] %s: 召回失败，返回空结果占位: %s: %s",
             lanlan_name, type(exc).__name__, exc,
@@ -3004,7 +3009,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         return {
             "results": [], "query": req.query or "",
             "candidates_total": 0, "elapsed_ms": 0.0,
-            "error": f"{type(exc).__name__}: {exc}",
+            "error_code": "hybrid_recall_failed",
         }
 
 @app.get("/get_settings/{lanlan_name}")
