@@ -17,6 +17,7 @@ import pytest
 from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
 from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
+from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
 from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
@@ -1906,26 +1907,11 @@ def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = _window()[0]
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_client_rect",
-        lambda _target: (5, 92, 1301, 1060),
-    )
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_window_uses_overlapped_chrome",
-        lambda _target: True,
-    )
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_monitor_work_rects",
-        lambda _rect: [],
-    )
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_monitor_work_rect",
-        lambda _target: (0, 0, 1920, 1040),
-    )
+    for mod in (galgame_ocr_reader, galgame_ocr_capture_backends):
+        monkeypatch.setattr(mod, "_target_client_rect", lambda _t: (5, 92, 1301, 1060))
+        monkeypatch.setattr(mod, "_target_window_uses_overlapped_chrome", lambda _t: True)
+        monkeypatch.setattr(mod, "_target_monitor_work_rects", lambda _r: [])
+        monkeypatch.setattr(mod, "_target_monitor_work_rect", lambda _t: (0, 0, 1920, 1040))
 
     rect = galgame_ocr_reader._target_screen_capture_rect(target)
 
@@ -1942,7 +1928,17 @@ def test_screen_capture_rect_spanning_monitors_keeps_other_display(
         lambda _target: (1800, 100, 2600, 1060),
     )
     monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_client_rect",
+        lambda _target: (1800, 100, 2600, 1060),
+    )
+    monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_backends,
         "_target_window_uses_overlapped_chrome",
         lambda _target: True,
     )
@@ -1952,7 +1948,17 @@ def test_screen_capture_rect_spanning_monitors_keeps_other_display(
         lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
     )
     monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_monitor_work_rects",
+        lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
+    )
+    monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_backends,
         "_target_monitor_work_rect",
         lambda _target: (0, 0, 1920, 1040),
     )
@@ -1972,7 +1978,17 @@ def test_screen_capture_rect_ignores_invalid_monitor_payload(
         lambda _target: (10, 20, 800, 600),
     )
     monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_client_rect",
+        lambda _target: (10, 20, 800, 600),
+    )
+    monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_backends,
         "_target_window_uses_overlapped_chrome",
         lambda _target: True,
     )
