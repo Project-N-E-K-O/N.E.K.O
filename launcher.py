@@ -842,6 +842,166 @@ SERVERS = [
 # 不再启动主程序，用户自己启动 lanlan_frd.exe
 
 
+# ===== 可选 mc-agent 子进程 =====
+# mc-agent 是 N.E.K.O. 的 Minecraft 桥（mineflayer 系），用 Node.js 跑。
+# 它跟主程序解耦：data/mc-agent/ 存在就拉起，不存在就跳过——这样不玩
+# MC 的用户零负担，玩 MC 的用户可以
+#   a) 让 build 时 scripts/vendor_mc_agent.py 把它打进 data/
+#   b) 单独下载 mc-agent zip 解压到 data/
+# 两种方式落地的目录布局一致：
+#   data/mc-agent/node/node-vX.Y.Z-win-x64/node.exe
+#   data/mc-agent/src/main.js
+#   data/mc-agent/src/node_modules/...
+#
+# 子进程的 stdout/stderr 重定向到 logs/mc-agent.log；mc-agent 自己也有
+# mindserver UI（默认 :8765）可以看 bot 状态，所以这里不需要 live 输出。
+
+_MC_AGENT_DEFAULT_PLUGIN_WS_PORT = 48909
+_MC_AGENT_DEFAULT_MINDSERVER_PORT = 8765
+_MC_AGENT_DEFAULT_MC_PORT = 55916
+
+_MC_AGENT_PROC: subprocess.Popen | None = None
+_MC_AGENT_LOG_HANDLE = None  # 关进程时一并关掉文件句柄
+
+
+def _resolve_mc_agent_paths() -> tuple[Path, Path] | None:
+    """Return ``(node_exe, src_dir)`` if mc-agent is vendored, else None.
+
+    Looks for the layout that ``scripts/vendor_mc_agent.py`` produces. Any
+    missing piece (no Node, no source, no main.js) → return None and the
+    launcher silently skips mc-agent.
+    """
+    mc_root = Path(bundle_dir) / "data" / "mc-agent"
+    node_root = mc_root / "node"
+    src_dir = mc_root / "src"
+    main_js = src_dir / "main.js"
+    if not main_js.is_file():
+        return None
+    # The portable Node zip extracts to node-vX.Y.Z-win-x64/; pick any
+    # subdir that has node.exe so we don't hard-code the version string.
+    if not node_root.is_dir():
+        return None
+    for child in node_root.iterdir():
+        candidate = child / "node.exe"
+        if candidate.is_file():
+            return candidate, src_dir
+    return None
+
+
+def _try_start_mc_agent() -> bool:
+    """Spawn the mc-agent Node subprocess if data/mc-agent/ is present.
+
+    Idempotent — calling twice while a process is alive is a no-op. Returns
+    True when a process was launched, False when there's nothing to launch.
+    """
+    global _MC_AGENT_PROC, _MC_AGENT_LOG_HANDLE
+    if _MC_AGENT_PROC is not None and _MC_AGENT_PROC.poll() is None:
+        return True
+
+    resolved = _resolve_mc_agent_paths()
+    if resolved is None:
+        print(
+            "[Launcher] mc-agent not vendored (data/mc-agent/ missing or "
+            "incomplete); skipping. Run scripts/vendor_mc_agent.py to enable.",
+            flush=True,
+        )
+        return False
+    node_exe, src_dir = resolved
+
+    # Three ports are env-overridable inside mc-agent (see settings.js +
+    # ws_server.js). We pass the launcher's view of them so the plugin
+    # side and mc-agent side agree without the user editing JSON.
+    env = os.environ.copy()
+    env.setdefault("NEKO_PLUGIN_WS_PORT", str(_MC_AGENT_DEFAULT_PLUGIN_WS_PORT))
+    env.setdefault("MINDSERVER_PORT", str(_MC_AGENT_DEFAULT_MINDSERVER_PORT))
+    env.setdefault("MINECRAFT_PORT", str(_MC_AGENT_DEFAULT_MC_PORT))
+
+    # Route output to a file the user can tail when MC bridge misbehaves.
+    log_dir = Path(bundle_dir) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "mc-agent.log"
+    try:
+        _MC_AGENT_LOG_HANDLE = log_path.open("a", encoding="utf-8", errors="replace")
+    except Exception as exc:
+        print(f"[Launcher] mc-agent: cannot open log {log_path}: {exc}", flush=True)
+        _MC_AGENT_LOG_HANDLE = None
+
+    # CREATE_NEW_PROCESS_GROUP lets us send Ctrl-Break for graceful shutdown
+    # without taking down the parent on the same Ctrl-C the user typed.
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    try:
+        _MC_AGENT_PROC = subprocess.Popen(
+            [str(node_exe), str(src_dir / "main.js")],
+            cwd=str(src_dir),
+            env=env,
+            stdout=_MC_AGENT_LOG_HANDLE or subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception as exc:
+        print(f"[Launcher] mc-agent: failed to spawn: {exc}", flush=True)
+        if _MC_AGENT_LOG_HANDLE is not None:
+            _MC_AGENT_LOG_HANDLE.close()
+            _MC_AGENT_LOG_HANDLE = None
+        return False
+
+    print(
+        f"[Launcher] mc-agent started (pid={_MC_AGENT_PROC.pid}, "
+        f"plugin_ws={env['NEKO_PLUGIN_WS_PORT']}, "
+        f"mindserver={env['MINDSERVER_PORT']}, "
+        f"mc_port={env['MINECRAFT_PORT']}); log: {log_path}",
+        flush=True,
+    )
+    return True
+
+
+def _stop_mc_agent(graceful_timeout: float = 5.0) -> None:
+    """Best-effort shutdown of the mc-agent subprocess."""
+    global _MC_AGENT_PROC, _MC_AGENT_LOG_HANDLE
+    proc = _MC_AGENT_PROC
+    if proc is None:
+        return
+    if proc.poll() is not None:
+        _MC_AGENT_PROC = None
+        if _MC_AGENT_LOG_HANDLE is not None:
+            _MC_AGENT_LOG_HANDLE.close()
+            _MC_AGENT_LOG_HANDLE = None
+        return
+
+    print("[Launcher] mc-agent: stopping…", flush=True)
+    try:
+        if sys.platform == "win32":
+            # CTRL_BREAK_EVENT only reaches processes in our new group;
+            # node honors it as a graceful exit signal.
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proc.terminate()
+    except Exception as exc:
+        print(f"[Launcher] mc-agent: signal failed: {exc}", flush=True)
+
+    try:
+        proc.wait(timeout=graceful_timeout)
+    except subprocess.TimeoutExpired:
+        print("[Launcher] mc-agent: graceful timeout, killing", flush=True)
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except Exception as exc:
+            print(f"[Launcher] mc-agent: kill failed: {exc}", flush=True)
+
+    _MC_AGENT_PROC = None
+    if _MC_AGENT_LOG_HANDLE is not None:
+        try:
+            _MC_AGENT_LOG_HANDLE.close()
+        except Exception:
+            pass
+        _MC_AGENT_LOG_HANDLE = None
+
+
 # ===== 合并进程模式 =====
 # 打包时三个 FastAPI 服务跑在同一个进程里，共享 Python 运行时，
 # 省掉 2 份 CPython + uvicorn + 共享库的重复加载（约 150-200 MB）。
@@ -1719,6 +1879,9 @@ def cleanup_servers():
         _cleanup_done = True
 
     print("\n正在关闭服务器...", flush=True)
+    # mc-agent 先停：它会等 plugin WS 关闭再退；先停可以避免
+    # task_finished 信号丢给一个正在关停的 main_server。
+    _stop_mc_agent()
     for server in _iter_servers_for_shutdown():
         proc = server.get('process')
         if not proc:
@@ -2110,6 +2273,11 @@ def main():
         print("\n  按 Ctrl+C 关闭所有服务器", flush=True)
         print("=" * 60, flush=True)
         print("", flush=True)
+
+        # 启完核心服务后再拉 mc-agent —— 它要的 plugin WS（默认 48909）
+        # 在 main_server 起来后才会有人接听；提前拉只会让 mc-agent 空等
+        # 重连 N 次。data/mc-agent/ 不存在则静默跳过。
+        _try_start_mc_agent()
 
         # 持续运行，监控服务器状态
         # agent_server 崩溃不应牵连 main/memory，仅记录日志。

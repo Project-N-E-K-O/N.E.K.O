@@ -71,3 +71,12 @@ stream_screenshots_to_llm = true
 # kept; older ones drop). Used by the system-prompt burst to send a brief
 # visual summary alongside the textual nudge.
 screenshot_cache_size = 3
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "快速开始"
+entry = "surfaces/quickstart.tsx"
+permissions = ["state:read"]
