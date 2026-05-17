@@ -1165,11 +1165,6 @@ class GameAgentService:
         echoed_task_id = data.get("task_id")
         if not isinstance(echoed_task_id, str) or not echoed_task_id:
             echoed_task_id = None
-        else:
-            # One-way latch — once we've seen mc-agent echo a task_id,
-            # we know the agent speaks the modern protocol and any
-            # later id-less frame is anomalous, not a legacy fallback.
-            self._seen_task_id_echo = True
         self._log_info("task_finished: status={}, text={}", status, text[:80])
 
         # Outcome of the in-lock classification, drained outside so
@@ -1194,9 +1189,20 @@ class GameAgentService:
             if echoed_task_id is not None:
                 if pending is not None and pending.task_id == echoed_task_id:
                     bucket = "current"
+                    # Only flip the latch once the id has been proven to
+                    # belong to OUR dispatch (current pending or recent
+                    # history). A foreign id (leaked from another client
+                    # on the same WS endpoint, mc-agent restart crossover,
+                    # buffered prior-session frame) lands in "unknown" and
+                    # must NOT flip the latch — that would permanently
+                    # disable the FIFO fallback for legacy agents that
+                    # never echo their own ids. Per Codex review on PR
+                    # #1395.
+                    self._seen_task_id_echo = True
                 elif echoed_task_id in self._dispatched_history:
                     bucket = "retroactive"
                     historical_text = self._dispatched_history.get(echoed_task_id)
+                    self._seen_task_id_echo = True
                 else:
                     bucket = "unknown"
             elif pending is not None and not self._seen_task_id_echo:

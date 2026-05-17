@@ -1022,6 +1022,45 @@ async def test_seen_task_id_latch_resets_on_ws_restart():
 
 
 @pytest.mark.asyncio
+async def test_foreign_task_id_does_not_latch_legacy_off():
+    """The ``_seen_task_id_echo`` latch must only flip on frames that
+    are proven to be ours (current pending or dispatched history).
+    A foreign id from a leaked frame (another client on the same WS
+    endpoint, buffered prior-session frame, mc-agent restart
+    crossover) lands in ``unknown`` and must NOT flip the latch —
+    otherwise a legacy agent that never echoes its own ids would
+    be permanently locked out of the FIFO fallback by a single
+    foreign-id frame, leaving every subsequent task on a 120s
+    timeout.
+    """
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Foreign-id frame arrives before any of our tasks (no pending,
+    # not in dispatched_history) → bucket unknown → latch must stay False.
+    await service._on_task_finished(
+        {"status": "ok", "task_id": "leaked-from-another-client"}
+    )
+    assert service._seen_task_id_echo is False, \
+        "foreign task_id (unknown bucket) must not flip the latch"
+
+    # Now a legacy id-less task: should still FIFO-resolve because
+    # the latch was never flipped.
+    runner = asyncio.create_task(service.execute_minecraft_task(task="legacy"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("legacy task never claimed pending slot")
+
+    await service._on_task_finished({"status": "ok", "text": "done"})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_idless_frame_legacy_agent_still_uses_fifo():
     """Genuine legacy mc-agent that never echoes task_id keeps the
     FIFO fallback — without ``_seen_task_id_echo`` ever latching,
