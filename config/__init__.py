@@ -906,11 +906,18 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 #                   再检索就是冗余）
 #
 # 阈值是经验值，跑起来再调；cosine 用 sentence-embedding 常见的相关性下限
-# 0.3；BM25 是 IDF×TF 量纲，初值 1.0 后续视实际分布调整。
+# 0.3；BM25 用 0.1 接近 "any meaningful overlap"（零 overlap 早就被
+# _bm25_rank 的 score > 0 卡掉了，0.1 主要挡偶发高频词碰瓷）。
+#
+# ⚠️ BM25 阈值不能定高：Okapi 公式在小 pool 下 IDF 系数自然就矮，
+# 单 doc pool 即使 exact match 最高也就 ~0.72（``log((1-1+0.5)/(1+0.5)
+# + 1) × (k1+1)``）；2-doc pool 两条都有词时 IDF 跌到 ~0.18。最初拍
+# 1.0 是用大语料经验值，结果新用户 / 小语料 / 高频词查询全部被阈值
+# 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
 HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
 HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
 HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
-HYBRID_RECALL_BM25_THRESHOLD = 1.0       # BM25 < 阈值视为不相关
+HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
 HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
 
 # ========================================================================

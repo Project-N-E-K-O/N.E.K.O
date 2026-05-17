@@ -301,6 +301,32 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         res = await self._run("完全不相关的 query", facts, [])
         self.assertEqual(res["results"], [])
 
+    async def test_small_pool_exact_match_clears_production_threshold(self):
+        """Regression for codex P1 on commit ef81ec41a: 之前 BM25 阈值定 1.0，
+        但 Okapi 公式在小 pool 下 IDF 系数本身就矮（单 doc IDF ≈ 0.288），
+        max score 也就 ~0.72 → 永远过不去 1.0 → 新用户 / 小语料下 BM25
+        兜底完全死掉。降到 0.1 后 single-doc exact match 能正常召回。
+
+        本测试**不 patch threshold**，用生产值（0.1）跑，验真实命中。
+        """
+        # 单 fact，query 完全命中：阈值 0.1 必须 clear
+        facts = [{"id": "only_one", "text": "博士最喜欢的游戏是 The Witness",
+                  "score": 1.0}]
+        fact_store, reflection_engine = self._make_stores(facts, [])
+        config_manager = MagicMock()
+        # 关掉 cosine（mock 成 unavailable），证 BM25-only 路径能出结果
+        with patch("memory.hybrid_recall._cosine_rank", new=AsyncMock(return_value=[])):
+            res = await __import__("memory.hybrid_recall", fromlist=["hybrid_recall"]).hybrid_recall(
+                lanlan_name="testcat",
+                query="博士 游戏",
+                fact_store=fact_store,
+                reflection_engine=reflection_engine,
+                config_manager=config_manager,
+            )
+        ids = [r["id"] for r in res["results"]]
+        self.assertIn("only_one", ids,
+                      "single-doc exact match should clear production BM25 threshold 0.1")
+
     async def test_malformed_entries_dont_kill_whole_query(self):
         """Regression for codex review on commit 47d0d191f: 单条 malformed
         entry (text 是 list / score 是 string 等) 不该带挂整个 hybrid_recall
