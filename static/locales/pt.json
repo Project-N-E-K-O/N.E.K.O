@@ -943,6 +943,7 @@
             "doubao": "ByteDance (Dubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs (clonagem de voz)",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelo)"
@@ -978,6 +979,7 @@
             "doubao": "ByteDance (Dubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter"

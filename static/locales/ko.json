@@ -943,6 +943,7 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "elevenlabs": "ElevenLabs(음성 클로닝)",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter(모델 통합 플랫폼)"
@@ -978,6 +979,7 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter"
