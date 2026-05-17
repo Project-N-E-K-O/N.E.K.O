@@ -343,6 +343,8 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
                 # py-cpuinfo surfaces ARM features under the same "flags" key.
                 return any(f in ("asimddp", "dotprod") for f in flags), True
         except Exception:
+            # py-cpuinfo not installed / failed on this ARM host — fall
+            # through to the /proc/cpuinfo probe below.
             pass
         try:
             # ARM Linux /proc/cpuinfo uses "Features" (capital F), not "flags".
