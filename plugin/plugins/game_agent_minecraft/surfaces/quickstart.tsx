@@ -28,10 +28,13 @@ const ADMIN_PANEL_URL = "http://localhost:8765"
 const STATUS_REFRESH_INTERVAL_MS = 5000
 
 // mc-agent is distributed as a zip on three netdisks (China-friendly +
-// global). End users pick whichever one is fastest from their network,
-// download, and unzip into data/mc-agent/. We do NOT ship mc-agent
-// inside the N.E.K.O. installer so non-MC users don't carry a ~200 MB
-// node_modules + portable Node tax.
+// global). End users pick whichever one is fastest, download, unzip
+// anywhere on disk, and double-click the bundled 启动mc-agent.bat to
+// run it — it's a separate program from N.E.K.O., the two communicate
+// over WebSocket (ws://localhost:48909 by default). We deliberately do
+// NOT bundle / auto-spawn mc-agent from N.E.K.O.: non-MC users would
+// carry a ~200 MB node_modules + portable Node tax for nothing, and
+// the two projects need to evolve independently.
 const DOWNLOAD_LINKS = {
   quark: "https://pan.quark.cn/s/b662424f7f34",
   gdrive:
@@ -102,7 +105,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "让猫娘陪你玩 MC——通过 mc-agent 桥接 mineflayer bot 控制游戏内化身。",
     cards: [
       { title: "先装 Minecraft", badge: "Install", body: "Java 版 v1.21.1 推荐，其他 1.21.x 也可。自己买正版或离线启动。" },
-      { title: "再开 mc-agent", badge: "Bridge", body: "本插件自动尝试启动 data/mc-agent/ 里的 bot。没装就到 GitHub 拿一份解压进去。" },
+      { title: "再开 mc-agent", badge: "Bridge", body: "下面下个 mc-agent 解压、双击「启动mc-agent.bat」启动它。它和 N.E.K.O 是两个独立程序，靠 WebSocket 联通。" },
       { title: "最后给猫娘任务", badge: "Play", body: "正常聊天，让她「帮我挖石头」「合成镐子」，她会自动调 minecraft_task 派给 bot。" },
     ],
     status: {
@@ -121,7 +124,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "下载 mc-agent",
-      hint: "三个网盘任选其一，下载完解压到 N.E.K.O 安装目录下的 data/mc-agent/，重启 N.E.K.O 即可。",
+      hint: "三个网盘任选其一，下载完解压到任意目录，双击里面的「启动mc-agent.bat」即可。启动后回这里点刷新看状态。",
       quark: "夸克网盘",
       gdrive: "Google Drive",
       baidu: "百度网盘（提取码 kuro）",
@@ -129,10 +132,10 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "完整流程",
     setupSteps: [
       { title: "1. 装 Minecraft Java Edition", body: "推荐 v1.21.1（1.21.x 系列都行）。自己选择正版 / 离线启动器。" },
-      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到 N.E.K.O 安装目录下的 data/mc-agent/。重启 N.E.K.O 后会自动拉起。" },
+      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到任意目录。双击里面的「启动mc-agent.bat」启动它（会开一个命令行黑窗口，别关）。N.E.K.O 这边会自动连上。" },
       { title: "3. 开 MC 世界并 Open to LAN", body: "进入单人世界 → ESC → Open to LAN → 选游戏模式 → 开放。MC 会在聊天框显示「Local game hosted on port XXXXX」，记下这个端口号。" },
       { title: "4. 在管理面板里把 MC 端口改成你抄下的那个", body: "点上面「打开管理面板」按钮 → 找到 bot 配置 → 修改 port 字段 → 保存。bot 会自动重启用新端口连进 MC 世界。" },
-      { title: "5. 验证 bot 进游戏了", body: "MC 聊天框会看到「Kuro joined the game」。看不到就刷新本页状态，或者看 logs/mc-agent.log。" },
+      { title: "5. 验证 bot 进游戏了", body: "MC 聊天框会看到「Kuro joined the game」。看不到就刷新本页状态，或者看「启动mc-agent.bat」那个黑窗口报什么错。" },
       { title: "6. 跟猫娘说话", body: "对猫娘说「帮我去砍 10 块橡木」之类的具体任务，她会自动派给 bot 执行，过程画面会实时传回来让她解说。" },
     ],
     portsTitle: "端口说明",
@@ -143,7 +146,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     tipsTitle: "排错",
     tips: [
-      "状态一直「未连接」：data/mc-agent/ 里没东西或者 mc-agent 进程没起来；看 logs/mc-agent.log 里报什么错。",
+      "状态一直「未连接」：没启动「启动mc-agent.bat」，或者 bat 启动后报错就退了；看那个黑窗口最后几行报什么错。",
       "bot 进不了 MC 世界：99% 端口对不上；MC 那边随机端口，每次重开都不一样，要在管理面板里改。",
       "bot 进了但啥也不干：可能是 LLM 没拿到 minecraft_task 工具；在 N.E.K.O 设置页确认本插件是「已启用」。",
       "想关掉 mc-agent：在管理面板的 bot 列表里点 Stop，或者直接关 N.E.K.O。",
@@ -155,7 +158,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "Let neko-chan play MC with you. mc-agent bridges a mineflayer bot to control an in-game avatar.",
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
-      { title: "Run mc-agent", badge: "Bridge", body: "This plugin auto-starts the bot in data/mc-agent/. If missing, grab the zip from GitHub and unpack it there." },
+      { title: "Run mc-agent", badge: "Bridge", body: "Download mc-agent below, unzip, double-click 启动mc-agent.bat. It's a separate program from N.E.K.O., they talk over WebSocket." },
       { title: "Give a task", badge: "Play", body: "Chat normally and ask neko-chan to \"mine stone\" or \"craft a pickaxe\" — she'll dispatch via minecraft_task." },
     ],
     status: {
@@ -174,7 +177,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "Download mc-agent",
-      hint: "Pick whichever drive is fastest from your network. Unzip into data/mc-agent/ under the N.E.K.O. install directory, then restart N.E.K.O.",
+      hint: "Pick whichever drive is fastest. Unzip anywhere, double-click 启动mc-agent.bat inside to launch, then hit Refresh here.",
       quark: "Quark Drive (CN)",
       gdrive: "Google Drive",
       baidu: "Baidu Pan (code: kuro)",
@@ -182,10 +185,10 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Full setup flow",
     setupSteps: [
       { title: "1. Install Minecraft Java Edition", body: "v1.21.1 recommended (any 1.21.x is fine). Pick any launcher (official, MultiMC, Prism, etc.)." },
-      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, and extract into data/mc-agent/ under your N.E.K.O. install directory. Restart N.E.K.O. to auto-spawn it." },
+      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, extract anywhere. Double-click 启动mc-agent.bat inside (it opens a black console window — don't close it). N.E.K.O. will auto-connect." },
       { title: "3. Open a world to LAN", body: "Single player → ESC → Open to LAN → pick game mode → Start. MC will print \"Local game hosted on port XXXXX\" in chat. Note the port number." },
       { title: "4. Change MC port via admin panel", body: "Click \"Open admin panel\" above → find your bot config → change the port field to the number you wrote down → save. The bot will restart and join your world." },
-      { title: "5. Confirm the bot joined", body: "You should see \"Kuro joined the game\" in MC chat. If not, refresh status here or check logs/mc-agent.log." },
+      { title: "5. Confirm the bot joined", body: "You should see \"Kuro joined the game\" in MC chat. If not, refresh status here or check the 启动mc-agent.bat console window for errors." },
       { title: "6. Talk to neko-chan", body: "Give her concrete tasks like \"go chop 10 oak logs\". She'll dispatch them to the bot, and the bot's POV will stream back so she can narrate." },
     ],
     portsTitle: "Ports",
@@ -196,7 +199,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     tipsTitle: "Troubleshooting",
     tips: [
-      "Status stays \"Disconnected\": data/mc-agent/ is empty or the mc-agent process crashed — check logs/mc-agent.log.",
+      "Status stays \"Disconnected\": 启动mc-agent.bat isn't running, or it crashed at startup — check the last few lines in that black console window.",
       "Bot can't join the world: 99% wrong port. MC picks a random LAN port each time; update it in the admin panel.",
       "Bot joins but does nothing: the LLM probably didn't pick up the minecraft_task tool. Check this plugin is enabled in N.E.K.O. settings.",
       "To stop mc-agent: click Stop in the admin panel's bot list, or just close N.E.K.O.",
@@ -208,7 +211,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "猫娘ちゃんと MC を遊ぼう。mc-agent が mineflayer ボットを橋渡しして、ゲーム内アバターを操作します。",
     cards: [
       { title: "Minecraft を入れる", badge: "Install", body: "Java 版 v1.21.1 推奨。他の 1.21.x でも可。お好きなランチャーで。" },
-      { title: "mc-agent を起動", badge: "Bridge", body: "本プラグインが data/mc-agent/ のボットを自動起動。無ければ GitHub から zip を取って解凍。" },
+      { title: "mc-agent を起動", badge: "Bridge", body: "下のカードから mc-agent を入手・解凍し「启动mc-agent.bat」をダブルクリック。N.E.K.O とは別プログラムで WebSocket 経由で連携。" },
       { title: "猫娘に指示", badge: "Play", body: "普通に会話して「石を掘って」「ツルハシを作って」と頼めば minecraft_task で自動派遣。" },
     ],
     status: {
@@ -227,7 +230,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "mc-agent をダウンロード",
-      hint: "回線に合うものを選んで DL し、N.E.K.O インストール先の data/mc-agent/ に解凍 → N.E.K.O を再起動。",
+      hint: "回線に合うものを選んで DL し、任意の場所に解凍 → 中の「启动mc-agent.bat」をダブルクリックで起動 → こちらで更新ボタンを押す。",
       quark: "Quark Drive（中国）",
       gdrive: "Google Drive",
       baidu: "百度网盘（パスワード kuro）",
@@ -235,10 +238,10 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "セットアップ全体",
     setupSteps: [
       { title: "1. Minecraft Java 版をインストール", body: "v1.21.1 推奨（1.21.x なら何でも）。公式 / MultiMC / Prism いずれでも。" },
-      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから 3 つのドライブのいずれかで mc-agent.zip を取得し、インストール先の data/mc-agent/ に解凍。N.E.K.O を再起動すると自動起動。" },
+      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから mc-agent.zip を取得し、任意の場所に解凍。中の「启动mc-agent.bat」をダブルクリックして起動（黒いコンソール窓が開く、閉じないこと）。N.E.K.O が自動で接続。" },
       { title: "3. ワールドを LAN 公開", body: "シングルプレイ → ESC → LAN 公開 → モード選択 → 開始。チャットに「Local game hosted on port XXXXX」と出るのでポート番号を控える。" },
       { title: "4. 管理パネルで MC ポートを書き換え", body: "上の「管理パネルを開く」→ ボット設定 → port を控えた番号に変更 → 保存。ボットが再起動して新ポートでワールドに参加。" },
-      { title: "5. ボットの参加を確認", body: "MC のチャットに「Kuro joined the game」と出れば成功。出なければ本ページの状態を更新、または logs/mc-agent.log を確認。" },
+      { title: "5. ボットの参加を確認", body: "MC のチャットに「Kuro joined the game」と出れば成功。出なければ本ページの状態を更新、または「启动mc-agent.bat」の黒い窓のエラーを確認。" },
       { title: "6. 猫娘に話しかける", body: "「樫の木を 10 個切ってきて」など具体的タスクを依頼。bot に派遣され、視界がストリーミングされて猫娘が実況。" },
     ],
     portsTitle: "ポート一覧",
@@ -249,7 +252,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     tipsTitle: "トラブルシューティング",
     tips: [
-      "ステータスがずっと「未接続」: data/mc-agent/ が空、または mc-agent プロセスがクラッシュ。logs/mc-agent.log を確認。",
+      "ステータスがずっと「未接続」: 「启动mc-agent.bat」が起動していない、または起動直後にクラッシュ。黒いコンソール窓の最終行のエラーを確認。",
       "ボットがワールドに入れない: 99% ポート不一致。MC は毎回ランダムポート、管理パネルで更新。",
       "入ったが何もしない: LLM が minecraft_task ツールを認識していない可能性。N.E.K.O 設定で本プラグインが「有効」か確認。",
       "mc-agent を止める: 管理パネルのボット一覧から Stop、または N.E.K.O ごと終了。",
@@ -261,7 +264,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "고양이 캐릭터와 함께 MC를 즐기세요. mc-agent가 mineflayer 봇을 게임 내 아바타로 다리 놓아 줍니다.",
     cards: [
       { title: "Minecraft 설치", badge: "Install", body: "Java 에디션 v1.21.1 권장. 다른 1.21.x도 가능. 원하는 런처 사용." },
-      { title: "mc-agent 실행", badge: "Bridge", body: "본 플러그인이 data/mc-agent/의 봇을 자동 시작. 없으면 GitHub에서 zip 받아 풀어 넣기." },
+      { title: "mc-agent 실행", badge: "Bridge", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动mc-agent.bat」 더블클릭. N.E.K.O와는 별개 프로그램으로 WebSocket으로 연동." },
       { title: "고양이에게 작업 지시", badge: "Play", body: "평범하게 채팅하며 「돌 캐줘」 「곡괭이 만들어줘」 요청 → minecraft_task로 자동 파견." },
     ],
     status: {
@@ -280,7 +283,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "mc-agent 다운로드",
-      hint: "네트워크에 맞는 드라이브를 골라 다운로드 후, N.E.K.O 설치 디렉터리의 data/mc-agent/에 압축 해제 → N.E.K.O 재시작.",
+      hint: "네트워크에 맞는 드라이브를 골라 다운로드 후 임의 폴더에 압축 해제 → 안의 「启动mc-agent.bat」 더블클릭으로 실행 → 여기서 새로고침.",
       quark: "Quark Drive (중국)",
       gdrive: "Google Drive",
       baidu: "百度网盘 (비밀번호 kuro)",
@@ -288,10 +291,10 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "전체 설정 흐름",
     setupSteps: [
       { title: "1. Minecraft Java 에디션 설치", body: "v1.21.1 권장 (1.21.x 모두 가능). 공식 / MultiMC / Prism 등 원하는 런처." },
-      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 세 드라이브 중 하나로 mc-agent.zip을 받아 설치 디렉터리의 data/mc-agent/에 압축 해제. N.E.K.O 재시작 시 자동 시작." },
+      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 mc-agent.zip을 받아 임의 폴더에 압축 해제. 안의 「启动mc-agent.bat」을 더블클릭해 실행 (검은 콘솔 창이 열림, 닫지 말 것). N.E.K.O가 자동 연결." },
       { title: "3. 월드를 LAN 공개", body: "싱글 플레이 → ESC → LAN 공개 → 게임 모드 선택 → 시작. 채팅창에 「Local game hosted on port XXXXX」가 표시되니 포트 번호 기록." },
       { title: "4. 관리 패널에서 MC 포트 변경", body: "위「관리 패널 열기」클릭 → 봇 설정 → port 필드를 기록한 번호로 변경 → 저장. 봇이 재시작되어 새 포트로 월드에 참가." },
-      { title: "5. 봇 참가 확인", body: "MC 채팅에「Kuro joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 logs/mc-agent.log 확인." },
+      { title: "5. 봇 참가 확인", body: "MC 채팅에「Kuro joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 「启动mc-agent.bat」 콘솔 창의 에러 확인." },
       { title: "6. 고양이에게 말 걸기", body: "「떡갈나무 10개 베어와」 같은 구체적 작업 요청. 봇이 파견되고 시야가 실시간 스트리밍되어 고양이가 중계." },
     ],
     portsTitle: "포트 안내",
@@ -302,7 +305,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     tipsTitle: "문제 해결",
     tips: [
-      "상태가 계속 「연결 안 됨」: data/mc-agent/가 비어있거나 mc-agent 프로세스가 죽음. logs/mc-agent.log 확인.",
+      "상태가 계속 「연결 안 됨」: 「启动mc-agent.bat」이 실행되지 않았거나 실행 직후 죽음. 검은 콘솔 창의 마지막 줄 에러 확인.",
       "봇이 월드에 못 들어감: 99% 포트 불일치. MC는 매번 랜덤 포트이므로 관리 패널에서 갱신.",
       "들어갔지만 아무것도 안 함: LLM이 minecraft_task 도구를 인식 못 함. N.E.K.O 설정에서 본 플러그인이 「활성화」인지 확인.",
       "mc-agent 종료: 관리 패널의 봇 목록에서 Stop, 또는 N.E.K.O 전체 종료.",
@@ -314,7 +317,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "Играй в MC вместе с нэко-тян. mc-agent связывает mineflayer-бота с аватаром в игре.",
     cards: [
       { title: "Установи Minecraft", badge: "Install", body: "Java Edition v1.21.1 рекомендуется; другие 1.21.x тоже подойдут. Любой лаунчер." },
-      { title: "Запусти mc-agent", badge: "Bridge", body: "Плагин сам стартует бота из data/mc-agent/. Если папка пустая — скачай zip с GitHub и распакуй туда." },
+      { title: "Запусти mc-agent", badge: "Bridge", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动mc-agent.bat. Это отдельная программа от N.E.K.O., связь по WebSocket." },
       { title: "Дай задачу", badge: "Play", body: "Общайся обычно: «накопай камня», «скрафти кирку» — нэко-тян диспатчит через minecraft_task." },
     ],
     status: {
@@ -333,7 +336,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "Скачать mc-agent",
-      hint: "Выбери диск, до которого быстрее всего достучаться, распакуй в data/mc-agent/ в каталоге установки N.E.K.O., затем перезапусти N.E.K.O.",
+      hint: "Выбери диск побыстрее, распакуй в любую папку, дважды кликни 启动mc-agent.bat внутри для запуска, затем жми «Обновить» здесь.",
       quark: "Quark Drive (Китай)",
       gdrive: "Google Drive",
       baidu: "Baidu Pan (код kuro)",
@@ -341,10 +344,10 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Полный путь настройки",
     setupSteps: [
       { title: "1. Установи Minecraft Java Edition", body: "v1.21.1 рекомендуется (любой 1.21.x подойдёт). Любой лаунчер: официальный, MultiMC, Prism." },
-      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше выбери любой из трёх дисков, скачай mc-agent.zip и распакуй в data/mc-agent/ в каталоге установки N.E.K.O. Перезапусти N.E.K.O. — оно подхватит автоматически." },
+      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше скачай mc-agent.zip, распакуй в любую папку. Дважды кликни 启动mc-agent.bat внутри (откроется чёрное окно консоли — не закрывай). N.E.K.O автоматически подключится." },
       { title: "3. Открой мир в LAN", body: "Одиночная игра → ESC → Открыть для сети → выбери режим → Старт. MC напишет в чате «Local game hosted on port XXXXX». Запомни порт." },
       { title: "4. Поменяй MC-порт в админ-панели", body: "Жми «Открыть админ-панель» сверху → найди конфиг бота → измени port на записанный номер → сохрани. Бот перезапустится и зайдёт в твой мир." },
-      { title: "5. Подтверди вход бота", body: "В чате MC появится «Kuro joined the game». Если нет — обнови статус здесь или загляни в logs/mc-agent.log." },
+      { title: "5. Подтверди вход бота", body: "В чате MC появится «Kuro joined the game». Если нет — обнови статус здесь или посмотри ошибки в чёрном окне 启动mc-agent.bat." },
       { title: "6. Поговори с нэко-тян", body: "Дай ей конкретную задачу: «нарубай 10 дубовых брёвен». Она передаст боту, и его обзор будет транслироваться обратно для комментариев." },
     ],
     portsTitle: "Порты",
@@ -355,7 +358,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     tipsTitle: "Решение проблем",
     tips: [
-      "Статус всё время «Нет связи»: пусто в data/mc-agent/ или процесс упал — смотри logs/mc-agent.log.",
+      "Статус всё время «Нет связи»: 启动mc-agent.bat не запущен, или упал на старте — смотри последние строки в том чёрном окне консоли.",
       "Бот не заходит в мир: 99% — порт не совпадает. MC выбирает случайный LAN-порт каждый раз; обнови в админ-панели.",
       "Бот зашёл, но ничего не делает: LLM, видимо, не подцепил инструмент minecraft_task. Проверь в настройках N.E.K.O., что плагин «включен».",
       "Остановить mc-agent: нажми Stop в списке ботов админ-панели, или просто закрой N.E.K.O.",
