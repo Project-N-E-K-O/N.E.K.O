@@ -185,7 +185,7 @@ def test_macos_target_window_rect_prefers_window_number_over_pid(
     assert ocr_reader._target_window_rect_macos(target) == (100, 200, 900, 800)
 
 
-def test_macos_target_window_rect_falls_back_when_quartz_returns_none(
+def test_macos_target_window_rect_fails_when_quartz_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from plugin.plugins.galgame_plugin import ocr_reader
@@ -198,7 +198,8 @@ def test_macos_target_window_rect_falls_back_when_quartz_returns_none(
     monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
     target = DetectedGameWindow(hwnd=22, title="Game", pid=123, width=800, height=600)
 
-    assert ocr_reader._target_window_rect_macos(target) == (0, 0, 800, 600)
+    with pytest.raises(RuntimeError, match="macos_target_window_rect_unavailable"):
+        ocr_reader._target_window_rect_macos(target)
 
 
 def test_macos_target_window_rect_falls_back_to_pid_and_title(
@@ -233,6 +234,35 @@ def test_macos_target_window_rect_falls_back_to_pid_and_title(
     target = DetectedGameWindow(hwnd=0, title="game", pid=123, width=640, height=480)
 
     assert ocr_reader._target_window_rect_macos(target) == (40, 50, 680, 530)
+
+
+def test_macos_target_window_rect_fails_when_target_is_unmatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import ocr_reader
+
+    windows = [
+        {
+            "kCGWindowNumber": 11,
+            "kCGWindowOwnerPID": 321,
+            "kCGWindowName": "Other",
+            "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 300, "Height": 200},
+        },
+    ]
+    fake_quartz = SimpleNamespace(
+        kCGWindowListOptionOnScreenOnly=1,
+        kCGNullWindowID=0,
+        kCGWindowNumber="kCGWindowNumber",
+        kCGWindowOwnerPID="kCGWindowOwnerPID",
+        kCGWindowName="kCGWindowName",
+        kCGWindowBounds="kCGWindowBounds",
+        CGWindowListCopyWindowInfo=lambda *_args: windows,
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+    target = DetectedGameWindow(hwnd=22, title="Game", pid=123, width=800, height=600)
+
+    with pytest.raises(RuntimeError, match="macos_target_window_rect_unavailable"):
+        ocr_reader._target_window_rect_macos(target)
 
 
 def test_linux_target_window_rect_closes_xlib_display_on_match(
@@ -295,6 +325,80 @@ def test_linux_target_window_rect_fails_when_geometry_is_unavailable(
 
     with pytest.raises(RuntimeError, match="linux_target_window_rect_unavailable"):
         ocr_reader._target_window_rect_linux(target)
+
+
+def test_linux_xlib_scanner_marks_hidden_windows_minimized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import window_scanner_linux
+
+    atoms = {
+        "_NET_CLIENT_LIST": 1,
+        "_NET_WM_NAME": 2,
+        "_NET_WM_VISIBLE_NAME": 3,
+        "_NET_WM_PID": 4,
+        "_NET_WM_STATE": 5,
+        "_NET_WM_STATE_HIDDEN": 6,
+        "WM_STATE": 7,
+    }
+
+    class _Prop:
+        def __init__(self, value):
+            self.value = value
+
+    class _FakeRoot:
+        def get_full_property(self, atom, _type):
+            if atom == atoms["_NET_CLIENT_LIST"]:
+                return _Prop([111, 222])
+            return None
+
+    root = _FakeRoot()
+
+    class _FakeWindow:
+        def __init__(self, wid: int) -> None:
+            self.wid = wid
+
+        def get_geometry(self):
+            return SimpleNamespace(width=640, height=480)
+
+        def get_full_property(self, atom, _type):
+            if atom in {atoms["_NET_WM_VISIBLE_NAME"], atoms["_NET_WM_NAME"]}:
+                return _Prop(f"Game {self.wid}")
+            if atom == atoms["_NET_WM_PID"]:
+                return _Prop([1234])
+            if atom == atoms["_NET_WM_STATE"] and self.wid == 222:
+                return _Prop([atoms["_NET_WM_STATE_HIDDEN"]])
+            if atom == atoms["WM_STATE"]:
+                return _Prop([1])
+            return None
+
+    class _FakeDisplay:
+        def screen(self):
+            return SimpleNamespace(root=root)
+
+        def intern_atom(self, name: str) -> int:
+            return atoms[name]
+
+        def create_resource_object(self, _kind: str, wid: int):
+            return _FakeWindow(int(wid))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "Xlib",
+        SimpleNamespace(
+            X=SimpleNamespace(AnyPropertyType=0),
+            display=SimpleNamespace(Display=_FakeDisplay),
+        ),
+    )
+
+    result = window_scanner_linux._scan_windows_linux_xlib()
+    by_hwnd = {window.hwnd: window for window in result}
+
+    assert by_hwnd[111].is_minimized is False
+    assert by_hwnd[222].is_minimized is True
 
 
 # ─── ElectronCaptureBackend smoke tests ──────────────────────────────────

@@ -57,6 +57,9 @@ def _scan_windows_linux_xlib() -> list["DetectedGameWindow"]:
         net_wm_name = d.intern_atom("_NET_WM_NAME")
         net_wm_pid = d.intern_atom("_NET_WM_PID")
         net_wm_visible_name = d.intern_atom("_NET_WM_VISIBLE_NAME")
+        net_wm_state = d.intern_atom("_NET_WM_STATE")
+        net_wm_state_hidden = d.intern_atom("_NET_WM_STATE_HIDDEN")
+        wm_state = d.intern_atom("WM_STATE")
 
         try:
             raw = root.get_full_property(net_client_list, X.AnyPropertyType)
@@ -72,6 +75,12 @@ def _scan_windows_linux_xlib() -> list["DetectedGameWindow"]:
 
                 title = _x11_get_window_title(window, net_wm_name, net_wm_visible_name)
                 pid = _x11_get_window_pid(window, net_wm_pid)
+                is_minimized = _x11_is_window_minimized(
+                    window,
+                    net_wm_state,
+                    net_wm_state_hidden,
+                    wm_state,
+                )
 
                 if not title or len(str(title)) < 2:
                     continue
@@ -94,7 +103,7 @@ def _scan_windows_linux_xlib() -> list["DetectedGameWindow"]:
                         height=height,
                         area=area,
                         is_foreground=False,
-                        is_minimized=False,
+                        is_minimized=is_minimized,
                         score=float(area),
                     )
                 )
@@ -140,6 +149,30 @@ def _x11_get_window_pid(window: Any, net_wm_pid: Any) -> int | None:
     except Exception as exc:
         _LOGGER.debug("linux xlib pid read failed: %s", exc)
     return None
+
+
+def _x11_is_window_minimized(
+    window: Any,
+    net_wm_state: Any,
+    net_wm_state_hidden: Any,
+    wm_state: Any,
+) -> bool:
+    """Return True for X11/EWMH hidden or ICCCM iconic windows."""
+    try:
+        prop = window.get_full_property(net_wm_state, 0)
+        if prop and prop.value is not None:
+            if any(int(value) == int(net_wm_state_hidden) for value in prop.value):
+                return True
+    except Exception as exc:
+        _LOGGER.debug("linux xlib _NET_WM_STATE read failed: %s", exc)
+
+    try:
+        prop = window.get_full_property(wm_state, 0)
+        if prop and prop.value is not None and len(prop.value) > 0:
+            return int(prop.value[0]) == 3  # ICCCM IconicState
+    except Exception as exc:
+        _LOGGER.debug("linux xlib WM_STATE read failed: %s", exc)
+    return False
 
 
 def _scan_windows_linux_wmctrl() -> list["DetectedGameWindow"]:

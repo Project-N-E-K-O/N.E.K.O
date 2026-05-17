@@ -90,7 +90,6 @@ class ElectronCaptureBackend:
         )
         self._request_timeout = float(request_timeout)
         self._health_timeout = float(health_timeout)
-        self._available_cached: bool | None = None
 
     def _validated_base_url(self) -> str:
         self._base_url = _normalize_loopback_base_url(self._base_url)

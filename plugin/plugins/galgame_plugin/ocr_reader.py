@@ -2463,21 +2463,21 @@ def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int
 
     Uses kCGWindowListOptionOnScreenOnly to avoid stale coordinates from
     windows on inactive Spaces (consistent with _scan_windows_macos).
-    Falls back to (0, 0, width, height) if Quartz is unavailable or the
-    window cannot be identified — the capture backend then does a
-    full-screen grab and the caller crops by profile ratios.
+    Raises if Quartz cannot resolve the real absolute window bounds.
+    Returning a synthetic (0, 0, width, height) rectangle would be treated as
+    screen coordinates by pixel-based backends and silently capture the wrong
+    region for non-origin windows.
     """
-    fallback_rect = (0, 0, int(target.width), int(target.height))
     try:
         import Quartz  # type: ignore[import-not-found]
-    except ImportError:
-        return fallback_rect
+    except ImportError as exc:
+        raise RuntimeError("macos_quartz_not_available") from exc
 
     window_list = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
     )
     if not window_list:
-        return fallback_rect
+        raise RuntimeError("macos_target_window_rect_unavailable")
 
     target_window_id = max(0, int(getattr(target, "hwnd", 0) or 0))
     target_pid = max(0, int(getattr(target, "pid", 0) or 0))
@@ -2517,7 +2517,7 @@ def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int
         if rect is not None:
             return rect
 
-    return fallback_rect
+    raise RuntimeError("macos_target_window_rect_unavailable")
 
 
 def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int, int]:
@@ -7493,7 +7493,10 @@ class OcrReaderManager:
         self,
         windows: list[DetectedGameWindow],
     ) -> tuple[list[DetectedGameWindow], list[DetectedGameWindow]]:
-        foreground_hwnd = _foreground_window_handle()
+        use_windows_foreground_api = bool(self._platform_fn())
+        foreground_hwnd = (
+            _foreground_window_handle() if use_windows_foreground_api else 0
+        )
         prepared: list[DetectedGameWindow] = []
         for window in windows:
             candidate = replace(window)
@@ -7505,8 +7508,11 @@ class OcrReaderManager:
             candidate.hwnd = max(0, int(candidate.hwnd or 0))
             candidate.area = max(0, int(candidate.area or 0))
             candidate.is_minimized = bool(candidate.is_minimized)
-            foreground_match, _ = _foreground_matches_target(foreground_hwnd, candidate)
-            candidate.is_foreground = foreground_match
+            if use_windows_foreground_api:
+                foreground_match, _ = _foreground_matches_target(foreground_hwnd, candidate)
+                candidate.is_foreground = foreground_match
+            else:
+                candidate.is_foreground = bool(candidate.is_foreground)
             candidate.score = float(max(candidate.area, 1))
             candidate = _classify_window_candidate(candidate)
             prepared.append(candidate)
@@ -10168,11 +10174,17 @@ class OcrReaderManager:
                 else "no_eligible_window"
             )
             if selection.selection_mode == "auto":
-                foreground_hwnd = _foreground_window_handle()
+                use_windows_foreground_api = bool(self._platform_fn())
+                foreground_hwnd = (
+                    _foreground_window_handle() if use_windows_foreground_api else 0
+                )
                 for candidate in excluded:
-                    if candidate.is_foreground or (
-                        foreground_hwnd and candidate.hwnd == foreground_hwnd
-                    ):
+                    candidate_foreground = (
+                        bool(foreground_hwnd and candidate.hwnd == foreground_hwnd)
+                        if use_windows_foreground_api
+                        else bool(candidate.is_foreground)
+                    )
+                    if candidate_foreground:
                         selection.selection_detail = "foreground_window_needs_manual_confirmation"
                         break
             return selection
@@ -10266,18 +10278,26 @@ class OcrReaderManager:
             if selection.selection_mode == "auto":
                 selection.selection_detail = "locked_target_unavailable"
             return selection
-        foreground_hwnd = _foreground_window_handle()
-        if foreground_hwnd:
-            for candidate in windows:
-                if candidate.hwnd == foreground_hwnd:
-                    if not _is_confident_auto_window(candidate):
-                        if selection.selection_mode == "auto":
-                            selection.selection_detail = "foreground_window_needs_manual_confirmation"
-                        return selection
-                    selection.target = candidate
-                    if selection.selection_mode == "auto":
-                        selection.selection_detail = "foreground_window"
-                    return selection
+        use_windows_foreground_api = bool(self._platform_fn())
+        foreground_hwnd = (
+            _foreground_window_handle() if use_windows_foreground_api else 0
+        )
+        for candidate in windows:
+            candidate_foreground = (
+                bool(foreground_hwnd and candidate.hwnd == foreground_hwnd)
+                if use_windows_foreground_api
+                else bool(candidate.is_foreground)
+            )
+            if not candidate_foreground:
+                continue
+            if not _is_confident_auto_window(candidate):
+                if selection.selection_mode == "auto":
+                    selection.selection_detail = "foreground_window_needs_manual_confirmation"
+                return selection
+            selection.target = candidate
+            if selection.selection_mode == "auto":
+                selection.selection_detail = "foreground_window"
+            return selection
         if len(windows) == 1:
             configured_profile = _lookup_capture_profile(
                 self._capture_profiles,
