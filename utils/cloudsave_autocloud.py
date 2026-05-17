@@ -234,7 +234,8 @@ class CloudSaveManager:
         source_launch = bool(is_source_launch())
         steam_session_ready = bool(
             steam_status["available"]
-            and (source_launch or steam_launch_tracked)
+            and not source_launch
+            and steam_launch_tracked
         )
         recommended_paths = _build_recommended_root_paths(self.config_manager)
         current_platform_rule = _build_current_platform_rule_preview(self.config_manager)

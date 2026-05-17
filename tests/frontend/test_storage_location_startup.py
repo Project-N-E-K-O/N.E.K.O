@@ -1442,9 +1442,16 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     expect(completion_paths.nth(0)).to_have_text(target_root, timeout=10_000)
     expect(completion_paths.nth(1)).to_have_text(source_root, timeout=10_000)
     expect(cleanup_button).to_be_visible(timeout=10_000)
-    expect(completion_card.get_by_role("button", name="打开当前目录")).to_have_count(0)
-    expect(completion_card.get_by_role("button", name="打开旧目录")).to_have_count(0)
+    open_target_button = completion_card.get_by_role("button", name="打开当前路径")
+    open_retained_button = completion_card.get_by_role("button", name="打开旧数据目录")
+    expect(open_target_button).to_be_visible(timeout=10_000)
+    expect(open_retained_button).to_be_visible(timeout=10_000)
     expect(completion_card.locator(".storage-location-actions button", has_text="关闭")).to_have_count(0)
+
+    open_target_button.click()
+    open_retained_button.click()
+    assert page.evaluate("window.__nekoOpenPathCalls") == [target_root, source_root]
+    assert cleanup_requests["count"] == 0
 
     before_drag = completion_card.bounding_box()
     assert before_drag is not None

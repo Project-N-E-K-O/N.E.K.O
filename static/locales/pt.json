@@ -1710,6 +1710,9 @@
         "maintenanceWaitingStatus": "Esta página ficará aqui e tentará novamente automaticamente até o serviço se recuperar.",
         "maintenanceWaitingSubtitle": "Fechando. Os dados serão migrados após o fechamento e o serviço será reiniciado automaticamente.",
         "migrationPending": "Foi detectado um plano de migração inacabado. A página inicial continuará bloqueada até o serviço voltar a ficar utilizável.",
+        "openPathFailed": "Este ambiente não consegue abrir a pasta. Acesse o caminho manualmente.",
+        "openRetainedRoot": "Abrir diretório de dados antigo",
+        "openTargetRoot": "Abrir caminho ativo",
         "pickFolder": "Escolher pasta",
         "pickFolderUnavailable": "O seletor de pastas do sistema não está disponível. Digite o caminho manualmente.",
         "pickFolderFailed": "Não foi possível abrir o seletor de pastas. Digite o caminho manualmente.",
@@ -1731,6 +1734,7 @@
         "progressVerifying": "Verificando os resultados da migração",
         "progressWaitingShutdown": "Fechando",
         "rebindPreviewNotice": "O backend confirmou que o caminho original voltou a estar acessível. O app será reiniciado nesse caminho. Desta vez, nenhum dado de execução será copiado.",
+        "recommendedPath": "Caminho recomendado",
         "selectedPath": "Caminho selecionado",
         "recoveryRequired": "Foi detectado um estado de armazenamento recuperável. Confirme o local de armazenamento desta inicialização antes de continuar.",
         "recoverySourceUnavailable": "O caminho de dados original está indisponível. Reconecte-o ou mude explicitamente para o caminho padrão recomendado.",
@@ -1762,7 +1766,8 @@
         "targetFreeSpace": "Espaço livre no volume de destino",
         "targetLabel": "Caminho ativo",
         "unknownBytes": "Ainda não estimado",
-        "useCurrent": "Manter o caminho atual"
+        "useCurrent": "Manter o caminho atual",
+        "useRecommended": "Usar caminho recomendado"
     },
     "character": {
         "manager": "Gerenciador de personagens",

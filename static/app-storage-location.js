@@ -50,12 +50,15 @@
         completionTitle: null,
         completionTarget: null,
         completionRetained: null,
+        completionOpenTargetButton: null,
+        completionOpenRetainedButton: null,
         completionCleanupButton: null,
         externalMaintenanceNoticeKey: '',
         selectionIntroView: null,
         selectionView: null,
         errorView: null,
         banner: null,
+        recommendedPath: null,
         currentPath: null,
         customInput: null,
         pickFolderButton: null,
@@ -667,10 +670,9 @@
             state.currentPath.textContent = currentRoot;
             state.currentPath.title = currentRoot;
         }
-        if (state.customInput && !String(state.customInput.value || '').trim()) {
-            state.customInput.value = recommendedRoot;
-            state.otherSelection.key = 'custom';
-            state.otherSelection.path = recommendedRoot;
+        if (state.recommendedPath) {
+            state.recommendedPath.textContent = recommendedRoot;
+            state.recommendedPath.title = recommendedRoot;
         }
 
         if (state.bootstrap.migration_pending) {
@@ -803,6 +805,37 @@
     function getHostBridge() {
         var host = window.nekoHost;
         return host && typeof host === 'object' ? host : null;
+    }
+
+    async function openPathWithHostBridge(pathText) {
+        var normalizedPath = String(pathText || '').trim();
+        if (!normalizedPath) return;
+
+        var host = getHostBridge();
+        if (!host || typeof host.openPath !== 'function') {
+            if (typeof window.showStatusToast === 'function') {
+                window.showStatusToast(
+                    translate('storage.openPathFailed', '当前环境无法打开该目录，请手动前往路径。'),
+                    4000
+                );
+            }
+            return;
+        }
+
+        try {
+            var result = await host.openPath(normalizedPath);
+            if (result && result.ok === false) {
+                throw new Error(result.error || 'openPath failed');
+            }
+        } catch (error) {
+            console.warn('[storage-location] host openPath failed', error);
+            if (typeof window.showStatusToast === 'function') {
+                window.showStatusToast(
+                    translate('storage.openPathFailed', '当前环境无法打开该目录，请手动前往路径。'),
+                    4000
+                );
+            }
+        }
     }
 
     async function pickOtherDirectory() {
@@ -1050,6 +1083,20 @@
         pathList.appendChild(retainedItem);
 
         var actions = createElement('div', 'storage-location-actions');
+        var openTargetButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openTargetRoot', '打开当前路径'));
+        openTargetButton.type = 'button';
+        openTargetButton.addEventListener('click', function () {
+            openPathWithHostBridge(state.completionNotice && state.completionNotice.target_root);
+        });
+        actions.appendChild(openTargetButton);
+
+        var openRetainedButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openRetainedRoot', '打开旧数据目录'));
+        openRetainedButton.type = 'button';
+        openRetainedButton.addEventListener('click', function () {
+            openPathWithHostBridge(state.completionNotice && state.completionNotice.retained_root);
+        });
+        actions.appendChild(openRetainedButton);
+
         var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据目录'));
         cleanupButton.type = 'button';
         cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
@@ -1057,6 +1104,8 @@
 
         state.completionCard = card;
         state.completionTitle = title;
+        state.completionOpenTargetButton = openTargetButton;
+        state.completionOpenRetainedButton = openRetainedButton;
         state.completionCleanupButton = cleanupButton;
 
         title.classList.add('storage-location-panel-title--with-close');
@@ -1149,6 +1198,8 @@
         var card = buildCompletionNoticeCard();
         state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
         state.completionRetained.textContent = String(state.completionNotice.retained_root || '').trim();
+        state.completionOpenTargetButton.hidden = !String(state.completionNotice.target_root || '').trim();
+        state.completionOpenRetainedButton.hidden = !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
         card.hidden = false;
     }
@@ -1634,6 +1685,11 @@
         submitSelection(state.bootstrap.current_root || '', 'current');
     }
 
+    function continueWithRecommendedPath() {
+        if (!state.bootstrap) return;
+        submitSelection(state.bootstrap.recommended_root || '', 'recommended');
+    }
+
     function useOtherPath() {
         var selectionPath = String(
             state.customInput && state.customInput.value
@@ -1663,7 +1719,18 @@
         var pathsPanel = createElement('section', 'storage-location-panel storage-location-selection-panel');
         var pathList = createElement('div', 'storage-location-path-list');
 
-        var selectedPathItem = createElement('div', 'storage-location-path-item storage-location-path-item--recommended storage-location-path-item--selection-input');
+        pathList.appendChild(buildInfoPathRow(
+            translate('storage.recommendedPath', '推荐路径'),
+            'recommendedPath',
+            'storage-location-path-item--recommended'
+        ));
+        pathList.appendChild(buildInfoPathRow(
+            translate('storage.currentPath', '当前路径'),
+            'currentPath',
+            'storage-location-path-item--inline'
+        ));
+
+        var selectedPathItem = createElement('div', 'storage-location-path-item storage-location-path-item--selection-input');
         selectedPathItem.appendChild(createElement('div', 'storage-location-label', translate('storage.selectedPath', '选择路径')));
         var inputRow = createElement('div', 'storage-location-input-row');
         var customInput = createElement('input', 'storage-location-input');
@@ -1689,24 +1756,18 @@
         inputRow.appendChild(pickFolderButton);
         selectedPathItem.appendChild(inputRow);
         pathList.appendChild(selectedPathItem);
-        pathList.appendChild(buildInfoPathRow(
-            translate('storage.currentPath', '当前路径'),
-            'currentPath',
-            'storage-location-path-item--inline'
-        ));
         pathsPanel.appendChild(pathList);
         grid.appendChild(pathsPanel);
         shell.appendChild(grid);
 
         var actions = createElement('div', 'storage-location-actions storage-location-selection-actions');
 
-        var useOtherButton = registerActionButton(
-            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.previewOther', '提交该位置'))
+        var recommendedButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.useRecommended', '使用推荐路径'))
         );
-        useOtherButton.type = 'button';
-        useOtherButton.addEventListener('click', useOtherPath);
-        state.useOtherButton = useOtherButton;
-        actions.appendChild(useOtherButton);
+        recommendedButton.type = 'button';
+        recommendedButton.addEventListener('click', continueWithRecommendedPath);
+        actions.appendChild(recommendedButton);
 
         var currentButton = registerActionButton(
             createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.useCurrent', '保持当前路径'))
@@ -1714,6 +1775,14 @@
         currentButton.type = 'button';
         currentButton.addEventListener('click', continueWithCurrentPath);
         actions.appendChild(currentButton);
+
+        var useOtherButton = registerActionButton(
+            createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.previewOther', '提交该位置'))
+        );
+        useOtherButton.type = 'button';
+        useOtherButton.addEventListener('click', useOtherPath);
+        state.useOtherButton = useOtherButton;
+        actions.appendChild(useOtherButton);
 
         shell.appendChild(actions);
         state.selectionActions = actions;
@@ -2007,6 +2076,7 @@
         state.selectionView = null;
         state.errorView = null;
         state.banner = null;
+        state.recommendedPath = null;
         state.currentPath = null;
         state.customInput = null;
         state.pickFolderButton = null;
@@ -2039,6 +2109,8 @@
         state.completionTitle = null;
         state.completionTarget = null;
         state.completionRetained = null;
+        state.completionOpenTargetButton = null;
+        state.completionOpenRetainedButton = null;
         state.completionCleanupButton = null;
 
         buildModalDom();
