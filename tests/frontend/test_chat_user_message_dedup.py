@@ -264,12 +264,21 @@ def test_normalized_pending_image_clears_stale_avatar_position(
     _open_react_chat_page(mock_page, running_server)
     _install_chat_send_harness(mock_page)
 
-    result = mock_page.evaluate(
-        """async () => {
+    mock_page.evaluate(
+        """() => {
             window.appButtons.addScreenshotToList(
                 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=',
                 { left: 10, top: 20, width: 30, height: 40 }
             );
+        }"""
+    )
+    mock_page.wait_for_function(
+        "() => document.querySelector('#screenshots-list')"
+        " && document.querySelector('#screenshots-list').children.length === 1"
+    )
+
+    result = mock_page.evaluate(
+        """async () => {
             const item = document.querySelector('#screenshots-list').children[0];
             const hadAvatarPositionBefore = Object.prototype.hasOwnProperty.call(item.dataset, 'avatarPosition');
             await window.appButtons.normalizeAllPendingComposerAttachments();
