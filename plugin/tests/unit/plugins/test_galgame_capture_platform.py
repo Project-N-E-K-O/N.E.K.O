@@ -560,21 +560,28 @@ def test_linux_wmctrl_scanner_uses_resolved_binary(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(window_scanner_linux.shutil, "which", lambda name: "/usr/bin/wmctrl")
+    monkeypatch.setattr(
+        window_scanner_linux,
+        "_linux_process_name_from_pid",
+        lambda pid: "Game.exe" if pid == 4321 else "",
+    )
 
     def _fake_check_output(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("cmd")
         captured["cmd"] = cmd
         captured["text"] = kwargs.get("text")
         captured["timeout"] = kwargs.get("timeout")
-        return "0x01200007  0 10 20 640 480 host Game Window\n"
+        return "0x01200007  0 4321 10 20 640 480 host Game Window\n"
 
     monkeypatch.setattr(window_scanner_linux.subprocess, "check_output", _fake_check_output)
 
     result = window_scanner_linux._scan_windows_linux_wmctrl()
 
-    assert captured["cmd"] == ["/usr/bin/wmctrl", "-lG"]
+    assert captured["cmd"] == ["/usr/bin/wmctrl", "-lpG"]
     assert len(result) == 1
     assert result[0].hwnd == int("0x01200007", 16)
+    assert result[0].pid == 4321
+    assert result[0].process_name == "Game.exe"
 
 
 # ─── Win32CaptureBackend filtering on non-Windows ────────────────────────
@@ -589,6 +596,16 @@ def _make_backend(kind: str):
             return True
 
     return _Stub(kind)
+
+
+class _StubElectronCaptureBackend:
+    kind = "electron"
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    def is_available(self) -> bool:  # pragma: no cover - not used here
+        return True
 
 
 @pytest.mark.parametrize("is_linux_host", [False, True])
@@ -627,3 +644,49 @@ def test_build_backends_keeps_win32_only_on_windows() -> None:
     assert "dxcam" in kinds
     assert "mss" in kinds
     assert "pyautogui" in kinds
+
+
+@pytest.mark.parametrize("selection", ["auto", "smart"])
+def test_build_backends_prefers_electron_on_linux_wayland_auto_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    selection: str,
+) -> None:
+    """Wayland import probes are not enough; prefer portal-backed capture."""
+    from plugin.plugins.galgame_plugin import electron_capture
+    from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setattr(
+        electron_capture,
+        "ElectronCaptureBackend",
+        _StubElectronCaptureBackend,
+    )
+
+    backend = Win32CaptureBackend(selection=selection)
+
+    assert [str(getattr(b, "kind", "")) for b in backend._backends] == ["electron"]
+
+
+def test_build_backends_keeps_electron_tail_fallback_on_linux_x11(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin import electron_capture
+    from plugin.plugins.galgame_plugin.ocr_reader import Win32CaptureBackend
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(
+        electron_capture,
+        "ElectronCaptureBackend",
+        _StubElectronCaptureBackend,
+    )
+
+    backend = Win32CaptureBackend(selection="auto")
+
+    assert [str(getattr(b, "kind", "")) for b in backend._backends] == [
+        "mss",
+        "pyautogui",
+        "electron",
+    ]

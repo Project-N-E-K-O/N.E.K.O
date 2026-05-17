@@ -13,6 +13,7 @@ under XWayland too, where the X11 tools remain available.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from typing import TYPE_CHECKING, Any
@@ -179,27 +180,28 @@ def _scan_windows_linux_wmctrl() -> list["DetectedGameWindow"]:
     """Window enumeration via wmctrl subprocess (fallback).
 
     Requires the system wmctrl binary. Output format:
-        <window_id> <desktop> <x> <y> <w> <h> <host> <title>
+        <window_id> <desktop> <pid> <x> <y> <w> <h> <host> <title>
     """
     from .ocr_reader import DetectedGameWindow  # noqa: PLC0415
 
     wmctrl_path = shutil.which("wmctrl")
     if not wmctrl_path:
         return []
-    output = subprocess.check_output([wmctrl_path, "-lG"], text=True, timeout=5)
+    output = subprocess.check_output([wmctrl_path, "-lpG"], text=True, timeout=5)
 
     results: list[DetectedGameWindow] = []
     for line in output.splitlines():
-        parts = line.split(None, 7)
-        if len(parts) < 8:
+        parts = line.split(None, 8)
+        if len(parts) < 9:
             continue
         try:
             window_id = int(parts[0], 16)
-            x = int(parts[2])
-            y = int(parts[3])
-            w = int(parts[4])
-            h = int(parts[5])
-            title = parts[7]
+            pid = int(parts[2])
+            x = int(parts[3])
+            y = int(parts[4])
+            w = int(parts[5])
+            h = int(parts[6])
+            title = parts[8]
             if not title or len(title) < 2:
                 continue
             area = max(0, w * h)
@@ -209,8 +211,8 @@ def _scan_windows_linux_wmctrl() -> list["DetectedGameWindow"]:
                 DetectedGameWindow(
                     hwnd=window_id,
                     title=title,
-                    process_name="",
-                    pid=0,
+                    process_name=_linux_process_name_from_pid(pid),
+                    pid=max(0, pid),
                     class_name="",
                     exe_path="",
                     width=max(0, w),
@@ -226,3 +228,25 @@ def _scan_windows_linux_wmctrl() -> list["DetectedGameWindow"]:
 
     results.sort(key=lambda w: w.area, reverse=True)
     return results
+
+
+def _linux_process_name_from_pid(pid: int) -> str:
+    """Best-effort Linux process name for wmctrl's -p PID field."""
+    pid = max(0, int(pid or 0))
+    if pid <= 0:
+        return ""
+    try:
+        with open(f"/proc/{pid}/comm", "r", encoding="utf-8") as fh:
+            name = fh.read().strip()
+            if name:
+                return name
+    except OSError:
+        pass
+    try:
+        exe_path = os.readlink(f"/proc/{pid}/exe")
+        name = os.path.basename(exe_path).strip()
+        if name:
+            return name
+    except OSError:
+        pass
+    return ""

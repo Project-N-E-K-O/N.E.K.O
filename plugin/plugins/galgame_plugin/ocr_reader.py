@@ -3274,6 +3274,7 @@ class Win32CaptureBackend:
         # background-target backend.
         from .capture_platform import (  # noqa: PLC0415
             is_linux,
+            is_linux_wayland_session,
             is_win32_only_backend_kind,
             is_windows,
         )
@@ -3291,9 +3292,17 @@ class Win32CaptureBackend:
                 if not is_win32_only_backend_kind(str(getattr(b, "kind", "")))
             ]
             if is_linux() and self._electron_backend is not None:
+                if (
+                    is_linux_wayland_session()
+                    and self.selection
+                    in {_CAPTURE_BACKEND_AUTO, _CAPTURE_BACKEND_SMART}
+                ):
+                    # On Wayland, MSS/PyAutoGUI can import successfully yet
+                    # return black frames. Prefer Electron's portal-backed
+                    # path for automatic selections instead of treating those
+                    # import probes as capture viability.
+                    return [self._electron_backend]
                 # X11/XWayland: MSS/PyAutoGUI work; Electron is a tail fallback.
-                # Pure Wayland: MSS/PyAutoGUI is_available() returns False,
-                # so Electron becomes the only live backend.
                 cross_platform.append(self._electron_backend)
             return cross_platform
 
@@ -3327,6 +3336,16 @@ class Win32CaptureBackend:
         from .capture_platform import is_windows  # noqa: PLC0415
 
         is_windows_host = is_windows()
+        window_level_backends = [
+            backend
+            for backend in self._backends
+            if str(getattr(backend, "kind", "")) == "electron"
+        ]
+        pixel_backends = [
+            backend
+            for backend in self._backends
+            if str(getattr(backend, "kind", "")) not in {"electron", _CAPTURE_BACKEND_PRINTWINDOW}
+        ]
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
             if not (
                 is_windows_host and self._printwindow_backend in self._backends
@@ -3351,7 +3370,11 @@ class Win32CaptureBackend:
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
         if not is_windows_host:
-            return list(self._backends)
+            if bool(getattr(target, "is_foreground", False)):
+                return window_level_backends + pixel_backends
+            if window_level_backends:
+                return window_level_backends
+            raise RuntimeError("smart: background_capture_requires_window_backend")
         if bool(getattr(target, "is_foreground", False)):
             foreground_backends = {
                 id(self._dxcam_backend),
@@ -5014,11 +5037,9 @@ class OcrReaderManager:
         )
         self._custom_capture_backend = capture_backend is not None
         # Win32CaptureBackend works on all platforms: its _build_backends()
-        # filters out dxcam/printwindow on non-Windows, leaving the
-        # cross-platform chain (mss, pyautogui) plus the optional Electron
-        # bridge added below for Linux. On pure Wayland with no Electron
-        # endpoint reachable, is_available() returns False and the preflight
-        # in _tick_preflight() surfaces the unsupported state cleanly.
+        # filters out dxcam/printwindow on non-Windows. Linux X11 keeps the
+        # screen-pixel chain plus the optional Electron bridge fallback, while
+        # Wayland automatic selections use the Electron portal path directly.
         self._capture_backend = capture_backend or Win32CaptureBackend(
             logger=logger,
             selection=config.ocr_reader_capture_backend,

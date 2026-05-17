@@ -2150,29 +2150,37 @@ def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> No
 def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _UnavailableBackend:
+    class _Backend:
         def __init__(self, kind: str) -> None:
             self.kind = kind
+            self.calls = 0
 
         def is_available(self) -> bool:
             return False
 
         def capture_frame(self, target, profile):  # pragma: no cover
+            self.calls += 1
             raise AssertionError(f"{self.kind} should not capture")
 
     class _ElectronBackend:
         kind = "electron"
 
+        def __init__(self) -> None:
+            self.calls = 0
+
         def is_available(self) -> bool:
             return True
 
         def capture_frame(self, target, profile):
+            self.calls += 1
             return "electron-frame"
 
     monkeypatch.setattr(sys, "platform", "linux")
     backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
-    backend._printwindow_backend = _UnavailableBackend("printwindow")
-    backend._backends = [_UnavailableBackend("mss"), _ElectronBackend()]
+    mss = _Backend("mss")
+    electron = _ElectronBackend()
+    backend._printwindow_backend = _Backend("printwindow")
+    backend._backends = [mss, electron]
 
     target = _window()[0]
     target.is_foreground = False
@@ -2180,8 +2188,65 @@ def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
     frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
 
     assert frame == "electron-frame"
+    assert electron.calls == 1
+    assert mss.calls == 0
     assert backend.last_backend_kind == "electron"
-    assert backend.last_backend_detail == "mss_unavailable_fallback"
+    assert backend.last_backend_detail == "selected"
+
+
+def test_smart_capture_backend_non_windows_background_fails_without_window_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PixelBackend:
+        kind = "mss"
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):  # pragma: no cover
+            raise AssertionError("pixel backend should not capture background target")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [_PixelBackend()]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    with pytest.raises(RuntimeError, match="background_capture_requires_window_backend"):
+        backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+
+def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool) -> None:
+            self.kind = kind
+            self.available = available
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, target, profile):
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [
+        _Backend("mss", available=True),
+        _Backend("electron", available=False),
+        _Backend("pyautogui", available=True),
+    ]
+
+    target = _window()[0]
+    target.is_foreground = True
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "mss-frame"
+    assert backend.last_backend_kind == "mss"
+    assert backend.last_backend_detail == "electron_unavailable_fallback"
 
 
 def test_smart_capture_backend_windows_background_keeps_printwindow_only(

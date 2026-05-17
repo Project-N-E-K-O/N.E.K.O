@@ -6,6 +6,7 @@ to avoid circular imports. All ocr_reader imports are lazy (inside functions).
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,15 @@ def is_macos() -> bool:
 
 def is_linux() -> bool:
     return sys.platform.startswith("linux")
+
+
+def is_linux_wayland_session() -> bool:
+    if not is_linux():
+        return False
+    session_type = str(os.environ.get("XDG_SESSION_TYPE") or "").strip().lower()
+    if session_type == "wayland":
+        return True
+    return bool(os.environ.get("WAYLAND_DISPLAY")) and not bool(os.environ.get("DISPLAY"))
 
 
 def platform_name() -> str:
