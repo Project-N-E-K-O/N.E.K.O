@@ -577,6 +577,13 @@ async def run_sync_connector(
         MEMORY_CACHE_SCOPE_TURN_END: False,
     }
 
+    def clear_unmatched_image_only_input_marker() -> None:
+        """清理尚未进入 assistant 轮次的纯图片输入标记。"""
+        nonlocal pending_user_input_marker, pending_user_images
+        if pending_user_input_marker and current_turn == 'user' and not user_input_cache:
+            pending_user_input_marker = False
+            pending_user_images = []
+
     try:
         while True:
             # 阻塞等消息。无消息时主 loop 完全沉默——ws 维护已下沉到 _slot_maintainer，
@@ -679,19 +686,32 @@ async def run_sync_connector(
 
                     elif message["type"] == "system":
                         try:
-                            if message["data"] == "google disconnected":
+                            system_data = message["data"]
+                            if system_data in {
+                                "google disconnected",
+                                "response_discarded_clear",
+                                "renew session",
+                                "turn end",
+                                "turn end agent_callback",
+                                "session end",
+                                "API server disconnected",
+                                "websocket disconnected",
+                            }:
+                                clear_unmatched_image_only_input_marker()
+
+                            if system_data == "google disconnected":
                                 if len(text_output_cache) > 0:
                                     chat_history.append({'role': 'system', 'content': [
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
                                 text_output_request_id = None
                             
-                            elif message["data"] == "response_discarded_clear":
+                            elif system_data == "response_discarded_clear":
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
                                 text_output_request_id = None
                             
-                            if message["data"] == "renew session":
+                            if system_data == "renew session":
                                 # 检查是否正在关闭
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过renew session处理")
@@ -752,8 +772,8 @@ async def run_sync_connector(
                                 chat_history.clear()
                                 last_synced_index = 0
 
-                            if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
-                                is_agent_callback_turn_end = (message["data"] == 'turn end agent_callback')
+                            if system_data in ('turn end', 'turn end agent_callback'): # lanlan的消息结束了
+                                is_agent_callback_turn_end = (system_data == 'turn end agent_callback')
                                 # 后端打标：meta 与 turn end 事件原子绑定，不再依赖独立通道
                                 # 的 pending_* 状态。game-only 足球台词在这里先截断，避免
                                 # 未打标的兼容镜像文本先 append 到 ordinary chat_history。
@@ -964,7 +984,7 @@ async def run_sync_connector(
                                             memory_cache_health_state,
                                         )
 
-                            elif message["data"] == 'session end': # 当前session结束了
+                            elif system_data == 'session end': # 当前session结束了
                                 # 检查是否正在关闭，如果是则跳过网络操作
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过session end处理")
