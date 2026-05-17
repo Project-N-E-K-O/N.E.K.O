@@ -191,6 +191,28 @@ async def test_survivor_gets_cluster_hash_stamp(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_all_malformed_actions_does_not_stamp(tmp_path):
+    """Codex P2 修复：非空 actions 但全部 reject (语义垃圾) 不应 stamp，
+    否则 cluster 会被错误标记为 fresh 推迟 1 个月才重审。"""
+    pm = _install(str(tmp_path))
+    s1 = await _seed(pm, "小天", "kept", id='p_keep')
+    cluster = [_annotate(s1)]
+    actions = [
+        {'action': 'invent_an_action', 'source_id': 'p_keep'},
+        {'action': 'also_unknown', 'source_id': 'p_keep'},
+    ]
+    applied = await pm.apply_refine_actions("小天", "master", cluster, actions, 'h_bad')
+    assert applied == 0
+    persona = await pm.aensure_persona("小天")
+    survivor = next(
+        e for e in pm._get_section_facts(persona, "master")
+        if e.get('id') == 'p_keep'
+    )
+    assert survivor.get('last_refine_cluster_hash') is None
+    assert survivor.get('last_refine_at') is None
+
+
+@pytest.mark.asyncio
 async def test_empty_actions_still_stamps_cluster_members(tmp_path):
     """Codex P1 修复：LLM 返回 [] (no-op) 也必须 stamp 整个 cluster，
     否则下轮 cron 重复审视同 cluster，cluster_hash skip 失效。"""

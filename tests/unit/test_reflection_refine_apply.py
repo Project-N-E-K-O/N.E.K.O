@@ -231,6 +231,26 @@ async def test_discard_reflection_removes_it(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_all_malformed_actions_does_not_stamp_reflection(tmp_path):
+    """Codex P2 修复：非空 actions 全 reject (含针对 fact id 的非法 source_id)
+    → applied=0 但不 stamp，等下轮重试。"""
+    engine = _install(str(tmp_path))
+    r1 = await _seed_refl(engine, "小天", id='r_keep', text='kept')
+    cluster = [_annot_refl(r1), _annot_fact('f_ctx')]
+    actions = [
+        {'action': 'split', 'source_id': 'f_ctx',  # fact 不可 split
+         'produce': [{'text': 'a'}, {'text': 'b'}]},
+        {'action': 'invent_an_action', 'source_id': 'r_keep'},
+    ]
+    applied = await engine.apply_refine_actions("小天", "master", cluster, actions, 'h_bad')
+    assert applied == 0
+    refls = await engine.aload_reflections("小天")
+    target = next(r for r in refls if r.get('id') == 'r_keep')
+    assert target.get('last_refine_cluster_hash') is None
+    assert target.get('last_refine_at') is None
+
+
+@pytest.mark.asyncio
 async def test_empty_actions_still_stamps_cluster_reflections(tmp_path):
     """Codex P1 修复：LLM 返回 [] (no-op) 也必须 stamp 整个 cluster
     内的 reflection（fact 跳过），否则下轮 cron 重复审视。"""

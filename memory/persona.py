@@ -2034,10 +2034,17 @@ class PersonaManager:
                     consumed.add(src_id)
                     applied += 1
 
-            # NOTE: applied 可能为 0（LLM 返回 [] 的合法 no-op），仍需 stamp
-            # 整个 cluster —— 否则下一轮 cron 形成同 cluster 时 hash skip 命不
-            # 中（成员未 stamp），再次送 LLM 又返回 []，造成无限重复审视，
-            # cluster_hash skip 机制完全失效（Codex P1 #1392）。
+            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
+            # - applied > 0：有变化，必 stamp + save
+            # - applied == 0 + actions 为空：LLM 明确判定 no-op，stamp
+            #   防 cluster_hash skip 失效（Codex P1）
+            # - applied == 0 + actions 非空：所有 action 都被 reject =
+            #   LLM 输出语义垃圾（unknown action / missing field 等），
+            #   不 stamp，等下轮重试（Codex P2，防垃圾输出导致 30 天
+            #   静默推迟需要的 refine）
+            if applied == 0 and actions:
+                return 0
+
             new_section = [
                 e for e in section
                 if not (isinstance(e, dict) and e.get('id') in consumed)

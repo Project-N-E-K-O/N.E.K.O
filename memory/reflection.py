@@ -1218,9 +1218,15 @@ class ReflectionEngine:
                     consumed.add(src_id)
                     applied += 1
 
-            # NOTE: applied 可能为 0（LLM 返回 [] 的合法 no-op），仍需 stamp
-            # 整个 cluster —— 否则下轮 cron 形成同 cluster 时 hash skip 命不
-            # 中，再次送 LLM 又返回 []，cluster_hash skip 失效（Codex P1 #1392）。
+            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
+            # - applied > 0：有变化，必 stamp + save
+            # - applied == 0 + actions 为空：LLM 明确 no-op，stamp 防
+            #   cluster_hash skip 失效（Codex P1）
+            # - applied == 0 + actions 非空：所有 action 全 reject = LLM
+            #   语义垃圾，不 stamp 等下轮重试（Codex P2）
+            if applied == 0 and actions:
+                return 0
+
             new_reflections = [
                 r for r in reflections
                 if not (isinstance(r, dict) and r.get('id') in consumed)
