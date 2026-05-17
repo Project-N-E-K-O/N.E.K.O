@@ -133,55 +133,63 @@ def _normalize_options(parsed: Any) -> dict[str, str]:
     fallback rather than throwing the whole batch away — preserves any
     on-style replies the model did manage to generate.
 
-    Accepted shapes (in priority order):
+    All recognised shapes are *merged*, not selected, so mixed payloads
+    like ``{"A": "topA", "options": [{"label":"B","text":"..."}, ...]}``
+    keep both the top-level label and the nested list candidates instead
+    of one source silently shadowing the other. First write wins on
+    same-label conflicts (top-level > nested-map > list).
+
+    Accepted shapes:
       * ``{"A": "...", "B": "...", "C": "..."}`` (top-level label map)
       * ``{"options": {"A": "...", ...}}`` (nested label map)
       * ``{"options": [{"label": "A", "text": "..."}, ...]}`` (canonical list)
       * ``{"options": ["serious", "warm", "wild"]}`` (positional list)
       * Top-level list of either dict or string entries
+      * Any mix of the above
     """
-    # Shape 1: top-level dict is already a label map.
-    direct = _take_label_map(parsed)
-    if direct:
-        return direct
+    by_label: dict[str, str] = {}
+
+    # Shape 1: top-level dict carries A/B/C directly.
+    by_label.update(_take_label_map(parsed))
 
     if isinstance(parsed, dict):
         candidates = parsed.get('options') or parsed.get('candidates') or parsed.get('replies')
-        # Shape 2: the inner container is itself a label map.
-        nested = _take_label_map(candidates)
-        if nested:
-            return nested
     else:
         candidates = parsed
-    if not isinstance(candidates, list):
-        return {}
 
-    by_label: dict[str, str] = {}
-    leftover: list[str] = []
-    for entry in candidates:
-        if isinstance(entry, dict):
-            text = entry.get('text') or entry.get('content') or entry.get('reply')
-            label = entry.get('label')
-        elif isinstance(entry, str):
-            text = entry
-            label = None
-        else:
-            continue
-        if not isinstance(text, str):
-            continue
-        text = text.strip()
-        if not text:
-            continue
-        normalized_label = str(label).strip().upper() if label else ''
-        if normalized_label in GALGAME_OPTION_LABELS and normalized_label not in by_label:
-            by_label[normalized_label] = text
-        else:
-            leftover.append(text)
+    # Shape 2: the inner container is itself a label map. Don't clobber any
+    # top-level entry — first write wins.
+    for label, text in _take_label_map(candidates).items():
+        by_label.setdefault(label, text)
 
-    for label in GALGAME_OPTION_LABELS:
-        if label in by_label or not leftover:
-            continue
-        by_label[label] = leftover.pop(0)
+    # Shape 3/4/5: list of dict (with `label`) or string entries.
+    if isinstance(candidates, list):
+        leftover: list[str] = []
+        for entry in candidates:
+            if isinstance(entry, dict):
+                text = entry.get('text') or entry.get('content') or entry.get('reply')
+                label = entry.get('label')
+            elif isinstance(entry, str):
+                text = entry
+                label = None
+            else:
+                continue
+            if not isinstance(text, str):
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            normalized_label = str(label).strip().upper() if label else ''
+            if normalized_label in GALGAME_OPTION_LABELS and normalized_label not in by_label:
+                by_label[normalized_label] = text
+            else:
+                leftover.append(text)
+
+        for label in GALGAME_OPTION_LABELS:
+            if label in by_label or not leftover:
+                continue
+            by_label[label] = leftover.pop(0)
+
     return by_label
 
 

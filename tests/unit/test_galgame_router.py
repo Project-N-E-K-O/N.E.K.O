@@ -186,8 +186,37 @@ async def test_galgame_option_generation_timeout_returns_fallback(monkeypatch):
             {"options": {"A": "认真听。", "B": "陪着你。", "C": "幻想一下。"}},
             ["认真听。", "陪着你。", "幻想一下。"],
         ),
+        # Shape C: mixed — top-level provides A only, nested list provides B+C.
+        # All three sources must be merged (regression guard for the early-return bug).
+        (
+            {
+                "A": "先确认你刚才说的重点。",
+                "options": [
+                    {"label": "B", "text": "我在这里陪你慢慢说。"},
+                    {"label": "C", "text": "那就把它变成月亮地图吧。"},
+                ],
+            },
+            ["先确认你刚才说的重点。", "我在这里陪你慢慢说。", "那就把它变成月亮地图吧。"],
+        ),
+        # Shape D: top-level wins on same-label conflicts.
+        (
+            {
+                "A": "顶层 A 才是真正发送的。",
+                "options": [
+                    {"label": "A", "text": "嵌套 A 应当被忽略。"},
+                    {"label": "B", "text": "嵌套 B 正常使用。"},
+                    {"label": "C", "text": "嵌套 C 正常使用。"},
+                ],
+            },
+            ["顶层 A 才是真正发送的。", "嵌套 B 正常使用。", "嵌套 C 正常使用。"],
+        ),
     ],
-    ids=["top_level_label_map", "nested_label_map"],
+    ids=[
+        "top_level_label_map",
+        "nested_label_map",
+        "mixed_top_level_and_nested_list",
+        "top_level_wins_on_conflict",
+    ],
 )
 @pytest.mark.unit
 @pytest.mark.asyncio
