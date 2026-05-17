@@ -976,6 +976,52 @@ async def test_idless_frame_after_seen_id_drops_to_stray():
 
 
 @pytest.mark.asyncio
+async def test_seen_task_id_latch_resets_on_ws_restart():
+    """The ``_seen_task_id_echo`` latch must clear on ``service.stop()``
+    so a reconnect to a different mc-agent version (e.g. user
+    downgraded to a legacy build that doesn't echo task_id) re-learns
+    from the next frame. Without the reset, post-restart id-less
+    completions from the legacy agent would be misrouted to ``stray``
+    and the runner would only resolve on its 120s timeout."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Session 1: modern agent (echoes task_id) — latches True.
+    runner1 = asyncio.create_task(service.execute_minecraft_task(task="modern"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("modern task never claimed pending slot")
+    modern_id = service._pending.task_id
+    await service._on_task_finished({"status": "ok", "task_id": modern_id})
+    await asyncio.wait_for(runner1, timeout=2.0)
+    assert service._seen_task_id_echo is True
+
+    # WS restart (config reload, ws_url change, or transport drop).
+    await service.stop()
+    assert service._seen_task_id_echo is False, \
+        "_seen_task_id_echo must reset on stop() so reconnect re-learns"
+
+    # Session 2: legacy agent (never echoes task_id) — FIFO must still
+    # fire so the new pending isn't stranded.
+    service._client = _FakeClient()
+    runner2 = asyncio.create_task(service.execute_minecraft_task(task="legacy"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("legacy task never claimed pending slot")
+
+    await service._on_task_finished({"status": "ok", "text": "done"})
+    out = await asyncio.wait_for(runner2, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_idless_frame_legacy_agent_still_uses_fifo():
     """Genuine legacy mc-agent that never echoes task_id keeps the
     FIFO fallback — without ``_seen_task_id_echo`` ever latching,
