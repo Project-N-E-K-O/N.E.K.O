@@ -837,6 +837,11 @@ async def test_unknown_task_id_with_pending_does_not_resolve_pending():
     })
     assert service._pending is not None
     assert service._pending.task_text == "B"
+    # Runner future must still be pending — a ghost task_id must not
+    # accidentally event.set() the wrong slot. (Belt-and-braces with
+    # the _pending check above: catches a future regression where the
+    # slot is correctly preserved but the runner's event fires anyway.)
+    assert not runner.done(), "ghost task_id must not resolve current runner"
     # Cache untouched — ghost frame's inventory must not have overwritten
     # the seed we set above.
     assert service._last_inventory == {"dirt": 5}
@@ -891,6 +896,9 @@ async def test_historical_task_id_emits_retroactive_cue():
     # The second task's pending slot is untouched.
     assert service._pending is not None
     assert service._pending.task_id == second_id
+    # And runner2 must still be pending — the retroactive cue path
+    # must never accidentally event.set() the current pending slot.
+    assert not runner2.done(), "historical task_id must not resolve current runner"
     # And a retroactive cue was pushed referencing the first task.
     assert any(
         "你之前派出去的「first」" in (p.get("text") or "")
