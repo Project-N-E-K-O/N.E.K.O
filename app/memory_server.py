@@ -1830,7 +1830,12 @@ async def _periodic_signal_extraction_loop():
                     {'type': 'human', 'data': {'content': m}}
                     for m in user_msgs_text
                 ]
-                messages = convert_to_messages(json.dumps(message_dicts))
+                # convert_to_messages 只接 list，不再解 JSON 字符串（PR #547 以来的契约）；
+                # 这里之前的 json.dumps 让函数走 isinstance(data, list)==False 分支直接返回 []，
+                # → messages=[] → _format_conversation render 出空字符串 → Stage-1 prompt
+                # 里 ======以下为对话====== 跟 ======以上为对话====== 之间为空 → LLM 合理
+                # 返回 []，整套 fact 抽取 + 后续 Stage-2 evidence 都被静默跳过。
+                messages = convert_to_messages(message_dicts)
 
                 try:
                     persisted, signals, batch_fact_ids = await fact_store.aextract_facts_and_detect_signals(
