@@ -14,6 +14,7 @@ URL convention: routes declared WITHOUT trailing slash. See the project
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
@@ -109,6 +110,21 @@ def _strip_code_fence(text: str) -> str:
     return text.strip()
 
 
+def _take_label_map(obj: Any) -> dict[str, str]:
+    """Pull canonical A/B/C label→text entries out of a dict, if any."""
+    if not isinstance(obj, dict):
+        return {}
+    collected: dict[str, str] = {}
+    for label in GALGAME_OPTION_LABELS:
+        # Accept both upper and lower-case keys ("a"/"A").
+        value = obj.get(label)
+        if not isinstance(value, str):
+            value = obj.get(label.lower())
+        if isinstance(value, str) and value.strip():
+            collected[label] = value.strip()
+    return collected
+
+
 def _normalize_options(parsed: Any) -> dict[str, str]:
     """Best-effort parse: return whatever label→text mappings the model produced.
 
@@ -116,9 +132,25 @@ def _normalize_options(parsed: Any) -> dict[str, str]:
     keyed by canonical labels (A/B/C). Callers fill missing labels from
     fallback rather than throwing the whole batch away — preserves any
     on-style replies the model did manage to generate.
+
+    Accepted shapes (in priority order):
+      * ``{"A": "...", "B": "...", "C": "..."}`` (top-level label map)
+      * ``{"options": {"A": "...", ...}}`` (nested label map)
+      * ``{"options": [{"label": "A", "text": "..."}, ...]}`` (canonical list)
+      * ``{"options": ["serious", "warm", "wild"]}`` (positional list)
+      * Top-level list of either dict or string entries
     """
+    # Shape 1: top-level dict is already a label map.
+    direct = _take_label_map(parsed)
+    if direct:
+        return direct
+
     if isinstance(parsed, dict):
         candidates = parsed.get('options') or parsed.get('candidates') or parsed.get('replies')
+        # Shape 2: the inner container is itself a label map.
+        nested = _take_label_map(candidates)
+        if nested:
+            return nested
     else:
         candidates = parsed
     if not isinstance(candidates, list):
@@ -270,15 +302,19 @@ async def generate_galgame_options(request: Request):
             parse_error = type(exc).__name__
 
     if not parsed_map:
-        # Log a single-line head of the raw output so future failures can be
-        # diagnosed without forcing DEBUG. Truncate to keep PII / long output
-        # out of the log file.
-        snippet = re.sub(r'\s+', ' ', raw_text)[:200]
+        # The raw output is generated from recent chat context and can carry
+        # PII (names, personal disclosures). Keep INFO logs content-free —
+        # only the parse-error class and total length — and stash the
+        # truncated snippet under DEBUG so deeper diagnosis still works when
+        # an operator deliberately opts into NEKO_LOG_LEVEL=DEBUG.
         logger.info(
             "GalGame model output unparseable, using fallback "
-            "(parse_error=%s raw_head=%r raw_len=%d)",
-            parse_error, snippet, len(raw_text),
+            "(parse_error=%s raw_len=%d)",
+            parse_error, len(raw_text),
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            snippet = re.sub(r'\s+', ' ', raw_text)[:200]
+            logger.debug("GalGame unparseable raw_head: %r", snippet)
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),

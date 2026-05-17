@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -172,6 +173,63 @@ async def test_galgame_option_generation_timeout_returns_fallback(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    "model_output, expected",
+    [
+        # Shape A: top-level label-keyed dict
+        (
+            {"A": "先确认你刚才说的重点。", "B": "我在这里陪你慢慢说。", "C": "那就把它变成月亮地图吧。"},
+            ["先确认你刚才说的重点。", "我在这里陪你慢慢说。", "那就把它变成月亮地图吧。"],
+        ),
+        # Shape B: nested label-keyed dict under "options"
+        (
+            {"options": {"A": "认真听。", "B": "陪着你。", "C": "幻想一下。"}},
+            ["认真听。", "陪着你。", "幻想一下。"],
+        ),
+    ],
+    ids=["top_level_label_map", "nested_label_map"],
+)
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_accepts_dict_shaped_options(model_output, expected, monkeypatch):
+    """Some models emit option maps instead of canonical lists. Don't discard them."""
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+
+    class MapLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content=json.dumps(model_output, ensure_ascii=False))
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **kw: MapLLM())
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
+                "language": "zh-CN",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert "fallback" not in data
+    assert "partial" not in data
+    assert _option_texts(data) == expected
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_galgame_partial_options_filled_from_fallback(monkeypatch):
@@ -226,8 +284,10 @@ async def test_galgame_partial_options_filled_from_fallback(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_galgame_unparseable_output_returns_fallback(monkeypatch):
-    """Garbage output → full fallback, and the warning carries a raw_head snippet."""
+async def test_galgame_unparseable_output_returns_fallback(monkeypatch, caplog):
+    """Garbage output → full fallback. INFO log must carry metadata only,
+    never the raw model text (privacy: the raw output is generated from
+    recent chat context)."""
     config_manager = FakeConfigManager(
         {
             "model": "local-summary",
@@ -235,6 +295,8 @@ async def test_galgame_unparseable_output_returns_fallback(monkeypatch):
             "api_key": "",
         }
     )
+
+    raw_content = "抱歉，我不太理解你的问题。"
 
     class GarbageLLM:
         async def __aenter__(self):
@@ -244,24 +306,38 @@ async def test_galgame_unparseable_output_returns_fallback(monkeypatch):
             return None
 
         async def ainvoke(self, messages):
-            return SimpleNamespace(content="抱歉，我不太理解你的问题。")
+            return SimpleNamespace(content=raw_content)
 
     monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
     monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **kw: GarbageLLM())
 
-    response = await galgame_router.generate_galgame_options(
-        FakeRequest(
-            {
-                "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
-                "language": "zh-CN",
-            }
+    with caplog.at_level(logging.INFO, logger=galgame_router.logger.name):
+        response = await galgame_router.generate_galgame_options(
+            FakeRequest(
+                {
+                    "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
+                    "language": "zh-CN",
+                }
+            )
         )
-    )
 
     data = _decode_response(response)
     assert data["success"] is True
     assert data["fallback"] is True
     assert _option_texts(data) == list(get_galgame_fallback_options("zh"))
+
+    # The INFO-level fallback log records parse_error + raw_len, but must NOT
+    # leak the raw model output (it can carry conversational PII).
+    info_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.INFO and "unparseable" in record.getMessage()
+    ]
+    assert info_messages, "expected an INFO log entry on unparseable output"
+    joined = " ".join(info_messages)
+    assert "raw_len=" in joined
+    assert "parse_error=" in joined
+    assert raw_content not in joined
 
 
 @pytest.mark.unit
