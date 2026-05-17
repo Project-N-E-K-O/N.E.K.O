@@ -72,6 +72,7 @@ import { VideoPlay, VideoPause, Refresh, SwitchButton, Monitor } from '@element-
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { openExternalUrl } from '@/utils/openExternal'
 
 interface Props {
   pluginId: string
@@ -149,13 +150,14 @@ async function handleOpenUi() {
   // server 暴露的 path（如 /plugin/<id>/ui/）和外部 URL 都得走 browser
   // navigation 才能正确跳转，否则 same_tab + plugin-server path 会被当
   // unmatched SPA route，UI 不打开。
+  // _blank 走 openExternalUrl：Electron host 下会经 electronShell 转发给
+  // 系统浏览器，避免落到嵌入 webview 里没有关闭按钮把用户困住。
   if (target) {
-    const windowTarget = openInNewTab ? '_blank' : '_self'
-    window.open(
-      target,
-      windowTarget,
-      openInNewTab ? 'noopener,noreferrer' : undefined,
-    )
+    if (openInNewTab) {
+      openExternalUrl(target)
+    } else {
+      window.open(target, '_self')
+    }
     return
   }
 
@@ -167,7 +169,7 @@ async function handleOpenUi() {
   }
   if (openInNewTab) {
     const resolved = router.resolve(fallback)
-    window.open(resolved.href, '_blank', 'noopener,noreferrer')
+    openExternalUrl(resolved.href)
   } else {
     await router.push(fallback)
   }

@@ -6,6 +6,7 @@ import { packPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { openExternalUrl } from '@/utils/openExternal'
 
 type PluginListContextPlugin = PluginMeta & {
   status?: string
@@ -363,8 +364,14 @@ export function usePluginListContextActions() {
     }
 
     if (action.kind === 'ui' || action.kind === 'url') {
-      const nextTarget = action.open_in === 'same_tab' ? '_self' : '_blank'
-      window.open(target, nextTarget, nextTarget === '_blank' ? 'noopener' : undefined)
+      // _blank 走 openExternalUrl，让 Electron host 把它转发到系统浏览器，
+      // 避免嵌入 webview 没有关闭按钮把用户困住；same_tab 仍是当前窗口
+      // navigation。
+      if (action.open_in === 'same_tab') {
+        window.open(target, '_self')
+      } else {
+        openExternalUrl(target)
+      }
     }
   }
 
