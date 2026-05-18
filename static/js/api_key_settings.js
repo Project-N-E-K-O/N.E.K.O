@@ -1791,10 +1791,9 @@ async function save_button_down(e) {
     }
 
     // handleCoreKeyChange 用 300ms 防抖才翻 _coreApiKeyInputDirty / syncKeyToBook,
-    // 用户快速 type/paste 后立刻点保存会落在窗口内：dirty 还是 false、book DOM
-    // 也还是旧值。下面 1761/1841 两处都会保留 keyBook 旧值覆盖新输入，新凭证
-    // 被静默丢弃。在这里按 input 当前值和 book 快照对比直接判脏，绕过防抖窗口。
-    if (coreApi && coreApi !== 'free' && !_coreApiKeyInputDirty && apiKey && _apiKeyRegistry[coreApi]) {
+    // 用户快速 type/paste/clear 后立刻点保存会落在窗口内：dirty 还是 false、book DOM
+    // 也还是旧值。这里按 input 当前值和 book 快照对比直接判脏，绕过防抖窗口。
+    if (coreApi && coreApi !== 'free' && !_coreApiKeyInputDirty && _apiKeyRegistry[coreApi]) {
         const bookSnapshot = syncKeyFromBook(coreApi);
         if (bookSnapshot !== null && bookSnapshot !== apiKey) {
             _coreApiKeyInputDirty = true;
@@ -1820,8 +1819,8 @@ async function save_button_down(e) {
     // 【修复】将上方主输入框的修改强制覆盖到保存 payload 中
     // 否则直接点保存时，后台的 assistApiKey[Provider] 会保留 Key Book 中的旧值
     if (coreApi && coreApi !== 'free' && _apiKeyRegistry[coreApi]) {
-        if (_coreApiKeyInputDirty && !isFreeVersionText(apiKey)) {
-            allBookKeys[coreApi] = apiKey;
+        if (_coreApiKeyInputDirty) {
+            allBookKeys[coreApi] = isFreeVersionText(apiKey) ? '' : apiKey;
         } else if (!(coreApi in allBookKeys) && !isFreeVersionText(apiKey)) {
             allBookKeys[coreApi] = apiKey;
         }
@@ -1897,10 +1896,13 @@ async function save_button_down(e) {
 
     const mcpToken = getVal('mcpTokenInput');
 
-    const coreBookKeyForSave = (coreApi && coreApi !== 'free' && allBookKeys[coreApi])
-        ? allBookKeys[coreApi]
-        : '';
-    const effectiveCoreApiKeyForSave = (!_coreApiKeyInputDirty && coreBookKeyForSave)
+    const hasCoreBookKeyForSave = !!(
+        coreApi
+        && coreApi !== 'free'
+        && Object.prototype.hasOwnProperty.call(allBookKeys, coreApi)
+    );
+    const coreBookKeyForSave = hasCoreBookKeyForSave ? allBookKeys[coreApi] : '';
+    const effectiveCoreApiKeyForSave = (!_coreApiKeyInputDirty && hasCoreBookKeyForSave)
         ? coreBookKeyForSave
         : apiKey;
     const apiKeyForSave = (coreApi === 'free' || assistApi === 'free') ? 'free-access' : effectiveCoreApiKeyForSave;
@@ -2692,7 +2694,7 @@ const ConnectivityManager = {
                 result.url = getProviderCoreUrl(coreProvider, coreProfile);
                 const inputKey = getRealKey(apiKeyInput);
                 const bookKey = syncKeyFromBook(coreProvider);
-                if (_coreApiKeyInputDirty && inputKey && !isFreeVersionText(inputKey)) {
+                if (_coreApiKeyInputDirty && !isFreeVersionText(inputKey)) {
                     result.key = inputKey;
                 } else if (bookKey !== null && bookKey !== '') {
                     result.key = bookKey;
