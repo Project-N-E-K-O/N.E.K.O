@@ -1066,7 +1066,7 @@ class FactStore:
         lanlan_name: str,
         messages: list,
         known_pool: list[dict],
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """AI-aware Stage-1 (path B) extraction —— 输入是 role-tagged user+ai
         全消息，prompt 里塞 ``known_pool``（path A 在同窗口已抽过的 fact）
         作为 "do-not-repeat" 列表，让 LLM 在输出层主动去重。
@@ -1077,12 +1077,22 @@ class FactStore:
         - 落盘 default_source='ai_disclosure'（LLM 显式输出的 source 仍优先）
         - Stage-2 不走（path B 设计就不进 evidence loop）
 
-        Stage-1 失败时返 [] 而非 raise——path B 是补抓性质，失败不该阻塞
-        后续 A tick（A 自己的 Stage-1 失败有独立的 FactExtractionFailed 处理）。
+        Returns:
+            - ``None``: Stage-1 LLM 终态失败（重试耗尽）。caller 应保留 cursor
+              下次 trigger 重试同窗口。
+            - ``[]``: Stage-1 成功但 LLM 判窗口内 0 条新 fact（已 dedupe 完）。
+              caller 可正常推进 cursor。
+            - ``list[dict]``: 成功且抽到 N 条新 fact，已 persist。
+
+            None / [] 的区分至关重要：若把 None 折叠成 []，path B 会在 LLM
+            transient failure 时把失败窗口当作"成功 0 抽"推进 cursor，导致
+            消息永久 skip（CodeRabbit / Codex P1 round-2 on PR #1408）。
         """
         extracted = await self._allm_extract_facts_with_known_pool(
             lanlan_name, messages, known_pool,
         )
+        if extracted is None:
+            return None
         if not extracted:
             return []
         return await self._apersist_new_facts(

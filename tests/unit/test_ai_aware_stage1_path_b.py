@@ -302,10 +302,9 @@ async def test_stage2_filters_out_ai_disclosure_facts():
     fs._allm_detect_signals = AsyncMock(return_value=[])  # signals=[] but ran
 
     # _allm_detect_signals 被调用时传的 batch 就是过 filter 后的 unprocessed。
-    # 三元 return 故意全用 _ 前缀——测试关心的是 mock call 参数，不是返回值。
-    _persisted, _signals, _batch_ids = await fs.aextract_facts_and_detect_signals(
-        '悠怡', messages=[],
-    )
+    # 这里直接 await 不绑变量——测试只关心 mock call 参数，不关心三元 return
+    # （CodeQL 对 `_xxx` 前缀仍判 unused，故彻底不绑）。
+    await fs.aextract_facts_and_detect_signals('悠怡', messages=[])
 
     # 验证 _allm_detect_signals 被调，且其 batch 参数里**没有** b（ai_disclosure）
     fs._allm_detect_signals.assert_awaited_once()
@@ -611,6 +610,172 @@ async def test_path_b_known_pool_sort_tolerates_malformed_importance():
     captured_known_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
     # 5 条脏 fact 全在窗口内，都应该进 pool（脏值不丢，只是排序 fallback）
     assert len(captured_known_pool) == 5
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_stage1_terminal_failure_preserves_cursor():
+    """Regression (CodeRabbit + Codex P1 round-2 on PR #1408)：
+    ``aextract_facts_with_known_pool`` 返 None 表示 Stage-1 LLM 终态失败
+    （重试耗尽 / network / JSON parse 等），cursor 必须保留不推进。
+    若把 None 折叠成 [] 当成"成功 0 抽"，失败窗口会被永久 skip，那批
+    msg 的 AI-aware fact 永远抓不到。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    original_last_b = last_a_msg_ts - timedelta(minutes=20)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': original_last_b,
+    }
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_a_msg_ts - timedelta(minutes=5), 's', json.dumps({
+            'type': 'human', 'data': {'content': '会话有内容'},
+        })),
+        (last_a_msg_ts, 's', json.dumps({
+            'type': 'ai', 'data': {'content': 'AI 回应'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    # Stage-1 LLM 终态失败 → 返 None（不是 []）
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=None)
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    # 关键契约：失败时 cursor 必须保持原值，下次 B trigger 重试同窗口
+    assert state['last_b_check_ts'] == original_last_b, (
+        f"Stage-1 失败时 cursor 必须保留原值 {original_last_b}，"
+        f"实际推到 {state['last_b_check_ts']}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_truncated_window_all_filtered_advances_to_last_fetched():
+    """Regression (Codex P2 round-2 on PR #1408)：
+    SQL LIMIT 截断 + 取到的 rows 全是 system msg / 空 content（被
+    ``_extract_role_tagged_messages_from_rows`` 过滤光）时，cursor 必须只
+    推到 last fetched row ts，不能跳到 last_a_msg_ts——否则截断后未取
+    到的尾巴里若有有效 human/ai msg 会被永久 skip。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=30)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 模拟 SQL 截断：返 2 行但都是 system msg，最后一行 ts < last_a_msg_ts
+    truncation_boundary = last_a_msg_ts - timedelta(minutes=10)
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_b + timedelta(seconds=10), 's', json.dumps({
+            'type': 'system', 'data': {'content': '系统消息1'},
+        })),
+        (truncation_boundary, 's', json.dumps({
+            'type': 'system', 'data': {'content': '系统消息2'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    assert state['last_b_check_ts'] == truncation_boundary, (
+        f"截断 + 过滤全空时 cursor 必须 = last fetched ({truncation_boundary})，"
+        f"不能跳到 last_a_msg_ts ({last_a_msg_ts})。"
+        f"实际: {state['last_b_check_ts']}"
+    )
+    assert state['last_b_check_ts'] < last_a_msg_ts, (
+        "截断尾巴未读到，下次 B 必须能继续覆盖"
+    )
+    # 而且不该调 LLM（没消息可抽）
+    fake_fact_store.aextract_facts_with_known_pool.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_skew():
+    """Regression (CodeRabbit on PR #1408)：A 的 idle/polling 延迟让"刚扫
+    完本 B 窗口"那批 A facts 的 created_at 普遍略晚于 last_a_msg_ts。known
+    _pool 不该用 ``created_at <= last_a_msg_ts`` 做上界过滤，否则最新一批
+    A facts 整批被排除 → B 容易和 A 重复抽同一窗口。
+
+    本测试构造：window=[last_b, last_a_msg_ts]，但 A 在 last_a_msg_ts +
+    30s 才写完那批 fact（created_at 比 last_a_msg_ts 晚），断言这些 fact
+    必须进 known_pool。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=20)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 关键场景：A 写入延迟 → created_at 在 last_a_msg_ts 之后
+    a_written_after_msg_ts = [
+        {'id': f'a_late_{i}', 'text': f'A 在 idle 后才写的 fact {i}',
+         'importance': 8,
+         # 写入延迟 30s ~ 90s（普通 idle gate / LLM call 时长）
+         'created_at': (last_a_msg_ts + timedelta(seconds=30 + i * 20)).isoformat()}
+        for i in range(3)
+    ]
+    # 对照组：窗口内正常时间写的 fact，必须也在
+    a_in_window = [
+        {'id': 'a_in', 'text': '窗口内写的 A fact', 'importance': 7,
+         'created_at': (last_b + timedelta(minutes=5)).isoformat()},
+    ]
+    # 对照组：窗口前的 old fact，不该在（下界过滤）
+    a_pre_window = [
+        {'id': 'a_old', 'text': 'pre-window fact', 'importance': 10,
+         'created_at': (last_b - timedelta(hours=1)).isoformat()},
+    ]
+    all_facts = a_written_after_msg_ts + a_in_window + a_pre_window
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_a_msg_ts - timedelta(minutes=1), 's', json.dumps({
+            'type': 'human', 'data': {'content': '测试'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=all_facts)
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
+    captured_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
+    pool_ids = {f['id'] for f in captured_pool}
+
+    # 关键断言：A 写入延迟产生的 facts（created_at > last_a_msg_ts）必须在
+    for f in a_written_after_msg_ts:
+        assert f['id'] in pool_ids, (
+            f"A idle-delay fact {f['id']} (created_at > last_a_msg_ts) 被错误排除——"
+            f"会让 known_pool 对最新一批 A 抽取失效，B 重复抽同窗口。"
+            f"实际 pool ids: {pool_ids}"
+        )
+    # 窗口内正常 fact 也在
+    assert 'a_in' in pool_ids
+    # 窗口前 old fact 仍被下界过滤掉
+    assert 'a_old' not in pool_ids, (
+        "下界 created_at >= last_b 必须保留，否则会拉入很多无关老 fact 挤掉 pool 名额"
+    )
 
 
 @pytest.mark.unit

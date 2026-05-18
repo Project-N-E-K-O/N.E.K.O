@@ -1824,18 +1824,26 @@ async def _run_path_b(name: str, state: dict) -> None:
       1. 窗口 = [last_b_check_ts, last_a_msg_ts]。cold start last_b 推算 =
          last_a_msg_ts - N × IDLE_MINUTES（保守覆盖 A 已经处理过的范围）
       2. SQL 层 LIMIT MAX_AI_AWARE_WINDOW_MSGS 防极端长窗口爆 prompt
-      3. 已知 fact 池：从 facts.json 拉 created_at ∈ window 的 fact，按
-         importance DESC 取前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出
-         层主动去重 path A 已抽内容
+      3. 已知 fact 池：从 facts.json 拉 created_at ≥ last_b 的 fact（不设
+         上界——A idle delay 让最新一批 A facts 的 created_at 略晚于
+         last_a_msg_ts，设上界会把它们整批漏掉），按 importance DESC 取
+         前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出层主动去重 path A
+         已抽内容
       4. 落盘 default_source='ai_disclosure'；LLM 显式 source 字段优先
-      5. 失败时 last_b_check_ts 不推进，下次 trigger 重试同窗口（fact
-         dedup 防双写）
+      5. Cursor 推进规则：
+         - SQL 返 0 rows → 推到 last_a_msg_ts（窗口确实空）
+         - SQL 返 N rows 但全 system/空 msg → 推到 last fetched row ts
+           （未取尾巴可能有内容）
+         - Stage-1 LLM 终态失败（aextract_facts_with_known_pool 返 None）
+           → cursor 不推进，下次 trigger 重试同窗口（fact dedup 防双写）
+         - 其它正常路径 → 推到 last fetched row ts（截断时 < last_a_msg_ts）
 
     与 path A 区别：
     - 不进 Stage-2 evidence loop（_apersist_new_facts 写 signal_processed=True
       + aextract_facts_and_detect_signals 内部 source filter 双重防御）
-    - Stage-1 失败 swallow（path A 自己的 FactExtractionFailed 有独立 retry
-      路径，B 是补抓性质不该阻塞）
+    - Stage-1 失败 swallow 不抛（path A 自己的 FactExtractionFailed 有独立
+      retry 路径，B 是补抓性质不该阻塞），但 cursor 必须保留——失败窗口
+      下次 trigger 重试，不能折叠成"成功 0 抽"静默 skip
     """
     last_a_msg_ts = state.get('last_a_msg_ts')
     if last_a_msg_ts is None:
@@ -1870,18 +1878,35 @@ async def _run_path_b(name: str, state: dict) -> None:
         state['last_b_check_ts'] = last_a_msg_ts
         return
 
+    # 解析 SQL 实际取到的最后一行 ts —— 后续所有 cursor 推进点都用这个值，
+    # 不能用 last_a_msg_ts。差别只在窗口被 MAX_AI_AWARE_WINDOW_MSGS LIMIT
+    # 截断时显现：截断时 last_fetched_ts < last_a_msg_ts，未取到的尾巴留
+    # 给下次 B trigger 继续处理；若推到 last_a_msg_ts 会让尾巴永久 skip
+    # （Codex P1 round-1 on PR #1408, P2 round-2 covers filtered-empty case）。
+    last_fetched_ts = _coerce_db_ts(rows[-1][0])
+    if last_fetched_ts is None:
+        # 防御：_coerce_db_ts 解析失败退回 last_a_msg_ts（避免 cursor 不动
+        # 死循环）。正常路径不触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
+        last_fetched_ts = last_a_msg_ts
+
     message_dicts = _extract_role_tagged_messages_from_rows(rows)
     if not message_dicts:
-        # 全是 system msg / 空内容。推 cursor 跳过。
-        state['last_b_check_ts'] = last_a_msg_ts
+        # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
+        # 截断时未取尾巴可能含有效 msg。
+        state['last_b_check_ts'] = last_fetched_ts
         return
 
     from utils.llm_client import convert_to_messages
     messages = convert_to_messages(message_dicts)
 
-    # 已知 fact 池：拉 created_at ∈ window 的 fact（这些是 path A 这段时间
-    # 内抽出的，给 path B prompt 当 do-not-repeat 提示）。按 importance
-    # DESC 取前 MAX_KNOWN_POOL_FACTS。
+    # 已知 fact 池：用 path A 在本 B 窗口内 / 之后写的 fact 当 do-not-repeat 提示。
+    # 只设下界 ``created_at >= last_b``、不设上界（CodeRabbit on PR #1408）：
+    # A 的 idle/polling 延迟让"刚扫完本 B 窗口"那批 fact 的 created_at 普遍
+    # 略晚于 last_a_msg_ts，若用 created_at <= last_a_msg_ts 过滤会把最新一
+    # 批 A facts 整批排除——known_pool 对"刚被 A 抽过的内容"失效，path B 更
+    # 容易和 A 重复抽同一窗口。多包含一些"窗口后"的 A fact 是安全的：known
+    # _pool 只是 LLM 的提示，多余条目至多让 B 多抑制少量新 fact，且 Stage-1
+    # dedup hash 仍是兜底。按 importance DESC 取前 MAX_KNOWN_POOL_FACTS。
     try:
         all_facts = await fact_store.aload_facts(name)
     except Exception as e:
@@ -1891,7 +1916,7 @@ async def _run_path_b(name: str, state: dict) -> None:
     # Importance 用 safe_importance 兜底——legacy/手改 facts.json 里可能
     # 有 'importance': "high" / None / list 等脏值，raw int(...) cast 会
     # ValueError 把整个 B 跑挂、下次 trigger 又同样脏值同样挂，path B 对该
-    # 角色永久哑火（Codex P2 on PR #1408）。
+    # 角色永久哑火（Codex P2 round-1 on PR #1408）。
     from memory.facts import safe_importance
 
     known_pool: list[dict] = []
@@ -1903,7 +1928,7 @@ async def _run_path_b(name: str, state: dict) -> None:
             created_at = datetime.fromisoformat(created_at_raw[:19])
         except (ValueError, TypeError):
             continue
-        if last_b <= created_at <= last_a_msg_ts:
+        if created_at >= last_b:
             known_pool.append(f)
     known_pool.sort(key=lambda f: -safe_importance(f))
     known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
@@ -1911,24 +1936,25 @@ async def _run_path_b(name: str, state: dict) -> None:
     persisted = await fact_store.aextract_facts_with_known_pool(
         name, messages, known_pool,
     )
+    if persisted is None:
+        # Stage-1 LLM 终态失败（重试耗尽）。cursor 保留不推进，下次 B trigger
+        # 重试同窗口（fact dedup hash 防双写）。区分 None vs [] 至关重要：
+        # 若把失败折叠成"成功 0 抽"，失败窗口会被永久 skip（CodeRabbit / Codex
+        # P1 round-2 on PR #1408）。
+        logger.warning(
+            f"[PathB] {name}: Stage-1 终态失败，保留 cursor 下次 trigger 重试 "
+            f"(window={last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')})"
+        )
+        return
     if persisted:
         logger.info(
             f"[PathB] {name}: AI-aware Stage-1 抽出 {len(persisted)} 条新 fact "
             f"(window={last_b.isoformat(timespec='seconds')} → "
-            f"{last_a_msg_ts.isoformat(timespec='seconds')}, "
+            f"{last_fetched_ts.isoformat(timespec='seconds')}, "
             f"known_pool={len(known_pool)})"
         )
 
-    # 推进 B cursor 到 SQL **实际取到的最后一行 ts**，不是 window 原本的下
-    # 游边界。当窗口包含 > MAX_AI_AWARE_WINDOW_MSGS 行（burst / 挂机后回来）
-    # 时 SQL 的 ORDER BY ts ASC + LIMIT 只取最早 N 行，剩下的尾巴留给下次
-    # B trigger 继续处理。若 cursor 推到 last_a_msg_ts 会让未取到的尾巴永
-    # 久 skip——path B 对那段 burst 静默失明（Codex P1 on PR #1408）。
-    last_fetched_ts = _coerce_db_ts(rows[-1][0])
-    if last_fetched_ts is None:
-        # 防御：_coerce_db_ts 解析失败时退回 last_a_msg_ts（避免 cursor 不动
-        # 死循环）。正常路径不会触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
-        last_fetched_ts = last_a_msg_ts
     state['last_b_check_ts'] = last_fetched_ts
 
 
