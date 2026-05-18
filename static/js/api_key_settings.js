@@ -1138,6 +1138,14 @@ async function loadCurrentApiKey() {
             // Use api_key_registry as single source of truth for field mapping
             Object.keys(_apiKeyRegistry).forEach(providerKey => {
                 if (providerKey === 'free') return;
+                // 当前核心 provider 对应的管理簿位置在上面已经用 data.api_key
+                // (coreApiKey, 权威值) 同步过了。这里再覆盖一次 data.assistApiKey<X>
+                // 是旧 assist 用法的残留：用户曾经把 qwen 当 assist 用过，留下了
+                // 一个旧 assistApiKeyQwen 字段；后来切回 qwen 当核心并换新 Key，
+                // 旧字段还在但已失效。保存时 _coreApiKeyInputDirty=false 会
+                // 优先用管理簿值 → coreApiKey 被悄悄 rollback 成旧 Key
+                // (Codex P1 #3258747306)。跳过它。
+                if (providerKey === data.coreApi) return;
                 const dataField = _apiKeyRegistry[providerKey].config_field;
                 if (!dataField || !data.hasOwnProperty(dataField)) return;
                 const val = data[dataField];
