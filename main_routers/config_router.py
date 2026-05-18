@@ -1544,7 +1544,6 @@ def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: s
         return "free-access"
 
     core_provider = str(core_cfg.get("coreApi") or "").strip()
-    assist_provider = str(core_cfg.get("assistApi") or "").strip()
     core_key = str(core_cfg.get("coreApiKey") or "").strip()
 
     registry_entry = (api_config.get("api_key_registry") or {}).get(provider_key, {})
@@ -1555,8 +1554,14 @@ def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: s
         return provider_key_value
     if provider_key == core_provider and core_key:
         return core_key
-    if provider_key in {core_provider, assist_provider}:
-        return core_key
+    # 不能把 coreApiKey 当成 assist provider 的 fallback：core/assist 是不同
+    # provider 时（比如 coreApi=openai + assistApi=qwen_intl），coreApiKey 是
+    # OpenAI 的 key，拿去打 qwen_intl 的 candidate URL 必然 401 →
+    # _auto_resolve_provider_urls_for_save 误判连通性失败 → 把之前测通的
+    # qwen_intl 区域 pin 顺手 pop 掉 (Codex P2 #3258802582)。
+    # 唯一应该回退 coreApiKey 的 case 是 provider_key == core_provider，
+    # 上面那条已经处理；这里返回空字符串让 _build_save_connectivity_targets
+    # 把这个 target 过滤掉，跳过本次 probe，保留 resolvedProviderUrls 旧值。
     return ""
 
 

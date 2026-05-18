@@ -453,6 +453,51 @@ class TestSchemaValidation:
             "assist:custom_unrelated": "https://example.com/v1",
         }
 
+    async def test_save_auto_resolve_skips_assist_provider_with_empty_key(self):
+        """assist provider 的 key 缺失时不应该回退到 coreApiKey 去 probe：
+        core/assist 是不同 provider 时 coreApiKey 是 OpenAI 的，拿去打 qwen_intl
+        必然 401 → 误判失败 → 顺手 pop 掉之前测通的 region pin
+        (Codex P2 #3258802582)。target 应该被 _build_save_connectivity_targets
+        过滤掉，resolved 旧值保留。
+        """
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {"config_field": "assistApiKeyQwenIntl"},
+            },
+        }
+        core_cfg = {
+            "coreApi": "openai",
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-openai-not-qwen",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+            },
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_test:
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        mock_test.assert_not_awaited()
+        assert result["total"] == 0
+        assert core_cfg["resolvedProviderUrls"] == {
+            "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        }
+
     async def test_save_auto_resolve_keeps_unrelated_resolved_when_no_targets(self):
         """没有候选目标时保留历史 resolved URL：本次 save 没动 qwen_intl，
         别把 CosyVoice intl runtime 还要用的 US 端点记忆顺手清掉
