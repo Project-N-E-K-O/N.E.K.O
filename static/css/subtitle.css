@@ -54,6 +54,11 @@ body.subtitle-window-host #subtitle-display {
     transition: min-height 0.3s ease, max-height 0.3s ease, font-size 0.3s ease;
 }
 
+body.subtitle-window-host.subtitle-linux-host #subtitle-display {
+    top: auto;
+    bottom: 0;
+}
+
 #subtitle-scroll {
     width: 100%;
     max-height: var(--subtitle-content-max-height, 120px);
@@ -154,6 +159,11 @@ body.subtitle-window-host #subtitle-settings-panel {
     top: calc(100% + 8px);
     right: 4px;
     bottom: auto;
+}
+
+body.subtitle-window-host.subtitle-linux-host #subtitle-settings-panel {
+    top: auto;
+    bottom: calc(100% + 8px);
 }
 
 #subtitle-settings-panel.hidden {
