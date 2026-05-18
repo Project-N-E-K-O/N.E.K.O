@@ -450,15 +450,45 @@ class FactStore:
             return []
         return extracted
 
+    # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；
+    # 'ai_disclosure' = path B 抽出的 AI 自我披露/屏幕上下文（trust-tier 较低）。
+    # 老 fact 没 source 字段时按 'user_observation' 回退（向后兼容——pre-#PR
+    # 时代所有 fact 都源自 user msg）。
+    _SOURCE_VALUES = frozenset({'user_observation', 'ai_disclosure'})
+    _SOURCE_DEFAULT = 'user_observation'
+
     async def _apersist_new_facts(
         self, lanlan_name: str, extracted: list[dict],
+        *,
+        default_source: str = 'user_observation',
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
-        filters at read time."""
+        filters at read time.
+
+        ``default_source``：当 LLM 输出的 fact dict 没有 ``source`` 字段时
+        的回退值。Path A 调用方传 ``'user_observation'``（也是默认），
+        path B 调用方传 ``'ai_disclosure'`` —— LLM 显式输出的 source 字段
+        优先于 default。
+
+        Monotonic source upgrade：SHA-256 命中既有 fact 时，正常 skip 不写。
+        **唯一例外**：既有 fact 的 source 是 'ai_disclosure'、新 fact 的
+        source 是 'user_observation' → in-place 升级 existing.source +
+        重置 signal_processed=False 让 Stage-2 重新评估。反向（user→ai）
+        永不降级——user 印证不可逆。
+        """
+        if default_source not in self._SOURCE_VALUES:
+            default_source = self._SOURCE_DEFAULT
+
         new_facts: list[dict] = []
+        upgraded_count = 0
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
+        # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
+        # 缓存了 list，这里读不复制。
+        hash_to_existing = {
+            f.get('hash'): f for f in existing_facts if f.get('hash')
+        }
 
         for fact in extracted:
             if not isinstance(fact, dict):
@@ -494,9 +524,27 @@ class FactStore:
                 )
                 entity = 'master'
 
-            # Stage 1: SHA-256 exact dedup
+            # Source resolution: LLM 显式 source 优先 + 白名单 + default fallback
+            raw_source = fact.get('source')
+            if raw_source in self._SOURCE_VALUES:
+                source = raw_source
+            else:
+                source = default_source
+
+            # Stage 1: SHA-256 exact dedup（+ source monotonic upgrade）
             content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
             if content_hash in existing_hashes:
+                existing = hash_to_existing.get(content_hash)
+                if (
+                    existing is not None
+                    and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
+                    and source == 'user_observation'
+                ):
+                    # Path A 用 user msg 印证了之前 path B 写过的 ai_disclosure fact
+                    # → 升级 source + 重新进 Stage-2 evidence loop
+                    existing['source'] = 'user_observation'
+                    existing['signal_processed'] = False
+                    upgraded_count += 1
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
@@ -528,6 +576,10 @@ class FactStore:
                 'text': text,
                 'importance': importance,
                 'entity': entity,
+                # Trust-tier source（path A 写 'user_observation'，path B 写
+                # 'ai_disclosure'）。Stage-2 / 其他 evidence-loop 消费者按需 filter。
+                # 老 fact 缺该字段时读侧默认 'user_observation' 向后兼容。
+                'source': source,
                 # RFC §2.7: tags 字段保留位但新 fact 默认写空，LLM 不再填
                 'tags': [],
                 'hash': content_hash,
@@ -546,7 +598,11 @@ class FactStore:
                 # without this key are read with default=True (i.e. treated as
                 # already processed) so an upgrade doesn't replay months of
                 # history through Stage-2.
-                'signal_processed': False,
+                #
+                # ⚠️ source='ai_disclosure' fact：写盘时直接置 True，让 Stage-2
+                # 永不取它。配合 aextract_facts_and_detect_signals 内部的
+                # source filter 做双重防御，防漏。
+                'signal_processed': (source == 'ai_disclosure'),
                 # Vector-embedding cache (memory-enhancements P2 — see
                 # memory/embeddings.py). Written as None so /process
                 # returns immediately without blocking on embedding;
@@ -567,15 +623,25 @@ class FactStore:
                     lanlan_name, fact_entry['id'], text,
                 )
 
-        if new_facts:
+        # Save if we either added new facts OR upgraded existing ones'
+        # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
+        # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
+        # 把升级 wipe 了。
+        if new_facts or upgraded_count:
             await self.asave_facts(lanlan_name)
+        if new_facts:
             logger.info(
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"
             )
             for nf in new_facts:
                 logger.debug(
-                    f"   - [{nf.get('entity','?')}] {nf.get('text','')[:80]}"
+                    f"   - [{nf.get('entity','?')}/{nf.get('source','?')}] {nf.get('text','')[:80]}"
                 )
+        if upgraded_count:
+            logger.info(
+                f"[FactStore] {lanlan_name}: 升级 {upgraded_count} 条 ai_disclosure → user_observation "
+                f"(user 印证后重入 Stage-2 evidence loop)"
+            )
 
         return new_facts
 
@@ -910,10 +976,18 @@ class FactStore:
         # Drain：拉所有 signal_processed=False 的 facts（含历史尾部 + 本轮新增）。
         # 老 facts 没这个字段时 default=True，避免升级后把几个月历史 fact
         # 一起重跑 Stage-2。
+        #
+        # ⚠️ Source filter：排除 source='ai_disclosure'——AI 自我披露的 fact
+        # 不进 evidence loop（防自我强化死循环：AI 说"我喜欢 X" → 抽出 → Stage-2
+        # 给 reflection "neko likes X" 涨分 → AI 更频繁说"我喜欢 X" → ...）。
+        # path B 写盘时已经把 signal_processed 置 True 兜底（_apersist_new_facts），
+        # 此处 source filter 做双重防御，防新加路径忘了置 signal_processed。
+        # 老 fact 缺 source 字段时按 'user_observation' 回退（向后兼容）。
         all_facts = await self.aload_facts(lanlan_name)
         unprocessed = [
             f for f in all_facts
             if not f.get('signal_processed', True)
+            and f.get('source', self._SOURCE_DEFAULT) != 'ai_disclosure'
         ]
         if not unprocessed:
             return persisted_this_round, [], []
@@ -986,6 +1060,82 @@ class FactStore:
         if not extracted:
             return []
         return await self._apersist_new_facts(lanlan_name, extracted)
+
+    async def aextract_facts_with_known_pool(
+        self,
+        lanlan_name: str,
+        messages: list,
+        known_pool: list[dict],
+    ) -> list[dict]:
+        """AI-aware Stage-1 (path B) extraction —— 输入是 role-tagged user+ai
+        全消息，prompt 里塞 ``known_pool``（path A 在同窗口已抽过的 fact）
+        作为 "do-not-repeat" 列表，让 LLM 在输出层主动去重。
+
+        与 ``extract_facts`` 区别：
+        - 用新 prompt (``FACT_EXTRACTION_AI_AWARE_PROMPT``) 而不是基础 prompt
+        - prompt 多了 known pool 段 + trust-tier 指导 + source 字段输出要求
+        - 落盘 default_source='ai_disclosure'（LLM 显式输出的 source 仍优先）
+        - Stage-2 不走（path B 设计就不进 evidence loop）
+
+        Stage-1 失败时返 [] 而非 raise——path B 是补抓性质，失败不该阻塞
+        后续 A tick（A 自己的 Stage-1 失败有独立的 FactExtractionFailed 处理）。
+        """
+        extracted = await self._allm_extract_facts_with_known_pool(
+            lanlan_name, messages, known_pool,
+        )
+        if not extracted:
+            return []
+        return await self._apersist_new_facts(
+            lanlan_name, extracted, default_source='ai_disclosure',
+        )
+
+    async def _allm_extract_facts_with_known_pool(
+        self,
+        lanlan_name: str,
+        messages: list,
+        known_pool: list[dict],
+    ) -> list[dict] | None:
+        """Stage-1 LLM call for path B: role-tagged conversation + known pool。
+
+        Returns raw LLM-extracted list, or None on terminal failure
+        (caller swallows in aextract_facts_with_known_pool)."""
+        from config.prompts.prompts_memory import get_fact_extraction_ai_aware_prompt
+
+        _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
+        name_mapping['ai'] = lanlan_name
+        conversation_text = self._format_conversation(messages, name_mapping)
+
+        # Known pool 段渲染：按 importance DESC 排（最重要的在最前，给 LLM
+        # 最强信号）。cap 已经在 caller 端做过，这里不重复。
+        known_lines = []
+        for f in known_pool:
+            text = f.get('text', '') or ''
+            if not text:
+                continue
+            imp = f.get('importance', 5)
+            known_lines.append(f"- {text} (importance: {imp})")
+        known_block = "\n".join(known_lines) if known_lines else "(none)"
+
+        prompt = get_fact_extraction_ai_aware_prompt(get_global_language()) \
+            .replace('{CONVERSATION}', conversation_text) \
+            .replace('{KNOWN_POOL}', known_block) \
+            .replace('{LANLAN_NAME}', lanlan_name) \
+            .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+
+        extracted = await self._allm_call_with_retries(
+            prompt, lanlan_name,
+            tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+            call_type="memory_fact_extraction_ai_aware",
+        )
+        if extracted is None:
+            return None
+        if not isinstance(extracted, list):
+            logger.warning(
+                f"[FactStore] {lanlan_name}: path-B Stage-1 返回非数组 "
+                f"{type(extracted).__name__}，当作空列表处理"
+            )
+            return []
+        return extracted
 
     # ── query helpers ────────────────────────────────────────────────
 

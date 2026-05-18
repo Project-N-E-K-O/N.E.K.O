@@ -42,6 +42,9 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
     EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
+    EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+    MAX_AI_AWARE_WINDOW_MSGS,
+    MAX_KNOWN_POOL_FACTS,
     MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS,
     IGNORED_REINFORCEMENT_DELTA,
     MEMORY_RECHECK_ENABLED,
@@ -811,6 +814,55 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
         except (json.JSONDecodeError, TypeError):
             continue
     return user_msgs
+
+
+def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
+    """Path B 用的全消息提取——保留 user + ai 两种 type，输出 message_dict
+    list 直接喂 ``convert_to_messages``。
+
+    跟 ``_extract_user_messages_from_rows`` 的区别：
+    - 收 type ∈ {'human', 'ai'} 两种（不再仅 human）
+    - 返回 [{'type': 'human'|'ai', 'data': {'content': str}}, ...] 而不是
+      纯 str list，让下游 ``convert_to_messages`` 还原成 HumanMessage/AIMessage
+      让 ``FactStore._format_conversation`` 渲染时按 type → name_mapping 出
+      "{MASTER_NAME} | xxx" / "{LANLAN_NAME} | xxx" 形式，path B prompt 据此
+      判每条 fact 的 source 归属（user_observation / ai_disclosure）
+
+    PR #1399 的教训：这里返回 list[dict] 让 caller 拼 message_dicts 后用
+    ``convert_to_messages(message_dicts)`` 直接转——**不要** ``json.dumps``
+    包一层（convert_to_messages 只接 list，str 会被静默吞成 []）。
+    """
+    out: list[dict] = []
+    for _, _, msg_json in rows:
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if not isinstance(msg, dict):
+                continue
+            msg_type = msg.get('type')
+            if msg_type not in ('human', 'ai'):
+                continue
+            content = msg.get('data', {}).get('content', '')
+            # content 归一化：内部可能是 str 或 [{type:'text', text:'...'}, ...]
+            # 后者拼回单个 str（path B prompt 不需要细粒度 part 结构，
+            # FactStore._format_conversation 把 list content 拼成 ''.join 也是
+            # 同样语义）。
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = [
+                    p.get('text', '')
+                    for p in content
+                    if isinstance(p, dict) and p.get('type') == 'text'
+                ]
+                text = ''.join(parts)
+            else:
+                continue
+            if not text.strip():
+                continue
+            out.append({'type': msg_type, 'data': {'content': text}})
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
 
 
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
@@ -1760,6 +1812,113 @@ async def _adispatch_evidence_signals(
     return all_ok
 
 
+async def _run_path_b(name: str, state: dict) -> None:
+    """Path B: AI-aware Stage-1 only（不进 Stage-2 evidence loop）。
+
+    Piggyback 在 path A 循环里，每 ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS`` 次 A
+    tick 触发一次。窗口下游边界用 path A 实际处理过的最晚 msg ts，保证 B
+    看到的消息严格被 A 看过——避免"A scan SQL 完成那一刻之后才入 SQLite 的
+    msg 被 B 抢先处理"的 race。
+
+    设计要点：
+      1. 窗口 = [last_b_check_ts, last_a_msg_ts]。cold start last_b 推算 =
+         last_a_msg_ts - N × IDLE_MINUTES（保守覆盖 A 已经处理过的范围）
+      2. SQL 层 LIMIT MAX_AI_AWARE_WINDOW_MSGS 防极端长窗口爆 prompt
+      3. 已知 fact 池：从 facts.json 拉 created_at ∈ window 的 fact，按
+         importance DESC 取前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出
+         层主动去重 path A 已抽内容
+      4. 落盘 default_source='ai_disclosure'；LLM 显式 source 字段优先
+      5. 失败时 last_b_check_ts 不推进，下次 trigger 重试同窗口（fact
+         dedup 防双写）
+
+    与 path A 区别：
+    - 不进 Stage-2 evidence loop（_apersist_new_facts 写 signal_processed=True
+      + aextract_facts_and_detect_signals 内部 source filter 双重防御）
+    - Stage-1 失败 swallow（path A 自己的 FactExtractionFailed 有独立 retry
+      路径，B 是补抓性质不该阻塞）
+    """
+    last_a_msg_ts = state.get('last_a_msg_ts')
+    if last_a_msg_ts is None:
+        # A 还没成功处理过任何 batch，B 无源可看
+        return
+
+    last_b = state.get('last_b_check_ts')
+    if last_b is None:
+        # Cold start：B 第一次 trigger 时已等了 EVIDENCE_AI_AWARE_EVERY_N_A_TICKS
+        # 个 A tick。每个 A tick 平均覆盖 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES 分钟
+        # （idle gate 阈值），所以 A 已覆盖范围 ≈ N × IDLE_MINUTES 分钟。
+        # 用这个推算作为 B 第一次窗口起点。
+        estimated_a_coverage = timedelta(
+            minutes=EVIDENCE_AI_AWARE_EVERY_N_A_TICKS * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+        )
+        last_b = last_a_msg_ts - estimated_a_coverage
+
+    if last_b >= last_a_msg_ts:
+        # 窗口为空（B 已追上 A）
+        return
+
+    try:
+        rows = await time_manager.aretrieve_original_by_timeframe(
+            name, last_b, last_a_msg_ts,
+            limit_rows=MAX_AI_AWARE_WINDOW_MSGS,
+        )
+    except Exception as e:
+        logger.warning(f"[PathB] {name}: 读取窗口失败: {e}")
+        return
+    if not rows:
+        # 窗口内无 msg（A 处理过但都是空白？少见但可能）。推 cursor 跳过。
+        state['last_b_check_ts'] = last_a_msg_ts
+        return
+
+    message_dicts = _extract_role_tagged_messages_from_rows(rows)
+    if not message_dicts:
+        # 全是 system msg / 空内容。推 cursor 跳过。
+        state['last_b_check_ts'] = last_a_msg_ts
+        return
+
+    from utils.llm_client import convert_to_messages
+    messages = convert_to_messages(message_dicts)
+
+    # 已知 fact 池：拉 created_at ∈ window 的 fact（这些是 path A 这段时间
+    # 内抽出的，给 path B prompt 当 do-not-repeat 提示）。按 importance
+    # DESC 取前 MAX_KNOWN_POOL_FACTS。
+    try:
+        all_facts = await fact_store.aload_facts(name)
+    except Exception as e:
+        logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
+        all_facts = []
+
+    known_pool: list[dict] = []
+    for f in all_facts:
+        if not isinstance(f, dict):
+            continue
+        created_at_raw = f.get('created_at') or ''
+        try:
+            created_at = datetime.fromisoformat(created_at_raw[:19])
+        except (ValueError, TypeError):
+            continue
+        if last_b <= created_at <= last_a_msg_ts:
+            known_pool.append(f)
+    known_pool.sort(
+        key=lambda f: -int(f.get('importance', 5) or 5),
+    )
+    known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
+
+    persisted = await fact_store.aextract_facts_with_known_pool(
+        name, messages, known_pool,
+    )
+    if persisted:
+        logger.info(
+            f"[PathB] {name}: AI-aware Stage-1 抽出 {len(persisted)} 条新 fact "
+            f"(window={last_b.isoformat(timespec='seconds')} → "
+            f"{last_a_msg_ts.isoformat(timespec='seconds')}, "
+            f"known_pool={len(known_pool)})"
+        )
+
+    # 成功跑完（无论抽出 0 还是 N 条），推进 B cursor 到 A 处理过的最晚点
+    state['last_b_check_ts'] = last_a_msg_ts
+
+
 async def _periodic_signal_extraction_loop():
     """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
     catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。
@@ -1890,6 +2049,34 @@ async def _periodic_signal_extraction_loop():
 
                 # Stage-1 + dispatch 都跨过了，cursor 推进。
                 _signal_check_mark_done(name, now)
+
+                # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
+                # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
+                # 用真实 msg ts 而不是 wall-clock now：保证 path B 看到的
+                # 消息严格被 path A 看过，避免"A scan SQL 完成那一刻之后才入
+                # SQLite 的 msg 被 B 抢先处理"的 race。
+                state = _signal_check_state.setdefault(
+                    name, {'turns_since': 0, 'last_check_ts': None},
+                )
+                last_msg_ts = _coerce_db_ts(rows[-1][0])
+                if last_msg_ts is not None:
+                    state['last_a_msg_ts'] = last_msg_ts
+
+                # Path B trigger：A 成功跑完后 bump counter；达 N 触发
+                # _run_path_b（AI-aware Stage-1 only，详见函数 docstring）。
+                state['b_tick_counter'] = state.get('b_tick_counter', 0) + 1
+                if state['b_tick_counter'] >= EVIDENCE_AI_AWARE_EVERY_N_A_TICKS:
+                    state['b_tick_counter'] = 0
+                    try:
+                        await _run_path_b(name, state)
+                    except Exception as e:
+                        # B 失败完全不应该影响 A 路径（A 已经在 mark_done 之
+                        # 后了）；只 log warning。下次 b_tick_counter 又满 N
+                        # 时 B 自动重试，cursor 是 last_b_check_ts 推进的，
+                        # 失败时不推 cursor → 下次 B 重新覆盖同窗口。
+                        logger.warning(
+                            f"[PathB] {name}: AI-aware Stage-1 失败 (skip 本轮，下次 B trigger 重试): {e}"
+                        )
             except Exception as e:
                 logger.debug(f"[SignalLoop] {name}: 处理失败: {e}")
 

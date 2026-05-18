@@ -881,6 +881,29 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
+# ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
+# 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
+# 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
+# 节奏：A 跑完后 b_tick_counter++，达到 N 就跑 B；窗口下游边界用 A 实际处理过
+# 的最晚 msg ts（不是 wall-clock now）保证 B 看的消息严格被 A 看过。
+EVIDENCE_AI_AWARE_EVERY_N_A_TICKS = 3
+"""Path B 每 N 次 A tick 触发一次（piggyback 在 A 循环里，不维护独立 wall-clock cadence）。
+- 选 3：A 平均 5 min 一次 tick → B 平均 15 min 一次。tempo 跟着对话强度自适应——
+  用户聊得越多 B 越频繁，符合"对话量大才需要补抓 AI fact"的直觉
+- B cold start lookback 自动 = N × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 15 min"""
+
+MAX_AI_AWARE_WINDOW_MSGS = 200
+"""Path B 单次窗口 SQL LIMIT 上限。挂机后重启 / 长 idle 突发 burst 可能让
+[last_b_check_ts, last_a_msg_ts] 窗口跨越数小时百余条消息——cap 住防 prompt
+爆炸。LIMIT 在 SQL 层执行（aretrieve_original_by_timeframe 的 limit_rows 参数），
+ORDER BY ts ASC 取最早 N 条而不是最新（保 cursor 单调推进）。"""
+
+MAX_KNOWN_POOL_FACTS = 30
+"""Path B prompt 里塞的"已知 fact 池"上限（按 importance DESC 取前 N）。
+- 30 × ~30 tok = ~900 tok overhead，控制在 prompt 总 budget 的 ~20%
+- 作用：让 path B 的 LLM 知道哪些 fact 已被 path A 抽出，主动避免重抽 user 段
+  内容；命中的 fact 通常带 source='user_observation'"""
+
 # §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
 # 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
 # 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
@@ -1870,6 +1893,9 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_ENABLED',
     'EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS',
     'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
+    'EVIDENCE_AI_AWARE_EVERY_N_A_TICKS',
+    'MAX_AI_AWARE_WINDOW_MSGS',
+    'MAX_KNOWN_POOL_FACTS',
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',

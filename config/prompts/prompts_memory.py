@@ -1280,6 +1280,245 @@ def get_fact_extraction_prompt(lang: str = "zh") -> str:
     return _loc(FACT_EXTRACTION_PROMPT, lang)
 
 
+# ---------- fact_extraction_ai_aware_prompt → i18n dict ----------
+# Path B (AI-aware Stage-1) 专用 prompt：相比基础 FACT_EXTRACTION_PROMPT 多了
+#   1. {KNOWN_POOL} 块——path A 在同窗口已抽过的 fact 列表，让 LLM 输出层主动去重
+#   2. trust-tier 指导段——明确 user 段是 ground truth、ai 段是 self-disclosure
+#   3. 输出 schema 加 source 字段（'user_observation' / 'ai_disclosure'）
+# 输入侧（{CONVERSATION}）由 _format_conversation 渲染成 "博士 | xxx" / "悠怡 | xxx"
+# 的 role-tagged 形式，LLM 据此判 source 归属。
+#
+# 单独建一个 prompt（而不是给基础 prompt 加 optional placeholder）是为了：
+# - 保护 path A 行为不被新字段污染（path A 不需要 source 字段，省 ~10 tok/fact 输出）
+# - 易于回退（删 prompt + 一个调用方法即可）
+# - 让 review 一眼看出 path B 的 prompt 改动范围
+
+FACT_EXTRACTION_AI_AWARE_PROMPT = {
+    "zh": """从以下对话中提取关于 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事实信息。
+
+⚠️ 本次抽取的特殊点（与基础抽取不同）：
+- 对话包含 {MASTER_NAME} 和 {LANLAN_NAME} 双方发言，形如 "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- 另一通路已经从 {MASTER_NAME} 单边发言抽过一遍 fact（见下面"已知事实池"），**请只补抓那一通路漏掉的内容**——特别是 {LANLAN_NAME} 自己披露的特征、{LANLAN_NAME} 引入的屏幕/活动上下文 grounded fact
+- 每条 fact 必须输出 `source` 字段标注 trust-tier：
+  - `"user_observation"`：主要从 {MASTER_NAME} 的发言推出（如果发现"已知池"漏抓的，归这一类）
+  - `"ai_disclosure"`：主要从 {LANLAN_NAME} 自己的发言推出，且 {MASTER_NAME} 在邻近 turn 内没明确反对/否认。例："{LANLAN_NAME} | 我今天突然觉得自己挺喜欢秋天的" → fact text "{LANLAN_NAME} 觉得自己挺喜欢秋天" + source=ai_disclosure
+
+要求：
+- 只提取重要且明确的事实（偏好、习惯、身份、关系动态等）
+- 忽略闲聊、寒暄、模糊的内容
+- 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
+- 每条事实必须是一个独立的原子陈述
+- entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
+- importance 1-10，规则与基础抽取一致（10 = 关键长期信息；8-9 = 长期稳定核心；6-7 = 普通偏好/日常；5 = 次要观察；1-4 = 弱相关线索）
+- event_when 可选，相对时间格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；无时间线索写 null
+
+======以下为已知事实池（已被另一通路抽取，避免重复抽取相同内容）======
+{KNOWN_POOL}
+======以上为已知事实池======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+请以 JSON 数组格式返回（如果没有值得补抓的事实，返回空数组 []）：
+[
+  {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "事实描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
+
+⚠️ Special notes for this extraction pass (differs from base extraction):
+- The conversation contains both {MASTER_NAME} and {LANLAN_NAME} speaking, formatted as "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Another extraction pass has already covered facts grounded in {MASTER_NAME}'s own statements (see "Known facts pool" below). **Focus on facts that pass missed** — especially {LANLAN_NAME}'s self-disclosure or screen/activity context {LANLAN_NAME} introduced
+- Each fact MUST output a `source` field marking its trust-tier:
+  - `"user_observation"`: grounded primarily in {MASTER_NAME}'s statements (use this for any facts the "known pool" missed)
+  - `"ai_disclosure"`: grounded primarily in {LANLAN_NAME}'s own self-statements, with no clear contradiction from {MASTER_NAME} in nearby turns. Example: "{LANLAN_NAME} | I suddenly realized I really like autumn" → fact text "{LANLAN_NAME} likes autumn" + source=ai_disclosure
+
+Requirements:
+- Only extract important and clear facts (preferences, habits, identity, relationship dynamics)
+- Ignore small talk, greetings, vague content, AI hallucinations / gibberish
+- Each fact is an independent atomic statement
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10, same rubric as base extraction
+- event_when optional, relative time format; null if no time cue
+
+======Known facts pool (already extracted by another pass, do NOT re-extract)======
+{KNOWN_POOL}
+======End known facts pool======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Return as a JSON array (empty array if nothing worth additionally extracting):
+[
+  {"text": "fact description", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "fact description", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "ja": """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
+
+⚠️ この抽出パスの特殊事項（基本抽出と異なる）：
+- 会話には {MASTER_NAME} と {LANLAN_NAME} の両方の発言が含まれ、"{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..." の形式
+- 別のパスが既に {MASTER_NAME} の発言から事実を抽出済み（下記「既知事実プール」参照）。**そのパスが見逃した内容に焦点を当ててください** —— 特に {LANLAN_NAME} 自身の自己開示、{LANLAN_NAME} が持ち込んだ画面/活動コンテキストに基づく事実
+- 各事実は trust-tier を示す `source` フィールドを必須で出力：
+  - `"user_observation"`: 主に {MASTER_NAME} の発言から推測（既知プールが見逃した場合はこれ）
+  - `"ai_disclosure"`: 主に {LANLAN_NAME} 自身の発言から推測、近隣ターンに {MASTER_NAME} の明確な否定がない場合
+
+要件：
+- 重要かつ明確な事実のみ抽出（好み、習慣、アイデンティティ、関係の動態など）
+- 雑談、挨拶、曖昧な内容、AI 幻覚は無視
+- 各事実は独立した原子的な文
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10（基本抽出と同じ基準）
+- event_when は任意、相対時間形式、時間の手がかりがなければ null
+
+======既知事実プール（別パスで抽出済み、重複抽出しないこと）======
+{KNOWN_POOL}
+======既知事実プール終わり======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+以下の形式の JSON 配列で返してください（補抓する事実がなければ空配列 [] を返す）：
+[
+  {"text": "事実の説明", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "事実の説明", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "ko": """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
+
+⚠️ 이번 추출의 특수 사항 (기본 추출과 다름):
+- 대화에는 {MASTER_NAME}과 {LANLAN_NAME}의 발언이 모두 포함되며, "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..." 형식
+- 다른 통로가 이미 {MASTER_NAME}의 발언에서 사실을 추출함 (아래 "기지 사실 풀" 참조). **그 통로가 놓친 부분에 집중해 주세요** — 특히 {LANLAN_NAME} 자신의 자기 개시, {LANLAN_NAME}이 도입한 화면/활동 컨텍스트 grounded 사실
+- 각 사실은 trust-tier를 표시하는 `source` 필드를 필수로 출력:
+  - `"user_observation"`: 주로 {MASTER_NAME}의 발언에서 추론 (기지 풀이 놓친 경우 이것)
+  - `"ai_disclosure"`: 주로 {LANLAN_NAME} 자신의 발언에서 추론, 근접 턴에 {MASTER_NAME}의 명확한 반대가 없음
+
+요구사항:
+- 중요하고 명확한 사실만 추출
+- 잡담, 인사, 모호한 내용, AI 환각 무시
+- 각 사실은 독립적인 원자적 진술
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (기본 추출과 동일 기준)
+- event_when 선택, 상대 시간 형식, 시간 단서 없으면 null
+
+======기지 사실 풀 (다른 통로에서 추출됨, 중복 추출하지 마세요)======
+{KNOWN_POOL}
+======기지 사실 풀 끝======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+다음 형식의 JSON 배열로 반환해 주세요 (보충 추출할 사실이 없으면 빈 배열 [] 반환):
+[
+  {"text": "사실 설명", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "사실 설명", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "ru": """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
+
+⚠️ Особенности этого прохода извлечения (отличается от базового):
+- Беседа содержит реплики и {MASTER_NAME}, и {LANLAN_NAME}, форматированные как "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Другой проход уже извлёк факты из реплик {MASTER_NAME} (см. «Пул известных фактов» ниже). **Сосредоточьтесь на том, что тот проход пропустил** — особенно на самораскрытии {LANLAN_NAME} и фактах из экранного/активного контекста, который {LANLAN_NAME} ввёл
+- Каждый факт ОБЯЗАН содержать поле `source`, отмечающее его trust-tier:
+  - `"user_observation"`: основан главным образом на репликах {MASTER_NAME} (используйте это для фактов, пропущенных пулом)
+  - `"ai_disclosure"`: основан главным образом на собственных репликах {LANLAN_NAME}, без явного возражения {MASTER_NAME} в соседних ходах
+
+Требования:
+- Извлекайте только важные и чёткие факты
+- Игнорируйте болтовню, приветствия, расплывчатое содержание, галлюцинации ИИ
+- Каждый факт — независимое атомарное утверждение
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (те же критерии, что и базовое извлечение)
+- event_when необязательно, относительное время; null если нет временного маркера
+
+======Пул известных фактов (уже извлечено другим проходом, не повторяйте)======
+{KNOWN_POOL}
+======Конец пула известных фактов======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Верните в формате JSON-массива (пустой массив, если нечего дополнительно извлечь):
+[
+  {"text": "описание факта", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "описание факта", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "es": """Extrae información factual importante sobre {LANLAN_NAME} y {MASTER_NAME} de la siguiente conversación.
+
+⚠️ Notas especiales para esta extracción (difiere de la extracción base):
+- La conversación contiene intervenciones de {MASTER_NAME} y {LANLAN_NAME}, con formato "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Otra pasada ya extrajo hechos basados en las declaraciones de {MASTER_NAME} (ver "Reserva de hechos conocidos" abajo). **Concéntrate en lo que esa pasada se perdió** — especialmente la autorrevelación de {LANLAN_NAME} o hechos basados en contexto de pantalla/actividad introducido por {LANLAN_NAME}
+- Cada hecho DEBE incluir un campo `source` que marque su trust-tier:
+  - `"user_observation"`: basado principalmente en declaraciones de {MASTER_NAME} (úsalo para hechos que la reserva se perdió)
+  - `"ai_disclosure"`: basado principalmente en las propias declaraciones de {LANLAN_NAME}, sin contradicción clara de {MASTER_NAME} en turnos cercanos
+
+Requisitos:
+- Extrae solo hechos importantes y claros
+- Ignora charla casual, saludos, contenido vago, alucinaciones de IA
+- Cada hecho es una declaración atómica independiente
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (mismo baremo que extracción base)
+- event_when opcional, tiempo relativo; null si no hay pista temporal
+
+======Reserva de hechos conocidos (ya extraídos por otra pasada, NO re-extraer)======
+{KNOWN_POOL}
+======Fin de la reserva de hechos conocidos======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Devuelve un array JSON (si no hay hechos adicionales que extraer, devuelve []):
+[
+  {"text": "descripción del hecho", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "descripción del hecho", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "pt": """Extraia informações factuais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo.
+
+⚠️ Notas especiais para esta extração (difere da extração base):
+- A conversa contém falas de {MASTER_NAME} e {LANLAN_NAME}, formatadas como "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Outra passagem já extraiu fatos baseados nas falas de {MASTER_NAME} (veja "Pool de fatos conhecidos" abaixo). **Concentre-se no que essa passagem perdeu** — especialmente autorrevelação de {LANLAN_NAME} ou fatos baseados em contexto de tela/atividade que {LANLAN_NAME} introduziu
+- Cada fato DEVE incluir um campo `source` marcando seu trust-tier:
+  - `"user_observation"`: baseado principalmente em falas de {MASTER_NAME} (use isto para fatos que o pool perdeu)
+  - `"ai_disclosure"`: baseado principalmente em falas próprias de {LANLAN_NAME}, sem contradição clara de {MASTER_NAME} em turnos próximos
+
+Requisitos:
+- Extraia apenas fatos importantes e claros
+- Ignore conversa casual, cumprimentos, conteúdo vago, alucinações de IA
+- Cada fato é uma declaração atômica independente
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (mesmo critério da extração base)
+- event_when opcional, tempo relativo; null se não houver pista temporal
+
+======Pool de fatos conhecidos (já extraídos por outra passagem, NÃO re-extrair)======
+{KNOWN_POOL}
+======Fim do pool de fatos conhecidos======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
+[
+  {"text": "descrição do fato", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "descrição do fato", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+}
+
+
+def get_fact_extraction_ai_aware_prompt(lang: str = "zh") -> str:
+    return _loc(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
+
+
 # backward compat
 fact_extraction_prompt = FACT_EXTRACTION_PROMPT["zh"]
 
