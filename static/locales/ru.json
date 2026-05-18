@@ -1032,6 +1032,10 @@
             "cancel": "Отмена",
             "continue": "Продолжить сохранение"
         },
+        "aliyunUsApiWarning": {
+            "title": "Уведомление об API Alibaba в США",
+            "message": "Сейчас используется API Alibaba в США. Он не поддерживает TTS и голос в реальном времени. Рекомендуется перейти на API Alibaba в Сингапуре."
+        },
         "conversationModelConfig": "Конфигурация модели текстового диалога",
         "summaryModelConfig": "Конфигурация модели сводки",
         "correctionModelConfig": "Конфигурация модели коррекции",

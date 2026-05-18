@@ -1032,6 +1032,10 @@
             "cancel": "Cancel",
             "continue": "Continue Saving"
         },
+        "aliyunUsApiWarning": {
+            "title": "Alibaba US API Notice",
+            "message": "You are currently using Alibaba's US API, which does not support TTS or realtime voice. We recommend switching to Alibaba's Singapore API."
+        },
         "conversationModelConfig": "Text Dialogue Model Configuration",
         "summaryModelConfig": "Summary Model Configuration",
         "correctionModelConfig": "Correction Model Configuration",

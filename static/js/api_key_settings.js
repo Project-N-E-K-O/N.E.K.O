@@ -20,6 +20,8 @@ let _resolvedProviderUrls = {};
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
 let _apiSaveInProgress = false;
+// 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
+const _aliyunUsApiWarningShownKeys = new Set();
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
 // Model types that support connectivity testing.
@@ -82,10 +84,50 @@ function getProviderCoreUrl(providerKey, profile) {
         || '';
 }
 
+function isAliyunUsApiUrl(url) {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return false;
+    try {
+        return new URL(rawUrl).hostname.toLowerCase() === 'dashscope-us.aliyuncs.com';
+    } catch (error) {
+        return rawUrl.toLowerCase().includes('dashscope-us.aliyuncs.com');
+    }
+}
+
+function showAliyunUsApiWarningModal() {
+    const modal = document.getElementById('aliyun-us-api-warning-modal');
+    if (!modal) {
+        showStatus(
+            window.t
+                ? window.t('api.aliyunUsApiWarning.message')
+                : '当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API',
+            'error'
+        );
+        return;
+    }
+    modal.style.display = 'flex';
+}
+
+function closeAliyunUsApiWarningModal() {
+    const modal = document.getElementById('aliyun-us-api-warning-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function maybeShowAliyunUsApiWarning(scope, providerKey, resolvedUrl) {
+    if (!isAliyunUsApiUrl(resolvedUrl)) return;
+    const warningKey = `${scope}:${providerKey}:${resolvedUrl}`;
+    if (_aliyunUsApiWarningShownKeys.has(warningKey)) return;
+    _aliyunUsApiWarningShownKeys.add(warningKey);
+    showAliyunUsApiWarningModal();
+}
+
 function rememberResolvedProviderUrl(scope, providerKey, resolvedUrl) {
     if (!scope || !providerKey || !resolvedUrl) return;
     const key = `${scope}:${providerKey}`;
     _resolvedProviderUrls[key] = resolvedUrl;
+    maybeShowAliyunUsApiWarning(scope, providerKey, resolvedUrl);
 }
 
 /**

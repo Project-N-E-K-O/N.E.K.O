@@ -1032,6 +1032,10 @@
             "cancel": "取消",
             "continue": "继续保存"
         },
+        "aliyunUsApiWarning": {
+            "title": "阿里美国 API 提醒",
+            "message": "当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API"
+        },
         "conversationModelConfig": "文本对话模型配置",
         "summaryModelConfig": "摘要模型配置",
         "correctionModelConfig": "纠错模型配置",

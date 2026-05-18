@@ -1032,6 +1032,10 @@
             "cancel": "Cancelar",
             "continue": "Continuar guardando"
         },
+        "aliyunUsApiWarning": {
+            "title": "Aviso de API de Alibaba en EE. UU.",
+            "message": "Actualmente está usando la API de Alibaba en EE. UU., que no admite TTS ni voz en tiempo real. Se recomienda cambiar a la API de Alibaba en Singapur."
+        },
         "conversationModelConfig": "Configuración del modelo de diálogo de texto",
         "summaryModelConfig": "Configuración del modelo resumido",
         "correctionModelConfig": "Configuración del modelo de corrección",
