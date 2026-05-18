@@ -765,6 +765,16 @@
                         mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                     })
                 });
+                // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
+                // 另一路 proactive 已占坑，见 main_routers/system_router.py:4241-4247）。
+                // 本次请求**根本没真正发起**一次 proactive，标 'pass' 走上游"不计数"
+                // 分支自行 schedule，否则 _voiceProactiveNoResponseCount 会被白白消耗
+                // 一格、最坏 5 次 server 忙就触发"连续 5 轮无回复，停止主动搭话"。
+                if (resp.status === 409) {
+                    console.log('[ProactiveChat] 语音模式 server 并发拒绝 (409)，不消耗 attempt');
+                    S._voiceProactiveLastResult = 'pass';
+                    return false;
+                }
                 requestSent = true;
                 var result = await resp.json();
                 S._voiceProactiveLastResult = result.action || 'unknown';
@@ -1023,6 +1033,19 @@
                 },
                 body: JSON.stringify(requestBody)
             });
+            // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
+            // 另一路 proactive 已占坑，见 main_routers/system_router.py:4241-4247）。
+            // 本次请求**根本没真正发起**一次 proactive——server 在 claim 那一步就早退
+            // 了，没跑过 phase 1/2 LLM、没消耗任何上下文资源。若返 true 让上游
+            // scheduleProactiveChat 的 `if (triggered)` 判定通过、把 backoffLevel++，
+            // 等于"server 一忙就被前端误判成 attempt 用掉一格"，惩罚性升级 backoff 把
+            // 节奏整体往后拉，跟 server 实际状态正交、用户体验上变成"server 越忙、AI
+            // 越沉默"。这里 requestSent 故意不翻 true、return false 让上游识别为"没
+            // 真发"、下一轮按 base interval 重排，不动 level。
+            if (response.status === 409) {
+                console.log('[ProactiveChat] server 并发拒绝 (409)，不消耗 backoff attempt');
+                return false;
+            }
             requestSent = true;
 
             var result = await response.json();

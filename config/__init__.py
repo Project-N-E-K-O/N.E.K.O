@@ -998,14 +998,19 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
 
-MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 600
+MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
 """``_periodic_reflection_synthesis_loop`` 每轮轮询间隔（秒）。
 - 用途：后端定期对每个角色调 ``reflection_engine.synthesize_reflections``。
 - 设计依据：synthesize_reflections 内部对"同批 source_fact_ids → 同 rid"做
   幂等 short-circuit，无新 unabsorbed fact 时 LLM 不会被调，所以这层只是
-  调度频率上限。10 min 在 auto_promote (180s) 和 refine cron (1800s) 之间，
-  贴近 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES (5 min) 的两倍——给上游 SignalLoop
-  足够时间在窗口里抽完 facts 再合成。
+  调度频率上限。**真 LLM 调用频率约等于"用户在 N 秒内新积了 ≥5 条 unabsorbed
+  fact 的次数"**，与 SignalLoop 实际产出速率绑死、与本常量解耦——把间隔从
+  600s 缩到 180s 不会按比例加 LLM 成本。
+- 选 180s：对齐 ``AUTO_PROMOTE_CHECK_INTERVAL = 180s``。两条 loop 一个产
+  pending、一个把 pending 推 confirmed，节奏对齐让 user-visible 状态机延迟
+  最短（合成 → 下一 tick 内就能被 promote 看到）。也跟
+  ``EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 60 = 300s`` 错峰，让 SignalLoop 抽
+  完一批 fact 后 1-2 个 reflection tick 内能消化掉。
 - 历史：以前 reflection 合成挂在 ``/api/proactive_chat`` handler 里（PR #1015
   顺手塞的，见 main_routers/system_router.py 历史 blame），整套合成链路与
   前端 setTimeout 强耦合——前端不开 / proactive 不触发 → reflection 永远不

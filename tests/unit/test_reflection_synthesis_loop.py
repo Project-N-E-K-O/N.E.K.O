@@ -198,3 +198,38 @@ def test_proactive_chat_handler_no_longer_posts_reflect():
         # 因为这个直觉负担，加括号杜绝同类困惑）
         f"匹配到: {(post_to_reflect.group(0) if post_to_reflect else '')!r}"
     )
+
+
+@pytest.mark.unit
+def test_proactive_chat_concurrent_rejection_returns_http_409():
+    """``proactive_chat`` handler 因 ``try_start_proactive`` 拒绝时必须返回
+    HTTP 409，且 response body 是 ``{"success": False, "error": <str>}``——
+    这是前端 ``app-proactive.js`` ``triggerProactiveChat`` 用来识别"server
+    并发忙、本次 attempt 不消耗 backoff"的 wire 契约。
+
+    任何把这条改成 status_code=200 / 不同 body shape 的 refactor 都会让前端
+    的 ``if (response.status === 409) return false`` guard 失效，server 一忙
+    就被前端误判成一次有效 attempt → 升级 backoff → 节奏整体往后拉，跟 server
+    实际状态正交。
+
+    用源码扫描而非 runtime call：handler 太重（依赖 MEMORY_SERVER_PORT / WS
+    / activity tracker / async LLM client 等等），跑完整 startup 不划算。这里
+    只钉静态保证。
+    """
+    import inspect
+    import main_routers.system_router as system_router
+
+    src = inspect.getsource(system_router.proactive_chat)
+
+    # try_start_proactive 失败那一段必须有 status_code=409
+    assert "try_start_proactive" in src, (
+        "proactive_chat 必须用 try_start_proactive 做并发占坑（PR #1015 引入的"
+        "原子 check+claim）；refactor 改成无锁 can_start_proactive 双查会重新"
+        "引入 PR #1015 修过的双进 PHASE1 race"
+    )
+    # 拒绝路径必须 409 + success=False（前端契约）
+    assert "status_code=409" in src, (
+        "proactive_chat 并发拒绝时必须 HTTP 409 —— 前端 "
+        "app-proactive.js triggerProactiveChat 据此跳过 backoff++。若改成 "
+        "200/500 等其他 status，前端会把 server 忙误算成 attempt 消耗"
+    )
