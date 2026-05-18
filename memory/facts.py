@@ -1078,15 +1078,17 @@ class FactStore:
         - Stage-2 不走（path B 设计就不进 evidence loop）
 
         Returns:
-            - ``None``: Stage-1 LLM 终态失败（重试耗尽）。caller 应保留 cursor
-              下次 trigger 重试同窗口。
-            - ``[]``: Stage-1 成功但 LLM 判窗口内 0 条新 fact（已 dedupe 完）。
+            - ``None``: Stage-1 终态失败——重试耗尽 / LLM 返非数组（如
+              ``{"facts": [...]}`` 包了一层）。caller 应保留 cursor 下次
+              trigger 重试同窗口。
+            - ``[]``: Stage-1 成功且 LLM 判窗口内 0 条新 fact（已 dedupe 完）。
               caller 可正常推进 cursor。
             - ``list[dict]``: 成功且抽到 N 条新 fact，已 persist。
 
             None / [] 的区分至关重要：若把 None 折叠成 []，path B 会在 LLM
-            transient failure 时把失败窗口当作"成功 0 抽"推进 cursor，导致
-            消息永久 skip（CodeRabbit / Codex P1 round-2 on PR #1408）。
+            transient failure / 错形态 payload 时把失败窗口当作"成功 0 抽"
+            推进 cursor，导致消息永久 skip（CodeRabbit / Codex P1 round-2 +
+            Codex P1 round-9 on PR #1408）。
         """
         extracted = await self._allm_extract_facts_with_known_pool(
             lanlan_name, messages, known_pool,
@@ -1140,11 +1142,15 @@ class FactStore:
         if extracted is None:
             return None
         if not isinstance(extracted, list):
+            # 非数组 payload（如 `{"facts": [...]}` 包了一层、或 LLM 偶发瞎写）
+            # 等同 Stage-1 terminal failure 处理——返 None 让 `_run_path_b`
+            # 保留 cursor 下次 trigger 重试同窗口，而不是当成"成功 0 抽"推
+            # cursor 永久 skip 这段消息（Codex P1 round-9 on PR #1408）。
             logger.warning(
                 f"[FactStore] {lanlan_name}: path-B Stage-1 返回非数组 "
-                f"{type(extracted).__name__}，当作空列表处理"
+                f"{type(extracted).__name__}，按 terminal failure 处理 (cursor 不推进)"
             )
-            return []
+            return None
         return extracted
 
     # ── query helpers ────────────────────────────────────────────────

@@ -882,6 +882,64 @@ async def test_path_b_known_pool_sort_tolerates_malformed_importance():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_allm_extract_known_pool_returns_none_on_non_list_payload():
+    """Regression (Codex P1 round-9 on PR #1408)：
+    `_allm_extract_facts_with_known_pool` 收到非 list payload (如
+    `{"facts": [...]}`、纯 str、int 等) 必须返 None 等同 terminal failure，
+    不能折叠成 []——否则 `aextract_facts_with_known_pool` 会再继续返 []，
+    `_run_path_b` 把它当成"成功 0 抽"推 cursor，那段窗口永久 skip。
+    """
+    from memory.facts import FactStore
+    from unittest.mock import AsyncMock, MagicMock
+
+    fs = FactStore.__new__(FactStore)
+    fs._config_manager = MagicMock()
+    fs._config_manager.aget_character_data = AsyncMock(return_value=(
+        None, None, None, None, {'ai': 'lan', 'human': 'usr'}, None, None, None, None,
+    ))
+    fs._format_conversation = MagicMock(return_value='对话占位')
+
+    # 各种 LLM 错形态 payload
+    for bad_payload in [
+        {'facts': [{'text': 'wrapped', 'importance': 5}]},  # 对象包一层
+        'random string output',                              # 纯字符串
+        42,                                                  # 数字
+        {},                                                  # 空对象
+        True,                                                # bool
+    ]:
+        fs._allm_call_with_retries = AsyncMock(return_value=bad_payload)
+        out = await fs._allm_extract_facts_with_known_pool('lan', [], [])
+        assert out is None, (
+            f"非 list payload ({type(bad_payload).__name__}: {bad_payload!r}) "
+            f"必须返 None 等同 terminal failure，实际返 {out!r}"
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_aextract_facts_with_known_pool_propagates_none_from_bad_shape():
+    """End-to-end 配套：bad-shape payload → `_allm_extract_facts_with_known
+    _pool` 返 None → `aextract_facts_with_known_pool` 也返 None →
+    `_run_path_b` 保留 cursor 下次 trigger 重试。"""
+    from memory.facts import FactStore
+    from unittest.mock import AsyncMock, MagicMock
+
+    fs = FactStore.__new__(FactStore)
+    # `_allm_extract_facts_with_known_pool` 直接 mock，验证 wrapper 透传 None
+    fs._allm_extract_facts_with_known_pool = AsyncMock(return_value=None)
+    fs._apersist_new_facts = AsyncMock(return_value=[])  # 不该被调
+
+    out = await fs.aextract_facts_with_known_pool('lan', [], [])
+    assert out is None, (
+        f"_allm_extract_facts_with_known_pool 返 None 时 wrapper 必须透传 None，"
+        f"实际返 {out!r}"
+    )
+    # persist 不该被调（失败时 fact 不该落盘）
+    fs._apersist_new_facts.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_path_b_stage1_terminal_failure_preserves_cursor():
     """Regression (CodeRabbit + Codex P1 round-2 on PR #1408)：
     ``aextract_facts_with_known_pool`` 返 None 表示 Stage-1 LLM 终态失败
