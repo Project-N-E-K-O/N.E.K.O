@@ -20,6 +20,44 @@ _PROMPT_COMPACTION_LEVELS = (
 )
 logger = logging.getLogger(__name__)
 
+CHARACTER_ANCHOR_CONTEXT_TEMPLATE = """======[角色身份]
+以下为当前固定角色的预设信息，由 galgame 插件从预置数据中提供。
+请以角色第一人称视角回应。回复时不要做客观总结，直接以角色身份说出你的感受、想法或选择。
+
+【{character_name}】
+你是{character_name}。
+身份：{identity}
+
+你的性格与对应的说话方式：
+{voice_traits}
+
+你的口头习惯：{verbal_tics}
+
+人际关系：{relationships}
+关键背景：{background}
+
+======"""
+
+CONSULT_CAT_PROMPT_TEMPLATE = (
+    "你正在玩一款 galgame。\n"
+    "当前剧情：\n"
+    "{scene_summary}\n\n"
+    "{consult_question}\n\n"
+    "请以 {character_name} 的身份和口吻，用第一人称给出你的感受和建议。\n"
+    "你的说话方式：{character_voice_summary}\n"
+    "不要做客观分析，直接以角色的内心独白方式回应。"
+)
+
+CONSULT_CAT_CHOICE_QUESTION_TEMPLATE = (
+    "你面临以下选择：{choices}。作为 {character_name}，你的真实想法是什么？"
+)
+CONSULT_CAT_SCENE_CHANGE_QUESTION_TEMPLATE = (
+    "场景发生了变化。作为 {character_name}，你现在的心情是什么？"
+)
+CONSULT_CAT_STORY_PROGRESS_QUESTION_TEMPLATE = (
+    "最近的剧情发展是：{recent_lines}。你有什么想说的？"
+)
+
 
 class PromptBudgetConfig(Protocol):
     context_counting_mode: str

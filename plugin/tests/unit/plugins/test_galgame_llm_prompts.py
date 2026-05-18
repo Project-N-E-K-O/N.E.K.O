@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from plugin.plugins.galgame_plugin.context_builder import build_local_scene_summary
 from plugin.plugins.galgame_plugin import llm_prompts
 from plugin.plugins.galgame_plugin.llm_prompts import (
+    CHARACTER_ANCHOR_CONTEXT_TEMPLATE,
+    CONSULT_CAT_CHOICE_QUESTION_TEMPLATE,
+    CONSULT_CAT_PROMPT_TEMPLATE,
     build_prompt_messages,
     build_prompt_messages_with_metadata,
 )
@@ -165,6 +168,31 @@ def test_build_prompt_messages_public_contract_returns_message_list() -> None:
 
     assert isinstance(messages, list)
     assert [message["role"] for message in messages] == ["system", "user"]
+
+
+def test_host_play_mode_prompt_constants_are_available() -> None:
+    anchor = CHARACTER_ANCHOR_CONTEXT_TEMPLATE.format(
+        character_name="叢雨",
+        identity="刀灵",
+        voice_traits="· 嘴硬 -> 句尾带「ぞ」",
+        verbal_tics="自称「わらわ」",
+        relationships="有地将臣（契约者）",
+        background="被封印数百年",
+    )
+    consult = CONSULT_CAT_PROMPT_TEMPLATE.format(
+        scene_summary="场景摘要",
+        consult_question=CONSULT_CAT_CHOICE_QUESTION_TEMPLATE.format(
+            choices="A / B",
+            character_name="叢雨",
+        ),
+        character_name="叢雨",
+        character_voice_summary="自称「わらわ」",
+    )
+
+    assert "======[角色身份]" in anchor
+    assert "你是叢雨。" in anchor
+    assert "请以 叢雨 的身份和口吻" in consult
+    assert "不要做客观分析" in consult
 
 
 def test_semantic_compression_disabled_keeps_rendered_context_unchanged() -> None:

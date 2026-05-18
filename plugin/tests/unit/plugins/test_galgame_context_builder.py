@@ -85,6 +85,25 @@ def test_build_input_degraded_context_marks_ocr_identifiers() -> None:
     ]
 
 
+def test_build_fallback_summary_uses_template_and_key_dialogue() -> None:
+    summary = context_builder.build_fallback_summary(
+        "scene-a",
+        [
+            {"speaker": "A", "text": "ただいま", "line_id": "1"},
+            {"speaker": "B", "text": "どうしてここに！？", "line_id": "2"},
+            {"speaker": "C", "text": "secret", "line_id": "3", "route_id": "r"},
+        ],
+        [{"choice_id": "choice-a"}],
+        {},
+    )
+
+    assert summary.startswith("场景 scene-a：A、B、C正在对话。")
+    assert "已做出 1 次选择。" in summary
+    assert "关键对白：" in summary
+    assert "B：どうしてここに！？" in summary
+    assert "；" not in summary
+
+
 def test_resolve_target_line_prefers_history_matches() -> None:
     result = context_builder._resolve_target_line(
         {

@@ -765,6 +765,57 @@ def build_local_scene_summary(
     return summary
 
 
+def build_fallback_summary(
+    scene_id: str,
+    lines: list[dict[str, Any]],
+    selected_choices: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+) -> str:
+    speakers = list(
+        dict.fromkeys(
+            str(line.get("speaker") or "").strip()
+            for line in lines
+            if isinstance(line, dict) and str(line.get("speaker") or "").strip()
+        )
+    )
+    speaker_str = "、".join(speakers[:3]) if speakers else "未知角色"
+    extra = f"等{len(speakers)}人" if len(speakers) > 3 else ""
+
+    candidate_lines = [line for line in lines if isinstance(line, dict)]
+    top_lines = sorted(
+        candidate_lines,
+        key=lambda line: _line_importance_score(line),
+        reverse=True,
+    )[:2]
+    key_dialogue = "\n".join(
+        f"「{str(line.get('speaker') or '旁白')}：{str(line.get('text') or '').strip()}」"
+        for line in top_lines
+        if str(line.get("text") or "").strip()
+    )
+
+    if not key_dialogue and isinstance(snapshot, dict):
+        snapshot_text = str(snapshot.get("text") or "").strip()
+        if snapshot_text:
+            snapshot_speaker = str(snapshot.get("speaker") or "旁白").strip() or "旁白"
+            key_dialogue = f"「{snapshot_speaker}：{snapshot_text}」"
+
+    emotion_hint = (
+        "涉及情感表达"
+        if any(_line_importance_score(line) >= 2.0 for line in candidate_lines)
+        else ""
+    )
+
+    parts = [f"场景 {scene_id or '(unknown)'}：{speaker_str}{extra}正在对话。"]
+    if emotion_hint:
+        parts.append(f"最近的 {len(candidate_lines)} 句台词{emotion_hint}。")
+    if selected_choices:
+        parts.append(f"已做出 {len(selected_choices)} 次选择。")
+    if key_dialogue:
+        parts.append(f"\n关键对白：\n{key_dialogue}")
+
+    return "".join(parts)
+
+
 def _matching_context_snapshot(
     local_state: dict[str, Any],
     *,

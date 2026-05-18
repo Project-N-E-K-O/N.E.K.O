@@ -70,11 +70,17 @@ from .models import (
     STATE_ERROR,
     STORE_BOUND_GAME_ID,
     STORE_ADVANCE_SPEED,
+    STORE_CHARACTER_FIXED_NAME,
+    STORE_CHARACTER_MODE,
+    STORE_CHARACTER_PROFILE_VERSION,
+    STORE_CHARACTER_PROFILES,
     STORE_DEDUPE_WINDOW,
+    STORE_CROSS_SCENE_MEMORY,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
     STORE_LAST_SEQ,
+    STORE_CHARACTER_RUNTIME_STATE,
     STORE_LLM_VISION_ENABLED,
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_MEMORY_READER_TARGET,
@@ -1124,6 +1130,15 @@ class GalgamePlugin(NekoPluginBase):
                 "ocr_capture_profiles": dict(state.ocr_capture_profiles),
                 "ocr_window_target": dict(state.ocr_window_target),
                 "context_snapshot": dict(state.context_snapshot),
+                "character_profiles": dict(state.character_profiles),
+                "active_scene_characters": list(state.active_scene_characters),
+                "character_profile_version": state.character_profile_version,
+                "character_mode": state.character_mode,
+                "character_fixed_name": state.character_fixed_name,
+                "character_mode_stale": state.character_mode_stale,
+                "cross_scene_memory": dict(state.cross_scene_memory),
+                "character_runtime_state": dict(state.character_runtime_state),
+                "last_push_seq": state.last_push_seq,
                 "plugin_error": state.plugin_error,
                 "dependency_status": dict(state.dependency_status),
             }
@@ -1169,6 +1184,15 @@ class GalgamePlugin(NekoPluginBase):
             "context_snapshot": json_copy(raw["context_snapshot"])
             if include_private_context
             else _public_context_snapshot(raw["context_snapshot"]),
+            "character_profiles": json_copy(raw["character_profiles"]),
+            "active_scene_characters": json_copy(raw["active_scene_characters"]),
+            "character_profile_version": raw["character_profile_version"],
+            "character_mode": raw["character_mode"],
+            "character_fixed_name": raw["character_fixed_name"],
+            "character_mode_stale": raw["character_mode_stale"],
+            "cross_scene_memory": json_copy(raw["cross_scene_memory"]),
+            "character_runtime_state": json_copy(raw["character_runtime_state"]),
+            "last_push_seq": raw["last_push_seq"],
             "plugin_error": raw["plugin_error"],
             "dependency_status": json_copy(raw["dependency_status"]),
         }
@@ -1870,6 +1894,43 @@ class GalgamePlugin(NekoPluginBase):
                     if state.advance_speed in ADVANCE_SPEEDS
                     else str(payload.get("advance_speed") or ADVANCE_SPEED_MEDIUM)
                 ))
+            character_mode = str(payload.get("character_mode", state.character_mode) or "off")
+            if character_mode not in {"off", "fixed"}:
+                character_mode = "off"
+            assign_json_if_live_unchanged(
+                "character_profiles",
+                payload.get("character_profiles", state.character_profiles),
+            )
+            assign_json_if_live_unchanged(
+                "active_scene_characters",
+                payload.get("active_scene_characters", state.active_scene_characters),
+            )
+            assign_if_live_unchanged(
+                "character_profile_version",
+                str(payload.get("character_profile_version", state.character_profile_version) or ""),
+            )
+            assign_if_live_unchanged("character_mode", character_mode)
+            assign_if_live_unchanged(
+                "character_fixed_name",
+                str(payload.get("character_fixed_name", state.character_fixed_name) or ""),
+            )
+            assign_if_live_unchanged(
+                "character_mode_stale",
+                bool(payload.get("character_mode_stale", state.character_mode_stale)),
+            )
+            assign_json_if_live_unchanged(
+                "cross_scene_memory",
+                payload.get("cross_scene_memory", state.cross_scene_memory),
+            )
+            assign_json_if_live_unchanged(
+                "character_runtime_state",
+                payload.get("character_runtime_state", state.character_runtime_state),
+            )
+            try:
+                last_push_seq = max(0, int(payload.get("last_push_seq", state.last_push_seq) or 0))
+            except (TypeError, ValueError):
+                last_push_seq = state.last_push_seq
+            assign_if_live_unchanged("last_push_seq", last_push_seq)
             assign("active_game_id", str(payload["active_game_id"]))
             assign("active_session_id", str(payload["active_session_id"]))
             assign_json("active_session_meta", payload["active_session_meta"])
@@ -2792,6 +2853,18 @@ class GalgamePlugin(NekoPluginBase):
             )
             self._state.ocr_window_target = json_copy(restored.get(STORE_OCR_WINDOW_TARGET, {}))
             self._state.context_snapshot = self._load_context_snapshot_for_state()
+            self._state.character_profiles = json_copy(restored.get(STORE_CHARACTER_PROFILES, {}))
+            self._state.character_profile_version = str(
+                restored.get(STORE_CHARACTER_PROFILE_VERSION, "")
+            )
+            self._state.character_mode = str(restored.get(STORE_CHARACTER_MODE, "off") or "off")
+            self._state.character_fixed_name = str(
+                restored.get(STORE_CHARACTER_FIXED_NAME, "")
+            )
+            self._state.cross_scene_memory = json_copy(restored.get(STORE_CROSS_SCENE_MEMORY, {}))
+            self._state.character_runtime_state = json_copy(
+                restored.get(STORE_CHARACTER_RUNTIME_STATE, {})
+            )
             if warnings and not self._state.last_error:
                 self._state.last_error = make_error(
                     "; ".join(warnings),

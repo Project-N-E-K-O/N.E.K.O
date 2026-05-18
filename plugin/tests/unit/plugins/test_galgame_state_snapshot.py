@@ -58,6 +58,15 @@ class _FakePlugin:
                 "ocr_reader_runtime": json_copy(state.ocr_reader_runtime),
                 "ocr_capture_profiles": json_copy(state.ocr_capture_profiles),
                 "ocr_window_target": json_copy(state.ocr_window_target),
+                "character_profiles": json_copy(state.character_profiles),
+                "active_scene_characters": json_copy(state.active_scene_characters),
+                "character_profile_version": state.character_profile_version,
+                "character_mode": state.character_mode,
+                "character_fixed_name": state.character_fixed_name,
+                "character_mode_stale": state.character_mode_stale,
+                "cross_scene_memory": json_copy(state.cross_scene_memory),
+                "character_runtime_state": json_copy(state.character_runtime_state),
+                "last_push_seq": state.last_push_seq,
                 "plugin_error": state.plugin_error,
                 "dependency_status": json_copy(state.dependency_status),
             }
@@ -81,6 +90,15 @@ class _FakePlugin:
             state.last_error = json_copy(payload["last_error"])
             state.next_poll_at_monotonic = float(payload["next_poll_at_monotonic"])
             state.current_connection_state = str(payload["current_connection_state"])
+            state.character_profiles = json_copy(payload.get("character_profiles", {}))
+            state.active_scene_characters = json_copy(payload.get("active_scene_characters", []))
+            state.character_profile_version = str(payload.get("character_profile_version", ""))
+            state.character_mode = str(payload.get("character_mode", "off"))
+            state.character_fixed_name = str(payload.get("character_fixed_name", ""))
+            state.character_mode_stale = bool(payload.get("character_mode_stale", False))
+            state.cross_scene_memory = json_copy(payload.get("cross_scene_memory", {}))
+            state.character_runtime_state = json_copy(payload.get("character_runtime_state", {}))
+            state.last_push_seq = int(payload.get("last_push_seq", 0) or 0)
             state.plugin_error = str(payload["plugin_error"])
             state.dependency_status = json_copy(payload["dependency_status"])
             self._state_dirty = True
@@ -116,6 +134,14 @@ class TestSnapshotIsolation:
         snap = p._snapshot_state()
         snap["history_lines"].append({"text": "injected"})
         assert len(p._state.history_lines) == 1
+
+    def test_modify_host_play_mode_snapshot_does_not_affect_state(self):
+        p = _FakePlugin()
+        p._state.character_profiles = {"叢雨": {"identity": "刀灵"}}
+        p._mark_state_dirty()
+        snap = p._snapshot_state()
+        snap["character_profiles"]["叢雨"]["identity"] = "modified"
+        assert p._state.character_profiles["叢雨"]["identity"] == "刀灵"
 
 
 class TestSnapshotCache:
@@ -202,6 +228,24 @@ class TestDirectWriteInvalidatesCache:
         snap2 = p._snapshot_state()
         assert snap2["bound_game_id"] == "direct_write"
         assert snap1 is not snap2
+
+
+def test_host_play_mode_state_defaults() -> None:
+    state = build_initial_state(
+        mode=MODE_COMPANION,
+        push_notifications=True,
+        advance_speed=ADVANCE_SPEED_MEDIUM,
+    )
+
+    assert state.character_profiles == {}
+    assert state.active_scene_characters == []
+    assert state.character_profile_version == ""
+    assert state.character_mode == "off"
+    assert state.character_fixed_name == ""
+    assert state.character_mode_stale is False
+    assert state.cross_scene_memory == {}
+    assert state.character_runtime_state == {}
+    assert state.last_push_seq == 0
 
 
 class TestConcurrentAccess:
