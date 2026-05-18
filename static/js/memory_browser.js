@@ -881,11 +881,43 @@
                 label.textContent = memoPrefix;
                 contentWrapper.appendChild(label);
 
+                // LLM 在压缩时按 SUMMARY_STALE_HINT 要求，把"较久前"段用单独
+                // 一行 `---` 与主体分隔。这里识别该分隔符并拆成两块独立 textarea
+                // 渲染，让阅读 / 编辑时能清楚区分"当前进行中"和"已归档"。
+                // 保存时再用 composeMemo 拼回 `\n\n---\n\n` 单一规范形式。
+                let bodyValue;
+                let olderValue;
+                ({ body: bodyValue, older: olderValue } = splitMemoOnDivider(text));
+                const commitMemo = function () {
+                    updateSystemContent(i, composeMemo(bodyValue, olderValue));
+                };
+
                 const ta = document.createElement('textarea');
                 ta.className = 'memo-textarea';
-                ta.value = text;
-                ta.addEventListener('change', function () { updateSystemContent(i, this.value); });
+                ta.value = bodyValue;
+                ta.addEventListener('change', function () {
+                    bodyValue = this.value;
+                    commitMemo();
+                });
                 contentWrapper.appendChild(ta);
+
+                if (olderValue) {
+                    const olderLabel = document.createElement('span');
+                    olderLabel.className = 'memo-older-label';
+                    olderLabel.textContent = window.t
+                        ? window.t('memory.olderSection', '较久前')
+                        : '较久前';
+                    contentWrapper.appendChild(olderLabel);
+
+                    const olderTa = document.createElement('textarea');
+                    olderTa.className = 'memo-textarea memo-textarea--older';
+                    olderTa.value = olderValue;
+                    olderTa.addEventListener('change', function () {
+                        olderValue = this.value;
+                        commitMemo();
+                    });
+                    contentWrapper.appendChild(olderTa);
+                }
             } else if (msg.role === 'ai') {
                 // 提取时间戳和正文，健壮处理
                 const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
@@ -965,6 +997,34 @@
             chatData[idx].text = value;
         }
     }
+    // 备忘录正文里 LLM 按 SUMMARY_STALE_HINT 约定，用 `---` 单独占行的分隔符
+    // 把"较久前"尾段从主体切开。这里识别"`---` 单独成行（前后都换行了）"——
+    // 前后空行数量都不强求，吃下 LLM 漏空行 / 多空行 / 多输几个连字符的常见漂移；
+    // 切成 body / older 两段后 composeMemo 再统一拼回规范 `\n\n---\n\n`。
+    // 整段里出现多次匹配（违反 prompt 约束）只取第一次。
+    const MEMO_DIVIDER_RE = /(?:\r?\n)+[ \t]*-{3,}[ \t]*(?:\r?\n)+/;
+
+    function splitMemoOnDivider(text) {
+        const src = String(text == null ? '' : text);
+        const m = MEMO_DIVIDER_RE.exec(src);
+        if (!m) return { body: src, older: '' };
+        return {
+            body: src.slice(0, m.index),
+            older: src.slice(m.index + m[0].length),
+        };
+    }
+
+    function composeMemo(body, older) {
+        // body 的尾部 / older 的首部都只去掉"整行空白"——也就是 trailing blank
+        // lines / leading blank lines——保留段内有意义的前导缩进（用户在 older
+        // textarea 里手写嵌套列表 / 代码片段时不被吃）。
+        // 拼回时再用规范 `\n\n---\n\n` 形式，splitter 端会容忍换行漂移。
+        const cleanBody = String(body == null ? '' : body).replace(/(?:[ \t]*\r?\n)+$/, '');
+        const cleanOlder = String(older == null ? '' : older).replace(/^(?:[ \t]*\r?\n)+/, '');
+        if (!cleanOlder) return cleanBody;
+        return cleanBody + '\n\n---\n\n' + cleanOlder;
+    }
+
     function updateSystemContent(idx, value) {
         // 存储时先移除任何现有的前缀，然后加上当前语言的前缀
         // 定义已知的备忘录前缀列表

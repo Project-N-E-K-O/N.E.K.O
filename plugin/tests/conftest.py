@@ -45,6 +45,19 @@ def _disable_galgame_rapidocr_warmup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_galgame_runtime_root(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = Path(str(request.node.fspath))
+    if "galgame" not in str(path):
+        return
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
     """Redirect plugin runtime override persistence to an in-memory dict for tests.
 

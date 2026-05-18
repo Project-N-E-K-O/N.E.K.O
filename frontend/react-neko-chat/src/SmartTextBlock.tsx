@@ -4,6 +4,29 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 
+import { openExternalUrl } from './openExternal';
+
+function ExternalAnchor(props: React.ComponentPropsWithoutRef<'a'>) {
+  const { href, onClick, children, ...rest } = props;
+  return (
+    <a
+      {...rest}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => {
+        if (onClick) onClick(event);
+        if (event.defaultPrevented) return;
+        if (!href) return;
+        event.preventDefault();
+        openExternalUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 function looksLikeRichText(text: string) {
   return (
     /```[\s\S]*```/.test(text)
@@ -123,7 +146,7 @@ export default function SmartTextBlock({
         rehypePlugins={[rehypeKatex]}
         components={{
           code: CodeBlock,
-          a: (props: React.ComponentPropsWithoutRef<'a'>) => <a {...props} target="_blank" rel="noreferrer" />,
+          a: ExternalAnchor,
         }}
       >
         {text}

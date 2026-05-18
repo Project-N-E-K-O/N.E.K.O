@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 Нарушение политики или блокировка безопасности: {{msg}}",
         "API_1008_FALLBACK": "💥 Соединение разорвано (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Голосовое соединение разорвано из-за неактивности, автоматическое переподключение...",
+        "FREE_API_AUTO_CLOSE_VOICE": "Бесплатный API автоматически закрыл голосовой сеанс после долгого отсутствия речи",
         "API_UNKNOWN_ERROR": "💥 Ошибка API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Сервер памяти не запущен! Сначала запустите memory_server.py.",
         "MEMORY_SERVER_CRASHED": "🧠 Сервер памяти (порт {{port}}) аварийно завершился. Перезапустите memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 Служба памяти восстанавливается, подождите {{wait_time}} сек.",
         "CONNECTION_REFUSED": "💥 Подключение к серверу отклонено. Проверьте API Key и сетевое подключение.",
-        "API_KEY_REJECTED": "💥 API Key отклонён сервером. Убедитесь, что API Key соответствует выбранной модели.",
+        "API_KEY_REJECTED": "Предоставленный API Key недействителен. Проверьте текущие настройки API.",
         "API_RATE_LIMIT_SESSION": "💥 Слишком частые запросы API. Повторите попытку позже.",
         "LLM_CONNECTION_FAILED": "💥 Ошибка подключения к LLM API. Проверьте сеть и настройки API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Соединение аварийно закрыто: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} переходит на другой терминал...",
-        "RELOAD_PAGE": "Голос обновлён, страница скоро обновится",
+        "RELOAD_PAGE": "Настройки обновлены, страница скоро обновится",
+        "RELOAD_PAGE_VOICE": "Голос обновлён, страница скоро обновится",
+        "RELOAD_PAGE_VOICE_STYLE": "Тембр голоса обновлён, страница скоро обновится",
+        "RELOAD_PAGE_PERSONA": "Настройки личности обновлены, страница скоро обновится",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Настройки персонажа обновлены, страница скоро обновится",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Персонаж из облачного сохранения обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Управление браузером автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Ошибка проверки подключения LLM Лапки Неко",
@@ -937,6 +943,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "elevenlabs": "ElevenLabs (клонирование голоса)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (агрегатор моделей)"
@@ -972,6 +979,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter"
@@ -1552,6 +1560,7 @@
         "loadFailed": "Ошибка загрузки",
         "noChatContent": "Нет содержимого чата",
         "previousMemo": "Заметка из предыдущего разговора: ",
+        "olderSection": "Ранее",
         "memoNone": "Нет.",
         "delete": "Удалить",
         "me": "Я:",
@@ -1964,6 +1973,7 @@
         "restartFailed": "Ошибка перезапуска: {{error}}",
         "configUpdated": "Конфигурация обновлена, страница обновится",
         "autoMuteTimeout": "Нет голосового ввода долгое время, микрофон выключен автоматически",
+        "freeApiAutoCloseNotice": "Бесплатный API автоматически закрыл голосовой сеанс после долгого отсутствия речи",
         "deviceSelected": "Выбрано {{device}}",
         "micAccessDenied": "Нет доступа к микрофону",
         "gameVoiceSttMicPermissionDenied": "У игрового голосового распознавания нет доступа к микрофону. Проверьте разрешения браузера.",
@@ -3693,7 +3703,7 @@
             "legacyDetected": "Обнаружены старые голоса CosyVoice, которые могут не работать. Рекомендуем повторно клонировать голоса."
         },
         "changelog": {
-            "title": "Что нового"
+            "title": "Информация об обновлении"
         }
     },
     "proactive": {

@@ -10,11 +10,84 @@ Provides:
 """
 from __future__ import annotations
 
+import contextvars
 import json as _json
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
 from openai import AsyncOpenAI, OpenAI
+
+
+# ────────────────────────────────────────────────────────────────
+# Active-character context — used by ChatOpenAI._params to substitute
+# ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders that originated from
+# plugin-supplied prompt fragments (the dialog LLM path already substitutes
+# at ``main_logic.core._render_callback_inner_item``; brain pipeline LLM
+# calls — analyzer / plugin LLM — used to leak the literal placeholder
+# all the way to the wire, surfacing as a ``llm_prompt_leak_check``
+# WARNING. Setting this contextvar at the brain entry point bridges the
+# gap.) ContextVar is async-safe — values inherit through ``asyncio.gather``
+# children automatically and don't bleed across unrelated tasks.
+# ────────────────────────────────────────────────────────────────
+
+_active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvars.ContextVar(
+    "_neko_active_character_master_lanlan", default=None
+)
+
+
+def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Token":
+    """Set ``(master_name, lanlan_name)`` on the active async context so
+    subsequent ``ChatOpenAI._params`` invocations on this task substitute
+    ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders in messages before
+    the leak check + wire send. Returns a token; pass to
+    ``reset_active_character`` to restore the previous value.
+
+    Empty strings are tolerated (skipped at substitution time) so callers
+    that only know one of the two can still set partial context.
+    """
+    return _active_character.set((master_name or "", lanlan_name or ""))
+
+
+def reset_active_character(token: "contextvars.Token") -> None:
+    _active_character.reset(token)
+
+
+def _substitute_character_placeholders(messages: list, master: str, lanlan: str) -> list:
+    """Return a NEW messages list with ``{MASTER_NAME}`` / ``{LANLAN_NAME}``
+    replaced in every text-bearing field. Defensive copy — does not
+    mutate the input. ``str.replace`` (not ``.format``) so JSON fragments
+    or other braces in user content don't trigger KeyError.
+    """
+    if not master and not lanlan:
+        return messages
+
+    def _swap(text: str) -> str:
+        if master:
+            text = text.replace("{MASTER_NAME}", master)
+        if lanlan:
+            text = text.replace("{LANLAN_NAME}", lanlan)
+        return text
+
+    out = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            new_content: Any = _swap(content)
+        elif isinstance(content, list):
+            new_parts = []
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    new_parts.append({**part, "text": _swap(part["text"])})
+                else:
+                    new_parts.append(part)
+            new_content = new_parts
+        else:
+            new_content = content
+        out.append({**m, "content": new_content})
+    return out
 
 # ────────────────────────────────────────────────────────────────
 # Message classes
@@ -329,6 +402,25 @@ class ChatOpenAI:
         # Anything else the caller passed (e.g. timeout, logit_bias) goes
         # straight through to the SDK call.
         p.update(overrides)
+
+        # Resolve {MASTER_NAME}/{LANLAN_NAME} placeholders that arrived
+        # from plugin-supplied prompt fragments (cue text / nudge prompt /
+        # plugin descriptions etc.) before the leak check and wire send.
+        # The dialog LLM path resolves these in
+        # ``main_logic.core._render_callback_inner_item``; brain pipeline
+        # LLM calls don't go through that renderer, so without this step
+        # the literal placeholder leaks all the way through.
+        # ``set_active_character`` sets the contextvar at brain entry;
+        # this reads + substitutes. No-op if no character is active
+        # (e.g. callers outside the brain pipeline) — the leak check
+        # below will then fire its WARNING the same as before.
+        active = _active_character.get()
+        if active is not None:
+            master, lanlan = active
+            if master or lanlan:
+                p["messages"] = _substitute_character_placeholders(
+                    p["messages"], master, lanlan
+                )
 
         # Catch prompt-template leaks: literal {placeholder} that should have
         # been .format()-ed before reaching the wire. See

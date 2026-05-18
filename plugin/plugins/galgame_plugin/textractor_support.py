@@ -11,6 +11,7 @@ import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -23,6 +24,10 @@ from .memory_reader import (
 
 DEFAULT_TEXTRACTOR_RELEASE_API_URL = (
     "https://api.github.com/repos/Artikash/Textractor/releases/latest"
+)
+DEFAULT_TEXTRACTOR_ASSET_NAME = "Textractor-5.2.0-Zip-Version-English-Only.zip"
+DEFAULT_TEXTRACTOR_ASSET_SHA256 = (
+    "3efdcf390261fcfb6a44220113c68b06eba22a3ef441ac618208238b52ee7974"
 )
 # TODO: Add a verified Textractor Baidu pan mirror before enabling mirror install.
 _BAIDU_YUN_TEXTTRACTOR_URL = ""
@@ -163,7 +168,21 @@ def _asset_sha256(asset: dict[str, Any]) -> str:
         digest = _normalize_sha256(asset.get(key))
         if digest:
             return digest
+    if str(asset.get("name") or "").strip() == DEFAULT_TEXTRACTOR_ASSET_NAME:
+        return DEFAULT_TEXTRACTOR_ASSET_SHA256
     return ""
+
+
+def _validate_release_api_endpoint(url: str) -> str:
+    normalized = str(url or "").strip() or DEFAULT_TEXTRACTOR_RELEASE_API_URL
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https":
+        raise ValueError("Textractor release API URL must use HTTPS")
+    if parsed.netloc != "api.github.com":
+        raise ValueError("Textractor release API URL host must be api.github.com")
+    if not parsed.path.startswith("/repos/"):
+        raise ValueError("Textractor release API URL must be a GitHub repository API endpoint")
+    return normalized
 
 
 def _verify_file_sha256(path: Path, expected_sha256: str) -> bool:
@@ -262,10 +281,8 @@ def _candidate_assets(release_payload: dict[str, Any]) -> list[dict[str, str]]:
         url = str(asset.get("browser_download_url") or "").strip()
         if not name or not url or not name.lower().endswith(".zip"):
             continue
-        entry = {"name": name, "url": url}
         expected_sha256 = _asset_sha256(asset)
-        if expected_sha256:
-            entry["sha256"] = expected_sha256
+        entry = {"name": name, "url": url, "sha256": expected_sha256}
         lowered = name.lower()
         if "source code" in lowered:
             continue
@@ -511,7 +528,18 @@ async def install_textractor(
     target_dir = resolve_textractor_install_target(install_target_dir_raw)
     if not target_dir:
         raise RuntimeError("missing Textractor install target directory")
-    release_endpoint = str(release_api_url or "").strip() or DEFAULT_TEXTRACTOR_RELEASE_API_URL
+    try:
+        release_endpoint = _validate_release_api_endpoint(release_api_url)
+    except ValueError as exc:
+        error_message = str(exc)
+        await _mark_textractor_install_failed(
+            task_id=task_id,
+            progress_callback=progress_callback,
+            target_dir=target_dir,
+            error_message=error_message,
+            failed_phase="fetch_release",
+        )
+        raise TextractorInstallError(error_message, failed_phase="fetch_release") from exc
     if task_id:
         update_install_task_state(
             task_id,

@@ -156,7 +156,7 @@ def _strip_condense_metadata(value: Any) -> Any:
         return {
             key: item
             for key, item in value.items()
-            if key not in {"_condensed_line_ids", "_condensed_count"}
+            if not str(key).startswith("_condensed_")
         }
     return value
 
@@ -204,7 +204,7 @@ def _condense_context(
             "semantic_lines_after": after,
         }
     except Exception:
-        logger.warning("Context compression failed, falling back to uncompressed", exc_info=True)
+        logger.warning("Prompt compression failed, falling back to uncompressed", exc_info=True)
         return dict(context), {
             "semantic_compression_enabled": False,
             "semantic_compression_fallback": True,

@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
         "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}",
         "API_IDLE_TIMEOUT": "💥 長時間操作がなかったため音声接続が切断されました。自動再接続中...",
+        "FREE_API_AUTO_CLOSE_VOICE": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "API_UNKNOWN_ERROR": "💥 APIエラー：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 メモリサーバーが起動していません！先に memory_server.py を実行してください。",
         "MEMORY_SERVER_CRASHED": "🧠 メモリサーバー(ポート{{port}})がクラッシュしました。memory_server.py を再起動してください。",
         "MEMORY_SERVER_COOLDOWN": "🧠 メモリサービスが回復中です。{{wait_time}}秒お待ちください",
         "CONNECTION_REFUSED": "💥 サーバー接続が拒否されました。API Keyとネットワーク接続を確認してください。",
-        "API_KEY_REJECTED": "💥 API Keyがサーバーに拒否されました。API Keyが選択したモデルと一致しているか確認してください。",
+        "API_KEY_REJECTED": "提供された API Key が無効です。現在の API 設定を確認してください。",
         "API_RATE_LIMIT_SESSION": "💥 APIリクエストが多すぎます。しばらくしてから再試行してください。",
         "LLM_CONNECTION_FAILED": "💥 LLM API の接続に失敗しました。ネットワーク接続とAPI設定を確認してください。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 接続が異常終了しました: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 テキスト生成エラー: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLMから応答がありませんでした。API接続と設定を確認してください。",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}が別のターミナルに移動中...",
-        "RELOAD_PAGE": "音声が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE": "設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_VOICE": "音声が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_VOICE_STYLE": "音色が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_PERSONA": "性格設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "キャラクター設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "クラウドセーブのキャラクターが更新されました。ページがまもなく更新されます",
         "AGENT_AUTO_DISABLED_COMPUTER": "キーボード/マウス制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "ブラウザ制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "ネコクロー LLM 接続チェックエラー",
@@ -937,6 +943,7 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "elevenlabs": "ElevenLabs（音声クローン）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（モデルアグリゲーター）"
@@ -972,6 +979,7 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter"
@@ -1552,6 +1560,7 @@
         "loadFailed": "読み込み失敗",
         "noChatContent": "チャットコンテンツなし",
         "previousMemo": "前回の会話メモ: ",
+        "olderSection": "以前",
         "memoNone": "なし。",
         "delete": "削除",
         "me": "私:",
@@ -1964,6 +1973,7 @@
         "restartFailed": "再起動失敗: {{error}}",
         "configUpdated": "設定が更新されました。ページを更新します",
         "autoMuteTimeout": "長時間音声入力がないため、マイクを自動オフにしました",
+        "freeApiAutoCloseNotice": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
         "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
@@ -3693,7 +3703,7 @@
             "legacyDetected": "旧バージョンの CosyVoice 音声が検出されました。動作しない可能性があります。再クローンをお勧めします。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新情報"
         }
     },
     "proactive": {

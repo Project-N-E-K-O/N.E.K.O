@@ -11,7 +11,9 @@ from .host_agent_adapter import HostAgentAdapter, HostAgentError
 from .context_builder import (
     _compute_dynamic_line_limit,
     _context_window_bounds,
+    _matching_context_snapshot,
     _recency_ordered_context_lines,
+    _scene_summary_seed_with_restored_context,
 )
 from .local_input_actuator import (
     VIRTUAL_MOUSE_DIALOGUE_CANDIDATES,
@@ -117,6 +119,22 @@ def _bounded_choice_instruction_text(value: object) -> str:
         return text
     omitted = len(text) - _CHOICE_INSTRUCTION_TEXT_MAX_CHARS
     return f"{text[:_CHOICE_INSTRUCTION_TEXT_MAX_CHARS]}\n...[truncated {omitted} chars]"
+
+
+def _context_line_count(lines: object) -> int:
+    if not isinstance(lines, list):
+        return 0
+    total = 0
+    for item in lines:
+        if not isinstance(item, dict):
+            total += 1
+            continue
+        try:
+            count = int(item.get("_condensed_count") or 1)
+        except (TypeError, ValueError):
+            count = 1
+        total += max(1, count)
+    return total
 
 
 class AgentMessageRouter:
@@ -681,6 +699,8 @@ class GameLLMAgent:
         self._planning_candidates: list[dict[str, Any]] = []
         self._planning_started_at = 0.0
         self._actuation: dict[str, Any] | None = None
+        self._starting_actuation = False
+        self._start_generation = 0
         self._pending_strategy: dict[str, Any] | None = None
         self._next_actuation_at = 0.0
         self._last_focus_attempt_at = 0.0
@@ -730,6 +750,7 @@ class GameLLMAgent:
         self._last_delivered_summary_key = ""
         self._last_delivered_summary_seq = 0
         self._last_delivered_summary_scene_id = ""
+        self._agent_reply_lock: asyncio.Lock | None = None
 
     @property
     def _scene_memory(self) -> list[dict[str, Any]]:
@@ -806,12 +827,17 @@ class GameLLMAgent:
 
     def _ensure_loop_affinity(self) -> None:
         loop = asyncio.get_running_loop()
-        if self._runtime_loop is loop and self._op_lock is not None:
+        if (
+            self._runtime_loop is loop
+            and self._op_lock is not None
+            and self._agent_reply_lock is not None
+        ):
             return
         if self._runtime_loop is not None and self._runtime_loop is not loop:
             self._clear_loop_bound_state()
         self._runtime_loop = loop
         self._op_lock = asyncio.Lock()
+        self._agent_reply_lock = asyncio.Lock()
 
     def _clear_loop_bound_state(self) -> None:
         if self._planning_task is not None:
@@ -820,6 +846,8 @@ class GameLLMAgent:
         self._planning_candidates = []
         self._planning_choice_signature = ()
         self._planning_started_at = 0.0
+        self._starting_actuation = False
+        self._start_generation += 1
 
     @staticmethod
     def _cancel_foreign_task(task: asyncio.Task[Any]) -> None:
@@ -1020,278 +1048,286 @@ class GameLLMAgent:
 
     async def shutdown(self) -> None:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
-            self._clear_hard_error()
-            self._scene_tracker.reset()
-            self._summary_debug.clear()
-            self._last_delivered_summary_key = ""
-            self._last_delivered_summary_seq = 0
-            self._last_delivered_summary_scene_id = ""
-            self._inbound_messages.clear()
-            self._outbound_messages.clear()
-            self._last_interruption = {}
-            self._pending_choice_advice = None
-            self._cancel_summary_tasks()
-            self._failure_memory.clear()
-            self._recent_local_inputs.clear()
-            self._virtual_mouse_stats.clear()
-            self._suggestion_reasons.clear()
-            self._observed_session_id = ""
-            self._observed_session_fingerprint = {}
-            self._last_session_transition_type = ""
-            self._last_session_transition_reason = ""
-            self._last_session_transition_fields = {}
-            self._session_transition_actuation_blocked = False
-            self._observed_scene_id = ""
-            self._observed_choice_marker = ""
-            self._observed_context_boundary = {}
-            self._observed_context_boundary_key = ""
-            self._observed_virtual_mouse_runtime_key = ""
-            self._ocr_no_observed_advance_count = 0
-            self._ocr_last_progress_seq = 0
-            self._advance_retry_budget.clear()
-            self._ocr_hold_release_budget.clear()
-            self._ocr_capture_diagnostic = ""
-            self._ocr_capture_diagnostic_set_at = 0.0
-            self._screen_recovery_diagnostic = ""
-            self._computer_use_quota_bypass_until = 0.0
-            self._local_task_seq = 0
-            self._next_actuation_at = 0.0
-            self._last_focus_attempt_at = 0.0
-            self._focus_failure_count = 0
-            self._ocr_choice_fallback_attempts = 0
-            self._scene_state = self._build_empty_scene_state()
-            self._last_status = AGENT_STATUS_STANDBY
-            self._last_trace_message = ""
-            self._pending_merge_primary = ""
-            self._pending_merge_scene_ids = None
-            self._pending_cross_scene_primary = ""
+        await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+        self._clear_hard_error()
+        self._scene_tracker.reset()
+        self._summary_debug.clear()
+        self._last_delivered_summary_key = ""
+        self._last_delivered_summary_seq = 0
+        self._last_delivered_summary_scene_id = ""
+        self._inbound_messages.clear()
+        self._outbound_messages.clear()
+        self._last_interruption = {}
+        self._pending_choice_advice = None
+        self._cancel_summary_tasks()
+        self._failure_memory.clear()
+        self._recent_local_inputs.clear()
+        self._virtual_mouse_stats.clear()
+        self._suggestion_reasons.clear()
+        self._observed_session_id = ""
+        self._observed_session_fingerprint = {}
+        self._last_session_transition_type = ""
+        self._last_session_transition_reason = ""
+        self._last_session_transition_fields = {}
+        self._session_transition_actuation_blocked = False
+        self._observed_scene_id = ""
+        self._observed_choice_marker = ""
+        self._observed_context_boundary = {}
+        self._observed_context_boundary_key = ""
+        self._observed_virtual_mouse_runtime_key = ""
+        self._ocr_no_observed_advance_count = 0
+        self._ocr_last_progress_seq = 0
+        self._advance_retry_budget.clear()
+        self._ocr_hold_release_budget.clear()
+        self._ocr_capture_diagnostic = ""
+        self._ocr_capture_diagnostic_set_at = 0.0
+        self._screen_recovery_diagnostic = ""
+        self._computer_use_quota_bypass_until = 0.0
+        self._local_task_seq = 0
+        self._next_actuation_at = 0.0
+        self._last_focus_attempt_at = 0.0
+        self._focus_failure_count = 0
+        self._ocr_choice_fallback_attempts = 0
+        self._scene_state = self._build_empty_scene_state()
+        self._last_status = AGENT_STATUS_STANDBY
+        self._last_trace_message = ""
+        self._last_push_ts = 0.0
+        self._pending_merge_primary = ""
+        self._pending_merge_scene_ids = None
+        self._pending_cross_scene_primary = ""
 
     async def tick(self, shared: SharedStatePayload) -> None:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared)
-            now = time.monotonic()
-            self._update_scene_state(shared, now)
-            self._clear_actuation_error_if_read_only(shared)
-            self._convert_screen_recovery_hard_error_if_applicable(shared, now=now)
-            self._recover_retryable_error_if_ready(now)
-            snapshot = sanitize_snapshot_state(shared.get("latest_snapshot", {}))
-            visible_choices = list(snapshot.get("choices", []))
-            status = self._compute_status(shared)
+        await self._observe(shared)
+        now = time.monotonic()
+        self._update_scene_state(shared, now)
+        self._clear_actuation_error_if_read_only(shared)
+        self._convert_screen_recovery_hard_error_if_applicable(shared, now=now)
+        self._recover_retryable_error_if_ready(now)
+        snapshot = sanitize_snapshot_state(shared.get("latest_snapshot", {}))
+        visible_choices = list(snapshot.get("choices", []))
+        status = self._compute_status(shared)
 
-            if status == AGENT_STATUS_ACTIVE and not self._should_actuate(shared):
-                if (
-                    self._actuation is not None
-                    or self._planning_task is not None
-                    or self._pending_strategy is not None
-                ):
-                    await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
-                self._trace_runtime(
-                    "tick read-only: "
-                    f"mode={str(shared.get('mode') or '') or 'unknown'} "
-                    f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
-                )
-                self._next_actuation_at = now + 1.0
-                self._last_status = self._compute_status(shared)
-                return
+        if status == AGENT_STATUS_ACTIVE and not self._should_actuate(shared):
+            if (
+                self._actuation is not None
+                or self._starting_actuation
+                or self._planning_task is not None
+                or self._pending_strategy is not None
+            ):
+                await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+            self._trace_runtime(
+                "tick read-only: "
+                f"mode={str(shared.get('mode') or '') or 'unknown'} "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
+            )
+            self._next_actuation_at = now + 1.0
+            self._last_status = self._compute_status(shared)
+            return
 
-            if self._actuation is not None:
-                await self._progress_actuation(shared, now)
-                self._last_status = self._compute_status(shared)
-                return
+        if self._actuation is not None:
+            await self._progress_actuation(shared, now)
+            self._last_status = self._compute_status(shared)
+            return
 
-            if self._planning_task is not None:
-                await self._progress_planning(shared, now)
-                self._last_status = self._compute_status(shared)
-                return
+        if self._starting_actuation:
+            self._trace_runtime(
+                "tick skipped: actuation start already in progress "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
+            )
+            self._last_status = status
+            return
 
-            if status != AGENT_STATUS_ACTIVE:
-                self._trace_runtime(
-                    "tick skipped: "
-                    f"status={status} stage={self._scene_state['stage']} "
-                    f"choices={len(visible_choices)} reason={self._current_status_reason(shared)}"
-                )
-                self._last_status = status
-                return
+        if self._planning_task is not None:
+            await self._progress_planning(shared, now)
+            self._last_status = self._compute_status(shared)
+            return
 
-            if self._should_pause_for_target_window_focus(shared):
-                retry_delay = min(
-                    self._FOCUS_RETRY_BASE_SECONDS * (2 ** self._focus_failure_count),
-                    self._FOCUS_RETRY_MAX_SECONDS,
-                )
-                if now - self._last_focus_attempt_at >= retry_delay:
-                    self._last_focus_attempt_at = now
-                    focus_result = try_focus_target_window(shared)
-                    if focus_result.get("success"):
-                        self._focus_failure_count = 0
-                        self._next_actuation_at = now
-                        self._trace_runtime(
-                            "tick focus restored: target window brought to foreground "
-                            f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
-                        )
-                    else:
-                        self._focus_failure_count += 1
-                        focus_diagnostic = str(focus_result.get("focus_diagnostic") or focus_result.get("reason") or "")
-                        self._trace_runtime(
-                            "tick focus attempt failed: "
-                            f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
-                            f"detail={focus_diagnostic} consecutive={self._focus_failure_count}"
-                        )
-                        await self._maybe_push_focus_lost_notification(shared)
-                        self._next_actuation_at = now + 1.0
-                        self._last_status = status
-                        return
-                else:
+        if status != AGENT_STATUS_ACTIVE:
+            self._trace_runtime(
+                "tick skipped: "
+                f"status={status} stage={self._scene_state['stage']} "
+                f"choices={len(visible_choices)} reason={self._current_status_reason(shared)}"
+            )
+            self._last_status = status
+            return
+
+        if self._should_pause_for_target_window_focus(shared):
+            retry_delay = min(
+                self._FOCUS_RETRY_BASE_SECONDS * (2 ** self._focus_failure_count),
+                self._FOCUS_RETRY_MAX_SECONDS,
+            )
+            if now - self._last_focus_attempt_at >= retry_delay:
+                self._last_focus_attempt_at = now
+                focus_result = try_focus_target_window(shared)
+                if focus_result.get("success"):
+                    self._focus_failure_count = 0
+                    self._next_actuation_at = now
                     self._trace_runtime(
-                        "tick paused: target window is not foreground "
-                        f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
-                        f"retry_in={max(0.0, retry_delay - (now - self._last_focus_attempt_at)):.1f}s"
+                        "tick focus restored: target window brought to foreground "
+                        f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
                     )
+                else:
+                    self._focus_failure_count += 1
+                    focus_diagnostic = str(focus_result.get("focus_diagnostic") or focus_result.get("reason") or "")
+                    self._trace_runtime(
+                        "tick focus attempt failed: "
+                        f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
+                        f"detail={focus_diagnostic} consecutive={self._focus_failure_count}"
+                    )
+                    await self._maybe_push_focus_lost_notification(shared)
                     self._next_actuation_at = now + 1.0
                     self._last_status = status
                     return
             else:
-                self._focus_failure_count = 0
-
-            if self._should_pause_for_minigame_screen(shared):
-                self._pending_strategy = None
                 self._trace_runtime(
-                    "tick paused: minigame screen detected "
-                    f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
+                    "tick paused: target window is not foreground "
+                    f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
+                    f"retry_in={max(0.0, retry_delay - (now - self._last_focus_attempt_at)):.1f}s"
                 )
                 self._next_actuation_at = now + 1.0
                 self._last_status = status
                 return
+        else:
+            self._focus_failure_count = 0
 
-            if self._should_pause_for_screen_recovery(shared):
-                self._pending_strategy = None
-                self._trace_runtime(
-                    "tick paused: screen recovery input unavailable "
-                    f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
-                    f"reason={self._screen_recovery_diagnostic}"
-                )
-                self._next_actuation_at = now + 1.0
-                self._last_status = status
-                return
+        if self._should_pause_for_minigame_screen(shared):
+            self._pending_strategy = None
+            self._trace_runtime(
+                "tick paused: minigame screen detected "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)}"
+            )
+            self._next_actuation_at = now + 1.0
+            self._last_status = status
+            return
 
-            if now < self._next_actuation_at:
-                self._trace_runtime(
-                    "tick delayed: "
-                    f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
-                    f"retry_in={max(0.0, self._next_actuation_at - now):.2f}s"
-                )
-                self._last_status = status
-                return
+        if self._should_pause_for_screen_recovery(shared):
+            self._pending_strategy = None
+            self._trace_runtime(
+                "tick paused: screen recovery input unavailable "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
+                f"reason={self._screen_recovery_diagnostic}"
+            )
+            self._next_actuation_at = now + 1.0
+            self._last_status = status
+            return
 
-            strategy = self._take_pending_strategy()
-            if strategy is not None:
-                self._trace_runtime(
-                    "tick resuming pending strategy: "
-                    f"kind={str(strategy.get('kind') or '')} "
-                    f"strategy_id={str(strategy.get('strategy_id') or '')}"
-                )
-                await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
-                self._last_status = self._compute_status(shared)
-                return
+        if now < self._next_actuation_at:
+            self._trace_runtime(
+                "tick delayed: "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
+                f"retry_in={max(0.0, self._next_actuation_at - now):.2f}s"
+            )
+            self._last_status = status
+            return
 
-            if self._scene_state["stage"] != "choice_menu":
-                self._ocr_choice_fallback_attempts = 0
+        strategy = self._take_pending_strategy()
+        if strategy is not None:
+            self._trace_runtime(
+                "tick resuming pending strategy: "
+                f"kind={str(strategy.get('kind') or '')} "
+                f"strategy_id={str(strategy.get('strategy_id') or '')}"
+            )
+            await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
+            self._last_status = self._compute_status(shared)
+            return
 
-            if self._scene_state["stage"] == "choice_menu":
-                if not visible_choices:
-                    if not self._has_confirmed_ocr_choice_menu(shared, snapshot):
-                        self._trace_runtime(
-                            "tick holding choice planning: waiting for confirmed OCR menu event "
-                            "(no bridge choices)"
-                        )
-                        self._last_status = status
-                        return
-                    strategy = self._build_choice_strategy(
-                        shared,
-                        candidate_choices=[],
-                        candidate_index=0,
-                        instruction_variant=self._ocr_choice_fallback_attempts,
-                    )
-                    if strategy is not None:
-                        self._ocr_choice_fallback_attempts += 1
-                        self._trace_runtime(
-                            "tick starting OCR-only choice navigation: "
-                            f"stage={self._scene_state['stage']} "
-                            f"attempt={self._ocr_choice_fallback_attempts}"
-                        )
-                        await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
-                    self._last_status = self._compute_status(shared)
-                    return
+        if self._scene_state["stage"] != "choice_menu":
+            self._ocr_choice_fallback_attempts = 0
+
+        if self._scene_state["stage"] == "choice_menu":
+            if not visible_choices:
                 if not self._has_confirmed_ocr_choice_menu(shared, snapshot):
                     self._trace_runtime(
-                        "tick holding choice planning: waiting for confirmed OCR menu event"
+                        "tick holding choice planning: waiting for confirmed OCR menu event "
+                        "(no bridge choices)"
                     )
                     self._last_status = status
                     return
-                choice_signature = build_choice_signature(visible_choices)
-                if self._pending_choice_advice is not None:
-                    pending_signature = tuple(self._pending_choice_advice.get("choice_signature") or ())
-                    if pending_signature == choice_signature:
-                        waited = now - float(self._pending_choice_advice.get("requested_at") or now)
-                        if waited >= self._CHOICE_ADVICE_WAIT_TIMEOUT_SECONDS:
-                            self._pending_choice_advice = None
-                            self._planning_choice_signature = choice_signature
-                            await self._run_choice_planning_inline(
-                                shared,
-                                context=build_suggest_context(
-                                    shared,
-                                    config=self._context_config,
-                                ),
-                                now=now,
-                            )
-                            self._last_status = self._compute_status(shared)
-                            return
-                        self._trace_runtime(
-                            "tick waiting for cat choice advice: "
-                            f"choices={len(visible_choices)} waited={waited:.1f}s"
-                        )
-                        self._next_actuation_at = now + 1.0
-                        self._last_status = status
-                        return
-                    self._pending_choice_advice = None
-
-                await self._request_choice_advice(shared, visible_choices, snapshot=snapshot, now=now)
+                strategy = self._build_choice_strategy(
+                    shared,
+                    candidate_choices=[],
+                    candidate_index=0,
+                    instruction_variant=self._ocr_choice_fallback_attempts,
+                )
+                if strategy is not None:
+                    self._ocr_choice_fallback_attempts += 1
+                    self._trace_runtime(
+                        "tick starting OCR-only choice navigation: "
+                        f"stage={self._scene_state['stage']} "
+                        f"attempt={self._ocr_choice_fallback_attempts}"
+                    )
+                    await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
                 self._last_status = self._compute_status(shared)
                 return
-
-            if self._should_hold_for_ocr_capture_diagnostic(shared):
-                runtime = shared.get("ocr_reader_runtime") if isinstance(shared.get("ocr_reader_runtime"), dict) else {}
-                self._ocr_capture_diagnostic = self._ocr_capture_diagnostic or (
-                    "ocr_context_unavailable: OCR 连续未读到有效对白，"
-                    "请检查截图区、目标窗口或当前画面是否为普通对白"
-                )
+            if not self._has_confirmed_ocr_choice_menu(shared, snapshot):
                 self._trace_runtime(
-                    "tick holding for OCR capture diagnostic: "
-                    f"detail={str(runtime.get('detail') or '')} "
-                    f"no_text_polls={int(runtime.get('consecutive_no_text_polls') or 0)}"
+                    "tick holding choice planning: waiting for confirmed OCR menu event"
                 )
-                self._next_actuation_at = now + 1.0
                 self._last_status = status
                 return
+            choice_signature = build_choice_signature(visible_choices)
+            if self._pending_choice_advice is not None:
+                pending_signature = tuple(self._pending_choice_advice.get("choice_signature") or ())
+                if pending_signature == choice_signature:
+                    waited = now - float(self._pending_choice_advice.get("requested_at") or now)
+                    if waited >= self._CHOICE_ADVICE_WAIT_TIMEOUT_SECONDS:
+                        self._pending_choice_advice = None
+                        self._planning_choice_signature = choice_signature
+                        await self._run_choice_planning_inline(
+                            shared,
+                            context=build_suggest_context(
+                                shared,
+                                config=self._context_config,
+                            ),
+                            now=now,
+                        )
+                        self._last_status = self._compute_status(shared)
+                        return
+                    self._trace_runtime(
+                        "tick waiting for cat choice advice: "
+                        f"choices={len(visible_choices)} waited={waited:.1f}s"
+                    )
+                    self._next_actuation_at = now + 1.0
+                    self._last_status = status
+                    return
+                self._pending_choice_advice = None
 
-            strategy = self._build_scene_strategy(shared, now=now)
-            if strategy is not None:
-                self._trace_runtime(
-                    "tick starting scene strategy: "
-                    f"kind={str(strategy.get('kind') or '')} "
-                    f"strategy_id={str(strategy.get('strategy_id') or '')} "
-                    f"stage={self._scene_state['stage']}"
-                )
-                await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
-            else:
-                self._trace_runtime(
-                    "tick idle: "
-                    f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
-                    f"reason={self._current_status_reason(shared)}"
-                )
+            await self._request_choice_advice(shared, visible_choices, snapshot=snapshot, now=now)
             self._last_status = self._compute_status(shared)
+            return
+
+        if self._should_hold_for_ocr_capture_diagnostic(shared):
+            runtime = shared.get("ocr_reader_runtime") if isinstance(shared.get("ocr_reader_runtime"), dict) else {}
+            self._ocr_capture_diagnostic = self._ocr_capture_diagnostic or (
+                "ocr_context_unavailable: OCR 连续未读到有效对白，"
+                "请检查截图区、目标窗口或当前画面是否为普通对白"
+            )
+            self._trace_runtime(
+                "tick holding for OCR capture diagnostic: "
+                f"detail={str(runtime.get('detail') or '')} "
+                f"no_text_polls={int(runtime.get('consecutive_no_text_polls') or 0)}"
+            )
+            self._next_actuation_at = now + 1.0
+            self._last_status = status
+            return
+
+        strategy = self._build_scene_strategy(shared, now=now)
+        if strategy is not None:
+            self._trace_runtime(
+                "tick starting scene strategy: "
+                f"kind={str(strategy.get('kind') or '')} "
+                f"strategy_id={str(strategy.get('strategy_id') or '')} "
+                f"stage={self._scene_state['stage']}"
+            )
+            await self._start_actuation_from_strategy(shared, strategy=strategy, now=now)
+        else:
+            self._trace_runtime(
+                "tick idle: "
+                f"stage={self._scene_state['stage']} choices={len(visible_choices)} "
+                f"reason={self._current_status_reason(shared)}"
+            )
+        self._last_status = self._compute_status(shared)
 
     async def _interrupt_for_status_query(self) -> bool:
         if self._planning_task is None:
@@ -1310,26 +1346,25 @@ class GameLLMAgent:
 
     async def set_standby(self, shared: SharedStatePayload, *, standby: bool) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared)
-            message = self._enqueue_inbound_message(
-                kind="set_standby",
-                content="standby=true" if standby else "standby=false",
-                priority=9,
-                metadata={"standby": bool(standby)},
-            )
-            self._mark_message(message, status="processing")
-            await self._interrupt_for_inbound_message(message)
-            self._explicit_standby = bool(standby)
-            status = self._compute_status(shared)
-            self._last_status = status
-            self._mark_message(message, status="completed", delivered=True)
-            return {
-                "action": "set_standby",
-                "result": "agent entered standby" if standby else "agent resumed",
-                "status": status,
-                "message": json_copy(message),
-            }
+        await self._observe(shared)
+        message = self._enqueue_inbound_message(
+            kind="set_standby",
+            content="standby=true" if standby else "standby=false",
+            priority=9,
+            metadata={"standby": bool(standby)},
+        )
+        self._mark_message(message, status="processing")
+        await self._interrupt_for_inbound_message(message)
+        self._explicit_standby = bool(standby)
+        status = self._compute_status(shared)
+        self._last_status = status
+        self._mark_message(message, status="completed", delivered=True)
+        return {
+            "action": "set_standby",
+            "result": "agent entered standby" if standby else "agent resumed",
+            "status": status,
+            "message": json_copy(message),
+        }
 
     async def _reset_runtime_state(
         self,
@@ -1337,6 +1372,7 @@ class GameLLMAgent:
         cancel_host_task: bool,
         clear_retry: bool,
     ) -> None:
+        self._start_generation += 1
         if self._planning_task is not None:
             self._planning_task.cancel()
             await asyncio.gather(self._planning_task, return_exceptions=True)
@@ -1353,6 +1389,7 @@ class GameLLMAgent:
                 except Exception as exc:
                     self._logger.warning("galgame host task cancellation failed: {}", exc)
             self._actuation = None
+        self._starting_actuation = False
 
         if clear_retry:
             self._pending_strategy = None
@@ -1482,7 +1519,7 @@ class GameLLMAgent:
                 "diagnostic": "timeout: choice planning exceeded fallback window",
             }
         except Exception as exc:
-            self._logger.warning("galgame inline choice planning failed: {}", exc)
+            self._logger.warning("galgame choice planning failed: {}", exc)
             suggestion = {"degraded": True, "choices": [], "diagnostic": str(exc)}
 
         current_choices = list((shared.get("latest_snapshot") or {}).get("choices") or [])
@@ -1552,30 +1589,51 @@ class GameLLMAgent:
         strategy: dict[str, Any],
         now: float,
     ) -> None:
-        try:
-            virtual_mouse_candidate_index = int(
-                strategy.get("virtual_mouse_candidate_index")
-                if strategy.get("virtual_mouse_candidate_index") is not None
-                else -1
+        if self._actuation is not None or self._starting_actuation:
+            self._trace_runtime(
+                "actuation start skipped: another start is already active "
+                f"kind={str(strategy.get('kind') or '')} "
+                f"strategy_id={str(strategy.get('strategy_id') or '')}"
             )
-        except (TypeError, ValueError):
-            virtual_mouse_candidate_index = -1
-        await self._start_actuation(
-            shared,
-            kind=str(strategy.get("kind") or ""),
-            instruction=str(strategy.get("instruction") or ""),
-            suggestion_reason=str(strategy.get("suggestion_reason") or ""),
-            now=now,
-            choice_id=str(strategy.get("choice_id") or ""),
-            strategy_family=str(strategy.get("strategy_family") or ""),
-            strategy_id=str(strategy.get("strategy_id") or ""),
-            instruction_variant=int(strategy.get("instruction_variant") or 0),
-            candidate_choices=list(strategy.get("candidate_choices") or []),
-            candidate_index=int(strategy.get("candidate_index") or 0),
-            retry_reason=str(strategy.get("retry_reason") or ""),
-            virtual_mouse_target_id=str(strategy.get("virtual_mouse_target_id") or ""),
-            virtual_mouse_candidate_index=virtual_mouse_candidate_index,
-        )
+            return
+        self._start_generation += 1
+        start_generation = self._start_generation
+        self._starting_actuation = True
+        try:
+            try:
+                virtual_mouse_candidate_index = int(
+                    strategy.get("virtual_mouse_candidate_index")
+                    if strategy.get("virtual_mouse_candidate_index") is not None
+                    else -1
+                )
+            except (TypeError, ValueError):
+                virtual_mouse_candidate_index = -1
+            await self._start_actuation(
+                shared,
+                start_generation=start_generation,
+                kind=str(strategy.get("kind") or ""),
+                instruction=str(strategy.get("instruction") or ""),
+                suggestion_reason=str(strategy.get("suggestion_reason") or ""),
+                now=now,
+                choice_id=str(strategy.get("choice_id") or ""),
+                strategy_family=str(strategy.get("strategy_family") or ""),
+                strategy_id=str(strategy.get("strategy_id") or ""),
+                instruction_variant=int(strategy.get("instruction_variant") or 0),
+                candidate_choices=list(strategy.get("candidate_choices") or []),
+                candidate_index=int(strategy.get("candidate_index") or 0),
+                retry_reason=str(strategy.get("retry_reason") or ""),
+                virtual_mouse_target_id=str(strategy.get("virtual_mouse_target_id") or ""),
+                virtual_mouse_candidate_index=virtual_mouse_candidate_index,
+            )
+        finally:
+            if start_generation == self._start_generation:
+                self._starting_actuation = False
+
+    def _actuation_start_is_current(self, start_generation: int) -> bool:
+        if start_generation == self._start_generation:
+            return True
+        self._trace_runtime("actuation start discarded: stale generation")
+        return False
 
     def _notify_ocr_after_advance_capture(
         self,
@@ -1607,6 +1665,7 @@ class GameLLMAgent:
         self,
         shared: dict[str, Any],
         *,
+        start_generation: int,
         kind: str,
         instruction: str,
         suggestion_reason: str,
@@ -1655,6 +1714,8 @@ class GameLLMAgent:
             if choice_id and suggestion_reason:
                 self._remember_suggestion_reason(choice_id, suggestion_reason)
             fallback = await self._run_local_input_fallback(shared, actuation=actuation)
+            if not self._actuation_start_is_current(start_generation):
+                return
             if bool(fallback.get("success")):
                 self._clear_hard_error()
                 self._screen_recovery_diagnostic = ""
@@ -1705,6 +1766,8 @@ class GameLLMAgent:
             if choice_id and suggestion_reason:
                 self._remember_suggestion_reason(choice_id, suggestion_reason)
             fallback = await self._run_local_input_fallback(shared, actuation=actuation)
+            if not self._actuation_start_is_current(start_generation):
+                return
             if bool(fallback.get("success")):
                 self._clear_hard_error()
                 self._screen_recovery_diagnostic = ""
@@ -1735,6 +1798,8 @@ class GameLLMAgent:
         try:
             availability = await self._host_adapter.get_computer_use_availability()
         except HostAgentError as exc:
+            if not self._actuation_start_is_current(start_generation):
+                return
             self._trace_runtime(f"actuation blocked by availability error: {exc}")
             if self._pause_screen_recovery_after_input_unavailable(
                 shared,
@@ -1748,6 +1813,8 @@ class GameLLMAgent:
                 return
             self._set_hard_error(str(exc), retryable=True)
             self._next_actuation_at = now + 1.0
+            return
+        if not self._actuation_start_is_current(start_generation):
             return
         if not bool(availability.get("ready")):
             reasons = availability.get("reasons")
@@ -1770,6 +1837,8 @@ class GameLLMAgent:
         try:
             started = await self._host_adapter.run_computer_use_instruction(instruction)
         except HostAgentError as exc:
+            if not self._actuation_start_is_current(start_generation):
+                return
             self._trace_runtime(f"actuation start failed: {exc}")
             if self._pause_screen_recovery_after_input_unavailable(
                 shared,
@@ -1785,6 +1854,8 @@ class GameLLMAgent:
             self._next_actuation_at = now + 1.0
             return
 
+        if not self._actuation_start_is_current(start_generation):
+            return
         task_id = str(started.get("task_id") or "")
         if not task_id:
             self._trace_runtime(f"actuation start failed: invalid task response {started}")
@@ -4168,114 +4239,121 @@ class GameLLMAgent:
         limit: int = 50,
     ) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared, allow_agent_side_effects=False)
-            return {
-                "action": "list_messages",
-                **self._message_queue_snapshot(direction=direction, limit=limit),
-            }
+        await self._observe(shared, allow_agent_side_effects=False)
+        return {
+            "action": "list_messages",
+            **self._message_queue_snapshot(direction=direction, limit=limit),
+        }
 
     async def ack_message(self, shared: dict[str, Any], *, message_id: str) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared)
-            target_id = str(message_id or "").strip()
-            message = self._message_router.ack_message(target_id)
-            if message is not None:
-                return {
-                    "action": "ack_message",
-                    "message": json_copy(message),
-                    **self._message_queue_snapshot(limit=20),
-                }
+        await self._observe(shared)
+        target_id = str(message_id or "").strip()
+        message = self._message_router.ack_message(target_id)
+        if message is not None:
             return {
                 "action": "ack_message",
-                "message": None,
-                "diagnostic": f"unknown message_id: {target_id}",
+                "message": json_copy(message),
                 **self._message_queue_snapshot(limit=20),
             }
+        return {
+            "action": "ack_message",
+            "message": None,
+            "diagnostic": f"unknown message_id: {target_id}",
+            **self._message_queue_snapshot(limit=20),
+        }
 
     async def apply_mode_change(self, shared: dict[str, Any]) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared)
-            if not self._should_actuate(shared):
-                await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
-                self._clear_hard_error()
-                self._next_actuation_at = time.monotonic() + 1.0
-            status = self._compute_status(shared)
-            self._last_status = status
-            return self._build_status_payload(shared, status=status, interrupted=False)
+        await self._observe(shared)
+        if not self._should_actuate(shared):
+            await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+            self._clear_hard_error()
+            self._next_actuation_at = time.monotonic() + 1.0
+        status = self._compute_status(shared)
+        self._last_status = status
+        return self._build_status_payload(shared, status=status, interrupted=False)
 
     async def query_status(self, shared: SharedStatePayload) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            interrupted = await self._interrupt_for_status_query()
-            await self._observe(shared, allow_agent_side_effects=False)
-            now = time.monotonic()
-            self._update_scene_state(shared, now)
-            self._clear_actuation_error_if_read_only(shared)
-            self._convert_screen_recovery_hard_error_if_applicable(shared, now=now)
-            self._recover_retryable_error_if_ready(now)
-            status = self._compute_status(shared)
-            self._last_status = status
-            return {
-                "action": "query_status",
-                **self._build_status_payload(
-                    shared,
-                    status=status,
-                    interrupted=interrupted,
-                ),
-            }
+        interrupted = await self._interrupt_for_status_query()
+        await self._observe(shared, allow_agent_side_effects=False)
+        now = time.monotonic()
+        self._update_scene_state(shared, now)
+        self._clear_actuation_error_if_read_only(shared)
+        self._convert_screen_recovery_hard_error_if_applicable(shared, now=now)
+        self._recover_retryable_error_if_ready(now)
+        status = self._compute_status(shared)
+        self._last_status = status
+        return {
+            "action": "query_status",
+            **self._build_status_payload(
+                shared,
+                status=status,
+                interrupted=interrupted,
+            ),
+        }
 
     async def peek_status(self, shared: SharedStatePayload) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            now = time.monotonic()
-            scene_state = self._preview_scene_state(shared, now=now)
-            status = self._compute_status(shared)
-            return self._build_status_payload(
-                shared,
-                status=status,
-                interrupted=False,
-                scene_state=scene_state,
-                extra_summary_debug=self._peek_summary_debug(shared),
-            )
+        now = time.monotonic()
+        scene_state = self._preview_scene_state(shared, now=now)
+        status = self._compute_status(shared)
+        return self._build_status_payload(
+            shared,
+            status=status,
+            interrupted=False,
+            scene_state=scene_state,
+            extra_summary_debug=self._peek_summary_debug(shared),
+        )
 
     async def query_context(self, shared: dict[str, Any], *, context_query: str) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared)
-            message = self._enqueue_inbound_message(
-                kind="query_context",
-                content=context_query,
-                priority=8,
+        message: dict[str, Any]
+        reply_context: dict[str, Any]
+        status_snapshot: str
+        input_source_snapshot: str
+        await self._observe(shared)
+        message = self._enqueue_inbound_message(
+            kind="query_context",
+            content=context_query,
+            priority=8,
+        )
+        self._mark_message(message, status="processing")
+        try:
+            await self._interrupt_for_inbound_message(message)
+            self._recover_retryable_error_if_ready(time.monotonic())
+            reply_context = self._build_agent_reply_context(shared, prompt=context_query)
+            status_snapshot = self._compute_status(shared)
+            input_source_snapshot = self._current_input_source(shared)
+        except Exception as exc:
+            self._mark_message(
+                message,
+                status="failed",
+                metadata={"error": str(exc)},
             )
-            self._mark_message(message, status="processing")
-            try:
-                await self._interrupt_for_inbound_message(message)
-                self._recover_retryable_error_if_ready(time.monotonic())
-                payload = await self._llm_gateway.agent_reply(
-                    self._build_agent_reply_context(shared, prompt=context_query)
-                )
-                status = self._compute_status(shared)
-                self._last_status = status
-                self._mark_message(message, status="completed", delivered=True)
-                return {
-                    "action": "query_context",
-                    "result": str(payload.get("reply") or ""),
-                    "status": status,
-                    "degraded": bool(payload.get("degraded")),
-                    "diagnostic": str(payload.get("diagnostic") or ""),
-                    "input_source": self._current_input_source(shared),
-                    "message": json_copy(message),
-                }
-            except Exception as exc:
-                self._mark_message(
-                    message,
-                    status="failed",
-                    metadata={"error": str(exc)},
-                )
-                raise
+            raise
+        try:
+            async with self._agent_reply_lock:
+                payload = await self._llm_gateway.agent_reply(reply_context)
+        except Exception as exc:
+            self._mark_message(
+                message,
+                status="failed",
+                metadata={"error": str(exc)},
+            )
+            raise
+        self._last_status = status_snapshot
+        self._mark_message(message, status="completed", delivered=True)
+        return {
+            "action": "query_context",
+            "result": str(payload.get("reply") or ""),
+            "status": status_snapshot,
+            "degraded": bool(payload.get("degraded")),
+            "diagnostic": str(payload.get("diagnostic") or ""),
+            "input_source": input_source_snapshot,
+            "message": json_copy(message),
+        }
 
     def _handle_low_frequency_control_message(
         self,
@@ -4329,51 +4407,69 @@ class GameLLMAgent:
 
     async def send_message(self, shared: dict[str, Any], *, message: str) -> dict[str, Any]:
         self._ensure_loop_affinity()
-        async with self._op_lock:
-            await self._observe(shared)
-            inbound = self._enqueue_inbound_message(
-                kind="send_message",
-                content=message,
-                priority=8,
-            )
-            self._mark_message(inbound, status="processing")
-            try:
-                await self._interrupt_for_inbound_message(inbound)
-                self._recover_retryable_error_if_ready(time.monotonic())
-                control_payload = self._handle_low_frequency_control_message(shared, message=message)
-                if control_payload is not None:
-                    self._mark_message(inbound, status="completed", delivered=True)
-                    control_payload["message"] = json_copy(inbound)
-                    return control_payload
-
-                choice_payload = await self._apply_pending_choice_advice(shared, message=message)
-                if choice_payload is not None:
-                    self._mark_message(inbound, status="completed", delivered=True)
-                    choice_payload["message"] = json_copy(inbound)
-                    return choice_payload
-
-                payload = await self._llm_gateway.agent_reply(
-                    self._build_agent_reply_context(shared, prompt=message)
-                )
-                status = self._compute_status(shared)
-                self._last_status = status
+        inbound: dict[str, Any]
+        reply_context: dict[str, Any] | None = None
+        status_snapshot: str | None = None
+        input_source_snapshot: str | None = None
+        await self._observe(shared)
+        inbound = self._enqueue_inbound_message(
+            kind="send_message",
+            content=message,
+            priority=8,
+        )
+        self._mark_message(inbound, status="processing")
+        try:
+            await self._interrupt_for_inbound_message(inbound)
+            self._recover_retryable_error_if_ready(time.monotonic())
+            control_payload = self._handle_low_frequency_control_message(shared, message=message)
+            if control_payload is not None:
                 self._mark_message(inbound, status="completed", delivered=True)
-                return {
-                    "action": "send_message",
-                    "result": str(payload.get("reply") or ""),
-                    "status": status,
-                    "degraded": bool(payload.get("degraded")),
-                    "diagnostic": str(payload.get("diagnostic") or ""),
-                    "input_source": self._current_input_source(shared),
-                    "message": json_copy(inbound),
-                }
-            except Exception as exc:
-                self._mark_message(
-                    inbound,
-                    status="failed",
-                    metadata={"error": str(exc)},
-                )
-                raise
+                control_payload["message"] = json_copy(inbound)
+                return control_payload
+
+            choice_payload = await self._apply_pending_choice_advice(shared, message=message)
+            if choice_payload is not None:
+                self._mark_message(inbound, status="completed", delivered=True)
+                choice_payload["message"] = json_copy(inbound)
+                return choice_payload
+
+            reply_context = self._build_agent_reply_context(shared, prompt=message)
+            status_snapshot = self._compute_status(shared)
+            input_source_snapshot = self._current_input_source(shared)
+        except Exception as exc:
+            self._mark_message(
+                inbound,
+                status="failed",
+                metadata={"error": str(exc)},
+            )
+            raise
+        try:
+            if (
+                reply_context is None
+                or status_snapshot is None
+                or input_source_snapshot is None
+            ):
+                raise RuntimeError("send_message reached LLM call without a reply context")
+            async with self._agent_reply_lock:
+                payload = await self._llm_gateway.agent_reply(reply_context)
+        except Exception as exc:
+            self._mark_message(
+                inbound,
+                status="failed",
+                metadata={"error": str(exc)},
+            )
+            raise
+        self._last_status = status_snapshot
+        self._mark_message(inbound, status="completed", delivered=True)
+        return {
+            "action": "send_message",
+            "result": str(payload.get("reply") or ""),
+            "status": status_snapshot,
+            "degraded": bool(payload.get("degraded")),
+            "diagnostic": str(payload.get("diagnostic") or ""),
+            "input_source": input_source_snapshot,
+            "message": json_copy(inbound),
+        }
 
     async def _observe(
         self,
@@ -4617,7 +4713,7 @@ class GameLLMAgent:
             context_payload = dict(context)
             metadata_payload = dict(metadata)
         scheduled_seq = int(metadata_payload.get("scheduled_from_event_seq") or 0)
-        stable_line_count = len(list(context_payload.get("stable_lines") or []))
+        stable_line_count = _context_line_count(context_payload.get("stable_lines"))
         last_line_seq = int(metadata_payload.get("last_line_seq") or scheduled_seq or 0)
         delivery_key = str(metadata_payload.get("summary_delivery_key") or "")
         if not delivery_key:
@@ -5080,6 +5176,7 @@ class GameLLMAgent:
             if scene_id == self._pending_cross_scene_primary:
                 self._pending_cross_scene_primary = ""
             stable_lines = list(context.get("stable_lines") or [])
+            stable_line_count = _context_line_count(stable_lines)
             if not stable_lines:
                 self._summary_debug["gate_blocked"] = {
                     "gate": "empty_stable_lines",
@@ -5101,7 +5198,7 @@ class GameLLMAgent:
                 scene_id=scene_id,
                 scheduled_seq=scheduled_seq,
                 last_line_seq=scheduled_seq,
-                stable_line_count=len(stable_lines),
+                stable_line_count=stable_line_count,
             )
             if delivery_key and delivery_key == self._last_delivered_summary_key:
                 self._summary_debug["last_skip"] = {
@@ -5124,7 +5221,7 @@ class GameLLMAgent:
                 "line_interval": self._scene_summary_push_line_interval,
                 "scheduled_from_event_seq": scheduled_seq,
                 "last_line_seq": scheduled_seq,
-                "stable_line_count": len(stable_lines),
+                "stable_line_count": stable_line_count,
                 "summary_delivery_key": delivery_key,
                 "current_scene_id_at_schedule": current_scene_id,
             }
@@ -5154,7 +5251,7 @@ class GameLLMAgent:
                     "scheduled_from_event_seq": scheduled_seq,
                     "summary_delivery_key": delivery_key,
                     "current_scene_id_at_schedule": current_scene_id,
-                    "stable_line_count": len(stable_lines),
+                    "stable_line_count": stable_line_count,
                 }
             )
 
@@ -5498,44 +5595,67 @@ class GameLLMAgent:
         status = self._compute_status(shared)
         history_lines = list(shared.get("history_lines") or [])
         history_observed_lines = list(shared.get("history_observed_lines") or [])
+        scene_id = str(snapshot.get("scene_id") or "")
+        route_id = str(snapshot.get("route_id") or "")
         min_limit, max_limit, target_tokens = _context_window_bounds(
             self._context_config,
+            min_floor=16,
             max_floor=16,
         )
+        tagged_stable = [
+            {**dict(item), "_reply_context_source": "stable"}
+            for item in history_lines
+            if isinstance(item, dict)
+            and (
+                not scene_id
+                or not str(item.get("scene_id") or "")
+                or str(item.get("scene_id") or "") == scene_id
+            )
+        ]
+        tagged_observed = [
+            {**dict(item), "_reply_context_source": "observed"}
+            for item in history_observed_lines
+            if isinstance(item, dict)
+            and (
+                not scene_id
+                or not str(item.get("scene_id") or "")
+                or str(item.get("scene_id") or "") == scene_id
+            )
+        ]
+        recency_ordered = _recency_ordered_context_lines(tagged_stable, tagged_observed)
         line_limit = _compute_dynamic_line_limit(
-            _recency_ordered_context_lines(history_lines, history_observed_lines),
+            recency_ordered,
             min_limit=min_limit,
             max_limit=max_limit,
             target_tokens=target_tokens,
         )
         history_choices = list(shared.get("history_choices") or [])
         if line_limit > 0:
-            tagged_stable = [
-                {**dict(item), "_reply_context_source": "stable"}
-                for item in history_lines
-                if isinstance(item, dict)
-            ]
-            tagged_observed = [
-                {**dict(item), "_reply_context_source": "observed"}
-                for item in history_observed_lines
-                if isinstance(item, dict)
-            ]
-            merged_recent = _recency_ordered_context_lines(
-                tagged_stable,
-                tagged_observed,
-            )[-line_limit:]
+            merged_recent = recency_ordered[-line_limit:]
             stable_lines = [
-                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_reply_context_source"
+                }
                 for item in merged_recent
                 if item.get("_reply_context_source") == "stable"
             ]
             observed_lines = [
-                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_reply_context_source"
+                }
                 for item in merged_recent
                 if item.get("_reply_context_source") == "observed"
             ]
             recent_lines = [
-                {key: value for key, value in item.items() if key != "_reply_context_source"}
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "_reply_context_source" and not str(key).startswith("_condensed_")
+                }
                 for item in merged_recent
             ]
             recent_line_ids = {
@@ -5543,11 +5663,33 @@ class GameLLMAgent:
                 for item in recent_lines
                 if str(item.get("line_id") or "")
             }
-            recent_choices = [
-                dict(item)
-                for item in history_choices
+            matching_history_choices = [
+                (index, dict(item))
+                for index, item in enumerate(history_choices)
                 if isinstance(item, dict)
+                and (
+                    not scene_id
+                    or not str(item.get("scene_id") or "")
+                    or str(item.get("scene_id") or "") == scene_id
+                )
+            ]
+            choices_without_line_id = [
+                (index, item)
+                for index, item in matching_history_choices
+                if not str(item.get("line_id") or "").strip()
+            ]
+            choices_with_recent_line_id = [
+                (index, item)
+                for index, item in matching_history_choices
+                if str(item.get("line_id") or "").strip()
                 and str(item.get("line_id") or "") in recent_line_ids
+            ]
+            recent_choices = [
+                item
+                for _index, item in sorted(
+                    [*choices_without_line_id, *choices_with_recent_line_id],
+                    key=lambda pair: pair[0],
+                )
             ][-line_limit:]
         else:
             stable_lines = []
@@ -5562,13 +5704,18 @@ class GameLLMAgent:
                 f"{speaker}: "
                 f"{str(effective_line.get('text') or '')}"
             )
+        restored_context_snapshot = _matching_context_snapshot(
+            shared,
+            scene_id=scene_id,
+            route_id=route_id,
+        )
         public_context = {
             "current_line": {
                 "speaker": str(effective_line.get("speaker") or ""),
                 "text": str(effective_line.get("text") or ""),
                 "line_id": str(effective_line.get("line_id") or ""),
-                "scene_id": str(effective_line.get("scene_id") or snapshot.get("scene_id") or ""),
-                "route_id": str(effective_line.get("route_id") or snapshot.get("route_id") or ""),
+                "scene_id": str(effective_line.get("scene_id") or scene_id),
+                "route_id": str(effective_line.get("route_id") or route_id),
                 "source": str(effective_line.get("source") or ""),
                 "stability": str(effective_line.get("stability") or ""),
             },
@@ -5577,13 +5724,16 @@ class GameLLMAgent:
             "stable_lines": json_copy(stable_lines),
             "observed_lines": json_copy(observed_lines),
             "recent_choices": json_copy(recent_choices),
-            "scene_summary_seed": build_local_scene_summary(
-                scene_id=str(snapshot.get("scene_id") or ""),
-                route_id=str(snapshot.get("route_id") or ""),
+            "scene_summary_seed": _scene_summary_seed_with_restored_context(
+                shared,
+                scene_id=scene_id,
+                route_id=route_id,
                 lines=recent_lines,
                 selected_choices=recent_choices,
                 snapshot=snapshot,
+                restored_context_snapshot=restored_context_snapshot,
             ),
+            "restored_context_snapshot": json_copy(restored_context_snapshot),
             "diagnostic": self._target_window_focus_diagnostic(shared)
             or self._ocr_capture_diagnostic
             or "",
@@ -5593,8 +5743,8 @@ class GameLLMAgent:
             "prompt": prompt,
             "game_id": str(shared.get("active_game_id") or ""),
             "session_id": str(shared.get("active_session_id") or ""),
-            "scene_id": str(snapshot.get("scene_id") or ""),
-            "route_id": str(snapshot.get("route_id") or ""),
+            "scene_id": scene_id,
+            "route_id": route_id,
             "public_context": public_context,
             "status": status,
             "agent_user_status": self._agent_user_status(shared, status=status),

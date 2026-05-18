@@ -570,6 +570,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             if (isMobileWidth()) {
                 return;
             }
+            if (this._freezeFloatingButtonsPosition === true) {
+                return;
+            }
             const bounds = model.getBounds();
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;

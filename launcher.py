@@ -61,6 +61,139 @@ else:
     bundle_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+def _configure_ssl_cert_bundle() -> None:
+    """仅在冻结发行版里把 certifi 的 CA bundle 显式喂给 OpenSSL。
+
+    Nuitka / PyInstaller 会复制 `libssl`，但其编译期硬编码的 OPENSSLDIR 指向
+    构建机路径，用户机上不存在；如果同时没设 SSL_CERT_FILE 环境变量，
+    `ssl.create_default_context()` 拿不到任何根证书，所有外部 TLS 一律失败。
+    build-desktop.yml 已经把 `certifi/cacert.pem` 当 package data 打进去，
+    这里只是把它显式指给 OpenSSL。
+
+    源码模式下**不动** SSL_CERT_FILE：系统 Python 的 OpenSSL 默认信任链是
+    OS / venv 在用的那一份，可能挂着企业私有 CA（公司 TLS 中间人代理、
+    内部 PKI 等），certifi 静态 bundle 里没有这些根，硬覆盖会让原本能通
+    的内网 HTTPS 突然报 `certificate verify failed`。打包发行版没这层风险
+    （libssl 的 OPENSSLDIR 本身就指不到任何东西），所以只在 IS_FROZEN
+    分支里兜底。
+
+    用户已显式设过任一变量且文件存在时，无论是否冻结都尊重原值；只覆盖
+    那些缺失或指向已不存在路径的变量（比如打包构建机继承下来的失效路径）。
+    """
+    var_names = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+
+    def _existing_is_valid(name: str) -> bool:
+        value = os.environ.get(name)
+        if not value:
+            return False
+        # 各变量对"有效"的定义不同：
+        # - REQUESTS_CA_BUNDLE: requests 文档明确允许 PEM 文件 *或* c_rehash
+        #   过的 CA 目录（capath 模式），把目录当失效值覆盖会破坏企业 PKI 的
+        #   capath 配置。
+        # - SSL_CERT_FILE / CURL_CA_BUNDLE: OpenSSL / curl 都只接受 PEM 文件，
+        #   目录由各自的 SSL_CERT_DIR / CURL_CA_PATH 单独表达。
+        if name == "REQUESTS_CA_BUNDLE":
+            return os.path.isfile(value) or os.path.isdir(value)
+        return os.path.isfile(value)
+
+    # 三个变量都已经指向有效文件 → 完全不动。
+    if all(_existing_is_valid(name) for name in var_names):
+        return
+
+    # 源码模式：保持系统默认信任链，不强行换 certifi（避免破坏企业 CA 场景）。
+    # 即便某个变量目前指向失效路径，源码模式也由用户/上游脚本负责修——我们
+    # 没法区分"用户故意指向坏路径调试"和"误继承坏路径"。
+    if not IS_FROZEN:
+        return
+
+    ca_path: str | None = None
+    try:
+        import certifi  # noqa: WPS433 — 故意放在函数内，保持模块导入开销可控
+        candidate = certifi.where()
+        if candidate and os.path.isfile(candidate):
+            ca_path = candidate
+    except Exception:
+        ca_path = None
+
+    if ca_path is None:
+        # 冻结环境兜底：build-desktop.yml 把 certifi/cacert.pem 落到 bundle_dir 下；
+        # PyInstaller onefile 模式下 bundle_dir == sys._MEIPASS（见文件顶部
+        # IS_FROZEN 分支），所以这一份候选覆盖了主流冻结布局。
+        candidate = os.path.join(bundle_dir, "certifi", "cacert.pem")
+        if os.path.isfile(candidate):
+            ca_path = candidate
+
+    if ca_path is None:
+        # 冻结环境下找不到任何 CA bundle —— 外网 TLS 注定挂，给运维一个明确的
+        # 根因提示，避免下游只看到二手的 "certificate verify failed"。
+        print(
+            "[Launcher] Warning: failed to locate CA bundle in frozen build "
+            f"(certifi.where() unavailable, no certifi/cacert.pem under {bundle_dir}); "
+            "external HTTPS / WSS will fail with certificate verify failed.",
+            flush=True,
+        )
+        return
+
+    # 每个失效变量按"自身语义最贴近的 fallback 顺序"挑来源，保持各库自己
+    # 的查找语义不变；都没拿到再用 certifi 兜底。
+    #
+    # 关键场景：用户故意分流 SSL_CERT_FILE=/etc/openssl.pem 给 OpenSSL、
+    # CURL_CA_BUNDLE=/etc/curl.pem 给 curl/requests，没设 REQUESTS_CA_BUNDLE
+    # 想让 requests 走文档里的 fallback (REQUESTS → CURL → default)。如果
+    # 我们对所有失效变量都 break 在第一个找到的有效文件（顺序为 SSL → REQUESTS
+    # → CURL），REQUESTS_CA_BUNDLE 会被错填成 SSL 的 PEM，requests 看不到
+    # 用户预期的 CURL_CA_BUNDLE，HTTPS 行为偏离文档。
+    #
+    # 偏好顺序设计依据：
+    # - SSL_CERT_FILE: OpenSSL 没 documented fallback，但 REQUESTS / CURL 的
+    #   PEM 都是 OpenSSL 兼容文件，任选其一无大差异；REQUESTS 排前因为更可能
+    #   是用户业务侧的 trust bundle，CURL 排后留给系统级 curl 配置。
+    # - REQUESTS_CA_BUNDLE: requests 文档明确 fallback 到 CURL_CA_BUNDLE，
+    #   所以 CURL 必须排第一；SSL 作为最后兜底（仍是有效 PEM）。
+    # - CURL_CA_BUNDLE: curl 没 documented fallback，按"系统全局信任 → 业务
+    #   信任"的直觉：SSL 排前，REQUESTS 兜底。
+    #
+    # 只看 file：REQUESTS_CA_BUNDLE 允许的目录（capath）不能喂给 OpenSSL /
+    # curl，跨变量传播一律走文件。
+    propagation_sources = {
+        "SSL_CERT_FILE": ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"),
+        "REQUESTS_CA_BUNDLE": ("CURL_CA_BUNDLE", "SSL_CERT_FILE"),
+        "CURL_CA_BUNDLE": ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"),
+    }
+
+    def _pick_fallback(target: str) -> str:
+        for src in propagation_sources[target]:
+            value = os.environ.get(src)
+            if value and os.path.isfile(value):
+                return value
+        return ca_path
+
+    # 三个变量统一处理：已存在且有效 → 保留；否则 → 按 propagation_sources
+    # 顺序找一个有效 PEM 文件填，找不到才用 certifi。`setdefault` 不够：
+    # 继承自打包构建机 / 旧路径的失效值会让 requests / curl 仍然报 verify
+    # failed，本函数要避免的恰恰就是这个症状。
+    for name in var_names:
+        if not _existing_is_valid(name):
+            os.environ[name] = _pick_fallback(name)
+
+
+# 必须在任何会触发 `import ssl` 的模块之前执行；Python 的 ssl 模块在第一次
+# import 时就会通过 OpenSSL 把默认 verify paths 锁住，之后再设环境变量
+# 对已有 SSLContext 不生效。下面 from utils.* import ... 已经会拉起 httpx /
+# openai SDK 链路，所以这里抢在前面跑。
+#
+# 用显式判断而非 `assert`：`python -O` 会剥离 assert，把检查变成静默通过。
+# 这里希望任何在本函数之前 import ssl 的回归都能被运维直接看到。
+if "ssl" in sys.modules:
+    print(
+        "[Launcher] Warning: `ssl` was imported before _configure_ssl_cert_bundle() ran; "
+        "SSL_CERT_FILE override won't affect the already-initialized default SSLContext. "
+        "Move SSL bootstrap higher in launcher.py.",
+        flush=True,
+    )
+_configure_ssl_cert_bundle()
+
+
 def _get_project_venv_python(project_dir: str) -> str | None:
     if sys.platform == 'win32':
         candidate = os.path.join(project_dir, '.venv', 'Scripts', 'python.exe')

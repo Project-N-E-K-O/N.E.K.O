@@ -374,6 +374,16 @@ def test_context_window_bounds_default_respects_small_configured_maximum() -> No
     assert context_builder._context_window_bounds(config) == (2, 3, 64)
 
 
+def test_context_window_bounds_min_floor_raises_minimum_and_maximum() -> None:
+    config = GalgameLLMConfig(
+        context_explain_min_lines=2,
+        context_explain_max_lines=3,
+        context_window_target_tokens=64,
+    )
+
+    assert context_builder._context_window_bounds(config, min_floor=16) == (16, 16, 64)
+
+
 def test_summarize_context_respects_small_configured_maximum() -> None:
     lines = [
         {
@@ -452,7 +462,6 @@ def test_summarize_context_applies_line_limit_across_all_dialogue_streams() -> N
         "observed-4",
         "observed-5",
     ]
-
 
 def test_suggest_context_applies_line_limit_across_all_dialogue_streams() -> None:
     stable_lines = [
@@ -540,6 +549,43 @@ def test_explain_context_applies_line_limit_across_all_dialogue_streams() -> Non
 
     assert len(result["recent_lines"]) == 4
     assert len(result["stable_lines"]) + len(result["observed_lines"]) == 4
+
+
+def test_explain_context_exposes_matching_restored_snapshot() -> None:
+    result = context_builder.build_explain_context(
+        {
+            "active_game_id": "demo.alpha",
+            "latest_snapshot": {
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "line_id": "line-1",
+                "speaker": "A",
+                "text": "current line.",
+            },
+            "history_lines": [
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "route-a",
+                    "line_id": "line-1",
+                    "speaker": "A",
+                    "text": "current line.",
+                }
+            ],
+            "history_observed_lines": [],
+            "history_choices": [],
+            "context_snapshot": {
+                "game_id": "demo.alpha",
+                "scene_id": "scene-a",
+                "route_id": "route-a",
+                "summary_seed": "restored summary",
+                "stable_line_ids": ["line-0"],
+            },
+        },
+        line_id="line-1",
+    )
+
+    assert result["restored_context_snapshot"]["summary_seed"] == "restored summary"
+    assert result["restored_context_snapshot"]["stable_line_ids"] == ["line-0"]
 
 
 def test_line_importance_score_rewards_plot_and_route_signals() -> None:
@@ -801,6 +847,17 @@ def test_previous_summary_accepts_context_snapshot_when_both_game_ids_missing() 
     )
 
 
+def test_matching_context_snapshot_ignores_non_dict_values() -> None:
+    assert (
+        context_builder._matching_context_snapshot(
+            {"context_snapshot": "broken"},
+            scene_id="scene-a",
+            route_id="route-a",
+        )
+        == {}
+    )
+
+
 def test_summarize_context_does_not_reuse_persisted_seed_across_game_or_route() -> None:
     config = GalgameLLMConfig(context_scene_summary_mode="cumulative_light")
     state = {
@@ -837,7 +894,7 @@ def test_summarize_context_keeps_live_route_when_restored_scene_differs() -> Non
     result = context_builder.build_summarize_context(
         {
             "active_game_id": "demo.alpha",
-            "latest_snapshot": {"scene_id": "scene-b", "route_id": "route-b"},
+            "latest_snapshot": {"scene_id": "scene-b", "route_id": "route-a"},
             "history_lines": [],
             "history_observed_lines": [],
             "history_choices": [],
@@ -852,7 +909,7 @@ def test_summarize_context_keeps_live_route_when_restored_scene_differs() -> Non
     )
 
     assert result["scene_id"] == "scene-b"
-    assert result["route_id"] == "route-b"
+    assert result["route_id"] == "route-a"
     assert "旧场景总结不应复用。" not in result["scene_summary_seed"]
 
 

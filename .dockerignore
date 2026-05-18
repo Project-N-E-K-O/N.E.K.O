@@ -1,0 +1,74 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+*.egg
+
+# Virtual environments (but keep deps/ for local wheels)
+.venv
+venv
+env
+ENV
+
+# Node
+node_modules
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+N.E.K.O/logs/
+
+# Memory and user data (don't include in image)
+memory/store/*
+config/core_config.json
+config/characters.json
+config/user_preferences.json
+config/voice_storage.json
+N.E.K.O/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup
+backup/
+*.bak
+*.tmp
+
+# Large media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Documentation (optional)
+docs/
+README*.md
+LICENSE
+CHANGELOG.md
+
+# Test fixtures
+plugin/tests/fixtures/
+
+# Local server (not needed in container)
+local_server/

@@ -368,6 +368,14 @@ class ReflectionEngine:
             'embedding': None,
             'embedding_text_sha256': None,
             'embedding_model_id': None,
+            # MemoryRefineEngine cluster_hash skip 状态（Phase A-3）。
+            # cluster_hash = sha1(sorted(member_ids))；refine 跑完后所有
+            # 存活成员都 stamp 上当前 cluster 的 hash + timestamp。下次
+            # 同 cluster 再形成时，全员 hash 命中 + 未超 REVISIT_AFTER_DAYS
+            # → 直接 skip（不送 LLM）。任一成员被 merge/split/modify/discard
+            # 后新条目无 stamp，cluster member set 变化 → hash 自然 invalidate。
+            'last_refine_cluster_hash': None,
+            'last_refine_at': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)
@@ -694,25 +702,29 @@ class ReflectionEngine:
         master_name = name_mapping.get('human', '主人')
 
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
+        related_block = await self._build_related_context_block(lanlan_name, unabsorbed)
         reflection_prompt = get_reflection_prompt(get_global_language())
-        prompt = reflection_prompt.replace('{FACTS}', facts_text)
+        prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
+        prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
         prompt = prompt.replace('{MASTER_NAME}', master_name)
 
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=120: 开 thinking 后输出多字段 JSON ontology（reflection
-            # text + entity + relation_type + temporal_scope + subject）+ 思考
-            # 过程，比简单分类长。LLM 在锁外，不阻塞同角色其他 reflection 写。
+            # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS 注释（上游转发
+            # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
+            # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外
+            # 不阻塞同角色其他 reflection 写。
             # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
             # try/except 兜底返回 []）。
             # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
             # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
+            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=120, max_retries=0,
+                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
                 extra_body=None,
             )
             try:
@@ -859,6 +871,388 @@ class ReflectionEngine:
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
         print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
+
+    async def _build_related_context_block(
+        self, lanlan_name: str, unabsorbed: list[dict]
+    ) -> str:
+        """Embedding 可用时召回 absorbed fact 作 RELATED_CONTEXT；不可用 /
+        召回为空 → 返回空字符串（{RELATED_CONTEXT_BLOCK} 渲染消失，prompt 与
+        改造前等价）。远期 fact 仅作参考，不进 source_fact_ids、不
+        mark_absorbed —— 幂等性由 unabsorbed 集合的 rid hash 保证。"""
+        try:
+            from memory.embeddings import (
+                get_embedding_service,
+                is_cached_embedding_valid,
+            )
+            # 同时检查 is_disabled (sticky 关闭) 和 is_available (READY) ——
+            # INIT/LOADING 状态下 is_disabled=False 但 is_available=False，
+            # 若只看前者，reranker 会降级到 evidence-only 排序，把无关历史
+            # fact 当 "相关背景" 塞进 prompt（Codex P2 #1392）。
+            service = get_embedding_service()
+            if service.is_disabled() or not service.is_available():
+                return ""
+            model_id = service.model_id()
+            if not model_id:
+                return ""
+        except Exception:
+            return ""
+
+        if not unabsorbed:
+            return ""
+
+        unabsorbed_ids = {f['id'] for f in unabsorbed if 'id' in f}
+        try:
+            # Phase C-2: 用 full 池含归档 fact，让远期 absorbed 也能被召回
+            all_facts = await self._fact_store.aload_facts_full(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] related context load_facts 失败: {e}")
+            return ""
+
+        # Codex P2 #1392：必须 pre-filter 出有 valid embedding 的 fact 才能
+        # 进 reranker。fact 没 evidence `score` 字段，若放进 rerank=False 的
+        # coarse_rank 而 embedding 又是 stale/missing（model-id 切换后 / backfill
+        # 前），fallback 路径会按 evidence_score=0 排序 → 顺序近似随机 →
+        # 把任意 fact 当 "相关背景" 注入 prompt。这里先 filter，pool 为空就
+        # early return，宁可没 RELATED_CONTEXT 也不要塞无关历史。
+        absorbed_pool = [
+            f for f in all_facts
+            if f.get('absorbed')
+            and f.get('id') not in unabsorbed_ids
+            and is_cached_embedding_valid(f, f.get('text', ''), model_id)
+        ]
+        if not absorbed_pool:
+            return ""
+
+        query_texts = [f.get('text', '') for f in unabsorbed if f.get('text')]
+        if not query_texts:
+            return ""
+
+        try:
+            from memory.recall import MemoryRecallReranker
+            from config import REFLECTION_RELATED_RECALL_K
+            reranker = MemoryRecallReranker()
+            related = await reranker.aretrieve_candidates(
+                absorbed_pool, query_texts,
+                budget=REFLECTION_RELATED_RECALL_K,
+                config_manager=self._config_manager,
+                rerank=False,
+            )
+        except Exception as e:
+            logger.warning(f"[Reflection] related context 召回失败: {e}")
+            return ""
+
+        if not related:
+            return ""
+
+        related_text = "\n".join(
+            f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
+            for f in related
+        )
+        return (
+            "======以下为相关历史背景======\n"
+            f"{related_text}\n"
+            "（仅供参考，本轮不要为它们单独产出 reflection）\n"
+            "======以上为相关历史背景======\n\n"
+        )
+
+    # ── refine apply (Phase A-3 MemoryRefineEngine) ─────────────────
+
+    @staticmethod
+    def _refine_reflection_id(text: str) -> str:
+        """Salted hash so split-into-N pieces get distinct ids even when
+        the underlying fact set is shared."""
+        salt = datetime.now().isoformat()
+        return f"ref_{hashlib.sha1(f'{text}|{salt}'.encode('utf-8')).hexdigest()[:16]}"
+
+    def _build_split_reflection(
+        self,
+        src: dict,
+        produce_item: dict,
+        entity: str,
+        now: datetime,
+        *,
+        split_count: int,
+    ) -> dict:
+        """构造 split 产出的新 reflection；继承 src 的 source_fact_ids、
+        ontology、event_when。reinforcement 按实际 split_count 等分
+        （Codex P2 #1392：原本硬编码 /2，N>2 时低估了每条强度）。
+        split_count 至少 2（caller 在 len(produce)<2 时已跳过）。"""
+        text = str(produce_item.get('text', '')).strip()
+        rel_type = produce_item.get('relation_type') or src.get('relation_type')
+        temporal = produce_item.get('temporal_scope') or src.get('temporal_scope')
+        denom = max(int(split_count), 2)
+        return self._normalize_reflection({
+            'id': self._refine_reflection_id(text),
+            'text': text,
+            'entity': entity,
+            'status': src.get('status') or 'pending',
+            'source_fact_ids': list(src.get('source_fact_ids') or []),
+            'created_at': now.isoformat(),
+            'reinforcement': float(src.get('reinforcement', 0) or 0) / denom,
+            'relation_type': rel_type,
+            'temporal_scope': temporal,
+            'subject': src.get('subject'),
+            'event_when_raw': src.get('event_when_raw'),
+            'event_start_at': src.get('event_start_at'),
+            'event_end_at': src.get('event_end_at'),
+            'schema_version': src.get('schema_version', 2),
+        })
+
+    def _build_merge_reflection(
+        self,
+        srcs: list[dict],
+        fact_source_ids: list[str],
+        produce: dict,
+        entity: str,
+        now: datetime,
+    ) -> dict:
+        """构造 merge 产出的新 reflection；合并 source_fact_ids（含
+        absorbed_from_fact_ids），status 取最高（promoted > confirmed >
+        pending），reinforcement 取最大。"""
+        text = str(produce.get('text', '')).strip()
+        rel_type = produce.get('relation_type') or (srcs[0].get('relation_type') if srcs else None)
+        temporal = produce.get('temporal_scope') or (srcs[0].get('temporal_scope') if srcs else None)
+        combined_facts: set[str] = set(fact_source_ids)
+        for s in srcs:
+            combined_facts.update(s.get('source_fact_ids') or [])
+        status_priority = {'promoted': 3, 'confirmed': 2, 'pending': 1}
+        best_status = max(
+            (s.get('status', 'pending') for s in srcs),
+            key=lambda st: status_priority.get(st, 0),
+            default='pending',
+        )
+        max_rein = max(
+            (float(s.get('reinforcement', 0) or 0) for s in srcs),
+            default=0.0,
+        )
+        first = srcs[0] if srcs else {}
+        return self._normalize_reflection({
+            'id': self._refine_reflection_id(text),
+            'text': text,
+            'entity': entity,
+            'status': best_status,
+            'source_fact_ids': sorted(combined_facts),
+            'created_at': now.isoformat(),
+            'reinforcement': max_rein,
+            'relation_type': rel_type,
+            'temporal_scope': temporal,
+            'subject': first.get('subject'),
+            'event_when_raw': first.get('event_when_raw'),
+            'event_start_at': first.get('event_start_at'),
+            'event_end_at': first.get('event_end_at'),
+            'schema_version': first.get('schema_version', 2),
+        })
+
+    async def apply_refine_actions(
+        self,
+        name: str,
+        entity: str,
+        cluster: list[dict],
+        actions: list[dict],
+        cluster_hash: str,
+    ) -> int:
+        """Apply MemoryRefineEngine 输出的四件套 actions 到 reflections。
+
+        cluster 内 fact entries 是只读信息源 —— 任何针对 fact id 的
+        split / discard / modify 一律 reject；fact 只能作 merge / modify
+        的 absorbed_from_fact_ids。代码层兜底，不靠 prompt 自觉。
+
+        Lock 内：reload → validate → apply → stamp → save。
+        新产生的 reflection 不 stamp —— 下轮 cron 重新审视。
+
+        Returns: 成功应用的 action 数。"""
+        from memory.refine import REFINE_TYPE_KEY, VALID_REFINE_ACTIONS
+
+        cluster_refl_ids = {
+            e.get('id') for e in cluster
+            if isinstance(e, dict)
+            and e.get(REFINE_TYPE_KEY) == 'reflection'
+            and e.get('id')
+        }
+        cluster_fact_ids = {
+            e.get('id') for e in cluster
+            if isinstance(e, dict)
+            and e.get(REFINE_TYPE_KEY) == 'fact'
+            and e.get('id')
+        }
+
+        async with self._get_alock(name):
+            reflections = await self.aload_reflections(name)
+            refl_by_id = {
+                r.get('id'): r for r in reflections
+                if isinstance(r, dict) and r.get('id')
+            }
+
+            consumed: set[str] = set()
+            produced: list[dict] = []
+            applied = 0
+            now = datetime.now()
+            now_iso = now.isoformat()
+
+            for act_obj in actions:
+                if not isinstance(act_obj, dict):
+                    continue
+                act = act_obj.get('action')
+                if act not in VALID_REFINE_ACTIONS:
+                    logger.warning(f"[Refine apply] reflection: 非法 action {act!r}")
+                    continue
+
+                # fact 不可作 split / discard / modify 的 source_id —— 代码层硬拦
+                if act in ('split', 'discard', 'modify'):
+                    sid = act_obj.get('source_id')
+                    if sid in cluster_fact_ids:
+                        logger.warning(
+                            f"[Refine apply] reflection: 拒绝对 fact id={sid} 做 {act}"
+                        )
+                        continue
+
+                if act == 'split':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    src = refl_by_id.get(src_id)
+                    if not src:
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, list) or len(produce) < 2:
+                        continue
+                    # 先过滤出有效 produce items，再以实际数量作 split_count
+                    valid_produce = [
+                        p for p in produce
+                        if isinstance(p, dict) and str(p.get('text', '')).strip()
+                    ]
+                    if len(valid_produce) < 2:
+                        continue
+                    new_entries = [
+                        self._build_split_reflection(
+                            src, p, entity, now, split_count=len(valid_produce),
+                        )
+                        for p in valid_produce
+                    ]
+                    produced.extend(new_entries)
+                    consumed.add(src_id)
+                    applied += 1
+
+                elif act == 'merge':
+                    src_ids_raw = act_obj.get('source_ids') or []
+                    if not isinstance(src_ids_raw, list):
+                        continue
+                    # source_ids 必须全是 reflection；含 fact id → 拒绝整个 action
+                    if any(sid in cluster_fact_ids for sid in src_ids_raw):
+                        logger.warning(
+                            "[Refine apply] reflection: merge source_ids 含 fact，拒绝"
+                        )
+                        continue
+                    valid_refl_ids = [
+                        sid for sid in src_ids_raw
+                        if sid in cluster_refl_ids
+                        and sid in refl_by_id
+                        and sid not in consumed
+                    ]
+                    if len(valid_refl_ids) < 2:
+                        continue
+                    absorbed_fact_ids = act_obj.get('absorbed_from_fact_ids') or []
+                    if not isinstance(absorbed_fact_ids, list):
+                        absorbed_fact_ids = []
+                    valid_fact_sources = [
+                        fid for fid in absorbed_fact_ids if fid in cluster_fact_ids
+                    ]
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, dict):
+                        continue
+                    text = str(produce.get('text', '')).strip()
+                    if not text:
+                        continue
+                    new_refl = self._build_merge_reflection(
+                        [refl_by_id[sid] for sid in valid_refl_ids],
+                        valid_fact_sources, produce, entity, now,
+                    )
+                    produced.append(new_refl)
+                    consumed.update(valid_refl_ids)
+                    applied += 1
+
+                elif act == 'modify':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    src = refl_by_id.get(src_id)
+                    if not src:
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, dict):
+                        continue
+                    new_text = str(produce.get('text', '')).strip()
+                    if not new_text:
+                        continue
+                    absorbed_fact_ids = act_obj.get('absorbed_from_fact_ids') or []
+                    if not isinstance(absorbed_fact_ids, list):
+                        absorbed_fact_ids = []
+                    valid_fact_sources = [
+                        fid for fid in absorbed_fact_ids if fid in cluster_fact_ids
+                    ]
+                    reason = str(act_obj.get('reason') or 'refine_modify')
+                    old_text = src.get('text', '')
+                    src['text'] = new_text
+                    existing_sources = list(src.get('source_fact_ids') or [])
+                    src['source_fact_ids'] = sorted(
+                        set(existing_sources + valid_fact_sources)
+                    )
+                    mod_history = list(src.get('modification_history') or [])
+                    mod_history.append({
+                        'old_text': old_text,
+                        'modified_at': now_iso,
+                        'reason': reason,
+                        'absorbed_fact_ids': valid_fact_sources,
+                    })
+                    src['modification_history'] = mod_history
+                    # 文本变 → embedding 失效（下次 worker 扫描重 embed）
+                    src['embedding'] = None
+                    src['embedding_text_sha256'] = None
+                    src['embedding_model_id'] = None
+                    applied += 1
+
+                elif act == 'discard':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    consumed.add(src_id)
+                    applied += 1
+
+            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
+            # - applied > 0：有变化，必 stamp + save
+            # - applied == 0 + actions 为空：LLM 明确 no-op，stamp 防
+            #   cluster_hash skip 失效（Codex P1）
+            # - applied == 0 + actions 非空：所有 action 全 reject = LLM
+            #   语义垃圾，不 stamp 等下轮重试（Codex P2）
+            if applied == 0 and actions:
+                return 0
+
+            new_reflections = [
+                r for r in reflections
+                if not (isinstance(r, dict) and r.get('id') in consumed)
+            ]
+            new_reflections.extend(produced)
+
+            stamped = 0
+            for r in new_reflections:
+                if not isinstance(r, dict):
+                    continue
+                rid = r.get('id')
+                if rid in cluster_refl_ids and rid not in consumed:
+                    r['last_refine_cluster_hash'] = cluster_hash
+                    r['last_refine_at'] = now_iso
+                    stamped += 1
+
+            if applied == 0 and stamped == 0:
+                return 0
+
+            await self.asave_reflections(name, new_reflections)
+            logger.info(
+                f"[Reflection] {name} entity={entity}: refine 应用 {applied} action "
+                f"(cluster_hash={cluster_hash}, stamped={stamped}, "
+                f"+{len(produced)} produced, -{len(consumed)} consumed)"
+            )
+        return applied
 
     # alias for backward compat (system_router calls .reflect())
     async def reflect(self, lanlan_name: str) -> dict | None:

@@ -147,6 +147,33 @@ class FactStore:
             return self._facts[name]
         return await asyncio.to_thread(self.load_facts, name)
 
+    def load_facts_full(self, name: str) -> list[dict]:
+        """Active + archived 全量 fact 池（Phase C-2）。
+
+        Archived = `_archive_absorbed` 已搬到 facts_archive.json 的旧条目
+        （absorbed 超过 _ARCHIVE_AGE_DAYS = 7 天）。
+
+        用于需要"远期历史可被搜到"的场景，目前是 reflection synthesis
+        的 RELATED_CONTEXT 召回。返回新 list，archive 不入 cache。
+
+        Archive 文件损坏时 best-effort 降级为 active-only，不抛。"""
+        active = self.load_facts(name)
+        archive_path = self._facts_archive_path(name)
+        if not os.path.exists(archive_path):
+            return list(active)
+        try:
+            with open(archive_path, encoding='utf-8') as f:
+                archived = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[FactStore] {name}: 读取 archive 失败，降级仅 active: {e}")
+            return list(active)
+        if not isinstance(archived, list):
+            return list(active)
+        return list(active) + [f for f in archived if isinstance(f, dict)]
+
+    async def aload_facts_full(self, name: str) -> list[dict]:
+        return await asyncio.to_thread(self.load_facts_full, name)
+
     @classmethod
     def _migrate_v1_entity_values(cls, facts: list[dict]) -> bool:
         """Rename v1 entity values ('user'→'master', 'ai'→'neko') in-place."""

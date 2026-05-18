@@ -45,6 +45,7 @@ from config import (
     IGNORED_REINFORCEMENT_DELTA,
     MEMORY_RECHECK_ENABLED,
     MEMORY_RECHECK_INITIAL_DELAY_SECONDS,
+    MEMORY_REFINE_CRON_INTERVAL_SECONDS,
     MEMORY_RECHECK_INTERVAL_SECONDS,
     MEMORY_SERVER_PORT,
     USER_CONFIRM_DELTA,
@@ -376,6 +377,8 @@ _INITIAL_DELAY_SIGNAL = 60           # Signal extraction 首次 (原 40s)
 _INITIAL_DELAY_REBUTTAL = 100        # Rebuttal 首次 (原 300s)
 _INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 rebuttal 50s)
 _INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
+_INITIAL_DELAY_PERSONA_REFINE = 400  # PERSONA_REFINE 首次（与 reflection refine 错峰 100s）
+_INITIAL_DELAY_REFLECTION_REFINE = 500  # REFLECTION_REFINE 首次
 
 # ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
 _maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
@@ -1827,7 +1830,12 @@ async def _periodic_signal_extraction_loop():
                     {'type': 'human', 'data': {'content': m}}
                     for m in user_msgs_text
                 ]
-                messages = convert_to_messages(json.dumps(message_dicts))
+                # convert_to_messages 只接 list，不再解 JSON 字符串（PR #547 以来的契约）；
+                # 这里之前的 json.dumps 让函数走 isinstance(data, list)==False 分支直接返回 []，
+                # → messages=[] → _format_conversation render 出空字符串 → Stage-1 prompt
+                # 里 ======以下为对话====== 跟 ======以上为对话====== 之间为空 → LLM 合理
+                # 返回 []，整套 fact 抽取 + 后续 Stage-2 evidence 都被静默跳过。
+                messages = convert_to_messages(message_dicts)
 
                 try:
                     persisted, signals, batch_fact_ids = await fact_store.aextract_facts_and_detect_signals(
@@ -1982,6 +1990,175 @@ async def _amaybe_trigger_negative_keyword_hook(
         )
 
 
+# ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
+
+
+async def _run_persona_refine_for_character(character: str) -> None:
+    """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
+    skip / 候选不足 → 整 pass no-op。"""
+    from memory.refine import (
+        MemoryRefineEngine,
+        REFINE_ENTITY_KEY,
+        annotate_entry,
+    )
+
+    pm = persona_manager
+    if pm is None:
+        return
+    persona = await pm.aensure_persona(character)
+    candidates_by_entity: dict[str, list[dict]] = {}
+    for entity in ('master', 'neko', 'relationship'):
+        section = pm._get_section_facts(persona, entity)
+        entries = [
+            annotate_entry(e, type_='persona', entity=entity)
+            for e in section
+            if isinstance(e, dict) and not e.get('protected') and e.get('id')
+        ]
+        if entries:
+            candidates_by_entity[entity] = entries
+    if not candidates_by_entity:
+        return
+
+    engine = MemoryRefineEngine(_config_manager)
+
+    async def _apply(cluster, actions, cluster_hash):
+        # cluster 内成员同 entity（engine 强制），从第一个非空成员读
+        ent = next(
+            (e.get(REFINE_ENTITY_KEY) for e in cluster
+             if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
+            'master',
+        )
+        await pm.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
+
+    result = await engine.refine_pass(
+        candidates_by_entity,
+        apply_fn=_apply,
+        scope_label=f"persona/{character}",
+    )
+    if result['clusters_resolved'] or result['clusters_failed']:
+        logger.info(
+            f"[PersonaRefine] {character}: seen={result['clusters_seen']}, "
+            f"skipped={result['clusters_skipped']}, "
+            f"resolved={result['clusters_resolved']}, "
+            f"failed={result['clusters_failed']}"
+        )
+
+
+async def _periodic_persona_refine_loop():
+    """每 N 秒对每个角色跑一轮 PERSONA_REFINE。
+
+    embedding 服务关 / powerful memory 关 → no-op；engine 内 cluster_hash
+    skip 让"刚审过"的 cluster 零成本跳过，所以高频触发不会浪费 LLM
+    token。初始 delay 错峰 reflection refine 100s。"""
+    await asyncio.sleep(_INITIAL_DELAY_PERSONA_REFINE)
+    interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
+    while True:
+        if not await _ais_powerful_memory_enabled():
+            await asyncio.sleep(interval)
+            continue
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[PersonaRefine] 加载角色列表失败: {e}")
+            await asyncio.sleep(interval)
+            continue
+        for name in catgirl_names:
+            try:
+                await _run_persona_refine_for_character(name)
+            except Exception as e:
+                logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
+        await asyncio.sleep(interval)
+
+
+async def _run_reflection_refine_for_character(character: str) -> None:
+    """单角色 reflection refine pass。cluster 内可混入同 entity 的
+    absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
+    层代码兜底）。"""
+    from memory.refine import (
+        MemoryRefineEngine,
+        REFINE_ENTITY_KEY,
+        annotate_entry,
+    )
+
+    # 用 `engine_ref` 而不是 `re` —— 后者遮蔽 Python 内置 `re` 模块
+    # （CodeRabbit nitpick #1392）。
+    engine_ref = reflection_engine
+    fs = fact_store
+    if engine_ref is None or fs is None:
+        return
+
+    refls = await engine_ref.aload_reflections(character, include_archived=False)
+    if not refls:
+        return
+    facts = await fs.aload_facts(character)
+
+    candidates_by_entity: dict[str, list[dict]] = {}
+    for entity in ('master', 'neko', 'relationship'):
+        entity_refls = [
+            annotate_entry(r, type_='reflection', entity=entity)
+            for r in refls
+            if isinstance(r, dict) and r.get('entity') == entity and r.get('id')
+        ]
+        entity_facts = [
+            annotate_entry(f, type_='fact', entity=entity)
+            for f in facts
+            if isinstance(f, dict) and f.get('entity') == entity
+            and f.get('absorbed') and f.get('id')
+        ]
+        if entity_refls:  # 至少要有 reflection；fact 是只读补料
+            candidates_by_entity[entity] = entity_refls + entity_facts
+    if not candidates_by_entity:
+        return
+
+    engine = MemoryRefineEngine(_config_manager)
+
+    async def _apply(cluster, actions, cluster_hash):
+        ent = next(
+            (e.get(REFINE_ENTITY_KEY) for e in cluster
+             if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
+            'master',
+        )
+        await engine_ref.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
+
+    result = await engine.refine_pass(
+        candidates_by_entity,
+        apply_fn=_apply,
+        scope_label=f"reflection/{character}",
+    )
+    if result['clusters_resolved'] or result['clusters_failed']:
+        logger.info(
+            f"[ReflectionRefine] {character}: seen={result['clusters_seen']}, "
+            f"skipped={result['clusters_skipped']}, "
+            f"resolved={result['clusters_resolved']}, "
+            f"failed={result['clusters_failed']}"
+        )
+
+
+async def _periodic_reflection_refine_loop():
+    """每 N 秒对每个角色跑一轮 REFLECTION_REFINE。candidate pool 包含
+    active reflection + 同 entity 的 absorbed fact（fact 只读）。"""
+    await asyncio.sleep(_INITIAL_DELAY_REFLECTION_REFINE)
+    interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
+    while True:
+        if not await _ais_powerful_memory_enabled():
+            await asyncio.sleep(interval)
+            continue
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[ReflectionRefine] 加载角色列表失败: {e}")
+            await asyncio.sleep(interval)
+            continue
+        for name in catgirl_names:
+            try:
+                await _run_reflection_refine_for_character(name)
+            except Exception as e:
+                logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
+        await asyncio.sleep(interval)
+
+
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -2120,6 +2297,9 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(_periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(_periodic_slow_memory_recheck_loop())
+            # Phase A-4 / A-5: MemoryRefineEngine cron 接入
+            _spawn_background_task(_periodic_persona_refine_loop())
+            _spawn_background_task(_periodic_reflection_refine_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
@@ -2945,7 +3125,10 @@ async def get_recent_history(lanlan_name: str):
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
 async def get_memory(query: str, lanlan_name: str):
-    """语义记忆已退环境，返回空结果占位。"""
+    """**Deprecated** — 旧 GET 端点保留只为不破坏老调用方；新调用方走
+    POST ``/query_memory/{lanlan_name}`` 拿结构化结果。本端点继续返回
+    占位文字以避免老路径回流（语义召回早就在这条 GET 上下线了）。
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = get_global_language()
     return (
@@ -2955,6 +3138,59 @@ async def get_memory(query: str, lanlan_name: str):
         + _loc(MEMORY_RESULTS_HEADER, _lang).format(name=lanlan_name)
         + "\n（语义记忆已下线，暂无相关记忆片段。）"
     )
+
+
+class QueryMemoryRequest(BaseModel):
+    query: str
+
+
+@app.post("/query_memory/{lanlan_name}")
+async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
+    """混合检索 entry point —— BM25 + cosine embedding 并行召回 + RRF 融合。
+
+    POST body: ``{"query": "<自然语言查询>"}``
+
+    返回 ``hybrid_recall`` 的结构化结果（见 ``memory.hybrid_recall``
+    docstring）。``main_server`` 的 ``recall_memory`` 工具 handler 调
+    本端点拿结果，再格式化给模型看。
+
+    ⚠️ 候选范围、阈值、budget 都在 ``config.HYBRID_RECALL_*`` 里配置；
+    persona 整段不入池（已经常态渲染进 system prompt），facts +
+    reflections 走全路径，facts_archive 只入 BM25 池。
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if fact_store is None or reflection_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    try:
+        # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
+        # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
+        # 直接 500 把 tool call 整死。
+        from memory.hybrid_recall import hybrid_recall
+        return await hybrid_recall(
+            lanlan_name=lanlan_name,
+            query=req.query or "",
+            fact_store=fact_store,
+            reflection_engine=reflection_engine,
+            config_manager=_config_manager,
+        )
+    except Exception as exc:
+        # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
+        # 那边的 handler 会把空 results 翻译成 "没有找到相关记忆"，模型可以
+        # 正常继续。完整 traceback 落 logger.exception（含 type + msg），
+        # 响应体只回稳定 error_code，避免把内部细节（异常消息可能夹带敏感
+        # 上下文）通过 HTTP body 泄出去。
+        logger.exception(
+            "[hybrid_recall] %s: 召回失败，返回空结果占位: %s: %s",
+            lanlan_name, type(exc).__name__, exc,
+        )
+        return {
+            "results": [], "query": req.query or "",
+            "candidates_total": 0, "elapsed_ms": 0.0,
+            "error_code": "hybrid_recall_failed",
+        }
 
 @app.get("/get_settings/{lanlan_name}")
 async def get_settings(lanlan_name: str):

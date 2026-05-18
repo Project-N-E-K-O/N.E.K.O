@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 Violación de política o bloqueo de seguridad: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexión desconectada (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Conexión de voz cerrada por inactividad, reconexión automática...",
+        "FREE_API_AUTO_CLOSE_VOICE": "La API gratuita cerró automáticamente la sesión de voz tras un largo periodo sin entrada de voz",
         "API_UNKNOWN_ERROR": "💥 Error de API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 ¡El servidor de memoria no se inició! Primero ejecute Memory_server.py.",
         "MEMORY_SERVER_CRASHED": "🧠 El servidor de memoria (puerto {{port}}) falló. Reinicie Memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 El servicio de memoria se está recuperando, espere {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Conexión del servidor rechazada. Verifique su clave API y su conexión de red.",
-        "API_KEY_REJECTED": "💥 Clave API rechazada por el servidor. Verifique si su clave API coincide con el modelo seleccionado.",
+        "API_KEY_REJECTED": "La API Key proporcionada no es válida. Revisa la configuración actual de la API.",
         "API_RATE_LIMIT_SESSION": "💥 La tasa de solicitudes de API es demasiado alta. Vuelva a intentarlo más tarde.",
         "LLM_CONNECTION_FAILED": "💥 Error en la conexión API de LLM. Verifique su conexión de red y la configuración de API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Conexión cerrada anormalmente: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 Error de generación de texto: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM no obtuvo respuesta. Verifique su conexión y configuración de API.",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} se dirige a otra terminal...",
-        "RELOAD_PAGE": "Voz actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE": "Configuración actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_VOICE": "Voz actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_VOICE_STYLE": "Estilo de voz actualizado, la página se actualizará en breve",
+        "RELOAD_PAGE_PERSONA": "Configuración de personalidad actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Configuración del personaje actualizada, la página se actualizará en breve",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Personaje de guardado en la nube actualizado, la página se actualizará en breve",
         "AGENT_AUTO_DISABLED_COMPUTER": "Control de teclado/ratón deshabilitado automáticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Control del navegador deshabilitado automáticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Error de comprobación de conectividad de NekoClaw LLM",
@@ -937,6 +943,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
+            "elevenlabs": "ElevenLabs (clonación de voz)",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelos)"
@@ -972,6 +979,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "enrutador abierto"
@@ -1552,6 +1560,7 @@
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
         "previousMemo": "Nota de conversación anterior:",
+        "olderSection": "Antes",
         "memoNone": "Ninguno.",
         "delete": "Borrar",
         "me": "A mí:",
@@ -1964,6 +1973,7 @@
         "restartFailed": "Error al reiniciar: {{error}}",
         "configUpdated": "Configuración actualizada, la página se actualizará",
         "autoMuteTimeout": "Sin entrada de voz durante mucho tiempo, micrófono cerrado automáticamente",
+        "freeApiAutoCloseNotice": "La API gratuita cerró automáticamente la sesión de voz tras un largo periodo sin entrada de voz",
         "deviceSelected": "Seleccionado {{device}}",
         "micAccessDenied": "No puedo acceder al micrófono",
         "gameVoiceSttMicPermissionDenied": "La transcripción de voz del juego no tiene permiso para usar el micrófono. Revisa los permisos del navegador.",
@@ -3693,7 +3703,7 @@
             "legacyDetected": "Se detectaron voces antiguas de CosyVoice que es posible que ya no funcionen. Considere volver a clonar sus voces."
         },
         "changelog": {
-            "title": "Qué hay de nuevo"
+            "title": "Información de actualización"
         }
     },
     "proactive": {

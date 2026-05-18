@@ -182,8 +182,8 @@ class UniversalTutorialManager {
         this._tutorialEndReason = null;
         this._tutorialEndRawReason = null;
         this._tutorialEndHandled = false;
-        this._tutorialAvatarOverride = null;
-        this._tutorialAvatarOverridePromise = null;
+        this._tutorialAvatarReloadController = null;
+        this._tutorialSkipController = null;
         this._teardownPromise = null;
         this._tutorialViewportPlacementResizeHandler = null;
         this._tutorialViewportPlacementResizeTimer = null;
@@ -216,6 +216,41 @@ class UniversalTutorialManager {
 
     logPromptFlow(step, details = {}) {
         logTutorialPromptFlow(step, details);
+    }
+
+    ensureTutorialSkipController() {
+        if (!this._tutorialSkipController
+            && window.TutorialSkipController
+            && typeof window.TutorialSkipController.createController === 'function') {
+            this._tutorialSkipController = window.TutorialSkipController.createController({
+                document: document,
+                buttonId: 'neko-tutorial-skip-btn'
+            });
+        }
+        return this._tutorialSkipController;
+    }
+
+    ensureTutorialAvatarReloadController() {
+        if (!this._tutorialAvatarReloadController
+            && window.TutorialAvatarReloadController
+            && typeof window.TutorialAvatarReloadController.createController === 'function') {
+            this._tutorialAvatarReloadController = window.TutorialAvatarReloadController.createController({
+                host: this,
+                timeoutMs: TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS,
+                tutorialModelName: TUTORIAL_YUI_LIVE2D_MODEL_NAME,
+                resolveCurrentName: () => this.resolveCurrentTutorialCatgirlName(),
+                fetchCharacters: () => this.fetchTutorialCharacters(),
+                buildSnapshotPayload: (currentConfig) => this.buildTutorialModelSavePayload(currentConfig),
+                reloadModel: (currentName, payload, options) => this.reloadTutorialModel(currentName, payload, options),
+                setPreparing: (preparing) => this.setTutorialLive2dPreparing(preparing),
+                revealPrepared: () => this.revealTutorialLive2dPrepared(),
+                captureAvatarPreview: () => this.captureTutorialChatAvatarPreview(),
+                applyIdentityOverride: (payload) => this.applyTutorialChatIdentityOverride(payload),
+                sleep: (delayMs) => this.sleep(delayMs),
+                clearViewportWatcher: () => this.clearTutorialLive2dViewportPlacementWatcher()
+            });
+        }
+        return this._tutorialAvatarReloadController;
     }
 
     /**
@@ -1413,7 +1448,8 @@ class UniversalTutorialManager {
             }
             this._tutorialViewportPlacementResizeTimer = setTimeout(() => {
                 this._tutorialViewportPlacementResizeTimer = null;
-                if (!this._tutorialAvatarOverride || this._isDestroyed) {
+                const controller = this.ensureTutorialAvatarReloadController();
+                if (!controller || !controller.hasActiveOverride() || this._isDestroyed) {
                     return;
                 }
                 this.applyTutorialLive2dViewportPlacement().catch(error => {
@@ -1439,160 +1475,19 @@ class UniversalTutorialManager {
     }
 
     beginTutorialAvatarOverride() {
-        if (this._tutorialAvatarOverridePromise) {
-            if (this._tutorialAvatarOverride && (this._tutorialAvatarOverride.restoring || this._tutorialAvatarOverride.restoreRequested)) {
-                return this._tutorialAvatarOverridePromise.then(() => this.beginTutorialAvatarOverride());
-            }
-            return this._tutorialAvatarOverridePromise;
+        const controller = this.ensureTutorialAvatarReloadController();
+        if (!controller || typeof controller.beginOverride !== 'function') {
+            return Promise.reject(new Error('tutorial avatar reload controller unavailable'));
         }
-        if (this._tutorialAvatarOverride) {
-            return Promise.resolve();
-        }
-
-        const activePrefix = UniversalTutorialManager.detectModelPrefix();
-        this._tutorialAvatarOverride = {
-            activePrefix,
-            restoreRequested: false
-        };
-        const override = this._tutorialAvatarOverride;
-        const ensureOverrideActive = () => {
-            if (this._tutorialAvatarOverride !== override || override.cancelled) {
-                throw new Error('tutorial avatar override setup cancelled');
-            }
-        };
-        const setupDeadline = new Promise((_, reject) => {
-            setTimeout(() => {
-                reject(new Error(`tutorial avatar override setup timed out after ${TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS}ms`));
-            }, TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS);
-        });
-
-        const setupPromise = Promise.race([(async () => {
-            const currentName = await this.resolveCurrentTutorialCatgirlName();
-            ensureOverrideActive();
-            if (!currentName) {
-                throw new Error('current tutorial catgirl name unavailable');
-            }
-
-            const characters = await this.fetchTutorialCharacters();
-            ensureOverrideActive();
-            const catgirls = (characters && characters['猫娘']) || {};
-            const currentConfig = catgirls[currentName];
-            if (!currentConfig) {
-                throw new Error(`current catgirl config not found: ${currentName}`);
-            }
-
-            const snapshotPayload = this.buildTutorialModelSavePayload(currentConfig);
-            const tutorialModelPayload = {
-                model_type: 'live2d',
-                live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME,
-                live2d_idle_animation: ''
-            };
-            this._tutorialAvatarOverride.currentName = currentName;
-            this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
-
-            this.setTutorialLive2dPreparing(true);
-            await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
-            ensureOverrideActive();
-            await this.sleep(350);
-            ensureOverrideActive();
-            const tutorialAvatar = await this.captureTutorialChatAvatarPreview();
-            ensureOverrideActive();
-            this.applyTutorialChatIdentityOverride({
-                active: true,
-                displayName: 'YUI',
-                avatarDataUrl: tutorialAvatar && tutorialAvatar.dataUrl ? tutorialAvatar.dataUrl : '',
-                modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
-            });
-            console.log('[Tutorial] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
-        })(), setupDeadline]).catch(async (error) => {
-            override.cancelled = true;
-            this.revealTutorialLive2dPrepared();
-            try {
-                await Promise.resolve(this.applyTutorialChatIdentityOverride({ active: false }));
-            } catch (identityError) {
-                console.warn('[Tutorial] 清理临时聊天身份失败:', identityError);
-            }
-            if (this._tutorialAvatarOverride === override) {
-                if (this._tutorialAvatarOverridePromise === setupPromise) {
-                    this._tutorialAvatarOverridePromise = null;
-                }
-                await this.restoreTutorialAvatarOverride();
-            }
-            console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
-            throw error;
-        });
-
-        this._tutorialAvatarOverridePromise = setupPromise;
-        setupPromise.then(
-            () => null,
-            () => null
-        ).then(() => {
-            if (this._tutorialAvatarOverridePromise === setupPromise) {
-                this._tutorialAvatarOverridePromise = null;
-            }
-            if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoreRequested) {
-                this.restoreTutorialAvatarOverride().catch(error => {
-                    console.warn('[Tutorial] 延迟恢复新手教程头像失败:', error);
-                });
-            }
-        }).catch(error => {
-            console.warn('[Tutorial] 清理新手教程头像准备状态失败:', error);
-        });
-
-        return setupPromise;
+        return controller.beginOverride();
     }
 
     restoreTutorialAvatarOverride() {
-        const override = this._tutorialAvatarOverride;
-        if (!override) {
+        const controller = this.ensureTutorialAvatarReloadController();
+        if (!controller || typeof controller.restoreOverride !== 'function') {
             return Promise.resolve();
         }
-
-        if (this._tutorialAvatarOverridePromise) {
-            override.restoreRequested = true;
-            return this._tutorialAvatarOverridePromise.then(() => {
-                if (this._tutorialAvatarOverride === override && !override.restoring) {
-                    return this.restoreTutorialAvatarOverride();
-                }
-                return this._tutorialAvatarOverridePromise || Promise.resolve();
-            });
-        }
-
-        const currentName = override.currentName;
-        const snapshotPayload = override.snapshotPayload;
-        override.restoring = true;
-
-        const restorePromise = Promise.resolve().then(async () => {
-            try {
-                this.clearTutorialLive2dViewportPlacementWatcher();
-                this.revealTutorialLive2dPrepared();
-                this.applyTutorialChatIdentityOverride({ active: false });
-                if (!currentName) {
-                    return;
-                }
-
-                await this.reloadTutorialModel(currentName, snapshotPayload || {});
-                console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
-            } catch (error) {
-                console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);
-                if (typeof window.showCurrentModel === 'function') {
-                    try {
-                        await window.showCurrentModel();
-                    } catch (_) {}
-                }
-            } finally {
-                this.clearTutorialLive2dViewportPlacementWatcher();
-                if (this._tutorialAvatarOverride === override) {
-                    this._tutorialAvatarOverride = null;
-                }
-                if (this._tutorialAvatarOverridePromise === restorePromise) {
-                    this._tutorialAvatarOverridePromise = null;
-                }
-            }
-        });
-
-        this._tutorialAvatarOverridePromise = restorePromise;
-        return restorePromise;
+        return controller.restoreOverride();
     }
 
     async captureTutorialChatAvatarPreview() {
@@ -3849,7 +3744,8 @@ class UniversalTutorialManager {
             this._tutorialModelPrefix = 'live2d';
             avatarReadyPromise = this.beginTutorialAvatarOverride();
         } else {
-            avatarReadyPromise = this._tutorialAvatarOverridePromise;
+            const avatarReloadController = this.ensureTutorialAvatarReloadController();
+            avatarReadyPromise = avatarReloadController ? avatarReloadController.getPendingPromise() : null;
         }
 
         if (useYuiOnlyHomeFlow) {
@@ -4084,92 +3980,47 @@ class UniversalTutorialManager {
      * 在右上角显示「跳过」按钮，点击后结束引导
      */
     showSkipButton() {
-        // 避免重复创建
-        this.hideSkipButton();
+        const controller = this.ensureTutorialSkipController();
+        if (!controller || typeof controller.show !== 'function') {
+            return;
+        }
 
-        const btn = document.createElement('button');
-        btn.id = 'neko-tutorial-skip-btn';
-        btn.textContent = this.t('tutorial.buttons.skip', '跳过');
+        controller.show({
+            label: this.t('tutorial.buttons.skip', '跳过'),
+            onSkip: () => this.handleTutorialSkipRequest()
+        });
+        console.log('[Tutorial] 跳过按钮已显示');
+    }
 
-        // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
-        btn.style.pointerEvents = 'auto';
-        btn.style.position = 'fixed';
-        btn.style.zIndex = '2147483647';
-        btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
-
-        let skipHandled = false;
+    handleTutorialSkipRequest() {
         const handleSkipFailure = (error) => {
             console.warn('[Tutorial] Yui Guide skip 失败，回退到 requestTutorialDestroy:', error);
-            skipHandled = false;
             this.requestTutorialDestroy('skip');
         };
-        const handleSkipRequest = (e) => {
-            if (skipHandled) {
-                return;
-            }
-            skipHandled = true;
-            btn.disabled = true;
-            btn.setAttribute('aria-disabled', 'true');
-            if (e && typeof e.preventDefault === 'function') {
-                e.preventDefault();
-            }
-            if (e && typeof e.stopImmediatePropagation === 'function') {
-                e.stopImmediatePropagation();
-            }
-            if (e && typeof e.stopPropagation === 'function') {
-                e.stopPropagation();
-            }
-            const director = this.isYuiGuideEnabledForPage(this.currentPage)
-                ? this.ensureYuiGuideDirector()
-                : null;
-            if (director && typeof director.skip === 'function') {
-                try {
-                    Promise.resolve(director.skip('skip', 'skip'))
-                        .then(() => {
-                            this.requestTutorialDestroy('skip');
-                        })
-                        .catch(handleSkipFailure);
-                } catch (error) {
-                    handleSkipFailure(error);
-                }
-                return;
-            }
+        const director = this.isYuiGuideEnabledForPage(this.currentPage)
+            ? this.ensureYuiGuideDirector()
+            : null;
+        if (director && typeof director.skip === 'function') {
+            return Promise.resolve(director.skip('skip', 'skip'))
+                .then(() => {
+                    this.requestTutorialDestroy('skip');
+                })
+                .catch(handleSkipFailure);
+        }
 
-            this.requestTutorialDestroy('skip');
-        };
-
-        btn.addEventListener('pointerdown', handleSkipRequest);
-        btn.addEventListener('mousedown', handleSkipRequest);
-        btn.addEventListener('touchstart', handleSkipRequest, { passive: false });
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            handleSkipRequest(e);
-        });
-        document.body.appendChild(btn);
-        this.setYuiGuideSkipBypassEnabled(true);
-        console.log('[Tutorial] 跳过按钮已显示');
+        this.requestTutorialDestroy('skip');
+        return Promise.resolve();
     }
 
     /**
      * 移除「跳过」按钮
      */
     hideSkipButton() {
-        const existing = document.getElementById('neko-tutorial-skip-btn');
-        if (existing) {
-            existing.remove();
-            console.log('[Tutorial] 跳过按钮已移除');
+        const controller = this.ensureTutorialSkipController();
+        if (controller && typeof controller.hide === 'function') {
+            controller.hide();
         }
-        this.setYuiGuideSkipBypassEnabled(false);
-    }
-
-    setYuiGuideSkipBypassEnabled(enabled) {
-        try {
-            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
-                detail: { enabled: !!enabled }
-            }));
-        } catch (error) {
-            console.warn('[Tutorial] 切换 Yui Guide skip bypass 失败:', error);
-        }
+        console.log('[Tutorial] 跳过按钮已移除');
     }
 
     /**

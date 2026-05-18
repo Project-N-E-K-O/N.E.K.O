@@ -300,6 +300,83 @@ def test_character_card_manager_renders_subscribed_preview_image_url_fallback(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_voice_dropdown_prefers_clone_prefix(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {
+                            customabc123: {
+                                voice_id: 'customabc123',
+                                prefix: 'Sweet01',
+                                name: 'customabc123',
+                                provider: 'minimax'
+                            },
+                            customnameonly: {
+                                voice_id: 'customnameonly',
+                                name: 'Readable Name',
+                                provider: 'cosyvoice'
+                            }
+                        },
+                        free_voices: {},
+                        native_voices: {},
+                        voice_owners: {
+                            customabc123: ['缓存猫娘']
+                        }
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+
+                return originalFetch(input, init);
+            };
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+            const ui = _panelCreateVoiceSelectUi(select);
+            document.body.appendChild(ui.container);
+
+            await _loadPanelVoices(select, 'customabc123');
+            ui.refresh();
+
+            const optionTexts = Array.from(select.options).map(option => ({
+                value: option.value,
+                text: option.textContent
+            }));
+
+            return {
+                selectedText: ui.container.querySelector('.voice-select-selected')?.textContent || '',
+                optionTexts
+            };
+        }
+        """
+    )
+
+    assert state["selectedText"] == "Sweet01"
+    assert {"value": "customabc123", "text": "Sweet01"} in state["optionTexts"]
+    assert {"value": "customnameonly", "text": "Readable Name"} in state["optionTexts"]
+
+
+@pytest.mark.frontend
 def test_character_card_manager_creates_tag_scroll_buttons_for_dynamic_wrapper(
     mock_page: Page,
     running_server: str,

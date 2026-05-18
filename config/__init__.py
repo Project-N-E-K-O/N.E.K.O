@@ -13,7 +13,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -893,6 +893,33 @@ PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
 REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 
+# ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
+# 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
+# cosine 召回，两路各自阈值过滤 + 限 top-K，RRF 融合后整体再限 N 条返回。
+#
+# 候选范围：
+#   - BM25 池：     facts.json + reflections.json + facts_archive.json
+#                  （BM25 对大池子廉价，archive 也能搜到罕见关键词命中）
+#   - Embedding 池: facts.json + reflections.json
+#                  （embedding 计算贵 + archive 已经超出常态记忆窗口；
+#                   persona 整段不入池——它已经被常态渲染进 system prompt，
+#                   再检索就是冗余）
+#
+# 阈值是经验值，跑起来再调；cosine 用 sentence-embedding 常见的相关性下限
+# 0.3；BM25 用 0.1 接近 "any meaningful overlap"（零 overlap 早就被
+# _bm25_rank 的 score > 0 卡掉了，0.1 主要挡偶发高频词碰瓷）。
+#
+# ⚠️ BM25 阈值不能定高：Okapi 公式在小 pool 下 IDF 系数自然就矮，
+# 单 doc pool 即使 exact match 最高也就 ~0.72（``log((1-1+0.5)/(1+0.5)
+# + 1) × (k1+1)``）；2-doc pool 两条都有词时 IDF 跌到 ~0.18。最初拍
+# 1.0 是用大语料经验值，结果新用户 / 小语料 / 高频词查询全部被阈值
+# 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
+HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
+HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
+HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
+HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
+HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
+
 # ========================================================================
 # §3.7 LLM Context & Output Budget
 # ------------------------------------------------------------------------
@@ -970,6 +997,17 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
 - 上游：用户长期不"吸收"事实就会堆积；外循环（aget_unabsorbed_facts）
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
+
+REFLECTION_RELATED_RECALL_K = 6
+"""Reflection synthesis 时通过 embedding 召回的 absorbed fact 数量。
+- 用途：synthesize_reflections 在调 LLM 前用 unabsorbed 文本作 multi-query，
+  从已 absorbed fact 池里 cosine 召回 top K 作为 {RELATED_CONTEXT_BLOCK}
+  喂给 prompt，让 LLM 知道"远期相关 fact 长啥样"。
+- 上游：absorbed=True 的 fact 池（已被前轮 reflection 吸收过的素材）。
+- 设计依据：K 约等于 SYNTHESIS_FACTS_MAX 的 1/3，再多会稀释 prompt 焦点；
+  embedding 不可用 / 池为空 / 召回为空 → block 整段省略，prompt 与改造前一致。
+- 远期 fact 仅作参考，不进 source_fact_ids、不 mark_absorbed，幂等性靠
+  unabsorbed 集合的 rid hash 保证。"""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
@@ -1053,6 +1091,52 @@ PERSONA_CORRECTION_BATCH_LIMIT = 10
 - 用途：_resolve_corrections_locked 从 pending_corrections 队列取前 N
   条丢给 LLM 做对错判断，剩下的下一轮再处理。
 - 上游：pending_corrections 队列。"""
+
+PERSONA_VERSION_HISTORY_MAX = 5
+"""单条 persona entry 的 version_history 保留上限（Phase B-1）。
+- 用途：每次 resolve_corrections 的 replace/merge 或 apply_refine_actions
+  的 merge/modify append 后裁到最近 K 个，防长期运行无限累积。
+- 老版本直接丢；version_history 是审计而非数据，超过 5 条价值极低。"""
+
+MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
+"""所有 memory 后台 LLM 调用的硬上限 timeout（秒）。
+- 上游转发服务器 hard timeout 120s；client 必须留 ≥10s margin，否则会被
+  转发层先 timeout 截断，连 response 都拿不到。**不能超过 110**。
+- 覆盖：reflection synthesis / persona correction / memory_refine /
+  recent review_history 等所有后台跑的 LLM 调用。
+- 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
+
+# ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
+# 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
+# REFLECTION_REFINE 两条 cron 上。fact 不可变（只能作 merge/modify
+# 的信息源，不能被 split/discard）。
+
+MEMORY_REFINE_COSINE_THRESHOLD = 0.82
+"""refine cluster 的 cosine 阈值。比 FACT_DEDUP 的 0.85 略松——persona
+和 reflection 文本通常更长，cosine 难拉到 0.85+；同时这里是聚类找
+"相关"而非 dedup 找"等价"，松一点更合适。"""
+
+MEMORY_REFINE_TOPK_PER_ENTRY = 5
+"""单个 entry 在邻接图上最多保留的近邻数（双 cap 的第二条）。防止某条
+被高度引用的 hub entry 把一大坨弱相关条目都拉进同一 cluster。"""
+
+MEMORY_REFINE_CLUSTER_SIZE_MAX = 6
+"""单 cluster 内最多成员数。超过 6 LLM 难以一致处理；溢出的 cluster
+按 cosine 强度截到前 6 条。"""
+
+MEMORY_REFINE_REVISIT_AFTER_DAYS = 30
+"""同一 cluster_hash 多久后允许重审（即使 hash 全员命中也不 skip）。
+LLM 行为月级别可能漂移，1 个月重审一次成本可控。"""
+
+MEMORY_REFINE_CLUSTERS_PER_PASS = 3
+"""单次 cron 触发最多送 LLM 的 cluster 数。按饥饿度（cluster 内
+min(last_refine_at)）升序取前 N。约 3 次 LLM call ≈ 60-90s 阻塞。"""
+
+MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
+"""PERSONA_REFINE / REFLECTION_REFINE cron 的轮询间隔（秒）。
+- 30 分钟一次；engine 内 cluster_hash skip 让"刚审过"的 cluster
+  零成本跳过，所以高频触发也不会浪费 LLM token。
+- 两条 cron 用同一间隔，靠 _INITIAL_DELAY_* 错峰起始。"""
 
 # ---- Memory: recall ----
 RECALL_COARSE_OVERSAMPLE = 3
@@ -1767,8 +1851,17 @@ __all__ = [
     'REFLECTION_TEXT_MAX_TOKENS',
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',
+    'REFLECTION_RELATED_RECALL_K',
     'PERSONA_MERGE_POOL_MAX_TOKENS',
     'PERSONA_CORRECTION_BATCH_LIMIT',
+    'PERSONA_VERSION_HISTORY_MAX',
+    'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'MEMORY_REFINE_COSINE_THRESHOLD',
+    'MEMORY_REFINE_TOPK_PER_ENTRY',
+    'MEMORY_REFINE_CLUSTER_SIZE_MAX',
+    'MEMORY_REFINE_REVISIT_AFTER_DAYS',
+    'MEMORY_REFINE_CLUSTERS_PER_PASS',
+    'MEMORY_REFINE_CRON_INTERVAL_SECONDS',
     'RECALL_COARSE_OVERSAMPLE',
     'RECALL_PER_CANDIDATE_MAX_TOKENS',
     'RECALL_CANDIDATES_TOTAL_MAX_TOKENS',

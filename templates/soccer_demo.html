@@ -112,6 +112,28 @@
   }
   #controls label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
   #controls input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
+  #game-audio-controls {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
+    display: grid; gap: 6px;
+  }
+  #game-audio-controls label {
+    display: grid; grid-template-columns: auto 128px 34px; gap: 6px 8px; align-items: center;
+    cursor: default;
+  }
+  #game-audio-controls span {
+    font: 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.84);
+  }
+  #game-audio-controls input[type="range"] {
+    width: 128px;
+    accent-color: #72d6ff;
+    cursor: pointer;
+  }
+  #game-audio-controls output {
+    font: 11px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.68);
+    text-align: right;
+  }
   #voice-controls {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
     display: none; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center;
@@ -316,6 +338,18 @@
 <div id="controls">
   <label><input type="checkbox" id="boundary-toggle"> <span data-i18n="soccer.debugControls.bounds">启用边界（出界规则）</span></label>
   <label><input type="checkbox" id="voice-output-toggle" checked> <span data-i18n="soccer.debugControls.voiceOutput">播放 LLM 台词（项目语音）</span></label>
+  <div id="game-audio-controls" aria-label="Game audio volume">
+    <label>
+      <span>BGM</span>
+      <input id="game-bgm-volume" type="range" min="0" max="100" step="1">
+      <output id="game-bgm-volume-value" for="game-bgm-volume">45%</output>
+    </label>
+    <label>
+      <span>SFX</span>
+      <input id="game-sfx-volume" type="range" min="0" max="100" step="1">
+      <output id="game-sfx-volume-value" for="game-sfx-volume">75%</output>
+    </label>
+  </div>
   <div id="voice-controls" aria-hidden="true">
     <button id="voice-mic-button" type="button" data-i18n="soccer.debugControls.voiceButton">调试语音</button>
     <input id="voice-text-input" type="text" data-i18n-placeholder="soccer.debugControls.voicePlaceholder" placeholder="调试：输入最终转写后回车">
@@ -545,6 +579,9 @@
 <script src="/static/live2d-model.js"></script>
 <script src="/static/live2d-interaction.js"></script>
 <script src="/static/live2d-init.js"></script>
+<script src="/static/game/games/soccer/how%20lovely%60s%20audio%20system%20temp%20root.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/games/soccer/soccer-audio-config.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
 
 <!-- Three.js via importmap -->
 <script type="importmap">
@@ -1151,6 +1188,10 @@
   };
   let _outOfBoundsTimer = 0;
   let _outOfBoundsSide = null; // 'player' | 'ai' | null — 最后触球的一方
+  let _lastWallBounceSfxAt = 0;
+  const WALL_BOUNCE_SFX_COOLDOWN_MS = 500;
+  let _startedAsMaxAngry = false;
+  let _openingMaxAngryBgmActive = false;
 
   const boundaryToggle = document.getElementById('boundary-toggle');
   boundaryToggle.addEventListener('change', () => {
@@ -1167,6 +1208,363 @@
   const moodDebugReadout = document.getElementById('mood-debug-readout');
   const startButton = document.getElementById('soccer-start-button');
   const exitToStartButton = document.getElementById('exit-to-start-button');
+  const bgmVolumeInput = document.getElementById('game-bgm-volume');
+  const bgmVolumeValue = document.getElementById('game-bgm-volume-value');
+  const sfxVolumeInput = document.getElementById('game-sfx-volume');
+  const sfxVolumeValue = document.getElementById('game-sfx-volume-value');
+  const soccerGameAudio = (() => {
+    const gameSystem = window.NekoGameSystem || {};
+    const audioConfig = gameSystem.soccer?.audioConfig || {};
+    const config = {
+      audioMix: {},
+      bgm: {
+        startMenu: [],
+        inGame: { variants: [] },
+        difficulty: {},
+        result: {},
+        mood: {},
+      },
+      loopedBgm: {},
+      sfx: {},
+      ...audioConfig,
+    };
+    const audio = typeof gameSystem.GameAudioSystem === 'function'
+      ? new gameSystem.GameAudioSystem({
+          config: {
+            audioMix: config.audioMix,
+            bgm: config.bgm,
+            loopedBgm: config.loopedBgm,
+            sfx: config.sfx,
+          },
+          bgmStorageKey: 'neko.soccerGameAudio.bgmVolume',
+          sfxStorageKey: 'neko.soccerGameAudio.sfxVolume',
+          fadeMs: 900,
+          onBgmError: (event, context) => {
+            console.warn('[SoccerAudio] BGM 播放失败，已尝试跳过:', describeAudioFailure(event, context));
+          },
+          onSfxError: (event, context) => {
+            console.warn('[SoccerAudio] SFX 播放失败:', describeAudioFailure(event, context));
+          },
+        })
+      : null;
+    let currentKey = '';
+    let preloadRunId = 0;
+    let selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
+
+    function describeAudioFailure(event, context) {
+      const audio = context?.audio || null;
+      const mediaError = audio?.error || null;
+      return {
+        src: context?.track?.src || audio?.currentSrc || audio?.src || '',
+        code: mediaError?.code || '',
+        message: mediaError?.message || event?.message || event?.type || String(event || ''),
+        networkState: audio?.networkState,
+        readyState: audio?.readyState,
+      };
+    }
+
+    function isLoopedBgmConfig(value) {
+      return value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        typeof value.loop === 'string';
+    }
+
+    function preloadBgmTree(value) {
+      if (!audio || !value) return;
+      if (isLoopedBgmConfig(value)) {
+        audio.preloadLoopedBgm(value);
+        return;
+      }
+      if (typeof value === 'string' || Array.isArray(value) || value.src) {
+        audio.preloadBgm(value);
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach(preloadBgmTree);
+      }
+    }
+
+    function preloadSfxTree(value) {
+      if (!audio || !value) return;
+      if (typeof value === 'string' || Array.isArray(value) || value.src) {
+        audio.preloadSfx(value);
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach(preloadSfxTree);
+      }
+    }
+
+    // 足球游戏内音频全部预载，减少第一次切换到对应 BGM / SFX 时的可感知停顿。
+    // 注意：HTMLAudio 预载不能保证采样级无缝，只能降低网络读取和首次解码等待。
+    function schedulePreloadJobs(jobs) {
+      const runId = ++preloadRunId;
+      const schedule = (callback) => {
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(callback, { timeout: 500 });
+          return;
+        }
+        window.setTimeout(callback, 120);
+      };
+      const runNext = (index) => {
+        if (runId !== preloadRunId || index >= jobs.length) return;
+        jobs[index]();
+        schedule(() => runNext(index + 1));
+      };
+      runNext(0);
+    }
+
+    function preloadAllAudio() {
+      schedulePreloadJobs([
+        () => preloadBgmTree(config.bgm.startMenu),
+        () => preloadBgmTree(selectedInGameBgm),
+        () => preloadBgmTree(config.bgm.difficulty),
+        () => preloadBgmTree(config.bgm.mood),
+        () => preloadBgmTree(config.bgm.result),
+        () => preloadBgmTree(config.loopedBgm),
+        () => preloadSfxTree(config.sfx),
+      ]);
+    }
+
+    function pickPageInGameBgm(inGameConfig) {
+      const variants = Array.isArray(inGameConfig?.variants) ? inGameConfig.variants : [];
+      if (!variants.length) return isLoopedBgmConfig(inGameConfig) ? inGameConfig : null;
+      const index = Math.floor(Math.random() * variants.length);
+      return variants[Math.min(index, variants.length - 1)];
+    }
+
+    preloadAllAudio();
+
+    function resolvePlaylist() {
+      if (!_llm.gameStarted) {
+        return { key: 'startMenu', type: 'bgm', playlist: config.bgm.startMenu };
+      }
+
+      const moodPlaylist = config.bgm.mood?.[moodKey];
+      const difficultyName = DIFFICULTY[difficultyIdx]?.name;
+      const isMaxAngry = moodKey === 'angry' && difficultyName === 'max';
+      if (!isMaxAngry) {
+        // 开场 max + angry 的 plus BGM 只允许覆盖“开场后连续保持 max+angry”的阶段。
+        // 一旦玩家/LLM 改过难度或心情导致离开该组合，后续再回到 max+angry 应使用普通 max BGM。
+        _openingMaxAngryBgmActive = false;
+      }
+      if (
+        isMaxAngry &&
+        _openingMaxAngryBgmActive &&
+        moodPlaylist?.openingMax?.loop
+      ) {
+        return { key: 'mood:angry:opening-max', type: 'loopedBgm', config: moodPlaylist.openingMax };
+      }
+      if (
+        isMaxAngry &&
+        moodPlaylist?.max?.loop
+      ) {
+        return { key: 'mood:angry:max', type: 'loopedBgm', config: moodPlaylist.max };
+      }
+      if (
+        difficultyName === 'lv4' &&
+        moodKey !== 'angry' &&
+        moodKey !== 'sad' &&
+        config.bgm.difficulty?.lv4NonAngry?.loop
+      ) {
+        return { key: 'difficulty:lv4:non-angry', type: 'loopedBgm', config: config.bgm.difficulty.lv4NonAngry };
+      }
+
+      // 正常比赛 BGM：没有命中特殊心情 / 难度 BGM 时统一回到这里。
+      // 例如打破 max + angry 组合后，下一次 sync 会切换回 inGame。
+      if (selectedInGameBgm?.loop) {
+        const selectedId = selectedInGameBgm.id || 'selected';
+        return { key: `inGame:${selectedId}`, type: 'loopedBgm', config: selectedInGameBgm };
+      }
+      return { key: 'inGame', type: 'bgm', playlist: [] };
+    }
+
+    function hasPlayableBgmTarget(type, playlist, loopedConfig) {
+      if (type === 'loopedBgm') return Boolean(loopedConfig?.loop);
+      return Boolean(Array.isArray(playlist) ? playlist.length : playlist);
+    }
+
+    function isCurrentBgmTarget(type, playlist, loopedConfig) {
+      if (!hasPlayableBgmTarget(type, playlist, loopedConfig)) return true;
+      return type === 'loopedBgm'
+        ? audio.isCurrentBgm(loopedConfig)
+        : audio.isCurrentBgm(playlist);
+    }
+
+    function sync(reason = 'sync') {
+      if (!audio) return;
+      const { key: nextKey, type, playlist, config: loopedConfig } = resolvePlaylist();
+      if (nextKey === currentKey && isCurrentBgmTarget(type, playlist, loopedConfig)) return;
+      currentKey = nextKey;
+      if (type === 'loopedBgm') {
+        console.log(`[SoccerAudio] 切换循环 BGM=${nextKey} reason=${reason}`);
+        void audio.playLoopedBgm(loopedConfig, { id: `soccer:${nextKey}` });
+        return;
+      }
+      console.log(`[SoccerAudio] 切换 BGM 歌单=${nextKey} reason=${reason} tracks=${playlist.length}`);
+      void audio.playBgm(playlist, { id: `soccer:${nextKey}` });
+    }
+
+    function setConfig(nextConfig = {}) {
+      if (nextConfig.bgm && typeof nextConfig.bgm === 'object') {
+        const nextMood = nextConfig.bgm.mood;
+        const currentMood = config.bgm.mood || {};
+        Object.assign(config.bgm, nextConfig.bgm);
+        if (nextMood && typeof nextMood === 'object') {
+          config.bgm.mood = { ...currentMood, ...nextMood };
+        }
+        selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
+      }
+      if (nextConfig.sfx && typeof nextConfig.sfx === 'object') {
+        Object.assign(config.sfx, nextConfig.sfx);
+      }
+      if (nextConfig.audioMix && typeof nextConfig.audioMix === 'object') {
+        config.audioMix = {
+          ...config.audioMix,
+          ...nextConfig.audioMix,
+          bgm: { ...(config.audioMix?.bgm || {}), ...(nextConfig.audioMix.bgm || {}) },
+          sfx: { ...(config.audioMix?.sfx || {}), ...(nextConfig.audioMix.sfx || {}) },
+        };
+      }
+      if (nextConfig.loopedBgm && typeof nextConfig.loopedBgm === 'object') {
+        Object.assign(config.loopedBgm, nextConfig.loopedBgm);
+      }
+      audio?.configure({ audioMix: config.audioMix, bgm: config.bgm, loopedBgm: config.loopedBgm, sfx: config.sfx });
+      preloadAllAudio();
+      currentKey = '';
+      sync('set-config');
+    }
+
+    function setBgmVolume(value) {
+      return audio ? audio.setBgmVolume(value) : 0;
+    }
+
+    function setSfxVolume(value) {
+      return audio ? audio.setSfxVolume(value) : 0;
+    }
+
+    function playSfx(keyOrAudio, options = {}) {
+      return audio ? audio.playSfx(keyOrAudio, options) : Promise.resolve(false);
+    }
+
+    function playBgm(keyOrPlaylist, options = {}) {
+      return audio ? audio.playBgm(keyOrPlaylist, options) : Promise.resolve(false);
+    }
+
+    function waitForBgmEnd(options = {}) {
+      return audio ? audio.waitForBgmEnd(options) : Promise.resolve(false);
+    }
+
+    function playLoopedBgm(keyOrConfig, options = {}) {
+      return audio ? audio.playLoopedBgm(keyOrConfig, options) : Promise.resolve(false);
+    }
+
+    function stopLoopedBgm(options = {}) {
+      audio?.stopLoopedBgm(options);
+    }
+
+    function finishLoopedBgm() {
+      return audio ? audio.finishLoopedBgm() : Promise.resolve(false);
+    }
+
+    function getBgmVolume() {
+      return audio ? audio.getBgmVolume() : 0;
+    }
+
+    function getCurrentBgmSrc() {
+      return audio ? audio.getCurrentBgmSrc() : '';
+    }
+
+    function isCurrentBgm(keyOrConfig) {
+      return audio ? audio.isCurrentBgm(keyOrConfig) : false;
+    }
+
+    function getSfxVolume() {
+      return audio ? audio.getSfxVolume() : 0;
+    }
+
+    function unlock() {
+      return audio ? audio.unlock() : Promise.resolve(false);
+    }
+
+    function stop() {
+      currentKey = '';
+      audio?.stopBgm();
+    }
+
+    function destroy() {
+      currentKey = '';
+      audio?.destroy();
+    }
+
+    return {
+      audio,
+      config,
+      sync,
+      setConfig,
+      playBgm,
+      waitForBgmEnd,
+      playSfx,
+      playLoopedBgm,
+      stopLoopedBgm,
+      finishLoopedBgm,
+      setBgmVolume,
+      setSfxVolume,
+      getBgmVolume,
+      getCurrentBgmSrc,
+      isCurrentBgm,
+      getSfxVolume,
+      unlock,
+      stop,
+      destroy,
+    };
+  })();
+  {
+    const gameSystem = window.NekoGameSystem || (window.NekoGameSystem = {});
+    gameSystem.soccer = gameSystem.soccer || {};
+    gameSystem.soccer.audio = soccerGameAudio;
+  }
+
+  // Chrome 等浏览器通常要求点击、按键、触摸这类真实用户激活后才能播放带声音音频；
+  // 鼠标移动一般不算用户激活。这里在首次激活时补一次 unlock，让之前被自动播放策略
+  // 拒绝的菜单 / 游戏 BGM 有机会恢复。
+  function unlockSoccerAudioFromUserActivation() {
+    void soccerGameAudio.unlock();
+  }
+  window.addEventListener('pointerdown', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+  window.addEventListener('keydown', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+  window.addEventListener('touchstart', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+
+  function _formatVolumePercent(value) {
+    return `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
+  }
+
+  function _syncGameAudioVolumeControls() {
+    const bgm = soccerGameAudio.getBgmVolume();
+    const sfx = soccerGameAudio.getSfxVolume();
+    if (bgmVolumeInput) {
+      bgmVolumeInput.disabled = !soccerGameAudio.audio;
+      bgmVolumeInput.value = String(Math.round(bgm * 100));
+    }
+    if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(bgm);
+    if (sfxVolumeInput) {
+      sfxVolumeInput.disabled = !soccerGameAudio.audio;
+      sfxVolumeInput.value = String(Math.round(sfx * 100));
+    }
+    if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(sfx);
+  }
+
+  bgmVolumeInput?.addEventListener('input', () => {
+    const volume = soccerGameAudio.setBgmVolume(Number(bgmVolumeInput.value) / 100);
+    if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(volume);
+  });
+  sfxVolumeInput?.addEventListener('input', () => {
+    const volume = soccerGameAudio.setSfxVolume(Number(sfxVolumeInput.value) / 100);
+    if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(volume);
+  });
+  _syncGameAudioVolumeControls();
+
   const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
     window.localStorage?.getItem('soccerDebugStt') === '1';
   if (debugSttVisible && voiceControls) {
@@ -1263,7 +1661,15 @@
   window.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', e => {
     if (!isGameRuntimeReady()) return;
+    if (isGameUiTarget(e.target)) return;
     if (e.key === 'r' || e.key === 'R') resetPositions();
+    // 难度快捷键：u=max，i=lv2，o=lv3，p=lv4。
+    const difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[e.key.toLowerCase()];
+    if (difficultyHotkey) {
+      e.preventDefault();
+      setDifficulty(difficultyHotkey, 'difficulty-hotkey');
+      return;
+    }
     // 1-6 切换 AI 心情（debug）
     const idx = Number(e.key) - 1;
     if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx], { manual: true });
@@ -1291,6 +1697,7 @@
     playerKickWallBounceForStartle = false;
     logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
     markBallTouched();
+    void soccerGameAudio.playSfx('ball.kick');
     emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
     // AI 把球从玩家附近踢走 → AI 抢到了；玩家把球从 AI 附近踢走 → AI 被抢
     if (oppNearBall) triggerScene(isPlayer ? 'stolen' : 'steal');
@@ -1437,7 +1844,14 @@
       if (b.x < r)     { b.x = r;     b.vx = -b.vx * CFG.wallRestitution; bouncedOffWall = true; }
       if (b.x > W - r) { b.x = W - r; b.vx = -b.vx * CFG.wallRestitution; bouncedOffWall = true; }
     }
-    if (bouncedOffWall) markPlayerKickWallBounceForStartle();
+    if (bouncedOffWall) {
+      const now = performance.now();
+      if (now - _lastWallBounceSfxAt >= WALL_BOUNCE_SFX_COOLDOWN_MS) {
+        _lastWallBounceSfxAt = now;
+        void soccerGameAudio.playSfx('ball.kick');
+      }
+      markPlayerKickWallBounceForStartle();
+    }
   }
 
   // 球"幽灵"时间：大于 0 时球临时穿透所有角色（unstick 用，让球能从死角飞出去）
@@ -1484,6 +1898,7 @@
       emitEvent(kind, { side: 'ai', lastTouch: lastTouchSide });
       resetPositions(+1);
       state.round++;
+      soccerGameAudio.sync('goal-ai');
       if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
     if (b.x + r > W - CFG.goalWidth && b.y > y1 && b.y < y2) {
@@ -1496,6 +1911,7 @@
       emitEvent(kind, { side: 'player', lastTouch: lastTouchSide });
       resetPositions(-1);
       state.round++;
+      soccerGameAudio.sync('goal-player');
       if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
   }
@@ -1506,7 +1922,7 @@
   // 兜底难度统一钉到 lv2：原本的 lv2/lv3 random 让玩家受到的初始压力抖动 1 档，
   // pre-game 端 LLM 又被 prompt 强制建议 neutral_play 选 lv2 → 兜底也对齐 lv2，
   // 让 fallback 路径与 prompt 引导走同一档，避免"LLM 出 lv2 / 兜底出 lv3"的体感
-  // 差异。lv3 / lv4 仍可由局内自动平衡、balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
+  // 差异。lv3 / lv4 仍可由 balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
@@ -1517,6 +1933,12 @@
   let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
+  }
+  function setDifficulty(name, opts = {}) {
+    const normalized = typeof opts === 'string'
+      ? { source: opts, reason: opts }
+      : (opts.source ? opts : { ...opts, source: 'manual' });
+    return setDifficultyInternal(name, normalized);
   }
 
   function setDifficultyInternal(name, opts = {}) {
@@ -1529,6 +1951,7 @@
     if (opts.source) {
       console.log(`[SoccerDifficulty] ${opts.source} | ${before} -> ${name} ${opts.reason || ''}`.trim());
     }
+    soccerGameAudio.sync(opts.reason || opts.source || 'difficulty-changed');
     return true;
   }
 
@@ -1540,7 +1963,14 @@
     return 'lv2';
   }
 
+  const SCORE_DIFF_AUTO_BALANCE_ENABLED = false;
+
   function rebalanceDifficultyForScore(reason = 'score') {
+    // 已废弃的按比分差直接改难度逻辑。
+    // 这段只作为历史逻辑和未来 fallback 入口保留；默认关闭。
+    // 正常难度调整应走开局上下文、LLM control 或后续统一难度管理，而不是在前端按固定比分差强制覆盖。
+    if (!SCORE_DIFF_AUTO_BALANCE_ENABLED) return false;
+
     const scoreDiff = Number(state.score.ai || 0) - Number(state.score.player || 0);
     const target = targetDifficultyForScoreDiff(scoreDiff);
     return setDifficultyInternal(target, {
@@ -2340,6 +2770,7 @@
     if (!changed) return false;
     triggerScene('mood-' + name);
     emitEvent('mood-changed', { mood: name });
+    soccerGameAudio.sync('mood-changed');
     return true;
   };
 
@@ -2348,6 +2779,7 @@
     __cycleDiffBase();
     triggerScene('diff-' + DIFFICULTY[difficultyIdx].name);
     emitEvent('difficulty-changed', { difficulty: DIFFICULTY[difficultyIdx].name });
+    soccerGameAudio.sync('difficulty-changed');
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2860,6 +3292,7 @@
       lastFreezeKind: null,
     });
     SoccerDemo.clearBubble();
+    soccerGameAudio.sync('reset-start-screen');
   }
 
   function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
@@ -2880,6 +3313,8 @@
     _llm.gameStarted = false;
     _llm.gameStartedAt = 0;
     _llm.gameStartedAtEpochMs = 0;
+    _startedAsMaxAngry = false;
+    _openingMaxAngryBgmActive = false;
     _llm.gameMemoryTailCount = null;
     _llm.soccerGameMemoryEnabled = _isGameMemoryEnabled();
     _llm.lastVoiceFailure = null;
@@ -4339,6 +4774,15 @@
     _llm.gameStarted = true;
     _llm.gameStartedAt = performance.now();
     _llm.gameStartedAtEpochMs = Date.now();
+    const openingDifficultyName = DIFFICULTY[difficultyIdx]?.name || '';
+    _startedAsMaxAngry = openingDifficultyName === 'max' && moodKey === 'angry';
+    _openingMaxAngryBgmActive = _startedAsMaxAngry;
+    const openingBgmReason = openingDifficultyName === 'max' && moodKey === 'angry'
+      ? 'start-game-max-angry'
+      : 'start-game';
+    console.log(`[SoccerAudio] 开局 BGM 判定 mood=${moodKey} difficulty=${openingDifficultyName} reason=${openingBgmReason}`);
+    void soccerGameAudio.unlock();
+    soccerGameAudio.sync(openingBgmReason);
     void _sendGameRouteHeartbeat(true);
     _deliverPendingOpeningLine();
   }
@@ -4351,6 +4795,10 @@
   // localizer。各元素的 ``data-i18n="soccer.…"`` 已就位，本块整体删除。
 
   let _manualEndInFlight = false;
+  function _waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async function _endGameAndShowClosePrompt() {
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
@@ -4363,12 +4811,36 @@
       const v = window.t(fullKey);
       return (v && v !== fullKey) ? v : fallback;
     };
+    let closeDelayMs = 600;
     try {
       window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
         reason: 'manual_user_exit',
         postgameProactive: false,
       });
+      const playerWon = Number(state.score.player || 0) > Number(state.score.ai || 0);
+      const playerWinBgm = soccerGameAudio.config.bgm.result?.playerWin;
+      const hasPlayerWinBgm = Array.isArray(playerWinBgm) ? playerWinBgm.length > 0 : Boolean(playerWinBgm);
+      if (playerWon && hasPlayerWinBgm) {
+        const started = await soccerGameAudio.playBgm(playerWinBgm, {
+          id: 'soccer:result:player-win',
+          repeat: false,
+          fadeMs: 250,
+        });
+        // 胜利结算 BGM 按 max(2.6 秒, BGM 播放完成) 后再返回。
+        // timeoutMs 只是异常兜底，避免浏览器没有 fired ended 时永久卡在退出流程。
+        if (started) {
+          await Promise.all([
+            _waitMs(2600),
+            soccerGameAudio.waitForBgmEnd({ timeoutMs: 120000 }),
+          ]);
+          closeDelayMs = 0;
+        } else {
+          closeDelayMs = 2600;
+        }
+      } else {
+        soccerGameAudio.stop();
+      }
     } finally {
       window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
@@ -4385,7 +4857,7 @@
             window.location.assign('/');
           }
         }, 150);
-      }, 600);
+      }, closeDelayMs);
     }
   }
 
@@ -4526,8 +4998,14 @@
     _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
   }
 
-  window.addEventListener('pagehide', () => _endGameLLMSession(true));
-  window.addEventListener('beforeunload', () => _endGameLLMSession(true));
+  window.addEventListener('pagehide', () => {
+    soccerGameAudio.destroy();
+    _endGameLLMSession(true);
+  });
+  window.addEventListener('beforeunload', () => {
+    soccerGameAudio.destroy();
+    _endGameLLMSession(true);
+  });
 
   let lastT = performance.now();
   function loop(t) {
