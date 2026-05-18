@@ -1874,8 +1874,20 @@ async def _run_path_b(name: str, state: dict) -> None:
         logger.warning(f"[PathB] {name}: 读取窗口失败: {e}")
         return
     if not rows:
-        # 窗口内无 msg（A 处理过但都是空白？少见但可能）。推 cursor 跳过。
-        state['last_b_check_ts'] = last_a_msg_ts
+        # `aretrieve_original_by_timeframe` 在 SQL exception / engine init 失败
+        # / 维护态等情况下都 swallow + 返 []（见 timeindex.py 实现），从 caller
+        # 端无法区分"真空窗口"vs"transient 读失败"。保守起见 cursor 不推：
+        # - 真空窗口：A 刚成功处理了同段范围，B 这里几乎不可能真空（除非
+        #   A 的 SQL 看到 row 但 B 的 SQL 同段读不到——意味着 SQL 层异常）。
+        #   下次 B trigger 再 query 一次 0 rows 也是常数代价（SQLite 空范围
+        #   scan 极快）。
+        # - Transient 失败：保留 cursor 让下次 trigger 重试该窗口，避免把整段
+        #   [last_b, last_a_msg_ts] 永久 skip（Codex P1 round-5 on PR #1408）。
+        logger.debug(
+            f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
+            f"{last_a_msg_ts.isoformat(timespec='seconds')} 取回 0 rows "
+            f"(可能 SQL transient 失败 swallow 成 []), 保留 cursor 下次 trigger 复查"
+        )
         return
 
     # 解析 SQL 实际取到的最后一行 ts —— 后续所有 cursor 推进点都用这个值，

@@ -423,25 +423,39 @@ async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_path_b_window_empty_still_advances_cursor():
-    """B 窗口内无 msg（A 处理过但都是 system msg 之类）时，cursor 也要推进。
-    否则下次 B trigger 又会扫同窗口（永远空跑）。"""
+async def test_path_b_empty_rows_preserves_cursor_for_retry():
+    """Regression (Codex P1 round-5 on PR #1408)：
+    `aretrieve_original_by_timeframe` 在 SQL exception / engine init 失败 /
+    维护态都 swallow + 返 []，从 caller 端无法区分"真空窗口"vs"transient
+    读失败"。如果在 rows 空时把 cursor 推到 last_a_msg_ts，整段 [last_b,
+    last_a_msg_ts] 会在 SQL transient 失败下被永久 skip → path B 静默丢
+    fact。保守做法：rows 空时 cursor 不推，下次 trigger 重试同窗口。
+
+    代价：真正的空窗口下次 B trigger 还会再 query 一次空（SQLite 空范围
+    scan 极快，常数代价）；A 推进 last_a_msg_ts 后窗口范围会增长但被
+    MAX_AI_AWARE_WINDOW_MSGS LIMIT 兜底。
+    """
     from app import memory_server
 
     last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    original_last_b = last_a_msg_ts - timedelta(minutes=20)
     state = {
         'last_a_msg_ts': last_a_msg_ts,
-        'last_b_check_ts': last_a_msg_ts - timedelta(minutes=20),
+        'last_b_check_ts': original_last_b,
     }
 
     fake_time_manager = MagicMock()
-    # 窗口完全空
+    # 模拟 SQL transient 失败（time_manager swallow 返 []，跟真空窗口同形态）
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
 
     with patch.object(memory_server, 'time_manager', fake_time_manager):
         await memory_server._run_path_b('悠怡', state)
 
-    assert state['last_b_check_ts'] == last_a_msg_ts
+    # 关键契约：cursor 必须保持原值，下次 B trigger 重试该窗口
+    assert state['last_b_check_ts'] == original_last_b, (
+        f"rows 空时 cursor 必须保留原值 {original_last_b} (transient SQL 失败保护)，"
+        f"实际推到 {state['last_b_check_ts']}"
+    )
 
 
 @pytest.mark.unit
