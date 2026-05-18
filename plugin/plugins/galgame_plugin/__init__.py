@@ -25,6 +25,7 @@ from plugin.sdk.plugin import (
     tr,
 )
 
+from .character_profile import CharacterProfileManager
 from .game_llm_agent import GameLLMAgent
 from .host_agent_adapter import HostAgentAdapter
 from .llm_gateway import LLMGateway
@@ -880,6 +881,19 @@ class GalgamePlugin(NekoPluginBase):
         self._ocr_capture_profile_last_rollback_reason = ""
         self._state_dirty = True
         self._cached_snapshot: dict[str, Any] | None = None
+        self._character_profile_manager: CharacterProfileManager | None = None
+        # host-play-mode plan step 19: query entries + rate limit windows.
+        # Each entry id maps to a deque of recent timestamps; entries trim past
+        # the 60-second window before each call.
+        self._story_so_far: str = ""
+        self._story_last_updated_seq: int = 0
+        self._push_history: deque[dict[str, Any]] = deque(maxlen=64)
+        self._query_rate_limits: dict[str, deque[float]] = {
+            "galgame_get_recent_lines": deque(maxlen=2),
+            "galgame_get_scene_context": deque(maxlen=3),
+            "galgame_get_story_so_far": deque(maxlen=1),
+            "galgame_get_push_history": deque(maxlen=10),
+        }
 
     def _not_configured_message(self) -> str:
         return self.i18n.t(
@@ -2875,6 +2889,69 @@ class GalgamePlugin(NekoPluginBase):
             self._cached_snapshot = None
 
         self._apply_config_overrides_from_store()
+
+    def _get_character_profile_manager(self) -> CharacterProfileManager:
+        if self._character_profile_manager is None:
+            self._character_profile_manager = CharacterProfileManager(
+                data_dir=Path(__file__).parent / "character_data",
+                logger=self.logger,
+            )
+        return self._character_profile_manager
+
+    def _activate_character_profiles(self, game_id: str) -> dict[str, Any]:
+        """Lazy-load preset+user profiles for ``game_id`` into shared state.
+
+        Initializes runtime overlay entries for any newly seen characters from
+        the preset baseline (so first push has emotion / arc data even before
+        the first scene-switch LLM update). Persists to the plugin store.
+        """
+        normalized = (game_id or "").strip()
+        manager = self._get_character_profile_manager()
+        load = manager.load_game_profiles(normalized)
+        profiles = load.get("profiles") or {}
+        version = str(load.get("version") or "")
+        with self._state_lock:
+            self._state.character_profiles = json_copy(profiles)
+            self._state.character_profile_version = version
+            runtime = dict(self._state.character_runtime_state or {})
+            for name, profile in profiles.items():
+                if name not in runtime:
+                    runtime[name] = manager.init_runtime_state_from_profile(
+                        name, profile
+                    )
+            self._state.character_runtime_state = runtime
+            self._state_dirty = True
+            self._cached_snapshot = None
+        try:
+            self._persist.persist_config_override(
+                STORE_CHARACTER_PROFILES, json_copy(profiles)
+            )
+            self._persist.persist_config_override(
+                STORE_CHARACTER_PROFILE_VERSION, version
+            )
+            self._persist.persist_config_override(
+                STORE_CHARACTER_RUNTIME_STATE,
+                json_copy(self._state.character_runtime_state),
+            )
+        except Exception:  # noqa: BLE001 — persistence failure must not crash the call
+            self.logger.warning(
+                "failed to persist character profile activation for %r",
+                normalized,
+                exc_info=True,
+            )
+        if load.get("errors"):
+            self.logger.warning(
+                "character profile load reported errors for %r: %s",
+                normalized,
+                "; ".join(load["errors"]),
+            )
+        if load.get("warnings"):
+            self.logger.info(
+                "character profile load warnings for %r: %s",
+                normalized,
+                "; ".join(load["warnings"]),
+            )
+        return load
 
     def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
         if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
@@ -6641,6 +6718,488 @@ class GalgamePlugin(NekoPluginBase):
                 "result": result_text,
                 "degraded": False,
                 "diagnostic": diagnostic,
+            }
+        )
+
+
+    # ------------------------------------------------------------------
+    # Query / debug entries (galgame-host-play-mode plan, step 19 + G4)
+    # ------------------------------------------------------------------
+
+    def _check_query_rate_limit(
+        self, entry_id: str, *, window_seconds: float = 60.0
+    ) -> dict[str, Any] | None:
+        """Return a throttle payload when ``entry_id`` exceeds its budget; else
+        record the current call and return ``None``.
+        """
+        bucket = self._query_rate_limits.get(entry_id)
+        if bucket is None:
+            return None
+        now = time.monotonic()
+        cutoff = now - max(1.0, float(window_seconds))
+        # Drop expired timestamps from the head; deque has no slice removal so
+        # we filter and rebuild in place.
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= bucket.maxlen:
+            retry_after = max(0.0, bucket[0] + window_seconds - now)
+            return {
+                "throttled": True,
+                "retry_after_seconds": round(retry_after, 2),
+                "entry": entry_id,
+            }
+        bucket.append(now)
+        return None
+
+    def _layer1_scene_summaries(self) -> list[dict[str, Any]]:
+        """Best-effort access to Layer 1 scene summaries (existing scene_memory)."""
+        agent = self._game_agent
+        if agent is None:
+            return []
+        tracker = getattr(agent, "_scene_tracker", None)
+        if tracker is None:
+            return []
+        scene_memory = getattr(tracker, "scene_memory", None)
+        if not isinstance(scene_memory, list):
+            return []
+        return [dict(entry) for entry in scene_memory if isinstance(entry, dict)]
+
+    @plugin_entry(
+        id="galgame_get_scene_context",
+        name=tr(
+            "entries.galgame_get_scene_context.name",
+            default="查询场景上下文",
+        ),
+        description=tr(
+            "entries.galgame_get_scene_context.description",
+            default="获取当前或指定场景的完整上下文摘要 + 关键台词。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scene_id": {"type": "string", "default": ""},
+            },
+        },
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_scene_context(
+        self,
+        scene_id: str = "",
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_scene_context")
+        if throttled is not None:
+            return Ok(throttled)
+        scenes = self._layer1_scene_summaries()
+        target = (scene_id or "").strip()
+        entry: dict[str, Any] | None = None
+        if target:
+            for item in reversed(scenes):
+                if str(item.get("scene_id") or "") == target:
+                    entry = item
+                    break
+        elif scenes:
+            entry = scenes[-1]
+        if entry is None:
+            return Ok(
+                {
+                    "scene_id": target,
+                    "found": False,
+                    "summary": "no scene context available",
+                }
+            )
+        return Ok(
+            {
+                "scene_id": str(entry.get("scene_id") or ""),
+                "route_id": str(entry.get("route_id") or ""),
+                "found": True,
+                "summary_text": str(entry.get("summary") or ""),
+                "key_lines": list(entry.get("key_lines") or []),
+                "ts": entry.get("ts") or "",
+                "summary": (
+                    f"scene={entry.get('scene_id') or '-'} "
+                    f"lines={len(entry.get('key_lines') or [])}"
+                ),
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_story_so_far",
+        name=tr(
+            "entries.galgame_get_story_so_far.name",
+            default="查询全局故事线",
+        ),
+        description=tr(
+            "entries.galgame_get_story_so_far.description",
+            default="获取从游戏开始到现在的完整故事线摘要（约 200 tokens）。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_story_so_far(self, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_story_so_far")
+        if throttled is not None:
+            return Ok(throttled)
+        story = (self._story_so_far or "").strip()
+        if not story:
+            return Ok(
+                {
+                    "story_so_far": "故事刚开始。",
+                    "available": False,
+                    "summary": "no story summary yet",
+                }
+            )
+        return Ok(
+            {
+                "story_so_far": story,
+                "available": True,
+                "last_updated_seq": int(self._story_last_updated_seq or 0),
+                "summary": f"story summary ({len(story)} chars)",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_recent_lines",
+        name=tr(
+            "entries.galgame_get_recent_lines.name",
+            default="查询最近台词",
+        ),
+        description=tr(
+            "entries.galgame_get_recent_lines.description",
+            default="获取最近 N 句原始台词内容（上限 20）。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            },
+        },
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_recent_lines(self, n: int = 10, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_recent_lines")
+        if throttled is not None:
+            return Ok(throttled)
+        try:
+            requested = int(n)
+        except (TypeError, ValueError):
+            requested = 10
+        requested = max(1, min(20, requested))
+        with self._state_lock:
+            history = [dict(line) for line in (self._state.history_lines or [])]
+        recent = history[-requested:]
+        return Ok(
+            {
+                "lines": recent,
+                "count": len(recent),
+                "summary": f"{len(recent)} line(s) returned",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_push_history",
+        name=tr(
+            "entries.galgame_get_push_history.name",
+            default="查询推送历史",
+        ),
+        description=tr(
+            "entries.galgame_get_push_history.description",
+            default="返回最近 N 次推送的元数据（push_seq/mode/token/场景/角色），不含台词文本。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            },
+        },
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_push_history(self, limit: int = 10, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_push_history")
+        if throttled is not None:
+            return Ok(throttled)
+        try:
+            requested = int(limit)
+        except (TypeError, ValueError):
+            requested = 10
+        requested = max(1, min(20, requested))
+        history = list(self._push_history)[-requested:]
+        return Ok(
+            {
+                "entries": history,
+                "count": len(history),
+                "summary": f"{len(history)} push record(s) returned",
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Character profile entries (galgame-host-play-mode plan, step 6)
+    # ------------------------------------------------------------------
+
+    @plugin_entry(
+        id="galgame_set_character_mode",
+        name=tr(
+            "entries.galgame_set_character_mode.name",
+            default="设置角色档案模式",
+        ),
+        description=tr(
+            "entries.galgame_set_character_mode.description",
+            default="切换角色档案模式：off 或 fixed（锁定某角色作为猫娘视角）。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["off", "fixed"]},
+                "character_name": {"type": "string", "default": ""},
+            },
+            "required": ["mode"],
+        },
+        llm_result_fields=["summary"],
+    )
+    async def galgame_set_character_mode(
+        self,
+        mode: str,
+        character_name: str = "",
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        mode_normalized = (mode or "").strip().lower()
+        if mode_normalized not in {"off", "fixed"}:
+            return Err(SdkError(f"invalid character mode: {mode!r}"))
+
+        with self._state_lock:
+            bound_game_id = str(self._state.bound_game_id or "")
+            current_profiles = dict(self._state.character_profiles or {})
+
+        if mode_normalized == "fixed":
+            name = (character_name or "").strip()
+            if not name:
+                return Err(SdkError("fixed mode requires character_name"))
+            if not current_profiles:
+                if not bound_game_id:
+                    return Err(
+                        SdkError("no game bound; cannot load character profiles")
+                    )
+                load = self._activate_character_profiles(bound_game_id)
+                current_profiles = dict(load.get("profiles") or {})
+                if not current_profiles:
+                    errors = load.get("errors") or []
+                    return Err(
+                        SdkError(
+                            f"no character profiles available for {bound_game_id}",
+                            details={"errors": list(errors)},
+                        )
+                    )
+            if name not in current_profiles:
+                return Err(SdkError(f"character {name!r} not found in profiles"))
+
+        with self._state_lock:
+            self._state.character_mode = mode_normalized
+            self._state.character_fixed_name = (
+                (character_name or "").strip()
+                if mode_normalized == "fixed"
+                else ""
+            )
+            self._state.character_mode_stale = False
+            self._state_dirty = True
+            self._cached_snapshot = None
+            fixed_name = str(self._state.character_fixed_name or "")
+
+        try:
+            self._persist.persist_config_override(
+                STORE_CHARACTER_MODE, mode_normalized
+            )
+            self._persist.persist_config_override(
+                STORE_CHARACTER_FIXED_NAME, fixed_name
+            )
+        except Exception:  # noqa: BLE001
+            self.logger.warning(
+                "failed to persist character mode switch", exc_info=True
+            )
+
+        return Ok(
+            {
+                "mode": mode_normalized,
+                "character_name": fixed_name,
+                "summary": (
+                    f"character_mode={mode_normalized} character={fixed_name or '-'}"
+                ),
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_character_list",
+        name=tr(
+            "entries.galgame_get_character_list.name",
+            default="查询当前游戏角色列表",
+        ),
+        description=tr(
+            "entries.galgame_get_character_list.description",
+            default="返回当前绑定游戏的可用角色名称和一句话身份描述。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        timeout=10.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_character_list(self, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        with self._state_lock:
+            bound_game_id = str(self._state.bound_game_id or "")
+            profiles = dict(self._state.character_profiles or {})
+        if not profiles and bound_game_id:
+            load = self._activate_character_profiles(bound_game_id)
+            profiles = dict(load.get("profiles") or {})
+        items = [
+            {
+                "name": name,
+                "identity": str((profile or {}).get("identity") or ""),
+            }
+            for name, profile in profiles.items()
+        ]
+        return Ok(
+            {
+                "game_id": bound_game_id,
+                "characters": items,
+                "summary": f"{len(items)} character(s) available",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_character_profile",
+        name=tr(
+            "entries.galgame_get_character_profile.name",
+            default="查询角色完整档案",
+        ),
+        description=tr(
+            "entries.galgame_get_character_profile.description",
+            default="返回指定角色的预置档案 + 运行时状态。off 模式下拒绝。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+        timeout=10.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_character_profile(self, name: str, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        with self._state_lock:
+            mode = str(self._state.character_mode or "off")
+            profiles = dict(self._state.character_profiles or {})
+            runtime = dict(self._state.character_runtime_state or {})
+            bound_game_id = str(self._state.bound_game_id or "")
+        if mode == "off":
+            return Ok(
+                {
+                    "disabled": True,
+                    "reason": (
+                        "角色档案功能未开启，请先调用 galgame_set_character_mode"
+                        " 切换为 fixed"
+                    ),
+                    "summary": "character_mode=off",
+                }
+            )
+        target = (name or "").strip()
+        if not target:
+            return Err(SdkError("character name required"))
+        if not profiles and bound_game_id:
+            load = self._activate_character_profiles(bound_game_id)
+            profiles = dict(load.get("profiles") or {})
+        profile = profiles.get(target)
+        if not profile:
+            return Err(SdkError(f"character {target!r} not found"))
+        return Ok(
+            {
+                "name": target,
+                "profile": profile,
+                "runtime_state": runtime.get(target, {}),
+                "summary": f"profile for {target}",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_import_character_data",
+        name=tr(
+            "entries.galgame_import_character_data.name",
+            default="导入角色档案 JSON",
+        ),
+        description=tr(
+            "entries.galgame_import_character_data.description",
+            default="从 JSON 文件导入用户自定义角色档案。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "game_id": {"type": "string", "default": ""},
+            },
+            "required": ["file_path"],
+        },
+        timeout=15.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_import_character_data(
+        self,
+        file_path: str,
+        game_id: str = "",
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        target_game = (game_id or "").strip()
+        if not target_game:
+            with self._state_lock:
+                target_game = str(self._state.bound_game_id or "")
+        if not target_game:
+            return Err(
+                SdkError("game_id required (no game currently bound)")
+            )
+        source = (file_path or "").strip()
+        if not source:
+            return Err(SdkError("file_path required"))
+        manager = self._get_character_profile_manager()
+        result = manager.import_user_profiles(target_game, source)
+        if not result.ok:
+            return Err(
+                SdkError(
+                    f"import failed: {'; '.join(result.errors)}",
+                    details={
+                        "target_path": result.target_path,
+                        "errors": list(result.errors),
+                        "warnings": list(result.warnings),
+                    },
+                )
+            )
+        # Reload merged profiles after a successful import.
+        self._activate_character_profiles(target_game)
+        return Ok(
+            {
+                "ok": True,
+                "game_id": target_game,
+                "target_path": result.target_path,
+                "profile_count": result.profile_count,
+                "warnings": list(result.warnings),
+                "summary": (
+                    f"imported {result.profile_count} profile(s) for {target_game}"
+                ),
             }
         )
 
