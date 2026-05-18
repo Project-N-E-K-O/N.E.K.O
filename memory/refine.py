@@ -173,7 +173,14 @@ class MemoryRefineEngine:
         resolved = 0
         failed = 0
         for entity, cluster, cluster_hash in to_process:
-            cluster_failed = False
+            # 只在 ``_resolve_cluster`` 返 False 时 bump refine_attempts
+            # （= LLM 输出空 / parse 失败 / 非 list 等持续性问题，跟 cluster
+            # 内容相关）。raise 路径不 bump（Codex P1）——抓不到的异常来源
+            # 不确定，可能是 ``apply_fn`` 的 manager 端持久化 transient
+            # （cloudsave 维护态 / atomic_write IO / 锁竞争）或 LLM 网络
+            # transient，把这类错算到 cluster 成员的 refine_attempts 上会
+            # 让磁盘 / 锁瞬态错误冤枉具体 entry，触发非必要 dead-letter。
+            llm_decision_failed = False
             try:
                 ok = await self._resolve_cluster(
                     entity, cluster, cluster_hash, apply_fn,
@@ -182,14 +189,14 @@ class MemoryRefineEngine:
                     resolved += 1
                 else:
                     failed += 1
-                    cluster_failed = True
+                    llm_decision_failed = True
             except Exception as e:  # noqa: BLE001 — refine is best-effort
                 failed += 1
-                cluster_failed = True
                 logger.warning(
-                    f"[Refine] {scope_label} cluster {cluster_hash} 异常: {e}"
+                    f"[Refine] {scope_label} cluster {cluster_hash} 异常"
+                    f"（按 transient 不计 refine_attempts）: {e}"
                 )
-            if cluster_failed and failure_fn is not None:
+            if llm_decision_failed and failure_fn is not None:
                 try:
                     await failure_fn(cluster, cluster_hash)
                 except Exception as fe:  # noqa: BLE001 — failure_fn 是兜底，自己再失败也不该挂主路径

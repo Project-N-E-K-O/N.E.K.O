@@ -403,6 +403,59 @@ async def test_refine_pass_failure_fn_invoked_on_resolve_false():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_refine_pass_exception_does_not_invoke_failure_fn():
+    """Codex P1 regression：``_resolve_cluster`` 抛异常时**不**调 failure_fn。
+
+    抛异常的可能源是 apply_fn 持久化 transient（cloudsave 维护态 / atomic
+    write IO / 锁竞争）或 LLM 网络 transient。把这类错算到 cluster 成员的
+    ``refine_attempts`` 上会冤枉具体 entry 触发非必要 dead-letter。只在
+    ``_resolve_cluster`` 明确返 False（LLM/parse 持续性问题）时 bump。
+    """
+    from memory.refine import (
+        MemoryRefineEngine,
+        REFINE_ENTITY_KEY,
+        REFINE_TYPE_KEY,
+    )
+
+    engine = MemoryRefineEngine(MagicMock())
+    fake_member = {
+        'id': 'r_x', 'text': 'x',
+        REFINE_TYPE_KEY: 'reflection',
+        REFINE_ENTITY_KEY: 'master',
+        'last_refine_at': None,
+        'last_refine_cluster_hash': None,
+    }
+    candidates = {'master': [fake_member, dict(fake_member, id='r_y')]}
+
+    engine._service.is_disabled = MagicMock(return_value=False)
+    engine._service.is_available = MagicMock(return_value=True)
+    engine._service.model_id = MagicMock(return_value='mock_model')
+
+    async def _exploding_resolve(*args, **kw):
+        raise RuntimeError("simulated apply_fn IO failure")
+
+    captured_failures: list = []
+    async def _failure_fn(cluster, cluster_hash):
+        captured_failures.append((cluster, cluster_hash))
+
+    with patch.object(engine, '_compute_clusters', return_value=[candidates['master']]), \
+         patch.object(engine, '_resolve_cluster', _exploding_resolve):
+        result = await engine.refine_pass(
+            candidates,
+            apply_fn=AsyncMock(),
+            scope_label='test/scope',
+            failure_fn=_failure_fn,
+        )
+
+    assert result['clusters_failed'] == 1, "exception 仍记 clusters_failed"
+    assert captured_failures == [], (
+        f"exception 不该触发 failure_fn（apply_fn / LLM transient 不算 cluster "
+        f"liveness failure）, 实际触发 {len(captured_failures)} 次"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_persona_abump_refine_attempts_at_threshold_warns():
     """PersonaManager._abump_refine_attempts: 第 N 次 bump 命中阈值 → WARN log。"""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
