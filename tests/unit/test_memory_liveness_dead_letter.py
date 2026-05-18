@@ -23,8 +23,6 @@ progress marker（cursor / 队头 / cluster_hash / op state）放弃毒输入，
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -534,7 +532,7 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
     path = tmp_path / 'outbox.ndjson'
 
     with patch.object(outbox, '_outbox_path', return_value=str(path)):
-        op_id = outbox.append_pending(name, 'poison_op', {'data': 'bad'})
+        outbox.append_pending(name, 'poison_op', {'data': 'bad'})
 
     # Register a handler that always raises
     async def _poison_handler(_n, _p):
