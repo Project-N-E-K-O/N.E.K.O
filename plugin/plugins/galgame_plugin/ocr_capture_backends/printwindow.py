@@ -1,7 +1,22 @@
 from __future__ import annotations
+
+import ctypes
+import sys
 from typing import Any
-from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_PRINTWINDOW
-from ._helpers import _require_visible_capture_target, _target_window_rect, _crop_window_image, _target_client_rect, _target_window_uses_overlapped_chrome, _target_monitor_work_rects, _target_monitor_work_rect, _target_screen_capture_rect
+
+from ..ocr_runtime_types import (
+    DetectedGameWindow,
+    OcrCaptureProfile,
+    _CAPTURE_BACKEND_PRINTWINDOW,
+)
+from ._helpers import (
+    _crop_window_image,
+    _require_visible_capture_target,
+    _target_content_rect,
+    _target_screen_capture_rect,
+)
+
+
 class PrintWindowCaptureBackend:
     kind = _CAPTURE_BACKEND_PRINTWINDOW
 
@@ -89,5 +104,4 @@ class PrintWindowCaptureBackend:
                 win32gui.DeleteObject(bmp.GetHandle())
             win32gui.ReleaseDC(hwnd, hdc)
         return image
-
 
