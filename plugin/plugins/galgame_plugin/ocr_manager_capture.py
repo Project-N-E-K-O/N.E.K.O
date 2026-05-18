@@ -759,15 +759,6 @@ class CaptureMixin:
                             and len(self._abandoned_capture_workers)
                             >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
                         ):
-                            if executor is not None:
-                                self._abandoned_capture_workers.append(
-                                    (executor, current)
-                                )
-                                executors_to_shutdown.append(executor)
-                            self._capture_executor = None
-                            self._capture_future = None
-                            self._capture_future_started_at = 0.0
-                            self._capture_future_timed_out = False
                             timeout_error = _CaptureTimedOut(
                                 f"previous ocr_reader capture/OCR timed out and is still running after {elapsed:.1f}s; "
                                 "stuck capture worker recovery limit reached"

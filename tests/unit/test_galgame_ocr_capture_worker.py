@@ -230,7 +230,7 @@ def test_timed_out_running_capture_is_abandoned_after_recovery_grace(
         manager._shutdown_capture_worker()
 
 
-def test_timed_out_capture_is_tracked_when_recovery_limit_is_reached(
+def test_timed_out_capture_is_retained_when_recovery_limit_is_reached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -288,7 +288,10 @@ def test_timed_out_capture_is_tracked_when_recovery_limit_is_reached(
             True,
         )
 
-    assert (first_executor, first_future) in manager._abandoned_capture_workers
+    assert manager._abandoned_capture_workers == [(old_executor, old_future)]
+    assert manager._capture_executor is first_executor
+    assert manager._capture_future is first_future
+    assert manager._capture_future_timed_out is True
 
     release_worker.set()
     try:

@@ -1898,14 +1898,14 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
             for warning in result.warnings
         )
         with manager._capture_worker_lock:
-            assert manager._capture_future is None
-            assert manager._capture_executor is None
-            assert manager._capture_future_timed_out is False
+            assert manager._capture_future is current
+            assert manager._capture_executor is current_executor
+            assert manager._capture_future_timed_out is True
             assert manager._abandoned_capture_workers == [
                 (abandoned_executor, abandoned),
-                (current_executor, current),
             ]
 
+        current.set_result(OcrExtractionResult(text="late"))
         retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
         assert backend.calls == 1
