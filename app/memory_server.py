@@ -2016,6 +2016,14 @@ async def _run_path_b(name: str, state: dict) -> None:
             created_at = datetime.fromisoformat(created_at_raw)
         except (ValueError, TypeError):
             continue
+        # 防御：本仓库 `_apersist_new_facts` 写的 `created_at` 都是 naive
+        # datetime.now().isoformat()，但若 import/migration 路径写入了 TZ-aware
+        # 值（如 "...+00:00"），跟 naive 的 last_b 比较会抛 TypeError 让
+        # `_run_path_b` 一直 fail，path B 对该角色永久哑火（Codex P1 round-7
+        # on PR #1408）。比较口径上把 aware 当 naive 处理——绝大多数场景就是
+        # 同一 wall-clock 时间，时区差异不应让 fact 抽取整段挂掉。
+        if created_at.tzinfo is not None:
+            created_at = created_at.replace(tzinfo=None)
         if created_at >= last_b:
             known_pool.append(f)
     known_pool.sort(key=lambda f: -safe_importance(f))

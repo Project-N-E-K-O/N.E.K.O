@@ -1022,6 +1022,65 @@ async def test_path_b_known_pool_preserves_microsecond_precision_at_boundary():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_path_b_known_pool_normalizes_tz_aware_created_at():
+    """Regression (Codex P1 round-7 on PR #1408)：facts.json 里若被 import/
+    migration 写入了 TZ-aware `created_at`（如 "...+00:00"），跟 naive 的
+    last_b 比较会抛 TypeError 让 _run_path_b 永久 fail → path B 对该角色
+    哑火。`_run_path_b` 必须把 aware 转 naive 再比较。
+    """
+    from app import memory_server
+    from datetime import timezone
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=10)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 三条 TZ-aware fact，在窗口内（utcnow 视角）。若实现不 normalize，
+    # `>= last_b` 立即抛 TypeError。
+    tz_aware_facts = [
+        {
+            'id': f'imported_{i}',
+            'text': f'TZ-aware imported fact {i}',
+            'importance': 7,
+            'created_at': (
+                (last_b + timedelta(minutes=1 + i))
+                .replace(tzinfo=timezone.utc)
+                .isoformat()
+            ),
+        }
+        for i in range(3)
+    ]
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_a_msg_ts - timedelta(seconds=1), 's', json.dumps({
+            'type': 'human', 'data': {'content': '占位 user msg'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=tz_aware_facts)
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        # 不该抛 TypeError
+        await memory_server._run_path_b('悠怡', state)
+
+    # Stage-1 被调（说明 created_at 比较没炸）
+    fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
+    captured_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
+    pool_ids = {f['id'] for f in captured_pool}
+    # 3 条 TZ-aware fact（wall-clock 视角在窗口内）都应该进 pool
+    assert len(pool_ids) == 3, (
+        f"TZ-aware fact 应该 normalize 后入 pool，实际 {len(pool_ids)}: {pool_ids}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_skew():
     """Regression (CodeRabbit on PR #1408)：A 的 idle/polling 延迟让"刚扫
     完本 B 窗口"那批 A facts 的 created_at 普遍略晚于 last_a_msg_ts。known
