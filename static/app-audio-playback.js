@@ -407,6 +407,21 @@
         }
     }
 
+    // 与 isAssistantTurnPlaybackDrained 的 4-queue 判断对齐：少查 pendingAudioChunkMetaQueue
+    // 会在 header 到了 blob 还没到的 race 窗口里误判"空"——3 个队列是空的，
+    // 但 meta 还在排队等 blob。filter shouldSkip 是因为上游可能 mark 跳过项。
+    function _hasPendingAudioWork() {
+        var pendingMeta = S.pendingAudioChunkMetaQueue.some(function (item) {
+            return item && !item.shouldSkip;
+        });
+        return (
+            S.scheduledSources.length > 0 ||
+            S.audioBufferQueue.length > 0 ||
+            pendingMeta ||
+            S.incomingAudioBlobQueue.length > 0
+        );
+    }
+
     // 兜底：所有音频队列空了且 isPlaying / assistantSpeechActiveTurnId 还粘着
     // → STUCK_SPEAKING_FALLBACK_MS 后强制走 cancel 路径收尾。
     // 触发点是 source.onended（最后一段音频刚播完，maybeFinalizeAssistantSpeech
@@ -414,13 +429,8 @@
     // 期间如果新音频进来或正常 finalize 走完，会被 clearStuckSpeakingFallback 撤掉。
     function maybeArmStuckSpeakingFallback() {
         if (_stuckSpeakingFallbackTimer) return;
-        var queuesEmpty = (
-            S.scheduledSources.length === 0 &&
-            S.audioBufferQueue.length === 0 &&
-            S.incomingAudioBlobQueue.length === 0
-        );
         var flagsSet = !!(S.isPlaying || S.assistantSpeechActiveTurnId);
-        if (!queuesEmpty || !flagsSet) return;
+        if (_hasPendingAudioWork() || !flagsSet) return;
 
         logAudioLifecycle('stuckSpeakingFallback:armed', {
             isPlaying: S.isPlaying,
@@ -432,15 +442,11 @@
 
         _stuckSpeakingFallbackTimer = window.setTimeout(function () {
             _stuckSpeakingFallbackTimer = 0;
-            var queuesStillEmpty = (
-                S.scheduledSources.length === 0 &&
-                S.audioBufferQueue.length === 0 &&
-                S.incomingAudioBlobQueue.length === 0
-            );
+            var hasPending = _hasPendingAudioWork();
             var flagsStillSet = !!(S.isPlaying || S.assistantSpeechActiveTurnId);
-            if (!queuesStillEmpty || !flagsStillSet) {
+            if (hasPending || !flagsStillSet) {
                 logAudioLifecycle('stuckSpeakingFallback:skip_resolved', {
-                    queuesStillEmpty: queuesStillEmpty,
+                    hasPendingAudioWork: hasPending,
                     flagsStillSet: flagsStillSet
                 });
                 return;
@@ -453,6 +459,7 @@
                 assistantTurnStartedAt: S.assistantTurnStartedAt,
                 scheduledSources: S.scheduledSources.length,
                 audioBufferQueue: S.audioBufferQueue.length,
+                pendingAudioChunkMetaQueue: S.pendingAudioChunkMetaQueue.length,
                 incomingAudioBlobQueue: S.incomingAudioBlobQueue.length
             };
             console.warn('[Audio] sticky speaking flag detected, force-resetting via cancel after ' +
