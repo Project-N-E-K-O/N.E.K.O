@@ -1277,6 +1277,7 @@ class ReflectionEngine:
         ``refine_attempts`` 清回 0；或人工编辑 reflections.json。
         """
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.facts import safe_int_field
         from memory.refine import REFINE_TYPE_KEY
 
         # fact 不计 attempts（fact 是 readonly 信息源，refine 永远不改它）；
@@ -1300,7 +1301,7 @@ class ReflectionEngine:
             for r in reflections:
                 if not isinstance(r, dict) or r.get('id') not in member_rids:
                     continue
-                new_attempts = int(r.get('refine_attempts', 0) or 0) + 1
+                new_attempts = safe_int_field(r, 'refine_attempts') + 1
                 r['refine_attempts'] = new_attempts
                 modified = True
                 if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:

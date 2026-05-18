@@ -611,7 +611,8 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
     op_id = op.get('op_id')
     op_type = op.get('type')
     payload = op.get('payload') or {}
-    prior_attempts = int(op.get('_attempt_count', 0) or 0)
+    from memory.facts import safe_int_field
+    prior_attempts = safe_int_field(op, '_attempt_count')
     handler = _OUTBOX_HANDLERS.get(op_type)
     if handler is None:
         logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
@@ -2600,6 +2601,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
     """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
     skip / 候选不足 → 整 pass no-op。"""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.facts import safe_int_field
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2624,7 +2626,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
             if isinstance(e, dict)
             and not e.get('protected')
             and e.get('id')
-            and int(e.get('refine_attempts', 0) or 0) < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
         ]
         if entries:
             candidates_by_entity[entity] = entries
@@ -2692,6 +2694,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
     层代码兜底）。"""
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.facts import safe_int_field
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2722,7 +2725,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
-            and int(r.get('refine_attempts', 0) or 0) < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
         ]
         entity_facts = [
             annotate_entry(f, type_='fact', entity=entity)

@@ -31,6 +31,7 @@ from config import (
     REFLECTION_RENDER_TOKEN_BUDGET,
 )
 from memory.evidence import evidence_score
+from memory.facts import safe_int_field
 from memory.stop_names import (
     acollect_stop_names,
     collect_stop_names,
@@ -1626,7 +1627,7 @@ class PersonaManager:
             )
             pairs = []
             for i, item in enumerate(corrections):
-                if int(item.get('resolve_attempts', 0) or 0) >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                if safe_int_field(item, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                     continue
                 old_text = item.get('old_text', '')
                 new_text = item.get('new_text', '')
@@ -1874,7 +1875,7 @@ class PersonaManager:
             for c in current:
                 key = c.get('created_at', '')
                 if key in bumped_keys:
-                    new_attempts = int(c.get('resolve_attempts', 0) or 0) + 1
+                    new_attempts = safe_int_field(c, 'resolve_attempts') + 1
                     if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                         dropped += 1
                         logger.warning(
@@ -2236,7 +2237,7 @@ class PersonaManager:
                 for e in section:
                     if not isinstance(e, dict) or e.get('id') not in ids:
                         continue
-                    new_attempts = int(e.get('refine_attempts', 0) or 0) + 1
+                    new_attempts = safe_int_field(e, 'refine_attempts') + 1
                     e['refine_attempts'] = new_attempts
                     modified = True
                     if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:

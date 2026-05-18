@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from memory.embeddings import cosine_similarity
+from memory.facts import safe_int_field
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
     atomic_write_json_async,
@@ -390,7 +391,7 @@ class FactDedupResolver:
         # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
         batch: list[dict] = []
         for it in pending:
-            if int(it.get('resolve_attempts', 0) or 0) >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+            if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                 continue
             batch.append(it)
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
@@ -527,7 +528,7 @@ class FactDedupResolver:
         for it in current:
             key = (it.get('candidate_id'), it.get('existing_id'))
             if key in bumped_keys:
-                new_attempts = int(it.get('resolve_attempts', 0) or 0) + 1
+                new_attempts = safe_int_field(it, 'resolve_attempts') + 1
                 if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                     dropped += 1
                     logger.warning(

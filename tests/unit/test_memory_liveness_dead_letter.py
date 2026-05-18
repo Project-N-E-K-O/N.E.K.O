@@ -351,6 +351,30 @@ async def test_dedup_dead_letter_at_threshold(tmp_path):
 
 
 @pytest.mark.unit
+def test_safe_int_field_handles_dirty_values():
+    """Codex P2 regression：``refine_attempts`` / ``resolve_attempts`` / ``_attempt_count``
+    持久化字段被手改 / migration noise 写成 ``""`` / ``"unknown"`` / list / dict
+    等脏值时，``safe_int_field`` 必须兜底返 default，不让上游 list comprehension
+    挂掉整个 refine pass / resolve loop。
+    """
+    from memory.facts import safe_int_field
+
+    # 合法值原样返回
+    assert safe_int_field({'x': 5}, 'x') == 5
+    assert safe_int_field({'x': '7'}, 'x') == 7
+    assert safe_int_field({'x': 0}, 'x') == 0
+    # 缺失 / None → default
+    assert safe_int_field({}, 'x') == 0
+    assert safe_int_field({'x': None}, 'x') == 0
+    assert safe_int_field({}, 'x', default=3) == 3
+    # 脏值（manual edit / legacy / migration noise）→ default 不挂
+    for bad in ('', 'unknown', 'high', [], {}, [1, 2]):
+        assert safe_int_field({'x': bad}, 'x') == 0, (
+            f"脏值 {bad!r} 必须兜底返 default 0，不能抛 ValueError/TypeError"
+        )
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_refine_pass_failure_fn_invoked_on_resolve_false():
     """refine_pass：_resolve_cluster 返 False 时必须调 failure_fn (Site 4 兜底)。"""
