@@ -597,6 +597,15 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
 
     `sem`：startup replay 路径传入共享 Semaphore 限制 LLM fan-out；日常单次
     spawn 路径传 None 即不限流。
+
+    Liveness 兜底（Site 7）：handler 失败时 append_attempt 一行记录失败。
+    若同 op_id 累计 attempt 数（含本次） ≥ ``MEMORY_LIVENESS_MAX_ATTEMPTS``
+    则 append_done 当 dead-letter 放弃该 op + WARN。否则毒 op（payload 触
+    发 handler 永久 raise，例如 LLM safety filter / parse 永久失败）每次重启
+    都重跑且永远不出 pending → ``compact`` 永久阻塞 → outbox.ndjson 线性增
+    长。``op.get('_attempt_count', 0)`` 来自 ``pending_ops`` scan 时的累计，
+    日常 spawn 路径调 _run_outbox_op 时 op 是临时构造的不带这个字段，按 0
+    起算（首次失败 → attempt=1，远 < N，正常 pending 等重启重放）。
     """
     op_id = op.get('op_id')
     op_type = op.get('type')
@@ -613,7 +622,35 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
         try:
             await handler(name, payload)
         except Exception as e:
-            logger.warning(f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending）: {e}")
+            from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+            prior_attempts = int(op.get('_attempt_count', 0) or 0)
+            try:
+                await outbox.aappend_attempt(name, op_id)
+            except Exception as ae:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id}: append_attempt 失败: {ae}"
+                )
+            total_attempts = prior_attempts + 1
+            if total_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id}: handler 累计失败 "
+                    f"{total_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+                    f"dead-letter 放弃该 op（最近一次失败: {e}）。"
+                    f"Why: liveness 兜底，避免毒 payload 让重启 replay 永远卡住 + "
+                    f"compact 永久阻塞。"
+                )
+                try:
+                    await outbox.aappend_done(name, op_id)
+                except Exception as de:
+                    logger.warning(
+                        f"[Outbox] {name}/{op_type}/{op_id}: dead-letter "
+                        f"append_done 失败: {de}"
+                    )
+            else:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending，"
+                    f"attempts={total_attempts}/{MEMORY_LIVENESS_MAX_ATTEMPTS}）: {e}"
+                )
             return
         try:
             await outbox.aappend_done(name, op_id)
@@ -945,6 +982,32 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
     return cursor
 
 
+_rebuttal_failures: dict[str, dict[str, int]] = {}
+"""Per-character rebuttal LLM 失败计数：``{name: {cursor_iso: count}}``。
+
+In-memory only（cursor 本身落盘到 cursors.json，但 counter 重启清零）。
+Why in-memory: 重启后再试 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 次再 dead-letter，
+避免内存 counter 错把短暂 transient 失败永久放弃；user-visible 代价 = 重启
+后多卡 N × REBUTTAL_CHECK_INTERVAL 一段时间，可接受。
+
+Liveness 兜底原因：``check_feedback_for_confirmed`` 返 None 时原代码直接
+``return`` 不动 cursor → 下轮重读相同 [cursor, now] 窗口含同样的毒 user
+msg → 仍失败 → 永久卡死 rebuttal 链路（毒窗口让 user 反驳信号永远进不来
+evidence loop）。"""
+
+
+def _rebuttal_bump_failure(name: str, cursor_key: str) -> int:
+    """Bump 失败计数，返回当前累计次数。Caller 自行判 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS。"""
+    fails = _rebuttal_failures.setdefault(name, {})
+    fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
+    return fails[cursor_key]
+
+
+def _rebuttal_clear_failures(name: str) -> None:
+    """Cursor 推进（成功）或 dead-letter 强推后清零 counter。"""
+    _rebuttal_failures.pop(name, None)
+
+
 async def _periodic_rebuttal_loop():
     """每 5 分钟检查 confirmed reflections 是否被近期对话反驳。
 
@@ -1015,6 +1078,7 @@ async def _periodic_rebuttal_loop():
                     await cursor_store.aset_cursor(
                         name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                     )
+                    _rebuttal_clear_failures(name)
                     return
 
                 start_time = await _resolve_rebuttal_start_time(name, now)
@@ -1026,6 +1090,7 @@ async def _periodic_rebuttal_loop():
                     await cursor_store.aset_cursor(
                         name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                     )
+                    _rebuttal_clear_failures(name)
                     return
 
                 # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
@@ -1044,6 +1109,7 @@ async def _periodic_rebuttal_loop():
                         await cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                         )
+                    _rebuttal_clear_failures(name)
                     return
 
                 # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
@@ -1072,8 +1138,34 @@ async def _periodic_rebuttal_loop():
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
-                    # LLM 调用失败 → 不推进游标，下次重试这批消息
-                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
+                    # LLM 调用失败 → 不推进游标，下次重试这批消息。
+                    # Liveness 兜底：同一 cursor 反复失败 ≥
+                    # MEMORY_LIVENESS_MAX_ATTEMPTS 时强推 cursor 到 now 放弃这段
+                    # 窗口（dead-letter），避免毒 user msg 让 rebuttal 链路永久
+                    # 卡死。cursor 落盘到 cursors.json，stuck cursor 重启都不
+                    # 复活，比 in-memory 的 signal extraction cursor 更顽固。
+                    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+                    cursor_key = (
+                        start_time.isoformat(timespec='microseconds')
+                        if start_time else 'cold'
+                    )
+                    attempts = _rebuttal_bump_failure(name, cursor_key)
+                    if attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                        logger.warning(
+                            f"[Rebuttal] {name}: 反驳检查在 cursor {cursor_key!r} "
+                            f"累计失败 {attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+                            f"强推 cursor 到 {now.isoformat(timespec='seconds')} "
+                            f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
+                        )
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                        )
+                        _rebuttal_clear_failures(name)
+                    else:
+                        logger.warning(
+                            f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试 "
+                            f"({attempts}/{MEMORY_LIVENESS_MAX_ATTEMPTS})"
+                        )
                     return
 
                 # 成功才推进游标并持久化。Drain 推进规则：
@@ -1104,6 +1196,9 @@ async def _periodic_rebuttal_loop():
                 await cursor_store.aset_cursor(
                     name, CURSOR_REBUTTAL_CHECKED_UNTIL, new_cursor,
                 )
+                # Cursor 推进 → 旧 cursor key 永远不会再被命中，清空 counter
+                # 避免内存 dict 随 cursor 历史无限增长（对偶 Site 0a/0b）。
+                _rebuttal_clear_failures(name)
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
@@ -1715,7 +1810,24 @@ async def _periodic_archive_sweep_loop():
 
 # ── memory-evidence-rfc §3.4.3: background signal extraction loop ───
 
-_signal_check_state: dict[str, dict] = {}  # {name: {turns_since, last_check_ts}}
+_signal_check_state: dict[str, dict] = {}
+"""Per-character signal extraction state.
+
+Schema:
+  {
+    'turns_since': int,           # turn counter since last successful check
+    'last_check_ts': str | None,  # ISO cursor for path A window start
+    'last_a_msg_ts': datetime,    # path A 实际处理过的最晚 msg ts (path B 上游边界)
+    'last_b_check_ts': datetime,  # ISO cursor for path B window start
+    'b_tick_counter': int,        # ticks since last path B trigger
+    # Liveness counters (in-memory only)：cursor key → 连续失败次数。
+    # 成功 mark_done 时清空对应 path 的 counter。重启清零是有意为之的"软兜底"
+    # ——重启后再试 MEMORY_LIVENESS_MAX_ATTEMPTS 次再 dead-letter，避免内存
+    # counter 错误地把短暂 transient 失败永久放弃。
+    'a_extract_failures': dict[str, int],  # path A cursor (last_check_ts) → fail count
+    'b_extract_failures': dict[str, int],  # path B cursor (last_b_check_ts) → fail count
+  }
+"""
 
 
 def _signal_check_should_run(name: str, now: datetime) -> bool:
@@ -1744,6 +1856,72 @@ def _signal_check_mark_done(name: str, now: datetime) -> None:
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = 0
     state['last_check_ts'] = now.isoformat()
+    # Cursor 推进 → path A 的旧 cursor key 永远不会再被命中，清空 counter
+    # 避免内存 dict 随 cursor 历史无限增长。同时把"曾经失败但靠新数据冲过去
+    # 了"的窗口归零，下次毒窗口出现按 fresh attempt 计算。
+    state['a_extract_failures'] = {}
+
+
+def _stage1_path_a_bump_failure(
+    name: str, state: dict, cursor_key: str, now: datetime,
+) -> bool:
+    """Path A Stage-1 LLM 终态失败的 liveness 兜底。
+
+    给 (cursor_key) 当前窗口 bump 失败计数；达 ``MEMORY_LIVENESS_MAX_ATTEMPTS``
+    时强推 cursor 到 now（视为放弃该窗口的 fact 抽取），返回 True；未达上限
+    返回 False（caller 走原有"保留 cursor 下轮重试"路径）。
+
+    Why: 毒 msg（safety filter / content policy / 永远 parse 不出来的畸形
+    输出）让 ``_allm_call_with_retries`` 永久耗尽，原代码捕获后直接 return
+    不动 cursor → 下轮重读同窗口 → 永远卡死该角色的 fact pipeline（类似
+    PR #1399 "26 天 0 fact" 事故的 liveness 缺口）。强推 cursor 等于
+    放弃这段窗口的 fact 抽取，代价上限 = N × interval (≈ 3 分钟)，远比
+    "永久 0 fact" 划算。
+    """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    fails = state.setdefault('a_extract_failures', {})
+    fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
+    if fails[cursor_key] < MEMORY_LIVENESS_MAX_ATTEMPTS:
+        return False
+    logger.warning(
+        f"[SignalLoop] {name}: Stage-1 path A 在 cursor {cursor_key!r} "
+        f"累计失败 {fails[cursor_key]} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+        f"强推 cursor 到 {now.isoformat(timespec='seconds')} "
+        f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
+    )
+    _signal_check_mark_done(name, now)  # 会顺带把 a_extract_failures 清空
+    return True
+
+
+def _stage1_path_b_bump_failure(
+    name: str, state: dict, cursor_key: str, force_to: datetime,
+) -> bool:
+    """Path B Stage-1 LLM 终态失败的 liveness 兜底（path A 的对偶）。
+
+    给 (cursor_key) 当前 B 窗口 bump 失败计数；达
+    ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 时强推 ``state['last_b_check_ts']``
+    到 ``force_to`` (= last_fetched_ts)，返回 True；未达上限返回 False
+    （caller 走原有"保留 cursor 下次 trigger 重试"路径）。
+
+    Why: 跟 path A 同源问题——B 的 ``persisted is None`` 分支原代码直接
+    return 不动 ``last_b_check_ts`` → 下次 B trigger 重读 [last_b_check_ts,
+    last_a_msg_ts] 同窗口 → 仍卡。强推 cursor 到 last_fetched_ts 等于
+    放弃 AI-aware 视角下的这段窗口，代价上限 = N × B trigger 间隔。
+    """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    fails = state.setdefault('b_extract_failures', {})
+    fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
+    if fails[cursor_key] < MEMORY_LIVENESS_MAX_ATTEMPTS:
+        return False
+    logger.warning(
+        f"[PathB] {name}: Stage-1 path B 在 cursor {cursor_key!r} "
+        f"累计失败 {fails[cursor_key]} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+        f"强推 last_b_check_ts 到 {force_to.isoformat(timespec='seconds')} "
+        f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
+    )
+    state['last_b_check_ts'] = force_to
+    state['b_extract_failures'] = {}
+    return True
 
 
 def _signal_check_window_start(name: str, now: datetime) -> datetime:
@@ -1986,6 +2164,7 @@ async def _run_path_b(name: str, state: dict) -> None:
         # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
         # 截断时未取尾巴可能含有效 msg。
         state['last_b_check_ts'] = last_fetched_ts
+        state['b_extract_failures'] = {}
         return
 
     # 截到 user msg bracket：首条 user msg 到末条 user msg 之间（含两端）。
@@ -2001,6 +2180,7 @@ async def _run_path_b(name: str, state: dict) -> None:
             f"(纯 AI-only 内容，product thesis 跳过)"
         )
         state['last_b_check_ts'] = last_fetched_ts
+        state['b_extract_failures'] = {}
         return
 
     from utils.llm_client import convert_to_messages
@@ -2059,11 +2239,19 @@ async def _run_path_b(name: str, state: dict) -> None:
         # 重试同窗口（fact dedup hash 防双写）。区分 None vs [] 至关重要：
         # 若把失败折叠成"成功 0 抽"，失败窗口会被永久 skip（CodeRabbit / Codex
         # P1 round-2 on PR #1408）。
-        logger.warning(
-            f"[PathB] {name}: Stage-1 终态失败，保留 cursor 下次 trigger 重试 "
-            f"(window={last_b.isoformat(timespec='seconds')} → "
-            f"{last_fetched_ts.isoformat(timespec='seconds')})"
+        #
+        # Liveness 兜底（path A 的对偶）：同一 last_b_check_ts cursor 反复
+        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 时强推 cursor 到 last_fetched_ts，
+        # 避免毒窗口让 B pipeline 永久卡死该角色的 AI-aware fact 抽取。
+        cursor_key = (
+            last_b.isoformat(timespec='microseconds') if last_b else 'cold'
         )
+        if not _stage1_path_b_bump_failure(name, state, cursor_key, last_fetched_ts):
+            logger.warning(
+                f"[PathB] {name}: Stage-1 终态失败，保留 cursor 下次 trigger 重试 "
+                f"(window={last_b.isoformat(timespec='seconds')} → "
+                f"{last_fetched_ts.isoformat(timespec='seconds')})"
+            )
         return
     if persisted:
         logger.info(
@@ -2074,6 +2262,10 @@ async def _run_path_b(name: str, state: dict) -> None:
         )
 
     state['last_b_check_ts'] = last_fetched_ts
+    # Cursor 推进 → 旧 cursor key 永远不会再被命中，清空 path-B counter
+    # 避免内存 dict 随 cursor 历史无限增长（对偶 _signal_check_mark_done
+    # 在 path A 成功路径上清 a_extract_failures）。
+    state['b_extract_failures'] = {}
 
 
 async def _periodic_signal_extraction_loop():
@@ -2172,10 +2364,18 @@ async def _periodic_signal_extraction_loop():
                     )
                 except FactExtractionFailed as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next
-                    # cycle retries the same message window (§3.4.3).
-                    logger.warning(
-                        f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
+                    # cycle retries the same message window (§3.4.3)。
+                    # Liveness 兜底：同一 cursor 反复失败 ≥ MEMORY_LIVENESS
+                    # _MAX_ATTEMPTS 强推 cursor 到 now，避免毒窗口让
+                    # fact pipeline 永久卡死。
+                    state = _signal_check_state.setdefault(
+                        name, {'turns_since': 0, 'last_check_ts': None},
                     )
+                    cursor_key = state.get('last_check_ts') or 'cold'
+                    if not _stage1_path_a_bump_failure(name, state, cursor_key, now):
+                        logger.warning(
+                            f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
+                        )
                     return
 
                 # 先 dispatch 再 mark_done：dispatch 中途有任何 aapply 失败
@@ -2351,6 +2551,7 @@ async def _amaybe_trigger_negative_keyword_hook(
 async def _run_persona_refine_for_character(character: str) -> None:
     """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
     skip / 候选不足 → 整 pass no-op。"""
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2364,10 +2565,18 @@ async def _run_persona_refine_for_character(character: str) -> None:
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
         section = pm._get_section_facts(persona, entity)
+        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
+        # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
+        # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
+        # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
+        # stamp 成功时会清回 0；或人工编辑 persona.json。
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
-            if isinstance(e, dict) and not e.get('protected') and e.get('id')
+            if isinstance(e, dict)
+            and not e.get('protected')
+            and e.get('id')
+            and int(e.get('refine_attempts', 0) or 0) < MEMORY_LIVENESS_MAX_ATTEMPTS
         ]
         if entries:
             candidates_by_entity[entity] = entries
@@ -2385,10 +2594,14 @@ async def _run_persona_refine_for_character(character: str) -> None:
         )
         await pm.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
 
+    async def _failure(cluster, cluster_hash):
+        await pm._abump_refine_attempts(character, cluster, cluster_hash)
+
     result = await engine.refine_pass(
         candidates_by_entity,
         apply_fn=_apply,
         scope_label=f"persona/{character}",
+        failure_fn=_failure,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
         logger.info(
@@ -2430,6 +2643,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     """单角色 reflection refine pass。cluster 内可混入同 entity 的
     absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
     层代码兜底）。"""
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2450,10 +2664,17 @@ async def _run_reflection_refine_for_character(character: str) -> None:
 
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
+        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
+        # reflection 不再进 cluster gather（同 persona refine）。fact 不算
+        # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
+        # attempts。
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
-            if isinstance(r, dict) and r.get('entity') == entity and r.get('id')
+            if isinstance(r, dict)
+            and r.get('entity') == entity
+            and r.get('id')
+            and int(r.get('refine_attempts', 0) or 0) < MEMORY_LIVENESS_MAX_ATTEMPTS
         ]
         entity_facts = [
             annotate_entry(f, type_='fact', entity=entity)
@@ -2476,10 +2697,14 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         )
         await engine_ref.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
 
+    async def _failure(cluster, cluster_hash):
+        await engine_ref._abump_refine_attempts(character, cluster, cluster_hash)
+
     result = await engine.refine_pass(
         candidates_by_entity,
         apply_fn=_apply,
         scope_label=f"reflection/{character}",
+        failure_fn=_failure,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
         logger.info(

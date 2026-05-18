@@ -375,6 +375,7 @@ class FactDedupResolver:
             return await self._aresolve_locked(name)
 
     async def _aresolve_locked(self, name: str) -> int:
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
         from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm
@@ -384,7 +385,18 @@ class FactDedupResolver:
         if not pending:
             return 0
 
-        batch = pending[:FACT_DEDUP_BATCH_LIMIT]
+        # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
+        # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
+        # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
+        batch: list[dict] = []
+        for it in pending:
+            if int(it.get('resolve_attempts', 0) or 0) >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                continue
+            batch.append(it)
+            if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
+                break
+        if not batch:
+            return 0
         pairs_text = "\n".join(
             f"[{i}] candidate: {item.get('candidate_text', '')}"
             f" | existing: {item.get('existing_text', '')}"
@@ -421,9 +433,18 @@ class FactDedupResolver:
                     "[FactDedup] %s: LLM 返回非数组 (%s)，跳过本轮",
                     name, type(results).__name__,
                 )
+                # Parse 失败也算 attempt（same input → same parse failure）；
+                # 跟 Exception 分支同治。
+                await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
                 return 0
         except Exception as e:
             logger.warning("[FactDedup] %s: LLM 调用失败: %s", name, e)
+            # Liveness 兜底：给本批 pair bump resolve_attempts；达
+            # MEMORY_LIVENESS_MAX_ATTEMPTS 的 entry 从 queue dead-letter
+            # 丢弃。否则毒 pair（safety filter / prompt 过长 / 永远 parse
+            # 不出来）一直占队头让 dedup 永久卡死。caller (aresolve) 已持
+            # 着 _get_alock，这里走 _locked 变体不再重复获取。
+            await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
             return 0
 
         applied, processed_keys = await self._aapply_decisions(
@@ -462,6 +483,55 @@ class FactDedupResolver:
                 name, applied, len(remaining),
             )
         return applied
+
+    async def _abump_dedup_attempts_and_dead_letter_locked(
+        self, name: str, batch_items: list[dict],
+    ) -> None:
+        """aresolve LLM 失败时的 liveness 兜底（caller MUST hold _get_alock）。
+
+        给本批 pending pair bump ``resolve_attempts``；累计 ≥
+        ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的 pair 直接从 queue 删除并 WARN。
+
+        Why: 毒 pair（LLM 永远 parse 不出 / safety filter / prompt 过长）让
+        队头每个 tick 都被送进同样 prompt 同样失败 → 整条 dedup pipeline 永久
+        卡死该角色。caller 已持着 _get_alock，所以不再 async with；这跟
+        ``_aresolve_locked`` 里 ``_aapply_decisions`` / ``aload_pending`` /
+        ``_asave_pending`` 全在 lock 内同一规则。
+        """
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        if not batch_items:
+            return
+        bumped_keys = {
+            (it.get('candidate_id'), it.get('existing_id')) for it in batch_items
+        }
+        bumped_keys.discard((None, None))
+        if not bumped_keys:
+            return
+        current = await self.aload_pending(name)
+        kept: list[dict] = []
+        dropped = 0
+        for it in current:
+            key = (it.get('candidate_id'), it.get('existing_id'))
+            if key in bumped_keys:
+                new_attempts = int(it.get('resolve_attempts', 0) or 0) + 1
+                if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                    dropped += 1
+                    logger.warning(
+                        "[FactDedup] %s: dead-letter pair (%s, %s) resolve %d 次失败 ≥ %d，丢弃",
+                        name, key[0], key[1], new_attempts, MEMORY_LIVENESS_MAX_ATTEMPTS,
+                    )
+                    continue
+                it['resolve_attempts'] = new_attempts
+            kept.append(it)
+        if not await self._asave_pending(name, kept):
+            logger.debug(
+                "[FactDedup] %s: 维护态跳过 dedup attempts 写盘", name,
+            )
+        elif dropped:
+            logger.info(
+                "[FactDedup] %s: dead-letter 丢弃 %d 对 dedup pair，剩余队列 %d 条",
+                name, dropped, len(kept),
+            )
 
     # Whitelist of action vocabulary the LLM may return. Anything
     # outside this set (case mismatch, trailing whitespace, localised

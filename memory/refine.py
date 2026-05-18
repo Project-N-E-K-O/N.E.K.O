@@ -86,6 +86,14 @@ def strip_refine_metadata(entry: dict) -> dict:
 # stamp internally; engine doesn't touch storage.
 ApplyFn = Callable[[list[dict], list[dict], str], Awaitable[set[str]]]
 
+# Manager-supplied failure callback signature.
+# Args: cluster (annotated entries), cluster_hash.
+# Triggered when ``_resolve_cluster`` returns False (LLM/parse failure) or
+# raises. Manager bumps ``refine_attempts`` on each non-fact cluster member
+# (and saves persona/reflection file), so the next refine pass can filter
+# out entries that have repeatedly failed (Site 4 liveness 兜底)。
+FailureFn = Callable[[list[dict], str], Awaitable[None]]
+
 
 class MemoryRefineEngine:
     """Stateless apart from the embedding service handle and config
@@ -104,6 +112,7 @@ class MemoryRefineEngine:
         *,
         apply_fn: ApplyFn,
         scope_label: str,  # for logging: "persona/character" etc.
+        failure_fn: FailureFn | None = None,
     ) -> dict:
         """通用 pass：候选已按 entity 切片（每条带 annotate_entry 的标签），
         engine 跑 cluster + hash skip + ranking + LLM + apply。
@@ -112,6 +121,12 @@ class MemoryRefineEngine:
                   'clusters_failed'}.
 
         Embedding 不可用 → 返回零计数，no-op。
+
+        ``failure_fn``: 可选回调，``_resolve_cluster`` 返 False / 抛异常时
+        调用，传入 ``(cluster, cluster_hash)``。Manager 在回调里 bump
+        ``refine_attempts`` 字段做 liveness 兜底——同 cluster 反复 LLM 失败
+        N 次后 manager 在下次候选 gather 时把成员过滤掉，避免毒 cluster
+        持续占用 starvation-first ordering 第一名空跑 LLM。
         """
         zero = {
             'clusters_seen': 0,
@@ -158,6 +173,7 @@ class MemoryRefineEngine:
         resolved = 0
         failed = 0
         for entity, cluster, cluster_hash in to_process:
+            cluster_failed = False
             try:
                 ok = await self._resolve_cluster(
                     entity, cluster, cluster_hash, apply_fn,
@@ -166,11 +182,21 @@ class MemoryRefineEngine:
                     resolved += 1
                 else:
                     failed += 1
+                    cluster_failed = True
             except Exception as e:  # noqa: BLE001 — refine is best-effort
                 failed += 1
+                cluster_failed = True
                 logger.warning(
                     f"[Refine] {scope_label} cluster {cluster_hash} 异常: {e}"
                 )
+            if cluster_failed and failure_fn is not None:
+                try:
+                    await failure_fn(cluster, cluster_hash)
+                except Exception as fe:  # noqa: BLE001 — failure_fn 是兜底，自己再失败也不该挂主路径
+                    logger.warning(
+                        f"[Refine] {scope_label} cluster {cluster_hash} "
+                        f"failure_fn 异常: {fe}"
+                    )
         return {
             'clusters_seen': len(all_clusters),
             'clusters_skipped': skipped,
