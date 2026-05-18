@@ -545,13 +545,17 @@ async def hybrid_recall(
 
     elapsed_ms = (time.time() - start) * 1000.0
     # union pool size for observability — bm25 pool is the superset.
+    # `passed` = items surviving the per-side threshold; `thresh` is the
+    # cutoff constant. 历史上这条 log 把 `passed` 数挂在 `(>thresh %d)`
+    # 字段里，被读成"阈值=N"误导调参，所以拆成 passed + thresh 两段。
     logger.info(
-        "[hybrid_recall] %s: pool bm25=%d emb=%d | scored bm25=%d (>thresh %d) "
-        "emb=%d (>thresh %d) | fused=%d | %.0fms",
+        "[hybrid_recall] %s: pool bm25=%d emb=%d | "
+        "scored bm25=%d (passed %d, thresh=%.2f) "
+        "emb=%d (passed %d, thresh=%.2f) | fused=%d | %.0fms",
         lanlan_name,
         len(bm25_pool), len(embedding_pool),
-        len(bm25_scored), len(bm25_top),
-        len(cosine_scored), len(cosine_top),
+        len(bm25_scored), len(bm25_top), HYBRID_RECALL_BM25_THRESHOLD,
+        len(cosine_scored), len(cosine_top), HYBRID_RECALL_COSINE_THRESHOLD,
         len(results), elapsed_ms,
     )
     return {
