@@ -25,6 +25,10 @@ class PyAutoGuiCaptureBackend:
         self._availability_error = ""
         self._availability_error_logged = False
 
+    @property
+    def availability_error(self) -> str:
+        return self._availability_error
+
     def is_available(self) -> bool:
         # `import pyautogui` can throw beyond ImportError in headless / WSL /
         # missing-DISPLAY environments — pyautogui's mouse module touches
@@ -72,4 +76,3 @@ class PyAutoGuiCaptureBackend:
             backend_kind=self.kind,
             backend_detail="selected",
         )
-

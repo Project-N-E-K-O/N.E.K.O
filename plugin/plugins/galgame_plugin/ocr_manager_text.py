@@ -118,35 +118,38 @@ from . import ocr_reader as _ocr_reader_module
 class TextMixin:
     """OCR 文本提取、语言检测、文本去重、台词 emit"""
 
-    def _log_debug(self, message: str, *args: Any) -> None:
+    @staticmethod
+    def _safe_log_arg(value: Any) -> str:
+        try:
+            return repr(value)
+        except Exception:
+            try:
+                return object.__repr__(value)
+            except Exception:
+                return f"<unrepresentable {type(value).__name__}>"
+
+    def _call_log_method(self, method_name: str, message: str, *args: Any) -> None:
         logger = getattr(self, "_logger", None)
-        debug = getattr(logger, "debug", None)
-        if not callable(debug):
+        method = getattr(logger, method_name, None)
+        if not callable(method):
             return
         try:
-            debug(message, *args)
+            method(message, *args)
         except Exception:
-            return
+            safe_args = tuple(self._safe_log_arg(arg) for arg in args)
+            try:
+                method(message, *safe_args)
+            except Exception:
+                return
+
+    def _log_debug(self, message: str, *args: Any) -> None:
+        self._call_log_method("debug", message, *args)
 
     def _log_warning(self, message: str, *args: Any) -> None:
-        logger = getattr(self, "_logger", None)
-        warning = getattr(logger, "warning", None)
-        if not callable(warning):
-            return
-        try:
-            warning(message, *args)
-        except Exception:
-            return
+        self._call_log_method("warning", message, *args)
 
     def _log_info(self, message: str, *args: Any) -> None:
-        logger = getattr(self, "_logger", None)
-        info = getattr(logger, "info", None)
-        if not callable(info):
-            return
-        try:
-            info(message, *args)
-        except Exception:
-            return
+        self._call_log_method("info", message, *args)
 
     def _rapidocr_cache_key(self) -> tuple[str, str, str, str, str]:
         return _rapidocr_runtime_cache_key(
@@ -687,7 +690,7 @@ class TextMixin:
                 warning = f"ocr_reader {descriptor.kind} failed: {type(exc).__name__}: {exc}"
                 warnings.append(warning)
                 backend_errors.append(warning)
-                self._logger.warning("ocr_reader backend {} failed: {}", descriptor.kind, exc)
+                self._log_warning("ocr_reader backend {} failed: {}", descriptor.kind, exc)
         if last_error is not None:
             detail = "; ".join(backend_errors) if backend_errors else str(last_error)
             raise RuntimeError(f"ocr_reader all configured backends failed: {detail}") from last_error

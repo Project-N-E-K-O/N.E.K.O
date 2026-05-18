@@ -593,7 +593,7 @@ class OcrReaderManager(
             try:
                 stop(join_timeout=join_timeout)
             except TypeError:
-                stop()
+                raise
         self._runtime.foreground_advance_monitor_running = False
         self._runtime.foreground_advance_last_seq = 0
 

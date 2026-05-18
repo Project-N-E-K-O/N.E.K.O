@@ -18,6 +18,7 @@ from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
 from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
 from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
+from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
@@ -114,6 +115,23 @@ class _ExplodingLogger(_Logger):
         raise RuntimeError("logger info failed")
 
 
+class _FormattingLogger(_Logger):
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def warning(self, message, *args, **kwargs):
+        del kwargs
+        self.messages.append(str(message).format(*args))
+
+
+class _BadLogArg:
+    def __repr__(self) -> str:
+        raise RuntimeError("repr failed")
+
+    def __str__(self) -> str:
+        raise RuntimeError("str failed")
+
+
 class _FakeCaptureBackend:
     def __init__(self, *, available: bool = True) -> None:
         self.available = available
@@ -147,6 +165,40 @@ class _FakeOcrBackend:
         if len(self._texts) == 1:
             return self._texts[0]
         return self._texts.pop(0)
+
+
+def test_log_warning_falls_back_when_argument_formatting_fails() -> None:
+    manager = object.__new__(OcrReaderManager)
+    logger = _FormattingLogger()
+    manager._logger = logger
+
+    manager._log_warning("ocr_reader backend failed: {}", _BadLogArg())
+
+    assert len(logger.messages) == 1
+    assert logger.messages[0].startswith("ocr_reader backend failed: <")
+
+
+def test_dxcam_create_timeout_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def _create_with_timeout(_dxcam_module, *, timeout_seconds: float):
+        nonlocal calls
+        del timeout_seconds
+        calls += 1
+        raise TimeoutError("dxcam_create_timed_out_after_0.1s")
+
+    monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **_kwargs: object()))
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_create_dxcam_camera_with_timeout",
+        _create_with_timeout,
+    )
+
+    backend = galgame_dxcam_backend.DxcamCaptureBackend(logger=_Logger())
+    with pytest.raises(TimeoutError):
+        backend._camera_instance()
+
+    assert calls == 1
 
 
 def _make_config(

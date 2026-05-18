@@ -27,6 +27,7 @@ def _create_dxcam_camera_with_timeout(dxcam_module: Any, *, timeout_seconds: flo
     try:
         status, payload = result_queue.get(timeout=max(0.01, float(timeout_seconds)))
     except queue.Empty as exc:
+        thread.join(timeout=0.5)
         raise TimeoutError(
             f"dxcam_create_timed_out_after_{timeout_seconds:.1f}s"
         ) from exc
@@ -71,6 +72,8 @@ class DxcamCaptureBackend:
                         dxcam,
                         timeout_seconds=_DXCAM_CREATE_TIMEOUT_SECONDS,
                     )
+                except TimeoutError:
+                    raise
                 except Exception as exc:
                     last_exc = exc
                     self._last_create_error = str(exc)
@@ -132,4 +135,3 @@ class DxcamCaptureBackend:
             backend_kind=self.kind,
             backend_detail="selected",
         )
-

@@ -24,6 +24,11 @@ class _NullLogger:
         pass
 
 
+class _ExplodingLogger(_NullLogger):
+    def warning(self, *_args, **_kwargs) -> None:
+        raise RuntimeError("logger failed")
+
+
 def test_ocr_reader_manager_context_manager_closes_capture_resources() -> None:
     manager = object.__new__(OcrReaderManager)
     manager._logger = _NullLogger()
@@ -42,6 +47,50 @@ def test_ocr_reader_manager_context_manager_closes_capture_resources() -> None:
         assert active is manager
 
     assert calls == [("stop", 1.0), ("shutdown", None)]
+
+
+def test_ocr_reader_manager_close_swallows_shutdown_errors() -> None:
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = _ExplodingLogger()
+    calls: list[tuple[str, float | None]] = []
+
+    def _stop(self, *, join_timeout: float = 1.0) -> None:
+        del self
+        calls.append(("stop", join_timeout))
+        raise TypeError("legacy stop rejected timeout")
+
+    def _shutdown(self) -> None:
+        del self
+        calls.append(("shutdown", None))
+        raise RuntimeError("shutdown failed")
+
+    manager._stop_foreground_advance_monitor = types.MethodType(_stop, manager)
+    manager._shutdown_capture_worker = types.MethodType(_shutdown, manager)
+
+    manager.close()
+
+    assert calls == [("stop", 1.0), ("shutdown", None)]
+
+
+def test_stop_foreground_advance_monitor_does_not_retry_without_timeout() -> None:
+    manager = object.__new__(OcrReaderManager)
+    calls: list[dict[str, float]] = []
+
+    class _LegacyMonitor:
+        def stop(self, **kwargs) -> None:
+            calls.append(kwargs)
+            raise TypeError("legacy stop rejected timeout")
+
+    manager._wheel_monitor = _LegacyMonitor()
+    manager._runtime = types.SimpleNamespace(
+        foreground_advance_monitor_running=True,
+        foreground_advance_last_seq=9,
+    )
+
+    with pytest.raises(TypeError):
+        manager._stop_foreground_advance_monitor(join_timeout=0.2)
+
+    assert calls == [{"join_timeout": 0.2}]
 
 
 def test_timed_out_capture_does_not_replace_running_executor_during_recovery_grace(
