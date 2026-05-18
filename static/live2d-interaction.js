@@ -1097,6 +1097,45 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     }, 100);
 };
 
+Live2DManager.prototype._restoreClickEffectState = async function(options = {}) {
+    const restoreIdle = options && options.restoreIdle === true;
+    this._currentClickEffectId = null;
+    if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
+        try { this._clickEffectMotion.stop(); } catch (_) {}
+    }
+    this._clickEffectMotion = null;
+
+    const restoreIdleMotion = async () => {
+        if (!restoreIdle || typeof window.restoreLive2DIdleAnimationOnMainPage !== 'function') {
+            return;
+        }
+        try {
+            await window.restoreLive2DIdleAnimationOnMainPage();
+        } catch (e) {
+            console.warn('[ClickEffect] 恢复待机动作失败:', e);
+        }
+    };
+
+    try {
+        if (typeof this.smoothResetToInitialState === 'function') {
+            await this.smoothResetToInitialState();
+            await restoreIdleMotion();
+            return;
+        }
+    } catch (e) {
+        console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
+    }
+
+    try {
+        if (typeof this.clearExpression === 'function') {
+            this.clearExpression();
+        }
+    } catch (e) {
+        console.warn('[ClickEffect] 清除表情失败:', e);
+    }
+    await restoreIdleMotion();
+};
+
 /**
  * 播放临时点击效果（低优先级，会自动恢复）
  * @param {string} emotion - 情感名称
@@ -1199,7 +1238,8 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }
 
         if (!didPlayEffect) {
-            console.log('[ClickEffect] 没有可播放的点击表情或动作，跳过恢复定时器');
+            console.log('[ClickEffect] 没有可播放的点击表情或动作，立即恢复旧点击状态');
+            await this._restoreClickEffectState({ restoreIdle: true });
             return false;
         }
 
@@ -1241,6 +1281,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
 
     } catch (error) {
         console.error('[ClickEffect] 播放临时效果失败:', error);
+        await this._restoreClickEffectState({ restoreIdle: true });
         return false;
     }
 };
@@ -1857,9 +1898,6 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         }
         if (!didPlayEffect) {
             console.log('[Interaction] 没有可播放的点击效果，保持当前待机动作');
-            if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
-                window.restoreLive2DIdleAnimationOnMainPage();
-            }
             return;
         }
     }

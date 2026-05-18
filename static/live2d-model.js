@@ -608,6 +608,8 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
                 elapsedTime += stepMs;
             }
             completed = batchEnd;
+            model.elapsedTime = elapsedTime;
+            model.deltaTime = 0;
 
             // 如果还有剩余步数，让出事件循环以避免主线程卡顿
             if (completed < totalSteps) {
@@ -871,6 +873,9 @@ Live2DManager.prototype._looksLikeEyeBlinkParamId = function(paramId) {
         /eye.*blink/i,
         /blink.*eye/i,
         /eyeblink/i,
+        /eye.*wink/i,
+        /wink.*eye/i,
+        /ウィンク|ｳｨﾝｸ/i,
         /まばたき|瞬き|目.*開|眼.*開/i
     ];
     return blinkPatterns.some(pattern => pattern.test(id));
