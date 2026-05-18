@@ -998,6 +998,21 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
 
+MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 600
+"""``_periodic_reflection_synthesis_loop`` 每轮轮询间隔（秒）。
+- 用途：后端定期对每个角色调 ``reflection_engine.synthesize_reflections``。
+- 设计依据：synthesize_reflections 内部对"同批 source_fact_ids → 同 rid"做
+  幂等 short-circuit，无新 unabsorbed fact 时 LLM 不会被调，所以这层只是
+  调度频率上限。10 min 在 auto_promote (180s) 和 refine cron (1800s) 之间，
+  贴近 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES (5 min) 的两倍——给上游 SignalLoop
+  足够时间在窗口里抽完 facts 再合成。
+- 历史：以前 reflection 合成挂在 ``/api/proactive_chat`` handler 里（PR #1015
+  顺手塞的，见 main_routers/system_router.py 历史 blame），整套合成链路与
+  前端 setTimeout 强耦合——前端不开 / proactive 不触发 → reflection 永远不
+  增长。本常量配套的后端 loop 把合成从 HTTP/前端解耦，与其他 9 条 periodic
+  loop（rebuttal / auto_promote / idle_maint / signal_extraction / archive /
+  refine 等）对偶。"""
+
 REFLECTION_RELATED_RECALL_K = 6
 """Reflection synthesis 时通过 embedding 召回的 absorbed fact 数量。
 - 用途：synthesize_reflections 在调 LLM 前用 unabsorbed 文本作 multi-query，
@@ -1851,6 +1866,7 @@ __all__ = [
     'REFLECTION_TEXT_MAX_TOKENS',
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',
+    'MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS',
     'REFLECTION_RELATED_RECALL_K',
     'PERSONA_MERGE_POOL_MAX_TOKENS',
     'PERSONA_CORRECTION_BATCH_LIMIT',

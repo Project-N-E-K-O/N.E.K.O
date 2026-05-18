@@ -42,6 +42,7 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
     EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
+    MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS,
     IGNORED_REINFORCEMENT_DELTA,
     MEMORY_RECHECK_ENABLED,
     MEMORY_RECHECK_INITIAL_DELAY_SECONDS,
@@ -379,6 +380,7 @@ _INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 reb
 _INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
 _INITIAL_DELAY_PERSONA_REFINE = 400  # PERSONA_REFINE 首次（与 reflection refine 错峰 100s）
 _INITIAL_DELAY_REFLECTION_REFINE = 500  # REFLECTION_REFINE 首次
+_INITIAL_DELAY_REFLECTION_SYNTHESIS = 700  # REFLECTION_SYNTHESIS 首次（错开 REFINE 200s）
 
 # ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
 _maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
@@ -2154,6 +2156,58 @@ async def _periodic_reflection_refine_loop():
         await asyncio.sleep(interval)
 
 
+async def _periodic_reflection_synthesis_loop():
+    """每 N 秒对每个角色跑一轮 reflection 合成。
+
+    与其他 9 条 ``_periodic_*_loop`` 对偶——signal_extraction 把对话抽成 fact，
+    本循环把 unabsorbed fact 综合成 pending reflection，auto_promote_loop 再把
+    pending 推到 confirmed/promoted。整条链路全部在 memory_server 进程内长跑，
+    不依赖 ``/api/proactive_chat`` HTTP trigger（也就不再依赖前端浏览器开着）。
+
+    历史背景（为啥要这条循环）：reflection 合成原本只挂在
+    ``main_routers/system_router.py`` 的 proactive_chat handler 里
+    （``_mem_client.post('/reflect/{name}')``，PR #1015 顺手塞的），导致：
+      - 前端关 / proactive 不触发 / 任一 frontend gate false → ``/reflect``
+        永不被调 → ``reflections.json`` 永不增长
+      - reflection 生命周期实际上跟前端 setTimeout 强耦合，违背"长跑后端服务
+        自己保证记忆生态"的设计意图
+
+    Gate 全靠 ``reflection_engine.synthesize_reflections`` 内置：
+      - ``len(unabsorbed) < MIN_FACTS_FOR_REFLECTION (=5)`` → 直接返回 []
+      - 同批 source_fact_ids → 同 rid 幂等 short-circuit，无新 fact 时 LLM 不调
+      - ``REFLECTION_SYNTHESIS_FACTS_MAX (=20)`` cap 单次输入规模
+    所以本循环只做调度，不重复加 gate；间隔常量
+    ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` 控制最大调用频率。
+
+    与 powerful_memory 开关：synthesize_reflections 不在 evidence-RFC 引入的
+    新 LLM 路径里——它是 RFC 之前就存在的合成机制（pending reflection 是 RFC
+    前就有的，evidence 只是给它做了状态推进），所以**不**受 powerful_memory 关
+    闭影响。这跟 refine / signal_extraction 不一样，对齐 idle_maintenance 里
+    "history 压缩 / review" 那两个子任务的处理。
+    """
+    await asyncio.sleep(_INITIAL_DELAY_REFLECTION_SYNTHESIS)
+    interval = MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS
+    while True:
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[ReflectionSynth] 加载角色列表失败: {e}")
+            await asyncio.sleep(interval)
+            continue
+        for name in catgirl_names:
+            try:
+                results = await reflection_engine.synthesize_reflections(name)
+                if results:
+                    logger.info(
+                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 pending reflection"
+                    )
+            except Exception as e:
+                # 单角色合成失败不阻塞其他角色 / 下轮重试
+                logger.warning(f"[ReflectionSynth] {name} 合成异常: {e}")
+        await asyncio.sleep(interval)
+
+
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -2295,6 +2349,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             # Phase A-4 / A-5: MemoryRefineEngine cron 接入
             _spawn_background_task(_periodic_persona_refine_loop())
             _spawn_background_task(_periodic_reflection_refine_loop())
+            _spawn_background_task(_periodic_reflection_synthesis_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
