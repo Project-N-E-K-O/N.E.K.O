@@ -400,6 +400,149 @@ class MemoryRecallReranker:
             result.extend(tail)
         return result[:k]
 
+    # ── per-query top-K recall（reflection synthesis 用） ────────────────
+
+    async def aretrieve_per_query_topk(
+        self,
+        observations: list[dict],
+        query_texts: list[str],
+        *,
+        per_query_k: int,
+        total_cap: int,
+    ) -> list[dict]:
+        """Per-query top-K cosine recall, union+dedup at most ``total_cap``。
+
+        与 ``aretrieve_candidates`` 的全局 max-pool top-K 不同：这里**每条
+        query 各自享有 ``per_query_k`` 的独立配额**，结果按 id dedup 合并，
+        总数截到 ``total_cap``。
+
+        Use case：reflection synthesis 的 ``{RELATED_CONTEXT_BLOCK}``——20 条
+        unabsorbed fact 主题分散时，max-pool 会让冷门主题被高频主题挤掉，
+        per-query 配额规避这点（PR #1401 thread 拍板）。
+
+        Perf：单次 ``embed_batch`` 拼所有 query，candidates decode 一次成 (N, D)
+        矩阵，一次 ``candidate_matrix @ query_matrix.T`` 算出 (N, Q) 分数矩
+        阵，per-column ``argpartition`` 取 top-K。整体复杂度 O(N·D·Q + N·Q·log K)，
+        BLAS 自带 SIMD/多线程，等同于"并行"per-query 调用但不付 N 次嵌入
+        服务往返。
+
+        Fallback 与主路径不同：embedding 不可用 / 无 model_id / 候选无 valid
+        embedding → **直接返回 []**，**不**退化到 evidence_score 排序。理由：
+        本方法的消费者（``_build_related_context_block``）拿结果是当
+        "semantic anchor" 注入 LLM prompt 用的，没真 semantic 关联的"高分历史
+        fact"当锚反而是注意力污染——宁可空 anchor。
+
+        ⚠️ 代码重用：candidate matrix build / query decode 与 ``_coarse_rank``
+        基本一致；当前两份接受少量重复，等出现第三个 caller 时再抽
+        ``_build_score_matrix`` 私有 helper。
+        """
+        if not observations or not query_texts:
+            return []
+
+        survivors = self._hard_filter(observations)
+        if not survivors:
+            return []
+
+        if not self._service.is_available():
+            return []
+        model_id = self._service.model_id()
+        if model_id is None:
+            return []
+
+        cleaned_queries = [
+            t.strip() for t in query_texts
+            if isinstance(t, str) and t.strip()
+        ]
+        if not cleaned_queries:
+            return []
+
+        query_vectors_raw = await self._service.embed_batch(cleaned_queries)
+        query_vectors_raw = [v for v in query_vectors_raw if v is not None]
+        if not query_vectors_raw:
+            return []
+
+        target_dim = parse_dim_from_model_id(model_id)
+
+        # Decode candidate embeddings once, build (N, D)
+        indexed_decoded: list[tuple[int, "np.ndarray"]] = []
+        for i, o in enumerate(survivors):
+            text = o.get('text', '')
+            if not is_cached_embedding_valid(o, text, model_id):
+                continue
+            cvec = decode_embedding(o.get('embedding'))
+            if cvec is None or cvec.size == 0:
+                continue
+            if target_dim is None:
+                target_dim = int(cvec.size)
+            elif cvec.size != target_dim:
+                continue
+            indexed_decoded.append((i, cvec))
+
+        if not indexed_decoded:
+            return []
+
+        import numpy as np
+        candidate_matrix = np.stack([cvec for _, cvec in indexed_decoded])
+        cand_survivor_indices = [i for i, _ in indexed_decoded]
+
+        query_rows = []
+        for qv in query_vectors_raw:
+            qvec = decode_embedding(qv)
+            if qvec is not None and qvec.size == target_dim:
+                query_rows.append(qvec)
+        if not query_rows:
+            return []
+        query_matrix = np.stack(query_rows)  # (Q, D)
+
+        # (N, D) @ (D, Q) → (N, Q)
+        scores_mat = candidate_matrix @ query_matrix.T
+
+        n_candidates = scores_mat.shape[0]
+        effective_k = max(0, min(per_query_k, n_candidates))
+        if effective_k == 0 or total_cap <= 0:
+            return []
+
+        # Stage A：先把每条 query 的 top-K 候选 doc index 列表算出来——只算不截断，
+        # 不参与 cap 决策（cap 留给 stage B round-robin 时统一执行）。
+        per_query_picks: list[list[int]] = []  # 每元素是 list[survivor_idx]
+        for q_idx in range(scores_mat.shape[1]):
+            col = scores_mat[:, q_idx]
+            if effective_k >= n_candidates:
+                top_idx = np.argsort(-col)
+            else:
+                # argpartition O(N) 拿无序 top-K，再对这 K 个 argsort
+                unsorted_top = np.argpartition(-col, effective_k - 1)[:effective_k]
+                top_idx = unsorted_top[np.argsort(-col[unsorted_top])]
+            per_query_picks.append([cand_survivor_indices[int(i)] for i in top_idx])
+
+        # Stage B：round-robin 取每轮每个 query 的第 r 名 → dedup 入池 → 满 cap
+        # 退出。fairness 关键点：cap 截断**只能发生在 round-robin 之后**，绝不
+        # 在 per-query 内部 early-return——否则前几个 query 会吃光全部 slot、
+        # 后面 query 一条 anchor 都拿不到，退化成 max-pool 那种 cold-topic
+        # 饥饿（PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜了先
+        # 判定的 fact"）。
+        #
+        # round-robin 之后 dedup 入池的 ordering（query 内 #1 → query 间 #1 →
+        # query 内 #2 → ...）也跟"first-seen = query 顺序 × within-query rank"
+        # 的老语义不一样：现在的 ordering 是 "每条 query 的 #1 先于任何 query
+        # 的 #2"，更贴近 prompt 里"每条 unabsorbed 平等享有 anchor"的设计意图。
+        seen_ids: set[str] = set()
+        result: list[dict] = []
+        for rank in range(effective_k):
+            for picks in per_query_picks:
+                if rank >= len(picks):
+                    continue
+                doc = survivors[picks[rank]]
+                doc_id = doc.get('id')
+                if not doc_id or doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
+                result.append(doc)
+                if len(result) >= total_cap:
+                    return result
+
+        return result
+
     # ── phase 3: LLM rerank ──────────────────────────────────────────
 
     async def _fine_rank(

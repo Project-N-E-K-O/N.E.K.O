@@ -943,6 +943,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs（语音克隆，国内无法使用）",
             "claude": "Claude（Anthropic，国内无法使用）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（模型聚合，国内无法使用）"
@@ -978,6 +979,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter"

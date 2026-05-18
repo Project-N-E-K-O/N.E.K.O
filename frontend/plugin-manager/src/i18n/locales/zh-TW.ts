@@ -466,7 +466,6 @@ export default {
     reloadFailed: '重新載入失敗',
     packFailed: '打包外掛失敗',
     deleteFailed: '刪除外掛失敗',
-    pluginDisabled: '外掛已停用，請先啟用',
     pluginLoadFailed: '外掛載入失敗，目前不可啟動',
     confirmDisableExt: '確認停用此擴充功能？宿主外掛中的擴充功能將被卸載。',
     extensionDisabled: '擴充功能已停用',

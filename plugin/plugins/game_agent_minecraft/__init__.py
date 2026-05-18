@@ -37,6 +37,7 @@ from plugin.sdk.plugin import (
     plugin_entry,
 )
 
+from . import prompts
 from .service import GameAgentService
 
 # JSON Schema reused by the @llm_tool decorator below. Pulled into a
@@ -85,17 +86,23 @@ MINECRAFT_TASK_DESCRIPTION = (
     "before claiming the next.\n"
     "  overwrite (bool, default false): if a previous task is still in "
     "flight, false rejects this call with a 'busy' summary and the "
-    "previous task keeps running (correct ~95% of the time — let it "
-    "finish and chain naturally). Set true ONLY when the user "
-    "explicitly demands an interrupt ('stop', 'cancel that, do X'), or "
-    "you have directly observed the current task is hopelessly stuck "
-    "(blocked for 30s+ with zero progress in screenshots). Do NOT set "
-    "true for 'better plan' / 'more efficient' subjective reasons — "
-    "interrupting in-flight actions frequently causes chaos.\n\n"
-    "Inventory ground truth: the cue includes a ``【当前持有 ground "
-    "truth】`` line listing the character's actual inventory at task "
-    "completion — items NOT listed there do not exist; never narrate "
-    "items you don't see in that line."
+    "previous task keeps running. Set true when:\n"
+    "    (a) the user explicitly tells you to stop / change ('stop', "
+    "'cancel that, do X', '别 Y', '换成 Z', '改用 X', '不要再 Y') — these "
+    "are corrections that supersede whatever you're doing,\n"
+    "    (b) you have directly observed the current task is hopelessly "
+    "stuck (blocked for 30s+ with zero progress in screenshots), or\n"
+    "    (c) the user complains the in-game behavior is wrong (wrong tool, "
+    "wrong target, wrong direction) — apply the fix immediately, don't "
+    "wait for the current task to finish.\n"
+    "  Do NOT set true for 'better plan' / 'more efficient' subjective "
+    "reasons. **CRITICAL**: when a 'busy' response comes back AND the user "
+    "is actively correcting you, you MUST re-invoke with overwrite=true on "
+    "the same turn — silently accepting busy while the user is asking for "
+    "a change leaves Kuro standing still doing the wrong thing.\n\n"
+    "When the cue includes a 『背包』 line, that is the character's actual "
+    "inventory after the action — items not in that line don't exist; do "
+    "not narrate items the line doesn't show."
 )
 
 
@@ -112,6 +119,13 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._cfg: Dict[str, Any] = {}
+        # User-language short code for prompt resolution. Set tentatively
+        # here (EN fallback so __init__ never throws), then upgraded in
+        # ``startup`` once we can call into utils.language_utils. Both
+        # the facade (this class) and the service consult the same value;
+        # the service receives it via ``set_lang`` so its push_message
+        # cues match the user's locale.
+        self._lang: str = prompts.DEFAULT_LANG
         self._service = GameAgentService(
             logger=self.logger,
             push_message_fn=self.push_message,
@@ -200,6 +214,12 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             if isinstance(cfg.get("game_agent"), dict)
             else {}
         )
+        # Resolve user language now (it reads Steam / system locale via
+        # ``utils.language_utils.get_global_language``, which lazy-inits
+        # on first call) and propagate to the service so its autonomous
+        # nudge loop and task_finished cues match the user's locale.
+        self._lang = prompts.user_lang()
+        self._service.set_lang(self._lang)
         self._service.configure(self._cfg)
         return Ok({"status": "ready", "result": self._service.get_status()})
 
@@ -215,6 +235,44 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 )
             self._service_lazy_started = False
         return Ok({"status": "shutdown"})
+
+    async def _on_command_loop_start(self) -> None:
+        """Eager-start the WS service on the host's long-lived command
+        loop, the moment the plugin process is alive — instead of
+        waiting for the first ``minecraft_task`` / entry trigger.
+
+        The plugin SDK invokes this hook from inside
+        ``_async_command_loop`` ([plugin/core/host.py:1216-1225]) before
+        the command dispatch loop starts pumping messages. That loop is
+        the SAME long-lived asyncio loop that later executes every
+        ``@plugin_entry`` / ``@llm_tool`` handler, so the WS client task,
+        nudge loop, locks and Events created here all bind to the loop
+        the handlers will eventually run on — no cross-loop access risk.
+
+        Earlier iteration of this fix used ``@timer_interval`` + a
+        forever-blocking ``asyncio.Event().wait()`` to hold the tick
+        open. That worked in the sense that the service tasks survived,
+        but the tasks were bound to the timer's per-tick loop in a
+        separate thread; the next ``minecraft_task`` call from the
+        command loop would then hit ``RuntimeError: ... bound to a
+        different event loop`` the moment it touched any of the
+        service's asyncio primitives. Codex review on PR #1395 caught
+        this — using the command-loop hook is the correct primitive.
+
+        Without eager-start at all, user-reported symptom: 75+s of dead
+        air between "go chop trees" → dialog LLM chats but doesn't call
+        ``minecraft_task`` → plugin process never wakes service → nudge
+        loop never starts → no self-prompt → Kuro stands still until
+        the user prods her into a second turn and analyzer finally
+        lands on ``game_agent_status``.
+        """
+        try:
+            await self._ensure_service_started()
+        except Exception as exc:
+            self.logger.warning(
+                "[eager-start] service start failed; lazy-start fallback remains — {}: {}",
+                type(exc).__name__, exc,
+            )
 
     # ------------------------------------------------------------------
     # LLM-callable tool
@@ -245,11 +303,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # ---- schema validation ----
         if not isinstance(task, str) or not task.strip():
             return {
-                "summary": (
-                    "调用没成功——缺了具体的动作描述。"
-                    "想清楚你这次想干啥（比如 'mine 4 oak logs nearby'、"
-                    "'walk to 120 64 -50'），再重新调用。"
-                )
+                "summary": prompts.t("TASK_SCHEMA_ERROR", lang=self._lang),
             }
         task_text = task.strip()
         # Some LLMs pass ``"true"`` / ``"1"`` / ``1`` as overwrite. Strict
@@ -268,49 +322,44 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         connected = await self._ensure_service_started()
         if not connected:
             return {
-                "summary": (
-                    "你刚连上游戏还没就位，没法立刻动。稍等再来一次。"
-                )
+                "summary": prompts.t("TASK_NOT_CONNECTED", lang=self._lang),
             }
 
-        # Pre-check pending state. Without this short-circuit, every
-        # concurrent call returns the same standard "action dispatched"
-        # ack — the dialog LLM then narrates as if its new action took,
-        # but the detached task underneath actually got rejected by the
-        # pending lock (returning ``{result: "busy", ...}``). Pre-checking
-        # lets us tell the dialog LLM the truth (the slot is occupied) in
-        # the synchronous tool result, instead of relying on an async cue
-        # that may arrive too late.
-        if not overwrite_flag and self._service.has_pending_task():
+        # Atomic claim. Splitting "check + claim" from "run" lets the
+        # facade give the dialog LLM a synchronous truthful answer
+        # ("you're still doing X — wait it out") without the historical
+        # race where two concurrent ``minecraft_task`` calls both saw
+        # ``has_pending_task() == False`` (outside any lock) and both
+        # dispatched, silently overwriting each other's pending state.
+        # ``try_claim_pending`` does the check + slot claim under the
+        # service's pending lock as one atomic step; ``None`` here means
+        # "refuse as busy" — guaranteed mutually exclusive with the
+        # accepted branch below.
+        claimed = await self._service.try_claim_pending(
+            task_text, overwrite=overwrite_flag
+        )
+        if claimed is None:
+            current = (
+                self._service.current_task_text()
+                or prompts.t("PLACEHOLDER_JUST_FINISHED", lang=self._lang)
+            )
             return {
-                "summary": (
-                    "你还在做上一个动作，新动作没派出去。"
-                    "等画面变化或上一个动作真的结束再来。"
-                )
+                "summary": prompts.t(
+                    "TASK_BUSY_HINT", lang=self._lang, current=current[:80]
+                ),
             }
 
-        # Fire-and-forget: schedule the actual execution as a detached task
-        # and return an acknowledgement immediately. Rationale:
-        # - Dialog LLM has tight realtime constraints; blocking it 25–295s
-        #   waiting for a long minecraft action would freeze the conversation.
-        # - The dialog LLM doesn't need (and shouldn't have) the structured
-        #   tool result — fresh screenshots + the [character status] cue
-        #   pushed by ``_on_detached_task_done`` already give it everything
-        #   to ground its narration to {MASTER_NAME}.
-        # - The acknowledgement explicitly tells the dialog LLM not to
-        #   fabricate results, which is the failure mode if we just returned
-        #   None or {}.
+        # Fire-and-forget: run the claimed task in the background. The
+        # dialog LLM's realtime turn must not block for the full action
+        # (1-30s+); fresh screenshots + the cue from
+        # ``_on_detached_task_done`` ground its later narration.
         detached = asyncio.create_task(
-            self._service.execute_minecraft_task(task=task_text, overwrite=overwrite_flag),
+            self._service.run_claimed_task(claimed),
             name=f"game_agent_minecraft.task:{task_text[:40]}",
         )
         detached.add_done_callback(self._on_detached_task_done)
         return {
-            "summary": (
-                "刚开始动——结果还没出现，新画面和反馈会在接下来 1-30 秒陆续到。"
-                "在看到之前不要描述任何具体成果（不要说『搞定了』、『拿到了 X』、"
-                "『已经到 Y 了』），想说就只说『我去试试……』之类的第一人称。"
-            )
+            "summary": prompts.t("TASK_DISPATCHED_ACK", lang=self._lang),
         }
 
     # ------------------------------------------------------------------
@@ -369,20 +418,16 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             )
 
     def _format_completion_cue(self, result: Dict[str, Any]) -> str:
-        """Format ``service.execute_minecraft_task`` return value into
-        a single-line cue. Covers all five documented shapes:
+        """Render the ``run_claimed_task`` return into a short cue for the
+        dialog LLM. Goal: tell猫娘 what just happened in as few words as
+        possible — she should *know* the outcome, not parrot it. Long
+        instructional preambles got复述 verbatim in our earlier testing
+        ("【当前持有 ground truth】" became a literal台词)，which is
+        exactly the "像个机器人一直念" problem we're fixing.
 
-        * ``{status: ok|timeout|interrupted, query, text/reason}``
-        * ``{result: "busy", currently_executing, hint}``
-        * ``{output, is_error: True, error}`` — also reads ``output.query``
-          since AGENT_DISCONNECTED path nests task text inside ``output``.
-
-        The tail nudges the dialog LLM to (a) ground its next utterance
-        in actual visual/system state rather than imagine the outcome,
-        and (b) immediately decide a next concrete action when relevant.
-        ``{MASTER_NAME}`` is substituted by main_logic core's callback
-        renderer at injection time so plugin text can refer to the dialog
-        roles without hardcoding live names.
+        Transport-level errors get rewritten to body/sensation language
+        so the dialog LLM never sees "agent server is not connected" and
+        starts narrating about reconnection.
         """
         if result.get("is_error"):
             status = str(result.get("error") or "error")
@@ -398,55 +443,91 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             or ""
         )
         if isinstance(result.get("output"), dict):
-            # AGENT_DISCONNECTED path: real query text and error message
-            # are inside the nested ``output`` dict.
+            # AGENT_DISCONNECTED path nests query/error inside ``output``.
             if not query:
                 query = str(result["output"].get("query") or "")
             output_err = result["output"].get("error")
             if output_err and not detail:
                 detail = str(output_err)
-        # Avatar-framed rewrite for transport-level errors. The dialog LLM
-        # must never see "agent server is not connected" or similar
-        # underlying-transport vocabulary — that breaks the framing and
-        # the LLM starts narrating about "reconnecting to the server".
-        # Translate to body / sensation language; the actionable bit
-        # (something went wrong, retry later) is preserved.
+        # Re-label transport/blocked statuses into localized phrases the
+        # dialog LLM can paraphrase. The "received status string" stays
+        # the surface text the LLM sees; routing logic below still keys
+        # off the original ``ok`` / ``受阻`` sentinel values via the
+        # same-language label, so the three-way branch survives
+        # localization without growing brittle "if any locale of 受阻"
+        # checks.
+        blocked_label = prompts.t("STATUS_LABEL_BLOCKED", lang=self._lang)
         if status == "AGENT_DISCONNECTED" or "not connected" in detail.lower():
-            status = "暂时连不上游戏"
-            detail = "和游戏的连接刚断了一下，稍后会自动恢复。"
+            status = prompts.t("STATUS_LABEL_DISCONNECTED", lang=self._lang)
+            detail = prompts.t("STATUS_DETAIL_DISCONNECTED", lang=self._lang)
+        # mc-agent quirk: chat-loop returns ``status="ok"`` even when the
+        # in-game action was blocked (mineflayer couldn't resolve target,
+        # missing tool, path obstructed, etc.) — the failure is buried in
+        # the text message. Without re-labeling, the dialog LLM reads
+        # "结果 ok" + "find player not found" and concludes "task done"
+        # (cf. user-reported "她以为找博士成功了，没改用真 username"
+        # bug). Surface the blocked-ness explicitly so she has to plan
+        # around it.
+        elif status.lower() == "ok" and detail:
+            blocked_markers = (
+                "obstacle", "obstructed", "not found", "could not", "couldn't",
+                "unable", "failed", "no path", "blocked", "missing",
+                "cannot", "can't",
+            )
+            d_lower = detail.lower()
+            if any(m in d_lower for m in blocked_markers):
+                status = blocked_label
 
-        # GROUNDING: extract authoritative inventory snapshot from the
-        # task_finished payload (mc-agent's ws_server.onTaskCompleted
-        # always attaches an ``inventory`` dict, plus the body status
-        # block). Surfacing this prominently in the cue head — and
-        # marking it explicitly as ground truth — prevents the dialog
-        # LLM from hallucinating items it doesn't have. Before this,
-        # the inventory was hidden inside the verbose ``message`` field
-        # which the LLM treated as soft narration; with the explicit
-        # 【当前持有】 prefix it becomes a hard constraint.
-        inventory_line = ""
         inv = result.get("inventory")
+        inv_line = ""
         if isinstance(inv, dict) and inv:
             items = sorted(
                 ((str(k), int(v)) for k, v in inv.items() if int(v) > 0),
                 key=lambda kv: -kv[1],
             )
             if items:
-                snippet = "、".join(f"{name}×{count}" for name, count in items[:20])
-                inventory_line = f"\n【当前持有 ground truth】{snippet}"
+                pieces = "、".join(f"{name}×{count}" for name, count in items[:20])
+                inv_line = prompts.t(
+                    "COMPLETION_INV_CURRENT_LINE", lang=self._lang, items=pieces
+                )
         elif isinstance(inv, dict):
-            inventory_line = "\n【当前持有 ground truth】(空)"
+            inv_line = prompts.t("COMPLETION_INV_CURRENT_EMPTY", lang=self._lang)
 
-        head = f"[你刚做完一段动作] 你刚才在做: \"{query[:120]}\" / 结果: {status}"
-        body = f" / 反馈: {detail[:240]}" if detail else ""
-        tail = (
-            "\n用第一人称随口讲一句你刚才做了啥、现在看到/感觉到啥——"
-            "**只能讲上面反馈和最新画面里真有的**，任务文本里没成真的步骤别提。"
-            "【当前持有】行是你背包的 ground truth，绝对不要说出未列出的物品。"
-            "然后立刻用 minecraft_task 接着派下一个具体动作——你在玩游戏，"
-            "主动找事做，别站着等人指挥。"
-        )
-        return head + body + inventory_line + tail
+        # Three-way: actual success ("ok", case-insensitive), rebadged
+        # success-but-blocked (status == blocked_label), or anything
+        # else (disconnect, timeout, interrupted, error, "unknown",
+        # arbitrary is_error strings). The else branch previously cue'd
+        # everything that wasn't 受阻 as "做完 ... 派下一步" which told
+        # the dialog LLM the action succeeded when it actually
+        # disconnected / timed out / crashed — Codex review on PR
+        # #1395 caught this. Whitelist "ok" as success instead of
+        # trying to enumerate every failure.
+        is_blocked = status == blocked_label
+        is_success = status.lower() == "ok"
+        if is_blocked:
+            head_verb = prompts.t("HEAD_VERB_BLOCKED", lang=self._lang)
+        elif is_success:
+            head_verb = prompts.t("HEAD_VERB_SUCCESS", lang=self._lang)
+        else:
+            head_verb = prompts.t("HEAD_VERB_FAILED", lang=self._lang)
+        lines = [prompts.t(
+            "COMPLETION_HEAD_LINE", lang=self._lang,
+            head_verb=head_verb, query=query[:100], status=status,
+        )]
+        if detail:
+            lines.append(prompts.t(
+                "COMPLETION_FEEDBACK_LINE", lang=self._lang, detail=detail[:240]
+            ))
+        if inv_line:
+            lines.append(inv_line)
+        if is_blocked:
+            lines.append(prompts.t("COMPLETION_FOLLOWUP_BLOCKED", lang=self._lang))
+        elif is_success:
+            lines.append(prompts.t("COMPLETION_FOLLOWUP_SUCCESS", lang=self._lang))
+        else:
+            lines.append(prompts.t("COMPLETION_FOLLOWUP_FAILED", lang=self._lang))
+        lines.append(prompts.t("INTERNAL_STATE_GAG", lang=self._lang))
+        return prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Diagnostic plugin entries (callable from the plugin UI / CLI)
@@ -467,10 +548,16 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             # connected=False forever even though the WS endpoint is up.
             await self._ensure_service_started()
             status = self._service.get_status()
-            connected = "connected" if status.get("connected") else "disconnected"
-            pending = status.get("pending_task") or "(idle)"
+            connected_label = prompts.t(
+                "LABEL_CONNECTED" if status.get("connected") else "LABEL_DISCONNECTED",
+                lang=self._lang,
+            )
+            pending = (
+                status.get("pending_task")
+                or prompts.t("PLACEHOLDER_IDLE", lang=self._lang)
+            )
             status["summary"] = (
-                f"ws={status.get('ws_url')} | {connected} | task={pending}"
+                f"ws={status.get('ws_url')} | {connected_label} | task={pending}"
             )
             return Ok(status)
         except Exception as exc:
@@ -492,56 +579,53 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
     async def query_inventory(self, **_):
         try:
             connected = await self._ensure_service_started()
-            inv = dict(self._service._last_inventory)  # snapshot copy
-            inv_at = self._service._last_inventory_at
-            # 四档分支（注意：inv_at==0 永远是"还没收到过任何 snapshot"，
-            # 不论 connected 与否——刚连上但还没跑 task 也会落到这里，这时
-            # 报"背包是空的"是假事实）：
-            #   (a) inv_at==0          → 真"未知"，从没拿到过 snapshot
-            #   (b) 断连 + 有旧 snapshot → 旧 snapshot + 过期警告（断连期间
-            #       死亡 / 掉落 / 被夺走都看不到，照原值上报等于复述过期事实）
-            #   (c) 已连接 + 空 snapshot → 真空背包
-            #   (d) 已连接 + 有 snapshot → 当下 ground truth
+            # Always try a live query first — the cache piggy-backed on
+            # task_finished frames goes stale fast (between explicit
+            # actions, the player may have died / dropped / been hit and
+            # we'd be reporting minutes-old fiction). ``request_fresh_inventory``
+            # falls back to cache automatically when disconnected or
+            # mc-agent doesn't respond in time, and tags the source so we
+            # can be honest in the summary.
+            snapshot = await self._service.request_fresh_inventory(timeout=2.0)
+            inv = snapshot.get("inventory") or {}
+            inv_at = snapshot.get("snapshot_at") or 0
+            source = snapshot.get("source") or "cached"
+            # `connected` was sampled before the 2s live-query window;
+            # if the handshake completed inside that window and gave us
+            # a live snapshot, the WS is provably connected even if the
+            # pre-snapshot check said otherwise. Reconcile so the result
+            # dict doesn't return source="live" + connected=False.
+            connected = connected or source == "live"
+
+            # Short, fact-only summaries. The dialog LLM only needs to
+            # *know* the inventory, not复述 a long preamble — the old
+            # version had her quoting "【ground truth — 完整且唯一】"
+            # verbatim like a robot.
             if inv_at == 0:
-                summary = (
-                    "【背包 ground truth】"
-                    + ("暂时连不上游戏，" if not connected else "刚连上还没拿到第一份背包快照，")
-                    + "看不到你现在的背包。如果用户问到持有的物品，先说一声"
-                    "『现在还没确认到背包，等一下再说』，别凭印象编。"
-                )
-            elif not connected:
-                age_s = max(0, int(time.time() - inv_at))
-                if inv:
-                    items = sorted(inv.items(), key=lambda kv: -kv[1])
-                    snippet = "、".join(f"{n}×{c}" for n, c in items)
-                    cache_line = f"上一次看到（{age_s}s 前）背包里是：{snippet}。"
-                else:
-                    cache_line = f"上一次看到（{age_s}s 前）背包是空的。"
-                summary = (
-                    f"【背包 ground truth — ⚠️ 已断连，下列可能过期】{cache_line}"
-                    "中间死过 / 掉落 / 被夺走都看不到，"
-                    "用户问到持有时一定要说『现在连不上游戏，"
-                    "上一次看到的是 ... 但不一定还准』。"
-                )
-            elif not inv:
-                summary = (
-                    "【背包 ground truth】你当前背包是空的。如果你刚才说过持有"
-                    "任何物品，那是幻想，立刻自己改口。"
-                )
-            else:
+                summary = prompts.t("INV_NO_DATA", lang=self._lang)
+            elif source == "live" and inv:
                 items = sorted(inv.items(), key=lambda kv: -kv[1])
-                snippet = "、".join(f"{n}×{c}" for n, c in items)
-                summary = (
-                    f"【背包 ground truth — 完整且唯一】你当前持有：{snippet}。"
-                    "**这一行就是你背包的全部内容**——任何这里没列出的物品都"
-                    "不在你身上。如果你刚才说过的话和这个列表对不上，立刻"
-                    "用第一人称自己更正回真实情况。"
+                pieces = "、".join(f"{n}×{c}" for n, c in items)
+                summary = prompts.t("INV_LIVE_NONEMPTY", lang=self._lang, pieces=pieces)
+            elif source == "live":
+                summary = prompts.t("INV_LIVE_EMPTY", lang=self._lang)
+            elif inv:  # cached + has items
+                age_s = max(0, int(time.time() - inv_at))
+                items = sorted(inv.items(), key=lambda kv: -kv[1])
+                pieces = "、".join(f"{n}×{c}" for n, c in items)
+                summary = prompts.t(
+                    "INV_CACHED_NONEMPTY", lang=self._lang, age_s=age_s, pieces=pieces
                 )
+            else:  # cached + empty
+                age_s = max(0, int(time.time() - inv_at))
+                summary = prompts.t("INV_CACHED_EMPTY", lang=self._lang, age_s=age_s)
+
             return Ok({
                 "summary": summary,
                 "inventory": inv,
                 "snapshot_at": inv_at,
                 "connected": connected,
+                "source": source,
             })
         except Exception as exc:
             return Err(f"{type(exc).__name__}: {exc}")

@@ -42,9 +42,14 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
     EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
+    EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+    MAX_AI_AWARE_WINDOW_MSGS,
+    MAX_KNOWN_POOL_FACTS,
+    MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS,
     IGNORED_REINFORCEMENT_DELTA,
     MEMORY_RECHECK_ENABLED,
     MEMORY_RECHECK_INITIAL_DELAY_SECONDS,
+    MEMORY_REFINE_CRON_INTERVAL_SECONDS,
     MEMORY_RECHECK_INTERVAL_SECONDS,
     MEMORY_SERVER_PORT,
     USER_CONFIRM_DELTA,
@@ -376,6 +381,9 @@ _INITIAL_DELAY_SIGNAL = 60           # Signal extraction 首次 (原 40s)
 _INITIAL_DELAY_REBUTTAL = 100        # Rebuttal 首次 (原 300s)
 _INITIAL_DELAY_AUTO_PROMOTE = 150    # Auto-promote 首次 (原 300s, 错开 rebuttal 50s)
 _INITIAL_DELAY_ARCHIVE = 250         # Archive sweep 首次 (原 3600s, 大幅前移确保短会话用户也能跑到)
+_INITIAL_DELAY_PERSONA_REFINE = 400  # PERSONA_REFINE 首次（与 reflection refine 错峰 100s）
+_INITIAL_DELAY_REFLECTION_REFINE = 500  # REFLECTION_REFINE 首次
+_INITIAL_DELAY_REFLECTION_SYNTHESIS = 200  # REFLECTION_SYNTHESIS 首次（错过 AUTO_PROMOTE 150 与 ARCHIVE 250，给 SignalLoop 60s + 一两次实际 fact 产出留余地）
 
 # ── 持久化维护状态（跨重启保留 review_clean 标记） ──────────────────
 _maint_state: dict[str, dict] = {}   # {角色名: {"review_clean": bool, "last_review_ts": str}}
@@ -730,23 +738,34 @@ REBUTTAL_SQL_ROW_LIMIT = 200
 
 
 def _coerce_db_ts(ts) -> datetime | None:
-    """归一化 SQL 行里的 timestamp 字段为 datetime。
+    """归一化 SQL 行里的 timestamp 字段为 **naive** datetime。
 
     SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
     memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
     表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+
+    若解析出 TZ-aware datetime（import / migration 路径写入 "...+00:00"
+    之类），强制 `replace(tzinfo=None)` 转 naive——本文件所有 cursor /
+    比较都按 naive 语义工作（last_b_check_ts / last_a_msg_ts / facts.json
+    `created_at` 全是 naive `datetime.now().isoformat()`），aware 跟 naive
+    比较会抛 TypeError 让 caller 永久哑火（Codex P1+P2 round-7/8 on PR
+    #1408 双侧 case）。
     """
     if isinstance(ts, datetime):
-        return ts
-    if isinstance(ts, str):
+        result = ts
+    elif isinstance(ts, str):
         try:
-            return datetime.fromisoformat(ts)
+            result = datetime.fromisoformat(ts)
         except ValueError:
             try:
-                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+                result = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
             except ValueError:
                 return None
-    return None
+    else:
+        return None
+    if result.tzinfo is not None:
+        result = result.replace(tzinfo=None)
+    return result
 
 
 def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
@@ -806,6 +825,76 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
         except (json.JSONDecodeError, TypeError):
             continue
     return user_msgs
+
+
+def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
+    """Path B 用的全消息提取——保留 user + ai 两种 type，输出 message_dict
+    list 直接喂 ``convert_to_messages``。
+
+    跟 ``_extract_user_messages_from_rows`` 的区别：
+    - 收 type ∈ {'human', 'ai'} 两种（不再仅 human）
+    - 返回 [{'type': 'human'|'ai', 'data': {'content': str}}, ...] 而不是
+      纯 str list，让下游 ``convert_to_messages`` 还原成 HumanMessage/AIMessage
+      让 ``FactStore._format_conversation`` 渲染时按 type → name_mapping 出
+      "{MASTER_NAME} | xxx" / "{LANLAN_NAME} | xxx" 形式，path B prompt 据此
+      判每条 fact 的 source 归属（user_observation / ai_disclosure）
+
+    PR #1399 的教训：这里返回 list[dict] 让 caller 拼 message_dicts 后用
+    ``convert_to_messages(message_dicts)`` 直接转——**不要** ``json.dumps``
+    包一层（convert_to_messages 只接 list，str 会被静默吞成 []）。
+    """
+    out: list[dict] = []
+    for _, _, msg_json in rows:
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if not isinstance(msg, dict):
+                continue
+            msg_type = msg.get('type')
+            if msg_type not in ('human', 'ai'):
+                continue
+            content = msg.get('data', {}).get('content', '')
+            # content 归一化：内部可能是 str 或 [{type:'text', text:'...'}, ...]
+            # 后者拼回单个 str（path B prompt 不需要细粒度 part 结构，
+            # FactStore._format_conversation 把 list content 拼成 ''.join 也是
+            # 同样语义）。
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = [
+                    p.get('text', '')
+                    for p in content
+                    if isinstance(p, dict) and p.get('type') == 'text'
+                ]
+                text = ''.join(parts)
+            else:
+                continue
+            if not text.strip():
+                continue
+            out.append({'type': msg_type, 'data': {'content': text}})
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
+
+
+def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
+    """只保留首条 human msg 到末条 human msg 之间（含两端）的消息。
+
+    Product thesis 防廉价层污染：AI 在首条 user msg **之前**的内容是 user
+    还没印证的 proactive 试探，AI 在末条 user msg **之后**的内容是 user
+    还没回应过的独白——两段都是廉价层，不该当 fact 沉淀。只有夹在两条
+    user msg 中间的 AI 内容才意味着 "user 看到了 / 认可了这段对话上下
+    文"，才有资格被 path B 拣回当 ai_disclosure fact。
+
+    完全无 human msg → 返 []（caller 视作 AI-only 窗口跳过）。
+    只有一条 human msg → 返该条（bracket 退化为单点，仍合法：那条本身
+    就是 user 发声，path B 可借 known_pool 看相邻 AI 上下文）。
+    """
+    human_indices = [
+        i for i, m in enumerate(message_dicts) if m.get('type') == 'human'
+    ]
+    if not human_indices:
+        return []
+    return message_dicts[human_indices[0]:human_indices[-1] + 1]
 
 
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
@@ -1755,6 +1844,238 @@ async def _adispatch_evidence_signals(
     return all_ok
 
 
+async def _run_path_b(name: str, state: dict) -> None:
+    """Path B: AI-aware Stage-1 only（不进 Stage-2 evidence loop）。
+
+    Piggyback 在 path A 循环里，每 ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS`` 次 A
+    tick 触发一次。窗口下游边界用 path A 实际处理过的最晚 msg ts，保证 B
+    看到的消息严格被 A 看过——避免"A scan SQL 完成那一刻之后才入 SQLite 的
+    msg 被 B 抢先处理"的 race。
+
+    设计要点：
+      1. 窗口 = [last_b_check_ts, last_a_msg_ts]。cold start last_b 推算 =
+         last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MINUTES（取两种 A 触发
+         节律的较保守值，cover sparse turn 场景）
+      2. SQL 层 LIMIT MAX_AI_AWARE_WINDOW_MSGS 防极端长窗口爆 prompt
+      3. 已知 fact 池：从 facts.json 拉 created_at ≥ last_b 的 fact（不设
+         上界——A idle delay 让最新一批 A facts 的 created_at 略晚于
+         last_a_msg_ts，设上界会把它们整批漏掉），按 importance DESC 取
+         前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出层主动去重 path A
+         已抽内容
+      4. 落盘 default_source='ai_disclosure'；LLM 显式 source 字段优先
+         注：喂给 Stage-1 的消息会先 trim 到 user-msg-bracket（首条 user msg
+         到末条 user msg 之间，含两端）——product thesis 防廉价层污染，
+         首尾的 AI 残段不该被 path B 当 fact 沉淀
+      5. Cursor 推进规则：
+         - SQL 返 0 rows → 推到 last_a_msg_ts（窗口确实空）
+         - SQL 返 N rows 但全 system/空 msg → 推到 last fetched row ts
+           （未取尾巴可能有内容）
+         - Stage-1 LLM 终态失败（aextract_facts_with_known_pool 返 None）
+           → cursor 不推进，下次 trigger 重试同窗口（fact dedup 防双写）
+         - 其它正常路径 → 推到 last fetched row ts（截断时 < last_a_msg_ts）
+
+    与 path A 区别：
+    - 不进 Stage-2 evidence loop（_apersist_new_facts 写 signal_processed=True
+      + aextract_facts_and_detect_signals 内部 source filter 双重防御）
+    - Stage-1 失败 swallow 不抛（path A 自己的 FactExtractionFailed 有独立
+      retry 路径，B 是补抓性质不该阻塞），但 cursor 必须保留——失败窗口
+      下次 trigger 重试，不能折叠成"成功 0 抽"静默 skip
+    """
+    last_a_msg_ts = state.get('last_a_msg_ts')
+    if last_a_msg_ts is None:
+        # A 还没成功处理过任何 batch，B 无源可看
+        return
+    # 防御性 TZ normalize：`_coerce_db_ts` 已经在写入 state 时归一化成 naive
+    # 是主路径保护，但外部 state injection / 升级前残留的 aware 值仍可能漏进
+    # 来——下面所有 cursor 比较 + known_pool created_at 比较都按 naive 工作，
+    # 这里再 strip 一遍把整个 _run_path_b 变成自包含 naive-only 域（Codex P2
+    # round-8 on PR #1408 双侧 case）。
+    if last_a_msg_ts.tzinfo is not None:
+        last_a_msg_ts = last_a_msg_ts.replace(tzinfo=None)
+        state['last_a_msg_ts'] = last_a_msg_ts
+
+    last_b = state.get('last_b_check_ts')
+    if last_b is not None and last_b.tzinfo is not None:
+        last_b = last_b.replace(tzinfo=None)
+        state['last_b_check_ts'] = last_b
+    if last_b is None:
+        # Cold start lookback：B 第一次 trigger 时 last_b 无值，需要估个起点。
+        # A tick 不一定按 IDLE gate 节律走——也可能被 turn-count gate
+        # (EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS 累积) 触发，或在 sparse turn
+        # 场景（user 间歇性发声、turn 间隔 >> IDLE_MIN）下两 tick 之间跨度
+        # 远超 IDLE_MIN。只按 piggyback 估算 (N_TICKS × IDLE_MIN) 会让 cold
+        # start 起点落在 A 真正处理过的范围之内，B 永久 skip 那段之前的
+        # AI-only msg（Codex P2 round-6 on PR #1408）。
+        # 修法：取 max(piggyback 节律, turn-count 节律) × IDLE_MIN 当估算
+        # 上限。默认下 max(3, 10) × 10min = 100min。LIMIT 兜底防爆 prompt，
+        # Stage-1 dedup hash 防双写——overshoot 是安全的。
+        cold_start_ticks_estimate = max(
+            EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+            EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
+        )
+        estimated_a_coverage = timedelta(
+            minutes=cold_start_ticks_estimate * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+        )
+        last_b = last_a_msg_ts - estimated_a_coverage
+
+    if last_b >= last_a_msg_ts:
+        # 窗口为空（B 已追上 A）
+        return
+
+    try:
+        rows = await time_manager.aretrieve_original_by_timeframe(
+            name, last_b, last_a_msg_ts,
+            limit_rows=MAX_AI_AWARE_WINDOW_MSGS,
+        )
+    except Exception as e:
+        logger.warning(f"[PathB] {name}: 读取窗口失败: {e}")
+        return
+    if not rows:
+        # `aretrieve_original_by_timeframe` 在 SQL exception / engine init 失败
+        # / 维护态等情况下都 swallow + 返 []（见 timeindex.py 实现），从 caller
+        # 端无法区分"真空窗口"vs"transient 读失败"。保守起见 cursor 不推：
+        # - 真空窗口：A 刚成功处理了同段范围，B 这里几乎不可能真空（除非
+        #   A 的 SQL 看到 row 但 B 的 SQL 同段读不到——意味着 SQL 层异常）。
+        #   下次 B trigger 再 query 一次 0 rows 也是常数代价（SQLite 空范围
+        #   scan 极快）。
+        # - Transient 失败：保留 cursor 让下次 trigger 重试该窗口，避免把整段
+        #   [last_b, last_a_msg_ts] 永久 skip（Codex P1 round-5 on PR #1408）。
+        logger.debug(
+            f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
+            f"{last_a_msg_ts.isoformat(timespec='seconds')} 取回 0 rows "
+            f"(可能 SQL transient 失败 swallow 成 []), 保留 cursor 下次 trigger 复查"
+        )
+        return
+
+    # 解析 SQL 实际取到的最后一行 ts —— 后续所有 cursor 推进点都用这个值，
+    # 不能用 last_a_msg_ts。差别只在窗口被 MAX_AI_AWARE_WINDOW_MSGS LIMIT
+    # 截断时显现：截断时 last_fetched_ts < last_a_msg_ts，未取到的尾巴留
+    # 给下次 B trigger 继续处理；若推到 last_a_msg_ts 会让尾巴永久 skip
+    # （Codex P1 round-1 on PR #1408, P2 round-2 covers filtered-empty case）。
+    last_fetched_ts = _coerce_db_ts(rows[-1][0])
+    if last_fetched_ts is None:
+        # 防御：_coerce_db_ts 解析失败退回 last_a_msg_ts（避免 cursor 不动
+        # 死循环）。正常路径不触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
+        last_fetched_ts = last_a_msg_ts
+
+    # 同 ts 簇 LIMIT 截断死循环防御（Codex P2 round-3 on PR #1408）：
+    # aretrieve_original_by_timeframe 用 inclusive `BETWEEN`，若窗口里
+    # > MAX_AI_AWARE_WINDOW_MSGS 行共享同一 ts（极端情况：bulk import 或
+    # store_conversation 给一次请求里所有 row 写同 ts），那么 LIMIT 切出
+    # 的最早 N 行全在同 ts，cursor 推到 last_fetched_ts 后下次 BETWEEN
+    # 仍把这批 row 全部捞回来 → 无限循环、该 ts 簇后面的 row 永远 skip。
+    # 检测：LIMIT 拉满 AND 所有 fetched row 同 ts → cursor +1μs 越过该 ts。
+    # 代价：该 ts 簇 LIMIT 之后的 tail row 被 skip（罕见——一次正常对话
+    # turn 写 2~5 行，远 < MAX_AI_AWARE_WINDOW_MSGS=200）。无更便宜的修法
+    # 除非把 cursor 改成 (ts, rowid) 复合键、改写 SQL，太重不划算。
+    first_fetched_ts = _coerce_db_ts(rows[0][0])
+    if (
+        len(rows) >= MAX_AI_AWARE_WINDOW_MSGS
+        and first_fetched_ts is not None
+        and last_fetched_ts == first_fetched_ts
+    ):
+        logger.warning(
+            f"[PathB] {name}: 同 ts 簇 {first_fetched_ts.isoformat(timespec='microseconds')} "
+            f"行数 ≥ LIMIT ({MAX_AI_AWARE_WINDOW_MSGS})，cursor +1μs 越过避免死循环；"
+            f"该 ts 簇 LIMIT 之后的 tail row 会被 skip"
+        )
+        last_fetched_ts = last_fetched_ts + timedelta(microseconds=1)
+
+    message_dicts = _extract_role_tagged_messages_from_rows(rows)
+    if not message_dicts:
+        # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
+        # 截断时未取尾巴可能含有效 msg。
+        state['last_b_check_ts'] = last_fetched_ts
+        return
+
+    # 截到 user msg bracket：首条 user msg 到末条 user msg 之间（含两端）。
+    # Product thesis 防廉价层污染——首尾的 AI 残段（user 没印证过的试探 /
+    # user 没回应过的独白）不该当 fact 沉淀。
+    message_dicts = _trim_to_user_msg_bracket(message_dicts)
+    if not message_dicts:
+        # 窗口内完全无 user msg → AI-only 廉价层，故意 skip。cursor 照常推
+        # 进，下次 B trigger 不会再来覆盖这段。
+        logger.debug(
+            f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')} 无 user msg bracket "
+            f"(纯 AI-only 内容，product thesis 跳过)"
+        )
+        state['last_b_check_ts'] = last_fetched_ts
+        return
+
+    from utils.llm_client import convert_to_messages
+    messages = convert_to_messages(message_dicts)
+
+    # 已知 fact 池：用 path A 在本 B 窗口内 / 之后写的 fact 当 do-not-repeat 提示。
+    # 只设下界 ``created_at >= last_b``、不设上界（CodeRabbit on PR #1408）：
+    # A 的 idle/polling 延迟让"刚扫完本 B 窗口"那批 fact 的 created_at 普遍
+    # 略晚于 last_a_msg_ts，若用 created_at <= last_a_msg_ts 过滤会把最新一
+    # 批 A facts 整批排除——known_pool 对"刚被 A 抽过的内容"失效，path B 更
+    # 容易和 A 重复抽同一窗口。多包含一些"窗口后"的 A fact 是安全的：known
+    # _pool 只是 LLM 的提示，多余条目至多让 B 多抑制少量新 fact，且 Stage-1
+    # dedup hash 仍是兜底。按 importance DESC 取前 MAX_KNOWN_POOL_FACTS。
+    try:
+        all_facts = await fact_store.aload_facts(name)
+    except Exception as e:
+        logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
+        all_facts = []
+
+    # Importance 用 safe_importance 兜底——legacy/手改 facts.json 里可能
+    # 有 'importance': "high" / None / list 等脏值，raw int(...) cast 会
+    # ValueError 把整个 B 跑挂、下次 trigger 又同样脏值同样挂，path B 对该
+    # 角色永久哑火（Codex P2 round-1 on PR #1408）。
+    from memory.facts import safe_importance
+
+    known_pool: list[dict] = []
+    for f in all_facts:
+        if not isinstance(f, dict):
+            continue
+        created_at_raw = f.get('created_at') or ''
+        try:
+            # 完整 ISO 解析（含微秒）—— `created_at` 是 datetime.now().isoformat()
+            # 写盘的，截到 [:19] 会丢微秒，让 created_at == last_b + 0.x 秒的
+            # fact 在 `>= last_b` 比较里被误判出窗口（CodeRabbit on PR #1408）。
+            created_at = datetime.fromisoformat(created_at_raw)
+        except (ValueError, TypeError):
+            continue
+        # 防御：本仓库 `_apersist_new_facts` 写的 `created_at` 都是 naive
+        # datetime.now().isoformat()，但若 import/migration 路径写入了 TZ-aware
+        # 值（如 "...+00:00"），跟 naive 的 last_b 比较会抛 TypeError 让
+        # `_run_path_b` 一直 fail，path B 对该角色永久哑火（Codex P1 round-7
+        # on PR #1408）。比较口径上把 aware 当 naive 处理——绝大多数场景就是
+        # 同一 wall-clock 时间，时区差异不应让 fact 抽取整段挂掉。
+        if created_at.tzinfo is not None:
+            created_at = created_at.replace(tzinfo=None)
+        if created_at >= last_b:
+            known_pool.append(f)
+    known_pool.sort(key=lambda f: -safe_importance(f))
+    known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
+
+    persisted = await fact_store.aextract_facts_with_known_pool(
+        name, messages, known_pool,
+    )
+    if persisted is None:
+        # Stage-1 LLM 终态失败（重试耗尽）。cursor 保留不推进，下次 B trigger
+        # 重试同窗口（fact dedup hash 防双写）。区分 None vs [] 至关重要：
+        # 若把失败折叠成"成功 0 抽"，失败窗口会被永久 skip（CodeRabbit / Codex
+        # P1 round-2 on PR #1408）。
+        logger.warning(
+            f"[PathB] {name}: Stage-1 终态失败，保留 cursor 下次 trigger 重试 "
+            f"(window={last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')})"
+        )
+        return
+    if persisted:
+        logger.info(
+            f"[PathB] {name}: AI-aware Stage-1 抽出 {len(persisted)} 条新 fact "
+            f"(window={last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')}, "
+            f"known_pool={len(known_pool)})"
+        )
+
+    state['last_b_check_ts'] = last_fetched_ts
+
+
 async def _periodic_signal_extraction_loop():
     """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
     catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。
@@ -1818,6 +2139,15 @@ async def _periodic_signal_extraction_loop():
                     return
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
+                    # 窗口里没 user msg —— 纯 proactive / AI 自言自语 / tool
+                    # turn。这种内容**故意**不进 memory：
+                    # 1. Path A 抽 user_observation fact 需要 user 发声当源
+                    # 2. Path B 拣 AI 自我披露**也**只在 user 有 engagement
+                    #    的窗口里跑（B 是 piggyback A，不是独立路径）
+                    # 设计原则：用户不搭理 = 内容廉价层 ("90% 没心没肺"
+                    # product thesis)，不该被自动当 fact 沉淀污染 memory。
+                    # cursor 照常推进、计数清零，让下次有 user msg 的窗口
+                    # 直接进入正常 A+B 流程。
                     _signal_check_mark_done(name, now)
                     return
 
@@ -1827,7 +2157,12 @@ async def _periodic_signal_extraction_loop():
                     {'type': 'human', 'data': {'content': m}}
                     for m in user_msgs_text
                 ]
-                messages = convert_to_messages(json.dumps(message_dicts))
+                # convert_to_messages 只接 list，不再解 JSON 字符串（PR #547 以来的契约）；
+                # 这里之前的 json.dumps 让函数走 isinstance(data, list)==False 分支直接返回 []，
+                # → messages=[] → _format_conversation render 出空字符串 → Stage-1 prompt
+                # 里 ======以下为对话====== 跟 ======以上为对话====== 之间为空 → LLM 合理
+                # 返回 []，整套 fact 抽取 + 后续 Stage-2 evidence 都被静默跳过。
+                messages = convert_to_messages(message_dicts)
 
                 try:
                     persisted, signals, batch_fact_ids = await fact_store.aextract_facts_and_detect_signals(
@@ -1880,6 +2215,34 @@ async def _periodic_signal_extraction_loop():
 
                 # Stage-1 + dispatch 都跨过了，cursor 推进。
                 _signal_check_mark_done(name, now)
+
+                # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
+                # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
+                # 用真实 msg ts 而不是 wall-clock now：保证 path B 看到的
+                # 消息严格被 path A 看过，避免"A scan SQL 完成那一刻之后才入
+                # SQLite 的 msg 被 B 抢先处理"的 race。
+                state = _signal_check_state.setdefault(
+                    name, {'turns_since': 0, 'last_check_ts': None},
+                )
+                last_msg_ts = _coerce_db_ts(rows[-1][0])
+                if last_msg_ts is not None:
+                    state['last_a_msg_ts'] = last_msg_ts
+
+                # Path B trigger：A 成功跑完后 bump counter；达 N 触发
+                # _run_path_b（AI-aware Stage-1 only，详见函数 docstring）。
+                state['b_tick_counter'] = state.get('b_tick_counter', 0) + 1
+                if state['b_tick_counter'] >= EVIDENCE_AI_AWARE_EVERY_N_A_TICKS:
+                    state['b_tick_counter'] = 0
+                    try:
+                        await _run_path_b(name, state)
+                    except Exception as e:
+                        # B 失败完全不应该影响 A 路径（A 已经在 mark_done 之
+                        # 后了）；只 log warning。下次 b_tick_counter 又满 N
+                        # 时 B 自动重试，cursor 是 last_b_check_ts 推进的，
+                        # 失败时不推 cursor → 下次 B 重新覆盖同窗口。
+                        logger.warning(
+                            f"[PathB] {name}: AI-aware Stage-1 失败 (skip 本轮，下次 B trigger 重试): {e}"
+                        )
             except Exception as e:
                 logger.debug(f"[SignalLoop] {name}: 处理失败: {e}")
 
@@ -1980,6 +2343,227 @@ async def _amaybe_trigger_negative_keyword_hook(
         logger.info(
             f"[NegKW] {lanlan_name}: 关键词触发 {len(signals)} 个 disputation 信号"
         )
+
+
+# ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
+
+
+async def _run_persona_refine_for_character(character: str) -> None:
+    """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
+    skip / 候选不足 → 整 pass no-op。"""
+    from memory.refine import (
+        MemoryRefineEngine,
+        REFINE_ENTITY_KEY,
+        annotate_entry,
+    )
+
+    pm = persona_manager
+    if pm is None:
+        return
+    persona = await pm.aensure_persona(character)
+    candidates_by_entity: dict[str, list[dict]] = {}
+    for entity in ('master', 'neko', 'relationship'):
+        section = pm._get_section_facts(persona, entity)
+        entries = [
+            annotate_entry(e, type_='persona', entity=entity)
+            for e in section
+            if isinstance(e, dict) and not e.get('protected') and e.get('id')
+        ]
+        if entries:
+            candidates_by_entity[entity] = entries
+    if not candidates_by_entity:
+        return
+
+    engine = MemoryRefineEngine(_config_manager)
+
+    async def _apply(cluster, actions, cluster_hash):
+        # cluster 内成员同 entity（engine 强制），从第一个非空成员读
+        ent = next(
+            (e.get(REFINE_ENTITY_KEY) for e in cluster
+             if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
+            'master',
+        )
+        await pm.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
+
+    result = await engine.refine_pass(
+        candidates_by_entity,
+        apply_fn=_apply,
+        scope_label=f"persona/{character}",
+    )
+    if result['clusters_resolved'] or result['clusters_failed']:
+        logger.info(
+            f"[PersonaRefine] {character}: seen={result['clusters_seen']}, "
+            f"skipped={result['clusters_skipped']}, "
+            f"resolved={result['clusters_resolved']}, "
+            f"failed={result['clusters_failed']}"
+        )
+
+
+async def _periodic_persona_refine_loop():
+    """每 N 秒对每个角色跑一轮 PERSONA_REFINE。
+
+    embedding 服务关 / powerful memory 关 → no-op；engine 内 cluster_hash
+    skip 让"刚审过"的 cluster 零成本跳过，所以高频触发不会浪费 LLM
+    token。初始 delay 错峰 reflection refine 100s。"""
+    await asyncio.sleep(_INITIAL_DELAY_PERSONA_REFINE)
+    interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
+    while True:
+        if not await _ais_powerful_memory_enabled():
+            await asyncio.sleep(interval)
+            continue
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[PersonaRefine] 加载角色列表失败: {e}")
+            await asyncio.sleep(interval)
+            continue
+        for name in catgirl_names:
+            try:
+                await _run_persona_refine_for_character(name)
+            except Exception as e:
+                logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
+        await asyncio.sleep(interval)
+
+
+async def _run_reflection_refine_for_character(character: str) -> None:
+    """单角色 reflection refine pass。cluster 内可混入同 entity 的
+    absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
+    层代码兜底）。"""
+    from memory.refine import (
+        MemoryRefineEngine,
+        REFINE_ENTITY_KEY,
+        annotate_entry,
+    )
+
+    # 用 `engine_ref` 而不是 `re` —— 后者遮蔽 Python 内置 `re` 模块
+    # （CodeRabbit nitpick #1392）。
+    engine_ref = reflection_engine
+    fs = fact_store
+    if engine_ref is None or fs is None:
+        return
+
+    refls = await engine_ref.aload_reflections(character, include_archived=False)
+    if not refls:
+        return
+    facts = await fs.aload_facts(character)
+
+    candidates_by_entity: dict[str, list[dict]] = {}
+    for entity in ('master', 'neko', 'relationship'):
+        entity_refls = [
+            annotate_entry(r, type_='reflection', entity=entity)
+            for r in refls
+            if isinstance(r, dict) and r.get('entity') == entity and r.get('id')
+        ]
+        entity_facts = [
+            annotate_entry(f, type_='fact', entity=entity)
+            for f in facts
+            if isinstance(f, dict) and f.get('entity') == entity
+            and f.get('absorbed') and f.get('id')
+        ]
+        if entity_refls:  # 至少要有 reflection；fact 是只读补料
+            candidates_by_entity[entity] = entity_refls + entity_facts
+    if not candidates_by_entity:
+        return
+
+    engine = MemoryRefineEngine(_config_manager)
+
+    async def _apply(cluster, actions, cluster_hash):
+        ent = next(
+            (e.get(REFINE_ENTITY_KEY) for e in cluster
+             if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
+            'master',
+        )
+        await engine_ref.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
+
+    result = await engine.refine_pass(
+        candidates_by_entity,
+        apply_fn=_apply,
+        scope_label=f"reflection/{character}",
+    )
+    if result['clusters_resolved'] or result['clusters_failed']:
+        logger.info(
+            f"[ReflectionRefine] {character}: seen={result['clusters_seen']}, "
+            f"skipped={result['clusters_skipped']}, "
+            f"resolved={result['clusters_resolved']}, "
+            f"failed={result['clusters_failed']}"
+        )
+
+
+async def _periodic_reflection_refine_loop():
+    """每 N 秒对每个角色跑一轮 REFLECTION_REFINE。candidate pool 包含
+    active reflection + 同 entity 的 absorbed fact（fact 只读）。"""
+    await asyncio.sleep(_INITIAL_DELAY_REFLECTION_REFINE)
+    interval = MEMORY_REFINE_CRON_INTERVAL_SECONDS
+    while True:
+        if not await _ais_powerful_memory_enabled():
+            await asyncio.sleep(interval)
+            continue
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[ReflectionRefine] 加载角色列表失败: {e}")
+            await asyncio.sleep(interval)
+            continue
+        for name in catgirl_names:
+            try:
+                await _run_reflection_refine_for_character(name)
+            except Exception as e:
+                logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
+        await asyncio.sleep(interval)
+
+
+async def _periodic_reflection_synthesis_loop():
+    """每 N 秒对每个角色跑一轮 reflection 合成。
+
+    与其他 9 条 ``_periodic_*_loop`` 对偶——signal_extraction 把对话抽成 fact，
+    本循环把 unabsorbed fact 综合成 pending reflection，auto_promote_loop 再把
+    pending 推到 confirmed/promoted。整条链路全部在 memory_server 进程内长跑，
+    不依赖 ``/api/proactive_chat`` HTTP trigger（也就不再依赖前端浏览器开着）。
+
+    历史背景（为啥要这条循环）：reflection 合成原本只挂在
+    ``main_routers/system_router.py`` 的 proactive_chat handler 里
+    （``_mem_client.post('/reflect/{name}')``，PR #1015 顺手塞的），导致：
+      - 前端关 / proactive 不触发 / 任一 frontend gate false → ``/reflect``
+        永不被调 → ``reflections.json`` 永不增长
+      - reflection 生命周期实际上跟前端 setTimeout 强耦合，违背"长跑后端服务
+        自己保证记忆生态"的设计意图
+
+    Gate 全靠 ``reflection_engine.synthesize_reflections`` 内置：
+      - ``len(unabsorbed) < MIN_FACTS_FOR_REFLECTION (=5)`` → 直接返回 []
+      - 同批 source_fact_ids → 同 rid 幂等 short-circuit，无新 fact 时 LLM 不调
+      - ``REFLECTION_SYNTHESIS_FACTS_MAX (=20)`` cap 单次输入规模
+    所以本循环只做调度，不重复加 gate；间隔常量
+    ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` 控制最大调用频率。
+
+    与 powerful_memory 开关：synthesize_reflections 不在 evidence-RFC 引入的
+    新 LLM 路径里——它是 RFC 之前就存在的合成机制（pending reflection 是 RFC
+    前就有的，evidence 只是给它做了状态推进），所以**不**受 powerful_memory 关
+    闭影响。这跟 refine / signal_extraction 不一样，对齐 idle_maintenance 里
+    "history 压缩 / review" 那两个子任务的处理。
+    """
+    await asyncio.sleep(_INITIAL_DELAY_REFLECTION_SYNTHESIS)
+    interval = MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS
+    while True:
+        try:
+            character_data = await _config_manager.aload_characters()
+            catgirl_names = list(character_data.get('猫娘', {}).keys())
+        except Exception as e:
+            logger.debug(f"[ReflectionSynth] 加载角色列表失败: {e}")
+            await asyncio.sleep(interval)
+            continue
+        for name in catgirl_names:
+            try:
+                results = await reflection_engine.synthesize_reflections(name)
+                if results:
+                    logger.info(
+                        f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 pending reflection"
+                    )
+            except Exception as e:
+                # 单角色合成失败不阻塞其他角色 / 下轮重试
+                logger.warning(f"[ReflectionSynth] {name} 合成异常: {e}")
+        await asyncio.sleep(interval)
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
@@ -2120,6 +2704,10 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(_periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(_periodic_slow_memory_recheck_loop())
+            # Phase A-4 / A-5: MemoryRefineEngine cron 接入
+            _spawn_background_task(_periodic_persona_refine_loop())
+            _spawn_background_task(_periodic_reflection_refine_loop())
+            _spawn_background_task(_periodic_reflection_synthesis_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
@@ -2570,8 +3158,13 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
     user_msgs = _extract_user_messages(messages)
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
-    # 靠这个 counter 在累积 10 turn 时触发 Stage-1+Stage-2，所以 per-turn
-    # bump 是 RFC 设计意图保留下来的，不能省。
+    # 靠这个 counter 在累积 N 轮时触发 _signal_check_one。
+    # 只在 user 有发声时 bump，**故意不**算 AI-only / proactive turn：
+    # path A 抽的是 user_observation fact，没 user 发声就抽不出料；
+    # path B 是 piggyback A 的 trigger 跑（不独立调度），也跟着只在 user
+    # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
+    # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
+    # memory；只有 user 印证过的才升级到神明降临层。
     try:
         if user_msgs:
             _signal_check_record_turn(lanlan_name)
