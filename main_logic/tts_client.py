@@ -2140,7 +2140,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         _dashscope_base_url = ""
 
     def _apply_dashscope_region():
-        """每次重建 SpeechSynthesizer 前调用，保证 module-global 是 worker 自己的地域/key。"""
+        """每次重建 SpeechSynthesizer 前调用（必须在 DASHSCOPE_GLOBAL_LOCK 内），
+        保证 module-global 是 worker 自己的地域/key。
+        """
         dashscope.api_key = audio_api_key
         try:
             configure_dashscope_sdk_urls(dashscope, _dashscope_base_url, websocket_path="inference")
@@ -2152,8 +2154,13 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 logger.error("DashScope TTS 默认地域重置失败: %s", reset_error, exc_info=True)
                 raise
 
-    _apply_dashscope_region()
-    
+    # 不在这里 eagerly 写 module-global：startup 到首次 _create_synthesizer 之间
+    # 没有任何 dashscope SDK 调用读 global；_create_synthesizer 重连时会在
+    # DASHSCOPE_GLOBAL_LOCK 内 _apply_dashscope_region。这里多一次 unlocked
+    # 写只会和并发的 /voice_preview / clone_voice 抢同一份 global → 重新
+    # 引入 Codex P1 #3258691457 已经修过的 cross-credential 错路由 race
+    # (Codex P1 #3258856950)。
+
     # CosyVoice 不需要预连接，直接发送就绪信号
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
     response_queue.put(("__ready__", True))
