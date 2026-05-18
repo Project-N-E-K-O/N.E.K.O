@@ -1099,7 +1099,34 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
 Live2DManager.prototype._restoreClickEffectState = async function(options = {}) {
     const restoreIdle = options && options.restoreIdle === true;
-    this._currentClickEffectId = null;
+    const expectedClickEffectId = options ? options.clickEffectId : null;
+    const expectedRestoreToken = options ? options.restoreToken : null;
+    const hasExpectedClickEffectId = expectedClickEffectId !== null && expectedClickEffectId !== undefined;
+    const hasExpectedRestoreToken = expectedRestoreToken !== null && expectedRestoreToken !== undefined;
+
+    const isCurrentRestore = () => {
+        if (hasExpectedRestoreToken && this._clickEffectRestoreToken !== expectedRestoreToken) {
+            return false;
+        }
+        if (hasExpectedClickEffectId && this._currentClickEffectId !== expectedClickEffectId) {
+            return false;
+        }
+        return true;
+    };
+
+    const finishClickEffectRestore = () => {
+        if (!isCurrentRestore()) {
+            return false;
+        }
+        this._currentClickEffectId = null;
+        this._clickEffectMotion = null;
+        return true;
+    };
+
+    if (!isCurrentRestore()) {
+        return false;
+    }
+
     if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
         try { this._clickEffectMotion.stop(); } catch (_) {}
     }
@@ -1107,23 +1134,35 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
 
     const restoreIdleMotion = async () => {
         if (!restoreIdle || typeof window.restoreLive2DIdleAnimationOnMainPage !== 'function') {
-            return;
+            return true;
+        }
+        if (!isCurrentRestore()) {
+            return false;
         }
         try {
-            await window.restoreLive2DIdleAnimationOnMainPage();
+            await window.restoreLive2DIdleAnimationOnMainPage({ shouldContinue: isCurrentRestore });
+            return isCurrentRestore();
         } catch (e) {
             console.warn('[ClickEffect] 恢复待机动作失败:', e);
+            return false;
         }
     };
 
     try {
         if (typeof this.smoothResetToInitialState === 'function') {
             await this.smoothResetToInitialState();
+            if (!isCurrentRestore()) {
+                return false;
+            }
             await restoreIdleMotion();
-            return;
+            return finishClickEffectRestore();
         }
     } catch (e) {
         console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
+    }
+
+    if (!isCurrentRestore()) {
+        return false;
     }
 
     try {
@@ -1134,6 +1173,7 @@ Live2DManager.prototype._restoreClickEffectState = async function(options = {}) 
         console.warn('[ClickEffect] 清除表情失败:', e);
     }
     await restoreIdleMotion();
+    return finishClickEffectRestore();
 };
 
 /**
@@ -1148,11 +1188,24 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         return false;
     }
     let didPlayEffect = false;
+    let clickEffectId = null;
+    const previousClickEffectId = this._currentClickEffectId;
+    const hadClickEffectState = Boolean(
+        previousClickEffectId ||
+        this._clickEffectRestoreTimer ||
+        this._clickEffectMotion
+    );
+    this._clickEffectRestoreToken = (this._clickEffectRestoreToken || 0) + 1;
+    const restoreToken = this._clickEffectRestoreToken;
 
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
         clearTimeout(this._clickEffectRestoreTimer);
         this._clickEffectRestoreTimer = null;
+    }
+
+    if (typeof this._cancelSmoothReset === 'function') {
+        this._cancelSmoothReset();
     }
     
     if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
@@ -1242,14 +1295,21 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }
 
         if (!didPlayEffect) {
-            console.log('[ClickEffect] 没有可播放的点击表情或动作，立即恢复旧点击状态');
-            await this._restoreClickEffectState({ restoreIdle: true });
+            console.log('[ClickEffect] 没有可播放的点击表情或动作，保持当前状态');
+            if (hadClickEffectState && previousClickEffectId && this._currentClickEffectId === previousClickEffectId) {
+                await this._restoreClickEffectState({
+                    restoreIdle: true,
+                    clickEffectId: previousClickEffectId,
+                    restoreToken
+                });
+            }
             return false;
         }
 
         // 3. 设置恢复定时器
         // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
-        const clickEffectId = Date.now();
+        this._clickEffectIdSeq = (this._clickEffectIdSeq || 0) + 1;
+        clickEffectId = this._clickEffectIdSeq;
         this._currentClickEffectId = clickEffectId;
         
         this._clickEffectRestoreTimer = setTimeout(() => {
@@ -1264,7 +1324,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态并恢复待机动作');
             // 复用统一恢复入口：smoothReset/clearExpression + restoreLive2DIdleAnimationOnMainPage
             // 与外层 triggerRandomEmotion 的恢复路径保持对偶，避免成功点击后丢失 saved idle motion
-            this._restoreClickEffectState({ restoreIdle: true }).catch(e => {
+            this._restoreClickEffectState({ restoreIdle: true, clickEffectId, restoreToken }).catch(e => {
                 console.warn('[ClickEffect] 恢复点击效果状态失败:', e);
             });
         }, duration);
@@ -1274,7 +1334,14 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
 
     } catch (error) {
         console.error('[ClickEffect] 播放临时效果失败:', error);
-        await this._restoreClickEffectState({ restoreIdle: true });
+        const restoreClickEffectId = clickEffectId || previousClickEffectId;
+        if (restoreClickEffectId && this._currentClickEffectId === restoreClickEffectId) {
+            await this._restoreClickEffectState({
+                restoreIdle: true,
+                clickEffectId: restoreClickEffectId,
+                restoreToken
+            });
+        }
         return false;
     }
 };
@@ -1794,6 +1861,11 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         clearTimeout(this._clickEffectRestoreTimer);
         this._clickEffectRestoreTimer = null;
     }
+    this._clickEffectRestoreToken = (this._clickEffectRestoreToken || 0) + 1;
+    const restoreToken = this._clickEffectRestoreToken;
+    if (typeof this._cancelSmoothReset === 'function') {
+        this._cancelSmoothReset();
+    }
 
     // 教程模式：直接随机播放表情
     if (window.isInTutorial) {
@@ -1898,7 +1970,8 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
 
     // 设置恢复定时器：在效果持续时间后清除表情，恢复到常驻/默认状态
     // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
-    const clickEffectId = Date.now();
+    this._clickEffectIdSeq = (this._clickEffectIdSeq || 0) + 1;
+    const clickEffectId = this._clickEffectIdSeq;
     this._currentClickEffectId = clickEffectId;
     
     this._clickEffectRestoreTimer = setTimeout(() => {
@@ -1911,25 +1984,9 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         }
         
         console.log('[Interaction] 点击效果持续时间结束，平滑恢复到默认状态');
-        this._currentClickEffectId = null;
-        // 待机动画恢复函数，等平滑恢复完成后再调用，避免被 smoothReset 停掉刚恢复的待机动画
-        const restoreIdleMotion = () => {
-            if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
-                window.restoreLive2DIdleAnimationOnMainPage();
-            }
-        };
-        if (typeof this.smoothResetToInitialState === 'function') {
-            this.smoothResetToInitialState().then(restoreIdleMotion).catch(e => {
-                console.warn('[Interaction] 平滑恢复失败，回退到即时恢复:', e);
-                if (typeof this.clearExpression === 'function') this.clearExpression();
-                restoreIdleMotion();
-            });
-        } else if (typeof this.clearExpression === 'function') {
-            this.clearExpression();
-            restoreIdleMotion();
-        } else {
-            restoreIdleMotion();
-        }
+        this._restoreClickEffectState({ restoreIdle: true, clickEffectId, restoreToken }).catch(e => {
+            console.warn('[Interaction] 恢复点击效果状态失败:', e);
+        });
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 

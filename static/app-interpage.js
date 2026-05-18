@@ -958,12 +958,29 @@
     // 原因：SDK 会检查 motionGroups 是否已有内容来判断动作是否已加载。
     // 如果放入 JSON 配置对象，SDK 会误认为动作已加载，跳过网络请求和解析。
     // =====================================================================
-    async function restoreLive2DIdleAnimationOnMainPage() {
+    async function restoreLive2DIdleAnimationOnMainPage(options = {}) {
         try {
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
+            const canContinue = () => {
+                if (!shouldContinue) return true;
+                try {
+                    return shouldContinue() !== false;
+                } catch (guardError) {
+                    console.warn('[Live2D Main] 待机动作恢复 guard 失败，跳过恢复:', guardError);
+                    return false;
+                }
+            };
+
             // 1. 获取当前角色名称，并作为当前任务的标识（防竞态）
             const initialLanlanName = window.lanlan_config?.lanlan_name;
             if (!initialLanlanName) {
                 console.log('[Live2D Main] 没有 lanlan_name，跳过恢复待机动作');
+                return;
+            }
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
                 return;
             }
 
@@ -973,6 +990,10 @@
 
             // 【竞态防护】如果中途角色被切换了，立刻中止
             if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             const charData = data['猫娘']?.[initialLanlanName];
             // 【修复】兼容新旧版字段，穿透 _reserved 读取 Live2D 待机动作
@@ -1010,6 +1031,10 @@
 
             // 【竞态防护】如果中途角色被切换了，立刻中止
             if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             const motionFiles = modelFilesData?.motion_files || [];
             if (!live2dIdleAnimation) {
@@ -1064,6 +1089,10 @@
             // 【最终竞态防护】加载完成后，确保角色没切走，且当前的 Live2D 模型实例还是我之前拿到的那个
             if (window.lanlan_config?.lanlan_name !== initialLanlanName || live2dManager?.getCurrentModel() !== live2dModel) {
                 console.log('[Live2D Main] 模型或角色已切换，中止待机动作播放');
+                return;
+            }
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
                 return;
             }
 
