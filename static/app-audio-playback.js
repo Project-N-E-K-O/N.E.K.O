@@ -407,9 +407,14 @@
         }
     }
 
-    // 与 isAssistantTurnPlaybackDrained 的 4-queue 判断对齐：少查 pendingAudioChunkMetaQueue
-    // 会在 header 到了 blob 还没到的 race 窗口里误判"空"——3 个队列是空的，
-    // 但 meta 还在排队等 blob。filter shouldSkip 是因为上游可能 mark 跳过项。
+    // 4 个队列 + 3 个 in-flight async flag，覆盖所有"音频还在路上"的状态。
+    // - 4 queue 对齐 isAssistantTurnPlaybackDrained（少查 pendingAudioChunkMetaQueue
+    //   会在 header 到了 blob 还没到的窗口里误判空）
+    // - 3 async flag 对齐 publishSpeechPlaybackState:86-92 的 pendingAudioWork：
+    //   processIncomingAudioBlobQueue 会先 shift 出 blob 再 await handleAudioBlob，
+    //   shift 之后 incomingAudioBlobQueue.length 是 0 但解码还在跑；decoder reset
+    //   同理是个 Promise 在 flight。这些都属于"未真正 idle"，arm watchdog 就是误伤。
+    // filter shouldSkip 是因为上游可能 mark 跳过项。
     function _hasPendingAudioWork() {
         var pendingMeta = S.pendingAudioChunkMetaQueue.some(function (item) {
             return item && !item.shouldSkip;
@@ -418,7 +423,10 @@
             S.scheduledSources.length > 0 ||
             S.audioBufferQueue.length > 0 ||
             pendingMeta ||
-            S.incomingAudioBlobQueue.length > 0
+            S.incomingAudioBlobQueue.length > 0 ||
+            !!S.pendingDecoderReset ||
+            !!S.decoderResetPromise ||
+            !!S.isProcessingIncomingAudioBlob
         );
     }
 
@@ -460,7 +468,10 @@
                 scheduledSources: S.scheduledSources.length,
                 audioBufferQueue: S.audioBufferQueue.length,
                 pendingAudioChunkMetaQueue: S.pendingAudioChunkMetaQueue.length,
-                incomingAudioBlobQueue: S.incomingAudioBlobQueue.length
+                incomingAudioBlobQueue: S.incomingAudioBlobQueue.length,
+                pendingDecoderReset: !!S.pendingDecoderReset,
+                decoderResetPromise: !!S.decoderResetPromise,
+                isProcessingIncomingAudioBlob: !!S.isProcessingIncomingAudioBlob
             };
             console.warn('[Audio] sticky speaking flag detected, force-resetting via cancel after ' +
                 STUCK_SPEAKING_FALLBACK_MS + 'ms with empty queues', snapshot);
