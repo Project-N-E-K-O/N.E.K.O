@@ -1144,8 +1144,9 @@ async function loadCurrentApiKey() {
                 // 一个旧 assistApiKeyQwen 字段；后来切回 qwen 当核心并换新 Key，
                 // 旧字段还在但已失效。保存时 _coreApiKeyInputDirty=false 会
                 // 优先用管理簿值 → coreApiKey 被悄悄 rollback 成旧 Key
-                // (Codex P1 #3258747306)。跳过它。
-                if (providerKey === data.coreApi) return;
+                // (Codex P1 #3258747306)。data.api_key 为空时不跳过 —— 那种情况
+                // step 1 没写过 keybook，仍然允许 assistApiKey<X> 提供初始值。
+                if (providerKey === data.coreApi && data.api_key) return;
                 const dataField = _apiKeyRegistry[providerKey].config_field;
                 if (!dataField || !data.hasOwnProperty(dataField)) return;
                 const val = data[dataField];
