@@ -192,7 +192,7 @@ class ObserveMixin:
         try:
             return (int(left, 16) ^ int(right, 16)).bit_count()
         except Exception:
-            return 0
+            return 64
 
 
     def _background_scene_change_distance(self) -> int:

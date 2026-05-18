@@ -870,10 +870,9 @@ class RuntimeMixin:
                 extraction.warnings.extend(region_extraction.warnings)
             except Exception as exc:
                 extraction.warnings.append(f"screen awareness {source} skipped: {exc}")
-                try:
-                    self._logger.debug("ocr_reader screen awareness {} skipped: {}", source, exc)
-                except Exception:
-                    pass
+                log_debug = getattr(self, "_log_debug", None)
+                if callable(log_debug):
+                    log_debug("ocr_reader screen awareness {} skipped: {}", source, exc)
 
         if regions or visual_features:
             self._last_screen_awareness_capture_at = now
@@ -1106,10 +1105,9 @@ class RuntimeMixin:
             self._screen_awareness_sample_last_error = ""
         except Exception as exc:
             self._screen_awareness_sample_last_error = str(exc)
-            try:
-                self._logger.debug("ocr_reader screen awareness sample skipped: {}", exc)
-            except Exception:
-                pass
+            log_debug = getattr(self, "_log_debug", None)
+            if callable(log_debug):
+                log_debug("ocr_reader screen awareness sample skipped: {}", exc)
 
 
     def _screen_templates_for_target(self, target: DetectedGameWindow) -> list[dict[str, Any]]:
@@ -1208,4 +1206,3 @@ class RuntimeMixin:
             OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
             OCR_CAPTURE_PROFILE_STAGE_GAME_OVER,
         }
-

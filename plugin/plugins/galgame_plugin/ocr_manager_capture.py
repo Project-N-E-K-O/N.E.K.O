@@ -241,10 +241,11 @@ class CaptureMixin:
                 return hashlib.sha1(small.tobytes()).hexdigest()[:16]
         except (AttributeError, OSError, ValueError):
             return ""
-        try:
-            return hashlib.sha1(repr(frame).encode("utf-8", "ignore")).hexdigest()[:16]
-        except Exception:
-            return ""
+        if isinstance(frame, str):
+            return hashlib.sha1(frame.encode("utf-8", "ignore")).hexdigest()[:16]
+        if isinstance(frame, bytes | bytearray):
+            return hashlib.sha1(bytes(frame)).hexdigest()[:16]
+        return ""
 
 
     @staticmethod
@@ -467,8 +468,10 @@ class CaptureMixin:
                     min_top_ratio,
                     round(title_bar_height / image_height + 0.02, 2),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            log_debug = getattr(self, "_log_debug", None)
+            if callable(log_debug):
+                log_debug("ocr_reader auto recalibrate client rect unavailable: {}", exc)
         top_values = [value for value in top_values if value >= min_top_ratio]
         if not top_values:
             top_values = [min_top_ratio]

@@ -763,6 +763,12 @@ class OcrReaderBridgeWriter:
                         self._logger.warning("ocr_reader session snapshot write failed: {}", exc)
                 except Exception:
                     pass
+            if cleanup_errors:
+                raise RuntimeError(
+                    f"ocr_reader session snapshot write failed: {exc}; "
+                    f"cleanup_errors={cleanup_errors}"
+                ) from exc
+            raise RuntimeError(f"ocr_reader session snapshot write failed: {exc}") from exc
 
     def _append_event(
         self,
@@ -866,4 +872,3 @@ class OcrReaderBridgeWriter:
         if _SPEAKER_PAREN_SUFFIX_RE.match(raw_text) is not None:
             return 0.80
         return 0.65
-

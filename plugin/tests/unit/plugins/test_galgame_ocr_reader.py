@@ -1170,12 +1170,12 @@ def test_ocr_session_snapshot_write_failure_is_nonfatal(
 
     monkeypatch.setattr(galgame_ocr_reader.os, "replace", _fail_replace)
 
-    writer.start_session(_window()[0])
+    with pytest.raises(RuntimeError, match="session snapshot write failed"):
+        writer.start_session(_window()[0])
 
     assert logger.warnings
     assert logger.warnings[0][0] == "ocr_reader session snapshot write failed: {}"
-    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
-    assert [event["type"] for event in events] == ["session_started"]
+    assert not (bridge_root / writer.game_id / "events.jsonl").exists()
 
 
 def test_ocr_choice_candidates_use_single_read_threshold_when_requested(tmp_path: Path) -> None:
@@ -1860,6 +1860,17 @@ def test_capture_image_hash_normalizes_non_rgb_frames() -> None:
     rgba = Image.new("RGBA", (16, 16), (32, 64, 128, 255))
 
     assert OcrReaderManager._capture_image_hash(rgb) == OcrReaderManager._capture_image_hash(rgba)
+
+
+def test_capture_image_hash_rejects_non_image_frames() -> None:
+    assert OcrReaderManager._capture_image_hash(object()) == ""
+
+
+def test_capture_image_hash_accepts_stable_text_frames() -> None:
+    assert OcrReaderManager._capture_image_hash("frame:1")
+    assert OcrReaderManager._capture_image_hash("frame:1") == OcrReaderManager._capture_image_hash(
+        "frame:1"
+    )
 
 
 def test_perceptual_hash_width_matches_requested_size() -> None:
@@ -2791,6 +2802,10 @@ def test_background_hash_distance_20_does_not_advance_visual_scene(
     assert manager._last_background_hash == "ff01010101010101"
     assert manager._pending_visual_scene_hash == ""
     assert manager._runtime.scene_ordering_diagnostic == "none"
+
+
+def test_malformed_background_hash_distance_does_not_suppress_change() -> None:
+    assert OcrReaderManager._hash_distance("not-a-hex-hash", "ffffffffffffffff") == 64
 
 
 def test_large_background_hash_distance_still_enters_pending_visual_scene(
