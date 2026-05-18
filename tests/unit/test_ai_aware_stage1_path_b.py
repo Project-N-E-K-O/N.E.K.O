@@ -779,6 +779,145 @@ async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_ske
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_triggered_for_ai_only_window_no_user_msgs():
+    """Regression (Codex P1 round-3 on PR #1408)：proactive / AI-only 触发的
+    窗口没有 human msg 时，path A 的 `_extract_user_messages_from_rows` 返
+    空 → 早 return + mark_done。但 path B 的存在意义就是补抓 AI 自我披露，
+    必须在 user_msgs 为空的早 return 路径里也 bump b_tick_counter 并在达
+    N 时跑 _run_path_b——否则 AI-only session 永远进不了 B，等于把 B 的
+    主要使命阉了。
+    """
+    import inspect
+    from app import memory_server
+
+    # 用源码扫描代替 mock 整套 _signal_check_one（依赖太多）：确认 user_msgs
+    # 检查之前已经记 last_a_msg_ts，user_msgs 空分支里有 b_tick_counter
+    # bump + _run_path_b trigger。
+    src = inspect.getsource(memory_server._periodic_signal_extraction_loop)
+
+    # 1. last_a_msg_ts 在 user_msgs 检查之前更新（state 共享给 AI-only 分支）
+    user_check_idx = src.find("if not user_msgs_text:")
+    last_a_set_idx = src.find("state['last_a_msg_ts']")
+    assert 0 < last_a_set_idx < user_check_idx, (
+        "last_a_msg_ts 必须在 `if not user_msgs_text:` 之前更新，"
+        "否则 AI-only 窗口的 B trigger 拿不到正确的下游边界"
+    )
+
+    # 2. user_msgs_text 为空的分支里必须能触发 path B
+    # 截取 `if not user_msgs_text:` 到下一个 return 之间的块
+    branch_start = user_check_idx
+    branch_end = src.find("return", branch_start)
+    branch_src = src[branch_start:branch_end + len("return")]
+    assert "b_tick_counter" in branch_src, (
+        "AI-only 早 return 路径里必须 bump b_tick_counter，"
+        "否则 B 在 AI-only session 里永远不 trigger"
+    )
+    assert "_run_path_b" in branch_src, (
+        "AI-only 早 return 路径里必须能 await _run_path_b 拣回 AI 自我披露"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_same_ts_cluster_overflow_advances_cursor_by_epsilon():
+    """Regression (Codex P2 round-3 on PR #1408)：
+    aretrieve_original_by_timeframe 用 inclusive BETWEEN，若窗口里
+    >= MAX_AI_AWARE_WINDOW_MSGS 行全在同一 ts（store_conversation 给一次
+    请求所有 row 同 ts，bulk import 等），cursor 推到 last_fetched_ts 后
+    下次 BETWEEN 仍把这批 row 全捞回来 → 无限循环。
+    检测：LIMIT 拉满 AND 所有 fetched row 同 ts → cursor +1μs 越过该 ts。
+    """
+    from app import memory_server
+    from config import MAX_AI_AWARE_WINDOW_MSGS
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=20)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 构造 MAX_AI_AWARE_WINDOW_MSGS 行全在同一 ts T（远早于 last_a_msg_ts，
+    # 模拟 bulk import / 同 batch 写入）
+    cluster_ts = last_b + timedelta(minutes=2)
+    same_ts_rows = [
+        (cluster_ts, f'sess_{i}', json.dumps({
+            'type': 'human', 'data': {'content': f'msg {i}'},
+        }))
+        for i in range(MAX_AI_AWARE_WINDOW_MSGS)
+    ]
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(
+        return_value=same_ts_rows,
+    )
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    # 关键断言：cursor 严格 > cluster_ts，下次 BETWEEN 不会再捞同 ts 簇
+    assert state['last_b_check_ts'] > cluster_ts, (
+        f"同 ts 簇 LIMIT 截断时 cursor 必须 +1μs 越过该 ts ({cluster_ts})，"
+        f"否则下次 BETWEEN inclusive 再捞同批 → 死循环。"
+        f"实际 cursor: {state['last_b_check_ts']}"
+    )
+    # 且只越过 1 微秒（不滥推到 last_a_msg_ts，否则中间正常的 ts 也被 skip）
+    assert state['last_b_check_ts'] == cluster_ts + timedelta(microseconds=1), (
+        f"epsilon 必须刚好 +1μs，实际推到 {state['last_b_check_ts']}"
+    )
+    assert state['last_b_check_ts'] < last_a_msg_ts, (
+        "epsilon bump 仍应远小于 last_a_msg_ts，让中间窗口正常被下次 B 处理"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
+    """对偶 test：LIMIT 拉满但 rows 跨多个 ts 时，cursor 推到 last fetched 即可
+    （不该 +1μs 越过——否则会 skip 掉刚好在 last_fetched_ts 的 tail row）。
+    """
+    from app import memory_server
+    from config import MAX_AI_AWARE_WINDOW_MSGS
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=30)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # MAX_AI_AWARE_WINDOW_MSGS 行，ts 均匀分布（不同 ts，模拟正常截断）
+    rows = [
+        (last_b + timedelta(seconds=i), f'sess_{i}', json.dumps({
+            'type': 'human', 'data': {'content': f'msg {i}'},
+        }))
+        for i in range(MAX_AI_AWARE_WINDOW_MSGS)
+    ]
+    expected_last_ts = rows[-1][0]
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=rows)
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    # 不该 epsilon bump——cursor 必须恰好 = last fetched ts
+    assert state['last_b_check_ts'] == expected_last_ts, (
+        f"diverse ts 截断时 cursor 应 = last fetched ({expected_last_ts}) "
+        f"无 epsilon bump，实际: {state['last_b_check_ts']}"
+    )
+
+
+@pytest.mark.unit
 def test_b_tick_counter_threshold_constant_sane():
     """N_A_TICKS 必须 >= 1（不能 0 否则每 A tick 都触发 B，退化成无 piggyback）。"""
     from config import (

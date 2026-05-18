@@ -1889,6 +1889,29 @@ async def _run_path_b(name: str, state: dict) -> None:
         # 死循环）。正常路径不触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
         last_fetched_ts = last_a_msg_ts
 
+    # 同 ts 簇 LIMIT 截断死循环防御（Codex P2 round-3 on PR #1408）：
+    # aretrieve_original_by_timeframe 用 inclusive `BETWEEN`，若窗口里
+    # > MAX_AI_AWARE_WINDOW_MSGS 行共享同一 ts（极端情况：bulk import 或
+    # store_conversation 给一次请求里所有 row 写同 ts），那么 LIMIT 切出
+    # 的最早 N 行全在同 ts，cursor 推到 last_fetched_ts 后下次 BETWEEN
+    # 仍把这批 row 全部捞回来 → 无限循环、该 ts 簇后面的 row 永远 skip。
+    # 检测：LIMIT 拉满 AND 所有 fetched row 同 ts → cursor +1μs 越过该 ts。
+    # 代价：该 ts 簇 LIMIT 之后的 tail row 被 skip（罕见——一次正常对话
+    # turn 写 2~5 行，远 < MAX_AI_AWARE_WINDOW_MSGS=200）。无更便宜的修法
+    # 除非把 cursor 改成 (ts, rowid) 复合键、改写 SQL，太重不划算。
+    first_fetched_ts = _coerce_db_ts(rows[0][0])
+    if (
+        len(rows) >= MAX_AI_AWARE_WINDOW_MSGS
+        and first_fetched_ts is not None
+        and last_fetched_ts == first_fetched_ts
+    ):
+        logger.warning(
+            f"[PathB] {name}: 同 ts 簇 {first_fetched_ts.isoformat(timespec='microseconds')} "
+            f"行数 ≥ LIMIT ({MAX_AI_AWARE_WINDOW_MSGS})，cursor +1μs 越过避免死循环；"
+            f"该 ts 簇 LIMIT 之后的 tail row 会被 skip"
+        )
+        last_fetched_ts = last_fetched_ts + timedelta(microseconds=1)
+
     message_dicts = _extract_role_tagged_messages_from_rows(rows)
     if not message_dicts:
         # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
@@ -2019,9 +2042,36 @@ async def _periodic_signal_extraction_loop():
                 if not rows:
                     _signal_check_mark_done(name, now)
                     return
+
+                # AI-only 窗口（proactive 触发的 AI 自我发起 / tool turn 等没有
+                # human msg）也要给 path B 跑——path B 设计目的就是拣回 AI 自我
+                # 披露和 grounded fact。这里把 last_a_msg_ts 推进 + b_tick_counter
+                # bump + maybe B trigger 提到 user_msgs 检查之前，保证 AI-only
+                # 窗口不被 path A 的 user-only Stage-1 早 return 漏掉
+                # （Codex P1 round-3 on PR #1408）。
+                state = _signal_check_state.setdefault(
+                    name, {'turns_since': 0, 'last_check_ts': None},
+                )
+                last_msg_ts = _coerce_db_ts(rows[-1][0])
+                if last_msg_ts is not None:
+                    state['last_a_msg_ts'] = last_msg_ts
+
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
+                    # 没 user msg → path A 跑不了 user-observation 抽取，但 A
+                    # 已经"看过"这窗口（cursor 推进）。bump B counter，达 N 触发
+                    # B 把这段 AI-only 内容拣回来。
                     _signal_check_mark_done(name, now)
+                    state['b_tick_counter'] = state.get('b_tick_counter', 0) + 1
+                    if state['b_tick_counter'] >= EVIDENCE_AI_AWARE_EVERY_N_A_TICKS:
+                        state['b_tick_counter'] = 0
+                        try:
+                            await _run_path_b(name, state)
+                        except Exception as e:
+                            logger.warning(
+                                f"[PathB] {name}: AI-only 窗口 B 触发失败 "
+                                f"(skip 本轮): {e}"
+                            )
                     return
 
                 # 组装成 BaseMessage-like 结构给 extract_facts 使用
@@ -2087,19 +2137,10 @@ async def _periodic_signal_extraction_loop():
                     logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
 
                 # Stage-1 + dispatch 都跨过了，cursor 推进。
+                # 注意：last_a_msg_ts 已经在 user_msgs 检查之前更新过
+                # （AI-only 窗口分支共享同一段逻辑），这里只 bump b_tick_counter
+                # 准备触发 path B。
                 _signal_check_mark_done(name, now)
-
-                # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
-                # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
-                # 用真实 msg ts 而不是 wall-clock now：保证 path B 看到的
-                # 消息严格被 path A 看过，避免"A scan SQL 完成那一刻之后才入
-                # SQLite 的 msg 被 B 抢先处理"的 race。
-                state = _signal_check_state.setdefault(
-                    name, {'turns_since': 0, 'last_check_ts': None},
-                )
-                last_msg_ts = _coerce_db_ts(rows[-1][0])
-                if last_msg_ts is not None:
-                    state['last_a_msg_ts'] = last_msg_ts
 
                 # Path B trigger：A 成功跑完后 bump counter；达 N 触发
                 # _run_path_b（AI-aware Stage-1 only，详见函数 docstring）。
