@@ -1687,6 +1687,7 @@ class OcrExtractionResult:
     backend: OcrBackendDescriptor = field(default_factory=OcrBackendDescriptor)
     backend_detail: str = ""
     warnings: list[str] = field(default_factory=list)
+    backend_errors: list[str] = field(default_factory=list)
     boxes: list[OcrTextBox] = field(default_factory=list)
     bounds_coordinate_space: str = ""
     source_size: dict[str, float] = field(default_factory=dict)
@@ -1725,4 +1726,3 @@ class _TickTargetContext:
     window_scan_duration: float = 0.0
     now: float = 0.0
     should_return: bool = False
-

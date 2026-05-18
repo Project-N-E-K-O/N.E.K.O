@@ -118,6 +118,36 @@ from . import ocr_reader as _ocr_reader_module
 class TextMixin:
     """OCR 文本提取、语言检测、文本去重、台词 emit"""
 
+    def _log_debug(self, message: str, *args: Any) -> None:
+        logger = getattr(self, "_logger", None)
+        debug = getattr(logger, "debug", None)
+        if not callable(debug):
+            return
+        try:
+            debug(message, *args)
+        except Exception:
+            return
+
+    def _log_warning(self, message: str, *args: Any) -> None:
+        logger = getattr(self, "_logger", None)
+        warning = getattr(logger, "warning", None)
+        if not callable(warning):
+            return
+        try:
+            warning(message, *args)
+        except Exception:
+            return
+
+    def _log_info(self, message: str, *args: Any) -> None:
+        logger = getattr(self, "_logger", None)
+        info = getattr(logger, "info", None)
+        if not callable(info):
+            return
+        try:
+            info(message, *args)
+        except Exception:
+            return
+
     def _rapidocr_cache_key(self) -> tuple[str, str, str, str, str]:
         return _rapidocr_runtime_cache_key(
             install_target_dir_raw=self._config.rapidocr_install_target_dir,
@@ -188,26 +218,17 @@ class TextMixin:
         rapidocr_active: bool = False,
     ) -> None:
         if not bool(getattr(self._config, "rapidocr_auto_detect_lang", False)):
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: auto_detect_disabled")
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: auto_detect_disabled")
             return
         if (
             not rapidocr_active
             or not bool(getattr(self._config, "rapidocr_enabled", False))
             or self._configured_backend_selection() not in {"auto", "rapidocr"}
         ):
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: rapidocr_not_active")
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: rapidocr_not_active")
             return
         if self._custom_ocr_backend:
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: custom_ocr_backend")
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: custom_ocr_backend")
             return
         now = time.monotonic()
         last_switched_at = self._ocr_lang_detector.last_switched_at
@@ -215,25 +236,16 @@ class TextMixin:
             last_switched_at is not None
             and now - last_switched_at < self._ocr_lang_cooldown_seconds
         ):
-            try:
-                remaining = self._ocr_lang_cooldown_seconds - (now - last_switched_at)
-                self._logger.debug("rapidocr auto-lang skipped: cooldown {:.1f}s remaining", remaining)
-            except Exception:
-                pass
+            remaining = self._ocr_lang_cooldown_seconds - (now - last_switched_at)
+            self._log_debug("rapidocr auto-lang skipped: cooldown {:.1f}s remaining", remaining)
             return
         detected_lang = self._ocr_lang_detector.feed(text)
         current_lang = str(getattr(self._config, "rapidocr_lang_type", "") or "").strip()
         if not detected_lang:
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: detection_unconfirmed")
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: detection_unconfirmed")
             return
         if detected_lang == current_lang:
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: already_using {}", detected_lang)
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: already_using {}", detected_lang)
             return
         try:
             inspection = _ocr_reader_module.inspect_rapidocr_installation(
@@ -244,22 +256,13 @@ class TextMixin:
                 ocr_version=self._config.rapidocr_ocr_version,
             )
         except Exception as exc:
-            try:
-                self._logger.warning("rapidocr auto-lang inspection failed: {}", exc)
-            except Exception:
-                pass
+            self._log_warning("rapidocr auto-lang inspection failed: {}", exc)
             return
         if not bool(inspection.get("installed")):
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: model_missing {}", detected_lang)
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: model_missing {}", detected_lang)
             return
         if not bool(getattr(self._config, "rapidocr_auto_detect_lang", False)):
-            try:
-                self._logger.debug("rapidocr auto-lang skipped: auto_detect_disabled_before_apply")
-            except Exception:
-                pass
+            self._log_debug("rapidocr auto-lang skipped: auto_detect_disabled_before_apply")
             return
 
         self._config.rapidocr_lang_type = detected_lang
@@ -276,14 +279,8 @@ class TextMixin:
             try:
                 callback(detected_lang)
             except Exception as exc:
-                try:
-                    self._logger.warning("rapidocr auto-lang persist callback failed: {}", exc)
-                except Exception:
-                    pass
-        try:
-            self._logger.info("RapidOCR auto-detected language switched to {}", detected_lang)
-        except Exception:
-            pass
+                self._log_warning("rapidocr auto-lang persist callback failed: {}", exc)
+        self._log_info("RapidOCR auto-detected language switched to {}", detected_lang)
 
 
     def _record_rejected_ocr_text(
@@ -635,6 +632,7 @@ class TextMixin:
         if resolved_plan.fallback.available:
             descriptors.append(resolved_plan.fallback)
         warnings: list[str] = []
+        backend_errors: list[str] = []
         last_error: Exception | None = None
         for index, descriptor in enumerate(descriptors):
             if descriptor.backend is None:
@@ -679,18 +677,25 @@ class TextMixin:
                         else (descriptor.detail or "selected_primary")
                     ),
                     warnings=warnings,
+                    backend_errors=backend_errors,
                     boxes=list(boxes),
                     ocr_confidence=_average_ocr_box_confidence(boxes),
                     text_source="bottom_region",
                 )
             except Exception as exc:
                 last_error = exc
-                warning = f"ocr_reader {descriptor.kind} failed: {exc}"
+                warning = f"ocr_reader {descriptor.kind} failed: {type(exc).__name__}: {exc}"
                 warnings.append(warning)
+                backend_errors.append(warning)
                 self._logger.warning("ocr_reader backend {} failed: {}", descriptor.kind, exc)
         if last_error is not None:
-            raise last_error
-        return OcrExtractionResult(backend=resolved_plan.primary, warnings=warnings)
+            detail = "; ".join(backend_errors) if backend_errors else str(last_error)
+            raise RuntimeError(f"ocr_reader all configured backends failed: {detail}") from last_error
+        return OcrExtractionResult(
+            backend=resolved_plan.primary,
+            warnings=warnings,
+            backend_errors=backend_errors,
+        )
 
 
     def _emit_screen_classification_from_extraction(
@@ -792,4 +797,3 @@ class TextMixin:
             text_source=text_source,
             rapidocr_active=rapidocr_active,
         )
-

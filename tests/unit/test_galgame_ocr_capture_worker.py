@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import types
 
 import pytest
 
@@ -21,6 +22,26 @@ class _NullLogger:
 
     def warning(self, *_args, **_kwargs) -> None:
         pass
+
+
+def test_ocr_reader_manager_context_manager_closes_capture_resources() -> None:
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = _NullLogger()
+    calls: list[tuple[str, float | None]] = []
+
+    def _stop(self, *, join_timeout: float = 1.0) -> None:
+        calls.append(("stop", join_timeout))
+
+    def _shutdown(self) -> None:
+        calls.append(("shutdown", None))
+
+    manager._stop_foreground_advance_monitor = types.MethodType(_stop, manager)
+    manager._shutdown_capture_worker = types.MethodType(_shutdown, manager)
+
+    with manager as active:
+        assert active is manager
+
+    assert calls == [("stop", 1.0), ("shutdown", None)]
 
 
 def test_timed_out_capture_does_not_replace_running_executor_during_recovery_grace(

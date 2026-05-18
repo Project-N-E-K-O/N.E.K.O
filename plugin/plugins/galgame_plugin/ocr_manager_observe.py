@@ -668,7 +668,7 @@ class ObserveMixin:
                 target_window_minimized,
                 ocr_window_capture_eligible,
                 ocr_window_capture_block_reason,
-            ) = _target_window_capture_state(target)
+            ) = _ocr_reader_module._target_window_capture_state(target)
             last_capture_error = str(self._last_capture_error or self._runtime.last_capture_error)
             stale_capture_backend = bool(
                 self._stale_capture_backend or self._runtime.stale_capture_backend
@@ -1292,4 +1292,3 @@ class ObserveMixin:
         if selection.selection_mode == "auto":
             selection.selection_detail = "auto_detect_needs_manual_fallback"
         return selection
-

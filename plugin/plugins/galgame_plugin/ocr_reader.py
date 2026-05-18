@@ -545,6 +545,33 @@ class OcrReaderManager(
         self._window_inventory_cache: list[DetectedGameWindow] = []
         self._start_rapidocr_warmup_if_configured()
 
+    def close(self) -> None:
+        try:
+            self._stop_foreground_advance_monitor(join_timeout=1.0)
+        except Exception as exc:
+            warning = getattr(getattr(self, "_logger", None), "warning", None)
+            if callable(warning):
+                try:
+                    warning("ocr_reader foreground advance monitor shutdown failed: {}", exc)
+                except Exception:
+                    pass
+        try:
+            self._shutdown_capture_worker()
+        except Exception as exc:
+            warning = getattr(getattr(self, "_logger", None), "warning", None)
+            if callable(warning):
+                try:
+                    warning("ocr_reader capture worker shutdown failed: {}", exc)
+                except Exception:
+                    pass
+
+    def __enter__(self) -> "OcrReaderManager":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+        self.close()
+        return False
+
     def _foreground_advance_monitor_enabled(self) -> bool:
         return (
             bool(self._config.ocr_reader_enabled)

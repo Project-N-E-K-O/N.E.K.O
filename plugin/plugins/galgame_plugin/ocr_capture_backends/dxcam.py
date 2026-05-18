@@ -1,9 +1,40 @@
 from __future__ import annotations
+import queue
 import time
 import threading
 from typing import Any
 from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_DXCAM, _DXCAM_GRAB_RETRY_ATTEMPTS, _DXCAM_GRAB_RETRY_DELAY_SECONDS, _STALE_CAPTURE_FRAME_THRESHOLD, _LOGGER
 from ._helpers import _require_visible_capture_target, _target_screen_capture_rect, _crop_window_image
+
+_DXCAM_CREATE_TIMEOUT_SECONDS = 5.0
+
+
+def _create_dxcam_camera_with_timeout(dxcam_module: Any, *, timeout_seconds: float):
+    result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+    def _create() -> None:
+        try:
+            result_queue.put(("ok", dxcam_module.create(output_color="RGB")))
+        except Exception as exc:
+            result_queue.put(("error", exc))
+
+    thread = threading.Thread(
+        target=_create,
+        name="galgame-ocr-dxcam-create",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        status, payload = result_queue.get(timeout=max(0.01, float(timeout_seconds)))
+    except queue.Empty as exc:
+        raise TimeoutError(
+            f"dxcam_create_timed_out_after_{timeout_seconds:.1f}s"
+        ) from exc
+    if status == "error":
+        raise payload
+    return payload
+
+
 class DxcamCaptureBackend:
     kind = _CAPTURE_BACKEND_DXCAM
     _MAX_CONSECUTIVE_FAILURES = 3
@@ -36,7 +67,10 @@ class DxcamCaptureBackend:
             last_exc = None
             for _attempt in range(3):
                 try:
-                    self._camera = dxcam.create(output_color="RGB")
+                    self._camera = _create_dxcam_camera_with_timeout(
+                        dxcam,
+                        timeout_seconds=_DXCAM_CREATE_TIMEOUT_SECONDS,
+                    )
                 except Exception as exc:
                     last_exc = exc
                     self._last_create_error = str(exc)
@@ -98,5 +132,4 @@ class DxcamCaptureBackend:
             backend_kind=self.kind,
             backend_detail="selected",
         )
-
 

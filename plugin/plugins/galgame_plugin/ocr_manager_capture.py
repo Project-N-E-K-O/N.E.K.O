@@ -459,7 +459,7 @@ class CaptureMixin:
 
         min_top_ratio = 0.04
         try:
-            client_rect = _target_client_rect(target)
+            client_rect = _ocr_reader_module._target_client_rect(target)
             client_height = int(client_rect[3] - client_rect[1])
             if client_height > 0 and image_height > client_height:
                 title_bar_height = image_height - client_height
@@ -1188,4 +1188,3 @@ class CaptureMixin:
             "manual_profile_present": self._has_manual_capture_profile(target),
             "created_at": utc_now_iso(now),
         }
-

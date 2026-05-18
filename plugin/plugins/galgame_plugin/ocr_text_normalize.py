@@ -88,13 +88,19 @@ __all__ = [
 ]
 
 _SPEAKER_QUOTE_RE = re.compile(
-    r"^\s*([^\u300c\u300d:\uff1a]{1,40})[\u300c\u300e](.+)[\u300d\u300f]\s*$"
+    r"^\s*([^\u300c\u300d:\uff1a]{1,40})[\u300c\u300e](.{1,200})[\u300d\u300f]\s*$"
 )
-_SPEAKER_COLON_RE = re.compile(r"^\s*([^:\uff1a]{1,40})[:\uff1a]\s*(.+\S)\s*$")
-_SPEAKER_BRACKET_RE = re.compile(r"^\s*[\u3010\[]([^\u3011\]]{1,40})[\u3011\]]\s*(.+\S)\s*$")
-_SPEAKER_PAREN_SUFFIX_RE = re.compile(r"^\s*([^\uff08\uff09()]{1,40})[\uff08(](.+\S)[\uff09)]\s*$")
-_SPEAKER_PAREN_PREFIX_RE = re.compile(r"^\s*[\uff08(]([^\uff09)]{1,40})[\uff09)]\s*(.+\S)\s*$")
-_NARRATION_QUOTE_RE = re.compile(r"^\s*[\u300c\u300e\u201c\"](.+\S)[\u300d\u300f\u201d\"]\s*$")
+_SPEAKER_COLON_RE = re.compile(r"^\s*([^:\uff1a]{1,40})[:\uff1a]\s*(.{0,199}\S)\s*$")
+_SPEAKER_BRACKET_RE = re.compile(
+    r"^\s*[\u3010\[]([^\u3011\]]{1,40})[\u3011\]]\s*(.{0,199}\S)\s*$"
+)
+_SPEAKER_PAREN_SUFFIX_RE = re.compile(
+    r"^\s*([^\uff08\uff09()]{1,40})[\uff08(](.{0,199}\S)[\uff09)]\s*$"
+)
+_SPEAKER_PAREN_PREFIX_RE = re.compile(
+    r"^\s*[\uff08(]([^\uff09)]{1,40})[\uff09)]\s*(.{0,199}\S)\s*$"
+)
+_NARRATION_QUOTE_RE = re.compile(r"^\s*[\u300c\u300e\u201c\"](.{0,199}\S)[\u300d\u300f\u201d\"]\s*$")
 _NARRATION_PAREN_RE = re.compile(r"^\s*[\uff08(]([^\uff09)]{1,40})[\uff09)]\s*$")
 _CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _KANA_CHAR_RE = re.compile(r"[\u3040-\u30ff]")
@@ -711,5 +717,4 @@ def _canonical_choice_candidate_text(choices: list[str]) -> str:
 
 def _stripped_ocr_lines(raw_text: str) -> list[str]:
     return [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
-
 

@@ -103,6 +103,17 @@ class _CapturingLogger(_Logger):
         self.warnings.append(args)
 
 
+class _ExplodingLogger(_Logger):
+    def debug(self, *args, **kwargs):
+        raise RuntimeError("logger debug failed")
+
+    def warning(self, *args, **kwargs):
+        raise RuntimeError("logger warning failed")
+
+    def info(self, *args, **kwargs):
+        raise RuntimeError("logger info failed")
+
+
 class _FakeCaptureBackend:
     def __init__(self, *, available: bool = True) -> None:
         self.available = available
@@ -4416,6 +4427,41 @@ def test_rapidocr_auto_lang_skips_when_rapidocr_not_active(
     assert manager._config.rapidocr_lang_type == "ch"
     assert manager._config.rapidocr_auto_detect_last_lang == ""
     assert persisted == []
+
+
+def test_rapidocr_auto_lang_safe_logging_does_not_break_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_ExplodingLogger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/korean/mobile",
+        },
+    )
+
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        rapidocr_active=True,
+    )
+
+    assert manager._config.rapidocr_lang_type == "korean"
+    assert manager._config.rapidocr_auto_detect_last_lang == "korean"
 
 
 def test_rapidocr_auto_lang_skips_when_rapidocr_disabled(

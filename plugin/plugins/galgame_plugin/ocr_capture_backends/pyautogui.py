@@ -22,6 +22,8 @@ class PyAutoGuiCaptureBackend:
 
     def __init__(self, *, logger=None) -> None:
         self._logger = logger
+        self._availability_error = ""
+        self._availability_error_logged = False
 
     def is_available(self) -> bool:
         # `import pyautogui` can throw beyond ImportError in headless / WSL /
@@ -33,7 +35,16 @@ class PyAutoGuiCaptureBackend:
             import pyautogui  # noqa: F401 — gate on user-facing label
             from PIL import ImageGrab  # noqa: F401 — actual capture mechanism
             return True
-        except Exception:
+        except Exception as exc:
+            self._availability_error = str(exc)
+            if not self._availability_error_logged and self._logger is not None:
+                self._availability_error_logged = True
+                debug = getattr(self._logger, "debug", None)
+                if callable(debug):
+                    try:
+                        debug("ocr_reader pyautogui capture backend unavailable: {}", exc)
+                    except Exception:
+                        pass
             return False
 
     def describe_target(self, target: DetectedGameWindow) -> str:
@@ -61,5 +72,4 @@ class PyAutoGuiCaptureBackend:
             backend_kind=self.kind,
             backend_detail="selected",
         )
-
 

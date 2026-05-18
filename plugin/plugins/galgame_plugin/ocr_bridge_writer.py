@@ -740,19 +740,27 @@ class OcrReaderBridgeWriter:
             os.replace(tmp_path, session_path)
             tmp_path = None
         except Exception as exc:
+            cleanup_errors: list[str] = []
             if tmp_fd is not None:
                 try:
                     os.close(tmp_fd)
-                except Exception:
-                    pass
+                except Exception as close_exc:
+                    cleanup_errors.append(f"close_tmp_fd_failed: {close_exc}")
             try:
                 if tmp_path is not None:
                     tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as unlink_exc:
+                cleanup_errors.append(f"unlink_tmp_file_failed: {unlink_exc}")
             if self._logger is not None:
                 try:
-                    self._logger.warning("ocr_reader session snapshot write failed: {}", exc)
+                    if cleanup_errors:
+                        self._logger.warning(
+                            "ocr_reader session snapshot write failed: {}; cleanup_errors={}",
+                            exc,
+                            cleanup_errors,
+                        )
+                    else:
+                        self._logger.warning("ocr_reader session snapshot write failed: {}", exc)
                 except Exception:
                     pass
 
@@ -858,5 +866,4 @@ class OcrReaderBridgeWriter:
         if _SPEAKER_PAREN_SUFFIX_RE.match(raw_text) is not None:
             return 0.80
         return 0.65
-
 
