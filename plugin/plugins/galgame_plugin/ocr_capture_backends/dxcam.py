@@ -72,7 +72,8 @@ class DxcamCaptureBackend:
                         dxcam,
                         timeout_seconds=_DXCAM_CREATE_TIMEOUT_SECONDS,
                     )
-                except TimeoutError:
+                except TimeoutError as exc:
+                    self._record_create_failure(exc)
                     raise
                 except Exception as exc:
                     last_exc = exc
@@ -83,8 +84,17 @@ class DxcamCaptureBackend:
                     return self._camera
                 time.sleep(0.5)
             if last_exc is not None:
+                self._record_create_failure(last_exc)
                 raise RuntimeError(f"dxcam_create_failed: {last_exc}") from last_exc
             raise RuntimeError("dxcam_create_failed: returned None after retries")
+
+    def _record_create_failure(self, exc: BaseException) -> None:
+        self._last_create_error = str(exc)
+        self._consecutive_failures = max(
+            self._consecutive_failures + 1,
+            self._MAX_CONSECUTIVE_FAILURES,
+        )
+        self._last_failure_time = time.monotonic()
 
     def _reset_camera(self) -> None:
         with self._camera_lock:

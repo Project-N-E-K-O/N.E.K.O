@@ -206,6 +206,46 @@ def test_dxcam_create_timeout_does_not_retry(monkeypatch: pytest.MonkeyPatch) ->
         backend._camera_instance()
 
     assert calls == 1
+    assert backend._consecutive_failures >= backend._MAX_CONSECUTIVE_FAILURES
+    assert backend._last_failure_time > 0.0
+
+
+def test_dxcam_create_timeout_rate_limits_followup_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def _create_with_timeout(_dxcam_module, *, timeout_seconds: float):
+        nonlocal calls
+        del timeout_seconds
+        calls += 1
+        raise TimeoutError("dxcam_create_timed_out_after_0.1s")
+
+    monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **_kwargs: object()))
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_create_dxcam_camera_with_timeout",
+        _create_with_timeout,
+    )
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_require_visible_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_target_screen_capture_rect",
+        lambda _target: (0, 0, 100, 100),
+    )
+
+    backend = galgame_dxcam_backend.DxcamCaptureBackend(logger=_Logger())
+    target = DetectedGameWindow(hwnd=1, pid=1, width=100, height=100)
+    with pytest.raises(TimeoutError):
+        backend.capture_frame(target, OcrCaptureProfile())
+    with pytest.raises(RuntimeError, match="dxcam rate limited"):
+        backend.capture_frame(target, OcrCaptureProfile())
+
+    assert calls == 1
 
 
 def _make_config(
