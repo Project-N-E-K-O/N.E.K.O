@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from utils.autostart_prompt_state import (
+    AUTOSTART_LATER_COOLDOWN_MS,
     AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
     get_autostart_prompt_state_response,
     get_autostart_prompt_state_path,
@@ -1206,13 +1207,15 @@ def test_malformed_token_usage_collections_do_not_crash_or_mark_existing_user(tm
 
 
 @pytest.mark.unit
-def test_autostart_prompt_uses_15_min_default_threshold(tmp_path):
+def test_autostart_prompt_uses_5_min_default_threshold_and_7_day_later_cooldown(tmp_path):
     config = DummyConfig(tmp_path)
 
     runtime_config = load_autostart_prompt_runtime_config(config)
 
-    assert AUTOSTART_MIN_PROMPT_FOREGROUND_MS == 15 * 60 * 1000
+    assert AUTOSTART_MIN_PROMPT_FOREGROUND_MS == 5 * 60 * 1000
+    assert AUTOSTART_LATER_COOLDOWN_MS == 7 * 24 * 60 * 60 * 1000
     assert runtime_config["min_prompt_foreground_ms"] == AUTOSTART_MIN_PROMPT_FOREGROUND_MS
+    assert runtime_config["later_cooldown_ms"] == AUTOSTART_LATER_COOLDOWN_MS
 
     blocked = process_autostart_prompt_heartbeat(
         {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS - 1},
@@ -1229,6 +1232,13 @@ def test_autostart_prompt_uses_15_min_default_threshold(tmp_path):
     )
     assert prompt["should_prompt"] is True
     assert prompt["prompt_reason"] == "usage_timeout"
+
+    decision = record_autostart_prompt_decision(
+        {"decision": "later", "prompt_token": prompt["prompt_token"]},
+        config_manager=config,
+        now_ms=4_000,
+    )
+    assert decision["state"]["deferred_until"] == 4_000 + AUTOSTART_LATER_COOLDOWN_MS
 
 
 @pytest.mark.unit
