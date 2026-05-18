@@ -588,6 +588,8 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
     console.log(`[Live2D] 开始物理预跑: ${simulatedMs}ms / ${stepMs}ms步长 = ${totalSteps}步，分批${BATCH_SIZE}步/帧`);
 
     let completed = 0;
+    // 每批次开头从 model.elapsedTime 重新读取，确保把 await 间隙里正常 ticker 的推进吸收进来，
+    // 避免本地快照覆盖外部进度导致模型时钟回退（physics/motion fade 会因此抖）
     let elapsedTime = Number.isFinite(model.elapsedTime) ? model.elapsedTime : 0;
 
     try {
@@ -602,10 +604,14 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
                 return;
             }
 
+            // 重新与外部时钟对齐：若 await 期间 ticker 已向前推进，跟随其前进；本地从不回退
+            const externalNow = Number.isFinite(model.elapsedTime) ? model.elapsedTime : elapsedTime;
+            if (externalNow > elapsedTime) elapsedTime = externalNow;
+
             const batchEnd = Math.min(completed + BATCH_SIZE, totalSteps);
             for (let i = completed; i < batchEnd; i++) {
-                internalModel.update(stepMs, elapsedTime);
                 elapsedTime += stepMs;
+                internalModel.update(stepMs, elapsedTime);
             }
             completed = batchEnd;
             model.elapsedTime = elapsedTime;
@@ -622,7 +628,8 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
 
     // 重置 deltaTime 累加器，确保下一次 _render() 的 internalModel.update
     // 使用正常的帧间增量，而非包含预跑时间的巨大值
-    model.elapsedTime = elapsedTime;
+    const finalExternal = Number.isFinite(model.elapsedTime) ? model.elapsedTime : elapsedTime;
+    model.elapsedTime = Math.max(elapsedTime, finalExternal);
     model.deltaTime = 0;
 
     console.log('[Live2D] 物理预跑完成');
