@@ -235,6 +235,78 @@ def test_detect_avx_vnni_arm64_linux_proc_cpuinfo_fallback(monkeypatch):
     assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
+def test_detect_avx_vnni_x86_cpuid_probe_is_authoritative(monkeypatch):
+    """When the direct CPUID probe returns a definitive answer, x86
+    detection MUST trust it and never fall back to py-cpuinfo. py-cpuinfo
+    on Windows silently omits ``avx_vnni`` from its flag list (Alder Lake
+    onwards on Intel, Zen 4+ on AMD), so consulting it after a positive
+    CPUID would let the stale absence overwrite the correct answer and
+    re-introduce the sticky-disable that #1395 fixed.
+    """
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+
+    # Force a py-cpuinfo result that disagrees with the probe, so the
+    # test fails loudly if the fallback ever runs ahead of the probe.
+    class _CpuinfoNoVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2"]}
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+
+    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: True)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: False)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
+def test_detect_avx_vnni_x86_falls_back_to_cpuinfo_when_probe_unavailable(
+    monkeypatch,
+):
+    """Sandboxes that block executable allocations make the CPUID probe
+    return None. In that case the existing py-cpuinfo / /proc/cpuinfo
+    chain must still drive the decision so we don't lose detection on
+    runtimes that worked before #1395.
+    """
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: None)
+
+    class _CpuinfoWithVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2", "avx_vnni"]}
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoWithVnni)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    class _CpuinfoNoVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2"]}
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
+def test_probe_avx_vnni_skips_non_x86():
+    """The probe targets the x86_64 CPUID encoding — on aarch64 / arm64
+    it must short-circuit to ``None`` so the ARM detector remains in
+    charge of those hosts.
+    """
+    from memory import embeddings as emb_mod
+    import unittest.mock as mock
+
+    with mock.patch.object(emb_mod.platform, "machine", return_value="aarch64"):
+        assert emb_mod._probe_avx_vnni_via_cpuid() is None
+
+
 def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
     """Codex review PR #1147: ``parse_dim_from_model_id`` must anchor on
     the trailing ``-<dim>d-<quant>`` segment that ``build_model_id``
