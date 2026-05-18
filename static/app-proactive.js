@@ -499,17 +499,25 @@
                     return;
                 }
                 S.isProactiveChatRunning = true;
+                var voiceTriggered = false;
                 try {
-                    await triggerProactiveChat();
+                    voiceTriggered = await triggerProactiveChat();
                 } finally {
                     S.isProactiveChatRunning = false;
                 }
-                S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                // server 并发拒绝（HTTP 409）时 triggerProactiveChat 返回 false 表示
+                // "根本没真正发起一次 proactive"——不消耗 no-response quota，否则连续
+                // 409 会按 >=10 阈值熔断语音 nudge 直到下次 user 触发 reset。等同
+                // _isAssistantSpeaking / _isUserRecentlySpeaking 这两个 frontend
+                // guard 走的"跳过不计数"分支。Codex review on PR #1401。
+                if (voiceTriggered) {
+                    S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                }
                 // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
                 // 避免 AI 还在说话就被下一次 nudge 打断。
                 // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
-                // 如果本次 nudge 被 guard 跳过（pass），AI 不会响应也不会有 turn end，
-                // 所以 pass 时仍需自行调度。
+                // 如果本次 nudge 被 guard 跳过（pass）/ 被 server 409 拒绝，
+                // AI 不会响应也不会有 turn end，所以这两种情况仍需自行调度。
                 if (S._voiceProactiveLastResult === 'pass') {
                     scheduleProactiveChat();
                 }
