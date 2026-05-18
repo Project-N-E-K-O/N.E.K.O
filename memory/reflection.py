@@ -1312,7 +1312,17 @@ class ReflectionEngine:
                         f"不再选入，避免毒 cluster 占用名额。"
                     )
             if modified:
-                await self.asave_reflections(name, reflections)
+                # CodeRabbit: 传 active-only 给 ``asave_reflections``。
+                # ``_prepare_save_reflections`` 把 input 当 "想要存活的 active 集",
+                # all_on_disk 里 id 在 input set 中的会跳过归档判断。如果传
+                # full list（含 terminal），``to_archive`` 永远是空，老 promoted/
+                # denied 永远 archive 不掉，跟 arecord_mentions / aupdate_suppressions
+                # 走同一约定保证归档流程正常推进。
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(name, active)
 
     # alias for backward compat (system_router calls .reflect())
     async def reflect(self, lanlan_name: str) -> dict | None:

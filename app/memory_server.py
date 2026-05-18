@@ -607,13 +607,38 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
     日常 spawn 路径调 _run_outbox_op 时 op 是临时构造的不带这个字段，按 0
     起算（首次失败 → attempt=1，远 < N，正常 pending 等重启重放）。
     """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     op_id = op.get('op_id')
     op_type = op.get('type')
     payload = op.get('payload') or {}
+    prior_attempts = int(op.get('_attempt_count', 0) or 0)
     handler = _OUTBOX_HANDLERS.get(op_type)
     if handler is None:
         logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
         return
+
+    # CodeRabbit: 已达 dead-letter 阈值的 op 直接补写 done，不要再跑 handler。
+    # 边缘 case：上一轮 ``aappend_attempt`` 成功把 _attempt_count 推到 N，但
+    # 紧接着 ``aappend_done`` 写盘失败（IO transient）→ op 留在 pending →
+    # 重启 replay 看到 ``_attempt_count=N`` 又进 handler 再失败再尝试 done。
+    # 对幂等 handler 只是浪费一次调用；对非幂等 handler（outbox 契约要求幂等
+    # 但不保证）就是真重复副作用。进门先短路保证"达阈值后绝不再执行"。
+    if prior_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+        logger.warning(
+            f"[Outbox] {name}/{op_type}/{op_id}: 进入时已达 dead-letter 阈值 "
+            f"({prior_attempts}/{MEMORY_LIVENESS_MAX_ATTEMPTS})，跳过 handler "
+            f"直接补写 done。Why: 上一轮 append_done 可能 IO 失败留 pending，"
+            f"避免毒 op 重复执行 + 副作用重放。"
+        )
+        try:
+            await outbox.aappend_done(name, op_id)
+        except Exception as de:
+            logger.warning(
+                f"[Outbox] {name}/{op_type}/{op_id}: dead-letter "
+                f"append_done 仍失败（保持 pending 等下次重放再补 done）: {de}"
+            )
+        return
+
     acquired = False
     if sem is not None:
         await sem.acquire()
@@ -622,8 +647,6 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
         try:
             await handler(name, payload)
         except Exception as e:
-            from config import MEMORY_LIVENESS_MAX_ATTEMPTS
-            prior_attempts = int(op.get('_attempt_count', 0) or 0)
             try:
                 await outbox.aappend_attempt(name, op_id)
                 attempt_persisted = True

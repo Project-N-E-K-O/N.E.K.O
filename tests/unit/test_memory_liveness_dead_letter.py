@@ -567,6 +567,64 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_run_outbox_op_short_circuits_when_already_dead_letter(tmp_path):
+    """CodeRabbit P1 regression：进门时 ``_attempt_count >= MAX`` → 跳 handler 直接 append_done。
+
+    Setup：op 在磁盘上已经累计了 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 条 attempt
+    行（边缘场景：上轮 dead-letter ``aappend_done`` 失败留下的 stuck pending）。
+    断言：handler **不**被调用，直接 ``aappend_done`` 补 done。否则非幂等
+    handler 会被毒 op 重复执行造成副作用。
+    """
+    from app import memory_server
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.outbox import Outbox
+
+    outbox = Outbox()
+    name = 'neko_test_outbox_short_circuit'
+    path = tmp_path / 'outbox.ndjson'
+
+    with patch.object(outbox, '_outbox_path', return_value=str(path)):
+        outbox.append_pending(name, 'side_effect_op', {})
+        op_id = outbox.pending_ops(name)[0]['op_id']
+        # 把 attempt 推满 → 模拟上轮 dead-letter append_done 失败的 stuck state
+        for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
+            outbox.append_attempt(name, op_id)
+
+    handler_called = []
+
+    async def _side_effect_handler(_n, _p):
+        handler_called.append(True)
+        raise RuntimeError("不应该被调用：op 已达 dead-letter 阈值")
+
+    original_outbox = memory_server.outbox
+    original_handlers = memory_server._OUTBOX_HANDLERS.copy()
+    try:
+        memory_server.outbox = outbox
+        memory_server._OUTBOX_HANDLERS['side_effect_op'] = _side_effect_handler
+
+        with patch.object(outbox, '_outbox_path', return_value=str(path)):
+            pending = outbox.pending_ops(name)
+            assert len(pending) == 1
+            assert pending[0]['_attempt_count'] == MEMORY_LIVENESS_MAX_ATTEMPTS
+            await memory_server._run_outbox_op(name, pending[0])
+
+            pending_after = outbox.pending_ops(name)
+
+        assert handler_called == [], (
+            f"已达 dead-letter 阈值的 op 不该再跑 handler. 调用次数: {len(handler_called)}"
+        )
+        assert pending_after == [], (
+            f"短路 dead-letter 后该 op 必须出 pending（append_done 已补）, "
+            f"实际剩 {pending_after}"
+        )
+    finally:
+        memory_server.outbox = original_outbox
+        memory_server._OUTBOX_HANDLERS.clear()
+        memory_server._OUTBOX_HANDLERS.update(original_handlers)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
     """Codex P1 regression：``aappend_attempt`` 抛异常时不应触发 dead-letter。
 
