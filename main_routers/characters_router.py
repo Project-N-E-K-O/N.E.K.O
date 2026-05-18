@@ -3706,6 +3706,15 @@ async def get_voice_preview(
             runtime_key = (cosyvoice_runtime.get('api_key') or '').strip()
             if runtime_key:
                 audio_api_key = runtime_key
+            elif provider == 'cosyvoice_intl':
+                # intl key 缺失时不要继续用顶上从 tts_custom/AUDIO_API_KEY 拿到的
+                # 国内 key 去打 intl DashScope 端点，必然 401，错误现象比明确缺 key
+                # 难排查。和 minimax/native step/gemini 分支一致显式返回缺 key。
+                return JSONResponse({
+                    'success': False,
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING'
+                }, status_code=400)
             cosyvoice_base_url = (
                 (voice_data or {}).get('dashscope_base_url')
                 or cosyvoice_runtime.get('base_url', '')

@@ -3884,9 +3884,19 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         elif voice_meta.get('provider') in ('cosyvoice', 'cosyvoice_intl'):
             provider = voice_meta.get('provider') or 'cosyvoice'
             runtime = cm.get_cosyvoice_clone_runtime(provider)
+            runtime_key = (runtime.get('api_key') or '').strip()
+            # provider=='cosyvoice_intl' 必须用 intl 的 key 调 intl 端点。runtime_key
+            # 缺失时如果只返回 None，core.py 会用 `api_key_override or tts_config['api_key']`
+            # 兜底到 tts_custom 槽位的国内 key，结果拿国内 key 打 intl 端点，每次
+            # utterance 都吃一次上游 401 — 比直接 dummy 静音更难排查。
+            if provider == 'cosyvoice_intl' and not runtime_key:
+                logger.warning(
+                    "阿里国际版 CosyVoice 克隆音色 %s 选中，但 intl key 缺失，"
+                    "改用 dummy TTS worker 避免用错凭证打 intl 端点", voice_id)
+                return dummy_tts_worker, None, None
             logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
                         voice_id, provider)
-            return cosyvoice_vc_tts_worker, (runtime.get('api_key') or None), 'cosyvoice'
+            return cosyvoice_vc_tts_worker, (runtime_key or None), 'cosyvoice'
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False

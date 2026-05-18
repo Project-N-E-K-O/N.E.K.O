@@ -2566,8 +2566,14 @@ function updateErrorMessage(errorDisplayElement, errorCode, errorDetail) {
 }
 
 function buildConnectivityCacheId(scope, providerKey, key, url) {
+    // 内置 provider 的 cacheId 故意不带 url：URL 会在第一次 testKey 成功后从
+    // 候选值翻成 rememberResolvedProviderUrl 写入的 resolved_url，
+    // 把 url 带进 cacheId 会让指示灯/错误面板的注册 key 凭空换一份，
+    // 导致后续刷新打不到原 DOM，表现成检测灯卡住或丢状态。
+    // 同一组 scope+providerKey 在 key 也是空（free 端点专用）时退到空字符串占位，
+    // 也不要回退到 url，保持 cacheId 在 URL 翻新时稳定。
     if (scope && providerKey) {
-        return `${scope}|${providerKey}|${key || url || ''}`;
+        return `${scope}|${providerKey}|${key || ''}`;
     }
     return key || url || '';
 }
