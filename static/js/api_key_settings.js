@@ -69,7 +69,6 @@ function getProviderResolvedUrl(scope, providerKey) {
 function getProviderOpenrouterUrl(providerKey, profile) {
     if (!profile) return '';
     return getProviderResolvedUrl('assist', providerKey)
-        || profile.resolved_openrouter_url
         || profile.openrouter_url
         || (Array.isArray(profile.openrouter_urls) ? profile.openrouter_urls[0] : '')
         || '';
@@ -78,7 +77,6 @@ function getProviderOpenrouterUrl(providerKey, profile) {
 function getProviderCoreUrl(providerKey, profile) {
     if (!profile) return '';
     return getProviderResolvedUrl('core', providerKey)
-        || profile.resolved_core_url
         || profile.core_url
         || (Array.isArray(profile.core_urls) ? profile.core_urls[0] : '')
         || '';
@@ -88,13 +86,6 @@ function rememberResolvedProviderUrl(scope, providerKey, resolvedUrl) {
     if (!scope || !providerKey || !resolvedUrl) return;
     const key = `${scope}:${providerKey}`;
     _resolvedProviderUrls[key] = resolvedUrl;
-    const target = scope === 'core' ? _coreApiProviders[providerKey] : _assistApiProviders[providerKey];
-    if (!target) return;
-    if (scope === 'core') {
-        target.resolved_core_url = resolvedUrl;
-    } else {
-        target.resolved_openrouter_url = resolvedUrl;
-    }
 }
 
 /**
