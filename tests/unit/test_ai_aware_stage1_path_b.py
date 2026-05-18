@@ -860,41 +860,35 @@ async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_ske
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_path_b_triggered_for_ai_only_window_no_user_msgs():
-    """Regression (Codex P1 round-3 on PR #1408)：proactive / AI-only 触发的
-    窗口没有 human msg 时，path A 的 `_extract_user_messages_from_rows` 返
-    空 → 早 return + mark_done。但 path B 的存在意义就是补抓 AI 自我披露，
-    必须在 user_msgs 为空的早 return 路径里也 bump b_tick_counter 并在达
-    N 时跑 _run_path_b——否则 AI-only session 永远进不了 B，等于把 B 的
-    主要使命阉了。
+async def test_path_b_skipped_for_ai_only_window_no_user_msgs():
+    """Design pin：纯 proactive / AI-only 窗口（没 human msg）**故意**不
+    触发 path B。Path B 是 piggyback path A 的 trigger 跑（不独立调度），
+    user 没参与的窗口里 A 不抽 user_observation，B 也跟着不拣 AI 自我披露。
+
+    Product thesis："90% 没心没肺 + 10% 神明降临"——AI 自言自语 + user
+    不搭理的内容是廉价层，不该自动当 fact 沉淀污染 memory。
+
+    源码扫描钉死：``if not user_msgs_text:`` 分支只 mark_done + return，
+    禁止在该分支调 _run_path_b / bump b_tick_counter。
     """
     import inspect
     from app import memory_server
 
-    # 用源码扫描代替 mock 整套 _signal_check_one（依赖太多）：确认 user_msgs
-    # 检查之前已经记 last_a_msg_ts，user_msgs 空分支里有 b_tick_counter
-    # bump + _run_path_b trigger。
     src = inspect.getsource(memory_server._periodic_signal_extraction_loop)
 
-    # 1. last_a_msg_ts 在 user_msgs 检查之前更新（state 共享给 AI-only 分支）
     user_check_idx = src.find("if not user_msgs_text:")
-    last_a_set_idx = src.find("state['last_a_msg_ts']")
-    assert 0 < last_a_set_idx < user_check_idx, (
-        "last_a_msg_ts 必须在 `if not user_msgs_text:` 之前更新，"
-        "否则 AI-only 窗口的 B trigger 拿不到正确的下游边界"
-    )
+    assert user_check_idx > 0
+    # 截到下一个 return（该早 return 分支的边界）
+    branch_end = src.find("return", user_check_idx)
+    branch_src = src[user_check_idx:branch_end + len("return")]
 
-    # 2. user_msgs_text 为空的分支里必须能触发 path B
-    # 截取 `if not user_msgs_text:` 到下一个 return 之间的块
-    branch_start = user_check_idx
-    branch_end = src.find("return", branch_start)
-    branch_src = src[branch_start:branch_end + len("return")]
-    assert "b_tick_counter" in branch_src, (
-        "AI-only 早 return 路径里必须 bump b_tick_counter，"
-        "否则 B 在 AI-only session 里永远不 trigger"
+    assert "_run_path_b" not in branch_src, (
+        "AI-only 早 return 路径里**禁止**调 _run_path_b——product thesis "
+        "明确这是廉价层，不该触发 fact 抽取"
     )
-    assert "_run_path_b" in branch_src, (
-        "AI-only 早 return 路径里必须能 await _run_path_b 拣回 AI 自我披露"
+    assert "b_tick_counter" not in branch_src, (
+        "AI-only 早 return 路径里**禁止** bump b_tick_counter——counter "
+        "只应在 user 有 engagement 时累积"
     )
 
 
@@ -998,39 +992,36 @@ async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
 
 
 @pytest.mark.unit
-def test_post_turn_signals_bumps_counter_for_ai_only_turn():
-    """Regression (CodeRabbit P1 round-4 on PR #1408)：``_run_post_turn_signals``
-    必须无条件 bump ``_signal_check_record_turn``，不能再用 ``if user_msgs:`` gate
-    挡掉 AI-only turn——否则 turns_since 在纯 proactive / AI-only session 里
-    永远 0，``_signal_check_should_run`` 永远返 False，``_signal_check_one`` 不
-    跑 → AI-only 分支里那段 path B trigger 永久不可达（前一轮 round-3 fix
-    形同虚设）。
+def test_post_turn_signals_only_bumps_counter_for_user_turn():
+    """Design pin：``_signal_check_record_turn`` 只在 user 发声时 bump，
+    AI-only / proactive turn 故意不算——counter 是 user engagement 信号，
+    不是消息总数。Product thesis："90% 没心没肺 + 10% 神明降临"，没有
+    user 印证的内容是廉价层，不该触发 fact 抽取 batch。
+
+    源码扫描钉死：``_signal_check_record_turn`` 调用必须被 ``if user_msgs:``
+    gate 包裹。
     """
     import inspect
     from app import memory_server
 
     src = inspect.getsource(memory_server._run_post_turn_signals)
 
-    # `_signal_check_record_turn` 调用必须存在
-    assert "_signal_check_record_turn" in src, (
-        "_run_post_turn_signals 必须 bump signal-check counter"
-    )
-
-    # 不能再被 `if user_msgs` 包裹（旧 bug）。扫源码截取 record_turn 调用
-    # 前面那段，禁出现 `if user_msgs` 紧贴它（允许全文件其他地方有
-    # user_msgs 条件，只要不 gate counter bump 即可）。
     record_idx = src.find("_signal_check_record_turn(lanlan_name)")
-    assert record_idx > 0
-    # 往前看 4 行，检查没有 `if user_msgs:` 紧 gate 这次调用
+    assert record_idx > 0, "_signal_check_record_turn 调用必须存在"
+
+    # 往前找最近的非空 `if ...` 行：必须是 `if user_msgs:`
     preceding = src[max(0, record_idx - 200):record_idx]
-    # 把行拆开，找最近的非空 `if ...` 行
     lines = [ln.strip() for ln in preceding.split("\n") if ln.strip()]
+    last_if = None
     for ln in reversed(lines):
         if ln.startswith("if "):
-            assert "user_msgs" not in ln, (
-                f"counter bump 不能再被 user_msgs gate 挡掉，紧上方 if: {ln!r}"
-            )
+            last_if = ln
             break
+    assert last_if is not None, "counter bump 紧上方必须有 if 条件"
+    assert "user_msgs" in last_if, (
+        f"counter bump 必须被 `if user_msgs:` gate——只算 user engagement，"
+        f"不算 AI-only turn。当前 if: {last_if!r}"
+    )
 
 
 @pytest.mark.unit

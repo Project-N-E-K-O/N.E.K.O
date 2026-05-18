@@ -2065,36 +2065,18 @@ async def _periodic_signal_extraction_loop():
                 if not rows:
                     _signal_check_mark_done(name, now)
                     return
-
-                # AI-only 窗口（proactive 触发的 AI 自我发起 / tool turn 等没有
-                # human msg）也要给 path B 跑——path B 设计目的就是拣回 AI 自我
-                # 披露和 grounded fact。这里把 last_a_msg_ts 推进 + b_tick_counter
-                # bump + maybe B trigger 提到 user_msgs 检查之前，保证 AI-only
-                # 窗口不被 path A 的 user-only Stage-1 早 return 漏掉
-                # （Codex P1 round-3 on PR #1408）。
-                state = _signal_check_state.setdefault(
-                    name, {'turns_since': 0, 'last_check_ts': None},
-                )
-                last_msg_ts = _coerce_db_ts(rows[-1][0])
-                if last_msg_ts is not None:
-                    state['last_a_msg_ts'] = last_msg_ts
-
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
-                    # 没 user msg → path A 跑不了 user-observation 抽取，但 A
-                    # 已经"看过"这窗口（cursor 推进）。bump B counter，达 N 触发
-                    # B 把这段 AI-only 内容拣回来。
+                    # 窗口里没 user msg —— 纯 proactive / AI 自言自语 / tool
+                    # turn。这种内容**故意**不进 memory：
+                    # 1. Path A 抽 user_observation fact 需要 user 发声当源
+                    # 2. Path B 拣 AI 自我披露**也**只在 user 有 engagement
+                    #    的窗口里跑（B 是 piggyback A，不是独立路径）
+                    # 设计原则：用户不搭理 = 内容廉价层 ("90% 没心没肺"
+                    # product thesis)，不该被自动当 fact 沉淀污染 memory。
+                    # cursor 照常推进、计数清零，让下次有 user msg 的窗口
+                    # 直接进入正常 A+B 流程。
                     _signal_check_mark_done(name, now)
-                    state['b_tick_counter'] = state.get('b_tick_counter', 0) + 1
-                    if state['b_tick_counter'] >= EVIDENCE_AI_AWARE_EVERY_N_A_TICKS:
-                        state['b_tick_counter'] = 0
-                        try:
-                            await _run_path_b(name, state)
-                        except Exception as e:
-                            logger.warning(
-                                f"[PathB] {name}: AI-only 窗口 B 触发失败 "
-                                f"(skip 本轮): {e}"
-                            )
                     return
 
                 # 组装成 BaseMessage-like 结构给 extract_facts 使用
@@ -2160,10 +2142,19 @@ async def _periodic_signal_extraction_loop():
                     logger.debug(f"[SignalLoop] {name}: auto_promote_stale 失败: {e}")
 
                 # Stage-1 + dispatch 都跨过了，cursor 推进。
-                # 注意：last_a_msg_ts 已经在 user_msgs 检查之前更新过
-                # （AI-only 窗口分支共享同一段逻辑），这里只 bump b_tick_counter
-                # 准备触发 path B。
                 _signal_check_mark_done(name, now)
+
+                # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
+                # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
+                # 用真实 msg ts 而不是 wall-clock now：保证 path B 看到的
+                # 消息严格被 path A 看过，避免"A scan SQL 完成那一刻之后才入
+                # SQLite 的 msg 被 B 抢先处理"的 race。
+                state = _signal_check_state.setdefault(
+                    name, {'turns_since': 0, 'last_check_ts': None},
+                )
+                last_msg_ts = _coerce_db_ts(rows[-1][0])
+                if last_msg_ts is not None:
+                    state['last_a_msg_ts'] = last_msg_ts
 
                 # Path B trigger：A 成功跑完后 bump counter；达 N 触发
                 # _run_path_b（AI-aware Stage-1 only，详见函数 docstring）。
@@ -3096,17 +3087,15 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
     # 靠这个 counter 在累积 N 轮时触发 _signal_check_one。
-    # 历史上这里 `if user_msgs:` 只在 user 发声时 bump，path A 时代没问题
-    # （Stage-1 抽的是 user_observation fact，AI-only 轮没料）。引入 path B
-    # 后该 gate 把纯 proactive / AI-only session 的所有 turn 全屏蔽掉，
-    # _signal_check_should_run 永远返 False，_signal_check_one 不跑，
-    # 进而 _run_path_b 永远不 trigger——AI 自我披露在 AI-only session 里
-    # 永久 skip（CodeRabbit P1 round-4 on PR #1408）。
-    # 修法：无条件 bump。代价：AI-only burst 会让 idle gate 提前到，
-    # _signal_check_one 多跑几次；但内部对 `user_msgs_text` 为空有早 return，
-    # Stage-1 LLM 不会白白跑——只多一次 SQL 读 + path B 触发判定。
+    # 只在 user 有发声时 bump，**故意不**算 AI-only / proactive turn：
+    # path A 抽的是 user_observation fact，没 user 发声就抽不出料；
+    # path B 是 piggyback A 的 trigger 跑（不独立调度），也跟着只在 user
+    # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
+    # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
+    # memory；只有 user 印证过的才升级到神明降临层。
     try:
-        _signal_check_record_turn(lanlan_name)
+        if user_msgs:
+            _signal_check_record_turn(lanlan_name)
     except Exception as e:
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
