@@ -447,8 +447,10 @@ async def test_path_b_window_empty_still_advances_cursor():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_filters_known_pool_by_window_and_caps():
-    """已知池：只取 created_at ∈ [last_b, last_a_msg_ts] 的 fact，
-    按 importance DESC，cap 到 MAX_KNOWN_POOL_FACTS。"""
+    """已知池：只看 ``created_at >= last_b`` 下界（不设上界——见
+    `test_path_b_known_pool_includes_just_written_a_facts_despite_clock_skew`
+    的 clock-skew 契约），按 importance DESC，cap 到 MAX_KNOWN_POOL_FACTS。
+    """
     from app import memory_server
     from config import MAX_KNOWN_POOL_FACTS
 
@@ -915,6 +917,42 @@ async def test_path_b_truncated_but_diverse_ts_does_not_epsilon_bump():
         f"diverse ts 截断时 cursor 应 = last fetched ({expected_last_ts}) "
         f"无 epsilon bump，实际: {state['last_b_check_ts']}"
     )
+
+
+@pytest.mark.unit
+def test_post_turn_signals_bumps_counter_for_ai_only_turn():
+    """Regression (CodeRabbit P1 round-4 on PR #1408)：``_run_post_turn_signals``
+    必须无条件 bump ``_signal_check_record_turn``，不能再用 ``if user_msgs:`` gate
+    挡掉 AI-only turn——否则 turns_since 在纯 proactive / AI-only session 里
+    永远 0，``_signal_check_should_run`` 永远返 False，``_signal_check_one`` 不
+    跑 → AI-only 分支里那段 path B trigger 永久不可达（前一轮 round-3 fix
+    形同虚设）。
+    """
+    import inspect
+    from app import memory_server
+
+    src = inspect.getsource(memory_server._run_post_turn_signals)
+
+    # `_signal_check_record_turn` 调用必须存在
+    assert "_signal_check_record_turn" in src, (
+        "_run_post_turn_signals 必须 bump signal-check counter"
+    )
+
+    # 不能再被 `if user_msgs` 包裹（旧 bug）。扫源码截取 record_turn 调用
+    # 前面那段，禁出现 `if user_msgs` 紧贴它（允许全文件其他地方有
+    # user_msgs 条件，只要不 gate counter bump 即可）。
+    record_idx = src.find("_signal_check_record_turn(lanlan_name)")
+    assert record_idx > 0
+    # 往前看 4 行，检查没有 `if user_msgs:` 紧 gate 这次调用
+    preceding = src[max(0, record_idx - 200):record_idx]
+    # 把行拆开，找最近的非空 `if ...` 行
+    lines = [ln.strip() for ln in preceding.split("\n") if ln.strip()]
+    for ln in reversed(lines):
+        if ln.startswith("if "):
+            assert "user_msgs" not in ln, (
+                f"counter bump 不能再被 user_msgs gate 挡掉，紧上方 if: {ln!r}"
+            )
+            break
 
 
 @pytest.mark.unit

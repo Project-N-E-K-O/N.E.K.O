@@ -3072,11 +3072,18 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
     user_msgs = _extract_user_messages(messages)
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
-    # 靠这个 counter 在累积 10 turn 时触发 Stage-1+Stage-2，所以 per-turn
-    # bump 是 RFC 设计意图保留下来的，不能省。
+    # 靠这个 counter 在累积 N 轮时触发 _signal_check_one。
+    # 历史上这里 `if user_msgs:` 只在 user 发声时 bump，path A 时代没问题
+    # （Stage-1 抽的是 user_observation fact，AI-only 轮没料）。引入 path B
+    # 后该 gate 把纯 proactive / AI-only session 的所有 turn 全屏蔽掉，
+    # _signal_check_should_run 永远返 False，_signal_check_one 不跑，
+    # 进而 _run_path_b 永远不 trigger——AI 自我披露在 AI-only session 里
+    # 永久 skip（CodeRabbit P1 round-4 on PR #1408）。
+    # 修法：无条件 bump。代价：AI-only burst 会让 idle gate 提前到，
+    # _signal_check_one 多跑几次；但内部对 `user_msgs_text` 为空有早 return，
+    # Stage-1 LLM 不会白白跑——只多一次 SQL 读 + path B 触发判定。
     try:
-        if user_msgs:
-            _signal_check_record_turn(lanlan_name)
+        _signal_check_record_turn(lanlan_name)
     except Exception as e:
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
