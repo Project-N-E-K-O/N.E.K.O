@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yui 花瓣转场预览</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --panel: rgba(255, 255, 255, 0.86);
+      --panel-border: rgba(70, 60, 50, 0.16);
+      --text: #2e2924;
+      --muted: rgba(46, 41, 36, 0.64);
+      --accent: #2f83ff;
+      --petal-final-opacity: 0.6;
+      --petal-duration: 6200ms;
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(255, 252, 248, 0.96), rgba(242, 247, 255, 0.96)),
+        radial-gradient(circle at 50% 54%, rgba(255, 210, 220, 0.35), transparent 32%);
+      color: var(--text);
+    }
+
+    body.is-dark {
+      --panel: rgba(24, 30, 40, 0.86);
+      --panel-border: rgba(255, 255, 255, 0.14);
+      --text: #f6f8fb;
+      --muted: rgba(246, 248, 251, 0.66);
+      background:
+        linear-gradient(180deg, rgba(12, 17, 25, 0.98), rgba(20, 27, 38, 0.98)),
+        radial-gradient(circle at 50% 54%, rgba(255, 168, 190, 0.22), transparent 34%);
+    }
+
+    .preview-stage {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .model-standin {
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      width: min(32vw, 300px);
+      aspect-ratio: 0.62;
+      transform: translate(-50%, -50%);
+      border-radius: 48% 48% 38% 38%;
+      background:
+        radial-gradient(circle at 50% 22%, rgba(255, 246, 235, 0.95) 0 22%, transparent 23%),
+        linear-gradient(160deg, rgba(255, 168, 190, 0.82), rgba(133, 189, 255, 0.82));
+      box-shadow: 0 26px 70px rgba(92, 78, 68, 0.24);
+      opacity: 0.78;
+    }
+
+    .model-standin::before,
+    .model-standin::after {
+      content: "";
+      position: absolute;
+      top: 10%;
+      width: 24%;
+      height: 20%;
+      background: rgba(255, 168, 190, 0.82);
+      clip-path: polygon(50% 0, 0 100%, 100% 100%);
+    }
+
+    .model-standin::before {
+      left: 18%;
+      transform: rotate(-18deg);
+    }
+
+    .model-standin::after {
+      right: 18%;
+      transform: rotate(18deg);
+    }
+
+    .center-cross {
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      width: 18px;
+      height: 18px;
+      transform: translate(-50%, -50%);
+      border: 2px solid rgba(47, 131, 255, 0.9);
+      border-radius: 50%;
+      box-shadow: 0 0 0 5px rgba(47, 131, 255, 0.14);
+      z-index: 4;
+    }
+
+    .petal-transition {
+      position: fixed;
+      inset: 0;
+      z-index: 3;
+      overflow: hidden;
+      pointer-events: none;
+      opacity: 1;
+      transition: opacity 460ms ease;
+    }
+
+    .petal-sequence {
+      position: absolute;
+      left: -10vw;
+      top: -10vh;
+      width: 120vw;
+      height: 120vh;
+      object-fit: cover;
+      transform: translate3d(6vw, 0, 0) scale(0.82);
+      opacity: 1;
+      will-change: opacity, transform;
+      animation-name: petal-sequence-motion, petal-sequence-opacity;
+      animation-duration: var(--petal-duration);
+      animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      animation-fill-mode: forwards;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    @keyframes petal-sequence-motion {
+      from { transform: translate3d(6vw, 0, 0) scale(0.82); }
+      to { transform: translate3d(6vw, 0, 0) scale(0.9); }
+    }
+
+    @keyframes petal-sequence-opacity {
+      from { opacity: 1; }
+      to { opacity: var(--petal-final-opacity); }
+    }
+
+    .top-band {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 18vh;
+      z-index: 2;
+      border-bottom: 1px dashed rgba(47, 131, 255, 0.34);
+      background: rgba(47, 131, 255, 0.045);
+      pointer-events: none;
+    }
+
+    .toolbar {
+      position: fixed;
+      left: 18px;
+      right: 18px;
+      bottom: 18px;
+      z-index: 10;
+      display: grid;
+      grid-template-columns: auto auto minmax(160px, 1fr) minmax(160px, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 42px rgba(32, 28, 24, 0.16);
+    }
+
+    button {
+      height: 36px;
+      padding: 0 14px;
+      border: 1px solid rgba(47, 131, 255, 0.26);
+      border-radius: 7px;
+      background: rgba(47, 131, 255, 0.12);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: rgba(47, 131, 255, 0.18);
+    }
+
+    label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .readout {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 720px) {
+      .toolbar {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      label {
+        grid-column: span 2;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="preview-stage" aria-label="Yui 花瓣转场预览">
+    <div class="top-band" aria-hidden="true"></div>
+    <div class="model-standin" aria-hidden="true"></div>
+    <div class="center-cross" aria-hidden="true"></div>
+    <div id="petalLayer" class="petal-transition" aria-hidden="true"></div>
+  </main>
+
+  <form class="toolbar">
+    <button id="replayButton" type="button">重播</button>
+    <button id="themeButton" type="button">深色</button>
+    <label>
+      时长 <span id="durationReadout" class="readout">6200ms</span>
+      <input id="durationInput" type="range" min="2400" max="8600" step="100" value="6200">
+    </label>
+    <label>
+      最终透明度 <span id="opacityReadout" class="readout">70%</span>
+      <input id="opacityInput" type="range" min="10" max="100" step="5" value="70">
+    </label>
+    <button id="toggleTopButton" type="button">顶部标线</button>
+  </form>
+
+  <script>
+    (() => {
+      const assetUrl = 'assets/tutorial/petals/yui-guide-petal-transition.webp';
+      const layer = document.getElementById('petalLayer');
+      const replayButton = document.getElementById('replayButton');
+      const themeButton = document.getElementById('themeButton');
+      const toggleTopButton = document.getElementById('toggleTopButton');
+      const durationInput = document.getElementById('durationInput');
+      const opacityInput = document.getElementById('opacityInput');
+      const durationReadout = document.getElementById('durationReadout');
+      const opacityReadout = document.getElementById('opacityReadout');
+      const topBand = document.querySelector('.top-band');
+
+      let runId = 0;
+
+      function updateControls() {
+        const duration = Number(durationInput.value) || 6200;
+        const opacity = (Number(opacityInput.value) || 50) / 100;
+        document.documentElement.style.setProperty('--petal-duration', duration + 'ms');
+        document.documentElement.style.setProperty('--petal-final-opacity', String(opacity));
+        durationReadout.textContent = duration + 'ms';
+        opacityReadout.textContent = Math.round(opacity * 100) + '%';
+      }
+
+      function replay() {
+        updateControls();
+        runId += 1;
+        layer.textContent = '';
+        const img = document.createElement('img');
+        img.className = 'petal-sequence';
+        img.alt = '';
+        img.decoding = 'async';
+        img.draggable = false;
+        img.src = assetUrl + '?preview=' + runId;
+        layer.appendChild(img);
+      }
+
+      replayButton.addEventListener('click', replay);
+      durationInput.addEventListener('input', replay);
+      opacityInput.addEventListener('input', replay);
+      themeButton.addEventListener('click', () => {
+        document.body.classList.toggle('is-dark');
+        themeButton.textContent = document.body.classList.contains('is-dark') ? '浅色' : '深色';
+      });
+      toggleTopButton.addEventListener('click', () => {
+        topBand.hidden = !topBand.hidden;
+      });
+
+      replay();
+    })();
+  </script>
+</body>
+</html>

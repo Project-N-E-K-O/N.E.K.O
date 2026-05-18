@@ -41,6 +41,23 @@
 部分官方 HTTP TTS 音色可能需要额外权限或不支持免费线路，不应直接暴露到
 角色卡和克隆页，否则预览/应用会返回 voice not found。
 
+### Provider 适配说明
+
+- **`step` / `free`**：`catalog_value_is_display_name=true`，`voices` 的值就是
+  前端展示名（中文音色标签）。`free` 通过 `inherits: "step"` 复用同一份目录，
+  只覆盖 `catalog_prefix`。详见 `utils/stepfun_tts_voices.py`。
+- **`gemini`**：`catalog_value_is_display_name=false`（默认），`voices` 的值
+  是性别标签 `Female`/`Male`，前端展示用 voice_id（Leda/Puck/…）。`aliases`
+  把 `male`/`woman`/`中文女` 之类用户输入映射回 Puck/Leda 等规范 ID。详见
+  `utils/gemini_tts_voices.py`。
+- **`grok`**：与 Gemini 同形，5 个 xAI 内置音色（eve/ara/leo/rex/sal），
+  上游接收小写 voice_id。详见 `utils/grok_tts_voices.py`。
+
+新增 Provider 时只需在 `native_tts_voice_providers` 里加配置，再写一个
+~50 行的适配模块（参照三者之一）调用 `register_provider`，把模块名追加到
+`utils/native_voice_registry.py::_BUILTIN_PROVIDER_MODULES` 即可——`config_manager`
+/`characters_router`/`tts_client` 都不需要改。
+
 ---
 
 ## 1. 阿里云 (DashScope / Qwen)

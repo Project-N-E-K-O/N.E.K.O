@@ -38,8 +38,16 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# op_type 常量，避免魔法字符串散落
-OP_EXTRACT_FACTS = "extract_facts"
+# op_type 常量，避免魔法字符串散落。
+#
+# 字符串值是 outbox.ndjson 里持久化的 op_type 字面值——视为不可变 wire-format
+# schema id（同数据库列名），重命名 Python 符号时**不能**改值，否则旧机器上
+# 残留的 pending op 在 replay 时 ``_OUTBOX_HANDLERS.get(op_type)`` 拿不到 handler
+# 会被静默 skip。``OP_POST_TURN_SIGNALS`` 的值仍是 ``"extract_facts"``：PR-1
+# 引入时 handler 主操作是 Stage-1 fact 抽取，PR #1346 把 Stage-1（ON-mode）剥离
+# 到 ``_periodic_signal_extraction_loop`` 后，handler 实际只做 counter bump +
+# 复读嗅探 + check_feedback + OFF-mode Stage-1 fallback——符号名随之更新，值保留。
+OP_POST_TURN_SIGNALS = "extract_facts"
 OP_SYNTH_REFLECTION = "synth_reflection"
 OP_CHECK_FEEDBACK = "check_feedback"
 OP_RESOLVE_CORRECTIONS = "resolve_corrections"

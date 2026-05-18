@@ -8,28 +8,12 @@
     const DEFAULT_DURATION_MS = 4000;
     const REDUCED_MOTION_DURATION_MS = 520;
     const LIVE2D_READY_WAIT_MS = 900;
-    const LIVE2D_HANDOFF_MS = 620;
-    const LIVE2D_REDUCED_HANDOFF_MS = 160;
-    const WAKEUP_EYE_CLOSED_PROGRESS = 0.40;
-    const WAKEUP_EYE_OPEN_PROGRESS = 0.40;
-    const LIVE2D_PARAMS = Object.freeze({
-        eyeLeft: 'ParamEyeLOpen',
-        eyeRight: 'ParamEyeROpen',
-        angleX: 'ParamAngleX',
-        angleY: 'ParamAngleY',
-        angleZ: 'ParamAngleZ',
-        eyeBallX: 'ParamEyeBallX',
-        eyeBallY: 'ParamEyeBallY',
-        eyeSmileLeft: 'ParamEyeLSmile',
-        eyeSmileRight: 'ParamEyeRSmile',
-        bodyAngleX: 'ParamBodyAngleX',
-        bodyAngleY: 'ParamBodyAngleY',
-        bodyAngleZ: 'ParamBodyAngleZ',
-        yuiRightWaveSwitch: 'Param75', // right-arm wave enable
-        yuiRightForearmAnim: 'Param90', // right forearm animation
-        yuiRightHandAnim: 'Param92', // right hand animation
-        yuiRightHandWave: 'Param95' // right hand wave
-    });
+    const STORAGE_WATCH_INTERVAL_MS = 120;
+    const OVERLAY_CLEANUP_INTERVAL_MS = 120;
+
+    function getAvatarStageApi() {
+        return window.YuiGuideAvatarStage || null;
+    }
 
     function shouldReduceMotion() {
         try {
@@ -100,470 +84,31 @@
         } catch (_) {}
     }
 
-    function clamp(value, min, max) {
-        const number = Number(value);
-        if (!Number.isFinite(number)) {
-            return min;
-        }
-        return Math.min(max, Math.max(min, number));
-    }
-
-    function easeOutCubic(value) {
-        const t = clamp(value, 0, 1);
-        return 1 - Math.pow(1 - t, 3);
-    }
-
-    function easeInOutCubic(value) {
-        const t = clamp(value, 0, 1);
-        return t < 0.5
-            ? 4 * t * t * t
-            : 1 - Math.pow(-2 * t + 2, 3) / 2;
-    }
-
     function normalizeDuration(value, fallback) {
-        return Number.isFinite(value) && value >= 0 ? value : fallback;
-    }
-
-    function getLive2DManager() {
-        return window.live2dManager || null;
-    }
-
-    function getCurrentLive2DModel(manager) {
-        if (!manager) {
-            return null;
-        }
-        if (typeof manager.getCurrentModel === 'function') {
-            return manager.getCurrentModel();
-        }
-        return manager.currentModel || null;
-    }
-
-    function getLive2DContext() {
-        const manager = getLive2DManager();
-        const model = getCurrentLive2DModel(manager);
-        const coreModel = model && model.internalModel && model.internalModel.coreModel;
-        if (!manager || !model || model.destroyed || !coreModel) {
-            return null;
-        }
-        return {
-            manager: manager,
-            model: model,
-            coreModel: coreModel,
-            ticker: manager.pixi_app && manager.pixi_app.ticker
-        };
-    }
-
-    function hasParam(coreModel, id) {
-        if (!coreModel || !id || typeof coreModel.getParameterIndex !== 'function') {
-            return false;
-        }
-        try {
-            return coreModel.getParameterIndex(id) >= 0;
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function readParamMeta(coreModel, id) {
-        if (!hasParam(coreModel, id)) {
-            return null;
-        }
-        try {
-            const index = coreModel.getParameterIndex(id);
-            if (index < 0) {
-                return null;
-            }
-            const current = coreModel.getParameterValueByIndex(index);
-            let min = Number.NEGATIVE_INFINITY;
-            let max = Number.POSITIVE_INFINITY;
-            let defaultValue = current;
-            try {
-                if (typeof coreModel.getParameterMinimumValueByIndex === 'function') {
-                    min = coreModel.getParameterMinimumValueByIndex(index);
-                }
-            } catch (_) {}
-            try {
-                if (typeof coreModel.getParameterMaximumValueByIndex === 'function') {
-                    max = coreModel.getParameterMaximumValueByIndex(index);
-                }
-            } catch (_) {}
-            try {
-                if (typeof coreModel.getParameterDefaultValueByIndex === 'function') {
-                    defaultValue = coreModel.getParameterDefaultValueByIndex(index);
-                }
-            } catch (_) {}
-            if (!Number.isFinite(min)) {
-                // Yui-specific wave params fall back to the generic range here;
-                // computed wave values are normalized to [0, 1] before writeParam clamps again.
-                min = id.indexOf('EyeBall') >= 0 ? -1 : (id.indexOf('Eye') >= 0 ? 0 : -30);
-            }
-            if (!Number.isFinite(max)) {
-                max = id.indexOf('EyeBall') >= 0 ? 1 : (id.indexOf('Eye') >= 0 ? 1 : 30);
-            }
-            return {
-                id: id,
-                index: index,
-                initial: Number.isFinite(current) ? current : defaultValue,
-                defaultValue: Number.isFinite(defaultValue) ? defaultValue : 0,
-                min: min,
-                max: max
-            };
-        } catch (_) {
-            return null;
-        }
-    }
-
-    function readParam(coreModel, meta) {
-        if (!coreModel || !meta) {
-            return 0;
-        }
-        try {
-            const value = coreModel.getParameterValueByIndex(meta.index);
-            return Number.isFinite(value) ? value : meta.defaultValue;
-        } catch (_) {
-            return meta.defaultValue;
-        }
-    }
-
-    function writeParam(coreModel, meta, value) {
-        if (!coreModel || !meta || typeof coreModel.setParameterValueByIndex !== 'function') {
-            return false;
-        }
-        try {
-            coreModel.setParameterValueByIndex(meta.index, clamp(value, meta.min, meta.max));
-            return true;
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function lerp(from, to, weight) {
-        const t = clamp(weight, 0, 1);
-        return from + (to - from) * t;
-    }
-
-    function scanLive2DParams(coreModel) {
-        const params = {};
-        Object.keys(LIVE2D_PARAMS).forEach((key) => {
-            const meta = readParamMeta(coreModel, LIVE2D_PARAMS[key]);
-            if (meta) {
-                params[key] = meta;
-            }
-        });
-        return params;
-    }
-
-    function hasAnyWakeupParam(params) {
-        return !!(
-            params
-            && (
-                params.eyeLeft
-                || params.eyeRight
-                || params.angleX
-                || params.angleY
-                || params.angleZ
-                || params.eyeBallX
-                || params.eyeBallY
-                || params.eyeSmileLeft
-                || params.eyeSmileRight
-                || params.bodyAngleX
-                || params.bodyAngleY
-                || params.bodyAngleZ
-                || params.yuiRightWaveSwitch
-                || params.yuiRightForearmAnim
-                || params.yuiRightHandAnim
-                || params.yuiRightHandWave
-            )
-        );
+        const number = Number(value);
+        return Number.isFinite(number) && number >= 0 ? number : fallback;
     }
 
     function waitForLive2DContext(timeoutMs) {
-        const immediate = getLive2DContext();
-        if (immediate) {
-            return Promise.resolve(immediate);
+        const api = getAvatarStageApi();
+        if (api && typeof api.waitForLive2DContext === 'function') {
+            return api.waitForLive2DContext(timeoutMs);
         }
-
-        const maxWait = Math.max(0, Math.round(timeoutMs || 0));
-        if (maxWait <= 0) {
-            return Promise.resolve(null);
-        }
-
-        return new Promise((resolve) => {
-            const startedAt = performance.now();
-            const check = () => {
-                const context = getLive2DContext();
-                if (context) {
-                    resolve(context);
-                    return;
-                }
-                if (performance.now() - startedAt >= maxWait) {
-                    resolve(null);
-                    return;
-                }
-                window.requestAnimationFrame(check);
-            };
-            window.requestAnimationFrame(check);
-        });
+        return Promise.resolve(null);
     }
 
-    class Live2DWakeupSession {
-        constructor(context, options) {
-            const normalizedOptions = options || {};
-            this.manager = context.manager;
-            this.model = context.model;
-            this.coreModel = context.coreModel;
-            this.ticker = context.ticker || null;
-            this.reducedMotion = !!normalizedOptions.reducedMotion;
-            this.durationMs = normalizeDuration(normalizedOptions.durationMs, DEFAULT_DURATION_MS);
-            this.handoffMs = this.reducedMotion ? LIVE2D_REDUCED_HANDOFF_MS : LIVE2D_HANDOFF_MS;
-            this.token = normalizedOptions.token || 0;
-            this.timelineStartedAt = Number.isFinite(normalizedOptions.timelineStartedAt)
-                ? normalizedOptions.timelineStartedAt
-                : 0;
-            this.params = scanLive2DParams(this.coreModel);
-            this.startedAt = 0;
-            this.active = false;
-            this.finished = false;
-            this.result = 'idle';
-            this.previousEyeBlinkSuspended = !!this.manager._suspendEyeBlinkOverride;
-            this.poseOverrideSource = 'yui_guide_wakeup_' + this.token;
-            this.usesTemporaryPoseOverride = false;
-            this.motionHoldInstalled = false;
-            this.tick = this.tick.bind(this);
-            this.applyTemporaryPose = this.applyTemporaryPose.bind(this);
+    function createWakeupSession(context, options) {
+        const api = getAvatarStageApi();
+        if (!api || typeof api.createWakeupSession !== 'function') {
+            return null;
         }
+        return api.createWakeupSession(context, options);
+    }
 
-        isUsable() {
-            return hasAnyWakeupParam(this.params);
-        }
-
-        isCurrentModel() {
-            if (!this.manager || !this.model || this.model.destroyed || !this.coreModel) {
-                return false;
-            }
-            const current = getCurrentLive2DModel(this.manager);
-            return current === this.model
-                && current.internalModel
-                && current.internalModel.coreModel === this.coreModel;
-        }
-
-        start() {
-            if (!this.isUsable() || !this.isCurrentModel()) {
-                return false;
-            }
-
-            this.active = true;
-            this.startedAt = this.timelineStartedAt || performance.now();
-            this.manager._suspendEyeBlinkOverride = true;
-            this.motionHoldInstalled = this.installMotionHold();
-            this.usesTemporaryPoseOverride = this.installTemporaryPoseOverride();
-            this.applyPose(this.computePose(0), 1);
-            if (this.manager && this.manager.pixi_app && this.manager.pixi_app.renderer) {
-                try {
-                    this.manager.pixi_app.renderer.render(this.manager.pixi_app.stage);
-                } catch (_) {}
-            }
-            revealPreparedTutorialLive2D('wakeup_initial_pose');
-            if (this.ticker && typeof this.ticker.add === 'function') {
-                this.ticker.add(this.tick);
-            } else {
-                this.frameId = window.requestAnimationFrame(this.tick);
-            }
-            return true;
-        }
-
-        stop(reason) {
-            if (!this.active && this.finished) {
-                return;
-            }
-            this.active = false;
-            this.finished = true;
-            this.result = reason || this.result || 'stopped';
-            if (this.ticker && typeof this.ticker.remove === 'function') {
-                try { this.ticker.remove(this.tick); } catch (_) {}
-            }
-            if (this.frameId) {
-                window.cancelAnimationFrame(this.frameId);
-                this.frameId = 0;
-            }
-            if (this.manager) {
-                this.manager._suspendEyeBlinkOverride = this.previousEyeBlinkSuspended;
-                this.clearTemporaryPoseOverride();
-                this.clearMotionHold();
-            }
-            this.restoreCapturedParams();
-        }
-
-        cancel(reason) {
-            this.stop(reason || 'cancelled');
-        }
-
-        installTemporaryPoseOverride() {
-            if (!this.manager || typeof this.manager.setTemporaryPoseOverride !== 'function') {
-                return false;
-            }
-            try {
-                return this.manager.setTemporaryPoseOverride(this.poseOverrideSource, this.applyTemporaryPose) === true;
-            } catch (_) {
-                return false;
-            }
-        }
-
-        clearTemporaryPoseOverride() {
-            if (!this.manager || typeof this.manager.clearTemporaryPoseOverride !== 'function') {
-                return;
-            }
-            try {
-                this.manager.clearTemporaryPoseOverride(this.poseOverrideSource);
-            } catch (_) {}
-        }
-
-        installMotionHold() {
-            if (!this.manager || typeof this.manager.suspendTemporaryMotions !== 'function') {
-                return false;
-            }
-            try {
-                return this.manager.suspendTemporaryMotions(this.poseOverrideSource, this.model) === true;
-            } catch (_) {
-                return false;
-            }
-        }
-
-        clearMotionHold() {
-            if (!this.motionHoldInstalled || !this.manager || typeof this.manager.resumeTemporaryMotions !== 'function') {
-                return;
-            }
-            try {
-                this.manager.resumeTemporaryMotions(this.poseOverrideSource);
-            } catch (_) {}
-            this.motionHoldInstalled = false;
-        }
-
-        restoreCapturedParams() {
-            if (!this.isCurrentModel()) {
-                return;
-            }
-            Object.keys(this.params).forEach((key) => {
-                const meta = this.params[key];
-                writeParam(this.coreModel, meta, meta.initial);
-            });
-        }
-
-        applyTemporaryPose(coreModel) {
-            if (!this.active || coreModel !== this.coreModel || !this.isCurrentModel()) {
-                return;
-            }
-            const frame = this.getFrameState(performance.now());
-            this.applyPose(frame.pose, frame.weight);
-        }
-
-        getFrameState(now) {
-            const elapsed = Math.max(0, now - this.startedAt);
-            const handoffStart = Math.max(0, this.durationMs - this.handoffMs);
-            let wakeProgress = handoffStart > 0 ? clamp(elapsed / handoffStart, 0, 1) : 1;
-            let weight = 1;
-            if (elapsed >= handoffStart) {
-                const handoffProgress = this.handoffMs > 0 ? clamp((elapsed - handoffStart) / this.handoffMs, 0, 1) : 1;
-                weight = 1 - easeOutCubic(handoffProgress);
-            }
-            if (this.reducedMotion) {
-                wakeProgress = 1;
-            }
-            return {
-                elapsed: elapsed,
-                pose: this.computePose(wakeProgress),
-                weight: weight
-            };
-        }
-
-        tick() {
-            if (!this.active) {
-                return;
-            }
-            if (!this.isCurrentModel()) {
-                this.stop('model_changed');
-                return;
-            }
-
-            const now = performance.now();
-            const frame = this.getFrameState(now);
-            if (!this.usesTemporaryPoseOverride) {
-                this.applyPose(frame.pose, frame.weight);
-            }
-
-            if (frame.elapsed >= this.durationMs) {
-                this.stop('played');
-                return;
-            }
-            if (!this.ticker) {
-                this.frameId = window.requestAnimationFrame(this.tick);
-            }
-        }
-
-        computePose(progress) {
-            const t = easeInOutCubic(progress);
-            const holdProgress = clamp(progress / WAKEUP_EYE_CLOSED_PROGRESS, 0, 1);
-            const wakeProgress = clamp((progress - WAKEUP_EYE_CLOSED_PROGRESS) / WAKEUP_EYE_OPEN_PROGRESS, 0, 1);
-            const wakeEase = easeOutCubic(wakeProgress);
-            const waveProgress = clamp((progress - 0.68) / 0.22, 0, 1);
-            const waveOut = 1 - easeOutCubic(clamp((progress - 0.88) / 0.12, 0, 1));
-            const waveWeight = Math.sin(waveProgress * Math.PI) * waveOut;
-            const waveCycle = Math.sin(waveProgress * Math.PI * 4);
-            let eyeOpen = 0;
-            if (progress <= WAKEUP_EYE_CLOSED_PROGRESS) {
-                eyeOpen = 0.02 * holdProgress;
-            } else {
-                const flutter = Math.sin(wakeProgress * Math.PI * 3) * 0.08 * (1 - wakeProgress);
-                eyeOpen = clamp((wakeEase * 0.98) + flutter, 0, 1);
-            }
-
-            return {
-                eyeOpen: this.reducedMotion ? 1 : eyeOpen,
-                angleX: lerp(0, 0, t),
-                angleY: this.reducedMotion ? -2 : lerp(-18, 0, t),
-                angleZ: this.reducedMotion ? 0 : lerp(-3.2, 0, t),
-                eyeBallX: 0,
-                eyeBallY: this.reducedMotion ? 0 : lerp(-0.38, 0, t),
-                eyeSmile: this.reducedMotion ? 0 : clamp(wakeEase * 0.18, 0, 0.18),
-                bodyAngleX: this.reducedMotion ? 0 : lerp(-6.5, 0, t),
-                bodyAngleY: this.reducedMotion ? 0 : lerp(-3.2, 0, t),
-                bodyAngleZ: this.reducedMotion ? 0 : lerp(3.6, 0, t),
-                yuiRightWaveSwitch: this.reducedMotion ? 0 : clamp(waveWeight, 0, 1),
-                yuiRightForearmAnim: this.reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight,
-                yuiRightHandAnim: this.reducedMotion ? 0 : clamp(0.56 + waveCycle * 0.44, 0, 1) * waveWeight,
-                yuiRightHandWave: this.reducedMotion ? 0 : clamp(0.5 + waveCycle * 0.5, 0, 1) * waveWeight
-            };
-        }
-
-        writeWeighted(key, targetValue, weight) {
-            const meta = this.params[key];
-            if (!meta) {
-                return;
-            }
-            const current = readParam(this.coreModel, meta);
-            const blended = lerp(current, targetValue, weight);
-            writeParam(this.coreModel, meta, blended);
-        }
-
-        applyPose(pose, weight) {
-            const w = clamp(weight, 0, 1);
-            this.writeWeighted('eyeLeft', pose.eyeOpen, w);
-            this.writeWeighted('eyeRight', pose.eyeOpen, w);
-            this.writeWeighted('angleX', pose.angleX, w);
-            this.writeWeighted('angleY', pose.angleY, w);
-            this.writeWeighted('angleZ', pose.angleZ, w);
-            this.writeWeighted('eyeBallX', pose.eyeBallX, w);
-            this.writeWeighted('eyeBallY', pose.eyeBallY, w);
-            this.writeWeighted('eyeSmileLeft', pose.eyeSmile, w);
-            this.writeWeighted('eyeSmileRight', pose.eyeSmile, w);
-            this.writeWeighted('bodyAngleX', pose.bodyAngleX, w);
-            this.writeWeighted('bodyAngleY', pose.bodyAngleY, w);
-            this.writeWeighted('bodyAngleZ', pose.bodyAngleZ, w);
-            this.writeWeighted('yuiRightWaveSwitch', pose.yuiRightWaveSwitch, w);
-            this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim, w);
-            this.writeWeighted('yuiRightHandAnim', pose.yuiRightHandAnim, w);
-            this.writeWeighted('yuiRightHandWave', pose.yuiRightHandWave, w);
-        }
+    function getSessionParamCount(session) {
+        return session && session.params && typeof session.params === 'object'
+            ? Object.keys(session.params).length
+            : 0;
     }
 
     class YuiGuideWakeupController {
@@ -611,6 +156,11 @@
         }
 
         async startLive2DWakeupSession(token, durationMs, reducedMotion, timelineStartedAt) {
+            const api = getAvatarStageApi();
+            if (!api) {
+                return { result: 'fallback', reason: 'avatar_stage_unavailable' };
+            }
+
             const waitBudget = reducedMotion
                 ? 0
                 : Math.min(LIVE2D_READY_WAIT_MS, Math.max(0, Math.round(durationMs - 180)));
@@ -622,16 +172,22 @@
                 return { result: 'fallback', reason: 'live2d_unavailable' };
             }
 
-            const session = new Live2DWakeupSession(context, {
+            const session = createWakeupSession(context, {
                 durationMs: durationMs,
                 reducedMotion: reducedMotion,
                 timelineStartedAt: timelineStartedAt,
-                token: token
+                token: token,
+                onInitialPose: () => {
+                    revealPreparedTutorialLive2D('wakeup_initial_pose');
+                }
             });
+            if (!session || typeof session.isUsable !== 'function') {
+                return { result: 'fallback', reason: 'live2d_session_unavailable' };
+            }
             if (!session.isUsable()) {
                 return { result: 'fallback', reason: 'live2d_params_missing' };
             }
-            if (!session.start()) {
+            if (!session.start || !session.start()) {
                 return { result: 'fallback', reason: 'live2d_session_start_failed' };
             }
             this.live2dSession = session;
@@ -639,7 +195,7 @@
             return {
                 result: 'played',
                 reason: '',
-                paramCount: Object.keys(session.params).length
+                paramCount: getSessionParamCount(session)
             };
         }
 
@@ -696,7 +252,9 @@
                     const activeSession = this.live2dSessionToken === token ? this.live2dSession : null;
                     if (activeSession) {
                         if (result === 'played') {
-                            activeSession.stop('played');
+                            activeSession.stop('played', {
+                                preserveFinalPose: true
+                            });
                             if (activeSession.result && activeSession.result !== 'played') {
                                 live2dResult = {
                                     result: activeSession.result,
@@ -742,7 +300,7 @@
                         return live2dResult;
                     })
                     .catch((error) => {
-                        console.warn('[YuiGuideWakeup] Live2D 苏醒参数覆盖失败:', error);
+                        console.warn('[YuiGuideWakeup] Live2D 苏醒动作失败:', error);
                         live2dResult = { result: 'fallback', reason: 'live2d_exception' };
                         if (this.runToken === token && !settled) {
                             revealPreparedTutorialLive2D(live2dResult.reason);
@@ -754,11 +312,10 @@
                     if (isStorageLocationOverlayVisible(this.document)) {
                         finish('cancelled', 'storage_overlay_visible');
                     }
-                }, 120);
+                }, STORAGE_WATCH_INTERVAL_MS);
                 this.overlayWatchTimer = window.setInterval(() => {
                     removeBlockingGuideOverlay(this.document);
-                }, 120);
-
+                }, OVERLAY_CLEANUP_INTERVAL_MS);
             });
         }
 

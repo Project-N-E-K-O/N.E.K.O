@@ -43,7 +43,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "推荐配置流程",
     setupSteps: [
       { title: "1. 打开插件 UI", body: "进入 galgame_plugin 详情页的“界面”标签，先查看顶部依赖与运行状态横幅。" },
-      { title: "2. 补齐 OCR 资源", body: "RapidOCR 可直接使用内置中文模型；如果切到日文、韩文或英文模型，按横幅提示下载缺失模型。Tesseract 只作为兼容兜底。" },
+      { title: "2. 补齐 OCR 资源", body: "RapidOCR 可直接使用内置中文模型；如果切到日文、韩文或英文模型，按横幅提示下载缺失模型。" },
       { title: "3. 打开游戏并刷新目标", body: "让游戏停在有文字的画面，点击刷新窗口；自动匹配失败时手动选择识别窗口。" },
       { title: "4. 校准截图区域", body: "在 OCR 窗口区域应用推荐校准或自动重新校准，对话框、字幕区和宽屏布局都可以单独保存 profile。" },
       { title: "5. 必要时启用 Memory Reader", body: "截图黑屏或 OCR 很差时，安装 Textractor，选择候选进程并锁定 Memory Reader 目标。" },
@@ -59,7 +59,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     panelsTitle: "当前面板对应关系",
     panels: [
-      { key: "install", label: "安装与依赖", value: "RapidOCR 模型、Tesseract、Textractor 的检测和安装任务。" },
+      { key: "install", label: "安装与依赖", value: "RapidOCR 模型、Textractor 的检测和安装任务。" },
       { key: "capture", label: "OCR 与窗口", value: "截图后端、窗口选择、截图校准、屏幕感知和视觉辅助。" },
       { key: "memory", label: "Memory Reader", value: "Textractor 候选进程、手动锁定、引擎 hook 兜底。" },
       { key: "status", label: "插件状态", value: "运行状态、快照、历史台词、选项、事件和 Agent 推送记录。" },
@@ -84,7 +84,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Recommended Flow",
     setupSteps: [
       { title: "1. Open the plugin UI", body: "Open the galgame_plugin detail page and switch to the UI tab, then check the dependency and runtime banners at the top." },
-      { title: "2. Prepare OCR resources", body: "RapidOCR can use the bundled Chinese model immediately. For Japanese, Korean, or English models, follow the banner to download missing files. Tesseract is only a compatibility fallback." },
+      { title: "2. Prepare OCR resources", body: "RapidOCR can use the bundled Chinese model immediately. For Japanese, Korean, or English models, follow the banner to download missing files." },
       { title: "3. Launch the game and refresh targets", body: "Keep the game on a text screen, refresh windows, and manually select the OCR target if auto matching misses it." },
       { title: "4. Calibrate capture", body: "Apply the recommended crop or run auto recalibration. Dialogue boxes, subtitle areas, and wide layouts can each keep their own profile." },
       { title: "5. Enable Memory Reader when needed", body: "If screenshots are black or OCR quality is poor, install Textractor, choose a candidate process, and lock the Memory Reader target." },
@@ -100,7 +100,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     panelsTitle: "Panel Map",
     panels: [
-      { key: "install", label: "Install & Dependencies", value: "RapidOCR models, Tesseract, Textractor checks, and install tasks." },
+      { key: "install", label: "Install & Dependencies", value: "RapidOCR models, Textractor checks, and install tasks." },
       { key: "capture", label: "OCR & Window", value: "Capture backend, window selection, calibration, screen awareness, and vision assist." },
       { key: "memory", label: "Memory Reader", value: "Textractor candidates, manual process lock, and engine hook fallback." },
       { key: "status", label: "Plugin Status", value: "Runtime state, snapshots, line history, choices, events, and Agent pushes." },
@@ -141,7 +141,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     panelsTitle: "パネル対応",
     panels: [
-      { key: "install", label: "インストールと依存", value: "RapidOCR モデル、Tesseract、Textractor の確認とインストール。" },
+      { key: "install", label: "インストールと依存", value: "RapidOCR モデル、Textractor の確認とインストール。" },
       { key: "capture", label: "OCR とウィンドウ", value: "キャプチャ backend、ウィンドウ選択、校正、画面認識、Vision 補助。" },
       { key: "memory", label: "Memory Reader", value: "Textractor 候補、手動固定、エンジン hook のフォールバック。" },
       { key: "status", label: "プラグイン状態", value: "実行状態、履歴、選択肢、イベント、Agent 通知。" },
@@ -182,7 +182,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     panelsTitle: "패널 안내",
     panels: [
-      { key: "install", label: "설치와 의존성", value: "RapidOCR 모델, Tesseract, Textractor 검사와 설치 작업." },
+      { key: "install", label: "설치와 의존성", value: "RapidOCR 모델, Textractor 검사와 설치 작업." },
       { key: "capture", label: "OCR과 창", value: "캡처 backend, 창 선택, 보정, 화면 인식, Vision 보조." },
       { key: "memory", label: "Memory Reader", value: "Textractor 후보, 수동 프로세스 고정, 엔진 hook 대체 경로." },
       { key: "status", label: "플러그인 상태", value: "실행 상태, 기록, 선택지, 이벤트, Agent 푸시." },
@@ -223,7 +223,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     panelsTitle: "Карта панели",
     panels: [
-      { key: "install", label: "Установка и зависимости", value: "Модели RapidOCR, Tesseract, Textractor и задачи установки." },
+      { key: "install", label: "Установка и зависимости", value: "Модели RapidOCR, Textractor и задачи установки." },
       { key: "capture", label: "OCR и окно", value: "Backend захвата, выбор окна, калибровка, screen awareness и Vision." },
       { key: "memory", label: "Memory Reader", value: "Кандидаты Textractor, ручная привязка процесса и engine hooks." },
       { key: "status", label: "Статус плагина", value: "Runtime, история строк, варианты, события и push-записи Agent." },

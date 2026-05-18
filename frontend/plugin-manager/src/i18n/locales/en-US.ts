@@ -466,7 +466,6 @@ export default {
     reloadFailed: 'Failed to reload',
     packFailed: 'Failed to package plugin',
     deleteFailed: 'Failed to delete plugin',
-    pluginDisabled: 'Plugin is disabled. Please enable it first.',
     pluginLoadFailed: 'Plugin load failed and cannot be started.',
     confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',
     extensionDisabled: 'Extension disabled',

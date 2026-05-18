@@ -5650,6 +5650,17 @@ function _panelNormalizeVoiceGroupLabel(label) {
     return String(label || '').replace(/^[\s\-—–─]+|[\s\-—–─]+$/g, '').trim();
 }
 
+function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
+    if (voiceData && typeof voiceData === 'object') {
+        const prefix = String(voiceData.prefix || '').trim();
+        if (prefix) return prefix;
+
+        const name = String(voiceData.name || '').trim();
+        if (name) return name;
+    }
+    return String(voiceId || '').trim();
+}
+
 // 创建音色自定义单选下拉，原生 select 只负责表单值。
 function _panelCreateVoiceSelectUi(selectEl) {
     const container = document.createElement('div');
@@ -5912,17 +5923,11 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             selectEl.appendChild(defaultOption);
 
             // 添加音色选项
-            const voiceOwners = data.voice_owners || {};
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
                 const option = document.createElement('option');
                 option.value = voiceId;
-                // 显示名称：优先用 voice_owners，其次 voiceData.name，最后 voiceId
-                let displayName = voiceId;
-                if (voiceOwners[voiceId]) {
-                    displayName = voiceOwners[voiceId] + ' - ' + voiceId;
-                } else if (voiceData && voiceData.name) {
-                    displayName = voiceData.name;
-                }
+                // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
+                const displayName = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                 option.textContent = displayName;
                 option.title = voiceId;
                 if (voiceId === currentVoiceId) option.selected = true;
@@ -6072,7 +6077,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     try {
-        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        const resp = await fetch('/api/characters/custom_tts_voices?provider=gptsovits', { signal: controller.signal });
         clearTimeout(timeoutId);
         // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
         // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。

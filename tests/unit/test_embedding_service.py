@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 
 import pytest
 
@@ -124,6 +125,198 @@ def test_resolve_quantization_invalid_falls_back_to_auto():
         _resolve_quantization("garbage", has_vnni=False, vnni_absence_confirmed=False)
         == "int8"
     )
+
+
+def test_detect_avx_vnni_arm64_apple_short_circuits(monkeypatch):
+    """Apple Silicon ships only dotprod-capable cores (M1+ universally),
+    so detection must claim the INT8 fast path without inspecting flags.
+    Without this, M-series Macs fall into the "VNNI required for int8"
+    disable branch even though INT8 inference runs fine on them.
+    """
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Darwin")
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+
+def test_detect_avx_vnni_arm64_windows_uses_processor_feature(monkeypatch):
+    """Windows-on-ARM must call ``IsProcessorFeaturePresent`` rather than
+    assuming support — first-gen WoA (Snapdragon 835, 2017) is ARMv8-A
+    without dotprod, so hard-coding True would silently enable a slow
+    INT8 path on that hardware (Codex review on PR #1394)."""
+    import ctypes
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+
+    class _FakeKernel32:
+        def __init__(self, present: int) -> None:
+            self._present = present
+
+        def IsProcessorFeaturePresent(self, feature: int) -> int:  # noqa: N802
+            # 43 == PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
+            assert feature == 43
+            return self._present
+
+    class _FakeWindll:
+        def __init__(self, present: int) -> None:
+            self.kernel32 = _FakeKernel32(present)
+
+    # Modern Snapdragon X / 8cx — kernel reports dotprod present.
+    monkeypatch.setattr(ctypes, "windll", _FakeWindll(present=1), raising=False)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    # API returning 0 is ambiguous (could be Snapdragon 835 lacking
+    # dotprod, could be an older Win10 ARM build that doesn't know
+    # feature 43). Stay inconclusive rather than false-disabling on
+    # capable hardware — Codex P1 on PR #1394.
+    monkeypatch.setattr(ctypes, "windll", _FakeWindll(present=0), raising=False)
+    assert emb_mod.detect_avx_vnni_details() == (False, False)
+
+
+def test_detect_avx_vnni_arm64_linux_checks_asimddp(monkeypatch):
+    """Linux ARM must verify the ``asimddp`` feature flag — old Cortex-A53
+    / A57 / A72 cores are aarch64 but predate ARMv8.2-A dotprod, so being
+    optimistic would silently run the slow path on a Raspberry Pi 3."""
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+
+    class _FakeCpuinfoModern:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["fp", "asimd", "asimddp", "sha2"]}
+
+    class _FakeCpuinfoOld:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["fp", "asimd", "sha2"]}  # pre-dotprod
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _FakeCpuinfoModern)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _FakeCpuinfoOld)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
+def test_detect_avx_vnni_arm64_linux_proc_cpuinfo_fallback(monkeypatch):
+    """Linux ARM falls back to /proc/cpuinfo when py-cpuinfo is
+    unavailable. Unlike x86 which uses ``flags``, ARM Linux exposes the
+    feature list under a capital-F ``Features`` line — make sure the
+    parser hits that branch and reads asimddp/dotprod correctly."""
+    from unittest.mock import mock_open
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+
+    class _BrokenCpuinfo:
+        @staticmethod
+        def get_cpu_info():
+            raise RuntimeError("simulated cpuinfo failure")
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _BrokenCpuinfo)
+
+    proc_modern = (
+        "processor\t: 0\n"
+        "Features\t: fp asimd evtstrm aes pmull sha2 crc32 asimddp\n"
+    )
+    monkeypatch.setattr("builtins.open", mock_open(read_data=proc_modern))
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    proc_old = (
+        "processor\t: 0\n"
+        "Features\t: fp asimd evtstrm aes pmull sha2 crc32\n"  # pre-dotprod
+    )
+    monkeypatch.setattr("builtins.open", mock_open(read_data=proc_old))
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
+def test_detect_avx_vnni_x86_cpuid_probe_is_authoritative(monkeypatch):
+    """When the direct CPUID probe returns a definitive answer, x86
+    detection MUST trust it and never fall back to py-cpuinfo. py-cpuinfo
+    on Windows silently omits ``avx_vnni`` from its flag list (Alder Lake
+    onwards on Intel, Zen 4+ on AMD), so consulting it after a positive
+    CPUID would let the stale absence overwrite the correct answer and
+    re-introduce the sticky-disable that #1395 fixed.
+    """
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+
+    # Force a py-cpuinfo result that disagrees with the probe, so the
+    # test fails loudly if the fallback ever runs ahead of the probe.
+    class _CpuinfoNoVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2"]}
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+
+    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: True)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: False)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
+def test_detect_avx_vnni_x86_falls_back_to_cpuinfo_when_probe_unavailable(
+    monkeypatch,
+):
+    """Sandboxes that block executable allocations make the CPUID probe
+    return None. In that case the existing py-cpuinfo / /proc/cpuinfo
+    chain must still drive the decision so we don't lose detection on
+    runtimes that worked before #1395.
+    """
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: None)
+
+    class _CpuinfoWithVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2", "avx_vnni"]}
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoWithVnni)
+    assert emb_mod.detect_avx_vnni_details() == (True, True)
+
+    class _CpuinfoNoVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2"]}
+
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+    assert emb_mod.detect_avx_vnni_details() == (False, True)
+
+
+def test_probe_avx_vnni_skips_non_windows_and_non_x86(monkeypatch):
+    """The probe is scoped to Windows x86_64. On Linux it must NOT issue
+    CPUID — ``arch_prctl(ARCH_SET_CPUID, 0)`` (rr debugger, certain
+    sandboxes) turns ``cpuid`` into SIGSEGV, which Python's try/except
+    cannot catch and would hard-kill the process (Codex P1 on #1402).
+    On macOS Intel there is no chip in the wild with AVX-VNNI anyway,
+    and hardened runtime breaks PROT_EXEC. ARM hosts are handled by the
+    sibling :func:`_detect_int8_fast_path_arm` and must not enter the
+    x86 shellcode path.
+    """
+    from memory import embeddings as emb_mod
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Darwin")
+    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+    assert emb_mod._probe_avx_vnni_via_cpuid() is None
 
 
 def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():

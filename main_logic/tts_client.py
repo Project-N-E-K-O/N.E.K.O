@@ -18,6 +18,11 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.elevenlabs_tts_voices import (
+    ELEVENLABS_TTS_DEFAULT_MODEL,
+    ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
+    normalize_elevenlabs_voice_id,
+)
 from utils.gemini_tts_voices import (
     GEMINI_TTS_MODEL,
     normalize_gemini_tts_voice,
@@ -125,6 +130,10 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
         })
 
     return voices
+
+
+def _resolve_elevenlabs_api_key(cm) -> str:
+    return (cm.get_tts_api_key('elevenlabs') or '').strip()
 
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
@@ -353,6 +362,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="gpt-4o-mini-tts；按句切分后流式接收音频",
     ),
+    "elevenlabs": TTSProviderMeta(
+        name="elevenlabs",
+        category="ws_bistream",
+        protocol="WebSocket (wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz -> resample 48kHz",
+        notes="ElevenLabs text-to-speech stream with Flash v2.5 by default",
+    ),
     "minimax": TTSProviderMeta(
         name="minimax",
         category="http_sentence",
@@ -506,6 +525,7 @@ async def _non_bistream_tts_main_loop(
     *,
     label: str = "TTS",
     max_concurrent: int = 3,
+    sentence_trace_fn=None,
 ):
     """非流式输入 TTS 的通用主循环（按句切分 + 并行合成 + 顺序投递）。
 
@@ -559,10 +579,19 @@ async def _non_bistream_tts_main_loop(
     _slot_done: dict[int, asyncio.Event] = {}           # seq_id → 合成完成事件
     _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → 有新数据通知
     _tasks: dict[int, asyncio.Task] = {}                # seq_id → synth task
+    _sentence_enqueued_at: dict[int, float] = {}        # seq_id → enqueue monotonic time
     _sem = asyncio.Semaphore(max_concurrent)
     _drain_seq: int = 0                                 # drain 当前正在投递的序号
     _drain_task: asyncio.Task | None = None
     _generation_id: int = 0                             # 每次 cancel 递增
+
+    def _trace_sentence(event: str, seq: int, sid: str, text: str, **extra) -> None:
+        if sentence_trace_fn is None:
+            return
+        try:
+            sentence_trace_fn(event, seq, sid, text, **extra)
+        except Exception:
+            pass
 
     def _alloc_slot() -> int:
         nonlocal _next_seq
@@ -578,6 +607,7 @@ async def _non_bistream_tts_main_loop(
         _slot_done.pop(seq, None)
         _slot_new_data.pop(seq, None)
         _tasks.pop(seq, None)
+        _sentence_enqueued_at.pop(seq, None)
 
     def _slot_put(seq: int, gen_id: int, item) -> None:
         """将一个 chunk 写入指定 slot 的 buffer（供 proxy 回调）。"""
@@ -600,6 +630,10 @@ async def _non_bistream_tts_main_loop(
             if gen_id != _generation_id:
                 return
             task = asyncio.current_task()
+            started_at = time.perf_counter()
+            enqueued_at = _sentence_enqueued_at.get(seq, started_at)
+            queue_wait_ms = int((started_at - enqueued_at) * 1000)
+            _trace_sentence("start", seq, sid, text, queue_wait_ms=queue_wait_ms)
             if proxy is not None:
                 proxy._register(task, seq, gen_id, _slot_put)
             try:
@@ -608,9 +642,12 @@ async def _non_bistream_tts_main_loop(
                 raise
             except Exception as exc:
                 if gen_id == _generation_id:
+                    _trace_sentence("error", seq, sid, text, error=str(exc))
                     _slot_put(seq, gen_id,
                               ("__synth_error__", f"{label} 合成失败: {exc}"))
             finally:
+                total_ms = int((time.perf_counter() - started_at) * 1000)
+                _trace_sentence("done", seq, sid, text, total_ms=total_ms)
                 if proxy is not None:
                     proxy._unregister(task)
                 if done_evt is _slot_done.get(seq):
@@ -675,6 +712,8 @@ async def _non_bistream_tts_main_loop(
 
     def _enqueue_sentence(text: str, sid: str) -> None:
         seq = _alloc_slot()
+        _sentence_enqueued_at[seq] = time.perf_counter()
+        _trace_sentence("enqueue", seq, sid, text)
         task = asyncio.create_task(_synth_one(seq, text, sid, _generation_id))
         _tasks[seq] = task
         _ensure_drain()
@@ -715,6 +754,7 @@ async def _non_bistream_tts_main_loop(
         _slot_done.clear()
         _slot_new_data.clear()
         _tasks.clear()
+        _sentence_enqueued_at.clear()
         _next_seq = 0
         _drain_seq = 0
         if proxy is not None:
@@ -763,6 +803,7 @@ def _run_sentence_tts_worker(
     async_setup_fn,
     *,
     label: str,
+    sentence_trace_fn=None,
 ):
     """HTTP 按句合成类 TTS worker 的通用骨架。
 
@@ -809,6 +850,7 @@ def _run_sentence_tts_worker(
             await _non_bistream_tts_main_loop(
                 request_queue, proxy, synthesize_fn,
                 label=label,
+                sentence_trace_fn=sentence_trace_fn,
             )
         except Exception as exc:
             _enqueue_error(response_queue, f"{label} Worker 错误: {exc}")
@@ -3244,6 +3286,396 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="MiniMax TTS")
 
 
+def _normalize_elevenlabs_voice_id(voice_id: str | None) -> str:
+    return normalize_elevenlabs_voice_id(voice_id)
+
+
+def _parse_elevenlabs_pcm_sample_rate(output_format: str | None) -> int:
+    match = re.match(r"^pcm_(\d+)$", (output_format or "").strip())
+    if not match:
+        return 24000
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return 24000
+
+
+def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
+    return bool(re.match(r"^pcm_(\d+)$", (output_format or "").strip()))
+
+
+def _get_elevenlabs_options(base_url=None):
+    raw_base_url = (
+        base_url
+        or "https://api.elevenlabs.io"
+    )
+    base_url = (raw_base_url or "https://api.elevenlabs.io").strip().rstrip('/')
+
+    return {
+        'base_url': base_url,
+        'model': ELEVENLABS_TTS_DEFAULT_MODEL,
+        'output_format': ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
+        'stability': 0.5,
+        'similarity_boost': 0.75,
+        'style': 0.0,
+        'use_speaker_boost': True,
+    }
+
+
+_ELEVENLABS_WS_CHUNK_SCHEDULE = [120, 160, 250, 290]
+
+
+def _elevenlabs_ws_base_url(base_url: str | None) -> str:
+    raw = (base_url or "https://api.elevenlabs.io").strip().rstrip("/")
+    if raw.startswith("https://"):
+        return "wss://" + raw[len("https://"):]
+    if raw.startswith("http://"):
+        return "ws://" + raw[len("http://"):]
+    if raw.startswith("wss://") or raw.startswith("ws://"):
+        return raw
+    return "wss://" + raw
+
+
+def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
+    """ElevenLabs TTS worker - WebSocket stream-input PCM output."""
+    from urllib.parse import urlencode
+
+    normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
+    options = _get_elevenlabs_options(base_url)
+    output_format = options['output_format']
+    if not _is_elevenlabs_pcm_output_format(output_format):
+        _enqueue_error(response_queue, {
+            "code": "ELEVENLABS_OUTPUT_FORMAT_UNSUPPORTED",
+            "provider": "elevenlabs",
+            "message": f"ElevenLabs TTS worker requires PCM output, got {output_format!r}",
+        })
+        response_queue.put(("__ready__", False))
+        return
+
+    ws_base_url = _elevenlabs_ws_base_url(options['base_url'])
+    ws_url = f"{ws_base_url}/v1/text-to-speech/{normalized_voice_id}/stream-input"
+    ws_params = urlencode({
+        "model_id": options['model'],
+        "output_format": output_format,
+    })
+    ws_url = f"{ws_url}?{ws_params}"
+    chunk_schedule = list(_ELEVENLABS_WS_CHUNK_SCHEDULE)
+    pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
+
+    def _build_voice_settings() -> dict:
+        return {
+            "stability": options['stability'],
+            "similarity_boost": options['similarity_boost'],
+            "style": options['style'],
+            "use_speaker_boost": options['use_speaker_boost'],
+            "speed": 1.0,
+        }
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        current_speech_id = None
+        response_finished = asyncio.Event()
+        text_done_sent = False
+        resampler = None
+        pending_text: list[str] = []
+        pending_text_sid: str | None = None
+
+        def _reset_session_metrics() -> None:
+            nonlocal response_finished, text_done_sent, resampler
+            response_finished = asyncio.Event()
+            text_done_sent = False
+            resampler = (
+                soxr.ResampleStream(pcm_sample_rate, 48000, 1, dtype='float32')
+                if pcm_sample_rate != 48000
+                else None
+            )
+
+        async def _close_ws(send_final_empty: bool = False, wait_for_final: bool = False) -> None:
+            nonlocal ws, receive_task, text_done_sent
+            if ws is not None:
+                if send_final_empty and not text_done_sent:
+                    try:
+                        await ws.send(json.dumps({"text": ""}))
+                        text_done_sent = True
+                    except Exception as exc:
+                        logger.debug("ElevenLabs WS final empty send failed: %s", exc)
+                if wait_for_final:
+                    try:
+                        await asyncio.wait_for(response_finished.wait(), timeout=30.0)
+                    except Exception:
+                        pass
+                try:
+                    await asyncio.wait_for(ws.close(), timeout=0.5)
+                except Exception:
+                    pass
+            ws = None
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            receive_task = None
+
+        async def _open_ws(speech_id: str) -> None:
+            nonlocal ws, receive_task, current_speech_id
+            if not normalized_voice_id:
+                raise RuntimeError("ElevenLabs voice_id is not configured")
+            if not audio_api_key:
+                raise RuntimeError("ElevenLabs API key is not configured")
+            ws = await websockets.connect(
+                ws_url,
+                additional_headers={"xi-api-key": audio_api_key},
+                ping_interval=None,
+                close_timeout=0.5,
+                max_size=10 * 1024 * 1024,
+            )
+            _reset_session_metrics()
+            current_speech_id = speech_id
+            receive_task = asyncio.create_task(_receive_ws_messages(speech_id))
+            init_payload = {
+                "text": " ",
+                "voice_settings": _build_voice_settings(),
+                "generation_config": {
+                    "chunk_length_schedule": chunk_schedule,
+                },
+                "xi_api_key": audio_api_key,
+            }
+            await ws.send(json.dumps(init_payload))
+
+        async def _receive_ws_messages(speech_id: str) -> None:
+            try:
+                async for message in ws:
+                    audio_bytes = None
+                    is_final = False
+                    payload = None
+
+                    if isinstance(message, bytes):
+                        if message[:1] == b"{":
+                            try:
+                                payload = json.loads(message.decode("utf-8", errors="replace"))
+                            except Exception:
+                                payload = None
+                        if payload is None:
+                            audio_bytes = message
+                    else:
+                        try:
+                            payload = json.loads(message)
+                        except Exception:
+                            preview = message if len(message) < 200 else message[:200] + "...<truncated>"
+                            logger.warning("ElevenLabs WS recv non-JSON: %s", preview)
+                            continue
+
+                    if payload is not None:
+                        event_type = payload.get("type")
+                        audio_b64 = payload.get("audio") or payload.get("data") or payload.get("delta") or ""
+                        if audio_b64:
+                            try:
+                                audio_bytes = base64.b64decode(audio_b64)
+                            except Exception as exc:
+                                logger.warning("ElevenLabs WS audio decode failed: %s", exc)
+                                audio_bytes = None
+                        is_final = bool(
+                            payload.get("isFinal")
+                            or payload.get("is_final")
+                            or payload.get("final")
+                            or event_type in {"final", "audio.done"}
+                        )
+                        if event_type == "error":
+                            _enqueue_error(response_queue, {
+                                "code": "API_REQUEST_FAILED",
+                                "provider": "elevenlabs",
+                                "message": f"ElevenLabs TTS API error: {payload}",
+                            })
+                            continue
+                        if not audio_bytes and not is_final:
+                            preview = message if isinstance(message, str) else repr(message[:200])
+                            logger.debug(
+                                "ElevenLabs WS recv unknown event type=%r raw=%s",
+                                event_type,
+                                preview,
+                            )
+                            continue
+
+                    if audio_bytes:
+                        usable_len = len(audio_bytes) - (len(audio_bytes) % 2)
+                        if usable_len <= 0:
+                            continue
+                        if usable_len < len(audio_bytes):
+                            audio_bytes = audio_bytes[:usable_len]
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                        response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
+                    if is_final:
+                        response_finished.set()
+                        break
+            except websockets.exceptions.ConnectionClosed as exc:
+                if exc.code != 1000:
+                    logger.info(
+                        "ElevenLabs WS closed: speech_id=%s code=%s reason=%r",
+                        speech_id,
+                        exc.code,
+                        exc.reason,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("ElevenLabs WS receive failed: %s", exc)
+            finally:
+                response_finished.set()
+
+        async def _send_text(text: str, speech_id: str, *, final: bool = False) -> None:
+            if ws is None:
+                raise RuntimeError("ElevenLabs WS is not connected")
+            payload = {"text": text}
+            if text and text.strip():
+                payload["try_trigger_generation"] = True
+            if final and text:
+                payload["flush"] = True
+            await ws.send(json.dumps(payload))
+
+        async def _ensure_session(speech_id: str) -> None:
+            nonlocal current_speech_id, pending_text_sid
+            if current_speech_id != speech_id or ws is None:
+                wait_for_previous_final = (
+                    ws is not None
+                    and text_done_sent
+                    and not response_finished.is_set()
+                )
+                await _close_ws(send_final_empty=False, wait_for_final=wait_for_previous_final)
+                if pending_text and pending_text_sid not in (None, speech_id):
+                    logger.debug(
+                        "ElevenLabs WS dropping stale pending text: pending_sid=%s current_sid=%s len=%d",
+                        pending_text_sid,
+                        speech_id,
+                        sum(len(part) for part in pending_text),
+                    )
+                    pending_text.clear()
+                    pending_text_sid = None
+                await _open_ws(speech_id)
+
+        try:
+            if not normalized_voice_id:
+                _enqueue_error(response_queue, {
+                    "code": "TTS_VOICE_ID_MISSING",
+                    "provider": "elevenlabs",
+                    "message": "ElevenLabs voice_id is not configured",
+                })
+                response_queue.put(("__ready__", False))
+                return
+            if not audio_api_key:
+                _enqueue_error(response_queue, {
+                    "code": "API_KEY_MISSING",
+                    "provider": "elevenlabs",
+                    "message": "ElevenLabs API key is not configured",
+                })
+                response_queue.put(("__ready__", False))
+                return
+            response_queue.put(("__ready__", True))
+            loop = asyncio.get_running_loop()
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+
+                if sid == "__interrupt__":
+                    await _close_ws(send_final_empty=False, wait_for_final=False)
+                    current_speech_id = None
+                    pending_text.clear()
+                    pending_text_sid = None
+                    continue
+
+                if sid is None:
+                    if pending_text and pending_text_sid is not None:
+                        target_sid = pending_text_sid
+                        try:
+                            if ws is None or current_speech_id != target_sid:
+                                await _ensure_session(target_sid)
+                            if ws is not None and current_speech_id == target_sid:
+                                sent_text = "".join(pending_text)
+                                await _send_text(sent_text, current_speech_id)
+                                _record_tts_telemetry(options['model'], len(sent_text))
+                        except Exception as exc:
+                            logger.warning("ElevenLabs WS flush pending text failed: %s", exc)
+                            _enqueue_error(response_queue, {
+                                "code": "API_REQUEST_FAILED",
+                                "provider": "elevenlabs",
+                                "message": f"ElevenLabs pending text flush failed: {exc}",
+                            })
+                            response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                            await _close_ws(send_final_empty=False, wait_for_final=False)
+                            current_speech_id = None
+                            continue
+                        pending_text.clear()
+                        pending_text_sid = None
+                    # 只发 final empty，让 receive_task 在后台继续把剩余音频抽完；
+                    # 真正的 close 由下一个 sid 切换 / __interrupt__ / shutdown 触发，
+                    # 避免主循环在这里阻塞最长 30s 拖慢下一句 utterance 首音延迟喵。
+                    if ws is not None and not text_done_sent:
+                        try:
+                            await ws.send(json.dumps({"text": ""}))
+                            text_done_sent = True
+                        except Exception as exc:
+                            logger.debug("ElevenLabs WS final empty send failed: %s", exc)
+                    current_speech_id = None
+                    pending_text.clear()
+                    pending_text_sid = None
+                    continue
+
+                if tts_text and tts_text.strip():
+                    payload_text = tts_text
+                    if pending_text and pending_text_sid == sid:
+                        payload_text = "".join(pending_text) + tts_text
+                        pending_text.clear()
+                        pending_text_sid = None
+                    elif pending_text and pending_text_sid not in (None, sid):
+                        logger.debug(
+                            "ElevenLabs WS dropping cross-utterance pending text: pending_sid=%s current_sid=%s len=%d",
+                            pending_text_sid,
+                            sid,
+                            sum(len(part) for part in pending_text),
+                        )
+                        pending_text.clear()
+                        pending_text_sid = None
+                    try:
+                        await _ensure_session(sid)
+                    except Exception as exc:
+                        logger.warning("ElevenLabs WS ensure session failed: %s", exc)
+                        pending_text.append(payload_text)
+                        pending_text_sid = sid
+                        await _close_ws(send_final_empty=False, wait_for_final=False)
+                        current_speech_id = None
+                        continue
+                    try:
+                        await _send_text(payload_text, current_speech_id)
+                        _record_tts_telemetry(options['model'], len(payload_text))
+                    except Exception as exc:
+                        logger.warning("ElevenLabs WS send text failed: %s", exc)
+                        pending_text.append(payload_text)
+                        pending_text_sid = sid
+                        await _close_ws(send_final_empty=False, wait_for_final=False)
+                        current_speech_id = None
+
+        except Exception as exc:
+            logger.error("ElevenLabs WS Worker error: %s", exc, exc_info=True)
+            response_queue.put(("__ready__", False))
+        finally:
+            try:
+                await _close_ws(send_final_empty=False, wait_for_final=False)
+            except Exception:
+                pass
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as exc:
+        logger.error("ElevenLabs WS Worker startup failed: %s", exc, exc_info=True)
+        response_queue.put(("__ready__", False))
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -3366,12 +3798,20 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
           不支持原生 TTS 时为 None
     """
     cm = get_config_manager()
+    try:
+        core_cfg = cm.get_core_config() or {}
+    except Exception:
+        core_cfg = {}
+
+    if core_cfg.get('DISABLE_TTS', False):
+        logger.info("TTS disabled; using dummy TTS worker")
+        return dummy_tts_worker, None, None
 
     # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
-    # "xAI 自定义 voice / 未知 voice"。MiniMax 分支保持嵌套以保留现有日志。
+    # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
     voice_meta = None
 
-    # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
+    # 优先检查克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
         voice_meta = _get_voice_meta(voice_id)
         if voice_meta is None:
@@ -3379,7 +3819,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             # 远端 clone 成功但本地保存失败，或 xAI 自定义 voice。
             # 不要在这里 short-circuit，让下面的 tts_custom（GPT-SoVITS / local
             # CosyVoice）分支先有机会匹配 — grok 短路放到 cosyvoice 块里。
-            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
+            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax/ElevenLabs 检测", voice_id)
         elif voice_meta.get('provider', '').startswith('minimax'):
             provider = voice_meta['provider']
             logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
@@ -3391,6 +3831,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             )
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
+        elif voice_meta.get('provider') == 'elevenlabs':
+            logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", voice_id)
+            elevenlabs_options = _get_elevenlabs_options()
+            base_url = voice_meta.get('elevenlabs_base_url') or elevenlabs_options['base_url']
+            worker = partial(elevenlabs_tts_worker, base_url=base_url)
+            return worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
@@ -3406,11 +3852,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url') or ''
         if tts_config.get('is_custom'):
-            base_url = tts_config.get('base_url') or ''
             # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
             # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
-            core_cfg = cm.get_core_config()
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'

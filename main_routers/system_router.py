@@ -22,6 +22,7 @@ import difflib
 import hashlib
 import hmac
 import ipaddress
+import json
 import math
 import random
 import re
@@ -4245,9 +4246,21 @@ async def proactive_chat(request: Request):
                 "state": mgr.state.snapshot(),
             }, status_code=409)
         _proactive_done_emitted = False
+        # Set after activity snapshot fetch — tells the frontend scheduler
+        # to skip the regular tier backoff and use a flat baseInterval on
+        # the next round (the backend will then inject a uniform
+        # [0, 0.5*baseInterval] sleep to provide the jitter). See the
+        # screen-only delay block further down and the matching
+        # ``S.proactiveFixedScheduleMode`` branch in static/app-proactive.js.
+        _next_schedule_fixed_mode = False
 
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
-            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。"""
+            """包装所有 proactive 正常/短路退出：幂等地 fire PROACTIVE_DONE。
+
+            同时把 ``next_schedule_fixed_mode`` 注入响应体，前端读取后
+            决定下一轮调度走 tier backoff 还是固定 base interval。注入
+            发生在统一出口，新增的响应路径无需逐个修改。
+            """
             nonlocal _proactive_done_emitted
             if not _proactive_done_emitted:
                 _proactive_done_emitted = True
@@ -4255,7 +4268,16 @@ async def proactive_chat(request: Request):
                     await mgr.state.fire(_SE.PROACTIVE_DONE)
                 except Exception as _done_err:
                     logger.warning("[%s] PROACTIVE_DONE fire 异常: %s", lanlan_name, _done_err)
-            return resp
+            try:
+                body = json.loads(resp.body)
+            except Exception:
+                return resp
+            if not isinstance(body, dict):
+                return resp
+            if 'next_schedule_fixed_mode' in body:
+                return resp
+            body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
+            return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
             logger.info(
@@ -4370,6 +4392,50 @@ async def proactive_chat(request: Request):
                 "action": "pass",
                 "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
             }))
+
+        # ========== Screen-only：固定间隔 + 后端抖动 ==========
+        # 用户处于 gaming / focused_work（propensity=restricted_screen_only）
+        # 时，常规的前端 3-tier 退避会让搭话间隔指数级增长，跟陪伴产品
+        # 命题冲突（用户最长会话段反而最安静）。改用：
+        #   1. 前端 reset backoffLevel=0 并按 baseInterval 等间隔触发
+        #      （由响应里的 next_schedule_fixed_mode=True 通知前端切换）
+        #   2. 后端在 LLM 调用前 sleep uniform(0, 0.5 * baseInterval)，把每轮
+        #      实际间隔从 base 抹成 [base, 1.5*base] 的均匀分布
+        # 总效果：屏幕态平均间隔 ≈ 1.25*base，且有自然的随机抖动。
+        # skip_probability（仅 immersive_horror=0.3）作为正交机制保留。
+        #
+        # ⚠️ 标志位 vs sleep 拆开：anti_slack_pending / work_break_pending
+        # 是 focused_work 下的 must-fire 提醒（紧跟在下一段 4425+），本身
+        # 时间敏感，不能被这里的随机抖动延后。但前端 fixed_mode 标志位
+        # 仍然要设——否则 must-fire 走 _end_proactive 时响应里会带回
+        # next_schedule_fixed_mode=False，前端误切回 tier backoff，让用户
+        # 离开 must-fire 状态后又被退避机制吞掉一段时间。
+        # Codex P2 + CodeRabbit Major review。
+        if (
+            activity_snapshot is not None
+            and activity_snapshot.propensity == 'restricted_screen_only'
+        ):
+            _next_schedule_fixed_mode = True
+            _has_must_fire = (
+                activity_snapshot.anti_slack_pending is not None
+                or activity_snapshot.work_break_pending is not None
+            )
+            if _has_must_fire:
+                print(f"[{lanlan_name}] propensity=restricted_screen_only 但有 must-fire 提醒待发，跳过本轮抖动 sleep")
+            else:
+                try:
+                    _base_interval_raw = data.get('base_interval_seconds')
+                    _base_interval = float(_base_interval_raw) if _base_interval_raw is not None else 0.0
+                except (TypeError, ValueError):
+                    _base_interval = 0.0
+                # 上限兜底：base 过大时把 0.5*base 截到 60s，避免极端配置
+                # （比如 user 把 proactiveChatInterval 调到 300s）让后端
+                # 单请求占连接十分钟。
+                if _base_interval > 0:
+                    _jitter_max = min(_base_interval * 0.5, 60.0)
+                    _jitter = random.uniform(0.0, _jitter_max)
+                    print(f"[{lanlan_name}] propensity=restricted_screen_only, 后端注入 {_jitter:.2f}s 间隔抖动（base={_base_interval:.1f}s）")
+                    await asyncio.sleep(_jitter)
 
         # ========== Must-fire: break-reminder branches ==========
         # Anti-slack outranks water-break (transition trigger more
@@ -4956,24 +5022,18 @@ async def proactive_chat(request: Request):
         )
         if not _allow_reminiscence:
             print(f"[{lanlan_name}] propensity=restricted_screen_only, 跳过反思/回忆话题获取")
-        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
+        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径。
+        # 仅 read：取 followup_topics 候选用于本轮 prompt 注入。
+        # 历史上这一段还前置调过 POST /reflect/{name}（"自动状态迁移 + 反思合成"），
+        # 已删除——合成迁到 ``_periodic_reflection_synthesis_loop`` 后端循环、
+        # auto_promote 早就由 ``_periodic_auto_promote_loop`` 每 180s 跑。把
+        # mutation 留在 proactive 关键路径上既拖延 ~15s response、又让整个
+        # reflection 生命周期跟前端 setTimeout 强耦合（前端不开 → 永不合成）。
         if _allow_reminiscence:
             try:
                 from utils.internal_http_client import get_internal_http_client
                 _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
                 _mem_client = get_internal_http_client()
-                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
-                _reflect_resp = await _mem_client.post(
-                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
-                )
-                if _reflect_resp.status_code == 200:
-                    _reflect_data = _reflect_resp.json()
-                    if _reflect_data.get('auto_transitions'):
-                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
-                    if _reflect_data.get('reflection'):
-                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
-
-                # 2. 获取回调话题候选
                 _topics_resp = await _mem_client.get(
                     f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
                 )
@@ -4987,11 +5047,11 @@ async def proactive_chat(request: Request):
                                 _surfaced_reflection_ids.append(topic['id'])
                         print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
             except Exception as e:
-                logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+                logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
 
-        # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
-        # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
-        # 后续步骤，再到 pre-LLM check 才识破。这里补一刀。
+        # Phase 1 preempt check：followup GET(5s) 是一段可能拖久的 await，
+        # 整段裸跑会让用户打断后继续跑完 LLM 配置和后续步骤，再到 pre-LLM
+        # check 才识破。这里补一刀。
         if mgr.state.is_proactive_preempted():
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
 
@@ -6319,7 +6379,7 @@ async def proactive_chat(request: Request):
                 print(f"[{lanlan_name}] 记录 surfaced 反思: {len(_surfaced_reflection_ids)} 条")
 
             # 记录 persona 提及次数（疲劳跟踪） — persona 文件由 memory_server 管理
-            # record_mentions 已在 memory_server 的 _extract_facts_and_check_feedback 中调用
+            # record_mentions 已在 memory_server 的 _run_post_turn_signals 中调用
         except Exception as e:
             logger.debug(f"[{lanlan_name}] 长期记忆后处理失败（不影响主流程）: {e}")
 

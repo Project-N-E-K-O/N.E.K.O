@@ -115,12 +115,22 @@ Defaults are derived from `(state, intensity, genre)` in
 
 | Combo | Default skip |
 |---|---|
-| `gaming + competitive` (any genre) | 0.3 |
+| `gaming + competitive` (any genre) | 0.0 |
 | `gaming + immersive + horror` | 0.3 |
 | `gaming + immersive` (other genre) | 0.0 |
 | `gaming + casual` | 0.0 |
 | `gaming + varied` / untagged | 0.0 |
 | Non-gaming states | 0.0 |
+
+Note: `competitive` used to default to `0.3` but produced negative user
+feedback (the AI vanishing during the user's longest gaming sessions
+defeats the companion product thesis). The quietness for
+`restricted_screen_only` propensity is now handled by the
+fixed-interval scheduler branch in `static/app-proactive.js` plus a
+backend `[0, 0.5×baseInterval]` sleep in `proactive_chat` — see the
+`restricted_screen_only` block in `main_routers/system_router.py`. Only
+`immersive_horror` keeps the full-skip default (atmosphere is more
+sensitive to interruption than information density).
 
 User overrides via `user_preferences.json`'s
 `__global_conversation__::activity::skip_probability_overrides` take

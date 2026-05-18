@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
         "API_IDLE_TIMEOUT": "💥 语音连接因长时间无操作而断开，正在自动重连...",
+        "FREE_API_AUTO_CLOSE_VOICE": "免费 API 长时间未检测到语音，已自动关闭语音会话",
         "API_UNKNOWN_ERROR": "💥 API错误：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 记忆服务器未启动！请先运行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 记忆服务器(端口{{port}})已崩溃。请重启 memory_server.py",
         "MEMORY_SERVER_COOLDOWN": "🧠 记忆服务正在恢复中，请稍候{{wait_time}}秒",
         "CONNECTION_REFUSED": "💥 服务器连接被拒绝。请检查API Key和网络连接。",
-        "API_KEY_REJECTED": "💥 API Key被服务器拒绝。请检查API Key是否与所选模型匹配。",
+        "API_KEY_REJECTED": "提供的 API Key 无效，请检查当前 API 设置。",
         "API_RATE_LIMIT_SESSION": "💥 API请求频率过高，请稍后再试。",
         "LLM_CONNECTION_FAILED": "💥 LLM API 连接失败。请检查网络连接和API配置。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 连接异常关闭: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 文本生成异常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未返回任何回复，请检查API连接和配置",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}正在前往另一个终端...",
-        "RELOAD_PAGE": "语音已更新，页面即将刷新",
+        "RELOAD_PAGE": "设定已更新，页面即将刷新",
+        "RELOAD_PAGE_VOICE": "语音已更新，页面即将刷新",
+        "RELOAD_PAGE_VOICE_STYLE": "音色已更新，页面即将刷新",
+        "RELOAD_PAGE_PERSONA": "人格设定已更新，页面即将刷新",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "角色设定已更新，页面即将刷新",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "云存档角色已更新，页面即将刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自动关闭键鼠控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "已自动关闭浏览器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "猫爪 LLM 连接检查异常",
@@ -939,6 +945,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs（语音克隆，国内无法使用）",
             "claude": "Claude（Anthropic，国内无法使用）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（模型聚合，国内无法使用）"
@@ -974,6 +981,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter"
@@ -1420,7 +1428,8 @@
         "provider": {
             "cosyvoice": "阿里云 CosyVoice",
             "minimax": "MiniMax（国服）",
-            "minimax_intl": "MiniMax（国际服）"
+            "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
@@ -1553,6 +1562,7 @@
         "loadFailed": "加载失败",
         "noChatContent": "无聊天内容",
         "previousMemo": "先前对话的备忘录: ",
+        "olderSection": "较久前",
         "memoNone": "无。",
         "delete": "删除",
         "me": "我：",
@@ -1876,6 +1886,7 @@
         "nativePresetVoicesGeneric": "原生预设音色",
         "savedVoiceFallback": "当前已保存音色",
         "gptsovitsVoices": "GPT-SoVITS 声音",
+        "elevenlabsVoices": "ElevenLabs 声音",
         "gsvDiagNotEnabled": "GPT-SoVITS 未启用 (请在 API 设置勾选)",
         "gsvDiagUrlMissing": "GPT-SoVITS URL 未配置 (请在 API 设置填写)",
         "gsvDiagUrlInvalid": "GPT-SoVITS URL 未配置或不是 http(s)",
@@ -1959,6 +1970,7 @@
         "restartFailed": "重启失败: {{error}}",
         "configUpdated": "配置已更新，页面即将刷新",
         "autoMuteTimeout": "长时间无语音输入，已自动关闭麦克风",
+        "freeApiAutoCloseNotice": "免费 API 长时间未检测到语音，已自动关闭语音会话",
         "deviceSelected": "已选择 {{device}}",
         "micAccessDenied": "无法访问麦克风",
         "gameVoiceSttMicPermissionDenied": "游戏语音转写没有麦克风权限，请检查浏览器权限。",
@@ -3688,7 +3700,7 @@
             "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新信息"
         }
     },
     "proactive": {
@@ -3913,9 +3925,58 @@
             "ready": "准备完成",
             "startButton": "开始"
         },
+        "startTutorial": {
+            "title": "玩法说明",
+            "move": "移动鼠标引导玩家角色。",
+            "charge": "靠近球时按住左键蓄力，松开射门。",
+            "range": "离球 {{distance}} 内才会触发踢球。",
+            "reset": "按 R 可以复位球和双方位置。",
+            "ai": "NEKO 的心情和难度会随局势变化。"
+        },
         "hint": {
-            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位",
-            "aiMood": "1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档"
+            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤{{distance}} 触发）· R 复位",
+            "aiMood": "NEKO 的心情和难度会随局势变化"
+        },
+        "debugControls": {
+            "bounds": "启用边界（出界规则）",
+            "voiceOutput": "播放 LLM 台词（项目语音）",
+            "voiceButton": "调试语音",
+            "voicePlaceholder": "调试：输入最终转写后回车",
+            "send": "发送",
+            "voiceStatusHidden": "调试 STT：隐藏"
+        },
+        "debug": {
+            "mouse": "鼠标：{{x}}, {{y}}",
+            "playerCenter": "玩家中心：{{x}}, {{y}}",
+            "aiCenter": "AI 中心：{{x}}, {{y}}  状态：{{mode}}",
+            "state": "回合：{{round}}  难度：{{difficulty}}  心情：{{mood}}  蓄力：{{charge}}%",
+            "ball": "球：({{x}}, {{y}})  速度={{speed}}",
+            "event": "{{age}}秒  {{label}}  @({{x}},{{y}})  速度=({{vx}},{{vy}})",
+            "roundCenter": "第 {{round}} 回合"
+        },
+        "moods": {
+            "calm": "平静",
+            "happy": "开心",
+            "angry": "生气",
+            "relaxed": "放松",
+            "sad": "悲伤",
+            "surprised": "惊讶"
+        },
+        "difficulties": {
+            "max": "最高",
+            "lv2": "二档",
+            "lv3": "三档",
+            "lv4": "四档"
+        },
+        "aiModes": {
+            "attack": "进攻",
+            "defend": "防守",
+            "clear": "解围"
+        },
+        "debugEvents": {
+            "player-kick": "玩家踢球",
+            "ai-kick": "AI 踢球",
+            "unstick": "球脱困"
         },
         "loading": {
             "beginStartDefault": "分析开局上下文…",

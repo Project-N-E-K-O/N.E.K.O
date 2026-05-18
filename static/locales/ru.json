@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 Нарушение политики или блокировка безопасности: {{msg}}",
         "API_1008_FALLBACK": "💥 Соединение разорвано (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Голосовое соединение разорвано из-за неактивности, автоматическое переподключение...",
+        "FREE_API_AUTO_CLOSE_VOICE": "Бесплатный API автоматически закрыл голосовой сеанс после долгого отсутствия речи",
         "API_UNKNOWN_ERROR": "💥 Ошибка API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Сервер памяти не запущен! Сначала запустите memory_server.py.",
         "MEMORY_SERVER_CRASHED": "🧠 Сервер памяти (порт {{port}}) аварийно завершился. Перезапустите memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 Служба памяти восстанавливается, подождите {{wait_time}} сек.",
         "CONNECTION_REFUSED": "💥 Подключение к серверу отклонено. Проверьте API Key и сетевое подключение.",
-        "API_KEY_REJECTED": "💥 API Key отклонён сервером. Убедитесь, что API Key соответствует выбранной модели.",
+        "API_KEY_REJECTED": "Предоставленный API Key недействителен. Проверьте текущие настройки API.",
         "API_RATE_LIMIT_SESSION": "💥 Слишком частые запросы API. Повторите попытку позже.",
         "LLM_CONNECTION_FAILED": "💥 Ошибка подключения к LLM API. Проверьте сеть и настройки API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Соединение аварийно закрыто: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 Ошибка генерации текста: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM не вернул ответ. Проверьте подключение к API и настройки.",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} переходит на другой терминал...",
-        "RELOAD_PAGE": "Голос обновлён, страница скоро обновится",
+        "RELOAD_PAGE": "Настройки обновлены, страница скоро обновится",
+        "RELOAD_PAGE_VOICE": "Голос обновлён, страница скоро обновится",
+        "RELOAD_PAGE_VOICE_STYLE": "Тембр голоса обновлён, страница скоро обновится",
+        "RELOAD_PAGE_PERSONA": "Настройки личности обновлены, страница скоро обновится",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Настройки персонажа обновлены, страница скоро обновится",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Персонаж из облачного сохранения обновлён, страница скоро обновится",
         "AGENT_AUTO_DISABLED_COMPUTER": "Управление клавиатурой/мышью автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Управление браузером автоматически отключено: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Ошибка проверки подключения LLM Лапки Неко",
@@ -939,6 +945,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "elevenlabs": "ElevenLabs (клонирование голоса)",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (агрегатор моделей)"
@@ -974,6 +981,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (Китай)",
             "minimax_intl": "MiniMax (международный)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Anthropic)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter"
@@ -1420,7 +1428,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax (Китай)",
-            "minimax_intl": "MiniMax (Международная)"
+            "minimax_intl": "MiniMax (Международная)",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "Выберите локальный аудиофайл (рекомендуется 15 секунд, макс. 30 секунд, формат wav/mp3)",
         "customPrefix": "Пользовательский префикс (Обязательно, для различения голосов)",
@@ -1553,6 +1562,7 @@
         "loadFailed": "Ошибка загрузки",
         "noChatContent": "Нет содержимого чата",
         "previousMemo": "Заметка из предыдущего разговора: ",
+        "olderSection": "Ранее",
         "memoNone": "Нет.",
         "delete": "Удалить",
         "me": "Я:",
@@ -1876,6 +1886,7 @@
         "nativePresetVoicesGeneric": "Нативные предустановленные голоса",
         "savedVoiceFallback": "Текущий сохранённый голос",
         "gptsovitsVoices": "Голоса GPT-SoVITS",
+        "elevenlabsVoices": "Голоса ElevenLabs",
         "gsvDiagNotEnabled": "GPT-SoVITS не включён (включите его в настройках API)",
         "gsvDiagUrlMissing": "URL GPT-SoVITS не настроен (укажите его в настройках API)",
         "gsvDiagUrlInvalid": "URL GPT-SoVITS не задан или не использует http(s)",
@@ -1959,6 +1970,7 @@
         "restartFailed": "Ошибка перезапуска: {{error}}",
         "configUpdated": "Конфигурация обновлена, страница обновится",
         "autoMuteTimeout": "Нет голосового ввода долгое время, микрофон выключен автоматически",
+        "freeApiAutoCloseNotice": "Бесплатный API автоматически закрыл голосовой сеанс после долгого отсутствия речи",
         "deviceSelected": "Выбрано {{device}}",
         "micAccessDenied": "Нет доступа к микрофону",
         "gameVoiceSttMicPermissionDenied": "У игрового голосового распознавания нет доступа к микрофону. Проверьте разрешения браузера.",
@@ -3688,7 +3700,7 @@
             "legacyDetected": "Обнаружены старые голоса CosyVoice, которые могут не работать. Рекомендуем повторно клонировать голоса."
         },
         "changelog": {
-            "title": "Что нового"
+            "title": "Информация об обновлении"
         }
     },
     "proactive": {
@@ -3913,9 +3925,58 @@
             "ready": "Готово",
             "startButton": "Старт"
         },
+        "startTutorial": {
+            "title": "Как играть",
+            "move": "Двигайте мышь, чтобы направлять игрока.",
+            "charge": "Рядом с мячом удерживайте ЛКМ для заряда и отпустите, чтобы ударить.",
+            "range": "Удар срабатывает только в пределах {{distance}} от мяча.",
+            "reset": "Нажмите R, чтобы сбросить мяч и позиции обоих игроков.",
+            "ai": "Настроение и сложность NEKO меняются по ходу матча."
+        },
         "hint": {
-            "controls": "Мышь = направлять игрока · Удерживать ЛКМ = заряд, отпустить = удар (срабатывает в 90px от мяча) · R = сброс",
-            "aiMood": "1-6 = настроение ИИ (спокойствие / радость / злость / расслабленность / грусть / удивление) · После гола сложность повышается"
+            "controls": "Мышь = направлять игрока · Удерживать ЛКМ = заряд, отпустить = удар (срабатывает в {{distance}} от мяча) · R = сброс",
+            "aiMood": "Настроение и сложность NEKO меняются по ходу матча"
+        },
+        "debugControls": {
+            "bounds": "Включить границы (правило аута)",
+            "voiceOutput": "Озвучивать реплики LLM (голос проекта)",
+            "voiceButton": "Отладка голоса",
+            "voicePlaceholder": "Отладка: введите финальную расшифровку и нажмите Enter",
+            "send": "Отправить",
+            "voiceStatusHidden": "Отладка STT: скрыто"
+        },
+        "debug": {
+            "mouse": "мышь: {{x}}, {{y}}",
+            "playerCenter": "центр игрока: {{x}}, {{y}}",
+            "aiCenter": "центр AI: {{x}}, {{y}}  режим: {{mode}}",
+            "state": "раунд: {{round}}  сложность: {{difficulty}}  настроение: {{mood}}  заряд: {{charge}}%",
+            "ball": "мяч: ({{x}}, {{y}})  скорость={{speed}}",
+            "event": "{{age}}с  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Раунд {{round}}"
+        },
+        "moods": {
+            "calm": "спокойствие",
+            "happy": "радость",
+            "angry": "злость",
+            "relaxed": "расслабленность",
+            "sad": "грусть",
+            "surprised": "удивление"
+        },
+        "difficulties": {
+            "max": "максимум",
+            "lv2": "уровень 2",
+            "lv3": "уровень 3",
+            "lv4": "уровень 4"
+        },
+        "aiModes": {
+            "attack": "атака",
+            "defend": "защита",
+            "clear": "вынос"
+        },
+        "debugEvents": {
+            "player-kick": "удар игрока",
+            "ai-kick": "удар AI",
+            "unstick": "мяч освобожден"
         },
         "loading": {
             "beginStartDefault": "Анализ предматчевого контекста…",

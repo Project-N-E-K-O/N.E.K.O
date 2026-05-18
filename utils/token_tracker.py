@@ -373,7 +373,16 @@ def _get_anonymous_device_id() -> str:
 # ---------------------------------------------------------------------------
 
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
-_TELEMETRY_BRANCHES: tuple = ("main",)
+# A/B 池：
+#   - "main"：控制组，沿用历史默认（隐私模式按用户地区分流，仅中国地区默认关闭）
+#   - "privacy_default_off_v1"：实验组，隐私模式一律默认关闭
+_TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v1")
+
+# 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
+# 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和
+# 前端 `/conversation-settings` 拿到不同分支，A/B 归因被打散。dict.setdefault
+# 在 CPython GIL 下是原子的，足以扛住模块内的并发首抽。
+_telemetry_branch_cache: dict = {}
 
 
 def _get_telemetry_branch(config_dir: Path) -> str:
@@ -383,23 +392,38 @@ def _get_telemetry_branch(config_dir: Path) -> str:
     其它并发进程拿到 FileExistsError 后回读同一文件，确保 device-stable
     cohorting（同 device 不同 worker 不会落到不同 branch）。同款模式见
     _file_lock 的实现。
+
+    进程级缓存：首次 resolve 后落 `_telemetry_branch_cache`，后续调用直接命中。
+    主要为只读 FS / 权限错误等持久化失败的环境兜底——多 cohort 下没有这层缓存，
+    每次 `secrets.choice` 都会重抽，同一进程内不同调用方会观察到不同分支。
     """
+    cache_key = str(config_dir)
+    cached_proc = _telemetry_branch_cache.get(cache_key)
+    if cached_proc is not None:
+        return cached_proc
+
     p = config_dir / _TELEMETRY_BRANCH_FILE
 
     def _read() -> Optional[str]:
-        try:
-            if p.exists():
-                value = p.read_text(encoding="utf-8").strip()
-                if value and len(value) <= 64:
-                    return value
-        except Exception:
-            pass
+        # 返 None 只表示「文件不存在 / 内容非法」两种确定状态；transient I/O 错误
+        # 故意向上冒泡。否则老设备一次读盘失败会被吞成 None，slow path 把
+        # FileExistsError 当成「文件存在但内容坏」走自愈覆盖，静默把设备改组。
+        # 让 OSError 透出，让 `/conversation-settings` 的 except 把 telemetryBranch
+        # 返 None，前端保留 pending marker，下次启动 fast path 读到合法值收敛。
+        #
+        # 严格校验：append-only 池下迁移期老分支也该保留在 _TELEMETRY_BRANCHES
+        # 里，所以这里不会误杀历史值。
+        if not p.exists():
+            return None
+        value = p.read_text(encoding="utf-8").strip()
+        if value in _TELEMETRY_BRANCHES:
+            return value
         return None
 
     # Fast path：文件已存在直接读
     cached = _read()
     if cached is not None:
-        return cached
+        return _telemetry_branch_cache.setdefault(cache_key, cached)
 
     branch = secrets.choice(_TELEMETRY_BRANCHES) if _TELEMETRY_BRANCHES else "main"
     try:
@@ -415,21 +439,40 @@ def _get_telemetry_branch(config_dir: Path) -> str:
             os.write(fd, branch.encode("utf-8"))
         finally:
             os.close(fd)
-        return branch
+        return _telemetry_branch_cache.setdefault(cache_key, branch)
     except FileExistsError:
         # 另一个进程抢先写了 —— 回读它写的值，确保两个进程返回同一 branch
         peer = _read()
         if peer is not None:
-            return peer
-        # 回读失败兜底：返回本进程抽到的值。短期不一致总比拒绝上报好；下次
-        # 启动 fast path 会读到磁盘上的固化值，最终收敛。
-        return branch
+            return _telemetry_branch_cache.setdefault(cache_key, peer)
+        # peer 是 None 说明文件存在但内容不在 _TELEMETRY_BRANCHES 里（截断/损坏/
+        # 跨版本残留）。这种情况下若只返回本进程抽到的值不修盘，下次进程重启会
+        # 再走一次「读到坏值 → fast path miss → slow path 拿到 FileExistsError →
+        # 重抽」，cohort 在多次启动间反复翻滚。覆盖修盘保证只有这一次重抽，
+        # 之后就稳定。
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(branch)
+        except Exception as e:
+            logger.debug(f"Token tracker: failed to heal corrupt branch file: {e}")
+        return _telemetry_branch_cache.setdefault(cache_key, branch)
     except Exception as e:
-        # 写盘失败不致命：单次进程内继续用抽到的分支上报，下次启动会再抽。
-        # 当前 _TELEMETRY_BRANCHES 只有一项，写失败不会有可观偏差；扩展后若
-        # 写盘长期失败，server 看到的将是分布噪声而非错误数据。
+        # 写盘失败不致命：进程级缓存 setdefault 保证同一进程后续所有调用方拿到
+        # 相同分支，TokenTracker 上报和前端 API 不会互相打架。下次进程重启时若
+        # 写盘仍然失败，缓存重新随机抽——按设计这就是 server 端看到的分布噪声
+        # 来源，不构成「同一 install 多个分支」的错误数据。
         logger.debug(f"Token tracker: failed to persist telemetry branch: {e}")
-        return branch
+        return _telemetry_branch_cache.setdefault(cache_key, branch)
+
+
+def get_telemetry_branch() -> str:
+    """对外暴露的 A/B test 分支读取入口。
+
+    `_get_telemetry_branch` 是内部实现（参数化 config_dir，方便测试）；本函数从
+    全局 config_manager 取 config_dir 后转发。前端通过 API 拿到 branch 后可在
+    首次启动时按分支选择默认行为，与 token tracker 自身上报的 branch 保持一致。
+    """
+    return _get_telemetry_branch(get_config_manager().config_dir)
 
 
 def _get_telemetry_locale() -> str:
@@ -517,6 +560,32 @@ def _is_steam_sdk_engaged() -> bool:
         pass
 
     return False
+
+
+def _get_telemetry_steam_user_id() -> str:
+    """读取当前会话的 Steam64 user id，作为字符串返回。
+
+    返回非空 string 表示 Steamworks SDK 真的从 Steam 客户端拿到了登录用户；
+    返回空 string 表示 SDK 没起来 / Steam 客户端没开 / 源码模式没初始化
+    SDK 等情形。
+
+    用 string 而非 int 上报，避免 Steam64（u64，常超过 2^53）在某些 JSON
+    消费方（JS / 部分 SDK）里精度丢失。
+    """
+    try:
+        from utils.steam_state import get_steamworks
+        sw = get_steamworks()
+        if sw is None:
+            return ""
+        try:
+            sid = int(sw.Users.GetSteamID() or 0)
+        except Exception:
+            return ""
+        if sid > 0:
+            return str(sid)
+    except Exception:
+        pass
+    return ""
 
 
 def _get_telemetry_distribution() -> str:
@@ -1071,6 +1140,7 @@ class TokenTracker:
             telemetry_locale = _get_telemetry_locale()
             telemetry_timezone = _get_telemetry_timezone()
             telemetry_distribution = _get_telemetry_distribution()
+            telemetry_steam_user_id = _get_telemetry_steam_user_id()
 
             payload = {
                 "device_id": self._device_id,
@@ -1085,6 +1155,9 @@ class TokenTracker:
                 "locale": telemetry_locale,
                 "timezone": telemetry_timezone,
                 "distribution": telemetry_distribution,
+                # 仅在 Steamworks SDK 起来 + 拿到 Steam64 时填值，其它情况为
+                # 空 string。server 端按 preserve-known 处理：空值不覆写历史。
+                "steam_user_id": telemetry_steam_user_id,
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }

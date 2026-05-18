@@ -57,12 +57,16 @@
 
         console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
 
-        const statusToast = S.dom.statusToast;
-        const statusElement = S.dom.statusElement;
+        const statusToast = S.dom.statusToast || document.getElementById('status-toast');
+        const statusElement = S.dom.statusElement || document.getElementById('status');
 
         if (!statusToast) {
             console.error(window.t('console.statusToastNotFound'));
             return;
+        }
+        S.dom.statusToast = statusToast;
+        if (statusElement) {
+            S.dom.statusElement = statusElement;
         }
 
         // 清除之前的定时器
@@ -327,6 +331,7 @@
         icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
 
         const textDiv = document.createElement('div');
+        textDiv.className = 'prominent-notice-body';
         textDiv.style.cssText = [
             'font-size:16px',
             'font-weight:600',
@@ -338,8 +343,13 @@
             'flex:1 1 auto',
             'max-height:min(54vh,420px)',
             'overflow-y:auto',
+            'overflow-x:hidden',
             'overflow-wrap:anywhere',
-            'padding-right:12px',
+            'scrollbar-gutter:stable',
+            'scrollbar-width:thin',
+            'scrollbar-color:rgba(148,163,184,0.62) rgba(15,23,42,0.18)',
+            'padding-right:8px',
+            'overscroll-behavior:contain',
             'box-sizing:border-box',
         ].join(';');
         if (typeof window.renderMiniMarkdown === 'function') {
@@ -366,6 +376,23 @@
                 @keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }
                 @keyframes pnBoxIn    { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }
                 @keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }
+                .prominent-notice-body::-webkit-scrollbar {
+                    width: 8px;
+                }
+                .prominent-notice-body::-webkit-scrollbar-track {
+                    background: transparent;
+                }
+                .prominent-notice-body::-webkit-scrollbar-thumb {
+                    background: rgba(148, 163, 184, 0.42);
+                    border-radius: 999px;
+                    border: 2px solid transparent;
+                    background-clip: padding-box;
+                }
+                .prominent-notice-body::-webkit-scrollbar-thumb:hover {
+                    background: rgba(148, 163, 184, 0.62);
+                    border: 2px solid transparent;
+                    background-clip: padding-box;
+                }
             `;
             document.head.appendChild(s);
         }
@@ -461,23 +488,38 @@
 
     mod.showReadyToSpeakToast = showReadyToSpeakToast;
 
+    function syncFloatingMicMuteButtonVisibility(manager, isActive) {
+        const muteButtonData = manager._floatingButtons && manager._floatingButtons['mic-mute'];
+        if (muteButtonData && typeof muteButtonData.updateVisibility === 'function') {
+            muteButtonData.updateVisibility(isActive);
+        } else if (muteButtonData && muteButtonData.button) {
+            muteButtonData.button.style.display = isActive ? 'flex' : 'none';
+        }
+    }
+
     // --- syncFloatingMicButtonState ---
     function syncFloatingMicButtonState(isActive) {
         const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
-                const { button, imgOff, imgOn } = manager._floatingButtons.mic;
-                if (button) {
-                    button.dataset.active = isActive ? 'true' : 'false';
-                    if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
-                        imgOn.style.opacity = isActive ? '1' : '0';
-                    }
-                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                        manager.updateSeparatePopupTriggerIcon('mic');
+                if (typeof manager.setButtonActive === 'function') {
+                    manager.setButtonActive('mic', isActive);
+                } else {
+                    const { button, imgOff, imgOn } = manager._floatingButtons.mic;
+                    if (button) {
+                        button.dataset.active = isActive ? 'true' : 'false';
+                        if (imgOff && imgOn) {
+                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOn.style.opacity = isActive ? '1' : '0';
+                        }
+                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                            manager.updateSeparatePopupTriggerIcon('mic');
+                        }
                     }
                 }
+
+                syncFloatingMicMuteButtonVisibility(manager, isActive);
             }
         }
     }
@@ -490,15 +532,19 @@
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
-                const { button, imgOff, imgOn } = manager._floatingButtons.screen;
-                if (button) {
-                    button.dataset.active = isActive ? 'true' : 'false';
-                    if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
-                        imgOn.style.opacity = isActive ? '1' : '0';
-                    }
-                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                        manager.updateSeparatePopupTriggerIcon('screen');
+                if (typeof manager.setButtonActive === 'function') {
+                    manager.setButtonActive('screen', isActive);
+                } else {
+                    const { button, imgOff, imgOn } = manager._floatingButtons.screen;
+                    if (button) {
+                        button.dataset.active = isActive ? 'true' : 'false';
+                        if (imgOff && imgOn) {
+                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOn.style.opacity = isActive ? '1' : '0';
+                        }
+                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                            manager.updateSeparatePopupTriggerIcon('screen');
+                        }
                     }
                 }
             }

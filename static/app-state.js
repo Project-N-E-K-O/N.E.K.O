@@ -143,6 +143,12 @@
         mergeMessagesEnabled: false,
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
+        // 屏幕专注态（gaming / focused_work，后端 propensity=restricted_screen_only）
+        // 切到「固定间隔 + 后端抖动」调度：跳过 3-tier 退避，按 baseInterval
+        // 等间隔触发，后端 /proactive_chat 入口注入 [0, 0.5×base] 的 sleep
+        // 把实际间隔抹成 [base, 1.5×base] 均匀分布。由 /proactive_chat 响应里的
+        // next_schedule_fixed_mode 字段控制开关；默认 false（即走常规退避）。
+        proactiveFixedScheduleMode: false,
         _voiceProactiveNoResponseCount: 0,
         _voiceSessionInitialTimer: null,
         isProactiveChatRunning: false,

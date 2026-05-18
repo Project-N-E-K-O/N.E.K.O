@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 Violação de política ou bloqueio de segurança: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexão desconectada (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Conexão de voz fechada devido a inatividade, reconexão automática...",
+        "FREE_API_AUTO_CLOSE_VOICE": "A API gratuita fechou automaticamente a sessão de voz após muito tempo sem entrada de voz",
         "API_UNKNOWN_ERROR": "💥 Erro de API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 Servidor de memória não iniciado! Execute memory_server.py primeiro.",
         "MEMORY_SERVER_CRASHED": "🧠 O servidor de memória (porta {{port}}) travou. Reinicie memory_server.py.",
         "MEMORY_SERVER_COOLDOWN": "🧠 O serviço de memória está se recuperando, aguarde {{wait_time}}s",
         "CONNECTION_REFUSED": "💥 Conexão do servidor recusada. Verifique sua chave API e conexão de rede.",
-        "API_KEY_REJECTED": "💥 Chave API rejeitada pelo servidor. Verifique se sua chave API corresponde ao modelo selecionado.",
+        "API_KEY_REJECTED": "A API Key fornecida é inválida. Verifique as configurações atuais da API.",
         "API_RATE_LIMIT_SESSION": "💥 Taxa de solicitação de API muito alta. Tente novamente mais tarde.",
         "LLM_CONNECTION_FAILED": "💥 Falha na conexão da API LLM. Verifique sua conexão de rede e configuração de API.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 Conexão fechada de forma anormal: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 Erro de geração de texto: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM não retornou resposta. Verifique sua conexão e configuração da API.",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}} está indo para outro terminal...",
-        "RELOAD_PAGE": "Voz atualizada, a página será atualizada em breve",
+        "RELOAD_PAGE": "Configurações atualizadas, a página será atualizada em breve",
+        "RELOAD_PAGE_VOICE": "Voz atualizada, a página será atualizada em breve",
+        "RELOAD_PAGE_VOICE_STYLE": "Estilo de voz atualizado, a página será atualizada em breve",
+        "RELOAD_PAGE_PERSONA": "Configurações de persona atualizadas, a página será atualizada em breve",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "Configurações do personagem atualizadas, a página será atualizada em breve",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "Personagem do salvamento em nuvem atualizado, a página será atualizada em breve",
         "AGENT_AUTO_DISABLED_COMPUTER": "Controle de teclado/mouse desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "Controle do navegador desabilitado automaticamente: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "Erro de verificação de conectividade do NekoClaw LLM",
@@ -939,6 +945,7 @@
             "doubao": "ByteDance (Dubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs (clonagem de voz)",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelo)"
@@ -974,6 +981,7 @@
             "doubao": "ByteDance (Dubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter"
@@ -1420,7 +1428,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax (China)",
-            "minimax_intl": "MiniMax (Internacional)"
+            "minimax_intl": "MiniMax (Internacional)",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "Selecione o arquivo de áudio local (8 segundos recomendados, máximo de 20 segundos, formato wav/mp3)",
         "customPrefix": "Prefixo personalizado (obrigatório, usado para distinguir vozes diferentes)",
@@ -1553,6 +1562,7 @@
         "loadFailed": "Falha no carregamento",
         "noChatContent": "Nenhum conteúdo de bate-papo",
         "previousMemo": "Memorando de conversa anterior:",
+        "olderSection": "Antes",
         "memoNone": "Nenhum.",
         "delete": "Excluir",
         "me": "Meu:",
@@ -1876,6 +1886,7 @@
         "nativePresetVoicesGeneric": "Vozes nativas predefinidas",
         "savedVoiceFallback": "Voz atualmente salva",
         "gptsovitsVoices": "Vozes GPT-SoVITS",
+        "elevenlabsVoices": "Vozes ElevenLabs",
         "gsvDiagNotEnabled": "GPT-SoVITS não está habilitado (habilite-o nas configurações da API)",
         "gsvDiagUrlMissing": "URL do GPT-SoVITS não configurada (preencha-a nas configurações da API)",
         "gsvDiagUrlInvalid": "URL do GPT-SoVITS ausente ou não usa http(s)",
@@ -1959,6 +1970,7 @@
         "restartFailed": "Falha na reinicialização: {{error}}",
         "configUpdated": "Configuração atualizada, a página será atualizada",
         "autoMuteTimeout": "Sem entrada de voz por muito tempo, microfone fechado automaticamente",
+        "freeApiAutoCloseNotice": "A API gratuita fechou automaticamente a sessão de voz após muito tempo sem entrada de voz",
         "deviceSelected": "Selecionado {{device}}",
         "micAccessDenied": "Não é possível acessar o microfone",
         "gameVoiceSttMicPermissionDenied": "A transcrição de voz do jogo não tem permissão para usar o microfone. Verifique as permissões do navegador.",
@@ -3688,7 +3700,7 @@
             "legacyDetected": "Detectadas vozes antigas do CosyVoice que podem não funcionar mais. Considere clonar novamente suas vozes."
         },
         "changelog": {
-            "title": "O que há de novo"
+            "title": "Informações da atualização"
         }
     },
     "proactive": {
@@ -3913,9 +3925,58 @@
             "ready": "Pronto",
             "startButton": "Iniciar"
         },
+        "startTutorial": {
+            "title": "Como jogar",
+            "move": "Mova o mouse para guiar o jogador.",
+            "charge": "Perto da bola, segure o botão esquerdo para carregar e solte para chutar.",
+            "range": "O chute só dispara a até {{distance}} da bola.",
+            "reset": "Pressione R para resetar a bola e as posições.",
+            "ai": "O humor e a dificuldade da NEKO mudam conforme a partida."
+        },
         "hint": {
-            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤90px da bola) · R = reset",
-            "aiMood": "1-6 = humor da IA (calma / feliz / brava / relaxada / triste / surpresa) · A dificuldade aumenta após cada gol"
+            "controls": "Mouse = guiar o jogador · Segurar botão esquerdo = carregar, soltar = chute (dispara a ≤{{distance}} da bola) · R = reset",
+            "aiMood": "O humor e a dificuldade da NEKO mudam conforme a partida"
+        },
+        "debugControls": {
+            "bounds": "Ativar limites (regra de fora)",
+            "voiceOutput": "Falar linhas LLM (voz do projeto)",
+            "voiceButton": "Voz de depuração",
+            "voicePlaceholder": "Depuração: digite a transcrição final e pressione Enter",
+            "send": "Enviar",
+            "voiceStatusHidden": "STT de depuração: oculto"
+        },
+        "debug": {
+            "mouse": "mouse: {{x}}, {{y}}",
+            "playerCenter": "centro do jogador: {{x}}, {{y}}",
+            "aiCenter": "centro da IA: {{x}}, {{y}}  modo: {{mode}}",
+            "state": "rodada: {{round}}  dificuldade: {{difficulty}}  humor: {{mood}}  carga: {{charge}}%",
+            "ball": "bola: ({{x}}, {{y}})  velocidade={{speed}}",
+            "event": "{{age}}s  {{label}}  @({{x}},{{y}})  v=({{vx}},{{vy}})",
+            "roundCenter": "Rodada {{round}}"
+        },
+        "moods": {
+            "calm": "calma",
+            "happy": "feliz",
+            "angry": "brava",
+            "relaxed": "relaxada",
+            "sad": "triste",
+            "surprised": "surpresa"
+        },
+        "difficulties": {
+            "max": "máxima",
+            "lv2": "nível 2",
+            "lv3": "nível 3",
+            "lv4": "nível 4"
+        },
+        "aiModes": {
+            "attack": "ataque",
+            "defend": "defesa",
+            "clear": "afastar"
+        },
+        "debugEvents": {
+            "player-kick": "chute do jogador",
+            "ai-kick": "chute da IA",
+            "unstick": "bola destravada"
         },
         "loading": {
             "beginStartDefault": "Analisando contexto de início…",

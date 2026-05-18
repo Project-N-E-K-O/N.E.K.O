@@ -466,7 +466,6 @@ export default {
     reloadFailed: 'リロードに失敗しました',
     packFailed: 'プラグインのパッケージ化に失敗しました',
     deleteFailed: 'プラグインの削除に失敗しました',
-    pluginDisabled: 'プラグインが無効です。先に有効化してください。',
     pluginLoadFailed: 'プラグインの読み込みに失敗したため、起動できません。',
     confirmDisableExt: 'この拡張機能を無効化しますか？ホストプラグインの拡張機能がアンロードされます。',
     extensionDisabled: '拡張機能が無効化されました',

@@ -12,6 +12,7 @@ from plugin.plugins.galgame_plugin.context_metrics import (
 from plugin.plugins.galgame_plugin.llm_backend import GalgameLLMBackend
 from plugin.plugins.galgame_plugin import llm_gateway as llm_gateway_module
 from plugin.plugins.galgame_plugin.llm_gateway import LLMGateway
+from plugin.plugins.galgame_plugin.llm_prompts import build_prompt_messages_with_metadata
 
 
 class _Backend:
@@ -68,12 +69,48 @@ class _ConfigAwareBackend:
         return {}
 
 
-class _RealPromptBackend(GalgameLLMBackend):
-    async def _call_model(self, *, operation: str, messages):
-        self.last_messages = messages
+class _SemanticCompressionAwareBackend:
+    def __init__(self, config: SimpleNamespace) -> None:
+        self._config = config
+        self.calls = 0
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        del context
+        self.calls += 1
+        assert operation == "summarize_scene"
+        return {
+            "summary": f"semantic:{bool(self._config.context_semantic_compression)}",
+            "key_points": [],
+        }
+
+    async def shutdown(self) -> None:
+        return None
+
+    def consume_prompt_metadata(self) -> dict[str, Any]:
+        return {}
+
+
+class _RealPromptBackend:
+    def __init__(self, config: SimpleNamespace) -> None:
+        self._config = config
+        self._prompt_metadata: dict[str, Any] = {}
+        self.last_messages: list[dict[str, str]] = []
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
         assert operation == "agent_reply"
-        assert "context:" in messages[-1]["content"]
-        return '{"reply": "ok"}'
+        prompt = build_prompt_messages_with_metadata(operation, context, self._config)
+        self.last_messages = prompt.messages
+        self._prompt_metadata = dict(prompt.metadata)
+        assert "context:" in self.last_messages[-1]["content"]
+        return {"reply": "ok"}
+
+    async def shutdown(self) -> None:
+        return None
+
+    def consume_prompt_metadata(self) -> dict[str, Any]:
+        metadata = dict(self._prompt_metadata)
+        self._prompt_metadata.clear()
+        return metadata
 
 
 def _config(**overrides: Any) -> SimpleNamespace:
@@ -84,6 +121,7 @@ def _config(**overrides: Any) -> SimpleNamespace:
         "llm_request_cache_ttl_seconds": 0.0,
         "llm_scene_summary_cache_ttl_seconds": 0.0,
         "context_metrics_enabled": False,
+        "context_semantic_compression": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -294,8 +332,43 @@ async def test_llm_gateway_cache_is_scoped_to_prompt_budget_config() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_gateway_cache_is_scoped_to_semantic_compression_config() -> None:
+    config = _config(
+        context_semantic_compression=False,
+        llm_request_cache_ttl_seconds=60.0,
+        llm_scene_summary_cache_ttl_seconds=60.0,
+    )
+    backend = _SemanticCompressionAwareBackend(config)
+    gateway = LLMGateway(None, None, config, backend=backend)
+    context = {"scene_id": "scene-a", "recent_lines": [{"text": "same input"}]}
+
+    first = await gateway.summarize_scene(context)
+    cached = await gateway.summarize_scene(context)
+    assert first["summary"] == "semantic:False"
+    assert cached["summary"] == "semantic:False"
+    assert backend.calls == 1
+
+    next_config = _config(
+        context_semantic_compression=True,
+        llm_request_cache_ttl_seconds=60.0,
+        llm_scene_summary_cache_ttl_seconds=60.0,
+    )
+    gateway.update_config(next_config)
+
+    after_update = await gateway.summarize_scene(context)
+
+    assert after_update["summary"] == "semantic:True"
+    assert backend.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_llm_gateway_records_real_prompt_metadata_end_to_end() -> None:
-    backend = _RealPromptBackend(logger=None, config=_config(context_metrics_enabled=True))
+    backend_config = _config(
+        context_metrics_enabled=True,
+        context_counting_mode="token",
+        context_max_tokens=1000,
+    )
+    backend = _RealPromptBackend(backend_config)
     gateway = LLMGateway(
         None,
         None,
