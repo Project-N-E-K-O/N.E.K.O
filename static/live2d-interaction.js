@@ -1106,8 +1106,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
     if (!this.currentModel) {
         console.warn('[ClickEffect] 无法播放：模型未加载');
-        return;
+        return false;
     }
+    let didPlayEffect = false;
 
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
@@ -1149,6 +1150,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             if (choiceFile && typeof this.playExpression === 'function') {
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
                 await this.playExpression(emotion, choiceFile);
+                didPlayEffect = true;
             }
         } else {
             console.log("[ClickEffect] 没找到可用表情")
@@ -1173,7 +1175,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         // 兜底：emotion 对不上任何 motion group 时，从所有可用 group 随机选一个
         if ((!motions || motions.length === 0) && this.fileReferences && this.fileReferences.Motions) {
             const allGroups = Object.keys(this.fileReferences.Motions).filter(
-                g => Array.isArray(this.fileReferences.Motions[g]) && this.fileReferences.Motions[g].length > 0
+                g => g !== 'PreviewAll' && Array.isArray(this.fileReferences.Motions[g]) && this.fileReferences.Motions[g].length > 0
             );
             if (allGroups.length > 0) {
                 motionGroup = allGroups[Math.floor(Math.random() * allGroups.length)];
@@ -1189,10 +1191,16 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 if (motion) {
                     console.log(`[ClickEffect] 播放临时动作: ${motionGroup}（优先级: ${priority}）`);
                     this._clickEffectMotion = motion;
+                    didPlayEffect = true;
                 }
             } catch (motionError) {
                 console.warn('[ClickEffect] 动作播放失败:', motionError);
             }
+        }
+
+        if (!didPlayEffect) {
+            console.log('[ClickEffect] 没有可播放的点击表情或动作，跳过恢复定时器');
+            return false;
         }
 
         // 3. 设置恢复定时器
@@ -1229,9 +1237,11 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }, duration);
 
         console.log(`[ClickEffect] 临时效果将在 ${duration}ms 后恢复`);
+        return true;
 
     } catch (error) {
         console.error('[ClickEffect] 播放临时效果失败:', error);
+        return false;
     }
 };
 
@@ -1838,11 +1848,19 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
         console.log(`[Interaction] 点击触发随机情感: ${randomEmotion}（低优先级，将自动恢复）`);
 
         // 触发临时情感效果
+        let didPlayEffect = false;
         try {
             // 播放低优先级的表情和动作
-            const result = await this._playTemporaryClickEffect(randomEmotion, 2, window.live2dManager.CLICK_EFFECT_DURATION);
+            didPlayEffect = await this._playTemporaryClickEffect(randomEmotion, 2, window.live2dManager.CLICK_EFFECT_DURATION);
         } catch (error) {
             console.warn('[Interaction] 触发情感失败:', error);
+        }
+        if (!didPlayEffect) {
+            console.log('[Interaction] 没有可播放的点击效果，保持当前待机动作');
+            if (typeof window.restoreLive2DIdleAnimationOnMainPage === 'function') {
+                window.restoreLive2DIdleAnimationOnMainPage();
+            }
+            return;
         }
     }
 

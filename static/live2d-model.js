@@ -588,6 +588,7 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
     console.log(`[Live2D] 开始物理预跑: ${simulatedMs}ms / ${stepMs}ms步长 = ${totalSteps}步，分批${BATCH_SIZE}步/帧`);
 
     let completed = 0;
+    let elapsedTime = Number.isFinite(model.elapsedTime) ? model.elapsedTime : 0;
 
     try {
         while (completed < totalSteps) {
@@ -603,8 +604,8 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
 
             const batchEnd = Math.min(completed + BATCH_SIZE, totalSteps);
             for (let i = completed; i < batchEnd; i++) {
-                internalModel.update(stepMs, model.elapsedTime);
-                model.elapsedTime += stepMs;
+                internalModel.update(stepMs, elapsedTime);
+                elapsedTime += stepMs;
             }
             completed = batchEnd;
 
@@ -619,6 +620,7 @@ Live2DManager.prototype._preTickPhysics = async function(model, simulatedMs, ste
 
     // 重置 deltaTime 累加器，确保下一次 _render() 的 internalModel.update
     // 使用正常的帧间增量，而非包含预跑时间的巨大值
+    model.elapsedTime = elapsedTime;
     model.deltaTime = 0;
 
     console.log('[Live2D] 物理预跑完成');
@@ -846,11 +848,32 @@ Live2DManager.prototype._forceEyeBlinkOpen = function(coreModel) {
 };
 
 Live2DManager.prototype._isEyeBlinkParamId = function(paramId) {
-    if (!paramId || !this._eyeBlinkParams || this._eyeBlinkParams.length === 0) return false;
+    if (!paramId) return false;
     const id = String(paramId);
-    return this._eyeBlinkParams.some(param => (
+    if (this._eyeBlinkParams && this._eyeBlinkParams.some(param => (
         param.id === id || `param_${param.idx}` === id
-    ));
+    ))) {
+        return true;
+    }
+    return this._looksLikeEyeBlinkParamId(id);
+};
+
+Live2DManager.prototype._looksLikeEyeBlinkParamId = function(paramId) {
+    if (!paramId) return false;
+    const id = String(paramId);
+    const nonBlinkPatterns = [/mouth/i, /eyeball/i, /angle/i, /look/i, /iris/i, /pupil/i];
+    if (nonBlinkPatterns.some(pattern => pattern.test(id))) return false;
+
+    const blinkPatterns = [
+        /^parameye[lr]open$/i,
+        /^param(?:left|right)?eye(?:l|r)?open$/i,
+        /^param.*eye.*open$/i,
+        /eye.*blink/i,
+        /blink.*eye/i,
+        /eyeblink/i,
+        /まばたき|瞬き|目.*開|眼.*開/i
+    ];
+    return blinkPatterns.some(pattern => pattern.test(id));
 };
 
 // 自动扫描模型参数以识别眨眼相关参数
@@ -858,13 +881,6 @@ Live2DManager.prototype._scanEyeBlinkParams = function(model) {
     if (!model?.internalModel?.coreModel) return null;
     const coreModel = model.internalModel.coreModel;
     const count = coreModel.getParameterCount();
-    const blinkPatterns = [
-        /parameye[lr]open/i,
-        /eye.*open/i,
-        /eye.*blink/i,
-        /まばたき|瞬き|目.*開|眼.*開/i
-    ];
-    const nonBlinkPatterns = [/eyeball/i, /angle/i, /look/i, /iris/i, /pupil/i];
     const found = [];
 
     // Cubism 4/5 的 coreModel 没有 getParameterId(index)，参数 ID 列表存在
@@ -878,8 +894,7 @@ Live2DManager.prototype._scanEyeBlinkParams = function(model) {
                 ?? (typeof coreModel.getParameterId === 'function' ? coreModel.getParameterId(i) : null);
         } catch (_) {}
         if (!paramId) continue;
-        if (!nonBlinkPatterns.some(p => p.test(paramId)) &&
-            blinkPatterns.some(p => p.test(paramId))) {
+        if (this._looksLikeEyeBlinkParamId(paramId)) {
             found.push(paramId);
         }
     }

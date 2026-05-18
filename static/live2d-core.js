@@ -251,6 +251,19 @@ class Live2DManager {
                     throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
                 }
 
+                try {
+                    canvas.style.background = 'transparent';
+                    canvas.style.backgroundColor = 'transparent';
+                    container.style.background = 'transparent';
+                    container.style.backgroundColor = 'transparent';
+                    if (this.pixi_app.renderer) {
+                        this.pixi_app.renderer.backgroundAlpha = 0;
+                        if (this.pixi_app.renderer.background) {
+                            this.pixi_app.renderer.background.alpha = 0;
+                        }
+                    }
+                } catch (_) {}
+
                 if (!this.pixi_app.stage) {
                     throw new Error('PIXI.Application 创建失败：stage 属性不存在');
                 }

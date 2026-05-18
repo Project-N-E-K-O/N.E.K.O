@@ -1811,17 +1811,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             const charData = data['猫娘']?.[lanlanName];
 
             // 优先从 _reserved 保留字段读取，兼容旧版本的直接平铺结构
-            // 使用 ?? 替代 || 以保留空字符串语义（用户清空后的有效值）
-            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
-                                     ?? charData?.avatar?.live2d?.idle_animation
-                                     ?? charData?.live2d_idle_animation;  // 兼容旧版本平铺字段
+            // 显式检查字段是否存在，以保留空字符串/null 语义（用户清空后的有效值）
+            const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+            const reservedLive2D = charData?._reserved?.avatar?.live2d;
+            const avatarLive2D = charData?.avatar?.live2d;
+            let live2dIdleAnimation;
+            let hasExplicitIdleAnimation = false;
+            if (hasOwn(reservedLive2D, 'idle_animation')) {
+                live2dIdleAnimation = reservedLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(avatarLive2D, 'idle_animation')) {
+                live2dIdleAnimation = avatarLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(charData, 'live2d_idle_animation')) {
+                live2dIdleAnimation = charData.live2d_idle_animation;  // 兼容旧版本平铺字段
+                hasExplicitIdleAnimation = true;
+            }
 
             console.log('[Live2D Restore] live2dIdleAnimation:', live2dIdleAnimation);
-
-            if (!live2dIdleAnimation) {
-                console.log('[Live2D Restore] 没有保存的待机动作');
-                return;
-            }
 
             const motionSelect = document.getElementById('motion-select');
             console.log('[Live2D Restore] motionSelect:', motionSelect);
@@ -1829,6 +1836,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const motionFiles = currentModelFiles?.motion_files || [];
             console.log('[Live2D Restore] motionFiles:', motionFiles);
+            if (!live2dIdleAnimation) {
+                if (hasExplicitIdleAnimation) {
+                    console.log('[Live2D Restore] 待机动作已明确清空');
+                    return;
+                }
+                if (motionFiles.length === 1) {
+                    live2dIdleAnimation = motionFiles[0];
+                    console.log('[Live2D Restore] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
+                } else {
+                    console.log('[Live2D Restore] 没有保存的待机动作');
+                    return;
+                }
+            }
+
             console.log('[Live2D Restore] 检查动作是否在列表中:', motionFiles.includes(live2dIdleAnimation));
             if (!motionFiles.includes(live2dIdleAnimation)) {
                 console.log('[Live2D] 保存的待机动作不在当前模型的动作列表中，跳过恢复:', live2dIdleAnimation);
