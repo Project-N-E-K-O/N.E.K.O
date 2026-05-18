@@ -18,7 +18,11 @@ from urllib.parse import quote, urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
-from utils.dashscope_region import configure_dashscope_sdk_urls, dashscope_ws_url_from_base
+from utils.dashscope_region import (
+    DASHSCOPE_GLOBAL_LOCK,
+    configure_dashscope_sdk_urls,
+    dashscope_ws_url_from_base,
+)
 from utils.elevenlabs_tts_voices import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
@@ -2273,10 +2277,13 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
-        # 重连前重新写一次 module-global，覆盖 /voice_preview / voice_clone 等
-        # 同进程其他流程留下的地域/key（见 worker 顶部说明）。
-        _apply_dashscope_region()
-        syn = SpeechSynthesizer(**kwargs)
+        # 写 module-global + 构造 SpeechSynthesizer 必须握 DASHSCOPE_GLOBAL_LOCK，
+        # 否则 /voice_preview / clone_voice 等同进程其它流程并发跑时会在
+        # "set global → __init__" 之间互相覆盖 → 拿别人的 key/地域建连。
+        # SpeechSynthesizer 一旦建好就由实例内部状态承载请求，解锁后继续跑安全。
+        with DASHSCOPE_GLOBAL_LOCK:
+            _apply_dashscope_region()
+            syn = SpeechSynthesizer(**kwargs)
         last_streaming_call_time = time.time()
         return syn
 

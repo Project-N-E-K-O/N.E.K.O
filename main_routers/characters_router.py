@@ -77,7 +77,7 @@ from utils.config_manager import (
     set_reserved,
     strip_generated_persona_selection_prompt,
 )
-from utils.dashscope_region import configure_dashscope_sdk_urls
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 from utils.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
@@ -3884,27 +3884,38 @@ async def get_voice_preview(
             return JSONResponse({'success': False, 'error': 'TTS_AUDIO_API_KEY_MISSING', 'code': 'TTS_AUDIO_API_KEY_MISSING'}, status_code=400)
 
         # 生成音频
-        dashscope.api_key = audio_api_key
         try:
             tts_api_config = _config_manager.get_model_api_config('tts_custom')
-            configure_dashscope_sdk_urls(
-                dashscope,
-                cosyvoice_base_url or tts_api_config.get('base_url', ''),
-                websocket_path="inference",
-            )
         except Exception as e:
-            logger.warning("DashScope 预览地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
-            try:
-                configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
-            except Exception as reset_error:
-                logger.error("DashScope 预览默认地域重置失败: %s", reset_error, exc_info=True)
-                raise
+            logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
+            tts_api_config = {}
+        preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
+
+        from utils.api_config_loader import get_cosyvoice_clone_model
+        clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
+
+        def _do_preview_synthesize():
+            # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
+            # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
+            # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
+            # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
+            # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
+            with DASHSCOPE_GLOBAL_LOCK:
+                dashscope.api_key = audio_api_key
+                try:
+                    configure_dashscope_sdk_urls(
+                        dashscope,
+                        preview_base_url,
+                        websocket_path="inference",
+                    )
+                except Exception as e:
+                    logger.warning("DashScope 预览地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+                    configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+                synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
+                return synthesizer, synthesizer.call(text)
+
         try:
-            from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
-            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
-            # 使用 asyncio.to_thread 包装同步阻塞调用
-            audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
+            synthesizer, audio_data = await asyncio.to_thread(_do_preview_synthesize)
 
             if not audio_data:
                 request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()

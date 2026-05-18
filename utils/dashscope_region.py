@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import threading
 from urllib.parse import urlparse, urlunparse
+
+
+# DashScope SDK 的 api_key / base_websocket_api_url / base_http_api_url 是模块级
+# 全局，同一进程里 cosyvoice TTS worker、/voice_preview、voice_clone 三条流程
+# 都会写 + 读。两条流程并发跑（典型场景：用户在 worker 跑 TTS 时点击克隆按钮）
+# 会在 "设 global → 构造 SDK 对象 / 调用" 之间互相覆盖，导致请求带着别人的
+# key/地域发出去 (Codex P1 #3258691457)。
+# 所有调用方在写 global + 构造 SDK + 同步调用这一整段都拿这把锁。
+# 拿到 SDK 实例后由实例自己的内部状态承载请求，可以解锁继续跑。
+DASHSCOPE_GLOBAL_LOCK = threading.Lock()
 
 
 DASHSCOPE_ALLOWED_HOSTS = {

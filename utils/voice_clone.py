@@ -22,7 +22,7 @@ from typing import Optional
 
 import httpx
 
-from utils.dashscope_region import configure_dashscope_sdk_urls
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 
 logger = logging.getLogger(__name__)
 
@@ -465,10 +465,6 @@ class QwenVoiceCloneClient:
         if target_model is None:
             target_model = get_cosyvoice_clone_model(self.dashscope_base_url)
 
-        dashscope.api_key = self.api_key
-        configure_dashscope_sdk_urls(dashscope, self.dashscope_base_url, websocket_path="inference")
-        service = VoiceEnrollmentService()
-
         kwargs: dict = dict(
             target_model=target_model,
             prefix=prefix,
@@ -477,9 +473,20 @@ class QwenVoiceCloneClient:
         if language_hints and cosyvoice_model_supports_language_hints(target_model):
             kwargs["language_hints"] = language_hints
 
+        # 写 module-global + 构造 service + service.create_voice 整段都拿
+        # DASHSCOPE_GLOBAL_LOCK：clone_voice 由 asyncio.to_thread 跑在工作线程，
+        # 同进程多个 clone 请求并发时会在 "set global → SDK 调用" 之间互相
+        # 覆盖 key/地域，请求带着别人的凭证发出去 (Codex P1 #3258691457)。
+        # TTS worker / preview 也共用这把锁。
         try:
-            voice_id = service.create_voice(**kwargs)
-            request_id = service.get_last_request_id()
+            with DASHSCOPE_GLOBAL_LOCK:
+                dashscope.api_key = self.api_key
+                configure_dashscope_sdk_urls(
+                    dashscope, self.dashscope_base_url, websocket_path="inference"
+                )
+                service = VoiceEnrollmentService()
+                voice_id = service.create_voice(**kwargs)
+                request_id = service.get_last_request_id()
             logger.info("CosyVoice 音色注册成功: voice_id=%s", voice_id)
             return voice_id, request_id
         except Exception as e:
