@@ -1888,6 +1888,12 @@ async def _run_path_b(name: str, state: dict) -> None:
         logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
         all_facts = []
 
+    # Importance 用 safe_importance 兜底——legacy/手改 facts.json 里可能
+    # 有 'importance': "high" / None / list 等脏值，raw int(...) cast 会
+    # ValueError 把整个 B 跑挂、下次 trigger 又同样脏值同样挂，path B 对该
+    # 角色永久哑火（Codex P2 on PR #1408）。
+    from memory.facts import safe_importance
+
     known_pool: list[dict] = []
     for f in all_facts:
         if not isinstance(f, dict):
@@ -1899,9 +1905,7 @@ async def _run_path_b(name: str, state: dict) -> None:
             continue
         if last_b <= created_at <= last_a_msg_ts:
             known_pool.append(f)
-    known_pool.sort(
-        key=lambda f: -int(f.get('importance', 5) or 5),
-    )
+    known_pool.sort(key=lambda f: -safe_importance(f))
     known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
 
     persisted = await fact_store.aextract_facts_with_known_pool(
@@ -1915,8 +1919,17 @@ async def _run_path_b(name: str, state: dict) -> None:
             f"known_pool={len(known_pool)})"
         )
 
-    # 成功跑完（无论抽出 0 还是 N 条），推进 B cursor 到 A 处理过的最晚点
-    state['last_b_check_ts'] = last_a_msg_ts
+    # 推进 B cursor 到 SQL **实际取到的最后一行 ts**，不是 window 原本的下
+    # 游边界。当窗口包含 > MAX_AI_AWARE_WINDOW_MSGS 行（burst / 挂机后回来）
+    # 时 SQL 的 ORDER BY ts ASC + LIMIT 只取最早 N 行，剩下的尾巴留给下次
+    # B trigger 继续处理。若 cursor 推到 last_a_msg_ts 会让未取到的尾巴永
+    # 久 skip——path B 对那段 burst 静默失明（Codex P1 on PR #1408）。
+    last_fetched_ts = _coerce_db_ts(rows[-1][0])
+    if last_fetched_ts is None:
+        # 防御：_coerce_db_ts 解析失败时退回 last_a_msg_ts（避免 cursor 不动
+        # 死循环）。正常路径不会触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
+        last_fetched_ts = last_a_msg_ts
+    state['last_b_check_ts'] = last_fetched_ts
 
 
 async def _periodic_signal_extraction_loop():

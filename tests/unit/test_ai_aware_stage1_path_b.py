@@ -301,8 +301,9 @@ async def test_stage2_filters_out_ai_disclosure_facts():
     ])
     fs._allm_detect_signals = AsyncMock(return_value=[])  # signals=[] but ran
 
-    # _allm_detect_signals 被调用时传的 batch 就是过 filter 后的 unprocessed
-    persisted, signals, batch_ids = await fs.aextract_facts_and_detect_signals(
+    # _allm_detect_signals 被调用时传的 batch 就是过 filter 后的 unprocessed。
+    # 三元 return 故意全用 _ 前缀——测试关心的是 mock call 参数，不是返回值。
+    _persisted, _signals, _batch_ids = await fs.aextract_facts_and_detect_signals(
         '悠怡', messages=[],
     )
 
@@ -381,9 +382,13 @@ async def test_path_b_skips_when_a_never_ran():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_path_b_advances_cursor_to_last_a_msg_ts():
-    """B 成功跑完后，last_b_check_ts 必须推进到 last_a_msg_ts。
-    防 B 反复跑同一窗口（cursor 单调推进语义）。"""
+async def test_path_b_full_window_advances_cursor_to_last_fetched_eq_last_a_msg_ts():
+    """无截断（rows 全部覆盖到 last_a_msg_ts）时 cursor = last fetched 恰好 =
+    last_a_msg_ts。语义上等价"推到 A 处理过的最晚点"。
+
+    （跟 test_path_b_truncated_window_... 形成对偶：那条覆盖截断情况，
+    cursor 推到 last fetched < last_a_msg_ts；这条覆盖无截断情况。）
+    """
     from app import memory_server
 
     last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
@@ -393,9 +398,13 @@ async def test_path_b_advances_cursor_to_last_a_msg_ts():
     }
 
     fake_time_manager = MagicMock()
+    # 最后一行 ts 就是 last_a_msg_ts（无截断的正常情况）
     fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
         (last_a_msg_ts - timedelta(minutes=5), 's', json.dumps({
-            'type': 'human', 'data': {'content': '测试消息'},
+            'type': 'human', 'data': {'content': '中间消息'},
+        })),
+        (last_a_msg_ts, 's', json.dumps({
+            'type': 'ai', 'data': {'content': '最后消息恰是 A 边界'},
         })),
     ])
     fake_fact_store = MagicMock()
@@ -406,8 +415,9 @@ async def test_path_b_advances_cursor_to_last_a_msg_ts():
          patch.object(memory_server, 'fact_store', fake_fact_store):
         await memory_server._run_path_b('悠怡', state)
 
+    # 无截断时 last fetched == last_a_msg_ts，cursor 推到此值
     assert state['last_b_check_ts'] == last_a_msg_ts, (
-        f"B cursor 必须推到 last_a_msg_ts={last_a_msg_ts}，"
+        f"无截断时 cursor (= last fetched) 应等于 last_a_msg_ts={last_a_msg_ts}，"
         f"实际 last_b_check_ts={state['last_b_check_ts']}"
     )
 
@@ -501,6 +511,106 @@ async def test_path_b_filters_known_pool_by_window_and_caps():
     assert importances == sorted(importances, reverse=True), (
         f"已知池必须按 importance DESC 排，实际: {importances}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_truncated_window_advances_cursor_to_last_fetched_row():
+    """Regression (Codex P1 PR #1408)：当窗口里消息数 > MAX_AI_AWARE_WINDOW_MSGS
+    时 SQL LIMIT 只取最早 N 行，cursor 必须推到**实际取到的最后一行 ts**，
+    不是 window 原本的 last_a_msg_ts。否则未取到的尾巴永久 skip → path B
+    对那段 burst 静默失明。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=30)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 模拟 SQL 返回截断的 rows：只到 last_a_msg_ts - 10 min（实际窗口是
+    # 30 min，但 LIMIT 把 ts 最早的部分截到 10 min 处就停了）
+    truncation_boundary = last_a_msg_ts - timedelta(minutes=10)
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_b + timedelta(seconds=10), 's', json.dumps({
+            'type': 'human', 'data': {'content': '早消息'},
+        })),
+        (truncation_boundary, 's', json.dumps({
+            'type': 'ai', 'data': {'content': '截断边界'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    assert state['last_b_check_ts'] == truncation_boundary, (
+        f"cursor 必须推到 last fetched row ts ({truncation_boundary}), "
+        f"不是 last_a_msg_ts ({last_a_msg_ts}). 实际: {state['last_b_check_ts']}"
+    )
+    # 关键：下次 B trigger 必须能从这里继续 = 还没追上 last_a_msg_ts
+    assert state['last_b_check_ts'] < last_a_msg_ts, (
+        "truncated 窗口 + 未取尾巴 → cursor 不该追上 A，下次 B 继续处理"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_known_pool_sort_tolerates_malformed_importance():
+    """Regression (Codex P2 PR #1408)：legacy / 手改 facts.json 里
+    'importance': "high" / None / list 等脏值不该让整个 path B sort 挂
+    （raw int(...) cast → ValueError → path B 对该角色永久哑火）。
+    用 safe_importance 兜底。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=20)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 构造一批脏 importance（每种异常类型混入）
+    dirty_facts = [
+        {'id': 'normal', 'text': 't', 'importance': 8,
+         'created_at': (last_b + timedelta(minutes=1)).isoformat()},
+        {'id': 'str_high', 'text': 't', 'importance': "high",  # ❌ ValueError
+         'created_at': (last_b + timedelta(minutes=2)).isoformat()},
+        {'id': 'none_imp', 'text': 't', 'importance': None,
+         'created_at': (last_b + timedelta(minutes=3)).isoformat()},
+        {'id': 'list_imp', 'text': 't', 'importance': [1, 2, 3],  # ❌ TypeError
+         'created_at': (last_b + timedelta(minutes=4)).isoformat()},
+        {'id': 'missing_imp', 'text': 't',  # 字段缺失
+         'created_at': (last_b + timedelta(minutes=5)).isoformat()},
+    ]
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_a_msg_ts - timedelta(minutes=1), 's', json.dumps({
+            'type': 'human', 'data': {'content': '测试'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=dirty_facts)
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        # 不该抛 ValueError / TypeError
+        await memory_server._run_path_b('悠怡', state)
+
+    # 验证 aextract_facts_with_known_pool 被调（说明 sort 没挂）
+    fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
+    captured_known_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
+    # 5 条脏 fact 全在窗口内，都应该进 pool（脏值不丢，只是排序 fallback）
+    assert len(captured_known_pool) == 5
 
 
 @pytest.mark.unit
