@@ -400,6 +400,133 @@ class MemoryRecallReranker:
             result.extend(tail)
         return result[:k]
 
+    # ── per-query top-K recall（reflection synthesis 用） ────────────────
+
+    async def aretrieve_per_query_topk(
+        self,
+        observations: list[dict],
+        query_texts: list[str],
+        *,
+        per_query_k: int,
+        total_cap: int,
+    ) -> list[dict]:
+        """Per-query top-K cosine recall, union+dedup at most ``total_cap``。
+
+        与 ``aretrieve_candidates`` 的全局 max-pool top-K 不同：这里**每条
+        query 各自享有 ``per_query_k`` 的独立配额**，结果按 id dedup 合并，
+        总数截到 ``total_cap``。
+
+        Use case：reflection synthesis 的 ``{RELATED_CONTEXT_BLOCK}``——20 条
+        unabsorbed fact 主题分散时，max-pool 会让冷门主题被高频主题挤掉，
+        per-query 配额规避这点（PR #1401 thread 拍板）。
+
+        Perf：单次 ``embed_batch`` 拼所有 query，candidates decode 一次成 (N, D)
+        矩阵，一次 ``candidate_matrix @ query_matrix.T`` 算出 (N, Q) 分数矩
+        阵，per-column ``argpartition`` 取 top-K。整体复杂度 O(N·D·Q + N·Q·log K)，
+        BLAS 自带 SIMD/多线程，等同于"并行"per-query 调用但不付 N 次嵌入
+        服务往返。
+
+        Fallback 与主路径不同：embedding 不可用 / 无 model_id / 候选无 valid
+        embedding → **直接返回 []**，**不**退化到 evidence_score 排序。理由：
+        本方法的消费者（``_build_related_context_block``）拿结果是当
+        "semantic anchor" 注入 LLM prompt 用的，没真 semantic 关联的"高分历史
+        fact"当锚反而是注意力污染——宁可空 anchor。
+
+        ⚠️ 代码重用：candidate matrix build / query decode 与 ``_coarse_rank``
+        基本一致；当前两份接受少量重复，等出现第三个 caller 时再抽
+        ``_build_score_matrix`` 私有 helper。
+        """
+        if not observations or not query_texts:
+            return []
+
+        survivors = self._hard_filter(observations)
+        if not survivors:
+            return []
+
+        if not self._service.is_available():
+            return []
+        model_id = self._service.model_id()
+        if model_id is None:
+            return []
+
+        cleaned_queries = [
+            t.strip() for t in query_texts
+            if isinstance(t, str) and t.strip()
+        ]
+        if not cleaned_queries:
+            return []
+
+        query_vectors_raw = await self._service.embed_batch(cleaned_queries)
+        query_vectors_raw = [v for v in query_vectors_raw if v is not None]
+        if not query_vectors_raw:
+            return []
+
+        target_dim = parse_dim_from_model_id(model_id)
+
+        # Decode candidate embeddings once, build (N, D)
+        indexed_decoded: list[tuple[int, "np.ndarray"]] = []
+        for i, o in enumerate(survivors):
+            text = o.get('text', '')
+            if not is_cached_embedding_valid(o, text, model_id):
+                continue
+            cvec = decode_embedding(o.get('embedding'))
+            if cvec is None or cvec.size == 0:
+                continue
+            if target_dim is None:
+                target_dim = int(cvec.size)
+            elif cvec.size != target_dim:
+                continue
+            indexed_decoded.append((i, cvec))
+
+        if not indexed_decoded:
+            return []
+
+        import numpy as np
+        candidate_matrix = np.stack([cvec for _, cvec in indexed_decoded])
+        cand_survivor_indices = [i for i, _ in indexed_decoded]
+
+        query_rows = []
+        for qv in query_vectors_raw:
+            qvec = decode_embedding(qv)
+            if qvec is not None and qvec.size == target_dim:
+                query_rows.append(qvec)
+        if not query_rows:
+            return []
+        query_matrix = np.stack(query_rows)  # (Q, D)
+
+        # (N, D) @ (D, Q) → (N, Q)
+        scores_mat = candidate_matrix @ query_matrix.T
+
+        # Per-query top-K + union dedup + total cap. 保留 "first-seen" 顺序——
+        # query 顺序 × within-query rank → 重要 query 的高分 anchor 在前。
+        n_candidates = scores_mat.shape[0]
+        effective_k = max(0, min(per_query_k, n_candidates))
+        if effective_k == 0:
+            return []
+
+        seen_ids: set[str] = set()
+        result: list[dict] = []
+        for q_idx in range(scores_mat.shape[1]):
+            col = scores_mat[:, q_idx]
+            if effective_k >= n_candidates:
+                top_idx = np.argsort(-col)
+            else:
+                # argpartition O(N) 拿到无序 top-K，再对这 K 个排序
+                unsorted_top = np.argpartition(-col, effective_k - 1)[:effective_k]
+                top_idx = unsorted_top[np.argsort(-col[unsorted_top])]
+            for idx in top_idx:
+                cand_idx = cand_survivor_indices[int(idx)]
+                doc = survivors[cand_idx]
+                doc_id = doc.get('id')
+                if not doc_id or doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
+                result.append(doc)
+                if len(result) >= total_cap:
+                    return result
+
+        return result
+
     # ── phase 3: LLM rerank ──────────────────────────────────────────
 
     async def _fine_rank(

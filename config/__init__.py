@@ -1018,16 +1018,29 @@ MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
   loop（rebuttal / auto_promote / idle_maint / signal_extraction / archive /
   refine 等）对偶。"""
 
-REFLECTION_RELATED_RECALL_K = 6
-"""Reflection synthesis 时通过 embedding 召回的 absorbed fact 数量。
-- 用途：synthesize_reflections 在调 LLM 前用 unabsorbed 文本作 multi-query，
-  从已 absorbed fact 池里 cosine 召回 top K 作为 {RELATED_CONTEXT_BLOCK}
-  喂给 prompt，让 LLM 知道"远期相关 fact 长啥样"。
-- 上游：absorbed=True 的 fact 池（已被前轮 reflection 吸收过的素材）。
-- 设计依据：K 约等于 SYNTHESIS_FACTS_MAX 的 1/3，再多会稀释 prompt 焦点；
-  embedding 不可用 / 池为空 / 召回为空 → block 整段省略，prompt 与改造前一致。
-- 远期 fact 仅作参考，不进 source_fact_ids、不 mark_absorbed，幂等性靠
-  unabsorbed 集合的 rid hash 保证。"""
+REFLECTION_RELATED_PER_QUERY_K = 3
+"""Reflection synthesis 时，每条 unabsorbed fact 单独 query 召回的 absorbed
+fact 数量上限。
+- 上游：synthesize_reflections 调 ``MemoryRecallReranker.aretrieve_per_query_topk``
+  时按本常量给每条 query 配独立预算。
+- 设计依据（PR #1401 thread 拍板）：原先用 max-pool top-K (=6 全局预算)，
+  20 条 unabsorbed 主题分散时冷门主题会被高频主题挤掉冷板凳。改成 per-query
+  K=3 + 全局 cap，保证每条 unabsorbed 至少能拿到自己的 top-3 锚（除非这条
+  query embed 失败 / 候选池没语义匹配）。
+- 单条 query 拿 3 条而不是 1 条：考虑到主题边界模糊（用户聊 MC 同时聊到
+  红石和挖矿，cosine top-1 可能只命中其中一条），多给两条让 LLM 能看出
+  "主题群"的轮廓。"""
+
+REFLECTION_RELATED_TOTAL_CAP = 20
+"""``aretrieve_per_query_topk`` 跨 query union+dedup 后的最终上限。
+- 设计依据：与 ``REFLECTION_SYNTHESIS_FACTS_MAX`` (=20) 同档，让 anchor 集
+  最坏也能跟 source 集等量——但实际命中通常远小于此（query 间 nearest
+  neighbor 大量重叠 + dedup）。典型 batch 10 条 unabsorbed × per_query=3
+  = 30 候选 → dedup 后落在 ~10-15 anchor。
+- 上界用于防御性截断：极端"20 条全主题不重叠"假设下，per_query=3 × 20 = 60
+  候选，dedup 不能去重时砍到 20，避免 prompt token 爆。
+- prompt 实际成本：20 × ~50 tok ≈ 1000 tok anchor + 20 × ~50 tok ≈ 1000 tok
+  source = 2k 上限，summary tier 模型完全吃得下。"""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
@@ -1872,7 +1885,8 @@ __all__ = [
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',
     'MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS',
-    'REFLECTION_RELATED_RECALL_K',
+    'REFLECTION_RELATED_PER_QUERY_K',
+    'REFLECTION_RELATED_TOTAL_CAP',
     'PERSONA_MERGE_POOL_MAX_TOKENS',
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',

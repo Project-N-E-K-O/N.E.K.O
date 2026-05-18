@@ -929,13 +929,20 @@ class ReflectionEngine:
 
         try:
             from memory.recall import MemoryRecallReranker
-            from config import REFLECTION_RELATED_RECALL_K
+            from config import (
+                REFLECTION_RELATED_PER_QUERY_K,
+                REFLECTION_RELATED_TOTAL_CAP,
+            )
             reranker = MemoryRecallReranker()
-            related = await reranker.aretrieve_candidates(
+            # Per-query top-K（每条 unabsorbed fact 单独享 ``PER_QUERY_K`` 配额，
+            # union dedup 后截到 ``TOTAL_CAP``），不走 max-pool 全局预算。详见
+            # ``aretrieve_per_query_topk`` docstring 和 PR #1401 thread：max-pool
+            # 在 unabsorbed 主题分散时会让冷门主题挤不进 anchor，per-query 配
+            # 额保证每条 unabsorbed 至少能拿自己的近邻。
+            related = await reranker.aretrieve_per_query_topk(
                 absorbed_pool, query_texts,
-                budget=REFLECTION_RELATED_RECALL_K,
-                config_manager=self._config_manager,
-                rerank=False,
+                per_query_k=REFLECTION_RELATED_PER_QUERY_K,
+                total_cap=REFLECTION_RELATED_TOTAL_CAP,
             )
         except Exception as e:
             logger.warning(f"[Reflection] related context 召回失败: {e}")
