@@ -1739,6 +1739,17 @@ async function save_button_down(e) {
         apiKey = '';
     }
 
+    // handleCoreKeyChange 用 300ms 防抖才翻 _coreApiKeyInputDirty / syncKeyToBook,
+    // 用户快速 type/paste 后立刻点保存会落在窗口内：dirty 还是 false、book DOM
+    // 也还是旧值。下面 1761/1841 两处都会保留 keyBook 旧值覆盖新输入，新凭证
+    // 被静默丢弃。在这里按 input 当前值和 book 快照对比直接判脏，绕过防抖窗口。
+    if (coreApi && coreApi !== 'free' && !_coreApiKeyInputDirty && apiKey && _apiKeyRegistry[coreApi]) {
+        const bookSnapshot = syncKeyFromBook(coreApi);
+        if (bookSnapshot !== null && bookSnapshot !== apiKey) {
+            _coreApiKeyInputDirty = true;
+        }
+    }
+
     // 读取辅助API Key
     const assistKeyInput = document.getElementById('assistApiKeyInput');
     const assistKeyVal = getRealKey(assistKeyInput);
