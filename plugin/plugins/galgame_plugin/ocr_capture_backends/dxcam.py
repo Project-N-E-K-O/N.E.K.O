@@ -90,10 +90,7 @@ class DxcamCaptureBackend:
 
     def _record_create_failure(self, exc: BaseException) -> None:
         self._last_create_error = str(exc)
-        self._consecutive_failures = max(
-            self._consecutive_failures + 1,
-            self._MAX_CONSECUTIVE_FAILURES,
-        )
+        self._consecutive_failures += 1
         self._last_failure_time = time.monotonic()
 
     def _reset_camera(self) -> None:
