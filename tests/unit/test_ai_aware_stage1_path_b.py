@@ -86,6 +86,194 @@ def test_extract_role_tagged_messages_skips_empty_content():
 
 
 @pytest.mark.unit
+def test_trim_to_user_msg_bracket_strips_leading_and_trailing_ai():
+    """Product thesis pin：path B 喂给 Stage-1 的消息必须先 trim 到
+    首条 user msg → 末条 user msg 之间（含两端）。首尾的 AI 残段是
+    "user 没印证 / 没回应过的廉价层"，不该入 fact。
+    """
+    from app.memory_server import _trim_to_user_msg_bracket
+
+    # 典型 case：[ai, ai, human, ai, human, ai] → 留 [human, ai, human]
+    msgs = [
+        {'type': 'ai', 'data': {'content': 'AI proactive 试探'}},
+        {'type': 'ai', 'data': {'content': '还是 AI'}},
+        {'type': 'human', 'data': {'content': 'user 终于发声'}},
+        {'type': 'ai', 'data': {'content': 'AI 中间回应'}},
+        {'type': 'human', 'data': {'content': 'user 再发声'}},
+        {'type': 'ai', 'data': {'content': 'AI 末尾独白 (user 没回应)'}},
+    ]
+    out = _trim_to_user_msg_bracket(msgs)
+    assert len(out) == 3
+    assert out[0]['data']['content'] == 'user 终于发声'
+    assert out[1]['data']['content'] == 'AI 中间回应'
+    assert out[2]['data']['content'] == 'user 再发声'
+
+
+@pytest.mark.unit
+def test_trim_to_user_msg_bracket_all_ai_returns_empty():
+    """纯 AI-only 窗口（无 human msg）→ 完全 trim 空。
+    Caller 视作廉价层 skip。"""
+    from app.memory_server import _trim_to_user_msg_bracket
+
+    msgs = [
+        {'type': 'ai', 'data': {'content': '独白 1'}},
+        {'type': 'ai', 'data': {'content': '独白 2'}},
+    ]
+    assert _trim_to_user_msg_bracket(msgs) == []
+
+
+@pytest.mark.unit
+def test_trim_to_user_msg_bracket_single_human_returns_self():
+    """只有一条 human msg → bracket 退化为单点。仍然合法（user 有发声）。"""
+    from app.memory_server import _trim_to_user_msg_bracket
+
+    msgs = [
+        {'type': 'ai', 'data': {'content': '前置 AI'}},
+        {'type': 'human', 'data': {'content': '唯一 user msg'}},
+        {'type': 'ai', 'data': {'content': '后置 AI'}},
+    ]
+    out = _trim_to_user_msg_bracket(msgs)
+    assert len(out) == 1
+    assert out[0]['type'] == 'human'
+    assert out[0]['data']['content'] == '唯一 user msg'
+
+
+@pytest.mark.unit
+def test_trim_to_user_msg_bracket_already_user_to_user_unchanged():
+    """首尾本就是 human msg → 不变。"""
+    from app.memory_server import _trim_to_user_msg_bracket
+
+    msgs = [
+        {'type': 'human', 'data': {'content': 'u1'}},
+        {'type': 'ai', 'data': {'content': 'a1'}},
+        {'type': 'human', 'data': {'content': 'u2'}},
+    ]
+    out = _trim_to_user_msg_bracket(msgs)
+    assert out == msgs
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_trims_to_user_bracket_before_stage1():
+    """End-to-end pin：_run_path_b 喂给 aextract_facts_with_known_pool
+    的 messages 必须已经被 user-msg-bracket trim 过。
+
+    构造窗口：前 2 条 AI + 中间 [user, ai, user] + 后 2 条 AI。
+    断言 Stage-1 收到的 messages 只有中间 3 条。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=10)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    base = last_b + timedelta(seconds=10)
+    rows = [
+        (base + timedelta(seconds=0), 's', json.dumps({
+            'type': 'ai', 'data': {'content': 'AI 试探 1 (user 未印证)'},
+        })),
+        (base + timedelta(seconds=10), 's', json.dumps({
+            'type': 'ai', 'data': {'content': 'AI 试探 2 (user 未印证)'},
+        })),
+        (base + timedelta(seconds=20), 's', json.dumps({
+            'type': 'human', 'data': {'content': 'user 第一句'},
+        })),
+        (base + timedelta(seconds=30), 's', json.dumps({
+            'type': 'ai', 'data': {'content': 'AI 中间回应 (有 user 包夹)'},
+        })),
+        (base + timedelta(seconds=40), 's', json.dumps({
+            'type': 'human', 'data': {'content': 'user 最后一句'},
+        })),
+        (base + timedelta(seconds=50), 's', json.dumps({
+            'type': 'ai', 'data': {'content': 'AI 末尾独白 (user 未回应)'},
+        })),
+        (base + timedelta(seconds=60), 's', json.dumps({
+            'type': 'ai', 'data': {'content': 'AI 又一条独白'},
+        })),
+    ]
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=rows)
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    # 验证 Stage-1 被调，且 messages 只含 bracket 内 3 条
+    fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
+    sent_messages = fake_fact_store.aextract_facts_with_known_pool.await_args.args[1]
+    assert len(sent_messages) == 3, (
+        f"bracket trim 后应剩 3 条 (user, ai, user)，"
+        f"实际 {len(sent_messages)}: {[type(m).__name__ for m in sent_messages]}"
+    )
+    contents = [
+        m.content if hasattr(m, 'content') else m.get('data', {}).get('content', '')
+        for m in sent_messages
+    ]
+    # 首尾必须是 user msg
+    assert 'user 第一句' in contents[0]
+    assert 'user 最后一句' in contents[2]
+    # 首尾 AI 残段必须被剥掉
+    full_text = '\n'.join(contents)
+    assert 'AI 试探' not in full_text, (
+        f"首部 AI 试探不该入 Stage-1（user 未印证），实际 content: {full_text!r}"
+    )
+    assert 'AI 末尾独白' not in full_text and 'AI 又一条独白' not in full_text, (
+        f"尾部 AI 独白不该入 Stage-1（user 未回应），实际 content: {full_text!r}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_no_user_msg_in_window_skips_extraction():
+    """End-to-end pin：窗口里完全无 user msg → bracket trim 后为空 →
+    path B 不调 Stage-1（廉价层 skip），cursor 仍照常推进避免反复扫同窗口。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    last_b = last_a_msg_ts - timedelta(minutes=10)
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    rows = [
+        (last_b + timedelta(seconds=10), 's', json.dumps({
+            'type': 'ai', 'data': {'content': '纯 AI 独白 1'},
+        })),
+        (last_b + timedelta(seconds=20), 's', json.dumps({
+            'type': 'ai', 'data': {'content': '纯 AI 独白 2'},
+        })),
+    ]
+    last_row_ts = rows[-1][0]
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=rows)
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    # Stage-1 不该被调
+    fake_fact_store.aextract_facts_with_known_pool.assert_not_awaited()
+    # cursor 推到 last fetched row ts（避免下次反复扫同窗口）
+    assert state['last_b_check_ts'] == last_row_ts, (
+        f"AI-only 窗口跳过后 cursor 应推到 last fetched ({last_row_ts})，"
+        f"实际 {state['last_b_check_ts']}"
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_apersist_writes_source_field_default_user_observation():
     """path A 调用方不传 default_source → 落盘 source='user_observation'，

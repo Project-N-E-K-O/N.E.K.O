@@ -865,6 +865,27 @@ def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
     return out
 
 
+def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
+    """只保留首条 human msg 到末条 human msg 之间（含两端）的消息。
+
+    Product thesis 防廉价层污染：AI 在首条 user msg **之前**的内容是 user
+    还没印证的 proactive 试探，AI 在末条 user msg **之后**的内容是 user
+    还没回应过的独白——两段都是廉价层，不该当 fact 沉淀。只有夹在两条
+    user msg 中间的 AI 内容才意味着 "user 看到了 / 认可了这段对话上下
+    文"，才有资格被 path B 拣回当 ai_disclosure fact。
+
+    完全无 human msg → 返 []（caller 视作 AI-only 窗口跳过）。
+    只有一条 human msg → 返该条（bracket 退化为单点，仍合法：那条本身
+    就是 user 发声，path B 可借 known_pool 看相邻 AI 上下文）。
+    """
+    human_indices = [
+        i for i, m in enumerate(message_dicts) if m.get('type') == 'human'
+    ]
+    if not human_indices:
+        return []
+    return message_dicts[human_indices[0]:human_indices[-1] + 1]
+
+
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
     """决定 rebuttal_loop 本轮查询的起始时间。
 
@@ -1831,6 +1852,9 @@ async def _run_path_b(name: str, state: dict) -> None:
          前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出层主动去重 path A
          已抽内容
       4. 落盘 default_source='ai_disclosure'；LLM 显式 source 字段优先
+         注：喂给 Stage-1 的消息会先 trim 到 user-msg-bracket（首条 user msg
+         到末条 user msg 之间，含两端）——product thesis 防廉价层污染，
+         首尾的 AI 残段不该被 path B 当 fact 沉淀
       5. Cursor 推进规则：
          - SQL 返 0 rows → 推到 last_a_msg_ts（窗口确实空）
          - SQL 返 N rows 但全 system/空 msg → 推到 last fetched row ts
@@ -1939,6 +1963,21 @@ async def _run_path_b(name: str, state: dict) -> None:
     if not message_dicts:
         # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
         # 截断时未取尾巴可能含有效 msg。
+        state['last_b_check_ts'] = last_fetched_ts
+        return
+
+    # 截到 user msg bracket：首条 user msg 到末条 user msg 之间（含两端）。
+    # Product thesis 防廉价层污染——首尾的 AI 残段（user 没印证过的试探 /
+    # user 没回应过的独白）不该当 fact 沉淀。
+    message_dicts = _trim_to_user_msg_bracket(message_dicts)
+    if not message_dicts:
+        # 窗口内完全无 user msg → AI-only 廉价层，故意 skip。cursor 照常推
+        # 进，下次 B trigger 不会再来覆盖这段。
+        logger.debug(
+            f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')} 无 user msg bracket "
+            f"(纯 AI-only 内容，product thesis 跳过)"
+        )
         state['last_b_check_ts'] = last_fetched_ts
         return
 
