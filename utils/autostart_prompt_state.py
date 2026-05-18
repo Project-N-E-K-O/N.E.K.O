@@ -45,8 +45,9 @@ AUTOSTART_PROMPT_CONFIG_FILENAME = "autostart_prompt_config.json"
 AUTOSTART_PROMPT_STATE_FILENAME = "autostart_prompt_state.json"
 AUTOSTART_PROMPT_LEGACY_STATE_FILENAME = "autostart_prompt.json"
 AUTOSTART_PROMPT_STATE_KIND = "autostart_prompt"
-AUTOSTART_MIN_PROMPT_FOREGROUND_MS = 15 * 60 * 1000
+AUTOSTART_MIN_PROMPT_FOREGROUND_MS = 5 * 60 * 1000
 AUTOSTART_LATER_COOLDOWN_MS = 24 * 60 * 60 * 1000
+AUTOSTART_NEVER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
 AUTOSTART_MAX_RECENT_HEARTBEAT_TOKENS = 16
 
 AUTOSTART_PROMPT_EXTRA_FIELDS = (
@@ -180,6 +181,12 @@ def load_autostart_prompt_runtime_config(config_manager=None) -> dict[str, int]:
         "later_cooldown_ms": clamp_int(
             raw_config.get("later_cooldown_ms"),
             default=AUTOSTART_LATER_COOLDOWN_MS,
+            minimum=MIN_ALLOWED_LATER_COOLDOWN_MS,
+            maximum=MAX_ALLOWED_LATER_COOLDOWN_MS,
+        ),
+        "never_cooldown_ms": clamp_int(
+            raw_config.get("never_cooldown_ms"),
+            default=AUTOSTART_NEVER_COOLDOWN_MS,
             minimum=MIN_ALLOWED_LATER_COOLDOWN_MS,
             maximum=MAX_ALLOWED_LATER_COOLDOWN_MS,
         ),
@@ -582,9 +589,11 @@ def record_autostart_prompt_decision(
 
         if decision == "never":
             changed |= clear_started_via_prompt_state(state)
-            state["never_remind"] = True
-            state["status"] = "never"
-            state["deferred_until"] = 0
+            if state["never_remind"]:
+                state["never_remind"] = False
+                changed = True
+            state["status"] = "deferred"
+            state["deferred_until"] = now_ms_value + runtime_config["never_cooldown_ms"]
             state["last_error"] = ""
             changed |= increment_funnel_count(state, "never")
         elif decision == "later":

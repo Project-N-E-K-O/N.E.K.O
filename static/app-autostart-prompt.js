@@ -45,6 +45,9 @@
         autostartProvider: '',
         autostartStatusUpdatedAt: 0,
         pendingDecisionPayload: null,
+        foregroundTrackingReady: false,
+        foregroundGateStarted: false,
+        foregroundTrackingBlockedHeartbeat: false,
     };
 
     const shortPromptToken = promptTools.shortToken;
@@ -58,8 +61,25 @@
     const isWeakHomeFocusTarget = promptTools.isWeakHomeFocusTarget;
     const isWeakHomeChangeTarget = promptTools.isWeakHomeChangeTarget;
     const foregroundTracker = promptTools.attachForegroundTracker(state);
-    const syncForegroundWindow = foregroundTracker.syncForegroundWindow;
-    const consumeForegroundDelta = foregroundTracker.consumeForegroundDelta;
+    const syncForegroundWindowNow = foregroundTracker.syncForegroundWindow;
+    const consumeForegroundDeltaNow = foregroundTracker.consumeForegroundDelta;
+
+    function syncForegroundWindow() {
+        if (!state.foregroundTrackingReady) {
+            return;
+        }
+        syncForegroundWindowNow();
+    }
+
+    function consumeForegroundDelta() {
+        if (!state.foregroundTrackingReady) {
+            state.pendingForegroundMs = 0;
+            state.foregroundStartedAt = null;
+            state.foregroundTrackingBlockedHeartbeat = true;
+            return 0;
+        }
+        return consumeForegroundDeltaNow();
+    }
 
     function createHeartbeatToken() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -446,7 +466,7 @@
 
             // 只在真有 replay-sensitive delta 时带 heartbeat_token：
             // 断线/超时/响应解析失败时前端会把 delta 加回 pending（Lines 364-367），
-            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被 15 分钟阈值重复计入
+            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入
             // 而误弹自启动提示。和 tutorial heartbeat (app-tutorial-prompt.js) 同构。
             const hasReplaySensitiveDelta = (
                 foregroundDelta > 0
@@ -488,27 +508,9 @@
             });
             if (data && data.should_prompt) {
                 try {
-                    // Gate: 等存档迁移/位置选择 + 初始人设走完再弹自启动提示。
-                    // 心跳间隔 15min，绝大多数情况下 onboarding 早已 settled，此处 await 立即过；
-                    // 拆分 race：超时只兜底"bootstrap 卡死"，overlay 显示中就无限等不超时。
-                    const AUTOSTART_GATE_FALLBACK_MS = 15000;
-                    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
-                        await window.waitForStorageLocationStartupBarrier();
-                    }
-                    const onboarding = window.CharacterPersonalityOnboarding;
-                    if (onboarding && typeof onboarding.whenSettled === 'function') {
-                        const settled = await Promise.race([
-                            onboarding.whenSettled().then(() => true),
-                            new Promise((resolve) => setTimeout(() => resolve(false), AUTOSTART_GATE_FALLBACK_MS)),
-                        ]);
-                        if (!settled) {
-                            const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
-                                || onboarding.pendingResumeAfterTutorial;
-                            if (overlayActive) {
-                                await onboarding.whenSettled();
-                            }
-                        }
-                    }
+                    await waitForAutostartPromptGate().catch(function (error) {
+                        console.warn('[AutostartPrompt] prompt gate failed, showing prompt anyway:', error);
+                    });
                     await maybeShowPrompt(data.prompt_token);
                 } catch (error) {
                     console.warn('[AutostartPrompt] prompt display failed:', error);
@@ -534,6 +536,59 @@
         sendHeartbeat,
         FAST_HEARTBEAT_DELAY_MS
     );
+
+    function beginForegroundTrackingAfterGate() {
+        if (state.foregroundTrackingReady) {
+            return;
+        }
+        state.pendingForegroundMs = 0;
+        state.foregroundStartedAt = null;
+        state.foregroundTrackingReady = true;
+        syncForegroundWindowNow();
+        logFlow('foreground-gate-settled', {});
+        if (state.foregroundTrackingBlockedHeartbeat) {
+            state.foregroundTrackingBlockedHeartbeat = false;
+            scheduleFastHeartbeat();
+        }
+    }
+
+    async function waitForAutostartPromptGate() {
+        const AUTOSTART_GATE_FALLBACK_MS = 15000;
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            await window.waitForStorageLocationStartupBarrier();
+        }
+
+        const onboarding = window.CharacterPersonalityOnboarding;
+        if (!onboarding || typeof onboarding.whenSettled !== 'function') {
+            return;
+        }
+
+        const settled = await Promise.race([
+            onboarding.whenSettled().then(() => true),
+            new Promise((resolve) => setTimeout(() => resolve(false), AUTOSTART_GATE_FALLBACK_MS)),
+        ]);
+        if (settled) {
+            return;
+        }
+
+        const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
+            || onboarding.pendingResumeAfterTutorial;
+        if (overlayActive) {
+            await onboarding.whenSettled();
+        }
+    }
+
+    function startForegroundTrackingGate() {
+        if (state.foregroundGateStarted) {
+            return;
+        }
+        state.foregroundGateStarted = true;
+        void waitForAutostartPromptGate()
+            .catch(function (error) {
+                console.warn('[AutostartPrompt] foreground gate failed, starting timer anyway:', error);
+            })
+            .finally(beginForegroundTrackingAfterGate);
+    }
 
     function isPromptSuppressedLocally() {
         return state.autostartEnabled
@@ -766,6 +821,7 @@
 
         state.initialized = true;
         syncForegroundWindow();
+        startForegroundTrackingGate();
         bindEvents();
 
         state.heartbeatTimer = setInterval(function () {

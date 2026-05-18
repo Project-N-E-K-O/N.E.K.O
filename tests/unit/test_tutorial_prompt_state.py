@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 from utils.autostart_prompt_state import (
+    AUTOSTART_LATER_COOLDOWN_MS,
     AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+    AUTOSTART_NEVER_COOLDOWN_MS,
     get_autostart_prompt_state_response,
     get_autostart_prompt_state_path,
     load_autostart_prompt_runtime_config,
@@ -1240,13 +1242,17 @@ def test_malformed_token_usage_collections_do_not_crash_or_mark_existing_user(tm
 
 
 @pytest.mark.unit
-def test_autostart_prompt_uses_15_min_default_threshold(tmp_path):
+def test_autostart_prompt_uses_5_min_threshold_24_hour_later_and_7_day_never_cooldowns(tmp_path):
     config = DummyConfig(tmp_path)
 
     runtime_config = load_autostart_prompt_runtime_config(config)
 
-    assert AUTOSTART_MIN_PROMPT_FOREGROUND_MS == 15 * 60 * 1000
+    assert AUTOSTART_MIN_PROMPT_FOREGROUND_MS == 5 * 60 * 1000
+    assert AUTOSTART_LATER_COOLDOWN_MS == 24 * 60 * 60 * 1000
+    assert AUTOSTART_NEVER_COOLDOWN_MS == 7 * 24 * 60 * 60 * 1000
     assert runtime_config["min_prompt_foreground_ms"] == AUTOSTART_MIN_PROMPT_FOREGROUND_MS
+    assert runtime_config["later_cooldown_ms"] == AUTOSTART_LATER_COOLDOWN_MS
+    assert runtime_config["never_cooldown_ms"] == AUTOSTART_NEVER_COOLDOWN_MS
 
     blocked = process_autostart_prompt_heartbeat(
         {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS - 1},
@@ -1263,6 +1269,50 @@ def test_autostart_prompt_uses_15_min_default_threshold(tmp_path):
     )
     assert prompt["should_prompt"] is True
     assert prompt["prompt_reason"] == "usage_timeout"
+
+    decision = record_autostart_prompt_decision(
+        {"decision": "later", "prompt_token": prompt["prompt_token"]},
+        config_manager=config,
+        now_ms=4_000,
+    )
+    assert decision["state"]["deferred_until"] == 4_000 + AUTOSTART_LATER_COOLDOWN_MS
+
+
+@pytest.mark.unit
+def test_autostart_never_decision_defers_for_7_days_instead_of_permanent_suppression(tmp_path):
+    config = DummyConfig(tmp_path)
+
+    prompt = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    decision = record_autostart_prompt_decision(
+        {"decision": "never", "prompt_token": prompt["prompt_token"]},
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert decision["state"]["status"] == "deferred"
+    assert decision["state"]["never_remind"] is False
+    assert decision["state"]["deferred_until"] == 2_000 + AUTOSTART_NEVER_COOLDOWN_MS
+
+    blocked = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=2_000 + AUTOSTART_NEVER_COOLDOWN_MS - 1,
+    )
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "cooldown_active"
+
+    retried = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=2_000 + AUTOSTART_NEVER_COOLDOWN_MS + 1,
+    )
+    assert retried["should_prompt"] is True
+    assert retried["prompt_reason"] == "usage_timeout"
 
 
 @pytest.mark.unit
