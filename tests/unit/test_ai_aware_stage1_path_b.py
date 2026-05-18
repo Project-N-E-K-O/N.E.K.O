@@ -443,7 +443,7 @@ async def test_apersist_monotonic_source_upgrade_within_same_batch():
         },
     ]
 
-    out = await fs._apersist_new_facts(
+    await fs._apersist_new_facts(
         '悠怡', extracted, default_source='ai_disclosure',
     )
 
