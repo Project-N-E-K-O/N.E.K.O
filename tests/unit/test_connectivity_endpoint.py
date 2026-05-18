@@ -23,6 +23,8 @@ import pytest
 from main_routers.config_router import (
     ConnectivityTestRequest,
     ConnectivityTestResponse,
+    _auto_resolve_provider_urls_for_save,
+    _get_save_provider_api_key,
     _test_openai_compatible,
     _test_websocket,
     _classify_openai_error,
@@ -155,6 +157,216 @@ class TestSchemaValidation:
             result = await _endpoint_test_connectivity(req)
             mock_ws.assert_awaited_once()
             assert result["success"] is True
+
+    async def test_builtin_assist_accepts_any_successful_candidate_url(self):
+        """内置辅助 provider 有多个候选 URL 时，任一通过即返回可用 URL。"""
+        calls = []
+
+        async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
+            calls.append(url)
+            if "dashscope-us.aliyuncs.com" in url:
+                return {"success": True}
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+
+        fake_config = {
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            side_effect=fake_test,
+        ):
+            req = ConnectivityTestRequest(
+                provider_key="qwen_intl",
+                provider_scope="assist",
+                api_key="sk-region-key",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert result["resolved_url"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        assert "https://dashscope-us.aliyuncs.com/compatible-mode/v1" in calls
+
+    async def test_builtin_core_accepts_any_successful_candidate_url(self):
+        """内置核心 provider 若配置多个候选 URL，任一通过即返回可用 URL。"""
+        calls = []
+
+        async def fake_test(url, api_key, model=""):
+            calls.append((url, api_key, model))
+            if "realtime-b.example.com" in url:
+                return {"success": True}
+            return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+
+        fake_config = {
+            "core_api_providers": {
+                "dual_ws": {
+                    "name": "双核心候选测试",
+                    "core_url": "wss://realtime-a.example.com/v1",
+                    "core_urls": [
+                        "wss://realtime-a.example.com/v1",
+                        "wss://realtime-b.example.com/v1",
+                    ],
+                    "core_model": "test-realtime-model",
+                }
+            }
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_websocket",
+            side_effect=fake_test,
+        ):
+            req = ConnectivityTestRequest(
+                provider_key="dual_ws",
+                provider_scope="core",
+                api_key="sk-region-key",
+            )
+            result = await _endpoint_test_connectivity(req)
+
+        assert result["success"] is True
+        assert result["resolved_url"] == "wss://realtime-b.example.com/v1"
+        assert calls[-1][1] == "sk-region-key"
+
+    async def test_save_auto_resolve_core_prefers_provider_keybook_key(self):
+        """核心 provider 有专属 Key 时，保存前检测优先使用专属 Key 而非旧 coreApiKey。"""
+        calls = []
+
+        async def fake_test(url, api_key, model=""):
+            calls.append((url, api_key, model))
+            return {"success": True}
+
+        fake_config = {
+            "core_api_providers": {
+                "qwen_intl": {
+                    "name": "Qwen-Omni（阿里国际版）",
+                    "core_url": "wss://realtime-a.example.com/v1",
+                    "core_urls": [
+                        "wss://realtime-a.example.com/v1",
+                        "wss://realtime-b.example.com/v1",
+                    ],
+                    "core_model": "qwen3.5-omni-flash-realtime-2026-03-15",
+                }
+            },
+            "assist_api_providers": {},
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "coreApi": "qwen_intl",
+            "assistApi": "qwen",
+            "coreApiKey": "sk-old-core",
+            "assistApiKeyQwenIntl": "sk-intl-key",
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_websocket",
+            side_effect=fake_test,
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["success"] == 1
+        assert calls[0][1] == "sk-intl-key"
+        assert _get_save_provider_api_key(core_cfg, fake_config, "qwen_intl") == "sk-intl-key"
+
+    async def test_save_auto_resolves_builtin_candidate_url(self):
+        """保存配置时会自动检测候选 URL，并写入通过的 URL。"""
+        calls = []
+
+        async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
+            calls.append((url, api_key, model))
+            if "dashscope-us.aliyuncs.com" in url:
+                return {"success": True}
+            return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "coreApi": "qwen",
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            side_effect=fake_test,
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["total"] == 1
+        assert result["success"] == 1
+        assert result["resolved_urls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        assert core_cfg["resolvedProviderUrls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        assert calls[-1][1] == "sk-intl"
+
+    async def test_save_auto_resolve_reuses_frontend_checked_url(self):
+        """前端本轮已检测通过的 URL 会被复用，避免保存时重复检测。"""
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+        ) as mock_test:
+            result = await _auto_resolve_provider_urls_for_save(
+                core_cfg,
+                {"assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"},
+            )
+
+        mock_test.assert_not_awaited()
+        assert result["success"] == 1
+        assert core_cfg["resolvedProviderUrls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
 
 
 # ===========================================================================

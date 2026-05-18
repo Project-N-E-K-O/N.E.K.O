@@ -22,6 +22,8 @@ from typing import Optional
 
 import httpx
 
+from utils.dashscope_region import configure_dashscope_sdk_urls
+
 logger = logging.getLogger(__name__)
 
 
@@ -355,9 +357,10 @@ class QwenVoiceCloneClient:
     MAX_RETRIES = 3
     RETRY_DELAY = 3  # 秒
 
-    def __init__(self, api_key: str, tflink_upload_url: str):
+    def __init__(self, api_key: str, tflink_upload_url: str, dashscope_base_url: str = ""):
         self.api_key = api_key
         self.tflink_upload_url = tflink_upload_url
+        self.dashscope_base_url = dashscope_base_url
 
     # ------------------------------------------------------------------
     # Step 1 - 上传音频到 tfLink，获取公网直链
@@ -463,6 +466,7 @@ class QwenVoiceCloneClient:
             target_model = get_cosyvoice_clone_model()
 
         dashscope.api_key = self.api_key
+        configure_dashscope_sdk_urls(dashscope, self.dashscope_base_url, websocket_path="inference")
         service = VoiceEnrollmentService()
 
         kwargs: dict = dict(

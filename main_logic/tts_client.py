@@ -14,10 +14,11 @@ import wave
 import aiohttp
 import asyncio
 from functools import partial
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.dashscope_region import configure_dashscope_sdk_urls, dashscope_ws_url_from_base
 from utils.elevenlabs_tts_voices import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
@@ -46,6 +47,37 @@ logger = get_module_logger(__name__, "Main")
 # 结束、flush/commit 缓冲区"的信号（见 _non_bistream_tts_main_loop、step/qwen
 # worker 的 sid is None 分支）。两种语义必须分开。
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
+
+_QWEN_REALTIME_TTS_MODEL = "qwen3-tts-flash-realtime-2025-11-27"
+_DASHSCOPE_DEFAULT_REALTIME_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+
+
+def _resolve_qwen_realtime_tts_url() -> str:
+    """根据当前 Qwen/Qwen Intl 核心配置选择实时 TTS WebSocket 地址。"""
+    try:
+        core_config = get_config_manager().get_core_config() or {}
+    except Exception:
+        core_config = {}
+    base_ws_url = dashscope_ws_url_from_base(
+        core_config.get("CORE_URL", ""),
+        "realtime",
+        _DASHSCOPE_DEFAULT_REALTIME_WS_URL,
+    )
+    configured_model = str(core_config.get("TTS_MODEL") or "").strip()
+    model = configured_model if configured_model.startswith("qwen3-tts") else _QWEN_REALTIME_TTS_MODEL
+    return f"{base_ws_url}?model={quote(model, safe='')}"
+
+
+def _qwen_intl_key_is_us_compatible_only(core_config: dict) -> bool:
+    """判断当前阿里国际 Key 是否只通过了美国 compatible-mode HTTP 路径。"""
+    if str(core_config.get("CORE_API_TYPE") or "").strip() != "qwen_intl":
+        return False
+    openrouter_url = str(core_config.get("OPENROUTER_URL") or "").lower()
+    if "dashscope-us.aliyuncs.com" not in openrouter_url:
+        return False
+    core_key = str(core_config.get("CORE_API_KEY") or "").strip()
+    intl_key = str(core_config.get("ASSIST_API_KEY_QWEN_INTL") or "").strip()
+    return bool(core_key and intl_key and core_key == intl_key)
 
 
 def _record_tts_telemetry(model_name: str, char_count: int):
@@ -304,7 +336,7 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
     "qwen": TTSProviderMeta(
         name="qwen",
         category="ws_bistream",
-        protocol="WebSocket (wss://dashscope.aliyuncs.com)",
+        protocol="WebSocket (wss://dashscope*.aliyuncs.com)",
         input_streaming=True,
         output_streaming=True,
         client_sentence_split=False,
@@ -1710,7 +1742,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
     async def async_worker():
         """异步TTS worker主循环"""
-        tts_url = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime-2025-11-27"
+        tts_url = _resolve_qwen_realtime_tts_url()
         ws = None
         current_speech_id = None
         receive_task = None
@@ -2097,11 +2129,18 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     from dashscope.audio.tts_v2 import ResultCallback, SpeechSynthesizer, AudioFormat
     from utils.language_utils import detect_tts_language_hint, TTS_LANG_DETECT_MIN_CHARS
 
-    dashscope.api_key = audio_api_key
-
-    # 从 voice 元数据中读取注册时使用的模型，fallback 到全局配置
+    # 从 voice 元数据中读取注册时使用的模型和地域 URL，缺失时回退到全局配置
     _voice_meta = _get_voice_meta(voice_id)
     _enrolled_model = (_voice_meta or {}).get('clone_model') if _voice_meta else None
+    _voice_provider = (_voice_meta or {}).get('provider') if _voice_meta else None
+
+    dashscope.api_key = audio_api_key
+    try:
+        _tts_api_config = get_config_manager().get_model_api_config('tts_custom')
+        _dashscope_base_url = (_voice_meta or {}).get('dashscope_base_url') or _tts_api_config.get('base_url', '')
+        configure_dashscope_sdk_urls(dashscope, _dashscope_base_url, websocket_path="inference")
+    except Exception as e:
+        logger.debug("DashScope TTS 地域 URL 配置跳过: %s", e)
     
     # CosyVoice 不需要预连接，直接发送就绪信号
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
@@ -2215,7 +2254,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             get_cosyvoice_clone_model,
         )
         nonlocal last_streaming_call_time
-        clone_model = _enrolled_model or get_cosyvoice_clone_model()
+        clone_model = _enrolled_model or get_cosyvoice_clone_model(_voice_provider)
         kwargs = dict(
             model=clone_model,
             voice=voice_id,
@@ -3837,6 +3876,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             base_url = voice_meta.get('elevenlabs_base_url') or elevenlabs_options['base_url']
             worker = partial(elevenlabs_tts_worker, base_url=base_url)
             return worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
+        elif voice_meta.get('provider') in ('cosyvoice', 'cosyvoice_intl'):
+            provider = voice_meta.get('provider') or 'cosyvoice'
+            runtime = cm.get_cosyvoice_clone_runtime(provider)
+            logger.info("检测到阿里 CosyVoice 克隆音色: %s (provider=%s)，使用 CosyVoice TTS Worker",
+                        voice_id, provider)
+            return cosyvoice_vc_tts_worker, (runtime.get('api_key') or None), 'cosyvoice'
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
@@ -3892,7 +3937,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
-    if core_api_type == 'qwen':
+    if core_api_type == 'qwen_intl' and _qwen_intl_key_is_us_compatible_only(core_cfg):
+        logger.warning("阿里国际版当前使用美国 compatible-mode URL，跳过 Qwen 实时 TTS")
+        return dummy_tts_worker, None, None
+    if core_api_type in ('qwen', 'qwen_intl'):
         return qwen_realtime_tts_worker, None, 'qwen'
     if core_api_type == 'free':
         # provider_key 故意用 'free' 而非 'step'：'free' 不在 TTS_PROVIDER_REGISTRY 中，
