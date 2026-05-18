@@ -1188,8 +1188,12 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             const choiceFile = this.getRandomElement(expressionFiles);
             if (choiceFile && typeof this.playExpression === 'function') {
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
-                await this.playExpression(emotion, choiceFile);
-                didPlayEffect = true;
+                const expressionPlayed = await this.playExpression(emotion, choiceFile);
+                if (expressionPlayed !== false) {
+                    didPlayEffect = true;
+                } else {
+                    console.warn(`[ClickEffect] 临时表情播放失败: ${choiceFile}`);
+                }
             }
         } else {
             console.log("[ClickEffect] 没找到可用表情")
@@ -1900,6 +1904,7 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
             console.log('[Interaction] 没有可播放的点击效果，保持当前待机动作');
             return;
         }
+        return;
     }
 
     // 设置恢复定时器：在效果持续时间后清除表情，恢复到常驻/默认状态
