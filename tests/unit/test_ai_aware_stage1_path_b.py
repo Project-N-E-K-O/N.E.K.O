@@ -1021,6 +1021,88 @@ async def test_path_b_known_pool_preserves_microsecond_precision_at_boundary():
 
 
 @pytest.mark.unit
+def test_coerce_db_ts_strips_tz_to_naive():
+    """Regression (Codex P2 round-8 on PR #1408)：`_coerce_db_ts` 必须把
+    TZ-aware datetime / "...+00:00" 字符串都归一化成 naive。
+    所有 cursor / 比较都按 naive 语义工作，aware 出来会让 last_b /
+    last_a_msg_ts 也 aware，跟 naive facts.json `created_at` 比较时
+    抛 TypeError 永久哑火 path B。
+    """
+    from datetime import timezone
+    from app.memory_server import _coerce_db_ts
+
+    # Case 1: TZ-aware datetime 对象输入
+    aware_dt = datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
+    out = _coerce_db_ts(aware_dt)
+    assert out is not None and out.tzinfo is None, (
+        f"TZ-aware datetime 输入必须返 naive，实际 tzinfo={out.tzinfo!r}"
+    )
+    # 时钟值不变（口径上当 naive 处理）
+    assert out == datetime(2026, 5, 18, 12, 0, 0)
+
+    # Case 2: ISO 字符串带 offset 输入
+    out = _coerce_db_ts('2026-05-18T12:00:00+00:00')
+    assert out is not None and out.tzinfo is None, (
+        f"TZ-aware ISO 字符串必须返 naive，实际 tzinfo={out.tzinfo!r}"
+    )
+
+    # Case 3: naive ISO 字符串保持 naive（无回归）
+    out = _coerce_db_ts('2026-05-18T12:00:00.123456')
+    assert out is not None and out.tzinfo is None
+    assert out == datetime(2026, 5, 18, 12, 0, 0, 123456)
+
+    # Case 4: naive datetime 对象保持 naive
+    naive_dt = datetime(2026, 5, 18, 12, 0, 0)
+    assert _coerce_db_ts(naive_dt) == naive_dt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_handles_tz_aware_db_rows_without_typeerror():
+    """End-to-end pin (Codex P2 round-8)：若 SQL row ts 是 TZ-aware，
+    `_coerce_db_ts` 归一化后 last_a_msg_ts / last_b 都是 naive，跟 naive
+    facts.json created_at 比较不抛 TypeError。
+    """
+    from datetime import timezone
+    from app import memory_server
+
+    # state.last_a_msg_ts 故意构造成 aware（模拟旧代码遗留 state）
+    aware_anchor = datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
+    state = {'last_a_msg_ts': aware_anchor}
+
+    # SQL row ts 也是 aware
+    aware_row_ts = aware_anchor - timedelta(seconds=30)
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (aware_row_ts, 's', json.dumps({
+            'type': 'human', 'data': {'content': '占位'},
+        })),
+    ])
+    # facts.json: naive created_at
+    fake_facts = [{
+        'id': 'naive_fact',
+        'text': 'naive created_at fact',
+        'importance': 5,
+        'created_at': (aware_anchor.replace(tzinfo=None) - timedelta(minutes=1)).isoformat(),
+    }]
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=fake_facts)
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        # 不该抛 TypeError
+        await memory_server._run_path_b('悠怡', state)
+
+    # Stage-1 被调说明 cursor 比较 + known_pool 构建都没炸
+    fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
+    # 推进后的 cursor 必须是 naive（避免 state 里残留 aware 继续污染）
+    assert state['last_b_check_ts'].tzinfo is None, (
+        f"last_b_check_ts 必须是 naive，实际 tzinfo={state['last_b_check_ts'].tzinfo!r}"
+    )
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_known_pool_normalizes_tz_aware_created_at():
     """Regression (Codex P1 round-7 on PR #1408)：facts.json 里若被 import/

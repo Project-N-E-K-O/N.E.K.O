@@ -738,23 +738,34 @@ REBUTTAL_SQL_ROW_LIMIT = 200
 
 
 def _coerce_db_ts(ts) -> datetime | None:
-    """归一化 SQL 行里的 timestamp 字段为 datetime。
+    """归一化 SQL 行里的 timestamp 字段为 **naive** datetime。
 
     SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
     memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
     表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+
+    若解析出 TZ-aware datetime（import / migration 路径写入 "...+00:00"
+    之类），强制 `replace(tzinfo=None)` 转 naive——本文件所有 cursor /
+    比较都按 naive 语义工作（last_b_check_ts / last_a_msg_ts / facts.json
+    `created_at` 全是 naive `datetime.now().isoformat()`），aware 跟 naive
+    比较会抛 TypeError 让 caller 永久哑火（Codex P1+P2 round-7/8 on PR
+    #1408 双侧 case）。
     """
     if isinstance(ts, datetime):
-        return ts
-    if isinstance(ts, str):
+        result = ts
+    elif isinstance(ts, str):
         try:
-            return datetime.fromisoformat(ts)
+            result = datetime.fromisoformat(ts)
         except ValueError:
             try:
-                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+                result = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
             except ValueError:
                 return None
-    return None
+    else:
+        return None
+    if result.tzinfo is not None:
+        result = result.replace(tzinfo=None)
+    return result
 
 
 def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
@@ -1874,8 +1885,19 @@ async def _run_path_b(name: str, state: dict) -> None:
     if last_a_msg_ts is None:
         # A 还没成功处理过任何 batch，B 无源可看
         return
+    # 防御性 TZ normalize：`_coerce_db_ts` 已经在写入 state 时归一化成 naive
+    # 是主路径保护，但外部 state injection / 升级前残留的 aware 值仍可能漏进
+    # 来——下面所有 cursor 比较 + known_pool created_at 比较都按 naive 工作，
+    # 这里再 strip 一遍把整个 _run_path_b 变成自包含 naive-only 域（Codex P2
+    # round-8 on PR #1408 双侧 case）。
+    if last_a_msg_ts.tzinfo is not None:
+        last_a_msg_ts = last_a_msg_ts.replace(tzinfo=None)
+        state['last_a_msg_ts'] = last_a_msg_ts
 
     last_b = state.get('last_b_check_ts')
+    if last_b is not None and last_b.tzinfo is not None:
+        last_b = last_b.replace(tzinfo=None)
+        state['last_b_check_ts'] = last_b
     if last_b is None:
         # Cold start lookback：B 第一次 trigger 时 last_b 无值，需要估个起点。
         # A tick 不一定按 IDLE gate 节律走——也可能被 turn-count gate
