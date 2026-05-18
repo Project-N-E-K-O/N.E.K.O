@@ -10,10 +10,12 @@ from ..ocr_runtime_types import (
     _CAPTURE_BACKEND_PRINTWINDOW,
 )
 from ._helpers import (
+    _crop_image_to_screen_rect,
     _crop_window_image,
     _require_visible_capture_target,
     _target_content_rect,
     _target_screen_capture_rect,
+    _target_window_rect,
 )
 
 
@@ -38,13 +40,20 @@ class PrintWindowCaptureBackend:
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
         _require_visible_capture_target(target, backend_kind=self.kind)
         try:
-            rect = _target_screen_capture_rect(target)
+            capture_rect = _target_screen_capture_rect(target)
         except Exception:
-            rect = _target_content_rect(target)
-        image = self._capture_full_window(target.hwnd, rect)
+            capture_rect = _target_content_rect(target)
+        window_rect = _target_window_rect(target)
+        image = self._capture_full_window(target.hwnd, window_rect)
+        if capture_rect != window_rect:
+            image = _crop_image_to_screen_rect(
+                image,
+                image_rect=window_rect,
+                crop_rect=capture_rect,
+            )
         return _crop_window_image(
             image,
-            window_rect=rect,
+            window_rect=capture_rect,
             profile=profile,
             backend_kind=self.kind,
             backend_detail="selected_legacy_fallback",
@@ -104,4 +113,3 @@ class PrintWindowCaptureBackend:
                 win32gui.DeleteObject(bmp.GetHandle())
             win32gui.ReleaseDC(hwnd, hdc)
         return image
-

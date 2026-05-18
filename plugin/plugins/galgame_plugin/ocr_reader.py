@@ -489,6 +489,7 @@ class OcrReaderManager(
         self._pending_background_candidate_base_hash = ""
         self._pending_background_candidate_used = False
         self._last_scene_change_committed_ts: float = 0.0
+        self._visual_scene_committed = False
         self._scene_ordering_diagnostic = "none"
         self._background_capture_pause_until = 0.0
         self._background_capture_pause_reason = ""

@@ -18,6 +18,7 @@ from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
 from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
 from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
+from plugin.plugins.galgame_plugin.ocr_capture_backends import printwindow as galgame_printwindow_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
@@ -50,6 +51,7 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     OcrReaderBridgeWriter,
     OcrReaderManager,
     OcrReaderRuntime,
+    OcrWindowTarget,
     OcrTextBox,
     SelectedOcrBackendPlan,
     _OcrLangDetector,
@@ -146,6 +148,11 @@ class _FakeCaptureBackend:
     def capture_frame(self, target: DetectedGameWindow, profile) -> str:
         self.capture_calls.append((target.hwnd, profile.to_dict()))
         return f"frame:{target.hwnd}:{len(self.capture_calls)}"
+
+
+class _ExplodingAvailabilityCaptureBackend(_FakeCaptureBackend):
+    def is_available(self) -> bool:
+        raise RuntimeError("probe failed")
 
 
 class _FakeOcrBackend:
@@ -298,6 +305,30 @@ def _window() -> list[DetectedGameWindow]:
             pid=4242,
         )
     ]
+
+
+def test_manual_window_target_signature_requires_pid_when_present() -> None:
+    target = OcrWindowTarget(
+        mode="manual",
+        process_name="DemoGame.exe",
+        normalized_title="demo window",
+        pid=4242,
+    )
+
+    assert not target.matches_signature(
+        DetectedGameWindow(
+            title="Demo Window",
+            process_name="DemoGame.exe",
+            pid=9999,
+        )
+    )
+    assert target.matches_signature(
+        DetectedGameWindow(
+            title="Demo Window",
+            process_name="DemoGame.exe",
+            pid=4242,
+        )
+    )
 
 
 def _assert_poll_runtime_completed(runtime: dict[str, object]) -> None:
@@ -1033,6 +1064,55 @@ def test_ocr_writer_discard_session_does_not_delete_existing_history(tmp_path: P
         "session_ended",
     ]
     assert events[-1]["payload"]["discarded"] is True
+
+
+def test_ocr_writer_end_session_resets_runtime_and_rejects_late_events(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    assert writer.emit_line("Yukino: stable line.", ts="2026-04-29T03:00:01Z") is True
+    game_id = writer.game_id
+
+    assert writer.end_session(ts="2026-04-29T03:00:02Z") is True
+    runtime = writer.runtime()
+
+    assert runtime.status == "idle"
+    assert runtime.session_id == ""
+    assert runtime.game_id == ""
+    assert writer.emit_line("Yukino: late line.", ts="2026-04-29T03:00:03Z") is False
+    events = _read_events(bridge_root / game_id / "events.jsonl")
+    assert [event["type"] for event in events] == [
+        "session_started",
+        "line_changed",
+        "session_ended",
+    ]
+
+
+def test_ocr_writer_scene_change_clears_previous_dialogue_state(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+
+    assert writer.emit_line("Yukino: old line.", ts="2026-04-29T03:00:01Z") is True
+    old_line_id = str(writer.current_state["line_id"])
+    scene_id = writer.advance_visual_scene(
+        ts="2026-04-29T03:00:02Z",
+        background_hash="ffffffffffffffff",
+    )
+    state = writer.current_state
+
+    assert state["scene_id"] == scene_id
+    assert state["speaker"] == ""
+    assert state["text"] == ""
+    assert state["line_id"] == ""
+    assert writer.emit_choices(["Save", "Leave"], ts="2026-04-29T03:00:03Z") is True
+    assert writer.current_state["line_id"] != old_line_id
 
 
 def test_ocr_reader_manager_remembers_short_lived_vision_snapshot(tmp_path: Path) -> None:
@@ -1781,6 +1861,7 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
             assert manager._capture_future_timed_out is False
             assert manager._abandoned_capture_workers == [
                 (abandoned_executor, abandoned),
+                (current_executor, current),
             ]
 
         retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
@@ -2142,6 +2223,69 @@ def test_printwindow_client_crop_keeps_profile_coordinates_in_client_space() -> 
         "right": 130.0,
         "bottom": 110.0,
     }
+
+
+def test_printwindow_capture_crops_content_rect_after_full_window_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image, ImageDraw
+
+    full_image = Image.new("RGB", (120, 100), (255, 0, 0))
+    draw = ImageDraw.Draw(full_image)
+    draw.rectangle((0, 20, 119, 99), fill=(0, 255, 0))
+    target = DetectedGameWindow(hwnd=101, width=120, height=100)
+    captured: list[tuple[int, tuple[int, int, int, int]]] = []
+
+    def _raise_screen_rect(_target: DetectedGameWindow) -> tuple[int, int, int, int]:
+        raise RuntimeError("screen rect unavailable")
+
+    def _capture_full_window(
+        _self: object,
+        hwnd: int,
+        window_rect: tuple[int, int, int, int],
+    ):
+        captured.append((hwnd, window_rect))
+        return full_image.copy()
+
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_require_visible_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_target_screen_capture_rect",
+        _raise_screen_rect,
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_target_content_rect",
+        lambda _target: (10, 30, 130, 110),
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_target_window_rect",
+        lambda _target: (10, 10, 130, 110),
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend.PrintWindowCaptureBackend,
+        "_capture_full_window",
+        _capture_full_window,
+    )
+
+    image = galgame_printwindow_backend.PrintWindowCaptureBackend().capture_frame(
+        target,
+        OcrCaptureProfile(
+            left_inset_ratio=0.0,
+            right_inset_ratio=0.0,
+            top_ratio=0.0,
+            bottom_inset_ratio=0.0,
+        ),
+    )
+
+    assert captured == [(101, (10, 10, 130, 110))]
+    assert image.size == (120, 80)
+    assert image.getpixel((0, 0)) == (0, 255, 0)
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -2594,6 +2738,57 @@ def test_pending_visual_scene_commits_before_observed_line(tmp_path: Path) -> No
     assert manager._runtime.scene_ordering_diagnostic == (
         "pending_scene_committed_before_observed"
     )
+
+
+def test_committed_pending_visual_scene_requests_rescan(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    target = _window()[0]
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+
+    manager._commit_pending_visual_scene(
+        now=3000.0,
+        diagnostic="pending_scene_committed_by_finalize",
+    )
+    result = manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.0,
+        poll_started_at=3000.0,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=target,
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=target),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=True,
+        capture_error=False,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+
+    assert result.should_rescan is True
+    assert manager._visual_scene_committed is False
 
 
 def test_pending_visual_scene_commits_before_stable_line_when_observed_disabled(
@@ -5155,7 +5350,7 @@ async def test_ocr_reader_manager_locks_auto_target_when_user_focuses_other_wind
         hwnd=303,
         title=game_window.title,
         process_name=game_window.process_name,
-        pid=38828,
+        pid=game_window.pid,
     )
     other_window = DetectedGameWindow(
         hwnd=202,
@@ -5574,6 +5769,33 @@ async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(
 
 
 @pytest.mark.asyncio
+async def test_ocr_reader_tick_treats_capture_backend_probe_error_as_unavailable(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_ExplodingAvailabilityCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["probe should not reach OCR"]),
+    )
+
+    result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+    assert result.runtime["status"] == "candidate"
+    assert result.runtime["detail"] == "capture_backend_unavailable"
+    assert result.warnings == ["ocr_reader capture backend is not available"]
+
+
+@pytest.mark.asyncio
 async def test_ocr_reader_manager_reports_capture_diagnostic_after_repeated_no_text(
     tmp_path: Path,
     ocr_runtime_root: Path,
@@ -5843,7 +6065,7 @@ async def test_ocr_reader_manager_prefers_manual_target_and_rebinds_by_signature
         hwnd=778,
         title=manual_window.title,
         process_name=manual_window.process_name,
-        pid=5566,
+        pid=manual_window.pid,
     )
     other_window = DetectedGameWindow(
         hwnd=100,

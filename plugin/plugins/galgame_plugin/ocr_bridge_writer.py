@@ -244,21 +244,7 @@ class OcrReaderBridgeWriter:
                 },
                 ts=utc_now_iso(self._time_fn()),
             )
-        self._game_id = ""
-        self._session_id = ""
-        self._process_name = ""
-        self._pid = 0
-        self._window_title = ""
-        self._engine = OCR_READER_DEFAULT_ENGINE
-        self._started_at = ""
-        self._last_seq = 0
-        self._last_event_ts = ""
-        self._scene_index = 1
-        self._keep_unknown_scene_until_visual_scene = False
-        self._state = self._initial_state("")
-        # Clear per-session line-id caches so text IDs cannot leak across sessions.
-        self._text_to_line_id.clear()
-        self._line_id_owner.clear()
+        self._reset_session_unlocked()
 
     def _existing_last_seq_unlocked(self) -> int:
         events_path = self._events_path()
@@ -583,6 +569,9 @@ class OcrReaderBridgeWriter:
         self._state = {
             **self._state,
             "scene_id": scene_id,
+            "speaker": "",
+            "text": "",
+            "line_id": "",
             "choices": [],
             "is_menu_open": False,
             "stability": "",
@@ -622,8 +611,7 @@ class OcrReaderBridgeWriter:
             "route_id": self._state["route_id"],
         }
         self._append_event("session_ended", payload, ts=ts, update_snapshot=False)
-        self._text_to_line_id.clear()
-        self._line_id_owner.clear()
+        self._reset_session_unlocked()
         return True
 
     @_locked_ocr_writer_method
@@ -640,6 +628,22 @@ class OcrReaderBridgeWriter:
             last_seq=self._last_seq,
             last_event_ts=self._last_event_ts,
         )
+
+    def _reset_session_unlocked(self) -> None:
+        self._game_id = ""
+        self._session_id = ""
+        self._process_name = ""
+        self._pid = 0
+        self._window_title = ""
+        self._engine = OCR_READER_DEFAULT_ENGINE
+        self._started_at = ""
+        self._last_seq = 0
+        self._last_event_ts = ""
+        self._scene_index = 1
+        self._keep_unknown_scene_until_visual_scene = False
+        self._state = self._initial_state("")
+        self._text_to_line_id.clear()
+        self._line_id_owner.clear()
 
     def _initial_state(self, ts: str) -> dict[str, Any]:
         return {
@@ -737,7 +741,14 @@ class OcrReaderBridgeWriter:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(tmp_path, session_path)
+            for attempt in range(3):
+                try:
+                    os.replace(tmp_path, session_path)
+                    break
+                except PermissionError:
+                    if attempt >= 2:
+                        raise
+                    time.sleep(0.05)
             tmp_path = None
         except Exception as exc:
             cleanup_errors: list[str] = []

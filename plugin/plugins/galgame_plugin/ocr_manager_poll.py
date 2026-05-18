@@ -297,9 +297,12 @@ class PollMixin:
                     should_return=True,
                 )
 
-        capture_backend_available = await asyncio.to_thread(
-            self._capture_backend.is_available
-        )
+        try:
+            capture_backend_available = await asyncio.to_thread(
+                self._capture_backend.is_available
+            )
+        except Exception:
+            capture_backend_available = False
         if not capture_backend_available:
             self._runtime = self._build_runtime(
                 status="candidate",
@@ -492,6 +495,10 @@ class PollMixin:
                 diagnostic="pending_scene_committed_by_timeout",
             )
 
+        if bool(getattr(self, "_visual_scene_committed", False)):
+            result.should_rescan = True
+            self._visual_scene_committed = False
+
         status = self._runtime.status
         detail = self._runtime.detail
         observed_or_stable_emitted = int(self._writer.last_seq or 0) > text_event_seq_before_capture
@@ -616,6 +623,7 @@ class PollMixin:
         backend_plan_duration = 0.0
         window_scan_duration = 0.0
         result = OcrReaderTickResult(runtime=self._runtime.to_dict())
+        self._visual_scene_committed = False
         self._scene_ordering_diagnostic = "none"
         self._runtime.scene_ordering_diagnostic = "none"
 

@@ -1028,14 +1028,14 @@ class OcrWindowTarget:
         return bool(self.last_known_hwnd) and self.last_known_hwnd == candidate.hwnd
 
     def matches_signature(self, candidate: DetectedGameWindow) -> bool:
+        if self.pid > 0 and candidate.pid != self.pid:
+            return False
         has_process_name = bool(self.process_name)
         has_title = bool(self.normalized_title)
         if has_process_name and self.process_name.strip().lower() != candidate.process_name.strip().lower():
             return False
         if has_title and self.normalized_title != candidate.normalized_title:
             return False
-        if not has_process_name and not has_title and self.pid > 0:
-            return candidate.pid == self.pid
         return bool(self.process_name or self.normalized_title or self.pid)
 
     def resolved_for(self, candidate: DetectedGameWindow) -> OcrWindowTarget:

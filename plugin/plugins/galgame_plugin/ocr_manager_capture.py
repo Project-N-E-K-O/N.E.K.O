@@ -338,6 +338,15 @@ class CaptureMixin:
         if attached_target is None:
             raise ValueError("当前没有已附着的 OCR 目标窗口，无法自动重校准对白区")
         target = replace(attached_target)
+        foreground_hwnd = 0
+        try:
+            foreground_hwnd = int(_ocr_reader_module._foreground_window_handle())
+        except Exception:
+            foreground_hwnd = 0
+        if not bool(getattr(target, "is_foreground", False)) and foreground_hwnd != int(
+            target.hwnd or 0
+        ):
+            raise ValueError("请先将目标窗口切到前台后再自动重校准对白区")
         process_name = str(target.process_name or "").strip()
         if not process_name:
             raise ValueError("当前 OCR 目标缺少进程名，无法自动重校准对白区")
@@ -751,6 +760,9 @@ class CaptureMixin:
                             >= _OCR_MAX_ABANDONED_CAPTURE_WORKERS
                         ):
                             if executor is not None:
+                                self._abandoned_capture_workers.append(
+                                    (executor, current)
+                                )
                                 executors_to_shutdown.append(executor)
                             self._capture_executor = None
                             self._capture_future = None

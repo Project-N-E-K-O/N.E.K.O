@@ -484,6 +484,7 @@ class ObserveMixin:
             )
         )
         if committed:
+            self._visual_scene_committed = True
             self._last_scene_change_committed_ts = now
             if commit_diagnostic:
                 self._set_scene_ordering_diagnostic(commit_diagnostic)

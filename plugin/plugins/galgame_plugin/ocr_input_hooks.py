@@ -5,7 +5,6 @@ import os
 import sys
 import threading
 from collections import deque
-from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -56,6 +55,8 @@ def _default_window_handle_from_point(x: int, y: int) -> int:
     if os.name != "nt":
         return 0
     try:
+        from ctypes import wintypes
+
         class POINT(ctypes.Structure):
             _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
@@ -283,6 +284,8 @@ class _MouseWheelMonitor:
 
     def _run(self) -> None:
         try:
+            from ctypes import wintypes
+
             low_level_mouse_proc = getattr(ctypes, "WINFUNCTYPE", None)
             if low_level_mouse_proc is None:
                 return
@@ -447,5 +450,4 @@ class _MouseWheelMonitor:
             self._hook_handle = 0
             self._keyboard_hook_handle = 0
             self._thread_id = 0
-
 
