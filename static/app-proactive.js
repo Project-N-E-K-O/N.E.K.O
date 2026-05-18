@@ -364,6 +364,29 @@
     }
     mod._isAssistantSpeaking = _isAssistantSpeaking;
 
+    // 给 proactive skip 日志带上 _isAssistantSpeaking 用到的全部输入 + 音频队列长度。
+    // gate 卡死时直接看 log 就能判断哪个 flag 粘住、队列是不是真的空，
+    // 不用让用户手动到 DevTools 抓快照（手动解锁前一刷新就把证据擦了）。
+    function _dumpSpeakingGateState() {
+        try {
+            if (!S) return { snapshot: 'no_state' };
+            return {
+                isPlaying: S.isPlaying,
+                assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+                assistantTurnId: S.assistantTurnId,
+                assistantTurnCompletedId: S.assistantTurnCompletedId,
+                assistantTurnStartedAt: S.assistantTurnStartedAt || null,
+                elapsedSinceStartMs: S.assistantTurnStartedAt ? Date.now() - S.assistantTurnStartedAt : null,
+                scheduledSources: (S.scheduledSources && S.scheduledSources.length) || 0,
+                audioBufferQueue: (S.audioBufferQueue && S.audioBufferQueue.length) || 0,
+                incomingAudioBlobQueue: (S.incomingAudioBlobQueue && S.incomingAudioBlobQueue.length) || 0
+            };
+        } catch (e) {
+            return { snapshot: 'error', error: String(e) };
+        }
+    }
+    mod._dumpSpeakingGateState = _dumpSpeakingGateState;
+
     // C: 判断用户是否最近在发声。仅在 voice 模式下使用（文本模式没有麦克风打点），
     // 用来在前端层面拦住 proactive tick，与后端 prompt_ephemeral 的
     // _user_recent_activity_time 防线形成对称冗余。
@@ -485,7 +508,7 @@
                 // （没真发请求就不算无回复），但仍然 scheduleProactiveChat() 推进下一 tick。
                 // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
                 if (_isAssistantSpeaking()) {
-                    console.log('[ProactiveChat] 语音模式：AI 正在播放语音，本次 nudge 跳过（不计数），继续下一 tick');
+                    console.log('[ProactiveChat] 语音模式：AI 正在播放语音，本次 nudge 跳过（不计数），继续下一 tick', _dumpSpeakingGateState());
                     scheduleProactiveChat();
                     return;
                 }
@@ -642,7 +665,7 @@
             // （没真发请求就不算一次尝试），但仍然 scheduleProactiveChat() 推进下一 tick。
             // 结果：播放完成到下一次 nudge 的等待 ∈ [0, interval)，带随机感，更自然。
             if (_isAssistantSpeaking()) {
-                console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick');
+                console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick', _dumpSpeakingGateState());
                 scheduleProactiveChat();
                 return;
             }
