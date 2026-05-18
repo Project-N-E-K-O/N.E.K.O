@@ -626,10 +626,27 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
             prior_attempts = int(op.get('_attempt_count', 0) or 0)
             try:
                 await outbox.aappend_attempt(name, op_id)
+                attempt_persisted = True
             except Exception as ae:
+                attempt_persisted = False
                 logger.warning(
                     f"[Outbox] {name}/{op_type}/{op_id}: append_attempt 失败: {ae}"
                 )
+
+            # Codex P1：不能基于"未落盘的 +1"触发 dead-letter。
+            # 如果本次 aappend_attempt 失败 + 接着 aappend_done 成功 →
+            # 重启后只看到磁盘上 prior_attempts 个 attempt 行 + 1 个 done →
+            # op 永久丢失而磁盘记录看起来"只失败了 N-1 次就 done"，违背 "≥ N
+            # 次失败才放弃" 的契约。Attempt 没落盘 → 本次失败按 transient 处理
+            # （保留 pending，下次重试自然再走一次 attempt），不进 dead-letter
+            # 判定。
+            if not attempt_persisted:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id} 执行失败（attempt 持久化"
+                    f"失败，按 transient 保留 pending 等下次重放）: {e}"
+                )
+                return
+
             total_attempts = prior_attempts + 1
             if total_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                 logger.warning(
@@ -2365,13 +2382,21 @@ async def _periodic_signal_extraction_loop():
                 except FactExtractionFailed as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next
                     # cycle retries the same message window (§3.4.3)。
-                    # Liveness 兜底：同一 cursor 反复失败 ≥ MEMORY_LIVENESS
+                    # Liveness 兜底：同一窗口反复失败 ≥ MEMORY_LIVENESS
                     # _MAX_ATTEMPTS 强推 cursor 到 now，避免毒窗口让
                     # fact pipeline 永久卡死。
                     state = _signal_check_state.setdefault(
                         name, {'turns_since': 0, 'last_check_ts': None},
                     )
-                    cursor_key = state.get('last_check_ts') or 'cold'
+                    # CodeRabbit: 用 start_time 当 key，不要字面 'cold'。
+                    # 字面 'cold' 把所有冷启动多轮失败聚合到同一桶，
+                    # 第 N 次会强推 cursor 到当时的 now，把那段时间内进来的
+                    # 正常 msg 也跟着 dead-letter。改用 start_time（每轮
+                    # window 起点）：有稳定 cursor 时 start_time == cursor
+                    # （`_signal_check_window_start` 直接返 cursor），冷启动
+                    # 时 start_time 是 `now - IDLE_MINUTES*2`，每轮不同 →
+                    # 冷启动阶段不会错误聚合 dead-letter。
+                    cursor_key = start_time.isoformat(timespec='microseconds')
                     if not _stage1_path_a_bump_failure(name, state, cursor_key, now):
                         logger.warning(
                             f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"

@@ -451,6 +451,20 @@ class FactDedupResolver:
             name, batch, results,
         )
 
+        # CodeRabbit: LLM 返了 list 但 ``_aapply_decisions`` 没消费任何 pair
+        # （所有 action 都被 reject = unknown action / missing index / invalid
+        # format 等），processed_keys 为空 → 下面的 ``remaining`` filter 不会
+        # 删任何东西 → 队头同一批 pair 下次 tick 重新喂 LLM 同样输出垃圾 →
+        # 永久卡死。算 attempts 一次（跟 LLM Exception / 非 list 同治）。
+        if not processed_keys:
+            logger.warning(
+                "[FactDedup] %s: LLM 输出 %d 条 action 全部无效（unknown action / "
+                "invalid index / conflict）, batch 无任何 pair 消费，按 attempt 失败计",
+                name, len(results),
+            )
+            await self._abump_dedup_attempts_and_dead_letter_locked(name, batch)
+            return 0
+
         # Read-modify-write the queue so concurrent enqueue calls
         # that landed during the LLM call survive — same shape as
         # PersonaManager._resolve_corrections_locked's processed-keys

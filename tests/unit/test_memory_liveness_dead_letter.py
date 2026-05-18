@@ -563,3 +563,65 @@ async def test_run_outbox_op_dead_letters_at_threshold(tmp_path):
         memory_server.outbox = original_outbox
         memory_server._OUTBOX_HANDLERS.clear()
         memory_server._OUTBOX_HANDLERS.update(original_handlers)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_outbox_op_attempt_persist_failure_keeps_pending(tmp_path):
+    """Codex P1 regression：``aappend_attempt`` 抛异常时不应触发 dead-letter。
+
+    Setup：op 已经在磁盘上有 ``MEMORY_LIVENESS_MAX_ATTEMPTS - 1`` 条 attempt
+    行（边缘 case：再失败一次就会触发 dead-letter）。让 ``aappend_attempt``
+    抛 IOError 模拟 transient 磁盘失败。
+    断言：op 仍在 pending（没被 append_done 当 dead-letter），允许下次重放
+    重新走一次 attempt。否则"未落盘的 +1" 误算成"已落盘的 N"，磁盘上看起来
+    只失败了 N-1 次就被 done 永久丢，违背契约。
+    """
+    from app import memory_server
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.outbox import Outbox
+
+    outbox = Outbox()
+    name = 'neko_test_outbox_persist_fail'
+    path = tmp_path / 'outbox.ndjson'
+
+    with patch.object(outbox, '_outbox_path', return_value=str(path)):
+        outbox.append_pending(name, 'poison_op', {'data': 'bad'})
+        # 预先填到 N-1 个 attempt（接下来再失败一次就该 dead-letter，正常路径下）
+        op_id_from_disk = outbox.pending_ops(name)[0]['op_id']
+        for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS - 1):
+            outbox.append_attempt(name, op_id_from_disk)
+
+    async def _poison_handler(_n, _p):
+        raise RuntimeError("simulated poison")
+
+    original_outbox = memory_server.outbox
+    original_handlers = memory_server._OUTBOX_HANDLERS.copy()
+    try:
+        memory_server.outbox = outbox
+        memory_server._OUTBOX_HANDLERS['poison_op'] = _poison_handler
+
+        # 让 aappend_attempt 抛异常（模拟磁盘 transient 失败）
+        async def _broken_append_attempt(*args, **kw):
+            raise IOError("simulated disk transient")
+
+        with patch.object(outbox, '_outbox_path', return_value=str(path)), \
+             patch.object(outbox, 'aappend_attempt', _broken_append_attempt):
+            pending = outbox.pending_ops(name)
+            assert len(pending) == 1
+            assert pending[0]['_attempt_count'] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
+            await memory_server._run_outbox_op(name, pending[0])
+
+        # 关键断言：op 仍在 pending，不该被 dead-letter
+        with patch.object(outbox, '_outbox_path', return_value=str(path)):
+            pending_after = outbox.pending_ops(name)
+        assert len(pending_after) == 1, (
+            f"aappend_attempt 失败时不应基于未落盘的 +1 触发 dead-letter, "
+            f"应保留 pending 等下次自然重放. 实际 pending: {pending_after}"
+        )
+        # 磁盘上 attempt 计数仍是 N-1（本次 attempt 没落盘）
+        assert pending_after[0]['_attempt_count'] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
+    finally:
+        memory_server.outbox = original_outbox
+        memory_server._OUTBOX_HANDLERS.clear()
+        memory_server._OUTBOX_HANDLERS.update(original_handlers)

@@ -1693,9 +1693,23 @@ class PersonaManager:
                 return 0
 
             # ── 短临界 2: load fresh persona + apply + save ──
-            return await self._apply_correction_results(
+            resolved = await self._apply_correction_results(
                 name, corrections, allowed_indices, results,
             )
+            # 对偶 fact_dedup：LLM 返了 list 但 ``_apply_correction_results_locked``
+            # 没消费任何 correction（全 invalid index / 全 unknown action），
+            # corrections queue 原样保留 → 队头同样 N 条下次 tick 重新喂同样
+            # prompt → 仍然 0 resolved → 永久卡死。算 attempts 一次。
+            if resolved == 0:
+                logger.warning(
+                    f"[Persona] {name}: correction model 输出 {len(results)} "
+                    f"条 action 全部无效（invalid index / unknown action），"
+                    f"batch 0 条 correction 消费，按 attempt 失败计"
+                )
+                await self._abump_correction_attempts_and_dead_letter(
+                    name, [item for _, item in pairs],
+                )
+            return resolved
 
     async def _apply_correction_results(
         self,
