@@ -2010,7 +2010,10 @@ async def _run_path_b(name: str, state: dict) -> None:
             continue
         created_at_raw = f.get('created_at') or ''
         try:
-            created_at = datetime.fromisoformat(created_at_raw[:19])
+            # 完整 ISO 解析（含微秒）—— `created_at` 是 datetime.now().isoformat()
+            # 写盘的，截到 [:19] 会丢微秒，让 created_at == last_b + 0.x 秒的
+            # fact 在 `>= last_b` 比较里被误判出窗口（CodeRabbit on PR #1408）。
+            created_at = datetime.fromisoformat(created_at_raw)
         except (ValueError, TypeError):
             continue
         if created_at >= last_b:

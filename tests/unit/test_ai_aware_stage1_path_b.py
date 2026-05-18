@@ -974,6 +974,54 @@ async def test_path_b_truncated_window_all_filtered_advances_to_last_fetched():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_path_b_known_pool_preserves_microsecond_precision_at_boundary():
+    """Regression (CodeRabbit on PR #1408)：known_pool 的 created_at 解析必
+    须保留微秒精度。先前 `datetime.fromisoformat(created_at_raw[:19])` 截
+    到秒会让"`created_at` 比 `last_b` 晚 0.x 秒"的 fact 被误判出窗口。
+    """
+    from app import memory_server
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 10, 0)  # 整秒
+    # last_b 故意带微秒小数
+    last_b = datetime(2026, 5, 18, 12, 0, 0, 500_000)  # T+0.5s
+    state = {
+        'last_a_msg_ts': last_a_msg_ts,
+        'last_b_check_ts': last_b,
+    }
+
+    # 关键 fact: created_at 比 last_b 晚 200ms（仍 >= last_b 应该进 pool）
+    # 若截秒，fact 会被解析成 T+0.000，比 last_b T+0.500 早 → 误排
+    on_boundary_fact = {
+        'id': 'just_after_last_b',
+        'text': 'created_at 比 last_b 晚 200ms',
+        'importance': 8,
+        'created_at': (last_b + timedelta(microseconds=200_000)).isoformat(),
+    }
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[
+        (last_a_msg_ts - timedelta(seconds=1), 's', json.dumps({
+            'type': 'human', 'data': {'content': '占位'},
+        })),
+    ])
+    fake_fact_store = MagicMock()
+    fake_fact_store.aload_facts = AsyncMock(return_value=[on_boundary_fact])
+    fake_fact_store.aextract_facts_with_known_pool = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager), \
+         patch.object(memory_server, 'fact_store', fake_fact_store):
+        await memory_server._run_path_b('悠怡', state)
+
+    fake_fact_store.aextract_facts_with_known_pool.assert_awaited_once()
+    captured_pool = fake_fact_store.aextract_facts_with_known_pool.await_args.args[2]
+    pool_ids = {f['id'] for f in captured_pool}
+    assert 'just_after_last_b' in pool_ids, (
+        "微秒精度边界 fact (created_at = last_b + 0.2s) 应入 known_pool，"
+        "实际被排除——`[:19]` 截秒回归了"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_path_b_known_pool_includes_just_written_a_facts_despite_clock_skew():
     """Regression (CodeRabbit on PR #1408)：A 的 idle/polling 延迟让"刚扫
     完本 B 窗口"那批 A facts 的 created_at 普遍略晚于 last_a_msg_ts。known
