@@ -2,12 +2,12 @@
 FROM node:20-slim AS frontend-builder
 WORKDIR /src/frontend/plugin-manager
 COPY frontend/plugin-manager/package.json frontend/plugin-manager/package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 COPY frontend/plugin-manager/ ./
 RUN npm run build-only
 WORKDIR /src/frontend/react-neko-chat
 COPY frontend/react-neko-chat/package.json frontend/react-neko-chat/package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 COPY frontend/react-neko-chat/ ./
 RUN npm run build
 
@@ -46,6 +46,52 @@ RUN echo "deb http://mirrors.aliyun.com/debian/ bookworm main non-free non-free-
     echo "deb-src http://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list
 
 # 2. 更新系统并安装基础依赖（条件性代理设置）[7](@ref)
+# 
+# ============================================================================
+# N.E.K.O. 完整组件系统依赖清单
+# ============================================================================
+#
+# [1] Agent / Browser Automation (browser_use + Playwright)
+#     - Chromium 浏览器运行时依赖
+#     - libx11-xcb1, libxcomposite1, libxcursor1, libxdamage1
+#     - libxext6, libxfixes3, libxi6, libxrandr2, libxrender1, libxtst6
+#     - libcups2, libdbus-1-3, libdrm2, libgbm1
+#     - libasound2, libpango-1.0-0, libcairo2
+#     - libatk1.0-0, libatspi2.0-0, libnss3
+#     - libxkbcommon0, libwayland-client0, libexpat1
+#
+# [2] Screen Control (pyautogui / pygetwindow / mss)
+#     - X11 窗口系统库（headless 模式也需要）
+#     - libx11-xcb1, libxext6, libxrandr2, libxrender1
+#
+# [3] Audio Processing (soxr / pyrnnoise / portaudio)
+#     - portaudio19-dev: 音频输入/输出
+#     - libasound2: ALSA 音频库
+#
+# [4] OCR / Text Recognition (pytesseract / rapidocr-onnxruntime)
+#     - pytesseract: Tesseract OCR 引擎包装（Tesseract 需单独安装或在 Windows 上自动下载）
+#     - rapidocr-onnxruntime: ONNX Runtime 驱动的 OCR（galgame 插件可选依赖）
+#     - opencv-python-headless: 图像处理（galgame 插件可选依赖，通过 --group galgame 安装）
+#
+# [5] Local Embeddings (onnxruntime / tokenizers)
+#     - onnxruntime: 本地向量嵌入模型推理
+#     - tokenizers: HuggingFace tokenizer
+#
+# [6] Fonts & Localization
+#     - fonts-wqy-zenhei: 中文字体支持
+#     - fonts-liberation: Liberation 字体族
+#     - fonts-noto-color-emoji: Emoji 表情支持
+#
+# [7] SSL / HTTPS (openssl / nginx)
+#     - openssl: SSL 证书生成和验证
+#     - bc: 数学计算（证书有效期计算）
+#     - nginx: 反向代理服务器
+#
+# [8] Build Tools
+#     - build-essential, gcc, g++, make: C/C++ 扩展编译
+#     - python3.11-dev: Python 开发头文件
+#     - pkg-config: 库配置查询
+# ============================================================================
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     apt-get update && \
@@ -62,8 +108,36 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     gcc \
     g++ \
     make \
-    portaudio19-dev \
     nginx \
+    openssl \
+    bc \
+    fonts-wqy-zenhei \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxtst6 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libnss3 \
+    libxkbcommon0 \
+    libwayland-client0 \
+    libexpat1 \
+    portaudio19-dev \
     && rm -rf /var/lib/apt/lists/* && apt-get clean
 
 # 创建nginx用户
@@ -93,11 +167,16 @@ COPY . /app
 
 # 7. 复制前端构建产物
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
-COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
+COPY --from=frontend-builder /src/frontend/react-neko-chat/dist /app/static/react/neko-chat
+
+# 7b. 解压 yui-origin Live2D 模型
+RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
+    test -f static/yui-origin/yui-origin.moc3
 
 # 8. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
 ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 # 9. 复制 entrypoint 脚本
 COPY ./docker/entrypoint.sh /entrypoint.sh

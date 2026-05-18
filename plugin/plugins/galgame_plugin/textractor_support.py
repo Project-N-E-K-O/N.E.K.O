@@ -11,6 +11,7 @@ import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -24,7 +25,20 @@ from .memory_reader import (
 DEFAULT_TEXTRACTOR_RELEASE_API_URL = (
     "https://api.github.com/repos/Artikash/Textractor/releases/latest"
 )
+DEFAULT_TEXTRACTOR_ASSET_NAME = "Textractor-5.2.0-Zip-Version-English-Only.zip"
+DEFAULT_TEXTRACTOR_ASSET_SHA256 = (
+    "3efdcf390261fcfb6a44220113c68b06eba22a3ef441ac618208238b52ee7974"
+)
+# TODO: Add a verified Textractor Baidu pan mirror before enabling mirror install.
+_BAIDU_YUN_TEXTTRACTOR_URL = ""
+_BAIDU_YUN_TEXTTRACTOR_CODE = ""
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+
+
+class TextractorInstallError(RuntimeError):
+    def __init__(self, message: str, *, failed_phase: str = "unknown") -> None:
+        super().__init__(message)
+        self.failed_phase = failed_phase
 
 
 async def _emit_progress(
@@ -62,6 +76,69 @@ def _compute_phase_progress(
     return 0.0
 
 
+def _infer_textractor_failed_phase(error_message: str, *, fallback: str = "unknown") -> str:
+    lowered = str(error_message or "").lower()
+    if not lowered:
+        return fallback
+    if "fetch_release" in lowered or "release metadata" in lowered or "github api" in lowered:
+        return "fetch_release"
+    if any(
+        token in lowered
+        for token in (
+            "download",
+            "network error",
+            "connect",
+            "timeout",
+            "http ",
+            "checksum",
+            "sha256",
+        )
+    ):
+        return "downloading"
+    if any(
+        token in lowered
+        for token in (
+            "extract",
+            "archive",
+            "zip",
+            "missing after extraction",
+            "textractorcli.exe is still missing",
+        )
+    ):
+        return "extracting"
+    return fallback
+
+
+async def _mark_textractor_install_failed(
+    *,
+    task_id: str | None,
+    progress_callback: ProgressCallback | None,
+    target_dir: Path | str,
+    error_message: str,
+    failed_phase: str,
+    release_name: str = "",
+    asset_name: str = "",
+) -> None:
+    failed_payload = {
+        "status": "failed",
+        "phase": "failed",
+        "message": error_message,
+        "progress": _compute_phase_progress("failed"),
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "resume_from": 0,
+        "target_dir": str(target_dir),
+        "detected_path": "",
+        "release_name": release_name,
+        "asset_name": asset_name,
+        "error": error_message,
+        "failed_phase": failed_phase,
+    }
+    if task_id:
+        update_install_task_state(task_id, **failed_payload)
+    await _emit_progress(progress_callback, failed_payload)
+
+
 def _extract_total_bytes(response: httpx.Response, *, resume_from: int) -> int:
     content_range = response.headers.get("Content-Range", "").strip()
     if "/" in content_range:
@@ -91,7 +168,21 @@ def _asset_sha256(asset: dict[str, Any]) -> str:
         digest = _normalize_sha256(asset.get(key))
         if digest:
             return digest
+    if str(asset.get("name") or "").strip() == DEFAULT_TEXTRACTOR_ASSET_NAME:
+        return DEFAULT_TEXTRACTOR_ASSET_SHA256
     return ""
+
+
+def _validate_release_api_endpoint(url: str) -> str:
+    normalized = str(url or "").strip() or DEFAULT_TEXTRACTOR_RELEASE_API_URL
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https":
+        raise ValueError("Textractor release API URL must use HTTPS")
+    if parsed.netloc != "api.github.com":
+        raise ValueError("Textractor release API URL host must be api.github.com")
+    if not parsed.path.startswith("/repos/"):
+        raise ValueError("Textractor release API URL must be a GitHub repository API endpoint")
+    return normalized
 
 
 def _verify_file_sha256(path: Path, expected_sha256: str) -> bool:
@@ -190,10 +281,8 @@ def _candidate_assets(release_payload: dict[str, Any]) -> list[dict[str, str]]:
         url = str(asset.get("browser_download_url") or "").strip()
         if not name or not url or not name.lower().endswith(".zip"):
             continue
-        entry = {"name": name, "url": url}
         expected_sha256 = _asset_sha256(asset)
-        if expected_sha256:
-            entry["sha256"] = expected_sha256
+        entry = {"name": name, "url": url, "sha256": expected_sha256}
         lowered = name.lower()
         if "source code" in lowered:
             continue
@@ -362,12 +451,37 @@ async def install_textractor(
     install_target_dir_raw: str,
     release_api_url: str,
     timeout_seconds: float,
+    textractor_proxy: str = "",
     force: bool = False,
     platform_fn: Callable[[], bool] | None = None,
     client_factory: Callable[[], Awaitable[httpx.AsyncClient] | httpx.AsyncClient] | None = None,
     task_id: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    if task_id:
+        update_install_task_state(
+            task_id,
+            status="running",
+            phase="preflight",
+            message="Checking Textractor installation",
+            progress=0.01,
+        )
+    await _emit_progress(
+        progress_callback,
+        {
+            "status": "running",
+            "phase": "preflight",
+            "message": "Checking Textractor installation",
+            "progress": 0.01,
+            "downloaded_bytes": 0,
+            "total_bytes": 0,
+            "resume_from": 0,
+            "target_dir": "",
+            "detected_path": "",
+            "release_name": "",
+            "asset_name": "",
+        },
+    )
     install_status = inspect_textractor_installation(
         configured_path=configured_path,
         install_target_dir_raw=install_target_dir_raw,
@@ -414,7 +528,18 @@ async def install_textractor(
     target_dir = resolve_textractor_install_target(install_target_dir_raw)
     if not target_dir:
         raise RuntimeError("missing Textractor install target directory")
-    release_endpoint = str(release_api_url or "").strip() or DEFAULT_TEXTRACTOR_RELEASE_API_URL
+    try:
+        release_endpoint = _validate_release_api_endpoint(release_api_url)
+    except ValueError as exc:
+        error_message = str(exc)
+        await _mark_textractor_install_failed(
+            task_id=task_id,
+            progress_callback=progress_callback,
+            target_dir=target_dir,
+            error_message=error_message,
+            failed_phase="fetch_release",
+        )
+        raise TextractorInstallError(error_message, failed_phase="fetch_release") from exc
     if task_id:
         update_install_task_state(
             task_id,
@@ -443,33 +568,79 @@ async def install_textractor(
 
     owned_client = False
     client: httpx.AsyncClient | None = None
+    client_kwargs: dict[str, Any] = {
+        "timeout": timeout_seconds,
+        "trust_env": True,
+        "follow_redirects": True,
+    }
     if client_factory is None:
-        client = httpx.AsyncClient(
-            timeout=timeout_seconds,
-            trust_env=True,
-            follow_redirects=True,
-        )
-        owned_client = True
-    else:
-        maybe_client = client_factory()
-        client = await maybe_client if hasattr(maybe_client, "__await__") else maybe_client
+        proxy = str(textractor_proxy or "").strip()
+        if proxy:
+            client_kwargs["proxy"] = proxy
 
     try:
-        release_response = await client.get(
-            release_endpoint,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "N.E.K.O/galgame_plugin",
-            },
-            timeout=timeout_seconds,
-        )
-        release_response.raise_for_status()
-        release_payload = release_response.json()
-        if not isinstance(release_payload, dict):
-            raise RuntimeError("release metadata returned an invalid payload")
-        assets = _candidate_assets(release_payload)
-        if not assets:
-            raise RuntimeError("no Textractor zip assets found in release metadata")
+        try:
+            if client_factory is None:
+                client = httpx.AsyncClient(**client_kwargs)
+                owned_client = True
+            else:
+                maybe_client = client_factory()
+                client = await maybe_client if hasattr(maybe_client, "__await__") else maybe_client
+            release_response = await client.get(
+                release_endpoint,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "N.E.K.O/galgame_plugin",
+                },
+                timeout=timeout_seconds,
+            )
+            release_response.raise_for_status()
+            release_payload = release_response.json()
+            if not isinstance(release_payload, dict):
+                raise RuntimeError("release metadata returned an invalid payload")
+            assets = _candidate_assets(release_payload)
+            if not assets:
+                raise RuntimeError("no Textractor zip assets found in release metadata")
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            error_message = f"Cannot reach GitHub API: {exc}"
+            await _mark_textractor_install_failed(
+                task_id=task_id,
+                progress_callback=progress_callback,
+                target_dir=target_dir,
+                error_message=error_message,
+                failed_phase="fetch_release",
+            )
+            raise TextractorInstallError(
+                error_message,
+                failed_phase="fetch_release",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else "unknown"
+            error_message = f"GitHub API returned HTTP {status_code}"
+            await _mark_textractor_install_failed(
+                task_id=task_id,
+                progress_callback=progress_callback,
+                target_dir=target_dir,
+                error_message=error_message,
+                failed_phase="fetch_release",
+            )
+            raise TextractorInstallError(
+                error_message,
+                failed_phase="fetch_release",
+            ) from exc
+        except Exception as exc:
+            error_message = f"Textractor release metadata failed: {exc}"
+            await _mark_textractor_install_failed(
+                task_id=task_id,
+                progress_callback=progress_callback,
+                target_dir=target_dir,
+                error_message=error_message,
+                failed_phase="fetch_release",
+            )
+            raise TextractorInstallError(
+                error_message,
+                failed_phase="fetch_release",
+            ) from exc
 
         release_name = str(
             release_payload.get("name")
@@ -477,12 +648,13 @@ async def install_textractor(
             or release_payload.get("html_url")
             or ""
         )
-        errors: list[str] = []
+        errors: list[tuple[str, str]] = []
         tmp_dir = Path(tempfile.mkdtemp(prefix="neko-textractor-"))
         try:
             for asset in assets:
                 asset_name = asset["name"]
                 archive_path = tmp_dir / asset_name
+                candidate_phase = "downloading"
                 try:
                     if task_id:
                         update_install_task_state(
@@ -546,6 +718,7 @@ async def install_textractor(
                         update_install_task_state(task_id, **download_progress)
                     await _emit_progress(progress_callback, download_progress)
 
+                    candidate_phase = "extracting"
                     extracting_progress = {
                         "status": "running",
                         "phase": "extracting",
@@ -640,9 +813,19 @@ async def install_textractor(
                     await _emit_progress(progress_callback, completed_progress)
                     return result
                 except Exception as exc:
+                    exc_message = str(exc).strip() or type(exc).__name__
                     if logger is not None:
-                        logger.warning("Textractor install candidate failed: {} -> {}", asset_name, exc)
-                    errors.append(f"{asset_name}: {exc}")
+                        logger.warning(
+                            "Textractor install candidate failed: {} -> {}: {!r}",
+                            asset_name,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    failed_phase = _infer_textractor_failed_phase(
+                        exc_message,
+                        fallback=candidate_phase,
+                    )
+                    errors.append((failed_phase, f"{asset_name}: {exc_message}"))
                     continue
         finally:
             try:
@@ -650,35 +833,27 @@ async def install_textractor(
             except Exception as exc:
                 if logger is not None:
                     logger.warning("Textractor temp cleanup failed: {}", exc)
-        error_message = "; ".join(errors) or "Textractor install failed"
-        if task_id:
-            update_install_task_state(
-                task_id,
-                status="failed",
-                phase="failed",
-                message=error_message,
-                progress=_compute_phase_progress("failed"),
-                target_dir=str(target_dir),
-                error=error_message,
-            )
-        await _emit_progress(
-            progress_callback,
-            {
-                "status": "failed",
-                "phase": "failed",
-                "message": error_message,
-                "progress": _compute_phase_progress("failed"),
-                "downloaded_bytes": 0,
-                "total_bytes": 0,
-                "resume_from": 0,
-                "target_dir": str(target_dir),
-                "detected_path": "",
-                "release_name": release_name,
-                "asset_name": "",
-                "error": error_message,
-            },
+        error_message = "; ".join(message for _, message in errors) or "Textractor install failed"
+        phase_priority = {
+            "fetch_release": 0,
+            "downloading": 1,
+            "extracting": 2,
+            "verifying": 3,
+        }
+        failed_phase = (
+            max((phase for phase, _ in errors), key=lambda phase: phase_priority.get(phase, -1))
+            if errors
+            else "unknown"
         )
-        raise RuntimeError(error_message)
+        await _mark_textractor_install_failed(
+            task_id=task_id,
+            progress_callback=progress_callback,
+            target_dir=target_dir,
+            error_message=error_message,
+            failed_phase=failed_phase,
+            release_name=release_name,
+        )
+        raise TextractorInstallError(error_message, failed_phase=failed_phase)
     finally:
         if owned_client and client is not None:
             await client.aclose()

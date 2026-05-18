@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 
-from config.prompts_chara import get_lanlan_prompt, is_default_prompt
+from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
 
 agent_router_module = importlib.import_module("main_routers.agent_router")
 

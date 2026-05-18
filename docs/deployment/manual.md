@@ -77,9 +77,9 @@ Notes:
 - On macOS source runs, if Apple reports that `SteamworksPy.dylib` cannot be verified, Gatekeeper is usually blocking the local unnotarized Steamworks libraries. First make sure you are launching from the project root. If it is still blocked, run the following from the repo root:
 
 ```bash
-xattr -dr com.apple.quarantine SteamworksPy.dylib libsteam_api.dylib
-codesign --force --sign - libsteam_api.dylib
-codesign --force --sign - SteamworksPy.dylib
+xattr -dr com.apple.quarantine steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/libsteam_api.dylib
+codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
 - After that, retry `uv run python launcher.py` or `uv run python main_server.py`.

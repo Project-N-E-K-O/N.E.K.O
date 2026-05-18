@@ -185,7 +185,7 @@
     steps.interrupt_angry_exit = createBaseStep('interrupt_angry_exit', 'home', '#${p}-container');
     steps.interrupt_angry_exit.tutorial.title = '生气退出';
     steps.interrupt_angry_exit.tutorial.description = '连续有效打断达到阈值后，进入带演出的 angry exit。';
-    steps.interrupt_angry_exit.performance.bubbleText = '人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！';
+    steps.interrupt_angry_exit.performance.bubbleText = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！';
     steps.interrupt_angry_exit.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.interruptAngryExit';
     steps.interrupt_angry_exit.performance.voiceKey = 'interrupt_angry_exit';
     steps.interrupt_angry_exit.performance.emotion = 'angry';

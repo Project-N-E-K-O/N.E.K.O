@@ -458,8 +458,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Computer Use Agentサブシステム
 ├── 📁 config/                   # ⚙️ 設定管理モジュール
 │   ├── api_providers.json       # APIプロバイダー設定
-│   ├── prompts_chara.py         # キャラクタープロンプト
-│   └── prompts_sys.py           # システムプロンプト
+│   └── 📁 prompts/              # キャラクター、システム、機能プロンプト
+│       ├── prompts_chara.py     # キャラクタープロンプト
+│       └── prompts_sys.py       # システムプロンプト
 ├── 📁 main_logic/               # 🔧 コアモジュール
 │   ├── core.py                  # コア対話モジュール
 │   ├── cross_server.py          # クロスサーバー通信

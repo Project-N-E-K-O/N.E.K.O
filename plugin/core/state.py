@@ -1775,3 +1775,44 @@ class GlobalState:
 
 # 全局状态实例
 state = GlobalState()
+
+
+# Self-register the user-context bus consumer with main_logic's event bus.
+# Why
+# ---
+# ``main_logic.core._publish_user_utterance_to_plugin_bus`` previously called
+# ``state.add_user_context_event`` directly — a layering inversion (L2 → L4)
+# now banned by ``scripts/check_module_layering.py``. After the inversion was
+# removed, ``main_logic.core`` calls ``dispatch_user_utterance`` instead, which
+# fans out to whatever the higher layers subscribed. Registering ourselves here
+# (rather than only in ``app/runtime_bindings.py``) keeps the dispatcher path
+# alive for any context that imports ``plugin.core.state`` directly — testbench
+# / ad-hoc scripts that previously relied on the chained-import side effect.
+# ``register_user_utterance_sink`` dedupes on identity, so the explicit
+# wiring in ``app/runtime_bindings.py`` ends up as a no-op when this self-
+# registration has already fired.
+#
+# Wrapped in try/except: plugin subprocess workers can be loaded in
+# environments where ``main_logic`` isn't on sys.path; in that case the bus
+# isn't reachable and we silently skip — matching the historical
+# "main_logic-less" plugin runtime contract.
+try:
+    from main_logic.agent_event_bus import register_user_utterance_sink as _register_sink
+    _register_sink(state.add_user_context_event)
+except Exception as _exc:
+    # Distinguish expected partial-env from real regression:
+    #   * ``ModuleNotFoundError(name='main_logic'...)`` → plugin subprocess
+    #     worker without main_logic on sys.path. Legit; stay silent.
+    #   * Anything else (transitive import broken inside
+    #     ``main_logic.agent_event_bus``, ``register_*`` signature
+    #     change, etc.) → regression worth logging. Codex P2 catch.
+    _expected_absent = {"main_logic", "main_logic.agent_event_bus"}
+    _is_expected_absent = (
+        isinstance(_exc, ModuleNotFoundError)
+        and getattr(_exc, "name", None) in _expected_absent
+    )
+    if not _is_expected_absent:
+        logger.warning(
+            "plugin.core.state: failed to self-register user_utterance_sink",
+            exc_info=True,
+        )

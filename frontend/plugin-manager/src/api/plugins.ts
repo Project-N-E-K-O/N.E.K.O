@@ -2,6 +2,7 @@
  * 插件相关 API
  */
 import { del, get, post } from './index'
+import { getLocale } from '@/i18n'
 import type {
   PluginMeta,
   PluginStatusData,
@@ -17,7 +18,7 @@ import type {
  * 获取插件列表
  */
 export function getPlugins(): Promise<{ plugins: PluginMeta[]; message: string }> {
-  return get('/plugins')
+  return get('/plugins', { params: { locale: getLocale() } })
 }
 
 /**
@@ -141,18 +142,20 @@ function normalizeSurface(raw: any, fallbackKind: PluginUiSurface['kind'] = 'pan
  * 获取插件 UI surface 列表。优先使用未来统一 /surfaces 接口，
  * 当前后端未实现时回退到现有 /ui-info，把 static UI 归一化为 panel surface。
  */
-export async function getPluginUiSurfaces(pluginId: string): Promise<PluginUiSurface[]> {
-  const result = await getPluginUiSurfaceInfo(pluginId)
+export async function getPluginUiSurfaces(pluginId: string, locale?: string): Promise<PluginUiSurface[]> {
+  const result = await getPluginUiSurfaceInfo(pluginId, locale)
   return result.surfaces
 }
 
-export async function getPluginUiSurfaceInfo(pluginId: string): Promise<{
+export async function getPluginUiSurfaceInfo(pluginId: string, locale?: string): Promise<{
   surfaces: PluginUiSurface[]
   warnings: PluginUiWarning[]
 }> {
   const safeId = encodeURIComponent(pluginId)
   try {
-    const response = await get<{ surfaces?: any[]; warnings?: any[] } | any[]>(`/plugin/${safeId}/surfaces`)
+    const response = await get<{ surfaces?: any[]; warnings?: any[] } | any[]>(`/plugin/${safeId}/surfaces`, {
+      params: locale ? { locale } : undefined,
+    })
     const rawSurfaces = Array.isArray(response) ? response : response?.surfaces
     const rawWarnings = Array.isArray(response) ? [] : response?.warnings
     if (Array.isArray(rawSurfaces)) {
@@ -214,6 +217,7 @@ export async function getPluginUiSurfaceInfo(pluginId: string): Promise<{
 export function getPluginHostedSurfaceSource(pluginId: string, params: {
   kind: PluginUiSurface['kind']
   id: string
+  locale?: string
 }): Promise<{
   plugin_id: string
   kind: string
@@ -230,6 +234,7 @@ export function getPluginHostedSurfaceSource(pluginId: string, params: {
     params: {
       kind: params.kind,
       id: params.id,
+      locale: params.locale,
     },
   })
 }

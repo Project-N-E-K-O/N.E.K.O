@@ -650,7 +650,7 @@ async def test_aretrieve_hard_filter_zero_returns_empty():
 def test_memory_recall_rerank_prompt_has_all_five_locales_with_placeholders():
     """All five locales rendered + every placeholder substituted —
     same contract test as fact_dedup.test_fact_dedup_prompt..."""
-    from config.prompts_memory import (
+    from config.prompts.prompts_memory import (
         MEMORY_RECALL_RERANK_PROMPT,
         get_memory_recall_rerank_prompt,
     )
@@ -815,3 +815,282 @@ async def test_aload_signal_targets_suppress_filter_applies_when_vectors_disable
     # The whole point: even with vectors DISABLED, hard_filter ran
     # and dropped the suppressed reflection.
     assert "reflection.r_silent" not in result_ids
+
+
+# ── per-query top-K recall (reflection synthesis 用) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_each_query_gets_independent_k():
+    """20 unabsorbed 主题分散时，max-pool 会让冷门主题挤不进 anchor；
+    per-query 配额保证每条 unabsorbed 至少能拿自己的 top-K。
+
+    Setup: 3 query 各指向独立方向；候选池里每个方向有 2 条高分 + 1 条
+    低分；per_query_k=2 → 每条 query 应该拿到自己方向的 2 条 top（共 6
+    条 union，无重叠 dedup 不触发）。
+    """
+    qmap = {
+        "q_topic_A": [1.0, 0.0, 0.0],
+        "q_topic_B": [0.0, 1.0, 0.0],
+        "q_topic_C": [0.0, 0.0, 1.0],
+    }
+    svc = _FakeService(
+        available=True,
+        model_id="fake-3d-int8",
+        vector_factory=lambda text: qmap.get(text, [0.0, 0.0, 0.0]),
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("A_high1", "ta1", embedding=[1.0, 0.0, 0.0], model_id="fake-3d-int8"),
+        _obs("A_high2", "ta2", embedding=[0.95, 0.05, 0.0], model_id="fake-3d-int8"),
+        _obs("A_low",   "ta3", embedding=[0.3, 0.3, 0.3], model_id="fake-3d-int8"),
+        _obs("B_high1", "tb1", embedding=[0.0, 1.0, 0.0], model_id="fake-3d-int8"),
+        _obs("B_high2", "tb2", embedding=[0.05, 0.95, 0.0], model_id="fake-3d-int8"),
+        _obs("B_low",   "tb3", embedding=[0.3, 0.3, 0.3], model_id="fake-3d-int8"),
+        _obs("C_high1", "tc1", embedding=[0.0, 0.0, 1.0], model_id="fake-3d-int8"),
+        _obs("C_high2", "tc2", embedding=[0.0, 0.05, 0.95], model_id="fake-3d-int8"),
+        _obs("C_low",   "tc3", embedding=[0.3, 0.3, 0.3], model_id="fake-3d-int8"),
+    ]
+    out = await r.aretrieve_per_query_topk(
+        obs, ["q_topic_A", "q_topic_B", "q_topic_C"],
+        per_query_k=2, total_cap=20,
+    )
+    ids = {o["id"] for o in out}
+    # 每个主题的 high1 + high2 都应该入选（per-query top-2 各 2 条 × 3 query
+    # = 6 条，主题间互不重叠）。max-pool 全局 top-6 也会得到同样结果——但
+    # 把 total_cap 缩到 3 时差异就体现出来（见下个测试）。
+    assert {"A_high1", "A_high2", "B_high1", "B_high2", "C_high1", "C_high2"} <= ids
+    # 三个 _low 都不该被任何 query 的 top-2 选中
+    assert "A_low" not in ids and "B_low" not in ids and "C_low" not in ids
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_vs_maxpool_protects_minority_topics():
+    """关键差异点：max-pool 会被高频主题挤掉冷门主题；per-query 不会。
+
+    Setup: query_A 重复 5 次（高频），query_B 1 次（冷门）。total_cap=3
+    时——
+    - max-pool（``aretrieve_candidates``）会把 3 个 slot 全给 A 方向
+      （因为 A 方向有 5 个 query 各贡献最高分）；
+    - per-query top-1（本方法）保证 A 拿 1 + B 拿 1，至少 union >= 2。
+    """
+    qmap = {"q_A": [1.0, 0.0], "q_B": [0.0, 1.0]}
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: qmap.get(text, [0.0, 0.0]),
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("A_anchor", "ta", embedding=[1.0, 0.0]),
+        _obs("B_anchor", "tb", embedding=[0.0, 1.0]),
+        _obs("noise",    "tn", embedding=[0.5, 0.5]),
+    ]
+    # 5 个 A 类 query + 1 个 B 类 query
+    queries = ["q_A"] * 5 + ["q_B"]
+
+    out = await r.aretrieve_per_query_topk(
+        obs, queries, per_query_k=1, total_cap=3,
+    )
+    ids = {o["id"] for o in out}
+    # B_anchor 必须在结果里——这是 per-query 配额的核心保证
+    assert "B_anchor" in ids
+    assert "A_anchor" in ids
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_dedups_across_queries():
+    """同一个候选被多条 query 都选中时，结果里只出现一次。"""
+    qmap = {"q1": [1.0, 0.0], "q2": [0.99, 0.01]}  # 两个 query 都指向 a
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: qmap.get(text, [0.0, 0.0]),
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("a", "ta", embedding=[1.0, 0.0]),
+        _obs("b", "tb", embedding=[0.7, 0.7]),
+    ]
+    out = await r.aretrieve_per_query_topk(
+        obs, ["q1", "q2"], per_query_k=2, total_cap=20,
+    )
+    ids = [o["id"] for o in out]
+    # a 不能出现两次；只 2 条候选 → union 后 ≤ 2 条结果
+    assert ids.count("a") == 1
+    assert set(ids) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_respects_total_cap():
+    """total_cap 截断生效——即使 per_query_k × Q > total_cap。
+
+    Setup: 5 query 各指向 5 个互相正交的方向（5D one-hot），每条 query 对应
+    2 个候选（同方向）。per_query_k=2 → 每条 query 各拿自己方向的 2 条
+    candidates → union 后 10 条（无重叠）→ total_cap=4 截到 4。
+    """
+    def _onehot(dim, idx):
+        v = [0.0] * dim
+        v[idx] = 1.0
+        return v
+
+    qmap = {f"q{i}": _onehot(5, i) for i in range(5)}
+    svc = _FakeService(
+        available=True,
+        model_id="fake-5d-int8",
+        vector_factory=lambda text: qmap.get(text, [0.0] * 5),
+    )
+    r = _make_reranker(svc)
+    obs = []
+    for i in range(5):
+        # 2 个高分候选指向方向 i
+        obs.append(_obs(
+            f"c{i}_h1", f"t{i}_h1",
+            embedding=_onehot(5, i), model_id="fake-5d-int8",
+        ))
+        # 第二个加点噪声但仍主要指向 i，跟 q{i} cosine ≈ 0.98
+        v = _onehot(5, i)
+        v[(i + 1) % 5] = 0.2
+        obs.append(_obs(
+            f"c{i}_h2", f"t{i}_h2",
+            embedding=v, model_id="fake-5d-int8",
+        ))
+    out = await r.aretrieve_per_query_topk(
+        obs, [f"q{i}" for i in range(5)],
+        per_query_k=2, total_cap=4,
+    )
+    assert len(out) == 4, f"total_cap=4 没截断；实际返回 {len(out)} 条"
+    # Round-robin 顺序：先每条 query 各出 #1，所以截到 4 时拿到的是
+    # q0~q3 的 #1（c0_h1, c1_h1, c2_h1, c3_h1）——q0 的 #2 (c0_h2) 必须
+    # 留给下一轮，但 cap 在 round 0 内就触发 → c0_h2 不该出现。
+    ids = [o["id"] for o in out]
+    assert ids == ["c0_h1", "c1_h1", "c2_h1", "c3_h1"], (
+        f"round-robin ordering 违约；实际: {ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_cap_does_not_starve_late_queries():
+    """fairness regression：``total_cap`` 截断**只能**发生在 round-robin
+    之后，不能在 per-query 内部 early-return。否则前几个 query 吃光所有
+    slot，后面 query 一条 anchor 都拿不到——退化成 max-pool 那种 cold-
+    topic 饥饿。PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜
+    了先判定的 fact"。
+
+    Setup: 5 query 各指向独立方向，每方向 2 个 candidate（high1, high2）。
+    per_query_k=2 + total_cap=5 → 期望 round-robin 拿到 5 个 query 各自
+    的 #1（c0_h1..c4_h1），任何 _h2 都不该出现（cap 在 round 0 就满了）。
+    """
+    def _onehot(dim, idx):
+        v = [0.0] * dim
+        v[idx] = 1.0
+        return v
+
+    qmap = {f"q{i}": _onehot(5, i) for i in range(5)}
+    svc = _FakeService(
+        available=True,
+        model_id="fake-5d-int8",
+        vector_factory=lambda text: qmap.get(text, [0.0] * 5),
+    )
+    r = _make_reranker(svc)
+    obs = []
+    for i in range(5):
+        obs.append(_obs(
+            f"c{i}_h1", f"t{i}_h1",
+            embedding=_onehot(5, i), model_id="fake-5d-int8",
+        ))
+        v = _onehot(5, i)
+        v[(i + 1) % 5] = 0.2
+        obs.append(_obs(
+            f"c{i}_h2", f"t{i}_h2",
+            embedding=v, model_id="fake-5d-int8",
+        ))
+
+    out = await r.aretrieve_per_query_topk(
+        obs, [f"q{i}" for i in range(5)],
+        per_query_k=2, total_cap=5,
+    )
+    ids = [o["id"] for o in out]
+    # 每个 query 至少出 1 条 anchor（fairness 核心保证）
+    for i in range(5):
+        assert f"c{i}_h1" in ids, (
+            f"q{i} 在 cap=5 + 5 queries 下被饿死；ids={ids}。"
+            f"这就是用户在 PR #1401 thread 抓到的 fairness 退化——'便宜了先"
+            f"判定的 fact'。"
+        )
+    # _h2 都还在等下一轮，不该出现
+    for i in range(5):
+        assert f"c{i}_h2" not in ids
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_total_cap_zero_returns_empty():
+    """``total_cap <= 0`` 时必须直接返 []，不能因为先 append 后 check 而
+    漏出 1 条结果（CodeRabbit Minor on PR #1401）。"""
+    qmap = {"q": [1.0, 0.0]}
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: qmap.get(text, [0.0, 0.0]),
+    )
+    r = _make_reranker(svc)
+    obs = [_obs("a", "ta", embedding=[1.0, 0.0])]
+    assert await r.aretrieve_per_query_topk(
+        obs, ["q"], per_query_k=2, total_cap=0,
+    ) == []
+    assert await r.aretrieve_per_query_topk(
+        obs, ["q"], per_query_k=2, total_cap=-5,
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_returns_empty_when_service_unavailable():
+    """关键 fallback 语义：vector 不可用时**直接返 []**，不退化到
+    evidence_score 排序——见 docstring 解释（"远期 anchor" 角色对
+    semantic 关联要求高，random anchor 比无 anchor 更糟）。"""
+    svc = _FakeService(available=False)
+    r = _make_reranker(svc)
+    obs = [
+        _obs("a", "ta", score=10.0, embedding=[1.0, 0.0]),
+        _obs("b", "tb", score=5.0, embedding=[0.0, 1.0]),
+    ]
+    out = await r.aretrieve_per_query_topk(
+        obs, ["q"], per_query_k=2, total_cap=20,
+    )
+    assert out == [], "vector 不可用时本方法必须返 []，不能按 evidence_score 兜底"
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_empty_inputs_short_circuit():
+    """无 observations / 无 query / 全是空字符串 query → 立即 []。"""
+    svc = _FakeService(available=True)
+    r = _make_reranker(svc)
+    assert await r.aretrieve_per_query_topk([], ["q"], per_query_k=2, total_cap=20) == []
+    assert await r.aretrieve_per_query_topk(
+        [_obs("a", "ta", embedding=[1.0, 0.0])],
+        [],
+        per_query_k=2, total_cap=20,
+    ) == []
+    assert await r.aretrieve_per_query_topk(
+        [_obs("a", "ta", embedding=[1.0, 0.0])],
+        ["", "   ", None],  # type: ignore[list-item]
+        per_query_k=2, total_cap=20,
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_skips_candidates_without_valid_embedding():
+    """No-embedding 候选不进 matrix——本方法**不**像 _coarse_rank 那样
+    保留 unembedded 候选作 LLM rerank 兜底（本方法没有 rerank 阶段）。"""
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: [1.0, 0.0],
+    )
+    r = _make_reranker(svc)
+    obs = [
+        _obs("with_embed", "ta", embedding=[1.0, 0.0]),
+        # No embedding field at all — should be skipped silently
+        _obs("no_embed", "tb"),
+    ]
+    out = await r.aretrieve_per_query_topk(
+        obs, ["q"], per_query_k=2, total_cap=20,
+    )
+    ids = {o["id"] for o in out}
+    assert ids == {"with_embed"}

@@ -523,7 +523,17 @@ body {
 
 .btn-primary:hover { background: #35b0d8; transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1); }
 .btn-primary:active { transform: translateY(1px) scale(0.98); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary:disabled,
+.btn-secondary:disabled,
+#control-panel button:disabled,
+#control-panel input:disabled,
+#control-panel select:disabled,
+#control-panel textarea:disabled,
+.page-title-bar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
 
 .btn-secondary {
     background: rgba(64, 197, 241, 0.12);
@@ -988,6 +998,18 @@ body {
 [data-theme="dark"] #control-panel {
     background: #16213e;
     border-left-color: #0f3460;
+}
+
+[data-theme="dark"] .btn-primary:disabled,
+[data-theme="dark"] .btn-secondary:disabled,
+[data-theme="dark"] #control-panel button:disabled,
+[data-theme="dark"] #control-panel input:disabled,
+[data-theme="dark"] #control-panel select:disabled,
+[data-theme="dark"] #control-panel textarea:disabled,
+[data-theme="dark"] .page-title-bar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+    filter: grayscale(0.6);
 }
 
 [data-theme="dark"] .btn-icon {

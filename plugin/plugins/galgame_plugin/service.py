@@ -27,6 +27,7 @@ from .models import (
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
     GalgameConfig,
+    GalgameLLMConfig,
     MODE_CHOICE_ADVISOR,
     MODE_COMPANION,
     MODES,
@@ -61,16 +62,21 @@ from .dependency_status import (
 from .dxcam_support import inspect_dxcam_installation
 from .reader import expand_bridge_root, normalize_text, read_session_json
 from .rapidocr_support import (
+    _BAIDU_YUN_RAPIDOCR_CODE,
+    _BAIDU_YUN_RAPIDOCR_URL,
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
     DEFAULT_RAPIDOCR_MODEL_TYPE,
     DEFAULT_RAPIDOCR_OCR_VERSION,
     inspect_rapidocr_installation,
+    resolve_rapidocr_model_cache_dir,
 )
-from .tesseract_support import inspect_tesseract_installation
 from .textractor_support import (
+    _BAIDU_YUN_TEXTTRACTOR_CODE,
+    _BAIDU_YUN_TEXTTRACTOR_URL,
     DEFAULT_TEXTRACTOR_RELEASE_API_URL,
     inspect_textractor_installation,
+    resolve_textractor_install_target,
 )
 
 _logger = logging.getLogger(__name__)
@@ -92,7 +98,7 @@ def _cached_install_inspection(
     with _INSTALL_INSPECT_CACHE_LOCK:
         cached = _INSTALL_INSPECT_CACHE.get(key)
         if cached is not None and now - cached[0] < _INSTALL_INSPECT_CACHE_TTL_SECONDS:
-            return copy.deepcopy(cached[1])
+            return dict(cached[1])
     value = factory()
     payload = copy.deepcopy(value if isinstance(value, dict) else {})
     with _INSTALL_INSPECT_CACHE_LOCK:
@@ -100,12 +106,60 @@ def _cached_install_inspection(
         if len(_INSTALL_INSPECT_CACHE) > 32:
             for stale_key in list(_INSTALL_INSPECT_CACHE)[:-32]:
                 _INSTALL_INSPECT_CACHE.pop(stale_key, None)
-    return copy.deepcopy(payload)
+    return dict(payload)
 
 
 def clear_install_inspection_cache() -> None:
     with _INSTALL_INSPECT_CACHE_LOCK:
         _INSTALL_INSPECT_CACHE.clear()
+
+
+def _build_download_guide_payload(
+    *,
+    config: GalgameConfig,
+    textractor: dict[str, Any],
+    rapidocr: dict[str, Any],
+) -> dict[str, Any]:
+    textractor_target = str(
+        textractor.get("target_dir")
+        or resolve_textractor_install_target(config.memory_reader_install_target_dir)
+        or ""
+    )
+    rapidocr_target = str(
+        rapidocr.get("model_cache_dir")
+        or resolve_rapidocr_model_cache_dir(config.rapidocr_install_target_dir)
+        or ""
+    )
+    textractor_available = (
+        bool(_BAIDU_YUN_TEXTTRACTOR_URL)
+        and "____" not in _BAIDU_YUN_TEXTTRACTOR_URL
+        and bool(_BAIDU_YUN_TEXTTRACTOR_CODE)
+        and _BAIDU_YUN_TEXTTRACTOR_CODE != "____"
+        and not bool(textractor.get("installed"))
+    )
+    rapidocr_available = (
+        bool(_BAIDU_YUN_RAPIDOCR_URL)
+        and "____" not in _BAIDU_YUN_RAPIDOCR_URL
+        and bool(_BAIDU_YUN_RAPIDOCR_CODE)
+        and _BAIDU_YUN_RAPIDOCR_CODE != "____"
+        and not bool(rapidocr.get("installed"))
+    )
+    return {
+        "textractor": {
+            "available": textractor_available,
+            "url": _BAIDU_YUN_TEXTTRACTOR_URL,
+            "code": _BAIDU_YUN_TEXTTRACTOR_CODE,
+            "target_dir": textractor_target,
+            "note": "Download TextractorCLI.exe manually and place it in the target directory.",
+        },
+        "rapidocr_models": {
+            "available": rapidocr_available,
+            "url": _BAIDU_YUN_RAPIDOCR_URL,
+            "code": _BAIDU_YUN_RAPIDOCR_CODE,
+            "target_dir": rapidocr_target,
+            "note": "Download the RapidOCR model files manually and place them in the model cache directory.",
+        },
+    }
 
 
 def _current_process_performance() -> dict[str, Any]:
@@ -343,7 +397,7 @@ def _coerce_bool(value: object, default: bool) -> bool:
 
 def _coerce_ocr_backend_selection(value: object, default: str = "auto") -> str:
     normalized = str(value or default).strip().lower()
-    if normalized in {"auto", "rapidocr", "tesseract"}:
+    if normalized in {"auto", "rapidocr"}:
         return normalized
     return default
 
@@ -541,6 +595,32 @@ def _coerce_reader_mode(value: object, default: str = READER_MODE_AUTO) -> str:
     return default
 
 
+def _coerce_context_counting_mode(value: object, default: str = "char") -> str:
+    normalized = str(value or default).strip().lower()
+    if normalized in {"char", "token"}:
+        return normalized
+    return default
+
+
+def _coerce_context_scene_summary_mode(value: object, default: str = "rolling") -> str:
+    normalized = str(value or default).strip().lower()
+    if normalized in {"rolling", "cumulative_light", "cumulative_llm"}:
+        return normalized
+    return default
+
+
+def _coerce_unit_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return max(0.0, min(parsed, 1.0))
+
+
 def _default_bridge_root_raw() -> str:
     if sys.platform.startswith("win"):
         return "%LOCALAPPDATA%/N.E.K.O/galgame-bridge"
@@ -589,6 +669,17 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     bridge_root_raw = str(bridge_root_value).strip() if bridge_root_value is not None else ""
     if not bridge_root_raw:
         bridge_root_raw = _default_bridge_root_raw()
+    context_explain_min_lines = _coerce_int(
+        llm_obj.get("context_explain_min_lines"), 4, minimum=1
+    )
+    context_explain_max_lines = _coerce_int(
+        llm_obj.get("context_explain_max_lines"), 16, minimum=1
+    )
+    if context_explain_min_lines > context_explain_max_lines:
+        context_explain_min_lines, context_explain_max_lines = (
+            context_explain_max_lines,
+            context_explain_min_lines,
+        )
 
     return GalgameConfig(
         bridge_root=expand_bridge_root(bridge_root_raw),
@@ -639,6 +730,9 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         llm_request_cache_ttl_seconds=_coerce_float(
             llm_obj.get("llm_request_cache_ttl_seconds"), 2.0, minimum=0.0
         ),
+        llm_explain_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_explain_cache_ttl_seconds"), 8.0, minimum=0.0
+        ),
         llm_target_entry_ref=str(llm_obj.get("target_entry_ref") or "").strip(),
         llm_vision_enabled=_coerce_bool(llm_obj.get("vision_enabled"), False),
         llm_vision_max_image_px=_coerce_int(
@@ -647,11 +741,14 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         llm_scene_summary_cache_ttl_seconds=_coerce_float(
             llm_obj.get("llm_scene_summary_cache_ttl_seconds"), 10.0, minimum=0.0
         ),
-        llm_temperature_agent_reply=_coerce_float(
-            llm_obj.get("temperature_agent_reply"), 0.2, minimum=0.0
+        llm_choice_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_choice_cache_ttl_seconds"), 4.0, minimum=0.0
         ),
-        llm_temperature_default=_coerce_float(
-            llm_obj.get("temperature_default"), 0.0, minimum=0.0
+        llm_near_match_cache_enabled=_coerce_bool(
+            llm_obj.get("llm_near_match_cache_enabled"), False
+        ),
+        llm_near_match_cache_ttl_seconds=_coerce_float(
+            llm_obj.get("llm_near_match_cache_ttl_seconds"), 15.0, minimum=0.0
         ),
         llm_max_tokens_agent_reply=_coerce_int(
             llm_obj.get("max_tokens_agent_reply"), 900, minimum=1
@@ -659,12 +756,56 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         llm_max_tokens_default=_coerce_int(
             llm_obj.get("max_tokens_default"), 1200, minimum=1
         ),
+        context_max_tokens=_coerce_int(
+            llm_obj.get("context_max_tokens"), 6000, minimum=1
+        ),
+        context_metrics_enabled=_coerce_bool(
+            llm_obj.get("context_metrics_enabled"), False
+        ),
+        context_counting_mode=_coerce_context_counting_mode(
+            llm_obj.get("context_counting_mode")
+        ),
+        context_semantic_compression=_coerce_bool(
+            llm_obj.get("context_semantic_compression"), False
+        ),
+        context_explain_min_lines=context_explain_min_lines,
+        context_explain_max_lines=context_explain_max_lines,
+        context_window_target_tokens=_coerce_int(
+            llm_obj.get("context_window_target_tokens"), 800, minimum=1
+        ),
+        context_scene_summary_mode=_coerce_context_scene_summary_mode(
+            llm_obj.get("context_scene_summary_mode")
+        ),
+        context_cumulative_llm_trigger_lines=_coerce_int(
+            llm_obj.get("context_cumulative_llm_trigger_lines"), 30, minimum=1
+        ),
+        context_line_importance_enabled=_coerce_bool(
+            llm_obj.get("context_line_importance_enabled"), False
+        ),
+        context_persist_enabled=_coerce_bool(
+            llm_obj.get("context_persist_enabled"), False
+        ),
+        context_persist_max_age_seconds=_coerce_float(
+            llm_obj.get("context_persist_max_age_seconds"), 3600.0, minimum=0.0
+        ),
+        context_persist_require_game_id=_coerce_bool(
+            llm_obj.get("context_persist_require_game_id"), True
+        ),
+        llm_repeat_detection_enabled=_coerce_bool(
+            llm_obj.get("llm_repeat_detection_enabled"), False
+        ),
+        llm_repeat_similarity_threshold=_coerce_unit_float(
+            llm_obj.get("llm_repeat_similarity_threshold"), 0.85
+        ),
         reader_mode=_coerce_reader_mode(galgame_obj.get("reader_mode")),
         memory_reader_enabled=_coerce_bool(
             memory_reader_obj.get("enabled"),
             _default_memory_reader_enabled(),
         ),
         memory_reader_textractor_path=str(memory_reader_obj.get("textractor_path") or ""),
+        memory_reader_textractor_proxy=str(
+            memory_reader_obj.get("textractor_proxy") or ""
+        ).strip(),
         memory_reader_install_release_api_url=str(
             memory_reader_obj.get("install_release_api_url")
             or DEFAULT_TEXTRACTOR_RELEASE_API_URL
@@ -673,7 +814,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             memory_reader_obj.get("install_target_dir") or ""
         ).strip(),
         memory_reader_install_timeout_seconds=_coerce_float(
-            memory_reader_obj.get("install_timeout_seconds"), 180.0, minimum=1.0
+            memory_reader_obj.get("install_timeout_seconds"), 600.0, minimum=1.0
         ),
         memory_reader_auto_detect=bool(memory_reader_obj.get("auto_detect", True)),
         memory_reader_hook_codes=_coerce_string_list(
@@ -700,7 +841,6 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             "smart",
         ),
         ocr_reader_capture_backend_explicit="capture_backend" in ocr_reader_obj,
-        ocr_reader_tesseract_path=str(ocr_reader_obj.get("tesseract_path") or ""),
         ocr_reader_install_manifest_url=str(
             ocr_reader_obj.get("install_manifest_url") or ""
         ).strip(),
@@ -1141,13 +1281,21 @@ def _primary_diagnosis(
     title: str,
     message: str,
     actions: list[dict[str, str]],
+    *,
+    title_i18n_key: str = "",
+    message_i18n_key: str = "",
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "severity": severity,
         "title": title,
         "message": message,
         "actions": actions,
     }
+    if title_i18n_key:
+        payload["title_i18n_key"] = title_i18n_key
+    if message_i18n_key:
+        payload["message_i18n_key"] = message_i18n_key
+    return payload
 
 
 def _status_text(value: Any) -> str:
@@ -1170,6 +1318,15 @@ def _is_textractor_missing_error_message(message: str) -> bool:
             "textractor" in normalized
             and ("missing" in normalized or "invalid" in normalized)
         )
+    )
+
+
+def _is_self_ui_guard_message(message: str) -> bool:
+    normalized = _status_text(message).lower()
+    return (
+        "ocr_reader ignored text that looks like the n.e.k.o plugin ui"
+        in normalized
+        or "self_ui_guard" in normalized
     )
 
 
@@ -1404,6 +1561,7 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
         item for item in inspection_failed_dependencies if item in {"rapidocr", "dxcam"}
     ]
     textractor_last_error_signal = _is_textractor_missing_error_message(last_error_message)
+    self_ui_guard_signal = _is_self_ui_guard_message(last_error_message)
     textractor_missing_signal = (
         memory_runtime_detail == "invalid_textractor_path"
         or _status_text(textractor_obj.get("detail")) == "missing"
@@ -1423,7 +1581,10 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
     )
     generic_last_error_message = (
         ""
-        if textractor_last_error_signal and not memory_reader_path_active
+        if (
+            self_ui_guard_signal
+            or (textractor_last_error_signal and not memory_reader_path_active)
+        )
         else last_error_message
     )
 
@@ -1469,6 +1630,25 @@ def build_primary_diagnosis(local_state: dict[str, Any]) -> dict[str, Any]:
                 _diagnosis_action("install_textractor", "安装 Textractor"),
                 _diagnosis_action("refresh_all", "刷新全部"),
             ],
+        )
+
+    if self_ui_guard_signal:
+        return _primary_diagnosis(
+            "warning",
+            "OCR 截到了插件 UI，已忽略",
+            (
+                "OCR Reader 识别到的文字像 N.E.K.O 插件管理页，而不是游戏画面。"
+                "这次结果已被丢弃，避免把插件界面文字写成台词。"
+                "请切回游戏窗口，或重新选择 OCR 目标窗口。"
+            ),
+            [
+                _diagnosis_action("focus_game", "切回游戏窗口"),
+                _diagnosis_action("select_ocr_window", "选择游戏窗口"),
+                _diagnosis_action("refresh_ocr_windows", "刷新窗口"),
+                _diagnosis_action("debug_details", "查看调试详情"),
+            ],
+            title_i18n_key="ui.diag.self_ui_guard.title",
+            message_i18n_key="ui.diag.self_ui_guard.body",
         )
 
     if generic_last_error_message:
@@ -2254,19 +2434,6 @@ def _build_status_payload_unchecked(
     rapidocr["auto_detect_last_lang"] = str(
         getattr(config, "rapidocr_auto_detect_last_lang", "") or ""
     )
-    tesseract = _cached_install_inspection(
-        (
-            "tesseract",
-            config.ocr_reader_tesseract_path,
-            config.ocr_reader_install_target_dir,
-            config.ocr_reader_languages,
-        ),
-        lambda: inspect_tesseract_installation(
-            configured_path=config.ocr_reader_tesseract_path,
-            install_target_dir_raw=config.ocr_reader_install_target_dir,
-            languages=config.ocr_reader_languages,
-        ),
-    )
     ocr_runtime = copy_for_payload(state.ocr_reader_runtime)
     ocr_runtime_obj = ocr_runtime if isinstance(ocr_runtime, dict) else {}
     last_error = copy_for_payload(state.last_error)
@@ -2293,6 +2460,13 @@ def _build_status_payload_unchecked(
         if str(ocr_runtime_obj.get("stable_ocr_block_reason") or "") == "waiting_for_repeat"
         else 0.0
     )
+    last_stable_history_line = _latest_stable_history_line(state.history_lines)
+    if (
+        last_stable_history_line
+        and isinstance(ocr_runtime_obj, dict)
+        and not _line_text_from_status(ocr_runtime_obj.get("last_stable_line"))
+    ):
+        ocr_runtime_obj["last_stable_line"] = copy_for_payload(last_stable_history_line)
     local_state = {
         "latest_snapshot": copy_for_payload(state.latest_snapshot),
         "history_observed_lines": copy_for_payload(state.history_observed_lines),
@@ -2507,7 +2681,11 @@ def _build_status_payload_unchecked(
         "dxcam": dxcam,
         "rapidocr": rapidocr,
         "textractor": textractor,
-        "tesseract": tesseract,
+        "download_guide": _build_download_guide_payload(
+            config=config,
+            textractor=textractor,
+            rapidocr=rapidocr,
+        ),
         # Recompute dependency_status off the just-inspected payload so the
         # UI doesn't show "缺依赖" warnings for components that just finished
         # installing (state.dependency_status is updated lazily, this is the
@@ -2706,6 +2884,25 @@ def resolve_effective_current_line(local_state: dict[str, Any]) -> dict[str, Any
     return None
 
 
+def _latest_stable_history_line(history_lines: Any) -> dict[str, Any]:
+    if not isinstance(history_lines, list):
+        return {}
+    for item in reversed(history_lines):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("stability") or "").strip().lower() != "stable":
+            continue
+        text = str(item.get("text") or "")
+        line_id = str(item.get("line_id") or "")
+        if not text or not line_id:
+            continue
+        result = dict(item)
+        result["source"] = str(result.get("source") or "stable")
+        result["stability"] = "stable"
+        return result
+    return {}
+
+
 def build_ocr_context_diagnostic(local_state: dict[str, Any]) -> str:
     runtime = local_state.get("ocr_reader_runtime")
     runtime_obj = runtime if isinstance(runtime, dict) else {}
@@ -2769,124 +2966,6 @@ def build_ocr_context_diagnostic(local_state: dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
-def _scene_lines(
-    history_lines: list[dict[str, Any]],
-    scene_id: str,
-    *,
-    limit: int,
-    extra_scene_ids: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    if scene_id:
-        match_ids = {scene_id}
-        if extra_scene_ids:
-            match_ids.update(str(sid) for sid in extra_scene_ids if sid)
-        items = [
-            dict(item)
-            for item in history_lines
-            if str(item.get("scene_id") or "") in match_ids
-        ]
-    else:
-        items = [dict(item) for item in history_lines]
-    return items[-limit:]
-
-
-def _scene_selected_choices(
-    history_choices: list[dict[str, Any]],
-    scene_id: str,
-    *,
-    limit: int,
-) -> list[dict[str, Any]]:
-    items = [
-        dict(item)
-        for item in history_choices
-        if str(item.get("action") or "") == "selected"
-        and (not scene_id or str(item.get("scene_id") or "") == scene_id)
-    ]
-    return items[-limit:]
-
-
-def _append_unique_line(
-    lines: list[dict[str, Any]],
-    line: dict[str, Any] | None,
-    *,
-    limit: int,
-) -> list[dict[str, Any]]:
-    if not line:
-        return lines[-limit:]
-    normalized = dict(line)
-    target_key = _dialogue_line_dedupe_key(normalized)
-    exists = any(_dialogue_line_dedupe_key(item) == target_key for item in lines)
-    if exists:
-        return lines[-limit:]
-    merged = list(lines) + [normalized]
-    return merged[-limit:]
-
-
-def _dialogue_line_dedupe_key(item: dict[str, Any]) -> str:
-    text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
-    if text:
-        return "::".join(
-            [
-                str(item.get("scene_id") or "").strip(),
-                str(item.get("speaker") or "").strip(),
-                text,
-            ]
-        )
-    return str(item.get("line_id") or "").strip()
-
-
-def _dialogue_context_lines(lines: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
-    deduped: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for item in lines:
-        if not _looks_like_game_dialogue_context_line(item):
-            continue
-        normalized = dict(item)
-        key = _dialogue_line_dedupe_key(normalized)
-        if not key:
-            continue
-        if key not in deduped:
-            order.append(key)
-        deduped[key] = normalized
-    return [deduped[key] for key in order][-limit:]
-
-
-def _is_memory_reader_identifier(value: object) -> bool:
-    return isinstance(value, str) and value.startswith("mem:")
-
-
-def _is_ocr_reader_identifier(value: object) -> bool:
-    return isinstance(value, str) and value.startswith("ocr:")
-
-
-def _build_input_degraded_context(
-    local_state: dict[str, Any],
-    *,
-    scene_id: str,
-    line_id: str,
-    choice_ids: list[str],
-) -> tuple[str, bool, list[str]]:
-    input_source = str(local_state.get("active_data_source") or DATA_SOURCE_BRIDGE_SDK)
-    reasons: list[str] = []
-    if input_source == DATA_SOURCE_MEMORY_READER:
-        reasons.append("memory_reader_source")
-    if input_source == DATA_SOURCE_OCR_READER:
-        reasons.append("ocr_reader_source")
-    if _is_memory_reader_identifier(scene_id):
-        reasons.append("memory_reader_scene")
-    if _is_ocr_reader_identifier(scene_id):
-        reasons.append("ocr_reader_scene")
-    if _is_memory_reader_identifier(line_id):
-        reasons.append("memory_reader_line")
-    if _is_ocr_reader_identifier(line_id):
-        reasons.append("ocr_reader_line")
-    if any(_is_memory_reader_identifier(choice_id) for choice_id in choice_ids):
-        reasons.append("memory_reader_choice")
-    if any(_is_ocr_reader_identifier(choice_id) for choice_id in choice_ids):
-        reasons.append("ocr_reader_choice")
-    return input_source, bool(reasons), reasons
-
-
 def _input_degraded_diagnostic(context: dict[str, Any]) -> str:
     reasons = list(context.get("degraded_reasons") or [])
     if not reasons:
@@ -2929,19 +3008,6 @@ def apply_input_degraded_result(
     return next_payload
 
 
-def _resolve_target_line(local_state: dict[str, Any], *, line_id: str) -> dict[str, Any] | None:
-    snapshot_line = _current_line_entry(local_state.get("latest_snapshot", {}))
-    if snapshot_line and str(snapshot_line.get("line_id") or "") == line_id:
-        return snapshot_line
-    for item in reversed(local_state.get("history_lines", [])):
-        if str(item.get("line_id") or "") == line_id:
-            return dict(item)
-    for item in reversed(local_state.get("history_observed_lines", [])):
-        if str(item.get("line_id") or "") == line_id:
-            return dict(item)
-    return None
-
-
 def build_local_scene_summary(
     *,
     scene_id: str,
@@ -2974,133 +3040,17 @@ def build_local_scene_summary(
     return summary
 
 
-def _snapshot_for_stable_summary_seed(
+def build_explain_context(
     local_state: dict[str, Any],
-    snapshot: dict[str, Any],
-    stable_lines: list[dict[str, Any]],
+    *,
+    line_id: str,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    if str(local_state.get("active_data_source") or "") != DATA_SOURCE_OCR_READER:
-        return snapshot
-    if str(snapshot.get("stability") or "") == "stable":
-        return snapshot
-    snapshot_line_id = str(snapshot.get("line_id") or "")
-    snapshot_text = str(snapshot.get("text") or "")
-    snapshot_speaker = str(snapshot.get("speaker") or "")
-    for line in stable_lines:
-        if not isinstance(line, dict):
-            continue
-        line_id = str(line.get("line_id") or "")
-        if snapshot_line_id and line_id and snapshot_line_id == line_id:
-            return snapshot
-        if (
-            snapshot_text
-            and snapshot_text == str(line.get("text") or "")
-            and snapshot_speaker == str(line.get("speaker") or "")
-        ):
-            return snapshot
-    seed_snapshot = dict(snapshot)
-    seed_snapshot["speaker"] = ""
-    seed_snapshot["text"] = ""
-    seed_snapshot["line_id"] = ""
-    seed_snapshot["stability"] = ""
-    return seed_snapshot
+    from .context_builder import build_explain_context as _build_explain_context
 
-
-def build_explain_context(local_state: dict[str, Any], *, line_id: str) -> dict[str, Any]:
-    snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
-    effective_line = resolve_effective_current_line(local_state)
-    effective_line_id = line_id or str(
-        (effective_line or {}).get("line_id") or snapshot.get("line_id") or ""
-    )
-    if not effective_line_id:
-        raise ValueError(build_ocr_context_diagnostic(local_state))
-
-    target_line = (
-        dict(effective_line)
-        if effective_line is not None
-        and str(effective_line.get("line_id") or "") == effective_line_id
-        else _resolve_target_line(local_state, line_id=effective_line_id)
-    )
-    if target_line is None:
-        raise ValueError(f"unknown line_id: {effective_line_id}; {build_ocr_context_diagnostic(local_state)}")
-
-    scene_id = str(target_line.get("scene_id") or snapshot.get("scene_id") or "")
-    route_id = str(target_line.get("route_id") or snapshot.get("route_id") or "")
-    stable_lines = _scene_lines(local_state.get("history_lines", []), scene_id, limit=8)
-    observed_lines = _scene_lines(
-        local_state.get("history_observed_lines", []),
-        scene_id,
-        limit=8,
-    )
-    scene_lines = _append_unique_line([*stable_lines, *observed_lines], target_line, limit=8)
-    selected_choices = _scene_selected_choices(
-        local_state.get("history_choices", []),
-        scene_id,
-        limit=6,
-    )
-
-    evidence: list[dict[str, Any]] = []
-    snapshot_line = _current_line_entry(snapshot)
-    if snapshot_line and str(snapshot_line.get("line_id") or "") == effective_line_id:
-        evidence.append(
-            {
-                "type": "current_line",
-                "text": str(snapshot_line.get("text") or ""),
-                "line_id": effective_line_id,
-                "speaker": str(snapshot_line.get("speaker") or ""),
-                "scene_id": str(snapshot_line.get("scene_id") or ""),
-                "route_id": str(snapshot_line.get("route_id") or ""),
-            }
-        )
-    for item in scene_lines[-4:]:
-        if str(item.get("line_id") or "") == effective_line_id:
-            continue
-        evidence.append(
-            {
-                "type": "history_line",
-                "text": str(item.get("text") or ""),
-                "line_id": str(item.get("line_id") or ""),
-                "speaker": str(item.get("speaker") or ""),
-                "scene_id": str(item.get("scene_id") or ""),
-                "route_id": str(item.get("route_id") or ""),
-            }
-        )
-    for choice in selected_choices[-2:]:
-        evidence.append(
-            {
-                "type": "choice",
-                "text": str(choice.get("text") or ""),
-                "line_id": str(choice.get("line_id") or ""),
-                "speaker": "",
-                "scene_id": str(choice.get("scene_id") or ""),
-                "route_id": str(choice.get("route_id") or ""),
-            }
-        )
-    input_source, input_degraded, degraded_reasons = _build_input_degraded_context(
-        local_state,
-        scene_id=scene_id,
-        line_id=effective_line_id,
-        choice_ids=[str(choice.get("choice_id") or "") for choice in selected_choices],
-    )
-
-    return {
-        "game_id": str(local_state.get("active_game_id") or ""),
-        "session_id": str(local_state.get("active_session_id") or ""),
-        "scene_id": scene_id,
-        "route_id": route_id,
-        "line_id": effective_line_id,
-        "speaker": str(target_line.get("speaker") or ""),
-        "text": str(target_line.get("text") or ""),
-        "current_snapshot": snapshot,
-        "recent_lines": scene_lines,
-        "stable_lines": stable_lines,
-        "observed_lines": observed_lines,
-        "recent_choices": selected_choices,
-        "evidence": evidence,
-        "input_source": input_source,
-        "input_degraded": input_degraded,
-        "degraded_reasons": degraded_reasons,
-    }
+    if config is None:
+        return _build_explain_context(local_state, line_id=line_id)
+    return _build_explain_context(local_state, line_id=line_id, config=config)
 
 
 def build_summarize_context(
@@ -3108,112 +3058,34 @@ def build_summarize_context(
     *,
     scene_id: str,
     merge_from_scene_ids: list[str] | None = None,
+    config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
-    effective_line = resolve_effective_current_line(local_state)
-    effective_scene_id = scene_id or str(
-        snapshot.get("scene_id") or (effective_line or {}).get("scene_id") or ""
-    )
-    route_id = str(snapshot.get("route_id") or (effective_line or {}).get("route_id") or "")
-    stable_lines = _scene_lines(
-        local_state.get("history_lines", []),
-        effective_scene_id,
-        limit=20,
-        extra_scene_ids=merge_from_scene_ids,
-    )
-    observed_lines = _scene_lines(
-        local_state.get("history_observed_lines", []),
-        effective_scene_id,
-        limit=20,
-        extra_scene_ids=merge_from_scene_ids,
-    )
-    stable_lines = _dialogue_context_lines(stable_lines, limit=20)
-    observed_lines = _dialogue_context_lines(observed_lines, limit=20)
-    scene_lines = _dialogue_context_lines([*stable_lines, *observed_lines], limit=20)
-    selected_choices = _scene_selected_choices(
-        local_state.get("history_choices", []),
-        effective_scene_id,
-        limit=12,
-    )
-    input_source, input_degraded, degraded_reasons = _build_input_degraded_context(
-        local_state,
-        scene_id=effective_scene_id,
-        line_id=str(snapshot.get("line_id") or ""),
-        choice_ids=[str(choice.get("choice_id") or "") for choice in selected_choices],
-    )
-    return {
-        "game_id": str(local_state.get("active_game_id") or ""),
-        "session_id": str(local_state.get("active_session_id") or ""),
-        "scene_id": effective_scene_id,
-        "route_id": route_id,
-        "current_snapshot": snapshot,
-        "recent_lines": scene_lines,
-        "stable_lines": stable_lines,
-        "observed_lines": observed_lines,
-        "recent_choices": selected_choices,
-        "scene_summary_seed": build_local_scene_summary(
-            scene_id=effective_scene_id,
-            route_id=route_id,
-            lines=stable_lines,
-            selected_choices=selected_choices,
-            snapshot=_snapshot_for_stable_summary_seed(local_state, snapshot, stable_lines),
-        ),
-        "input_source": input_source,
-        "input_degraded": input_degraded,
-        "degraded_reasons": degraded_reasons,
-    }
+    from .context_builder import build_summarize_context as _build_summarize_context
 
-
-def build_suggest_context(local_state: dict[str, Any]) -> dict[str, Any]:
-    snapshot = sanitize_snapshot_state(local_state.get("latest_snapshot", {}))
-    visible_choices = [
-        sanitize_choice(item) for item in snapshot.get("choices", [])
-    ]
-    scene_id = str(snapshot.get("scene_id") or "")
-    route_id = str(snapshot.get("route_id") or "")
-    stable_lines = _scene_lines(local_state.get("history_lines", []), scene_id, limit=8)
-    observed_lines = _scene_lines(
-        local_state.get("history_observed_lines", []),
-        scene_id,
-        limit=8,
-    )
-    scene_lines = [*stable_lines, *observed_lines][-8:]
-    selected_choices = _scene_selected_choices(
-        local_state.get("history_choices", []),
-        scene_id,
-        limit=8,
-    )
-    input_source, input_degraded, degraded_reasons = _build_input_degraded_context(
+    if config is None:
+        return _build_summarize_context(
+            local_state,
+            scene_id=scene_id,
+            merge_from_scene_ids=merge_from_scene_ids,
+        )
+    return _build_summarize_context(
         local_state,
         scene_id=scene_id,
-        line_id=str(snapshot.get("line_id") or ""),
-        choice_ids=[
-            str(choice.get("choice_id") or "")
-            for choice in [*visible_choices, *selected_choices]
-        ],
+        merge_from_scene_ids=merge_from_scene_ids,
+        config=config,
     )
-    return {
-        "game_id": str(local_state.get("active_game_id") or ""),
-        "session_id": str(local_state.get("active_session_id") or ""),
-        "scene_id": scene_id,
-        "route_id": route_id,
-        "current_snapshot": snapshot,
-        "visible_choices": visible_choices,
-        "recent_lines": scene_lines,
-        "stable_lines": stable_lines,
-        "observed_lines": observed_lines,
-        "recent_choices": selected_choices,
-        "scene_summary": build_local_scene_summary(
-            scene_id=scene_id,
-            route_id=route_id,
-            lines=scene_lines,
-            selected_choices=selected_choices,
-            snapshot=snapshot,
-        ),
-        "input_source": input_source,
-        "input_degraded": input_degraded,
-        "degraded_reasons": degraded_reasons,
-    }
+
+
+def build_suggest_context(
+    local_state: dict[str, Any],
+    *,
+    config: GalgameLLMConfig | None = None,
+) -> dict[str, Any]:
+    from .context_builder import build_suggest_context as _build_suggest_context
+
+    if config is None:
+        return _build_suggest_context(local_state)
+    return _build_suggest_context(local_state, config=config)
 
 
 def build_explain_degraded_result(

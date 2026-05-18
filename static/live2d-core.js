@@ -4506,7 +4506,10 @@ class Live2DManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
-        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
+        const effectiveEnabled = enabled && (
+            window.nekoYuiGuideFaceForwardLock !== true
+            || window.nekoYuiGuideIntroVoiceLookAtActive === true
+        );
 
         if (effectiveEnabled) {
             // 重新启用时，如果模型存在且没有鼠标跟踪监听器，则启用
@@ -4532,7 +4535,10 @@ class Live2DManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
-        if (window.nekoYuiGuideFaceForwardLock === true) {
+        if (
+            window.nekoYuiGuideFaceForwardLock === true
+            && window.nekoYuiGuideIntroVoiceLookAtActive !== true
+        ) {
             return false;
         }
         return this._mouseTrackingEnabled !== false;

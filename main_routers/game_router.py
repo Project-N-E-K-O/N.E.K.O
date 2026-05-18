@@ -26,7 +26,7 @@ _EXTERNAL_VOICE_DEDUP_MAX_ENTRIES = 64
 
 from fastapi import APIRouter, Request
 
-from config.prompts_game import (
+from config.prompts.prompts_game import (
     SOCCER_SYSTEM_PROMPT as _SOCCER_SYSTEM_PROMPT,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
@@ -36,7 +36,7 @@ from config.prompts_game import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from config.prompts_game_route import (
+from config.prompts.prompts_game_route import (
     GAME_CONTEXT_SIGNAL_GROUP_KEYS,
     get_compact_realtime_context_texts,
     get_game_chat_event_user_prompt,
@@ -86,7 +86,7 @@ _GAME_ROUTE_ACTIVATION_LOG_LIMIT = 32
 _SOCCER_QUICK_LINE_KEYS = {
     "goal-scored", "goal-conceded", "own-goal-by-ai", "own-goal-by-player",
     "steal", "stolen", "player-idle", "player-charging-long",
-    "free-ball", "startle", "zoneout",
+    "free-ball", "startle-direct", "startle-graze", "zoneout",
 }
 
 _DEFAULT_GAME_MEMORY_TAIL_COUNT = 6
@@ -1094,11 +1094,22 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     current_name = str(lanlan_name or characters.get('当前猫娘', '') or '').strip()
 
     master_data = characters.get('主人', {})
-    master_name = master_data.get('档案名', '玩家')
+    # 显式 str 归一化：'档案名' 来自用户编辑的角色配置 JSON，可能是 None / 数字
+    # / 其他非字符串。下面 .replace 的第二个参数必须是 str，且 master_name 还会
+    # 直接进入返回 dict 给下游消费，统一在源头收口。
+    master_name = str(master_data.get('档案名', '玩家') or '玩家')
 
     # 获取角色人格 prompt
+    # Why: lanlan_prompt_map 存的是带 {LANLAN_NAME} / {MASTER_NAME} 占位符的原始
+    # 模板（普通会话路径在 main_server 写入 SessionManager 时才替换）。Game 流程
+    # 直接从 config_manager 拿，必须在源头补这一步替换，否则下游 _build_game_prompt
+    # / quick_lines / pregame context AI 拼出来的 prompt 会含字面占位符，触发
+    # llm_prompt_leak_check 警告并污染人设。
+    # 模板本身也用 str() 兜底：极端情况下 lanlan_prompt_map 里的值可能是 None。
     _, _, _, _, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
-    lanlan_prompt = lanlan_prompt_map.get(current_name, '')
+    lanlan_prompt = str(lanlan_prompt_map.get(current_name, '') or '') \
+        .replace('{LANLAN_NAME}', current_name) \
+        .replace('{MASTER_NAME}', master_name)
 
     # 获取对话模型配置
     conversation_config = config_manager.get_model_api_config('conversation')
@@ -5485,16 +5496,22 @@ async def game_quick_lines(game_type: str, request: Request):
 
 
 @router.get("/{game_type}/character")
-async def game_character(game_type: str):
+async def game_character(game_type: str, request: Request):
     """获取当前角色信息（需求 2：角色替换用）。
 
-    返回当前角色的模型类型和路径。足球游戏 AI 侧目前只支持 Live2D，
-    如果当前角色不是 Live2D 类型，前端应回退到默认模型。
+    返回角色的模型类型和路径。足球游戏 AI 侧支持 Live2D / VRM；
+    MMD 仍由前端回退到 Live2D 默认模型。
     """
     try:
         config_manager = get_config_manager()
         characters = await asyncio.to_thread(config_manager.load_characters)
-        current_name = characters.get('当前猫娘', '')
+        requested_name = str(request.query_params.get('lanlan_name') or '').strip()
+        all_nekos = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
+        current_name = (
+            requested_name
+            if requested_name and isinstance(all_nekos, dict) and requested_name in all_nekos
+            else characters.get('当前猫娘', '')
+        )
         neko_data = characters.get('猫娘', {}).get(current_name, {})
 
         # 获取 _reserved.avatar 配置
@@ -5533,7 +5550,9 @@ async def game_character(game_type: str):
             if isinstance(vrm_info, dict):
                 raw = vrm_info.get('model_path', '')
                 if raw:
-                    vrm_path = raw if raw.startswith('/static/') else f'/static/{raw}'
+                    from .config_router import _resolve_vrm_path
+
+                    vrm_path = _resolve_vrm_path(raw, config_manager, current_name)
 
         return {
             'lanlan_name': current_name,

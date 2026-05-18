@@ -12,6 +12,9 @@ const TUTORIAL_PROMPT_FLOW_PREFIX = '[TutorialPromptFlow]';
 const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
 const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json';
 const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
+const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
+const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
+const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -21,12 +24,118 @@ function getTutorialManualIntentKeyForPage(pageKey) {
     return getTutorialStorageKeyForPage(pageKey) + '_manual_intent';
 }
 
+function getTutorialStorageKeysForPageFallback(pageKey) {
+    if (pageKey === 'model_manager') {
+        return ['model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_mmd', 'model_manager_common']
+            .map(getTutorialStorageKeyForPage);
+    }
+
+    if (pageKey === 'home') {
+        return [
+            getTutorialStorageKeyForPage('home_yui_v1'),
+            getTutorialStorageKeyForPage('home'),
+        ];
+    }
+
+    return [getTutorialStorageKeyForPage(pageKey)];
+}
+
 function logTutorialPromptFlow(step, details = {}) {
     // 默认关闭高频引导流程日志，避免 heartbeat 等调试信息刷屏。
     if (localStorage.getItem('neko_tutorial_prompt_flow_debug') !== '1') {
         return;
     }
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
+}
+
+function dispatchHomeTutorialResetEvent(pageKey, source) {
+    if (pageKey !== 'home' && pageKey !== 'all') {
+        return;
+    }
+    const detail = {
+        page: pageKey,
+        source: source || 'manual_home_tutorial_reset',
+        nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent(HOME_TUTORIAL_RESET_EVENT, { detail }));
+    }
+
+    if (typeof BroadcastChannel === 'function') {
+        try {
+            const channel = new BroadcastChannel(HOME_TUTORIAL_RESET_CHANNEL);
+            channel.postMessage({
+                type: HOME_TUTORIAL_RESET_EVENT,
+                detail,
+            });
+            channel.close();
+        } catch (error) {
+            console.warn('[Tutorial] 广播首页教程重置事件失败:', error);
+        }
+    }
+
+    try {
+        localStorage.setItem(HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY, JSON.stringify(detail));
+        localStorage.removeItem(HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY);
+    } catch (error) {
+        console.warn('[Tutorial] 写入首页教程重置同步事件失败:', error);
+    }
+}
+
+async function getTutorialMutationHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const helper = window.nekoLocalMutationSecurity;
+    if (helper && typeof helper.getMutationHeaders === 'function') {
+        try {
+            return Object.assign(headers, await helper.getMutationHeaders());
+        } catch (error) {
+            console.warn('[Tutorial] 获取本地写入安全头失败，尝试直接读取页面配置:', error);
+        }
+    }
+
+    try {
+        const response = await fetch('/api/config/page_config', { cache: 'no-store' });
+        if (!response.ok) {
+            return headers;
+        }
+        const data = await response.json();
+        if (data && typeof data.autostart_csrf_token === 'string' && data.autostart_csrf_token) {
+            headers['X-CSRF-Token'] = data.autostart_csrf_token;
+        }
+    } catch (error) {
+        console.warn('[Tutorial] 读取页面配置失败，继续使用基础请求头:', error);
+    }
+    return headers;
+}
+
+async function postTutorialPromptReset(reason) {
+    const body = JSON.stringify({ reason });
+    const sendResetRequest = async () => fetch('/api/tutorial-prompt/reset', {
+        method: 'POST',
+        headers: await getTutorialMutationHeaders(),
+        body,
+    });
+
+    let response = await sendResetRequest();
+    if (response.status === 403 && window.nekoLocalMutationSecurity &&
+        typeof window.nekoLocalMutationSecurity.refreshToken === 'function') {
+        let shouldRetry = false;
+        try {
+            const payload = await response.clone().json();
+            shouldRetry = payload && payload.error_code === 'csrf_validation_failed';
+        } catch (_) {
+            shouldRetry = false;
+        }
+        if (shouldRetry) {
+            await window.nekoLocalMutationSecurity.refreshToken();
+            response = await sendResetRequest();
+        }
+    }
+    if (!response.ok) {
+        throw new Error(`tutorial prompt reset failed: ${response.status}`);
+    }
+    return response.json();
 }
 
 window.getTutorialStorageKeyForPage = getTutorialStorageKeyForPage;
@@ -73,11 +182,17 @@ class UniversalTutorialManager {
         this._tutorialEndReason = null;
         this._tutorialEndRawReason = null;
         this._tutorialEndHandled = false;
-        this._tutorialAvatarOverride = null;
-        this._tutorialAvatarOverridePromise = null;
+        this._tutorialAvatarReloadController = null;
+        this._tutorialSkipController = null;
         this._teardownPromise = null;
         this._tutorialViewportPlacementResizeHandler = null;
         this._tutorialViewportPlacementResizeTimer = null;
+        this._tutorialScrollBlockHandler = this.blockTutorialScrollEvent.bind(this);
+        this._tutorialScrollBlockOptions = { capture: true, passive: false };
+        this._isTutorialScrollBlocked = false;
+        this._tutorialPointerBlockHandler = this.blockTutorialPointerEvent.bind(this);
+        this._tutorialPointerBlockOptions = { capture: true, passive: false };
+        this._isTutorialPointerBlocked = false;
         this._isDestroyed = false;
 
         // 刷新延迟常量
@@ -101,6 +216,41 @@ class UniversalTutorialManager {
 
     logPromptFlow(step, details = {}) {
         logTutorialPromptFlow(step, details);
+    }
+
+    ensureTutorialSkipController() {
+        if (!this._tutorialSkipController
+            && window.TutorialSkipController
+            && typeof window.TutorialSkipController.createController === 'function') {
+            this._tutorialSkipController = window.TutorialSkipController.createController({
+                document: document,
+                buttonId: 'neko-tutorial-skip-btn'
+            });
+        }
+        return this._tutorialSkipController;
+    }
+
+    ensureTutorialAvatarReloadController() {
+        if (!this._tutorialAvatarReloadController
+            && window.TutorialAvatarReloadController
+            && typeof window.TutorialAvatarReloadController.createController === 'function') {
+            this._tutorialAvatarReloadController = window.TutorialAvatarReloadController.createController({
+                host: this,
+                timeoutMs: TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS,
+                tutorialModelName: TUTORIAL_YUI_LIVE2D_MODEL_NAME,
+                resolveCurrentName: () => this.resolveCurrentTutorialCatgirlName(),
+                fetchCharacters: () => this.fetchTutorialCharacters(),
+                buildSnapshotPayload: (currentConfig) => this.buildTutorialModelSavePayload(currentConfig),
+                reloadModel: (currentName, payload, options) => this.reloadTutorialModel(currentName, payload, options),
+                setPreparing: (preparing) => this.setTutorialLive2dPreparing(preparing),
+                revealPrepared: () => this.revealTutorialLive2dPrepared(),
+                captureAvatarPreview: () => this.captureTutorialChatAvatarPreview(),
+                applyIdentityOverride: (payload) => this.applyTutorialChatIdentityOverride(payload),
+                sleep: (delayMs) => this.sleep(delayMs),
+                clearViewportWatcher: () => this.clearTutorialLive2dViewportPlacementWatcher()
+            });
+        }
+        return this._tutorialAvatarReloadController;
     }
 
     /**
@@ -710,6 +860,13 @@ class UniversalTutorialManager {
         const launchTutorial = () => {
             setTimeout(() => {
                 this._pendingI18nStart = false;
+                if (this.shouldSkipAutomaticHomeTutorialStart()) {
+                    this.logPromptFlow('home-auto-start-skipped', {
+                        page: this.currentPage,
+                        reason: 'prompt-flow-active',
+                    });
+                    return;
+                }
                 this.startTutorial();
             }, delayMs);
         };
@@ -752,6 +909,26 @@ class UniversalTutorialManager {
             cleanup();
             launchTutorial();
         }, 5000);
+    }
+
+    shouldSkipAutomaticHomeTutorialStart() {
+        if (this.currentPage !== 'home') {
+            return false;
+        }
+        const source = this.peekTutorialStartSource('home') || 'auto';
+        if (source !== 'auto') {
+            return false;
+        }
+        const prompt = window.appTutorialPrompt || null;
+        if (!prompt || typeof prompt.shouldSuppressAutomaticHomeTutorialStart !== 'function') {
+            return false;
+        }
+        try {
+            return prompt.shouldSuppressAutomaticHomeTutorialStart() === true;
+        } catch (error) {
+            console.warn('[Tutorial] 检查主页自动教程启动抑制状态失败:', error);
+            return false;
+        }
     }
 
     /**
@@ -1271,7 +1448,8 @@ class UniversalTutorialManager {
             }
             this._tutorialViewportPlacementResizeTimer = setTimeout(() => {
                 this._tutorialViewportPlacementResizeTimer = null;
-                if (!this._tutorialAvatarOverride || this._isDestroyed) {
+                const controller = this.ensureTutorialAvatarReloadController();
+                if (!controller || !controller.hasActiveOverride() || this._isDestroyed) {
                     return;
                 }
                 this.applyTutorialLive2dViewportPlacement().catch(error => {
@@ -1297,160 +1475,19 @@ class UniversalTutorialManager {
     }
 
     beginTutorialAvatarOverride() {
-        if (this._tutorialAvatarOverridePromise) {
-            if (this._tutorialAvatarOverride && (this._tutorialAvatarOverride.restoring || this._tutorialAvatarOverride.restoreRequested)) {
-                return this._tutorialAvatarOverridePromise.then(() => this.beginTutorialAvatarOverride());
-            }
-            return this._tutorialAvatarOverridePromise;
+        const controller = this.ensureTutorialAvatarReloadController();
+        if (!controller || typeof controller.beginOverride !== 'function') {
+            return Promise.reject(new Error('tutorial avatar reload controller unavailable'));
         }
-        if (this._tutorialAvatarOverride) {
-            return Promise.resolve();
-        }
-
-        const activePrefix = UniversalTutorialManager.detectModelPrefix();
-        this._tutorialAvatarOverride = {
-            activePrefix,
-            restoreRequested: false
-        };
-        const override = this._tutorialAvatarOverride;
-        const ensureOverrideActive = () => {
-            if (this._tutorialAvatarOverride !== override || override.cancelled) {
-                throw new Error('tutorial avatar override setup cancelled');
-            }
-        };
-        const setupDeadline = new Promise((_, reject) => {
-            setTimeout(() => {
-                reject(new Error(`tutorial avatar override setup timed out after ${TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS}ms`));
-            }, TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS);
-        });
-
-        const setupPromise = Promise.race([(async () => {
-            const currentName = await this.resolveCurrentTutorialCatgirlName();
-            ensureOverrideActive();
-            if (!currentName) {
-                throw new Error('current tutorial catgirl name unavailable');
-            }
-
-            const characters = await this.fetchTutorialCharacters();
-            ensureOverrideActive();
-            const catgirls = (characters && characters['猫娘']) || {};
-            const currentConfig = catgirls[currentName];
-            if (!currentConfig) {
-                throw new Error(`current catgirl config not found: ${currentName}`);
-            }
-
-            const snapshotPayload = this.buildTutorialModelSavePayload(currentConfig);
-            const tutorialModelPayload = {
-                model_type: 'live2d',
-                live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME,
-                live2d_idle_animation: ''
-            };
-            this._tutorialAvatarOverride.currentName = currentName;
-            this._tutorialAvatarOverride.snapshotPayload = snapshotPayload;
-
-            this.setTutorialLive2dPreparing(true);
-            await this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true });
-            ensureOverrideActive();
-            await this.sleep(350);
-            ensureOverrideActive();
-            const tutorialAvatar = await this.captureTutorialChatAvatarPreview();
-            ensureOverrideActive();
-            this.applyTutorialChatIdentityOverride({
-                active: true,
-                displayName: 'YUI',
-                avatarDataUrl: tutorialAvatar && tutorialAvatar.dataUrl ? tutorialAvatar.dataUrl : '',
-                modelType: tutorialAvatar && tutorialAvatar.modelType ? tutorialAvatar.modelType : 'live2d'
-            });
-            console.log('[Tutorial] 新手教程期间已临时切换到 yui-origin 模型（未写入用户配置）:', tutorialModelPayload);
-        })(), setupDeadline]).catch(async (error) => {
-            override.cancelled = true;
-            this.revealTutorialLive2dPrepared();
-            try {
-                await Promise.resolve(this.applyTutorialChatIdentityOverride({ active: false }));
-            } catch (identityError) {
-                console.warn('[Tutorial] 清理临时聊天身份失败:', identityError);
-            }
-            if (this._tutorialAvatarOverride === override) {
-                if (this._tutorialAvatarOverridePromise === setupPromise) {
-                    this._tutorialAvatarOverridePromise = null;
-                }
-                await this.restoreTutorialAvatarOverride();
-            }
-            console.warn('[Tutorial] 临时切换 yui-origin 模型失败:', error);
-            throw error;
-        });
-
-        this._tutorialAvatarOverridePromise = setupPromise;
-        setupPromise.then(
-            () => null,
-            () => null
-        ).then(() => {
-            if (this._tutorialAvatarOverridePromise === setupPromise) {
-                this._tutorialAvatarOverridePromise = null;
-            }
-            if (this._tutorialAvatarOverride && this._tutorialAvatarOverride.restoreRequested) {
-                this.restoreTutorialAvatarOverride().catch(error => {
-                    console.warn('[Tutorial] 延迟恢复新手教程头像失败:', error);
-                });
-            }
-        }).catch(error => {
-            console.warn('[Tutorial] 清理新手教程头像准备状态失败:', error);
-        });
-
-        return setupPromise;
+        return controller.beginOverride();
     }
 
     restoreTutorialAvatarOverride() {
-        const override = this._tutorialAvatarOverride;
-        if (!override) {
+        const controller = this.ensureTutorialAvatarReloadController();
+        if (!controller || typeof controller.restoreOverride !== 'function') {
             return Promise.resolve();
         }
-
-        if (this._tutorialAvatarOverridePromise) {
-            override.restoreRequested = true;
-            return this._tutorialAvatarOverridePromise.then(() => {
-                if (this._tutorialAvatarOverride === override && !override.restoring) {
-                    return this.restoreTutorialAvatarOverride();
-                }
-                return this._tutorialAvatarOverridePromise || Promise.resolve();
-            });
-        }
-
-        const currentName = override.currentName;
-        const snapshotPayload = override.snapshotPayload;
-        override.restoring = true;
-
-        const restorePromise = Promise.resolve().then(async () => {
-            try {
-                this.clearTutorialLive2dViewportPlacementWatcher();
-                this.revealTutorialLive2dPrepared();
-                this.applyTutorialChatIdentityOverride({ active: false });
-                if (!currentName) {
-                    return;
-                }
-
-                await this.reloadTutorialModel(currentName, snapshotPayload || {});
-                console.log('[Tutorial] 已按模型管理页保存流程恢复新手教程前的用户模型:', override.activePrefix || 'unknown');
-            } catch (error) {
-                console.warn('[Tutorial] 恢复新手教程前用户模型失败:', error);
-                if (typeof window.showCurrentModel === 'function') {
-                    try {
-                        await window.showCurrentModel();
-                    } catch (_) {}
-                }
-            } finally {
-                this.clearTutorialLive2dViewportPlacementWatcher();
-                if (this._tutorialAvatarOverride === override) {
-                    this._tutorialAvatarOverride = null;
-                }
-                if (this._tutorialAvatarOverridePromise === restorePromise) {
-                    this._tutorialAvatarOverridePromise = null;
-                }
-            }
-        });
-
-        this._tutorialAvatarOverridePromise = restorePromise;
-        return restorePromise;
+        return controller.restoreOverride();
     }
 
     async captureTutorialChatAvatarPreview() {
@@ -1559,7 +1596,7 @@ class UniversalTutorialManager {
         }
 
         // 角色管理
-        if (path.includes('chara_manager')) {
+        if (path.includes('character_card_manager') || path.includes('chara_manager')) {
             return 'chara_manager';
         }
 
@@ -1859,6 +1896,13 @@ class UniversalTutorialManager {
         }
 
         return Array.from(new Set(pageKeys)).map(getTutorialStorageKeyForPage);
+    }
+
+    getResetStorageKeysForPage(page) {
+        return Array.from(new Set([
+            ...this.getStorageKeysForPage(page),
+            ...getTutorialStorageKeysForPageFallback(page),
+        ]));
     }
 
     getManualStartIntentKey(page = null) {
@@ -2703,24 +2747,45 @@ class UniversalTutorialManager {
     getCharaManagerSteps() {
         return [
             {
-                element: '#master-section',
+                element: '#master-profile-section',
                 popover: {
                     title: this.t('tutorial.chara_manager.step1.title', '👤 主人档案'),
-                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。填写您的信息后，猫娘会根据这些信息来称呼您。'),
+                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响猫娘对您的称呼和态度。'),
                 }
             },
             {
-                element: '#catgirl-section',
+                element: '#character-cards-content',
                 popover: {
                     title: this.t('tutorial.chara_manager.step6.title', '🐱 猫娘档案'),
-                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格设定。'),
+                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。'),
                 }
             },
             {
-                element: '.catgirl-block:first-child button[id^="switch-btn-"]',
+                element: '.chara-add-btn',
+                popover: {
+                    title: this.t('tutorial.chara_manager.step7.title', '➕ 新增猫娘'),
+                    description: this.t('tutorial.chara_manager.step7.desc', '点击这个按钮创建一个新的猫娘角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。'),
+                }
+            },
+            {
+                element: '.chara-card-item:first-child, .chara-list-item:first-child',
+                popover: {
+                    title: this.t('tutorial.chara_manager.step8.title', '📋 猫娘卡片'),
+                    description: this.t('tutorial.chara_manager.step8.desc', '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。'),
+                }
+            },
+            {
+                element: '.chara-card-item:first-child .card-action-btn.switch-btn, .chara-list-item:first-child .list-action-btn.switch-btn',
                 popover: {
                     title: this.t('tutorial.chara_manager.step11.title', '🔄 切换猫娘'),
                     description: this.t('tutorial.chara_manager.step11.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页会使用该角色的形象和性格。'),
+                }
+            },
+            {
+                element: '#api-key-settings-btn',
+                popover: {
+                    title: this.t('tutorial.chara_manager.step5.title', '🔑 API Key 设置'),
+                    description: this.t('tutorial.chara_manager.step5.desc', '点击这里配置 AI 服务的 API Key。这是猫娘能够进行对话的必要配置。'),
                 }
             }
         ];
@@ -3232,16 +3297,79 @@ class UniversalTutorialManager {
         if (this._isBodyLocked) return;
         this._originalBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
+        this.blockTutorialScroll();
+        this.blockTutorialPointerEvents();
         this._isBodyLocked = true;
         console.log('[Tutorial] 禁用页面滚动');
     }
 
     unlockBodyScroll() {
         if (!this._isBodyLocked) return;
+        this.unblockTutorialPointerEvents();
+        this.unblockTutorialScroll();
         document.body.style.overflow = this._originalBodyOverflow ?? '';
         this._originalBodyOverflow = undefined;
         this._isBodyLocked = false;
         console.log('[Tutorial] 恢复页面滚动');
+    }
+
+    blockTutorialScrollEvent(event) {
+        if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.currentPage !== 'chara_manager') return;
+        if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
+    }
+
+    blockTutorialScroll() {
+        if (this._isTutorialScrollBlocked) return;
+        window.addEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        window.addEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        this._isTutorialScrollBlocked = true;
+    }
+
+    unblockTutorialScroll() {
+        if (!this._isTutorialScrollBlocked) return;
+        window.removeEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        window.removeEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions);
+        this._isTutorialScrollBlocked = false;
+    }
+
+    isTutorialControlEventTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        return !!target.closest('.driver-popover, #neko-tutorial-skip-btn');
+    }
+
+    blockTutorialPointerEvent(event) {
+        if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.currentPage !== 'chara_manager') return;
+        if (this.isTutorialControlEventTarget(event && event.target)) return;
+        if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
+        if (event && typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        } else if (event && typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+        }
+    }
+
+    blockTutorialPointerEvents() {
+        if (this._isTutorialPointerBlocked) return;
+        window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.addEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.addEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.addEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._isTutorialPointerBlocked = true;
+    }
+
+    unblockTutorialPointerEvents() {
+        if (!this._isTutorialPointerBlocked) return;
+        window.removeEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.removeEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.removeEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions);
+        this._isTutorialPointerBlocked = false;
     }
 
     restoreTutorialInteractionState() {
@@ -3616,7 +3744,8 @@ class UniversalTutorialManager {
             this._tutorialModelPrefix = 'live2d';
             avatarReadyPromise = this.beginTutorialAvatarOverride();
         } else {
-            avatarReadyPromise = this._tutorialAvatarOverridePromise;
+            const avatarReloadController = this.ensureTutorialAvatarReloadController();
+            avatarReadyPromise = avatarReloadController ? avatarReloadController.getPendingPromise() : null;
         }
 
         if (useYuiOnlyHomeFlow) {
@@ -3851,92 +3980,47 @@ class UniversalTutorialManager {
      * 在右上角显示「跳过」按钮，点击后结束引导
      */
     showSkipButton() {
-        // 避免重复创建
-        this.hideSkipButton();
+        const controller = this.ensureTutorialSkipController();
+        if (!controller || typeof controller.show !== 'function') {
+            return;
+        }
 
-        const btn = document.createElement('button');
-        btn.id = 'neko-tutorial-skip-btn';
-        btn.textContent = this.t('tutorial.buttons.skip', '跳过');
+        controller.show({
+            label: this.t('tutorial.buttons.skip', '跳过'),
+            onSkip: () => this.handleTutorialSkipRequest()
+        });
+        console.log('[Tutorial] 跳过按钮已显示');
+    }
 
-        // 明确设置点击区域，防止 CEF 继承父元素 pointer-events 导致无法点击
-        btn.style.pointerEvents = 'auto';
-        btn.style.position = 'fixed';
-        btn.style.zIndex = '2147483647';
-        btn.style.touchAction = 'manipulation'; // 消除 CEF 的 300ms 点击延迟
-
-        let skipHandled = false;
+    handleTutorialSkipRequest() {
         const handleSkipFailure = (error) => {
             console.warn('[Tutorial] Yui Guide skip 失败，回退到 requestTutorialDestroy:', error);
-            skipHandled = false;
             this.requestTutorialDestroy('skip');
         };
-        const handleSkipRequest = (e) => {
-            if (skipHandled) {
-                return;
-            }
-            skipHandled = true;
-            btn.disabled = true;
-            btn.setAttribute('aria-disabled', 'true');
-            if (e && typeof e.preventDefault === 'function') {
-                e.preventDefault();
-            }
-            if (e && typeof e.stopImmediatePropagation === 'function') {
-                e.stopImmediatePropagation();
-            }
-            if (e && typeof e.stopPropagation === 'function') {
-                e.stopPropagation();
-            }
-            const director = this.isYuiGuideEnabledForPage(this.currentPage)
-                ? this.ensureYuiGuideDirector()
-                : null;
-            if (director && typeof director.skip === 'function') {
-                try {
-                    Promise.resolve(director.skip('skip', 'skip'))
-                        .then(() => {
-                            this.requestTutorialDestroy('skip');
-                        })
-                        .catch(handleSkipFailure);
-                } catch (error) {
-                    handleSkipFailure(error);
-                }
-                return;
-            }
+        const director = this.isYuiGuideEnabledForPage(this.currentPage)
+            ? this.ensureYuiGuideDirector()
+            : null;
+        if (director && typeof director.skip === 'function') {
+            return Promise.resolve(director.skip('skip', 'skip'))
+                .then(() => {
+                    this.requestTutorialDestroy('skip');
+                })
+                .catch(handleSkipFailure);
+        }
 
-            this.requestTutorialDestroy('skip');
-        };
-
-        btn.addEventListener('pointerdown', handleSkipRequest);
-        btn.addEventListener('mousedown', handleSkipRequest);
-        btn.addEventListener('touchstart', handleSkipRequest, { passive: false });
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            handleSkipRequest(e);
-        });
-        document.body.appendChild(btn);
-        this.setYuiGuideSkipBypassEnabled(true);
-        console.log('[Tutorial] 跳过按钮已显示');
+        this.requestTutorialDestroy('skip');
+        return Promise.resolve();
     }
 
     /**
      * 移除「跳过」按钮
      */
     hideSkipButton() {
-        const existing = document.getElementById('neko-tutorial-skip-btn');
-        if (existing) {
-            existing.remove();
-            console.log('[Tutorial] 跳过按钮已移除');
+        const controller = this.ensureTutorialSkipController();
+        if (controller && typeof controller.hide === 'function') {
+            controller.hide();
         }
-        this.setYuiGuideSkipBypassEnabled(false);
-    }
-
-    setYuiGuideSkipBypassEnabled(enabled) {
-        try {
-            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
-                detail: { enabled: !!enabled }
-            }));
-        } catch (error) {
-            console.warn('[Tutorial] 切换 Yui Guide skip bypass 失败:', error);
-        }
+        console.log('[Tutorial] 跳过按钮已移除');
     }
 
     /**
@@ -3999,8 +4083,8 @@ class UniversalTutorialManager {
             const startTime = Date.now();
 
             const checkCatgirlCards = () => {
-                const catgirlList = document.getElementById('catgirl-list');
-                const firstCatgirl = document.querySelector('.catgirl-block:first-child');
+                const catgirlList = document.getElementById('chara-cards-container');
+                const firstCatgirl = document.querySelector('.chara-card-item, .chara-list-item');
 
                 if (catgirlList && firstCatgirl) {
                     console.log('[Tutorial] 猫娘卡片已创建');
@@ -4027,7 +4111,7 @@ class UniversalTutorialManager {
      * 优先选择第一个，如果不存在则返回 null
      */
     getTargetCatgirlBlock() {
-        const catgirlBlocks = document.querySelectorAll('.catgirl-block');
+        const catgirlBlocks = document.querySelectorAll('.chara-card-item, .chara-list-item');
         if (catgirlBlocks.length === 0) {
             console.warn('[Tutorial] 没有找到任何猫娘卡片');
             return null;
@@ -4044,26 +4128,8 @@ class UniversalTutorialManager {
     async ensureCatgirlExpanded(catgirlBlock) {
         if (!catgirlBlock) return false;
 
-        const expandBtn = catgirlBlock.querySelector('.catgirl-expand');
-        const detailsDiv = catgirlBlock.querySelector('.catgirl-details');
-
-        if (!expandBtn || !detailsDiv) {
-            console.warn('[Tutorial] 猫娘卡片结构不完整');
-            return false;
-        }
-
-        // 检查是否已展开 - 通过检查 detailsDiv 的 display 样式
-        const isExpanded = detailsDiv.style.display === 'block';
-        console.log(`[Tutorial] 猫娘卡片展开状态: ${isExpanded}`);
-
-        if (!isExpanded) {
-            console.log('[Tutorial] 展开猫娘卡片');
-            expandBtn.click();
-            // 等待展开动画完成
-            await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        return true;
+        // 当前角色管理页的卡片详情改为独立面板，不再有内联展开区域。
+        return this.isElementVisible(catgirlBlock);
     }
 
     /**
@@ -4134,19 +4200,10 @@ class UniversalTutorialManager {
             }
         });
 
-        // 2. 再关闭所有"猫娘卡片" (.catgirl-block)
-        const allCatgirlBlocks = document.querySelectorAll('.catgirl-block');
-        allCatgirlBlocks.forEach(block => {
-            const details = block.querySelector('.catgirl-details');
-            const expandBtn = block.querySelector('.catgirl-expand');
-
-            // 检查内容区域是否可见
-            if (details && expandBtn) {
-                const style = window.getComputedStyle(details);
-                if (style.display !== 'none') {
-                    console.log('[Tutorial] 检测到猫娘卡片已展开，正在关闭...');
-                    expandBtn.click(); // 点击折叠按钮关闭它
-                }
+        // 2. 当前角色管理页的卡片详情使用独立面板；教程只需要确认卡片列表处于可见稳定态。
+        document.querySelectorAll('.chara-card-item, .chara-list-item').forEach(block => {
+            if (!this.isElementVisible(block)) {
+                console.log('[Tutorial] 检测到不可见的猫娘卡片，跳过预处理');
             }
         });
 
@@ -4468,9 +4525,9 @@ class UniversalTutorialManager {
                 // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
                 if (this.currentPage === 'chara_manager') {
                     const needsAdvancedSettings = [
-                        '.catgirl-block:first-child .fold-toggle',
-                        '.catgirl-block:first-child .live2d-link',
-                        '.catgirl-block:first-child select[name="voice_id"]'
+                        '.chara-card-item:first-child .fold-toggle, .chara-list-item:first-child .fold-toggle',
+                        '.chara-card-item:first-child .live2d-link, .chara-list-item:first-child .live2d-link',
+                        '.chara-card-item:first-child select[name="voice_id"], .chara-list-item:first-child select[name="voice_id"]'
                     ].includes(currentStepConfig.element);
 
                     if (needsAdvancedSettings) {
@@ -4554,29 +4611,19 @@ class UniversalTutorialManager {
                                 console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
 
                                 // 1. 找到要点击的元素
-                                const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
+                                const innerTrigger = element.querySelector('.fold-toggle');
                                 const clickTarget = innerTrigger || element;
 
                                 // 2. 检查是否是折叠类元素，如果已展开则不点击
                                 let shouldClick = true;
                                 if (clickTarget.classList.contains('fold-toggle')) {
                                     // 检查进阶设定是否已展开
-                                    const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
+                                    const foldContainer = clickTarget.closest('.chara-card-item, .chara-list-item, .catgirl-panel-wrapper')?.querySelector('.fold');
                                     if (foldContainer) {
                                         const isExpanded = foldContainer.classList.contains('open') ||
                                             window.getComputedStyle(foldContainer).display !== 'none';
                                         if (isExpanded) {
                                             console.log('[Tutorial] 进阶设定已展开，跳过点击');
-                                            shouldClick = false;
-                                        }
-                                    }
-                                } else if (clickTarget.classList.contains('catgirl-expand')) {
-                                    // 检查猫娘卡片是否已展开
-                                    const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
-                                    if (details) {
-                                        const isExpanded = window.getComputedStyle(details).display !== 'none';
-                                        if (isExpanded) {
-                                            console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
                                             shouldClick = false;
                                         }
                                     }
@@ -4682,6 +4729,24 @@ class UniversalTutorialManager {
 
         this._teardownTutorialUI();
 
+        if (endMeta.reason === 'destroy') {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
+                detail: {
+                    page: this.currentPage,
+                    source: completedSource,
+                    reason: endMeta.rawReason
+                }
+            }));
+            this.logPromptFlow('tutorial-ended-without-completion', {
+                page: this.currentPage,
+                source: completedSource,
+                reason: endMeta.reason,
+                rawReason: endMeta.rawReason
+            });
+            console.log('[Tutorial] 引导未完成即结束，页面:', this.currentPage, 'reason:', endMeta.rawReason);
+            return;
+        }
+
         // 标记用户已看过该页面的引导
         const storageKey = this.getStorageKey();
         localStorage.setItem(storageKey, 'true');
@@ -4689,6 +4754,24 @@ class UniversalTutorialManager {
             const commonStorageKey = getTutorialStorageKeyForPage('model_manager_common');
             localStorage.setItem(commonStorageKey, 'true');
             console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
+        }
+
+        if (endMeta.reason === 'skip') {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: {
+                    page: this.currentPage,
+                    source: completedSource,
+                    reason: endMeta.rawReason
+                }
+            }));
+            this.logPromptFlow('tutorial-skipped', {
+                page: this.currentPage,
+                source: completedSource,
+                reason: endMeta.reason,
+                rawReason: endMeta.rawReason
+            });
+            console.log('[Tutorial] 引导已跳过并标记看过，页面:', this.currentPage);
+            return;
         }
 
         window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
@@ -5024,28 +5107,18 @@ class UniversalTutorialManager {
             console.log(`[Tutorial] _ensureCharaManagerExpanded: 尝试 ${attempts}/${maxAttempts}`);
 
             // 1. 找到第一个猫娘卡片
-            const targetBlock = document.querySelector('.catgirl-block:first-child');
+            const targetBlock = document.querySelector('.chara-card-item:first-child, .chara-list-item:first-child');
             if (!targetBlock) {
                 console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片，重试中...');
                 await this.sleep(300);
                 continue;
             }
 
-            // 2. 确保猫娘卡片详情区域已展开
-            const details = targetBlock.querySelector('.catgirl-details');
-            const expandBtn = targetBlock.querySelector('.catgirl-expand');
-            if (details && expandBtn) {
-                const detailsStyle = window.getComputedStyle(details);
-                if (detailsStyle.display === 'none') {
-                    console.log('[Tutorial] 猫娘卡片详情未展开，正在点击展开按钮...');
-                    expandBtn.click();
-                    // 等待卡片展开动画完成
-                    await this.sleep(600);
-                    continue; // 重新进入循环以验证展开结果
-                }
-            } else {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 猫娘卡片结构异常，缺少详情或展开按钮');
-                return false;
+            // 2. 当前角色管理页卡片详情是独立面板，不再需要展开内联详情区域。
+            if (!this.isElementVisible(targetBlock)) {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 目标猫娘卡片不可见，重试中...');
+                await this.sleep(300);
+                continue;
             }
 
             // 3. 确保“进阶设定”折叠区域已展开
@@ -5053,8 +5126,8 @@ class UniversalTutorialManager {
             const foldToggle = targetBlock.querySelector('.fold-toggle');
 
             if (!foldContainer || !foldToggle) {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到进阶设定折叠区域或开关');
-                return false;
+                console.log('[Tutorial] _ensureCharaManagerExpanded: 当前卡片无内联进阶设定，跳过展开');
+                return true;
             }
 
             const isExpanded = foldContainer.classList.contains('open') ||
@@ -5102,11 +5175,17 @@ class UniversalTutorialManager {
     /** 
      * 重置所有页面的引导状态 
      */ 
-    resetAllTutorials() {
+    async resetHomeTutorialPromptState(reason = 'manual_home_tutorial_reset') {
+        return postTutorialPromptReset(reason);
+    }
+
+    async resetAllTutorials() {
+        await this.resetHomeTutorialPromptState('manual_all_tutorial_reset');
         TUTORIAL_PAGES.forEach(page => {
-            this.getStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
+            this.getResetStorageKeysForPage(page).forEach(key => localStorage.removeItem(key));
         });
         this.markTutorialManualStartIntent('home');
+        dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
         console.log('[Tutorial] 已重置所有页面引导');
         this.notifyTutorialResetForCurrentPageIfNeeded('all');
     } 
@@ -5114,13 +5193,17 @@ class UniversalTutorialManager {
     /**
      * 重置指定页面的引导状态
      */
-    resetPageTutorial(pageKey) {
+    async resetPageTutorial(pageKey) {
         if (pageKey === 'all') {
-            this.resetAllTutorials();
+            await this.resetAllTutorials();
             return;
         }
 
-        this.getStorageKeysForPage(pageKey).forEach((storageKey) => {
+        if (pageKey === 'home') {
+            await this.resetHomeTutorialPromptState('manual_home_tutorial_reset');
+        }
+
+        this.getResetStorageKeysForPage(pageKey).forEach((storageKey) => {
             const oldVal = localStorage.getItem(storageKey);
             localStorage.removeItem(storageKey);
             if (oldVal) console.log('[Tutorial] 重置: 移除', storageKey, '(旧值:', oldVal, ')');
@@ -5128,6 +5211,7 @@ class UniversalTutorialManager {
 
         if (pageKey === 'home') {
             this.markTutorialManualStartIntent('home');
+            dispatchHomeTutorialResetEvent('home', 'manual_home_tutorial_reset');
         }
 
         console.log('[Tutorial] 已重置页面引导:', pageKey);
@@ -5252,13 +5336,17 @@ async function initUniversalTutorialManager() {
  * 全局函数：重置所有引导
  * 供 HTML 按钮调用
  */
-function resetAllTutorials() {
+async function resetAllTutorials() {
     if (window.universalTutorialManager) {
-        window.universalTutorialManager.resetAllTutorials();
+        await window.universalTutorialManager.resetAllTutorials();
     } else {
         // 如果管理器未初始化，直接清除 localStorage
-        TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(getTutorialStorageKeyForPage(page)); });
+        await postTutorialPromptReset('manual_all_tutorial_reset');
+        TUTORIAL_PAGES.forEach(page => {
+            getTutorialStorageKeysForPageFallback(page).forEach(key => localStorage.removeItem(key));
+        });
         localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
+        dispatchHomeTutorialResetEvent('all', 'manual_all_tutorial_reset');
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
@@ -5267,12 +5355,12 @@ function resetAllTutorials() {
  * 全局函数：重置指定页面的引导
  * 供下拉菜单调用
  */
-function resetTutorialForPage(pageKey) {
+async function resetTutorialForPage(pageKey) {
     if (!pageKey) return;
     console.log('%c[Tutorial] resetTutorialForPage 被调用, pageKey:', 'color: red; font-weight: bold', pageKey);
 
     if (pageKey === 'all') {
-        resetAllTutorials();
+        await resetAllTutorials();
         return;
     }
 
@@ -5295,8 +5383,8 @@ function resetTutorialForPage(pageKey) {
             }
 
             const successMessage = window.t
-                ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的人格重选请求，请回到主页刷新后继续。')
-                : '已记录当前角色的人格重选请求，请回到主页刷新后继续。';
+                ? window.t('memory.currentPersonalityResetSuccess', '已记录当前角色的性格重选请求，请回到主页刷新后继续。')
+                : '已记录当前角色的性格重选请求，请回到主页刷新后继续。';
             alert(successMessage);
         }).catch(() => {
             const fallbackError = window.t
@@ -5308,19 +5396,19 @@ function resetTutorialForPage(pageKey) {
     }
 
     if (window.universalTutorialManager) {
-        window.universalTutorialManager.resetPageTutorial(pageKey);
+        await window.universalTutorialManager.resetPageTutorial(pageKey);
     } else {
+        if (pageKey === 'home') {
+            await postTutorialPromptReset('manual_home_tutorial_reset');
+        }
         if (pageKey === 'model_manager') {
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_live2d'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_vrm'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_mmd'));
-            localStorage.removeItem(getTutorialStorageKeyForPage('model_manager_common'));
+            getTutorialStorageKeysForPageFallback('model_manager').forEach(key => localStorage.removeItem(key));
         } else {
-            localStorage.removeItem(getTutorialStorageKeyForPage(pageKey));
+            getTutorialStorageKeysForPageFallback(pageKey).forEach(key => localStorage.removeItem(key));
         }
         if (pageKey === 'home') {
             localStorage.setItem(getTutorialManualIntentKeyForPage('home'), 'true');
+            dispatchHomeTutorialResetEvent('home', 'manual_home_tutorial_reset');
         }
     }
 

@@ -846,6 +846,11 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     };
 
     returnButtonContainer.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+        }
         if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); handleStart(e.clientX, e.clientY);
         }
@@ -913,7 +918,7 @@ VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
  * 将屏幕像素偏移量应用到 VRM 模型的世界坐标
  * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
  */
-VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
+VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {}) {
     const scene = this.currentModel && this.currentModel.scene;
     if (!scene || !this.camera || !this.renderer) return;
 
@@ -941,7 +946,7 @@ VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy) {
     scene.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
     scene.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
 
-    if (this.interaction && typeof this.interaction.clampModelPosition === 'function') {
+    if (options.clamp !== false && this.interaction && typeof this.interaction.clampModelPosition === 'function') {
         const clamped = this.interaction.clampModelPosition(scene.position.clone());
         if (clamped && clamped.isVector3) scene.position.copy(clamped);
     }

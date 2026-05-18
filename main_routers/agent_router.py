@@ -15,6 +15,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -44,6 +45,53 @@ _OPENCLAW_GUIDE_LANG_FILES = {
     "ko": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ko.md",
     "ru": _OPENCLAW_GUIDE_DIR / "openclaw_guide.ru.md",
 }
+
+_AGENT_OFF_FLAGS = {
+    "agent_enabled": False,
+    "computer_use_enabled": False,
+    "browser_use_enabled": False,
+    "user_plugin_enabled": False,
+    "openclaw_enabled": False,
+    "openfang_enabled": False,
+}
+
+
+async def force_disable_agent_for_character_switch(current_lanlan: str, previous_lanlan: str | None = None) -> bool:
+    """角色切换后强制关闭猫爪，避免工具服务的全局旧状态串到新角色。"""
+    names = {
+        str(name or "").strip()
+        for name in (current_lanlan, previous_lanlan)
+        if str(name or "").strip()
+    }
+    session_manager = get_session_manager()
+    for name in names:
+        mgr = session_manager.get(name)
+        if mgr:
+            mgr.update_agent_flags(dict(_AGENT_OFF_FLAGS))
+
+    if not current_lanlan:
+        return False
+
+    try:
+        client = _get_http_client()
+        payload = {
+            "request_id": f"character-switch-agent-off-{uuid.uuid4().hex[:8]}",
+            "command": "set_agent_enabled",
+            "enabled": False,
+            "lanlan_name": current_lanlan,
+        }
+        # 工具服务会先落关闭状态再收尾任务，短超时避免角色切换被长任务清理拖住。
+        response = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=payload, timeout=1.2)
+        if response.is_success:
+            return True
+        logger.warning(
+            "角色切换关闭猫爪失败: lanlan=%s status=%s",
+            current_lanlan,
+            response.status_code,
+        )
+    except Exception as exc:
+        logger.warning("角色切换关闭猫爪异常: lanlan=%s err=%s", current_lanlan, exc)
+    return False
 
 
 def _is_loopback_origin(value: str) -> bool:

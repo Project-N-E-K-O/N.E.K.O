@@ -54,6 +54,86 @@ class VRMCore {
         }
     }
 
+    static _getSceneRotation(vrm) {
+        if (!vrm || !vrm.scene || !vrm.scene.rotation) {
+            return null;
+        }
+
+        const { x, y, z } = vrm.scene.rotation;
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            return null;
+        }
+
+        return { x, y, z };
+    }
+
+    static _isFiniteRotation(rotation) {
+        return !!rotation &&
+            Number.isFinite(rotation.x) &&
+            Number.isFinite(rotation.y) &&
+            Number.isFinite(rotation.z);
+    }
+
+    static _isIdentityRotation(rotation) {
+        return VRMCore._isFiniteRotation(rotation) &&
+            Math.abs(rotation.x) < 0.000001 &&
+            Math.abs(rotation.y) < 0.000001 &&
+            Math.abs(rotation.z) < 0.000001;
+    }
+
+    getEffectiveSavedRotation(savedRotation, versionDefaultRotation) {
+        if (!VRMCore._isFiniteRotation(savedRotation)) {
+            return null;
+        }
+
+        // 旧逻辑可能把漏判的 VRM0.x 朝向自动保存为 identity。
+        // 对有明确 VRM0.x 版本默认旋转的模型，将该缓存视为可迁移旧值。
+        // 这也会迁移用户有意保存的 VRM0 identity；特殊背对模型需保存非 identity 旋转或按个案处理。
+        if (this.vrmVersion === '0.0' &&
+            VRMCore._isIdentityRotation(savedRotation) &&
+            VRMCore._isFiniteRotation(versionDefaultRotation) &&
+            !VRMCore._isIdentityRotation(versionDefaultRotation)) {
+            console.log('[VRM Core] 忽略旧版 VRM0.x identity rotation 缓存，改用版本默认旋转');
+            return null;
+        }
+
+        return savedRotation;
+    }
+
+    /**
+     * 对 VRM0.x 应用 three-vrm 官方朝向兼容，并返回统一旋转管线应使用的默认旋转。
+     * VRM1.0 不需要该兼容处理；已有用户保存 rotation 时，后续统一旋转管线仍会优先使用用户值。
+     */
+    async applyVRM0CompatibilityRotation(vrm) {
+        if (this.vrmVersion !== '0.0' || !vrm || !vrm.scene) {
+            return null;
+        }
+
+        try {
+            const VRMUtils = await VRMCore._getVRMUtils();
+            if (VRMUtils && typeof VRMUtils.rotateVRM0 === 'function') {
+                VRMUtils.rotateVRM0(vrm);
+                if (VRMCore._isIdentityRotation(VRMCore._getSceneRotation(vrm))) {
+                    console.warn('[VRM Core] VRMUtils.rotateVRM0 未产生旋转，回退到 Y 轴 180 度旋转');
+                    vrm.scene.rotation.y = Math.PI;
+                }
+            } else {
+                vrm.scene.rotation.y = Math.PI;
+            }
+        } catch (error) {
+            console.warn('[VRM Core] VRM0.x 官方朝向兼容失败，回退到 Y 轴 180 度旋转:', error);
+            vrm.scene.rotation.y = Math.PI;
+        }
+
+        vrm.scene.updateMatrixWorld(true);
+
+        const rotation = VRMCore._getSceneRotation(vrm);
+        if (rotation) {
+            console.log('[VRM Core] 已应用 VRM0.x 朝向兼容:', rotation);
+        }
+        return rotation;
+    }
+
     /**
      * 检测设备性能模式
      */
@@ -682,6 +762,7 @@ class VRMCore {
 
             // 检测 VRM 模型版本（0.0 或 1.0）
             this.vrmVersion = this.detectVRMVersion(vrm, gltf);
+            const versionDefaultRotation = await this.applyVRM0CompatibilityRotation(vrm);
 
             // 计算模型的边界框，用于确定合适的初始大小
             const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -834,29 +915,36 @@ class VRMCore {
             
             // 旋转设置统一在这里处理，确保只应用一次
             // 先通过检测器检测并修复方向，然后应用最终的旋转值
-            const savedRotation = preferences?.rotation;
+            const savedRotation = this.getEffectiveSavedRotation(preferences?.rotation, versionDefaultRotation);
             
-            const detectedRotation = window.VRMOrientationDetector 
-                ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation)
-                : { x: 0, y: 0, z: 0 };
+            let detectedRotation = window.VRMOrientationDetector
+                ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation, {
+                    defaultRotation: versionDefaultRotation
+                })
+                : (versionDefaultRotation || { x: 0, y: 0, z: 0 });
             
             if (window.VRMOrientationDetector) {
                 window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
             } else {
-                // 如果没有检测器，回退到直接使用保存的旋转值
+                // 如果没有检测器，回退到直接使用保存的旋转值或版本默认旋转
                 if (savedRotation && 
                     Number.isFinite(savedRotation.x) && 
                     Number.isFinite(savedRotation.y) && 
                     Number.isFinite(savedRotation.z)) {
                     vrm.scene.rotation.set(savedRotation.x, savedRotation.y, savedRotation.z);
                     vrm.scene.updateMatrixWorld(true);
+                    detectedRotation = VRMCore._getSceneRotation(vrm) || detectedRotation;
+                } else if (versionDefaultRotation &&
+                    Number.isFinite(versionDefaultRotation.x) &&
+                    Number.isFinite(versionDefaultRotation.y) &&
+                    Number.isFinite(versionDefaultRotation.z)) {
+                    vrm.scene.rotation.set(versionDefaultRotation.x, versionDefaultRotation.y, versionDefaultRotation.z);
+                    vrm.scene.updateMatrixWorld(true);
+                    detectedRotation = VRMCore._getSceneRotation(vrm) || detectedRotation;
                 }
             }
             
-            const hasSavedRotation = savedRotation && 
-                Number.isFinite(savedRotation.x) && 
-                Number.isFinite(savedRotation.y) && 
-                Number.isFinite(savedRotation.z);
+            const hasSavedRotation = VRMCore._isFiniteRotation(savedRotation);
             
             if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
@@ -1355,4 +1443,3 @@ window.addEventListener('neko-render-quality-changed', (e) => {
         window.vrmManager.core.applyQualitySettings(quality);
     }
 });
-

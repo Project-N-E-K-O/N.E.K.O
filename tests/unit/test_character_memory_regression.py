@@ -26,7 +26,7 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
     crash on attribute access.
     """
     # Import lazily to avoid circular import at module load time
-    from main_server import RoleState, _SyncMessageQueue
+    from app.main_server import RoleState, _SyncMessageQueue
     return {
         name: RoleState(
             sync_message_queue=_SyncMessageQueue(),
@@ -722,6 +722,235 @@ async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_t
             }
             assert_saved_mock.assert_awaited_once()
             assert "维护态工坊角色" not in cm.load_characters().get("猫娘", {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_preserves_persona_override_written_during_scan():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_persona_race_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "启动竞态工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            current_name = cm.load_characters()["当前猫娘"]
+
+            def _write_persona_override_during_scan(_installed_folder, _chara_name=None, _chara_file_stem=None):
+                latest = cm.load_characters()
+                latest["猫娘"][current_name].setdefault("_reserved", {})["persona_override"] = {
+                    "preset_id": "classic_genki",
+                    "source": "onboarding",
+                    "selected_at": "2026-05-08T12:00:00Z",
+                    "prompt_guidance": "保持测试人格",
+                    "profile": {
+                        "性格原型": "经典元气猫娘",
+                    },
+                }
+                cm.save_characters(latest, bypass_write_fence=True)
+                return None
+
+            with (
+                patch.object(
+                    workshop_router_module,
+                    "get_subscribed_workshop_items",
+                    AsyncMock(
+                        return_value={
+                            "success": True,
+                            "items": [
+                                {
+                                    "publishedFileId": "123456",
+                                    "installedFolder": str(installed_folder),
+                                }
+                            ],
+                        }
+                    ),
+                ),
+                patch.object(
+                    workshop_router_module,
+                    "find_preview_image_in_folder",
+                    side_effect=_write_persona_override_during_scan,
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 1
+            saved_characters = cm.load_characters()
+            assert "启动竞态工坊角色" in saved_characters.get("猫娘", {})
+            saved_override = saved_characters["猫娘"][current_name].get("_reserved", {}).get("persona_override")
+            assert saved_override["preset_id"] == "classic_genki"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_does_not_write_orphan_face_when_pending_add_is_skipped():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_orphan_face_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "并发工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            duplicate_dir = installed_folder / "duplicate"
+            duplicate_dir.mkdir()
+            (duplicate_dir / "重复角色卡.chara.json").write_text(
+                json.dumps({"档案名": "并发工坊角色", "昵称": "重复工坊卡"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            preview_path = installed_folder / "preview.png"
+            Image.new("RGBA", (1024, 1024), (80, 160, 220, 255)).save(preview_path)
+
+            def _create_same_character_during_scan(_installed_folder, _chara_name=None, _chara_file_stem=None):
+                latest = cm.load_characters()
+                latest.setdefault("猫娘", {})["并发工坊角色"] = {"昵称": "并发创建"}
+                cm.save_characters(latest, bypass_write_fence=True)
+                return str(preview_path)
+
+            with (
+                patch.object(
+                    workshop_router_module,
+                    "get_subscribed_workshop_items",
+                    AsyncMock(
+                        return_value={
+                            "success": True,
+                            "items": [
+                                {
+                                    "publishedFileId": "123456",
+                                    "installedFolder": str(installed_folder),
+                                }
+                            ],
+                        }
+                    ),
+                ),
+                patch.object(
+                    workshop_router_module,
+                    "find_preview_image_in_folder",
+                    side_effect=_create_same_character_during_scan,
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 0
+            assert sync_result["skipped"] >= 1
+            saved_characters = cm.load_characters()
+            assert saved_characters["猫娘"]["并发工坊角色"]["昵称"] == "并发创建"
+            assert not (cm.card_faces_dir / "并发工坊角色.png").exists()
+            assert not cm.card_face_meta_path("并发工坊角色").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_workshop_character_cards_aborts_when_latest_catgirl_map_is_malformed():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            installed_folder = Path(td) / "mock_workshop_bad_latest_characters"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "坏结构保护角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            initial_characters = cm.load_characters()
+            malformed_latest = {**initial_characters, "猫娘": []}
+            save_mock = AsyncMock()
+
+            with (
+                patch.object(
+                    workshop_router_module,
+                    "get_subscribed_workshop_items",
+                    AsyncMock(
+                        return_value={
+                            "success": True,
+                            "items": [
+                                {
+                                    "publishedFileId": "123456",
+                                    "installedFolder": str(installed_folder),
+                                }
+                            ],
+                        }
+                    ),
+                ),
+                patch.object(cm, "aload_characters", AsyncMock(side_effect=[initial_characters, malformed_latest])),
+                patch.object(cm, "asave_characters", save_mock),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 0
+            assert sync_result["errors"] == 1
+            save_mock.assert_not_awaited()
+            assert "坏结构保护角色" not in cm.load_characters().get("猫娘", {})
 
 
 @pytest.mark.unit
@@ -1842,3 +2071,139 @@ def test_timeindexed_readonly_open_still_runs_writable_bootstrap_on_first_write(
     assert manager._ensure_engine_exists("测试角色", db_path=str(db_path), readonly=False) is True
     assert ensure_calls == [("测试角色", writable_engine)]
     assert migrate_calls == [("测试角色", writable_engine)]
+
+
+def test_timeindexed_dispose_and_rebuild_when_memory_dir_drifts(monkeypatch, tmp_path):
+    """``TimeIndexedMemory.db_paths`` 是 per-character path cache，cache 命中后
+    短路 return 不会重新校核当前 ``memory_dir``。罕见但可能：``/reload``
+    期间底层 ``storage_policy`` 被改写，或测试 monkeypatch 了 memory_dir，
+    cached 路径就和实际目标分叉。老 SQLAlchemy engine 还连着旧文件，新
+    数据全飘到老位置——``/process`` 的 ``except Exception`` 又把 SQL
+    错误吞掉，表象是 db 永远不更新（time perception 错乱）。
+
+    本用例验证 ``_ensure_engine_exists`` 检测到 cached vs expected 漂移
+    后会 dispose 旧 engine + 用 expected 路径重建。
+    """
+    from memory.timeindex import TimeIndexedMemory
+
+    class _DummyEngine:
+        def __init__(self, name):
+            self.name = name
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    old_db_path = (tmp_path / "old" / "测试角色" / "time_indexed.db").resolve()
+    old_db_path.parent.mkdir(parents=True, exist_ok=True)
+    old_db_path.write_text("", encoding="utf-8")
+    new_db_path = (tmp_path / "new" / "测试角色" / "time_indexed.db").resolve()
+    new_db_path.parent.mkdir(parents=True, exist_ok=True)
+    new_db_path.write_text("", encoding="utf-8")
+
+    old_engine = _DummyEngine("old")
+    new_engine = _DummyEngine("new")
+    created_engines = [old_engine, new_engine]
+    ensure_calls: list = []
+    migrate_calls: list = []
+
+    # 受控的 time_store——第一次返 old，第二次返 new，模拟 memory_dir 漂移。
+    current_time_store = {"测试角色": str(old_db_path)}
+
+    def _fake_character_data():
+        return ({}, {}, {}, {}, {}, {}, dict(current_time_store), {}, {})
+
+    fake_config_manager = SimpleNamespace(get_character_data=_fake_character_data)
+    monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+    monkeypatch.setattr(
+        "memory.timeindex.create_engine",
+        lambda _connection_string: created_engines.pop(0),
+    )
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
+    monkeypatch.setattr(
+        manager,
+        "_ensure_tables_exist_with",
+        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append((_lanlan_name, _engine)),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_check_and_migrate_schema",
+        lambda _engine, _lanlan_name: migrate_calls.append((_lanlan_name, _engine)),
+    )
+
+    # 第一次初始化：从 time_store 解析到 old_db_path，engine 缓存
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert manager.engines["测试角色"] is old_engine
+    assert os.path.normcase(str(manager.db_paths["测试角色"])) == os.path.normcase(str(old_db_path))
+    assert old_engine.dispose_calls == 0
+
+    # 模拟 memory_dir 漂移——time_store 现在指向 new_db_path
+    current_time_store["测试角色"] = str(new_db_path)
+
+    # 第二次 _ensure_engine_exists：cache 命中但 expected 已变；应 dispose + 重建
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert old_engine.dispose_calls == 1
+    assert manager.engines["测试角色"] is new_engine
+    assert os.path.normcase(str(manager.db_paths["测试角色"])) == os.path.normcase(str(new_db_path))
+    # 新 engine 走完整 writable 初始化（确保表结构在新文件里就位）
+    assert ensure_calls[-1] == ("测试角色", new_engine)
+    assert migrate_calls[-1] == ("测试角色", new_engine)
+
+
+def test_timeindexed_short_circuits_when_memory_dir_unchanged(monkeypatch, tmp_path):
+    """对偶用例：cached 与 expected 一致时 drift 检测不该误伤——cache 命中
+    应仍然短路，不重建 engine。
+    """
+    from memory.timeindex import TimeIndexedMemory
+
+    class _DummyEngine:
+        def __init__(self):
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    db_path = (tmp_path / "测试角色" / "time_indexed.db").resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_text("", encoding="utf-8")
+
+    engine = _DummyEngine()
+    created_engines = [engine]
+    create_calls: list = []
+    ensure_calls: list = []
+    migrate_calls: list = []
+
+    fake_config_manager = SimpleNamespace(
+        get_character_data=lambda: ({}, {}, {}, {}, {}, {}, {"测试角色": str(db_path)}, {}, {}),
+    )
+    monkeypatch.setattr("memory.timeindex.get_config_manager", lambda: fake_config_manager)
+
+    def _fake_create_engine(connection_string):
+        create_calls.append(connection_string)
+        return created_engines.pop(0)
+
+    monkeypatch.setattr("memory.timeindex.create_engine", _fake_create_engine)
+
+    manager = TimeIndexedMemory(recent_history_manager=None)
+    monkeypatch.setattr(manager, "_assert_timeindex_writable", lambda _lanlan_name: None)
+    monkeypatch.setattr(
+        manager,
+        "_ensure_tables_exist_with",
+        lambda _engine, _connection_string, _lanlan_name: ensure_calls.append(_lanlan_name),
+    )
+    monkeypatch.setattr(
+        manager,
+        "_check_and_migrate_schema",
+        lambda _engine, _lanlan_name: migrate_calls.append(_lanlan_name),
+    )
+
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert manager._ensure_engine_exists("测试角色") is True
+    assert manager._ensure_engine_exists("测试角色") is True
+    # 仅第一次创建 engine + bootstrap，后续短路
+    assert len(create_calls) == 1
+    assert ensure_calls == ["测试角色"]
+    assert migrate_calls == ["测试角色"]
+    assert engine.dispose_calls == 0

@@ -87,7 +87,7 @@
                     <el-option
                       v-for="plugin in selectablePlugins"
                       :key="plugin.id"
-                      :label="plugin.name"
+                      :label="pluginDisplayName(plugin)"
                       :value="plugin.id"
                     />
                   </el-select>
@@ -197,7 +197,7 @@
                     <el-option
                       v-for="plugin in selectablePlugins"
                       :key="plugin.id"
-                      :label="plugin.name"
+                      :label="pluginDisplayName(plugin)"
                       :value="plugin.id"
                     />
                   </el-select>
@@ -247,11 +247,14 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { Close } from '@element-plus/icons-vue'
 import PackageArchiveListPanel from '@/components/plugin/PackageArchiveListPanel.vue'
 import PackageResultPanel from '@/components/plugin/PackageResultPanel.vue'
 import PluginSelectorPanel from '@/components/plugin/PluginSelectorPanel.vue'
 import { usePackageManager } from '@/composables/usePackageManager'
+import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
+import type { PluginMeta } from '@/types/api'
 
 withDefaults(
   defineProps<{
@@ -320,6 +323,17 @@ const {
   handleUnpack,
   handleAnalyze,
 } = usePackageManager()
+
+const { locale } = useI18n()
+
+function pluginDisplayName(plugin: PluginMeta): string {
+  return resolvePluginI18nMessage(
+    plugin.i18n,
+    'plugin.name',
+    locale.value,
+    plugin.name || plugin.id,
+  )
+}
 </script>
 
 <style scoped>

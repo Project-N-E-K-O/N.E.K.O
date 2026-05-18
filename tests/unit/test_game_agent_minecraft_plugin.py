@@ -122,7 +122,7 @@ def test_configure_clamps_invalid_numeric():
     # already test against private state throughout this file, and
     # without these assertions a regression in the fallback or clamp
     # logic would silently let this test pass.
-    assert service._task_timeout == 25.0  # default
+    assert service._task_timeout == 90.0  # default
     assert service._system_prompt_interval == 1.0  # clamped from -5
     assert service._screenshot_cache_size == 3  # default
     assert service._reconnect_interval == 5.0  # default
@@ -452,7 +452,7 @@ async def test_overwrite_only_accepts_true_canonical_bool():
 
 @pytest.mark.asyncio
 async def test_overwrite_interrupts_old_task_with_status():
-    service, _ = _make_service()
+    service, push_calls = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
 
@@ -466,6 +466,7 @@ async def test_overwrite_interrupts_old_task_with_status():
         await asyncio.sleep(0.01)
     else:
         pytest.fail("service._pending was never set within poll budget")
+    old_id = service._pending.task_id
 
     # Issue overwrite — should kick old task into "interrupted" return.
     new_runner = asyncio.create_task(
@@ -485,14 +486,32 @@ async def test_overwrite_interrupts_old_task_with_status():
         await asyncio.sleep(0.01)
     else:
         pytest.fail("_pending was never the new task within poll budget")
+    new_id = service._pending.task_id
 
-    # The agent will (eventually) emit a delayed task_finished for the
-    # *old* task before the new one's frame arrives. Per the FIFO drop
-    # rule, that first frame is swallowed and the new task's frame
-    # resolves the runner.
-    await service._on_task_finished({"status": "ok", "text": "old finished late"})
-    assert service._pending is not None  # still waiting
-    await service._on_task_finished({"status": "ok"})
+    # The agent emits a delayed ``task_finished`` for the *old* task
+    # before the new one finishes. With task_id echo (the protocol
+    # mc-agent actually uses), this routes to the retroactive cue
+    # path — the new pending slot is untouched and the dialog LLM
+    # gets a "your earlier 「old task」 actually finished" cue.
+    push_calls.clear()
+    await service._on_task_finished(
+        {"status": "ok", "text": "old finished late", "task_id": old_id}
+    )
+    assert service._pending is not None  # still the new task
+    assert service._pending.task_id == new_id
+    # The retroactive cue should have fired. Match locale-agnostically:
+    # the cue is localized via prompts.t() (depends on service._lang),
+    # but the task_text is interpolated raw and therefore stable across
+    # locales.
+    assert any(
+        "old task" in (p.get("text") or "")
+        for call in push_calls
+        for p in (call.get("parts") or [])
+    ), "retroactive completion cue was not pushed for the old task"
+
+    # Now mc-agent reports the new task's completion, echoing its id.
+    push_calls.clear()
+    await service._on_task_finished({"status": "ok", "task_id": new_id})
     new_out = await asyncio.wait_for(new_runner, timeout=2.0)
     assert new_out == {"status": "ok", "query": "new task"}
 
@@ -641,44 +660,6 @@ async def test_screenshot_data_uri_jpeg_with_empty_encoding_picks_jpeg_mime(monk
 
 
 @pytest.mark.asyncio
-async def test_log_task_run_ended_drains_one_stale_debt():
-    """Some agent implementations emit ``task run ended`` log lines
-    in lieu of (or alongside) the explicit ``task_finished`` frame
-    for an abandoned task. When that log fires AND we're carrying
-    stale-frame debt AND no task is currently pending, this log line
-    IS the abandoned task's completion — drain one drop so a
-    future legitimate ``task_finished`` doesn't get swallowed."""
-    service, _ = _make_service()
-    service.configure({})
-
-    # Pre-bump debt as if a prior task had been abandoned.
-    service._stale_task_finishes_to_drop = 1
-    assert service._pending is None
-
-    await service._on_log("task run ended (for the abandoned task)")
-    assert service._stale_task_finishes_to_drop == 0, (
-        "log heuristic must drain one stale-frame debt"
-    )
-    assert service._task_finished is True
-
-
-@pytest.mark.asyncio
-async def test_log_connection_lost_clears_all_stale_debt():
-    """Agent reconnect wipes its task queue — any debts we were
-    holding for in-flight frames will never be paid off. Reset the
-    debt counter to avoid swallowing the next session's frames."""
-    service, _ = _make_service()
-    service.configure({})
-
-    service._stale_task_finishes_to_drop = 3
-    assert service._pending is None
-
-    await service._on_log("Connection lost and re-established.")
-    assert service._stale_task_finishes_to_drop == 0
-    assert service._task_finished is True
-
-
-@pytest.mark.asyncio
 async def test_log_connection_lost_wakes_pending_handler():
     """If a task is pending when the agent reconnects, its
     ``task_finished`` will never arrive (agent's task queue was
@@ -697,9 +678,6 @@ async def test_log_connection_lost_wakes_pending_handler():
     else:
         pytest.fail("_pending was never set")
 
-    # Pre-bump debt to verify it's also drained.
-    service._stale_task_finishes_to_drop = 2
-
     await service._on_log("Connection lost and re-established.")
 
     # Pending was woken with an interrupted verdict.
@@ -708,8 +686,6 @@ async def test_log_connection_lost_wakes_pending_handler():
     assert "connection bounced" in out["reason"].lower()
     # Slot is free for the next call.
     assert service._pending is None
-    # Debt drained (agent state is gone).
-    assert service._stale_task_finishes_to_drop == 0
 
 
 @pytest.mark.asyncio
@@ -794,61 +770,23 @@ async def test_stop_unblocks_pending_handler():
     assert "shutting down" in out["reason"].lower()
 
 
-@pytest.mark.asyncio
-async def test_stop_preserves_stale_frame_debt():
-    """When stop() interrupts a pending task, it must bump the drop
-    counter (not zero it). reload_config_live = stop+start; if the
-    same agent buffers and redelivers the abandoned task's
-    task_finished after reconnect, the counter ensures it doesn't
-    bind to whatever the LLM picks next. Likewise, prior debt from
-    earlier timeouts must survive stop() instead of being zeroed."""
-    service, _ = _make_service()
-    service.configure({"task_timeout_seconds": 30.0})
-    service._client = _FakeClient()
-
-    # Pre-populate a debt of 2 from earlier abandons.
-    service._stale_task_finishes_to_drop = 2
-
-    runner = asyncio.create_task(
-        service.execute_minecraft_task(task="will be stopped")
-    )
-    for _ in range(50):
-        if service._pending is not None:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("service._pending was never set within poll budget")
-
-    await service.stop()
-    out = await asyncio.wait_for(runner, timeout=2.0)
-    assert out["status"] == "interrupted"
-    # Counter should be 3: prior debt (2) preserved + this stop's
-    # abandoned task (+1).
-    assert service._stale_task_finishes_to_drop == 3
-
-
 # ---------------------------------------------------------------------------
-# Stale task_finished filtering — protocol has no task IDs, so a delayed
-# completion frame for an abandoned task must not be misattributed to the
-# new pending task.
+# task_finished routing — with task_id correlation the plugin decides one of
+# three outcomes per frame: wake the current pending handler, emit a
+# retroactive completion cue for a historical (overwritten) task, or drift
+# (no pending + unknown id).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_explicit_task_id_correlation_resolves_out_of_order():
-    """When the agent echoes ``task_id`` on ``task_finished``, the
-    plugin trusts the ID over arrival order. An out-of-order
-    completion (B's frame before A's, but A's overwrite came first)
-    must NOT be swallowed by the FIFO drop counter — the ID matches
-    the active pending task and the frame is accepted."""
+    """When the agent echoes ``task_id`` on ``task_finished``, the plugin
+    matches the id to ``_pending`` and accepts the frame regardless of
+    arrival order (the old FIFO drop counter is gone — each frame is
+    classified by id, never by arrival sequence)."""
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
-
-    # Pre-bump drop counter as if FIFO mode was tracking an abandon —
-    # in explicit-correlation mode this counter must NOT be consumed
-    # for an ID-matching frame.
-    service._stale_task_finishes_to_drop = 1
 
     runner = asyncio.create_task(
         service.execute_minecraft_task(task="B")
@@ -862,21 +800,18 @@ async def test_explicit_task_id_correlation_resolves_out_of_order():
     b_id = service._pending.task_id
     assert b_id  # service generated a task_id
 
-    # Agent emits task_finished for B with matching task_id. Even
-    # though drop counter > 0, the ID match means "this is for the
-    # active task" so we accept it without touching the counter.
     await service._on_task_finished({"status": "ok", "task_id": b_id})
     out = await asyncio.wait_for(runner, timeout=2.0)
     assert out["status"] == "ok"
-    # Counter untouched — explicit correlation skips FIFO drops.
-    assert service._stale_task_finishes_to_drop == 1
 
 
 @pytest.mark.asyncio
-async def test_explicit_task_id_correlation_drops_mismatch():
-    """When the agent echoes a ``task_id`` that doesn't match the
-    pending task, the frame is unambiguously stale — drop without
-    touching the FIFO counter (counter is only for the no-id mode)."""
+async def test_unknown_task_id_with_pending_does_not_resolve_pending():
+    """A ``task_finished`` echoing an id we never dispatched (e.g.
+    leftover from a previous session that somehow leaked through) must
+    not be misattributed to the current pending task. With no history
+    match and no FIFO assumption, the frame is logged as drift; the
+    pending runner keeps waiting for its own id-matched frame."""
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
@@ -890,217 +825,269 @@ async def test_explicit_task_id_correlation_drops_mismatch():
         await asyncio.sleep(0.01)
     else:
         pytest.fail("_pending was never set")
+    b_id = service._pending.task_id
 
-    # Stale frame with non-matching task_id arrives.
+    # Seed a known-good inventory snapshot from before the ghost frame
+    # arrives, so we can assert the ghost doesn't overwrite it.
+    service._last_inventory = {"dirt": 5}
+    service._last_inventory_at = 1234.0
+
+    # Frame echoing some other id — not in history, doesn't match pending.
+    # It carries inventory but that inventory belongs to whatever session
+    # produced the ghost id, not ours. Must not leak into our cache.
     await service._on_task_finished({
-        "status": "ok",
-        "task_id": "this-is-some-other-tasks-id",
+        "status": "ok", "task_id": "ghost-id", "inventory": {"diamond": 99},
     })
-    # B's pending state is untouched.
     assert service._pending is not None
     assert service._pending.task_text == "B"
+    # Runner future must still be pending — a ghost task_id must not
+    # accidentally event.set() the wrong slot. (Belt-and-braces with
+    # the _pending check above: catches a future regression where the
+    # slot is correctly preserved but the runner's event fires anyway.)
+    assert not runner.done(), "ghost task_id must not resolve current runner"
+    # Cache untouched — ghost frame's inventory must not have overwritten
+    # the seed we set above.
+    assert service._last_inventory == {"dirt": 5}
+    assert service._last_inventory_at == 1234.0
 
-    # B's real frame with matching id arrives.
-    await service._on_task_finished({
-        "status": "ok",
-        "task_id": service._pending.task_id,
-    })
+    # Real B completion still resolves the runner.
+    await service._on_task_finished({"status": "ok", "task_id": b_id})
     out = await asyncio.wait_for(runner, timeout=2.0)
     assert out["status"] == "ok"
 
 
 @pytest.mark.asyncio
-async def test_stale_task_finished_after_timeout_is_dropped():
-    """After a task times out, a delayed task_finished frame for it
-    should be swallowed instead of resolving the *next* call."""
-    service, _ = _make_service()
-    service.configure({"task_timeout_seconds": 0.1})
-    service._client = _FakeClient()
-
-    # Task A times out — leaves a "stale frame" debt of 1.
-    out_a = await service.execute_minecraft_task(task="task A")
-    assert out_a["status"] == "timeout"
-    assert service._stale_task_finishes_to_drop == 1
-
-    # Late task_finished for A arrives — should be dropped, not
-    # attached to anything.
-    await service._on_task_finished({"status": "ok", "text": "A done late (stale)"})
-    assert service._stale_task_finishes_to_drop == 0
-    # No pending task got falsely resolved.
-    assert service._pending is None
-
-
-@pytest.mark.asyncio
-async def test_stale_task_finished_with_no_pending_marks_idle():
-    """When a stale frame drops AND there's no current pending task,
-    the agent has genuinely returned to idle. Set ``_task_finished``
-    to True so the autonomous loop knows it can resume nudging —
-    otherwise a flag stuck at False (from before stop()/abandon)
-    would silently keep the busy gate engaged forever."""
-    service, _ = _make_service()
-    service.configure({})
-    # Pre-conditions: a task is "in flight" from the loop's perspective
-    # (flag stuck at False) and we have one pending stale-frame drop
-    # but no actual pending task — the typical post-stop+restart shape.
-    service._stale_task_finishes_to_drop = 1
-    service._task_finished = False
-    assert service._pending is None
-
-    await service._on_task_finished({"status": "ok", "text": "late frame for abandoned task"})
-    assert service._stale_task_finishes_to_drop == 0
-    # Critical: the flag flipped to True even though the frame was
-    # dropped — agent is idle, busy gate must reflect that.
-    assert service._task_finished is True
-
-
-@pytest.mark.asyncio
-async def test_stale_task_finished_with_pending_keeps_flag_false():
-    """Counter-test to the above: when dropping a stale frame WHILE a
-    real task is pending, ``_task_finished`` must stay False (existing
-    invariant — pinned by ``test_stale_task_finished_does_not_flip_…``).
-    Combined with the prior test, this defines the rule: flip on
-    drop only when ``_pending is None``."""
-    service, _ = _make_service()
+async def test_historical_task_id_emits_retroactive_cue():
+    """A late ``task_finished`` for a task that was dispatched and then
+    overwritten/abandoned routes to the retroactive cue path: a
+    push_message is sent so the dialog LLM learns the earlier action
+    completed, but the current pending slot is untouched."""
+    service, push_calls = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
 
-    # Pre-bump drop counter as if a prior task had been abandoned.
-    service._stale_task_finishes_to_drop = 1
-
-    # Now start a fresh task — _pending=B, _task_finished=False.
-    runner = asyncio.create_task(service.execute_minecraft_task(task="B"))
+    # Start + complete one task to seed the dispatched history with a
+    # known id, then start a second task so there's something current
+    # to defend against accidental overwrite.
+    runner1 = asyncio.create_task(service.execute_minecraft_task(task="first"))
     for _ in range(50):
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
     else:
-        pytest.fail("B never claimed the slot")
-    assert service._task_finished is False
+        pytest.fail("first task never claimed pending slot")
+    first_id = service._pending.task_id
+    await service._on_task_finished({"status": "ok", "task_id": first_id})
+    await asyncio.wait_for(runner1, timeout=2.0)
 
-    # Stale drop while B is in flight — must NOT flip the flag.
-    await service._on_task_finished({"status": "ok", "text": "old"})
-    assert service._task_finished is False
+    # Now a fresh second task in flight.
+    runner2 = asyncio.create_task(service.execute_minecraft_task(task="second"))
+    for _ in range(50):
+        if service._pending is not None and service._pending.task_text == "second":
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("second task never claimed pending slot")
+    second_id = service._pending.task_id
+
+    push_calls.clear()
+    # A surprise late frame echoing first_id arrives (e.g. mc-agent
+    # buffered something). Routes to retroactive cue.
+    await service._on_task_finished(
+        {"status": "ok", "text": "first done late", "task_id": first_id}
+    )
+    # The second task's pending slot is untouched.
     assert service._pending is not None
-    assert service._pending.task_text == "B"
+    assert service._pending.task_id == second_id
+    # And runner2 must still be pending — the retroactive cue path
+    # must never accidentally event.set() the current pending slot.
+    assert not runner2.done(), "historical task_id must not resolve current runner"
+    # And a retroactive cue was pushed referencing the first task.
+    # Match locale-agnostically — the cue is localized, but task_text
+    # is interpolated raw and stable across locales.
+    assert any(
+        "first" in (p.get("text") or "")
+        for call in push_calls
+        for p in (call.get("parts") or [])
+    ), "retroactive cue was not pushed for the historical task"
 
-    runner.cancel()
-    try:
-        await runner
-    except (asyncio.CancelledError, Exception):
-        # Cleanup-only swallow.
-        pass
+    # Cleanup: resolve the second task so the runner doesn't dangle.
+    await service._on_task_finished({"status": "ok", "task_id": second_id})
+    await asyncio.wait_for(runner2, timeout=2.0)
 
 
 @pytest.mark.asyncio
-async def test_stale_task_finished_does_not_pollute_log_cache():
-    """Stale frames must not contribute their text to ``_log_cache``
-    either — otherwise the next system prompt would surface "old task
-    done" alongside a still-running new task, contradicting itself."""
+async def test_no_pending_no_id_marks_idle():
+    """Drift case: a ``task_finished`` arrives with no task_id and no
+    pending slot (e.g. residue from before a stop+start cycle). With
+    nothing to wake, the only state change is flipping ``_task_finished``
+    to True so the autonomous loop's busy gate can resume nudging."""
     service, _ = _make_service()
     service.configure({})
-    # Pre-bump drop counter as if a prior task had been abandoned.
-    service._stale_task_finishes_to_drop = 1
+    service._task_finished = False  # simulate stuck-flag scenario
+    assert service._pending is None
 
-    await service._on_task_finished({
-        "status": "ok",
-        "text": "old task completion message — should NOT appear in cache",
-    })
-    # Frame was dropped → text must not be cached.
-    assert list(service._log_cache) == []
-    assert service._stale_task_finishes_to_drop == 0
+    await service._on_task_finished({"status": "ok", "text": "stray"})
+    assert service._task_finished is True
 
 
 @pytest.mark.asyncio
-async def test_stale_task_finished_does_not_flip_task_finished_flag():
-    """Dropping a stale frame must not set ``_task_finished = True``,
-    which would leak the abandoned task's completion state into the
-    *current* in-flight task and break the autonomous loop's busy
-    gate."""
+async def test_idless_frame_after_seen_id_drops_to_stray():
+    """Modern mc-agent always echoes task_id. Once we've latched on
+    that fact (``_seen_task_id_echo``), an id-less ``task_finished``
+    is anomalous (e.g. stale completion from a task we already
+    overwrote) and must NOT FIFO-resolve the current pending — doing
+    so would silently misroute the stale payload onto a newer task.
+    """
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
 
-    # Start a task → _task_finished flips to False → time it out so we
-    # accumulate a drop.
-    service.configure({"task_timeout_seconds": 0.1})
-    out = await service.execute_minecraft_task(task="A")
-    assert out["status"] == "timeout"
-    assert service._stale_task_finishes_to_drop == 1
+    # First task: A, completes with task_id → latches _seen_task_id_echo.
+    runner_a = asyncio.create_task(service.execute_minecraft_task(task="A"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("task A never claimed pending slot")
+    a_id = service._pending.task_id
+    await service._on_task_finished({"status": "ok", "task_id": a_id})
+    await asyncio.wait_for(runner_a, timeout=2.0)
+    assert service._seen_task_id_echo is True
 
-    # Start a fresh task — _task_finished is False again (in flight).
-    service.configure({"task_timeout_seconds": 5.0})
-    runner = asyncio.create_task(service.execute_minecraft_task(task="B"))
+    # Second task: B is now in flight (legitimately claimed pending).
+    runner_b = asyncio.create_task(service.execute_minecraft_task(task="B"))
     for _ in range(50):
         if service._pending is not None and service._pending.task_text == "B":
             break
         await asyncio.sleep(0.01)
     else:
-        pytest.fail("_pending was never task B within poll budget")
-    assert service._task_finished is False
+        pytest.fail("task B never claimed pending slot")
+    b_id = service._pending.task_id
 
-    # Stale frame for A arrives → must be dropped, must NOT flip
-    # _task_finished to True (B is still running).
-    await service._on_task_finished({"status": "ok", "text": "A done late (stale)"})
-    assert service._stale_task_finishes_to_drop == 0
-    assert service._task_finished is False
+    # A stale id-less completion arrives (would have FIFO-resolved B
+    # under the old fallback). With the latch, this routes to stray.
+    await service._on_task_finished({"status": "ok", "text": "stale!"})
     assert service._pending is not None
-    assert service._pending.task_text == "B"
+    assert service._pending.task_id == b_id
+    assert not runner_b.done(), \
+        "id-less frame after seen task_id echo must not resolve pending"
 
-    # Real B completion now flips the flag.
-    await service._on_task_finished({"status": "ok"})
-    assert service._task_finished is True
-    out_b = await asyncio.wait_for(runner, timeout=2.0)
-    assert out_b == {"status": "ok", "query": "B"}
+    # B's real completion still resolves cleanly.
+    await service._on_task_finished({"status": "ok", "task_id": b_id})
+    out = await asyncio.wait_for(runner_b, timeout=2.0)
+    assert out["status"] == "ok"
 
 
 @pytest.mark.asyncio
-async def test_stale_task_finished_after_overwrite_is_dropped():
-    """After overwrite, a delayed task_finished for the *old* task must
-    not be matched to the *new* pending task (which has its own id-less
-    frame coming later)."""
+async def test_seen_task_id_latch_resets_on_ws_restart():
+    """The ``_seen_task_id_echo`` latch must clear on ``service.stop()``
+    so a reconnect to a different mc-agent version (e.g. user
+    downgraded to a legacy build that doesn't echo task_id) re-learns
+    from the next frame. Without the reset, post-restart id-less
+    completions from the legacy agent would be misrouted to ``stray``
+    and the runner would only resolve on its 120s timeout."""
     service, _ = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
 
-    # Start old task.
-    old_runner = asyncio.create_task(
-        service.execute_minecraft_task(task="old task")
-    )
+    # Session 1: modern agent (echoes task_id) — latches True.
+    runner1 = asyncio.create_task(service.execute_minecraft_task(task="modern"))
     for _ in range(50):
         if service._pending is not None:
             break
         await asyncio.sleep(0.01)
     else:
-        pytest.fail("service._pending was never set within poll budget")
+        pytest.fail("modern task never claimed pending slot")
+    modern_id = service._pending.task_id
+    await service._on_task_finished({"status": "ok", "task_id": modern_id})
+    await asyncio.wait_for(runner1, timeout=2.0)
+    assert service._seen_task_id_echo is True
 
-    # Overwrite — old runner resolves with "interrupted", drop counter += 1.
-    new_runner = asyncio.create_task(
-        service.execute_minecraft_task(task="new task", overwrite=True)
-    )
-    old_out = await asyncio.wait_for(old_runner, timeout=2.0)
-    assert old_out["status"] == "interrupted"
-    assert service._stale_task_finishes_to_drop == 1
+    # WS restart (config reload, ws_url change, or transport drop).
+    await service.stop()
+    assert service._seen_task_id_echo is False, \
+        "_seen_task_id_echo must reset on stop() so reconnect re-learns"
 
-    # Wait for the new task's pending slot.
+    # Session 2: legacy agent (never echoes task_id) — FIFO must still
+    # fire so the new pending isn't stranded.
+    service._client = _FakeClient()
+    runner2 = asyncio.create_task(service.execute_minecraft_task(task="legacy"))
     for _ in range(50):
-        if service._pending is not None and service._pending.task_text == "new task":
+        if service._pending is not None:
             break
         await asyncio.sleep(0.01)
     else:
-        pytest.fail("_pending was never the new task within poll budget")
+        pytest.fail("legacy task never claimed pending slot")
 
-    # Late task_finished for OLD task arrives first — must be dropped,
-    # NOT attached to the new task.
-    await service._on_task_finished({"status": "ok", "text": "old done late"})
-    assert service._stale_task_finishes_to_drop == 0
-    # New task is still pending (drop didn't resolve it).
-    assert service._pending is not None
-    assert service._pending.task_text == "new task"
+    await service._on_task_finished({"status": "ok", "text": "done"})
+    out = await asyncio.wait_for(runner2, timeout=2.0)
+    assert out["status"] == "ok"
 
-    # Now the real frame for the new task arrives — should resolve normally.
-    await service._on_task_finished({"status": "ok"})
-    new_out = await asyncio.wait_for(new_runner, timeout=2.0)
-    assert new_out == {"status": "ok", "query": "new task"}
+
+@pytest.mark.asyncio
+async def test_foreign_task_id_does_not_latch_legacy_off():
+    """The ``_seen_task_id_echo`` latch must only flip on frames that
+    are proven to be ours (current pending or dispatched history).
+    A foreign id from a leaked frame (another client on the same WS
+    endpoint, buffered prior-session frame, mc-agent restart
+    crossover) lands in ``unknown`` and must NOT flip the latch —
+    otherwise a legacy agent that never echoes its own ids would
+    be permanently locked out of the FIFO fallback by a single
+    foreign-id frame, leaving every subsequent task on a 120s
+    timeout.
+    """
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    # Foreign-id frame arrives before any of our tasks (no pending,
+    # not in dispatched_history) → bucket unknown → latch must stay False.
+    await service._on_task_finished(
+        {"status": "ok", "task_id": "leaked-from-another-client"}
+    )
+    assert service._seen_task_id_echo is False, \
+        "foreign task_id (unknown bucket) must not flip the latch"
+
+    # Now a legacy id-less task: should still FIFO-resolve because
+    # the latch was never flipped.
+    runner = asyncio.create_task(service.execute_minecraft_task(task="legacy"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("legacy task never claimed pending slot")
+
+    await service._on_task_finished({"status": "ok", "text": "done"})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_idless_frame_legacy_agent_still_uses_fifo():
+    """Genuine legacy mc-agent that never echoes task_id keeps the
+    FIFO fallback — without ``_seen_task_id_echo`` ever latching,
+    an id-less ``task_finished`` correctly resolves the current
+    pending so legacy users aren't stuck on a 120s timeout."""
+    service, _ = _make_service()
+    service.configure({"task_timeout_seconds": 5.0})
+    service._client = _FakeClient()
+
+    runner = asyncio.create_task(service.execute_minecraft_task(task="legacy"))
+    for _ in range(50):
+        if service._pending is not None:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("legacy task never claimed pending slot")
+
+    # Legacy agent reply: no task_id. Latch is still False.
+    assert service._seen_task_id_echo is False
+    await service._on_task_finished({"status": "ok", "text": "done"})
+    out = await asyncio.wait_for(runner, timeout=2.0)
+    assert out["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -1151,159 +1138,6 @@ async def test_cancellation_during_send_task_clears_pending_slot():
 
     assert service._pending is None
     assert service._task_finished is True
-    # NOT bumped — ``send_task`` was cancelled before completing, so
-    # the agent never received the task and won't emit a stale frame
-    # for it. Bumping would silently swallow the next legitimate
-    # ``task_finished`` from a future task.
-    assert service._stale_task_finishes_to_drop == 0
-
-
-@pytest.mark.asyncio
-async def test_overwrite_during_send_task_bumps_via_late_dispatch_flag():
-    """Re-architected: drive the slow-send fake step by step to verify
-    the late-dispatch bump fires when overwrite sets the flag."""
-
-    class _SlowSendClient:
-        is_connected = True
-
-        def __init__(self):
-            self.gates: list[asyncio.Event] = []
-            self.sent_tasks: list[str] = []
-
-        async def send_task(self, task, *, task_id=""):
-            gate = asyncio.Event()
-            self.gates.append(gate)
-            await gate.wait()
-            self.sent_tasks.append(task)
-            return True
-
-        async def stop(self):
-            pass
-
-    service, _ = _make_service()
-    service.configure({"task_timeout_seconds": 5.0})
-    slow = _SlowSendClient()
-    service._client = slow
-
-    # 1. Start old task. send_task suspends on gates[0].
-    old_runner = asyncio.create_task(service.execute_minecraft_task(task="old"))
-    for _ in range(50):
-        if len(slow.gates) >= 1 and service._pending is not None:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("old's send_task never reached the gate")
-    old_pending = service._pending
-    assert old_pending.dispatched is False
-    assert service._stale_task_finishes_to_drop == 0
-
-    # 2. Overwrite arrives. send_task for new will suspend on gates[1].
-    new_runner = asyncio.create_task(
-        service.execute_minecraft_task(task="new", overwrite=True)
-    )
-    for _ in range(50):
-        if len(slow.gates) >= 2:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("new's send_task never reached the gate")
-
-    # 3. After overwrite ran inside the lock:
-    #    - old's event was set + result=interrupted
-    #    - bump_on_late_dispatch was armed (because dispatched=False)
-    #    - drop counter NOT yet bumped
-    assert old_pending.bump_on_late_dispatch is True
-    assert service._stale_task_finishes_to_drop == 0
-
-    # 4. Release old's send_task. Handler runs: dispatched=True →
-    #    sees bump_on_late_dispatch → bumps counter → is_set() → returns.
-    slow.gates[0].set()
-    old_out = await asyncio.wait_for(old_runner, timeout=2.0)
-    assert old_out["status"] == "interrupted"
-    assert service._stale_task_finishes_to_drop == 1, (
-        "bump must have happened on late dispatch"
-    )
-
-    # 5. Release new's send_task and let new run normally to confirm
-    #    the slot is healthy.
-    slow.gates[1].set()
-    # Wait for new to enter event.wait, then drive task_finished.
-    for _ in range(50):
-        if service._pending is not None and service._pending.task_text == "new":
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("new never settled into pending state")
-
-    # 6. The agent's frame for old (the abandoned one) arrives first
-    #    — should be dropped via the counter we just bumped, NOT
-    #    misattributed to new.
-    await service._on_task_finished({"status": "ok", "text": "old's late frame"})
-    assert service._stale_task_finishes_to_drop == 0
-    assert service._pending is not None  # new still pending
-
-    # 7. New's real frame arrives → resolves new.
-    await service._on_task_finished({"status": "ok"})
-    new_out = await asyncio.wait_for(new_runner, timeout=2.0)
-    assert new_out == {"status": "ok", "query": "new"}
-
-
-@pytest.mark.asyncio
-async def test_overwrite_does_not_bump_drop_counter_for_undispatched_old():
-    """If the OLD task hadn't reached past ``send_task`` yet when
-    overwrite arrives, the agent never received it and won't emit a
-    stale frame. Bumping the drop counter in that case would silently
-    swallow the NEW task's legitimate completion frame.
-
-    We can't observe this directly via the public path (overwrite
-    inside the lock makes the race unreachable in production), but
-    the underlying invariant is: ``_stale_task_finishes_to_drop``
-    increments must gate on ``PendingTask.dispatched``. Verify by
-    pre-seeding an undispatched pending state and overwriting it."""
-    from plugin.plugins.game_agent_minecraft.service import PendingTask
-
-    service, _ = _make_service()
-    service.configure({"task_timeout_seconds": 5.0})
-    service._client = _FakeClient()
-
-    # Plant an undispatched pending task in the slot directly. This
-    # simulates the corner where OLD's handler claimed _pending but
-    # was suspended inside ``send_task`` and never returned.
-    fake_old = PendingTask(
-        task_text="undispatched-old",
-        event=asyncio.Event(),
-        start_time=0.0,
-        dispatched=False,
-    )
-    service._pending = fake_old
-    service._task_finished = False
-
-    # New task arrives with overwrite=True — should set old's event,
-    # claim the slot, and crucially NOT bump the drop counter.
-    new_runner = asyncio.create_task(
-        service.execute_minecraft_task(task="new", overwrite=True)
-    )
-
-    # Wait for the new task to claim the slot.
-    for _ in range(50):
-        if service._pending is not None and service._pending is not fake_old:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("new task never claimed the slot")
-
-    # Old task's event was set → its handler would resolve, but we
-    # injected it directly so there's no handler to drain. Just
-    # verify the counter rule.
-    assert service._stale_task_finishes_to_drop == 0, (
-        "must not bump for undispatched abandoned task"
-    )
-
-    # Now drive the agent's task_finished for the new task — it
-    # should resolve normally (NOT be swallowed as stale).
-    await service._on_task_finished({"status": "ok"})
-    out = await asyncio.wait_for(new_runner, timeout=2.0)
-    assert out == {"status": "ok", "query": "new"}
 
 
 @pytest.mark.asyncio
@@ -1326,9 +1160,6 @@ async def test_cancellation_clears_pending_slot():
     with pytest.raises(asyncio.CancelledError):
         await runner
     assert service._pending is None
-    # And the drop counter was bumped so a delayed frame doesn't bind
-    # to whatever task comes next.
-    assert service._stale_task_finishes_to_drop == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1398,3 +1229,54 @@ async def test_reload_config_live_no_restart_for_pure_data_keys():
     })
     assert restarted is False
     assert start_calls == []
+
+
+# ---------------------------------------------------------------------------
+# i18n: every prompt key is fully translated across all 7 supported locales.
+# Catches forgotten translations + drift between locale tables.
+# ---------------------------------------------------------------------------
+
+
+def test_prompts_have_all_seven_locales():
+    """Every entry in PROMPTS must carry a non-empty translation for
+    each supported language (zh, en, ja, ko, ru, es, pt). Missing keys
+    would otherwise silently fall back to EN and hide translation gaps
+    from non-EN users."""
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    # Pin the expected locale set so the "seven locales" promise can't
+    # be silently regressed by editing SUPPORTED_LANGS down to six.
+    assert set(prompts.SUPPORTED_LANGS) == {
+        "zh", "en", "ja", "ko", "ru", "es", "pt",
+    }
+    missing: list[str] = []
+    for key, bundle in prompts.PROMPTS.items():
+        for lang in prompts.SUPPORTED_LANGS:
+            if not bundle.get(lang):
+                missing.append(f'{key}[{lang}]')
+    assert not missing, (
+        'Missing/empty translations in PROMPTS: ' + ', '.join(missing)
+    )
+
+
+def test_prompts_t_formats_placeholders():
+    r"""prompts.t() must accept \*\*fmt and substitute via str.format,
+    while leaving {{MASTER_NAME}} escaped for downstream main_server
+    substitution."""
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    out_en = prompts.t('TASK_BUSY_HINT', lang='en', current='mine stone')
+    assert 'mine stone' in out_en
+    # Downstream placeholder must survive str.format intact.
+    assert '{MASTER_NAME}' in out_en
+    assert '{{MASTER_NAME}}' not in out_en
+
+
+def test_prompts_t_falls_back_to_english_on_missing_locale():
+    """Unknown locales must resolve to EN, not raise."""
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    out = prompts.t('TASK_NOT_CONNECTED', lang='xx-NOSUCH')
+    en = prompts.t('TASK_NOT_CONNECTED', lang='en')
+    assert out == en
+

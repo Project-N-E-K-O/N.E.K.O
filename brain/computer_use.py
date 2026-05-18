@@ -47,6 +47,71 @@ except Exception:
     pyautogui = None
 
 
+# ─── Connectivity probe error classification ────────────────────────────
+#
+# Maps raw exception/text patterns from the chat completion client into the
+# stable ``AGENT_*`` reason codes that ``check_connectivity()`` returns and
+# the restore path (see ``_restore_llm_dependent_flags`` in
+# ``app/agent_server.py``) uses to decide whether a failure is transient
+# (worth retrying within the bounded restore window of ~32s wall-clock,
+# 3 attempts × 6s timeout + 2 × 7s gap) or permanent (give up immediately
+# and surface ``AGENT_AUTO_DISABLED_*`` to the user).
+# Keep the classifier here (not in agent_server) so any caller of
+# ``check_connectivity`` gets the same reason vocabulary.
+_PERMANENT_AUTH_TOKENS = (
+    "authentication",
+    "invalid_api_key",
+    "invalid api key",
+    "unauthorized",
+    "forbidden",
+    " 401",
+    " 403",
+)
+_QUOTA_TOKENS = (
+    "quota",
+    "rate_limit",
+    "rate limit",
+    " 429",
+    "insufficient_quota",
+)
+_DNS_NXDOMAIN_TOKENS = (
+    "nxdomain",
+    "name or service not known",
+    "getaddrinfo failed",
+    "no address associated",
+)
+
+
+def _classify_connectivity_exception(exc: Optional[Exception]) -> str:
+    """Bucket an exception from ``invoke_raw`` into a stable reason code.
+
+    Match is text-based on ``str(exc)`` because openai-sdk / httpx wraps
+    layer the underlying HTTP status into the message rather than exposing a
+    typed status; the SDK type hierarchy itself is also imported lazily by
+    ``create_chat_llm``, so we cannot ``isinstance`` against it from here
+    without a circular import.
+    """
+    if exc is None:
+        return "AGENT_LLM_UNREACHABLE"
+    msg = str(exc).lower()
+    if any(tok in msg for tok in _PERMANENT_AUTH_TOKENS):
+        return "AGENT_API_KEY_INVALID"
+    if any(tok in msg for tok in _QUOTA_TOKENS):
+        return "AGENT_QUOTA_EXCEEDED"
+    if any(tok in msg for tok in _DNS_NXDOMAIN_TOKENS):
+        return "AGENT_DNS_NXDOMAIN"
+    return "AGENT_LLM_UNREACHABLE"
+
+
+# Permanent (no point retrying) reason codes — see restore path in agent_server.
+PERMANENT_CONNECTIVITY_REASONS = frozenset({
+    "AGENT_ENDPOINT_NOT_CONFIGURED",
+    "AGENT_API_KEY_INVALID",
+    "AGENT_QUOTA_EXCEEDED",
+    "AGENT_DNS_NXDOMAIN",
+})
+
+
 # ─── Prompt Templates ───────────────────────────────────────────────────
 
 INSTRUCTION_TEMPLATE = (
@@ -522,13 +587,34 @@ class ComputerUseAdapter:
     # Non-blocking LLM connectivity probe
     # ------------------------------------------------------------------
 
-    def check_connectivity(self, *, _retries: int = 2) -> bool:
+    def check_connectivity(
+        self,
+        *,
+        timeout_s: float = 6.0,
+        _retries: int = 0,
+    ) -> Tuple[bool, str]:
         """Synchronous LLM ping using the same ChatOpenAI client that real
         tasks will use, so the TCP/TLS connection pool is warmed up.
         Meant to be called from a background thread.
 
-        Retries up to *_retries* times on failure (cold-start DNS/TLS
-        handshake can exceed the per-request timeout on first attempt).
+        Returns ``(ok, reason_code)``. ``reason_code`` is empty on success;
+        otherwise a stable identifier the caller can match against to decide
+        whether the failure is transient (retry) or permanent (give up):
+
+            ``AGENT_ENDPOINT_NOT_CONFIGURED``  — base_url / model missing
+            ``AGENT_API_KEY_INVALID``          — HTTP 401/403, auth rejected
+            ``AGENT_QUOTA_EXCEEDED``           — HTTP 429 / quota exhausted
+            ``AGENT_DNS_NXDOMAIN``             — host does not resolve
+            ``AGENT_LLM_UNREACHABLE``          — generic transient (timeout / 5xx / refused)
+
+        ``timeout_s=6.0, _retries=0`` is the current fast/restore default.
+        Callers that need extra cold-start TLS / DNS tolerance on slow links
+        can pass a larger ``timeout_s``. The previous 20s + 3×retry default
+        was over-defensive — TLS resumption + warmed DNS cache settle <2s in
+        normal environments — but the 6s budget here leaves room for one
+        cold handshake while keeping a single probe well under the
+        ``_RESTORE_PING_INTERVAL_S=7s`` gap used by the restore loop, so
+        attempts don't overlap.
         """
         cfg = self._config_manager.get_model_api_config("agent")
         api_key = cfg.get("api_key") or "EMPTY"
@@ -537,13 +623,24 @@ class ComputerUseAdapter:
         if not base_url or not model:
             self.init_ok = False
             self.last_error = "Agent model not configured"
-            return False
+            return False, "AGENT_ENDPOINT_NOT_CONFIGURED"
 
         last_exc: Exception | None = None
         for attempt in range(_retries + 1):
             try:
                 current_sig = (base_url.rstrip("/"), api_key, model)
                 if self._llm_client is None or self._llm_client_sig != current_sig:
+                    # CRITICAL: keep the client instance's default timeout at
+                    # 65.0s, NOT ``timeout_s``. ``self._llm_client`` is reused
+                    # by the live ``_call_llm`` path (line ~1123) which calls
+                    # ``invoke_raw(messages, ...)`` WITHOUT a per-call
+                    # ``timeout=`` kwarg, so it inherits the instance default.
+                    # If we cached a 4s-default client here, real GUI Agent
+                    # requests would time out after 4 seconds and break the
+                    # whole feature. The fast-probe behavior is achieved
+                    # purely by the per-call ``timeout=timeout_s`` argument
+                    # on the ping's ``invoke_raw`` below, which routes
+                    # through ``_params()`` without mutating the instance.
                     self._llm_client = create_chat_llm(
                         model=model,
                         base_url=base_url,
@@ -555,17 +652,16 @@ class ComputerUseAdapter:
                     self._llm_client_sig = current_sig
                 extra = get_agent_extra_body(model) or {}
                 set_call_type("agent_cua")
-                # Pass per-call overrides into invoke_raw so they hit
-                # _params() locally instead of mutating self._llm_client —
-                # this ping runs from a background thread and the live
-                # _call_llm path uses self.max_completion_tokens=6000;
-                # writing the 5-token ping budget back to the instance
-                # would clip a concurrent real request to 5 tokens.
+                # Per-call overrides via invoke_raw's **kwargs path: routes
+                # both max_completion_tokens AND timeout through _params()
+                # locally, NOT writing back to the instance. This means a
+                # 4s probe ping running concurrently with a real 60s GUI
+                # request won't clip the latter's budget or timeout.
                 resp = self._llm_client.invoke_raw(
                     [{"role": "user", "content": "ok"}],
                     max_completion_tokens=LLM_PING_MAX_TOKENS,
                     extra_body=extra or None,
-                    timeout=20,
+                    timeout=timeout_s,
                 )
                 # 连通性检测只关心 HTTP 层是否通、响应结构是否合法；某些上游
                 # （如 free-agent-model）会返回 choices 非空但 message=None
@@ -576,7 +672,7 @@ class ComputerUseAdapter:
                 self.init_ok = True
                 self.last_error = None
                 logger.info("[CUA] LLM connectivity OK (%s @ %s)", model, base_url)
-                return True
+                return True, ""
             except Exception as e:
                 last_exc = e
                 if attempt < _retries:
@@ -587,9 +683,13 @@ class ComputerUseAdapter:
                     time.sleep(delay)
 
         self.init_ok = False
-        self.last_error = str(last_exc)
-        logger.warning("[CUA] LLM connectivity FAIL after %d attempts: %s", _retries + 1, last_exc)
-        return False
+        self.last_error = str(last_exc) if last_exc else "unknown"
+        reason_code = _classify_connectivity_exception(last_exc)
+        logger.warning(
+            "[CUA] LLM connectivity FAIL after %d attempts (reason=%s): %s",
+            _retries + 1, reason_code, last_exc,
+        )
+        return False, reason_code
 
     # ------------------------------------------------------------------
     # Public interface

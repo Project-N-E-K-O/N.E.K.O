@@ -458,10 +458,10 @@ uv sync
 # cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. 启动服务（至少需要 main_server 和 memory_server）
-uv run python memory_server.py
-uv run python main_server.py
+uv run python app/memory_server.py
+uv run python app/main_server.py
 # 可选：启动 Agent 服务
-uv run python agent_server.py
+uv run python app/agent_server.py
 
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
@@ -523,8 +523,9 @@ N.E.K.O/
 │   └── 📁 cua/                  # Computer Use Agent 子系统
 ├── 📁 config/                   # ⚙️ 配置管理模块 
 │   ├── api_providers.json       # API服务商配置
-│   ├── prompts_chara.py         # 角色提示词
-│   └── prompts_sys.py           # 系统提示词
+│   └── 📁 prompts/              # 角色、系统和功能提示词
+│       ├── prompts_chara.py     # 角色提示词
+│       └── prompts_sys.py       # 系统提示词
 ├── 📁 main_logic/               # 🔧 核心逻辑模块
 │   ├── core.py                  # 核心对话模块
 │   ├── cross_server.py          # 跨服务器通信
@@ -545,9 +546,12 @@ N.E.K.O/
 ├── 📁 static/                   # 🌐 前端静态资源（含构建产物）
 ├── 📁 templates/                # 📄 前端HTML模板（14个页面）
 ├── 📁 utils/                    # 🛠️ 工具模块
-├── main_server.py               # 🌐 主服务器
-├── agent_server.py              # 🤖 AI智能体服务器
-└── memory_server.py             # 🧠 记忆服务器
+├── 📁 app/                      # 🚀 服务器入口模块
+│   ├── main_server.py           # 🌐 主服务器
+│   ├── agent_server.py          # 🤖 AI智能体服务器
+│   ├── memory_server.py         # 🧠 记忆服务器
+│   └── monitor.py               # 📺 独立观看端
+└── launcher.py                  # 🎬 一键启动入口（打包入口）
 ```
 
 > **AI 辅助开发**：`.agent/` 目录遵循 Google Antigravity 开放规范，包含项目的开发规范和技能集。只有 Antigravity 自动读取，其他 AI 工具（含 Claude Code）需手动导入，详见[适配指引](https://project-neko.online/contributing/ai-assisted-dev)。

@@ -2610,7 +2610,7 @@ function syncTitleDataText() {
 // 加载角色卡数据
 async function loadCharacterData() {
     try {
-        const resp = await fetch('/api/characters');
+        const resp = await fetch('/api/characters', { cache: 'no-store' });
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
         }
@@ -2630,6 +2630,122 @@ let currentCharacterCardId = null;
 
 const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
 let characterCardLoadSequence = 0;
+
+function getCharacterCardDescriptionFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return window.t ? window.t('steam.noDescription') : '暂无描述';
+    }
+    if (data['description']) return data['description'];
+    if (data['描述']) return data['描述'];
+    if (data['角色卡描述']) return data['角色卡描述'];
+    return window.t ? window.t('steam.noDescription') : '暂无描述';
+}
+
+function getCharacterCardTagsFromData(data) {
+    if (!data || typeof data !== 'object') {
+        return [];
+    }
+    return Array.isArray(data['关键词']) ? data['关键词'] : [];
+}
+
+function buildCharacterCardEntry(name, data, id) {
+    return {
+        id: id,
+        name: name,
+        description: getCharacterCardDescriptionFromData(data),
+        tags: getCharacterCardTagsFromData(data),
+        rawData: data || {},
+        originalName: name
+    };
+}
+
+function findCharacterCardIndexByName(name) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    return cards.findIndex(card => String(card?.originalName || card?.name || '') === String(name));
+}
+
+function getNextCharacterCardId() {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    let maxId = 0;
+    cards.forEach(card => {
+        const numericId = Number(card && card.id);
+        if (Number.isFinite(numericId)) {
+            maxId = Math.max(maxId, numericId);
+        }
+    });
+    return maxId + 1;
+}
+
+function buildLocalCatgirlRawData(catgirlName, submittedData) {
+    const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const previousRawData = existingIdx >= 0 && cards[existingIdx]?.rawData && typeof cards[existingIdx].rawData === 'object'
+        ? cards[existingIdx].rawData
+        : {};
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const nextRawData = {};
+
+    // 通用编辑接口会保留系统字段，但会用本次提交的普通字段整体替换旧普通字段。
+    Object.keys(previousRawData).forEach(key => {
+        if (allReservedFields.includes(key)) {
+            nextRawData[key] = previousRawData[key];
+        }
+    });
+    Object.entries(submittedData || {}).forEach(([key, value]) => {
+        if (!key || key === '档案名' || allReservedFields.includes(key)) {
+            return;
+        }
+        if (value !== null && value !== undefined && String(value).trim() !== '') {
+            nextRawData[key] = value;
+        }
+    });
+    return nextRawData;
+}
+
+function mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData) {
+    const allReservedFields = ['档案名', ...getWorkshopHiddenFields()];
+    const merged = {};
+
+    // 本轮刚保存的普通字段优先；重新拉取的数据只用于补回模型、音色等保留字段。
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (!allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(localRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    Object.entries(freshRawData || {}).forEach(([key, value]) => {
+        if (allReservedFields.includes(key)) {
+            merged[key] = value;
+        }
+    });
+    return merged;
+}
+
+function syncCharacterCardCache(catgirlName, rawData) {
+    if (!catgirlName) return;
+    if (!Array.isArray(window.characterCards)) {
+        window.characterCards = [];
+    }
+
+    const existingIdx = findCharacterCardIndexByName(catgirlName);
+    const existingCard = existingIdx >= 0 ? window.characterCards[existingIdx] : null;
+    const cardId = existingCard?.id ?? getNextCharacterCardId();
+    const updatedCard = buildCharacterCardEntry(catgirlName, rawData || {}, cardId);
+
+    if (existingIdx >= 0) {
+        window.characterCards[existingIdx] = updatedCard;
+    } else {
+        window.characterCards.push(updatedCard);
+    }
+    globalCharacterCards = window.characterCards || [];
+
+    refreshCharacterCardSelectOptions();
+    renderCharaCardsView();
+}
 
 function waitForCharacterCardModelScanBudget(scanPromise) {
     const eventual = Promise.resolve(scanPromise)
@@ -2816,31 +2932,7 @@ async function loadCharacterCards() {
     // 只处理猫娘数据，忽略其他角色类型（包括主人）
     const catgirls = characterData['猫娘'] || {};
     for (const [name, data] of Object.entries(catgirls)) {
-        // 兼容实际的数据结构 - 使用可用字段创建角色卡
-        // 只从description或角色卡描述字段获取描述信息
-        let description = window.t ? window.t('steam.noDescription') : '暂无描述';
-        if (data['description']) {
-            description = data['description'];
-        } else if (data['描述']) {
-            description = data['描述'];
-        } else if (data['角色卡描述']) {
-            description = data['角色卡描述'];
-        }
-
-        // 只从关键词字段获取标签信息，不自动生成标签
-        let tags = [];
-        if (data['关键词'] && Array.isArray(data['关键词']) && data['关键词'].length > 0) {
-            tags = data['关键词'];
-        }
-
-        window.characterCards.push({
-            id: idCounter++,
-            name: name,
-            description: description,
-            tags: tags,
-            rawData: data,  // 保存原始数据，方便详情页使用
-            originalName: name  // 保存原始键名
-        });
+        window.characterCards.push(buildCharacterCardEntry(name, data, idCounter++));
     }
 
     // 从character_cards文件夹加载角色卡
@@ -4110,6 +4202,64 @@ function renderCharaCardsList(container, cards, currentCatgirl, hiddenKeys) {
 // ===== 角色卡详情面板 =====
 
 let _catgirlPanelOpen = false;
+const CATGIRL_PANEL_STEAM_COMPACT_WIDTH = 1280;
+let _catgirlPanelSteamLayoutRaf = null;
+
+function isCatgirlPanelSteamCompactWindow() {
+    const width = window.innerWidth || document.documentElement.clientWidth || 0;
+    return width > 0 && width < CATGIRL_PANEL_STEAM_COMPACT_WIDTH;
+}
+
+function refreshSteamPreviewAfterPanelLayoutChange() {
+    requestAnimationFrame(function () {
+        if (typeof buildPreviewRing === 'function') buildPreviewRing();
+        if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+            const l2dContainer = document.getElementById('live2d-preview-content');
+            if (l2dContainer && l2dContainer.clientWidth > 0 && l2dContainer.clientHeight > 0) {
+                live2dPreviewManager.pixi_app.renderer.resize(l2dContainer.clientWidth, l2dContainer.clientHeight);
+                if (live2dPreviewManager.currentModel) {
+                    live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    live2dPreviewManager.pixi_app.renderer.render(live2dPreviewManager.pixi_app.stage);
+                }
+            }
+        }
+        syncWorkshop3DPreviewSize(workshopVrmManager, 'vrm-preview-canvas');
+        syncWorkshop3DPreviewSize(workshopMmdManager, 'mmd-preview-canvas');
+    });
+}
+
+function updateCatgirlPanelSteamCardLayout(wrapper) {
+    const panel = wrapper || document.getElementById('catgirl-panel-wrapper');
+    if (!panel) return;
+
+    const activeTab = panel.querySelector('.panel-tab.active');
+    const shouldHideCardFace = !!(
+        activeTab
+        && activeTab.dataset.tab === 'steam'
+        && isCatgirlPanelSteamCompactWindow()
+    );
+    const wasHidden = panel.classList.contains('steam-compact-card-hidden');
+    panel.classList.toggle('steam-compact-card-hidden', shouldHideCardFace);
+    const indicator = panel.querySelector('.panel-tabs-indicator');
+    if (activeTab && indicator) {
+        indicator.style.left = activeTab.offsetLeft + 'px';
+        indicator.style.width = activeTab.offsetWidth + 'px';
+    }
+    const changed = wasHidden !== shouldHideCardFace;
+    if (changed) {
+        setTimeout(refreshSteamPreviewAfterPanelLayoutChange, 430);
+    }
+}
+
+function scheduleCatgirlPanelSteamCardLayoutUpdate() {
+    if (_catgirlPanelSteamLayoutRaf) cancelAnimationFrame(_catgirlPanelSteamLayoutRaf);
+    _catgirlPanelSteamLayoutRaf = requestAnimationFrame(function () {
+        _catgirlPanelSteamLayoutRaf = null;
+        updateCatgirlPanelSteamCardLayout();
+    });
+}
+
+window.addEventListener('resize', scheduleCatgirlPanelSteamCardLayoutUpdate);
 
 function openCatgirlPanel(card, originEl) {
     if (_catgirlPanelOpen) return;
@@ -4193,10 +4343,15 @@ function openCatgirlPanel(card, originEl) {
         openManagedPopup(makerUrl, CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME, 'width=1200,height=800');
     };
 
-    // 点击卡面主体或右侧按钮打开角色卡制作页面
-    cardImage.addEventListener('click', (event) => {
+    const openCardModelManager = async () => {
+        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
+        await openModelManagerForCharacterForm(form, name);
+    };
+
+    // 点击卡面主体打开模型管理；编辑卡面按钮仍进入角色卡制作页面。
+    cardImage.addEventListener('click', async (event) => {
         if (event.target.closest('.catgirl-panel-card-action')) return;
-        openCardMaker();
+        await openCardModelManager();
     });
     editCardFaceAction.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -4204,8 +4359,7 @@ function openCatgirlPanel(card, originEl) {
     });
     modelSettingsAction.addEventListener('click', async (event) => {
         event.stopPropagation();
-        const form = cardImage.closest('.catgirl-panel-wrapper')?.querySelector('form');
-        await openModelManagerForCharacterForm(form, name);
+        await openCardModelManager();
     });
 
     // 监听角色卡制作页面的保存消息
@@ -4383,9 +4537,11 @@ function openCatgirlPanel(card, originEl) {
             '/static/icons/star.png',
             '/static/icons/paw_ui.png'
         ];
-        const spawnCurtainTransition = function (targetTabName, reverse) {
+        const spawnCurtainTransition = function (targetTabName, reverse, fullPanel) {
             const curtain = document.createElement('div');
-            curtain.className = 'panel-transition-curtain' + (reverse ? ' curtain-reverse' : '');
+            curtain.className = 'panel-transition-curtain'
+                + (reverse ? ' curtain-reverse' : '')
+                + (fullPanel ? ' full-panel' : '');
 
             // 幕布色块
             const sweep = document.createElement('div');
@@ -4425,7 +4581,8 @@ function openCatgirlPanel(card, originEl) {
             centerIcon.style.animationDelay = '0.18s';
             curtain.appendChild(centerIcon);
 
-            rightSection.appendChild(curtain);
+            const curtainHost = fullPanel ? wrapper : rightSection;
+            curtainHost.appendChild(curtain);
             setTimeout(function () { curtain.remove(); }, 900);
         };
 
@@ -4449,11 +4606,17 @@ function openCatgirlPanel(card, originEl) {
                 const currentIdx = currentActiveTabBtn ? allTabs.indexOf(currentActiveTabBtn) : -1;
                 const targetIdx = allTabs.indexOf(this);
                 const reverseDirection = (currentIdx >= 0 && targetIdx >= 0 && targetIdx < currentIdx);
+                const needsFullPanelCurtain = wrapper.classList.contains('steam-compact-card-hidden')
+                    || (targetTab === 'steam' && isCatgirlPanelSteamCompactWindow());
 
                 _tabSwitching = true;
                 headerBar.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
                 this.classList.add('active');
                 updateIndicator();
+
+                // 小窗口 Steam 切换会联动左侧卡面，幕布先覆盖整个面板再更新布局。
+                spawnCurtainTransition(targetTab, reverseDirection, needsFullPanelCurtain);
+                updateCatgirlPanelSteamCardLayout(wrapper);
 
                 // 根据当前激活状态切换设定齿轮图标 on/off
                 if (settingsIcon) {
@@ -4461,9 +4624,6 @@ function openCatgirlPanel(card, originEl) {
                         ? '/static/icons/set_on.png'
                         : '/static/icons/set_off.png';
                 }
-
-                // 播放幕布转场
-                spawnCurtainTransition(targetTab, reverseDirection);
 
                 // 退出当前页 — absolute定位防止撑高容器
                 if (currentActive) {
@@ -4527,6 +4687,7 @@ function openCatgirlPanel(card, originEl) {
 
     overlay.appendChild(wrapper);
     document.body.appendChild(overlay);
+    updateCatgirlPanelSteamCardLayout(wrapper);
 
     // 动画 Phase 1: 卡面移动到中间
     requestAnimationFrame(() => {
@@ -4698,6 +4859,10 @@ async function closeCatgirlPanel() {
     overlay.dataset.closing = 'true';
 
     const currentForm = overlay.querySelector('form');
+    if (currentForm && currentForm._voiceSelectCleanup) {
+        currentForm._voiceSelectCleanup();
+        delete currentForm._voiceSelectCleanup;
+    }
     if (currentForm && currentForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', currentForm._characterPersonalityUpdateHandler);
         delete currentForm._characterPersonalityUpdateHandler;
@@ -4758,6 +4923,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const previousForm = container && typeof container.querySelector === 'function'
         ? container.querySelector('form')
         : null;
+    if (previousForm && previousForm._voiceSelectCleanup) {
+        previousForm._voiceSelectCleanup();
+    }
     if (previousForm && previousForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
     }
@@ -5169,13 +5337,15 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.overflow = 'visible';
     voiceRow.style.position = 'relative';
     voiceRow.style.alignItems = 'center';
-    voiceRow.style.flex = '0 0 auto';
+    voiceRow.style.flex = '1 1 360px';
     voiceRow.style.width = 'auto';
-    voiceRow.style.minWidth = '200px';
-    voiceRow.style.maxWidth = '300px';
+    voiceRow.style.minWidth = '240px';
+    voiceRow.style.maxWidth = '560px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
-    voiceSelect.className = 'form-control';
+    voiceSelect.className = 'form-control voice-native-select';
+    voiceSelect.tabIndex = -1;
+    voiceSelect.setAttribute('aria-hidden', 'true');
     voiceSelect.style.flex = '0 0 auto';
     voiceSelect.style.width = '100%';
     voiceSelect.style.position = 'relative';
@@ -5189,6 +5359,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
     voiceRow.appendChild(voiceSelect);
+    const voiceSelectUi = _panelCreateVoiceSelectUi(voiceSelect);
+    voiceRow.appendChild(voiceSelectUi.container);
+    form._voiceSelectCleanup = voiceSelectUi.destroy;
     voiceWrapper.appendChild(voiceRow);
 
     // 注册新声音按钮
@@ -5333,7 +5506,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
 
     // 加载音色列表
-    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim());
+    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim()).then(() => {
+        voiceSelectUi.refresh();
+    }, () => {
+        voiceSelectUi.refresh();
+    });
     form._voicesLoadPromise = voicesLoadPromise;
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
@@ -5450,6 +5627,284 @@ function _panelAttachTextareaAutoResize(textarea) {
     resize();
 }
 
+function _panelGetNativeVoiceProviderLabel(nativeEntries) {
+    if (!Array.isArray(nativeEntries)) return '';
+    for (const [, voiceData] of nativeEntries) {
+        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        if (label) return String(label);
+    }
+    return '';
+}
+
+function _panelFormatNativeVoiceGroupLabel(nativeEntries) {
+    const providerLabel = _panelGetNativeVoiceProviderLabel(nativeEntries);
+    if (providerLabel) {
+        return window.t
+            ? window.t('character.nativePresetVoices', { provider: providerLabel })
+            : providerLabel + ' 原生音色';
+    }
+    return window.t ? window.t('character.nativePresetVoicesGeneric') : '原生预设音色';
+}
+
+function _panelNormalizeVoiceGroupLabel(label) {
+    return String(label || '').replace(/^[\s\-—–─]+|[\s\-—–─]+$/g, '').trim();
+}
+
+function _panelGetRegisteredVoiceDisplayName(voiceId, voiceData) {
+    if (voiceData && typeof voiceData === 'object') {
+        const prefix = String(voiceData.prefix || '').trim();
+        if (prefix) return prefix;
+
+        const name = String(voiceData.name || '').trim();
+        if (name) return name;
+    }
+    return String(voiceId || '').trim();
+}
+
+// 创建音色自定义单选下拉，原生 select 只负责表单值。
+function _panelCreateVoiceSelectUi(selectEl) {
+    const container = document.createElement('div');
+    container.className = 'voice-custom-select';
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'voice-select-header';
+    header.setAttribute('aria-haspopup', 'listbox');
+    header.setAttribute('aria-expanded', 'false');
+
+    const selectedText = document.createElement('span');
+    selectedText.className = 'voice-select-selected';
+    selectedText.textContent = selectEl.options[selectEl.selectedIndex]?.textContent || '';
+    header.appendChild(selectedText);
+
+    const options = document.createElement('div');
+    options.className = 'voice-select-options';
+    options.id = 'voice-select-options-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    options.setAttribute('role', 'listbox');
+    header.setAttribute('aria-controls', options.id);
+
+    container.appendChild(header);
+    container.appendChild(options);
+
+    function getItems() {
+        return Array.from(options.querySelectorAll('.voice-select-option:not(.disabled)'));
+    }
+
+    function updateScrollbarState() {
+        requestAnimationFrame(() => {
+            options.classList.toggle('has-scrollbar', options.scrollHeight > options.clientHeight);
+        });
+    }
+
+    function setOptionTabbability(isTabbable) {
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            if (item.classList.contains('disabled')) {
+                item.setAttribute('tabindex', '-1');
+                return;
+            }
+            item.setAttribute('tabindex', isTabbable ? '0' : '-1');
+        });
+    }
+
+    function applyDropdownDirection() {
+        const maxHeight = 250;
+        const gap = 8;
+        const headerRect = header.getBoundingClientRect();
+        const optionHeight = Math.min(options.scrollHeight || maxHeight, maxHeight);
+        const spaceBelow = window.innerHeight - headerRect.bottom - gap;
+        const spaceAbove = headerRect.top - gap;
+        let placement = 'open-down';
+        let computedMaxHeight = maxHeight;
+
+        if (spaceBelow >= optionHeight) {
+            placement = 'open-down';
+        } else if (spaceAbove >= optionHeight) {
+            placement = 'open-up';
+        } else if (spaceAbove > spaceBelow) {
+            placement = 'open-up';
+            computedMaxHeight = Math.max(80, Math.floor(spaceAbove));
+        } else {
+            computedMaxHeight = Math.max(80, Math.floor(spaceBelow));
+        }
+
+        container.classList.toggle('open-up', placement === 'open-up');
+        container.classList.toggle('open-down', placement === 'open-down');
+        options.style.maxHeight = computedMaxHeight + 'px';
+        updateScrollbarState();
+    }
+
+    function closeDropdown(restoreFocus = false) {
+        const wasActive = container.classList.contains('active');
+        container.classList.remove('active', 'open-up', 'open-down');
+        header.setAttribute('aria-expanded', 'false');
+        setOptionTabbability(false);
+        if (restoreFocus && wasActive && header.isConnected) {
+            header.focus();
+        }
+    }
+
+    function openDropdown() {
+        document.querySelectorAll('.voice-custom-select.active').forEach(activeSelect => {
+            if (activeSelect === container) return;
+            activeSelect.classList.remove('active', 'open-up', 'open-down');
+            const activeHeader = activeSelect.querySelector('.voice-select-header');
+            if (activeHeader) activeHeader.setAttribute('aria-expanded', 'false');
+            activeSelect.querySelectorAll('.voice-select-option:not(.disabled)').forEach(item => {
+                item.setAttribute('tabindex', '-1');
+            });
+        });
+
+        container.classList.add('active');
+        header.setAttribute('aria-expanded', 'true');
+        setOptionTabbability(true);
+        applyDropdownDirection();
+
+        const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+        if (selectedItem) selectedItem.scrollIntoView({ block: 'nearest' });
+    }
+
+    function toggleDropdown() {
+        if (container.classList.contains('active')) {
+            closeDropdown();
+        } else {
+            openDropdown();
+        }
+    }
+
+    function syncSelectionState() {
+        const selectedOption = selectEl.options[selectEl.selectedIndex] || selectEl.querySelector('option');
+        const displayText = selectedOption ? selectedOption.textContent : '';
+        selectedText.textContent = displayText;
+        header.title = selectedOption ? (selectedOption.title || displayText) : '';
+
+        options.querySelectorAll('.voice-select-option').forEach(item => {
+            const isSelected = item.dataset.value === selectEl.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+    }
+
+    function selectOptionValue(value) {
+        if (selectEl.value === value) {
+            closeDropdown(true);
+            return;
+        }
+        selectEl.value = value;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        closeDropdown(true);
+    }
+
+    function focusItemByOffset(currentItem, offset) {
+        const items = getItems();
+        if (items.length === 0) return;
+        const currentIndex = items.indexOf(currentItem);
+        const nextIndex = currentIndex >= 0
+            ? (currentIndex + offset + items.length) % items.length
+            : 0;
+        items[nextIndex].focus();
+    }
+
+    function appendOptionItem(option) {
+        const item = document.createElement('div');
+        item.className = 'voice-select-option';
+        item.setAttribute('role', 'option');
+        item.setAttribute('tabindex', '-1');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent || option.value;
+        item.title = option.title || item.textContent;
+
+        if (option.disabled) {
+            item.classList.add('disabled');
+            item.setAttribute('aria-disabled', 'true');
+        } else {
+            item.addEventListener('click', () => selectOptionValue(option.value));
+            item.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    selectOptionValue(option.value);
+                } else if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    focusItemByOffset(item, 1);
+                } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    focusItemByOffset(item, -1);
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeDropdown(true);
+                }
+            });
+        }
+
+        options.appendChild(item);
+    }
+
+    function refresh() {
+        options.innerHTML = '';
+        Array.from(selectEl.children).forEach(child => {
+            if (child.tagName === 'OPTGROUP') {
+                const groupOptions = Array.from(child.children).filter(option => option.tagName === 'OPTION');
+                if (groupOptions.length > 0) {
+                    const groupLabel = document.createElement('div');
+                    groupLabel.className = 'voice-select-group-label';
+                    const groupLabelText = document.createElement('span');
+                    groupLabelText.className = 'voice-select-group-text';
+                    groupLabelText.textContent = _panelNormalizeVoiceGroupLabel(child.label);
+                    groupLabel.appendChild(groupLabelText);
+                    options.appendChild(groupLabel);
+                    groupOptions.forEach(appendOptionItem);
+                }
+            } else if (child.tagName === 'OPTION') {
+                appendOptionItem(child);
+            }
+        });
+        syncSelectionState();
+        setOptionTabbability(container.classList.contains('active'));
+        updateScrollbarState();
+    }
+
+    function handleDocumentClick(event) {
+        if (!container.contains(event.target)) {
+            closeDropdown();
+        }
+    }
+
+    function handleDocumentKeydown(event) {
+        if (event.key === 'Escape' && container.classList.contains('active')) {
+            closeDropdown(true);
+        }
+    }
+
+    header.addEventListener('click', toggleDropdown);
+    header.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDropdown();
+        } else if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            if (!container.classList.contains('active')) openDropdown();
+            const selectedItem = options.querySelector('.voice-select-option.selected:not(.disabled)');
+            (selectedItem || getItems()[0])?.focus();
+        }
+    });
+    selectEl.addEventListener('change', syncSelectionState);
+    document.addEventListener('click', handleDocumentClick);
+    document.addEventListener('keydown', handleDocumentKeydown);
+
+    refresh();
+
+    return {
+        container,
+        refresh,
+        destroy() {
+            closeDropdown();
+            selectEl.removeEventListener('change', syncSelectionState);
+            document.removeEventListener('click', handleDocumentClick);
+            document.removeEventListener('keydown', handleDocumentKeydown);
+            container.remove();
+        }
+    };
+}
+
 // 加载音色列表（完整复制原版逻辑）
 async function _loadPanelVoices(selectEl, currentVoiceId) {
     const GSV_PREFIX = 'gsv:';
@@ -5468,17 +5923,11 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             selectEl.appendChild(defaultOption);
 
             // 添加音色选项
-            const voiceOwners = data.voice_owners || {};
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
                 const option = document.createElement('option');
                 option.value = voiceId;
-                // 显示名称：优先用 voice_owners，其次 voiceData.name，最后 voiceId
-                let displayName = voiceId;
-                if (voiceOwners[voiceId]) {
-                    displayName = voiceOwners[voiceId] + ' - ' + voiceId;
-                } else if (voiceData && voiceData.name) {
-                    displayName = voiceData.name;
-                }
+                // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
+                const displayName = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                 option.textContent = displayName;
                 option.title = voiceId;
                 if (voiceId === currentVoiceId) option.selected = true;
@@ -5489,7 +5938,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             if (data.free_voices && Object.keys(data.free_voices).length > 0) {
                 const freeGroup = document.createElement('optgroup');
                 const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
-                freeGroup.label = '── ' + freeLabel + ' ──';
+                freeGroup.label = _panelNormalizeVoiceGroupLabel(freeLabel);
                 Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                     const option = document.createElement('option');
                     option.value = voiceId;
@@ -5499,10 +5948,64 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 });
                 selectEl.appendChild(freeGroup);
             }
+
+            // 当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
+            // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
+            // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
+            // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+            if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+                const renderedVoiceIds = new Set();
+                Object.keys(data.voices || {}).forEach(function (id) {
+                    renderedVoiceIds.add(String(id).toLowerCase());
+                });
+                if (data.free_voices) {
+                    Object.values(data.free_voices).forEach(function (id) {
+                        if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                    });
+                }
+                const nativeEntries = Object.entries(data.native_voices)
+                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
+                if (nativeEntries.length > 0) {
+                    const nativeGroup = document.createElement('optgroup');
+                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(_panelFormatNativeVoiceGroupLabel(nativeEntries));
+                    nativeEntries.forEach(function ([voiceId, voiceData]) {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = (voiceData && voiceData.prefix) || voiceId;
+                        option.title = voiceId;
+                        if (voiceId === currentVoiceId) option.selected = true;
+                        nativeGroup.appendChild(option);
+                    });
+                    selectEl.appendChild(nativeGroup);
+                }
+            }
         }
 
         // 加载 GPT-SoVITS 声音列表
         await _loadPanelGsvVoices(selectEl, currentVoiceId);
+
+        // 保底：currentVoiceId 在任何分支都没渲染时（Gemini 别名、免费版被过滤掉的
+        // CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项 select
+        // 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
+        // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+        // 必须放在所有 loader（含 _loadPanelGsvVoices）之后才能正确判断是否已渲染；
+        // gsv: 前缀 ID 由 _loadPanelGsvVoices.ensureGsvFallback 自行兜底，跳过避免双插。
+        if (currentVoiceId
+            && !currentVoiceId.startsWith(GSV_PREFIX)
+            && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            const fallbackGroup = document.createElement('optgroup');
+            const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+            fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
+            fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
+            const fallbackOption = document.createElement('option');
+            fallbackOption.value = currentVoiceId;
+            fallbackOption.textContent = currentVoiceId + ' (?)';
+            fallbackOption.title = currentVoiceId;
+            fallbackOption.selected = true;
+            fallbackGroup.appendChild(fallbackOption);
+            selectEl.appendChild(fallbackGroup);
+            selectEl.value = currentVoiceId;
+        }
     } catch (e) {
         console.warn('加载音色列表失败:', e);
     }
@@ -5522,7 +6025,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         if (!gsvGroup) {
             gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
             gsvGroup.dataset.gsvGroup = 'true';
             selectEl.appendChild(gsvGroup);
         }
@@ -5533,17 +6036,56 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         selectEl.value = currentVoiceId;
     }
 
+    // GSV 不可用时把后端给的 code 翻成一行人话塞到下拉里——以前是静默丢，
+    // 用户连"为啥没出现"都看不到，只能猜是 server 没起还是开关没勾。
+    const _gsvT = (key, fallback) => (window.t && typeof window.t === 'function' && window.t(key)) || fallback;
+
+    function _appendGsvDiagnosticOption(message) {
+        const diagGroup = document.createElement('optgroup');
+        diagGroup.label = '── GPT-SoVITS ──';
+        diagGroup.dataset.gsvDiagGroup = 'true';
+        const diagOpt = document.createElement('option');
+        diagOpt.value = '';
+        diagOpt.disabled = true;
+        diagOpt.textContent = message;
+        diagGroup.appendChild(diagOpt);
+        selectEl.appendChild(diagGroup);
+    }
+
+    function _diagnoseFailure(result, status) {
+        const code = result && result.code;
+        if (code === 'GPTSOVITS_NOT_ENABLED') {
+            return _gsvT('character.gsvDiagNotEnabled', 'GPT-SoVITS 未启用 (请在 API 设置勾选)');
+        }
+        if (code === 'CUSTOM_API_NOT_ENABLED') {
+            return _gsvT('character.gsvDiagUrlMissing', 'GPT-SoVITS URL 未配置 (请在 API 设置填写)');
+        }
+        if (code === 'TTS_CUSTOM_URL_NOT_CONFIGURED') {
+            return _gsvT('character.gsvDiagUrlInvalid', 'GPT-SoVITS URL 未配置或不是 http(s)');
+        }
+        if (code === 'TTS_CUSTOM_URL_LOCALHOST_ONLY') {
+            return _gsvT('character.gsvDiagUrlLocalhostOnly', 'GPT-SoVITS URL 必须是 localhost');
+        }
+        if (status === 502 || (result && /连接 GPT-SoVITS API 失败/.test(result.error || ''))) {
+            return _gsvT('character.gsvDiagUnreachable', 'GPT-SoVITS server 未运行或不可达');
+        }
+        const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+        return base + (result && result.error ? ': ' + result.error : '');
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     try {
-        const resp = await fetch('/api/characters/custom_tts_voices', { signal: controller.signal });
+        const resp = await fetch('/api/characters/custom_tts_voices?provider=gptsovits', { signal: controller.signal });
         clearTimeout(timeoutId);
-        const result = await resp.json();
+        // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
+        // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。
+        const result = await resp.json().catch(() => ({}));
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
             const gsvLabel = window.t ? window.t('character.gptsovitsVoices') : 'GPT-SoVITS 声音';
-            gsvGroup.label = '── ' + gsvLabel + ' ──';
+            gsvGroup.label = _panelNormalizeVoiceGroupLabel(gsvLabel);
             gsvGroup.dataset.gsvGroup = 'true';
             result.voices.forEach(function (v) {
                 const option = document.createElement('option');
@@ -5563,11 +6105,21 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
             if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
                 selectEl.value = currentVoiceId;
             }
+        } else if (result && result.success && Array.isArray(result.voices) && result.voices.length === 0) {
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagEmpty', 'GPT-SoVITS server 没有任何声音 (空列表)'));
+        } else {
+            _appendGsvDiagnosticOption(_diagnoseFailure(result, resp.status));
         }
         ensureGsvFallback();
     } catch (e) {
         clearTimeout(timeoutId);
         console.debug('GPT-SoVITS voices not available:', e.message);
+        if (e.name === 'AbortError') {
+            _appendGsvDiagnosticOption(_gsvT('character.gsvDiagTimeout', 'GPT-SoVITS server 响应超时 (>3s)'));
+        } else {
+            const base = _gsvT('character.gsvDiagLoadFailed', 'GPT-SoVITS 加载失败');
+            _appendGsvDiagnosticOption(base + (e && e.message ? ': ' + e.message : ''));
+        }
         ensureGsvFallback();
     }
 }
@@ -5662,6 +6214,9 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return;
         }
+        const localRawData = buildLocalCatgirlRawData(data['档案名'], data);
+        let savedRawDataForCache = localRawData;
+        syncCharacterCardCache(data['档案名'], localRawData);
         if (form._autoCreatedDetachedName) {
             await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
             form._autoCreated = false;
@@ -5683,8 +6238,22 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                         body: JSON.stringify({ voice_id: selectedVoiceId })
                     });
                     const voiceResult = await voiceResp.json().catch(() => ({}));
+                    // 留 console 痕迹：toast 一闪而过看不清，这里把 PUT 的完整 status/payload
+                    // 持久打到 console，遇到 "保存后再打开 voice 又没了" 这类问题能直接定位
+                    // 是 PUT 被拒、还是后续 cleanup_invalid_voice_ids 把它清掉了。
+                    console.log(
+                        '[character voice PUT]',
+                        'name=', data['档案名'],
+                        'voice_id=', selectedVoiceId,
+                        'status=', voiceResp.status,
+                        'response=', voiceResult,
+                    );
                     if (!voiceResp.ok || voiceResult.success === false) {
                         const detail = (voiceResult && voiceResult.error) || (voiceResp.status + ' ' + voiceResp.statusText);
+                        // available_voices 直接打出来，方便看到 backend 当前认到的合法音色
+                        if (voiceResult && Array.isArray(voiceResult.available_voices)) {
+                            console.warn('[character voice PUT] backend 当前合法音色:', voiceResult.available_voices);
+                        }
                         showMessage(
                             window.t ? window.t('character.partialSaveVoiceFailed', { error: detail }) : '角色已保存，但音色更新失败: ' + detail,
                             'error'
@@ -5754,7 +6323,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             const catgirlName = data['档案名'];
             const hasCardFace = window._cardFaceNames && window._cardFaceNames.has(catgirlName);
             if (!hasCardFace) {
-                const makerUrl = `/card_maker?name=${encodeURIComponent(catgirlName)}&mode=maker`;
+                const makerParams = new URLSearchParams({
+                    name: catgirlName,
+                    mode: 'maker',
+                    fallback_default_on_close: '1'
+                });
+                const makerUrl = `/card_maker?${makerParams.toString()}`;
                 const makerWindow = openManagedPopup(
                     makerUrl,
                     CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME,
@@ -5777,14 +6351,19 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             if (cancelBtn) cancelBtn.style.display = 'none';
             try {
                 const freshData = await loadCharacterData();
-                if (freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]) {
-                    buildCatgirlDetailForm(data['档案名'], freshData['猫娘'][data['档案名']], false, container);
-                }
+                const freshRawData = freshData && freshData['猫娘'] && freshData['猫娘'][data['档案名']]
+                    ? freshData['猫娘'][data['档案名']]
+                    : {};
+                savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+                buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
             } catch (e) {
                 console.error('重新加载猫娘数据失败:', e);
+                buildCatgirlDetailForm(data['档案名'], localRawData, false, container);
             }
         }
         await loadCharacterCards();
+        syncCharacterCardCache(data['档案名'], savedRawDataForCache);
     } catch (error) {
         console.error('保存猫娘失败:', error);
         const errorMessage = error.message || String(error);
@@ -9324,6 +9903,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
+            syncCharacterCardCache(catgirlName, buildLocalCatgirlRawData(catgirlName, data));
             storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             const sentFields = new Set(Object.keys(data));

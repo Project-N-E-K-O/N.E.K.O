@@ -1199,3 +1199,101 @@ async def test_delete_plugin_clears_runtime_override(
             module.state.event_handlers.update(handlers_backup)
         with module.state._snapshot_cache_lock:
             module.state._snapshot_cache = cache_backup
+
+
+def _seed_running_plugin(plugin_id: str, config_path: Path) -> None:
+    with module.state.acquire_plugins_write_lock():
+        module.state.plugins.clear()
+        module.state.plugins[plugin_id] = {
+            "id": plugin_id,
+            "name": plugin_id,
+            "type": "plugin",
+            "config_path": str(config_path),
+            "entry_point": "tests.fake:Plugin",
+        }
+    with module.state.acquire_plugin_hosts_write_lock():
+        module.state.plugin_hosts.clear()
+        module.state.plugin_hosts[plugin_id] = _FakeProcessHost(
+            plugin_id=plugin_id,
+            entry_point="tests.fake:Plugin",
+            config_path=config_path,
+        )
+    with module.state.acquire_event_handlers_write_lock():
+        module.state.event_handlers.clear()
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_stop_plugin_persist_user_intent_writes_runtime_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        await service.stop_plugin("demo_plugin", persist_user_intent=True)
+        assert _isolate_runtime_overrides == {"demo_plugin": False}
+        assert runtime_overrides_module.get_runtime_override("demo_plugin") is False
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_stop_plugin_internal_call_does_not_touch_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    config_path = tmp_path / "demo_plugin" / "plugin.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("[plugin]\nid='demo_plugin'\n", encoding="utf-8")
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    handlers_backup = dict(module.state.event_handlers)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+
+    try:
+        _seed_running_plugin("demo_plugin", config_path)
+        runtime_overrides_module.set_runtime_override("demo_plugin", True)
+        monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+        service = module.PluginLifecycleService()
+        await service.stop_plugin("demo_plugin")
+        assert _isolate_runtime_overrides == {"demo_plugin": True}
+        assert runtime_overrides_module.get_runtime_override("demo_plugin") is True
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+        with module.state.acquire_event_handlers_write_lock():
+            module.state.event_handlers.clear()
+            module.state.event_handlers.update(handlers_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup

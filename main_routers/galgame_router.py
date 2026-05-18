@@ -14,13 +14,14 @@ URL convention: routes declared WITHOUT trailing slash. See the project
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from config.prompts_galgame import (
+from config.prompts.prompts_galgame import (
     GALGAME_DEFAULT_LANLAN_PLACEHOLDER,
     GALGAME_DEFAULT_MASTER_PLACEHOLDER,
     get_galgame_fallback_options,
@@ -28,7 +29,7 @@ from config.prompts_galgame import (
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
 )
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from utils.language_utils import detect_language, normalize_language_code
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
@@ -43,8 +44,8 @@ logger = get_module_logger(__name__, "GalGame")
 
 GALGAME_MAX_HISTORY = 8
 GALGAME_MAX_TEXT_PER_TURN = 240
-GALGAME_OPTION_MAX_TOKENS = 360
-GALGAME_OPTION_TIMEOUT_SECONDS = 5.0
+GALGAME_OPTION_MAX_TOKENS = 600
+GALGAME_OPTION_TIMEOUT_SECONDS = 10.0
 GALGAME_OPTION_LABELS = ("A", "B", "C")
 
 
@@ -52,17 +53,17 @@ def _resolve_language(text_sample: str, request_lang: str | None) -> str:
     """Pick the best 'short' language code for the prompt."""
     if request_lang:
         try:
-            return normalize_language_code(request_lang, format='short') or 'zh'
+            return normalize_language_code(request_lang, format='short') or 'en'
         except Exception:
             # Bad language tag from the client — fall through to text-based detection.
             pass
     try:
         if text_sample.strip():
-            return normalize_language_code(detect_language(text_sample), format='short') or 'zh'
+            return normalize_language_code(detect_language(text_sample), format='short') or 'en'
     except Exception:
-        # detect_language can choke on emoji-only / very short strings — default to zh.
+        # detect_language can choke on emoji-only / very short strings — default to en.
         pass
-    return 'zh'
+    return 'en'
 
 
 def _coerce_messages(raw: Any) -> list[dict[str, str]]:
@@ -109,45 +110,94 @@ def _strip_code_fence(text: str) -> str:
     return text.strip()
 
 
-def _normalize_options(parsed: Any) -> list[dict[str, str]]:
+def _take_label_map(obj: Any) -> dict[str, str]:
+    """Pull canonical A/B/C label→text entries out of a dict, if any."""
+    if not isinstance(obj, dict):
+        return {}
+    collected: dict[str, str] = {}
+    for label in GALGAME_OPTION_LABELS:
+        # Accept both upper and lower-case keys ("a"/"A").
+        value = obj.get(label)
+        if not isinstance(value, str):
+            value = obj.get(label.lower())
+        if isinstance(value, str) and value.strip():
+            collected[label] = value.strip()
+    return collected
+
+
+def _normalize_options(parsed: Any) -> dict[str, str]:
+    """Best-effort parse: return whatever label→text mappings the model produced.
+
+    Returns an empty dict if nothing salvageable, otherwise a 1-3 entry dict
+    keyed by canonical labels (A/B/C). Callers fill missing labels from
+    fallback rather than throwing the whole batch away — preserves any
+    on-style replies the model did manage to generate.
+
+    All recognised shapes are *merged*, not selected, so mixed payloads
+    like ``{"A": "topA", "options": [{"label":"B","text":"..."}, ...]}``
+    keep both the top-level label and the nested list candidates instead
+    of one source silently shadowing the other. First write wins on
+    same-label conflicts (top-level > nested-map > list).
+
+    Accepted shapes:
+      * ``{"A": "...", "B": "...", "C": "..."}`` (top-level label map)
+      * ``{"options": {"A": "...", ...}}`` (nested label map)
+      * ``{"options": [{"label": "A", "text": "..."}, ...]}`` (canonical list)
+      * ``{"options": ["serious", "warm", "wild"]}`` (positional list)
+      * Top-level list of either dict or string entries
+      * Any mix of the above
+    """
+    by_label: dict[str, str] = {}
+
+    # Shape 1: top-level dict carries A/B/C directly.
+    by_label.update(_take_label_map(parsed))
+
     if isinstance(parsed, dict):
         candidates = parsed.get('options') or parsed.get('candidates') or parsed.get('replies')
     else:
         candidates = parsed
-    if not isinstance(candidates, list):
-        return []
 
-    by_label: dict[str, str] = {}
-    leftover: list[str] = []
-    for entry in candidates:
-        if isinstance(entry, dict):
-            text = entry.get('text') or entry.get('content') or entry.get('reply')
-            label = entry.get('label')
-        elif isinstance(entry, str):
-            text = entry
-            label = None
-        else:
-            continue
-        if not isinstance(text, str):
-            continue
-        text = text.strip()
-        if not text:
-            continue
-        normalized_label = str(label).strip().upper() if label else ''
-        if normalized_label in GALGAME_OPTION_LABELS and normalized_label not in by_label:
-            by_label[normalized_label] = text
-        else:
+    # Shape 2: the inner container is itself a label map. Don't clobber any
+    # top-level entry — first write wins.
+    for label, text in _take_label_map(candidates).items():
+        by_label.setdefault(label, text)
+
+    # Shape 3/4/5: list of dict (with `label`) or string entries.
+    if isinstance(candidates, list):
+        leftover: list[str] = []
+        for entry in candidates:
+            if isinstance(entry, dict):
+                text = entry.get('text') or entry.get('content') or entry.get('reply')
+                label = entry.get('label')
+            elif isinstance(entry, str):
+                text = entry
+                label = None
+            else:
+                continue
+            if not isinstance(text, str):
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            normalized_label = str(label).strip().upper() if label else ''
+            if normalized_label in GALGAME_OPTION_LABELS:
+                # Recognised label. Take it only if no stronger source
+                # (top-level / nested map / earlier list entry) already
+                # provided this slot. Never push a labeled-but-duplicate
+                # entry into leftover — the model intended this text for
+                # one specific style, and reusing it as a positional fill
+                # for a different label mis-attributes that style.
+                if normalized_label not in by_label:
+                    by_label[normalized_label] = text
+                continue
             leftover.append(text)
 
-    options: list[dict[str, str]] = []
-    for label in GALGAME_OPTION_LABELS:
-        text = by_label.get(label)
-        if text is None and leftover:
-            text = leftover.pop(0)
-        if text is None:
-            return []
-        options.append({'label': label, 'text': text})
-    return options
+        for label in GALGAME_OPTION_LABELS:
+            if label in by_label or not leftover:
+                continue
+            by_label[label] = leftover.pop(0)
+
+    return by_label
 
 
 def _fallback_options(lang: str) -> list[dict[str, str]]:
@@ -257,19 +307,56 @@ async def generate_galgame_options(request: Request):
 
     raw_text = (getattr(result, 'content', '') or '').strip()
     cleaned = _strip_code_fence(raw_text)
-    options: list[dict[str, str]] = []
+    parsed_map: dict[str, str] = {}
+    parse_error: str | None = None
     if cleaned:
         try:
             parsed = robust_json_loads(cleaned)
-            options = _normalize_options(parsed)
-        except Exception:
-            options = []
-    if not options:
-        logger.info("GalGame model output unparseable, using fallback")
+            parsed_map = _normalize_options(parsed)
+        except Exception as exc:
+            parse_error = type(exc).__name__
+
+    if not parsed_map:
+        # The raw output is generated from recent chat context and can carry
+        # PII (names, personal disclosures). Keep INFO logs content-free —
+        # only the parse-error class and total length — and stash the
+        # truncated snippet under DEBUG so deeper diagnosis still works when
+        # an operator deliberately opts into NEKO_LOG_LEVEL=DEBUG.
+        logger.info(
+            "GalGame model output unparseable, using fallback "
+            "(parse_error=%s raw_len=%d)",
+            parse_error, len(raw_text),
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            snippet = re.sub(r'\s+', ' ', raw_text)[:200]
+            logger.debug("GalGame unparseable raw_head: %r", snippet)
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
             "fallback": True,
+        })
+
+    fallback_texts = get_galgame_fallback_options(lang)
+    options: list[dict[str, str]] = []
+    missing_labels: list[str] = []
+    for label, fb_text in zip(GALGAME_OPTION_LABELS, fallback_texts):
+        text = parsed_map.get(label)
+        if text:
+            options.append({'label': label, 'text': text})
+        else:
+            options.append({'label': label, 'text': fb_text})
+            missing_labels.append(label)
+
+    if missing_labels:
+        logger.info(
+            "GalGame partial parse: model returned %d/3 options; filled %s from fallback",
+            3 - len(missing_labels), missing_labels,
+        )
+        return JSONResponse({
+            "success": True,
+            "options": options,
+            "partial": True,
+            "missing_labels": missing_labels,
         })
 
     return JSONResponse({"success": True, "options": options})

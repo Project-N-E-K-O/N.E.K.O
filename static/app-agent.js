@@ -1757,15 +1757,18 @@
     // ====================================================================
     // Floating buttons ready => bind agent checkbox listeners
     // ====================================================================
+    let agentReadyAutoOpenHandled = false;
     window.addEventListener('live2d-floating-buttons-ready', () => {
         console.log('[App] \u6536\u5230\u6d6e\u52a8\u6309\u94ae\u5c31\u7eea\u4e8b\u4ef6\uff0c\u5f00\u59cb\u7ed1\u5b9aAgent\u5f00\u5173');
         setupAgentCheckboxListeners();
+        if (agentReadyAutoOpenHandled) return;
+        agentReadyAutoOpenHandled = true;
         setTimeout(() => {
             if (typeof window.openAgentStatusPopupWhenEnabled === 'function') {
                 window.openAgentStatusPopupWhenEnabled();
             }
         }, 400);
-    }, { once: true });
+    });
 
     // ====================================================================
     // Expose module

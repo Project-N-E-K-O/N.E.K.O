@@ -38,7 +38,7 @@ a footgun: testers would silently burn their real budget when they
 meant to test an offline endpoint.
 
 So this runner owns the LLM call path: it imports the same prompts
-(``config.prompts_memory``) and the same ``create_chat_llm`` factory,
+(``config.prompts.prompts_memory``) and the same ``create_chat_llm`` factory,
 but resolves base_url / api_key / model from ``session.model_config``
 via :func:`chat_runner.resolve_group_config` — identical to how the
 chat turn does it. Disk writes still go through the sandboxed
@@ -455,7 +455,7 @@ async def _preview_recent_compress(
     summarizer ate) as a read-only list so the tester can verify the
     cut-point visually.
     """
-    from config.prompts_memory import (
+    from config.prompts.prompts_memory import (
         get_detailed_recent_history_manager_prompt,
         get_recent_history_manager_prompt,
     )
@@ -491,10 +491,21 @@ async def _preview_recent_compress(
     messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
 
     lang = get_global_language()
+    # 与生产 ``memory.recent.compress_history`` 保持一致：先把 ``{MASTER_NAME}``
+    # 字面占位符（"保留负面反馈"clause 用的）替成 master 实名，再做 ``%s`` 替换。
+    master_name = name_mapping.get('human', '')
+    # codex P2：master_name 替换最后做（与 memory.recent.compress_history 一致）
     if detailed:
-        prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
+        prompt = (
+            (get_detailed_recent_history_manager_prompt(lang) % messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
     else:
-        prompt = get_recent_history_manager_prompt(lang).replace("%s", messages_text)
+        prompt = (
+            get_recent_history_manager_prompt(lang)
+            .replace("%s", messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
 
     llm = _llm_for_memory(session, temperature=0.3)
     warnings: list[str] = []
@@ -549,7 +560,7 @@ async def _preview_recent_compress(
     # Build the "replacement memo" — exactly the same rendering upstream
     # applies (`MEMORY_MEMO_WITH_SUMMARY` template), so commit can just
     # drop this into recent.json as a single system message.
-    from config.prompts_sys import MEMORY_MEMO_EMPTY, MEMORY_MEMO_WITH_SUMMARY, _loc
+    from config.prompts.prompts_sys import MEMORY_MEMO_EMPTY, MEMORY_MEMO_WITH_SUMMARY, _loc
     if summary_text:
         memo_content = _loc(MEMORY_MEMO_WITH_SUMMARY, lang).format(summary=summary_text)
     else:
@@ -658,7 +669,7 @@ async def _preview_facts_extract(
     SHA-256 dedup pass (protects against the tester clicking Commit
     twice or another tab writing a duplicate).
     """
-    from config.prompts_memory import get_fact_extraction_prompt
+    from config.prompts.prompts_memory import get_fact_extraction_prompt
     from utils.language_utils import get_global_language
 
     character = _require_character(session)
@@ -890,7 +901,7 @@ async def _preview_reflect(
     Commit appends ``reflection`` to reflections.json and marks every
     id in ``source_fact_ids`` as ``absorbed=True`` in facts.json.
     """
-    from config.prompts_memory import get_reflection_prompt
+    from config.prompts.prompts_memory import get_reflection_prompt
     from utils.language_utils import get_global_language
 
     # Lazy import to avoid pulling MIN_FACTS_FOR_REFLECTION constant via
@@ -1192,7 +1203,7 @@ async def _preview_persona_resolve_corrections(
     keep_both`` — direct mirror of the correction prompt schema. Tester
     can tweak ``action`` / ``text`` per row before commit.
     """
-    from config.prompts_memory import persona_correction_prompt
+    from config.prompts.prompts_memory import persona_correction_prompt
     from memory.persona import PersonaManager
 
     character = _require_character(session)
@@ -1279,7 +1290,7 @@ async def _preview_persona_resolve_corrections(
             continue
         item = corrections[idx]
         action = result.get("action", "keep_both")
-        if action not in ("replace", "keep_new", "keep_old", "keep_both"):
+        if action not in ("merge", "keep_new", "keep_old", "keep_both"):
             warnings.append(f"非法 action={action!r} 于 index {idx}, 归位为 keep_both.")
             action = "keep_both"
         actions.append({
@@ -1345,7 +1356,7 @@ async def _commit_persona_resolve_corrections(
         new_text = item.get("new_text", "")
         section_facts = pm._get_section_facts(persona, entity)  # noqa: SLF001
 
-        if action == "replace":
+        if action == "merge":
             for j, existing in enumerate(section_facts):
                 et = (existing.get("text", "") if isinstance(existing, dict)
                       else str(existing))
@@ -1591,7 +1602,7 @@ async def _build_recent_compress_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import (
+    from config.prompts.prompts_memory import (
         get_detailed_recent_history_manager_prompt,
         get_recent_history_manager_prompt,
     )
@@ -1624,10 +1635,21 @@ async def _build_recent_compress_wire(
     messages_text = _messages_to_wire_lines(to_compress, mapping_for_prompt)
 
     lang = get_global_language()
+    # 同 _run_memory_compress 的 master_name 替换路径，preview 也得复刻避免
+    # 原始 ``{MASTER_NAME}`` 字面流到调试输出。
+    master_name = name_mapping.get('human', '')
+    # codex P2：master_name 替换最后做（与 memory.recent.compress_history 一致）
     if detailed:
-        prompt = get_detailed_recent_history_manager_prompt(lang) % messages_text
+        prompt = (
+            (get_detailed_recent_history_manager_prompt(lang) % messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
     else:
-        prompt = get_recent_history_manager_prompt(lang).replace("%s", messages_text)
+        prompt = (
+            get_recent_history_manager_prompt(lang)
+            .replace("%s", messages_text)
+            .replace("{MASTER_NAME}", master_name)
+        )
 
     return MemoryPromptPreview(
         op=OP_RECENT_COMPRESS,
@@ -1646,7 +1668,7 @@ async def _build_facts_extract_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import get_fact_extraction_prompt
+    from config.prompts.prompts_memory import get_fact_extraction_prompt
     from utils.language_utils import get_global_language
 
     character = _require_character(session)
@@ -1697,7 +1719,7 @@ async def _build_reflect_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import get_reflection_prompt
+    from config.prompts.prompts_memory import get_reflection_prompt
     from memory.reflection import MIN_FACTS_FOR_REFLECTION
     from utils.language_utils import get_global_language
 
@@ -1749,7 +1771,7 @@ async def _build_persona_resolve_corrections_wire(
     session: Session,
     params: dict[str, Any],
 ) -> MemoryPromptPreview:
-    from config.prompts_memory import persona_correction_prompt
+    from config.prompts.prompts_memory import persona_correction_prompt
     from memory.persona import PersonaManager
 
     character = _require_character(session)

@@ -66,9 +66,12 @@ from steamworks.interfaces.workshop     import SteamWorkshop
 from steamworks.interfaces.microtxn     import SteamMicroTxn
 from steamworks.interfaces.input        import SteamInput
 
-# Linux 源码/打包模式都优先从应用根目录查找 Steam 依赖，但保留现有搜索路径。
+# Linux 源码/打包模式都优先从 steamworks 包目录及应用根目录查找 Steam 依赖，
+# 但保留现有搜索路径。源码模式下 libsteam_api.so 与 SteamworksPy.so 同放在
+# steamworks/ 子目录；打包后两者落在 exe 同级目录（即 _get_app_root()）。
 if sys.platform in ('linux', 'linux2'):
     _prepend_env_path('LD_LIBRARY_PATH', _get_app_root())
+    _prepend_env_path('LD_LIBRARY_PATH', os.path.dirname(os.path.abspath(__file__)))
 
 
 class STEAMWORKS(object):

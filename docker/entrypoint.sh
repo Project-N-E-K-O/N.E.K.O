@@ -874,6 +874,25 @@ setup_dependencies() {
     fi
     
     echo "✅ Dependencies installed successfully"
+    
+    # 安装 Playwright 浏览器（用于 browser_use 自动化）
+    # 如果浏览器已预装（如 full 镜像），则跳过安装
+    echo "🎭 Checking Playwright Chromium browser..."
+    mkdir -p "${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}"
+    
+    # 检查是否已有 Chromium 浏览器安装
+    if ls "${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}"/chromium-* 1>/dev/null 2>&1; then
+        echo "✅ Playwright Chromium already installed, skipping installation"
+    else
+        echo "📦 Playwright Chromium not found, installing..."
+        # 尝试安装 Chromium，失败时不中断启动
+        if uv run python -m playwright install chromium --with-deps 2>&1; then
+            echo "✅ Playwright Chromium installed successfully"
+        else
+            echo "⚠️ Playwright Chromium installation failed (will retry on next start)"
+            echo "   Browser automation features may not work until Playwright is installed"
+        fi
+    fi
 }
 
 # 7. 服务启动优化
@@ -881,24 +900,35 @@ start_services() {
     echo "🚀 Starting N.E.K.O. services..."
     cd /app
     
-    local services=("memory_server.py" "main_server.py" "agent_server.py")
+    # Use the virtual environment's Python interpreter
+    local VENV_PYTHON="/app/.venv/bin/python"
     
+    # Verify venv exists
+    if [ ! -f "$VENV_PYTHON" ]; then
+        echo "❌ Virtual environment not found at /app/.venv!"
+        echo "   Attempting to use system python3 as fallback..."
+        VENV_PYTHON="python3"
+    fi
+    
+    # PR #1265: 4 个 server 入口搬进 app/ 子包；这里跟着改成 app/<name>.py
+    local services=("app/memory_server.py" "app/main_server.py" "app/agent_server.py")
+
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
             echo "❌ Service file $service not found!"
             # 对关键服务直接失败
-            if [[ "$service" == "main_server.py" ]] || [[ "$service" == "memory_server.py" ]]; then
+            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server.py" ]]; then
                 return 1
             fi
             continue
         fi
-        
-        echo "   Starting $service..."
-        # 启动服务并记录PID
-        python "$service" &
+
+        echo "   Starting $service as neko user..."
+        # 启动服务并记录PID（以 neko 用户运行，使用 venv 的 Python）
+        runuser -u neko -- "$VENV_PYTHON" "$service" &
         local pid=$!
         PIDS+=("$pid")
-        echo "     Started $service with PID: $pid"
+        echo "     Started $service with PID: $pid (running as neko)"
         sleep 5  # 给服务启动留出更多时间
     done
     

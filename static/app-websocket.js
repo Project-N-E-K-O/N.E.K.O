@@ -19,10 +19,23 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
+    const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
+    const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
+    const MUSIC_PLAY_URL_CLAIM_CLEANUP_MS = 60000;
+    const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
+    const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
     let _lanlanNameWaitLastLogAt = 0;
+    let _musicPlayUrlCoordChannel = null;
+    let _musicPlayUrlCoordChannelReady = false;
+    let _musicPlayUrlClaims = Object.create(null);
+    let _musicPlayUrlClaimCleanupTimer = 0;
+    let _musicPlayUrlCoordBeforeUnloadBound = false;
+    let _musicPlayUrlBroadcastUnavailableWarned = false;
+    const MUSIC_PLAY_URL_SENDER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
     // ---- DOM element shortcuts (resolved lazily / once) ----
     function $id(id) { return document.getElementById(id); }
@@ -36,6 +49,501 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    async function releaseVoiceCaptureResources() {
+        if (S.stream && typeof S.stream.getTracks === 'function') {
+            S.stream.getTracks().forEach(function (track) {
+                if (track && typeof track.stop === 'function') {
+                    try {
+                        track.stop();
+                    } catch (error) {
+                        console.warn('[App] mic track cleanup failed:', error);
+                    }
+                }
+            });
+        }
+        S.stream = null;
+
+        [S.workletNode, S.micGainNode, S.inputAnalyser].forEach(function (node) {
+            if (node && typeof node.disconnect === 'function') {
+                try {
+                    node.disconnect();
+                } catch (_) { }
+            }
+        });
+        S.workletNode = null;
+        S.micGainNode = null;
+        S.inputAnalyser = null;
+
+        if (S.audioContext) {
+            var audioContext = S.audioContext;
+            S.audioContext = null;
+            if (audioContext.state !== 'closed' && typeof audioContext.close === 'function') {
+                try {
+                    await audioContext.close();
+                } catch (error) {
+                    console.warn('[App] audioContext cleanup failed:', error);
+                }
+            }
+        }
+
+        S.isRecording = false;
+        window.isRecording = false;
+    }
+
+    async function resetVoiceUiAfterAutoClose(options) {
+        var keepSwitchingMode = !!(options && options.keepSwitchingMode);
+
+        if (S._voiceSessionInitialTimer) {
+            clearTimeout(S._voiceSessionInitialTimer);
+            S._voiceSessionInitialTimer = null;
+        }
+
+        if (typeof window.stopMicCapture === 'function') {
+            try {
+                await window.stopMicCapture();
+            } catch (error) {
+                console.warn('[App] auto_close_mic cleanup failed:', error);
+            }
+        }
+        await releaseVoiceCaptureResources();
+
+        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+        if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
+        if (typeof window.stopGameVoiceSttGate === 'function') window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (typeof window.updateMicVolumeStatusNow === 'function') window.updateMicVolumeStatusNow(false);
+
+        S.isTextSessionActive = false;
+        S.voiceChatActive = false;
+        S.voiceStartPending = false;
+        S.isRecording = false;
+        if (!keepSwitchingMode) {
+            S.isSwitchingMode = false;
+        }
+        window.isRecording = false;
+        window.isMicStarting = false;
+        window.currentGeminiMessage = null;
+        S.lastVoiceUserMessage = null;
+        S.lastVoiceUserMessageTime = 0;
+
+        var mb = micButton();
+        if (mb) {
+            mb.classList.remove('active');
+            mb.classList.remove('recording');
+            mb.disabled = false;
+        }
+        var sb = screenButton();
+        if (sb) {
+            sb.classList.remove('active');
+            sb.disabled = true;
+        }
+        var mu = muteButton(); if (mu) mu.disabled = true;
+        var st = stopButton(); if (st) st.disabled = true;
+        var rs = resetSessionButton(); if (rs) rs.disabled = false;
+        var rt = returnSessionButton(); if (rt) rt.disabled = true;
+        var ts = textSendButton(); if (ts) ts.disabled = false;
+        var ti = textInputBox(); if (ti) ti.disabled = false;
+        var ss = screenshotButton(); if (ss) ss.disabled = false;
+
+        var textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
+        if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
+        if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
+    }
+
+    function resolveAutoCloseMicToastMessage(response) {
+        var reasonCode = response && response.reason_code;
+        if (reasonCode === 'free_api_silence_timeout' && typeof window.t === 'function') {
+            return window.t('app.freeApiAutoCloseNotice', {
+                defaultValue: '免费 API 长时间未检测到语音，已自动关闭语音会话'
+            });
+        }
+        return (typeof window.t === 'function' && window.t('app.autoMuteTimeout'))
+            || (response && response.message)
+            || '长时间无语音输入，已自动关闭麦克风';
+    }
+
+    function showAutoCloseMicToast(response) {
+        if (typeof window.showStatusToast !== 'function') return;
+        var now = Date.now();
+        if (S._lastAutoCloseMicToastAt && now - S._lastAutoCloseMicToastAt < 1500) return;
+        S._lastAutoCloseMicToastAt = now;
+        window.showStatusToast(
+            resolveAutoCloseMicToastMessage(response),
+            7000,
+            { priority: 80 }
+        );
+    }
+
+    function handleMusicPlayUrlCoordMessage(data) {
+        if (!data || typeof data !== 'object') return;
+        if (data.sender === MUSIC_PLAY_URL_SENDER_ID) return;
+        if (data.type === 'music_play_url_claim' && data.key && data.sender) {
+            _musicPlayUrlClaims[data.key] = {
+                sender: data.sender,
+                expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
+            };
+        } else if (data.type === 'music_play_url_claim_release' && data.key && data.sender) {
+            var claim = getValidMusicPlayUrlClaim(data.key);
+            if (claim && claim.sender === data.sender) {
+                delete _musicPlayUrlClaims[data.key];
+            }
+        }
+    }
+
+    function startMusicPlayUrlClaimCleanup() {
+        if (_musicPlayUrlClaimCleanupTimer) return;
+        _musicPlayUrlClaimCleanupTimer = setInterval(pruneMusicPlayUrlClaims, MUSIC_PLAY_URL_CLAIM_CLEANUP_MS);
+    }
+
+    function bindMusicPlayUrlCoordCleanup() {
+        if (_musicPlayUrlCoordBeforeUnloadBound) return;
+        _musicPlayUrlCoordBeforeUnloadBound = true;
+        window.addEventListener('beforeunload', function () {
+            if (_musicPlayUrlClaimCleanupTimer) {
+                clearInterval(_musicPlayUrlClaimCleanupTimer);
+                _musicPlayUrlClaimCleanupTimer = 0;
+            }
+            releaseOwnedMusicPlayUrlClaims();
+            try {
+                if (_musicPlayUrlCoordChannel && typeof _musicPlayUrlCoordChannel.close === 'function') {
+                    _musicPlayUrlCoordChannel.close();
+                    _musicPlayUrlCoordChannel = null;
+                }
+            } catch (error) {
+                console.warn('[Music] music_play_url 协调通道关闭失败:', error, {
+                    channelId: MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                    sender: MUSIC_PLAY_URL_SENDER_ID
+                });
+            }
+        });
+    }
+
+    function createMusicPlayUrlStorageCoord() {
+        if (typeof window.addEventListener !== 'function' || typeof localStorage === 'undefined') {
+            throw new Error('localStorage coordination unavailable');
+        }
+        var storageListener = function (event) {
+            if (!event || event.key !== MUSIC_PLAY_URL_COORD_STORAGE_KEY || !event.newValue) return;
+            try {
+                handleMusicPlayUrlCoordMessage(JSON.parse(event.newValue));
+            } catch (error) {
+                console.warn('[Music] music_play_url localStorage 协调消息解析失败:', error, {
+                    channelId: MUSIC_PLAY_URL_COORD_STORAGE_KEY,
+                    sender: MUSIC_PLAY_URL_SENDER_ID
+                });
+            }
+        };
+        window.addEventListener('storage', storageListener);
+        return {
+            _nekoCoordType: 'localStorage',
+            _nekoCoordId: MUSIC_PLAY_URL_COORD_STORAGE_KEY,
+            postMessage: function (payload) {
+                var serialized = JSON.stringify(Object.assign({
+                    storageNonce: Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+                }, payload || {}));
+                localStorage.setItem(MUSIC_PLAY_URL_COORD_STORAGE_KEY, serialized);
+                setTimeout(function () {
+                    try {
+                        if (localStorage.getItem(MUSIC_PLAY_URL_COORD_STORAGE_KEY) === serialized) {
+                            localStorage.removeItem(MUSIC_PLAY_URL_COORD_STORAGE_KEY);
+                        }
+                    } catch (_) { /* 忽略 */ }
+                }, 0);
+            },
+            close: function () {
+                window.removeEventListener('storage', storageListener);
+            }
+        };
+    }
+
+    function activateMusicPlayUrlCoordChannel(channel) {
+        _musicPlayUrlCoordChannel = channel;
+        _musicPlayUrlCoordChannelReady = true;
+        bindMusicPlayUrlCoordCleanup();
+        startMusicPlayUrlClaimCleanup();
+        return _musicPlayUrlCoordChannel;
+    }
+
+    function getMusicPlayUrlCoordChannel() {
+        if (_musicPlayUrlCoordChannelReady) {
+            return _musicPlayUrlCoordChannel;
+        }
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                var channel = new BroadcastChannel(MUSIC_PLAY_URL_COORD_CHANNEL_NAME);
+                channel._nekoCoordType = 'BroadcastChannel';
+                channel._nekoCoordId = MUSIC_PLAY_URL_COORD_CHANNEL_NAME;
+                channel.onmessage = function (event) {
+                    handleMusicPlayUrlCoordMessage(event && event.data);
+                };
+                return activateMusicPlayUrlCoordChannel(channel);
+            }
+            if (!_musicPlayUrlBroadcastUnavailableWarned) {
+                _musicPlayUrlBroadcastUnavailableWarned = true;
+                console.warn('[Music] music_play_url BroadcastChannel 不可用，使用 localStorage 后备通道', {
+                    channelId: MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                    sender: MUSIC_PLAY_URL_SENDER_ID
+                });
+            }
+        } catch (error) {
+            console.warn('[Music] music_play_url BroadcastChannel 初始化失败，使用 localStorage 后备通道:', error, {
+                channelId: MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                sender: MUSIC_PLAY_URL_SENDER_ID
+            });
+        }
+
+        try {
+            return activateMusicPlayUrlCoordChannel(createMusicPlayUrlStorageCoord());
+        } catch (error) {
+            console.warn('[Music] music_play_url localStorage 后备通道初始化失败:', error, {
+                channelId: MUSIC_PLAY_URL_COORD_STORAGE_KEY,
+                sender: MUSIC_PLAY_URL_SENDER_ID
+            });
+            _musicPlayUrlCoordChannel = null;
+            return null;
+        }
+    }
+
+    function pruneMusicPlayUrlClaims() {
+        var now = Date.now();
+        Object.keys(_musicPlayUrlClaims).forEach(function (key) {
+            var claim = _musicPlayUrlClaims[key];
+            var expires = claim && typeof claim === 'object' ? claim.expires : claim;
+            if (!claim || !expires || expires <= now) {
+                delete _musicPlayUrlClaims[key];
+            }
+        });
+    }
+
+    function getMusicPlayUrlClaimKey(response) {
+        if (!response || !response.url) return '';
+        return JSON.stringify([
+            String(response.url || '').trim(),
+            String(response.name || '').trim(),
+            String(response.artist || '').trim()
+        ]);
+    }
+
+    function hasMusicPlayUrlClaim(key) {
+        if (!key) return false;
+        return !!getValidMusicPlayUrlClaim(key);
+    }
+
+    function getValidMusicPlayUrlClaim(key) {
+        if (!key) return null;
+        pruneMusicPlayUrlClaims();
+        var claim = _musicPlayUrlClaims[key];
+        if (!claim || typeof claim !== 'object' || !claim.sender || !claim.expires) {
+            if (claim) delete _musicPlayUrlClaims[key];
+            return null;
+        }
+        if (claim.expires <= Date.now()) {
+            delete _musicPlayUrlClaims[key];
+            return null;
+        }
+        return claim;
+    }
+
+    function claimMusicPlayUrl(key) {
+        if (!key) return;
+        pruneMusicPlayUrlClaims();
+        _musicPlayUrlClaims[key] = {
+            sender: MUSIC_PLAY_URL_SENDER_ID,
+            expires: Date.now() + MUSIC_PLAY_URL_CLAIM_TTL_MS
+        };
+        var channel = getMusicPlayUrlCoordChannel();
+        if (!channel) return;
+        var timestamp = Date.now();
+        try {
+            channel.postMessage({
+                type: 'music_play_url_claim',
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                ts: timestamp
+            });
+        } catch (error) {
+            console.warn('[Music] music_play_url claim 广播失败:', error, {
+                key: key,
+                sender: MUSIC_PLAY_URL_SENDER_ID,
+                timestamp: timestamp,
+                channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                channelType: channel._nekoCoordType || 'unknown'
+            });
+        }
+    }
+
+    function releaseOwnedMusicPlayUrlClaims() {
+        var channel = _musicPlayUrlCoordChannel;
+        var keys = Object.keys(_musicPlayUrlClaims).filter(function (key) {
+            var claim = getValidMusicPlayUrlClaim(key);
+            return claim && claim.sender === MUSIC_PLAY_URL_SENDER_ID;
+        });
+        keys.forEach(function (key) {
+            delete _musicPlayUrlClaims[key];
+            if (!channel || typeof channel.postMessage !== 'function') return;
+            var timestamp = Date.now();
+            try {
+                channel.postMessage({
+                    type: 'music_play_url_claim_release',
+                    key: key,
+                    sender: MUSIC_PLAY_URL_SENDER_ID,
+                    ts: timestamp
+                });
+            } catch (error) {
+                console.warn('[Music] music_play_url claim 释放广播失败:', error, {
+                    key: key,
+                    sender: MUSIC_PLAY_URL_SENDER_ID,
+                    timestamp: timestamp,
+                    channelId: channel._nekoCoordId || MUSIC_PLAY_URL_COORD_CHANNEL_NAME,
+                    channelType: channel._nekoCoordType || 'unknown'
+                });
+            }
+        });
+    }
+
+    function isStandaloneChatPageForMusic() {
+        var pathname = (window.location && window.location.pathname) || '';
+        return pathname === '/chat' || pathname === '/chat/';
+    }
+
+    function hasLocalMusicOwnerOrPending() {
+        try {
+            if (typeof window.getMusicPlayerInstance === 'function' && window.getMusicPlayerInstance()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.isMusicPlaying === 'function' && window.isMusicPlaying()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            if (typeof window.isMusicPending === 'function' && window.isMusicPending()) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function hasRemoteMusicLeaderHint() {
+        try {
+            if (typeof window.isRemoteMusicActive === 'function' && window.isRemoteMusicActive()) {
+                return true;
+            }
+        } catch (_) {}
+        try {
+            var musicBar = document.getElementById('music-player-bar');
+            if (musicBar && musicBar.dataset && musicBar.dataset.mirror === 'true') {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function getMusicPlayUrlFollowerGraceMs() {
+        var configured = NaN;
+        try {
+            if (window.NEKO_MUSIC_PLAY_URL_FOLLOWER_GRACE_MS !== undefined) {
+                configured = Number(window.NEKO_MUSIC_PLAY_URL_FOLLOWER_GRACE_MS);
+            } else if (typeof localStorage !== 'undefined') {
+                configured = Number(localStorage.getItem('neko_music_play_url_follower_grace_ms'));
+            }
+        } catch (_) {
+            configured = NaN;
+        }
+        if (Number.isFinite(configured) && configured >= 100 && configured <= 3000) {
+            return configured;
+        }
+        return MUSIC_PLAY_URL_FOLLOWER_GRACE_MS;
+    }
+
+    function shouldSkipMusicPlayUrlForOtherWindow(key) {
+        return !hasLocalMusicOwnerOrPending() && (hasRemoteMusicLeaderHint() || hasMusicPlayUrlClaim(key));
+    }
+
+    async function dispatchMusicPlayUrlResponse(response, reason) {
+        if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
+            return false;
+        }
+        var key = getMusicPlayUrlClaimKey(response);
+        var track = {
+            name: response.name || 'Plugin Music',
+            artist: response.artist || 'External',
+            url: response.url,
+            cover: response.cover || undefined
+        };
+        var dispatchResult;
+        try {
+            dispatchResult = await window.dispatchMusicPlay(track, {
+                source: 'music_play_url',
+                reason: reason || 'websocket'
+            });
+        } catch (error) {
+            console.warn('[Music] music_play_url 播放派发失败，未发布跨窗口 claim:', error, {
+                key: key,
+                url: response.url,
+                reason: reason || 'websocket'
+            });
+            return false;
+        }
+        if (dispatchResult === true) {
+            claimMusicPlayUrl(key);
+            console.log('[Music] Received direct play command from backend:', response.url);
+            return true;
+        }
+        if (dispatchResult === 'queued') {
+            console.log('[Music] music_play_url 播放派发仍在等待接口就绪，暂不发布跨窗口 claim:', {
+                key: key,
+                url: response.url,
+                reason: reason || 'websocket'
+            });
+            return false;
+        }
+        console.warn('[Music] music_play_url 播放派发被拒绝，未发布跨窗口 claim:', {
+            key: key,
+            url: response.url,
+            reason: reason || 'websocket',
+            result: dispatchResult
+        });
+        return false;
+    }
+
+    function handleMusicPlayUrlResponse(response) {
+        if (!response || !response.url || typeof window.dispatchMusicPlay !== 'function') {
+            return;
+        }
+
+        var key = getMusicPlayUrlClaimKey(response);
+        getMusicPlayUrlCoordChannel();
+
+        // chat.html 是独立聊天窗口时默认作为从窗口，给主窗口一个很短的
+        // 抢占窗口；若主窗口不存在或没有接管播放，再由 chat.html 兜底。
+        if (isStandaloneChatPageForMusic() && !hasLocalMusicOwnerOrPending()) {
+            setTimeout(function () {
+                if (shouldSkipMusicPlayUrlForOtherWindow(key)) {
+                    console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+                    return;
+                }
+                setTimeout(function () {
+                    if (shouldSkipMusicPlayUrlForOtherWindow(key)) {
+                        console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+                        return;
+                    }
+                    dispatchMusicPlayUrlResponse(response, 'chat-fallback');
+                }, MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS);
+            }, getMusicPlayUrlFollowerGraceMs());
+            return;
+        }
+
+        if (shouldSkipMusicPlayUrlForOtherWindow(key)) {
+            console.log('[Music] 跳过 music_play_url：其他窗口已接管播放');
+            return;
+        }
+
+        dispatchMusicPlayUrlResponse(response, 'websocket');
+    }
 
     function isHomeTutorialLockedForGreeting() {
         try {
@@ -1234,8 +1742,17 @@
                     // TTS 水印提示需要更长显示时间和更高优先级，避免被后续消息覆盖
                     var stickyInfoCodes = ['TTS_WATERMARK_DETECTED'];
                     var isStickyInfo = statusCode && stickyInfoCodes.indexOf(statusCode) !== -1;
+                    var highPriorityInfoCodes = ['FREE_API_AUTO_CLOSE_VOICE'];
+                    var isHighPriorityInfo = statusCode && highPriorityInfoCodes.indexOf(statusCode) !== -1;
+                    if (isHighPriorityInfo) {
+                        S._lastAutoCloseMicToastAt = Date.now();
+                    }
 
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, isStickyInfo ? 8000 : 4000, { important: isCriticalError, priority: isStickyInfo ? 50 : undefined });
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(
+                        translatedMessage,
+                        isStickyInfo ? 8000 : (isHighPriorityInfo ? 7000 : 4000),
+                        { important: isCriticalError, priority: isStickyInfo ? 50 : (isHighPriorityInfo ? 80 : undefined) }
+                    );
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {
@@ -1381,6 +1898,11 @@
                 // -------- agent_status_update --------
                 } else if (response.type === 'agent_status_update') {
                     var snapshot = response.snapshot || {};
+                    var snapshotMeta = { sourceCharacter: response.lanlan_name || '' };
+                    if (typeof window.isAgentStatusSnapshotCurrent === 'function'
+                        && !window.isAgentStatusSnapshotCurrent(snapshotMeta)) {
+                        return;
+                    }
                     window._agentStatusSnapshot = snapshot;
                     var serverOnline = snapshot.server_online !== false;
                     var flags = snapshot.flags || {};
@@ -1391,7 +1913,7 @@
                         window.agentStateMachine.updateCache(serverOnline, flags);
                     }
                     if (typeof window.applyAgentStatusSnapshotToUI === 'function') {
-                        window.applyAgentStatusSnapshotToUI(snapshot);
+                        window.applyAgentStatusSnapshotToUI(snapshot, snapshotMeta);
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
@@ -1987,19 +2509,16 @@
                 // -------- auto_close_mic --------
                 } else if (response.type === 'auto_close_mic') {
                     console.log(window.t('console.autoCloseMicReceived'));
-                    if (S.isRecording) {
-                        var _mu4 = muteButton(); if (_mu4) _mu4.click();
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
-                        }
-                    } else {
-                        var _mb4 = micButton();
-                        if (_mb4) { _mb4.classList.remove('active'); _mb4.classList.remove('recording'); }
-                        if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
-                        }
-                    }
+                    S.voiceStartPending = false;
+                    window.isMicStarting = false;
+                    showAutoCloseMicToast(response);
+
+                    Promise.resolve(resetVoiceUiAfterAutoClose({ keepSwitchingMode: true })).then(function () {
+                        showAutoCloseMicToast(response);
+                    }, function (error) {
+                        console.warn('[App] auto_close_mic cleanup failed:', error);
+                        showAutoCloseMicToast(response);
+                    });
 
                 // -------- music action --------
                 } else if (response.action === 'music') {
@@ -2072,14 +2591,7 @@
 
                 // -------- music play url --------
                 } else if (response.type === 'music_play_url') {
-                    if (response.url && typeof window.dispatchMusicPlay === 'function') {
-                        console.log('[Music] Received direct play command from backend:', response.url);
-                        window.dispatchMusicPlay({
-                            name: response.name || 'Plugin Music',
-                            artist: response.artist || 'External',
-                            url: response.url
-                        });
-                    }
+                    handleMusicPlayUrlResponse(response);
 
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
@@ -2137,7 +2649,39 @@
                             gameType: response.game_type || '',
                             sessionId: response.session_id || ''
                         };
-                        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                        var currentGameSessionId = S.gameRouteSessionId || '';
+                        var incomingGameSessionId = detail.sessionId || '';
+                        var isStaleGameWindowEvent = detail.action === 'closed'
+                            && incomingGameSessionId
+                            && currentGameSessionId
+                            && incomingGameSessionId !== currentGameSessionId;
+                        if (isStaleGameWindowEvent) {
+                            console.log(`[GameWindow] 忽略过期窗口事件 | action=${detail.action} incoming=${incomingGameSessionId} current=${currentGameSessionId}`);
+                        } else if (detail.action === 'opened') {
+                            S.gameRouteActive = true;
+                            S.gameRouteGameType = detail.gameType || 'soccer';
+                            S.gameRouteLanlanName = detail.lanlanName || '';
+                            S.gameRouteSessionId = incomingGameSessionId || '';
+                            if (typeof window.stopProactiveChatSchedule === 'function') {
+                                S.proactiveChatWasStoppedByGameRoute = !!S.proactiveChatEnabled;
+                                window.stopProactiveChatSchedule();
+                            }
+                        } else if (detail.action === 'closed') {
+                            var wasGameRouteActive = !!S.gameRouteActive;
+                            S.gameRouteActive = false;
+                            S.gameRouteGameType = '';
+                            S.gameRouteLanlanName = '';
+                            S.gameRouteSessionId = '';
+                            if ((wasGameRouteActive || S.proactiveChatWasStoppedByGameRoute)
+                                    && S.proactiveChatEnabled
+                                    && typeof window.scheduleProactiveChat === 'function') {
+                                window.scheduleProactiveChat();
+                            }
+                            S.proactiveChatWasStoppedByGameRoute = false;
+                        }
+                        if (!isStaleGameWindowEvent) {
+                            window.dispatchEvent(new CustomEvent('neko-game-window-state-change', { detail: detail }));
+                        }
                     } catch (gwErr) {
                         console.warn('[GameWindow] dispatch failed:', gwErr);
                     }

@@ -323,9 +323,17 @@ window.addEventListener('load', async () => {
             }
             if (entries.length > 0) {
                 const changelogPromises = entries.map(entry => {
-                    const title = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
+                    const changelogTitleKey = 'notice.changelog.title';
+                    const resolvedChangelogTitle = typeof window.t === 'function'
+                        ? window.t(changelogTitleKey)
+                        : '';
+                    const changelogTitle = (typeof resolvedChangelogTitle === 'string'
+                        && resolvedChangelogTitle
+                        && resolvedChangelogTitle !== changelogTitleKey)
+                        ? resolvedChangelogTitle
+                        : '更新内容';
                     return window.showProminentNotice({
-                        message: `**${title}**\n\n${(entry.content || '').trim()}`,
+                        message: `**v${entry.version} ${changelogTitle}**\n\n${(entry.content || '').trim()}`,
                     });
                 });
                 await Promise.all(changelogPromises);

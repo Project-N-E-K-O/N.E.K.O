@@ -1,6 +1,6 @@
 ---
 name: i18n
-description: "i18n (internationalization) toolkit for projects using i18next. Provides three main functions: (1) i18n-check - Detect hardcoded Chinese text in HTML/JS files, (2) i18n-fix - Replace hardcoded text with i18n markers, (3) i18n-sync - Align translation keys across multiple languages (zh-CN, en, ja, ko, zh-TW). Use when working on internationalization tasks, detecting untranslated strings, or syncing locale files."
+description: "i18n (internationalization) toolkit for projects using i18next. Provides three main functions: (1) i18n-check - Detect hardcoded Chinese text in HTML/JS files, (2) i18n-fix - Replace hardcoded text with i18n markers, (3) i18n-sync - Align translation keys across multiple languages (zh-CN, zh-TW, en, ja, ko, ru, es, pt). Use when working on internationalization tasks, detecting untranslated strings, or syncing locale files."
 ---
 
 # i18n Toolkit
@@ -10,7 +10,7 @@ Complete i18n (internationalization) toolkit for projects using i18next.
 ## Architecture
 
 - **i18n library**: i18next
-- **Locale files**: `static/locales/` (zh-CN, zh-TW, en, ja, ko)
+- **Locale files**: `static/locales/` (zh-CN, zh-TW, en, ja, ko, ru, es, pt)
 - **HTML attributes**: `data-i18n`, `data-i18n-placeholder`, `data-i18n-title`, `data-i18n-alt`
 - **JS function**: `window.t()` or `i18next.t()`
 - **Progress file**: `.claude/i18n-progress.json`
@@ -50,8 +50,8 @@ See [references/fix-patterns.md](references/fix-patterns.md) for examples.
 Align translation keys across all languages.
 
 ```bash
-python3 scripts/i18n_sync.py          # Check status
-python3 scripts/i18n_sync.py --apply  # Apply changes
+uv run python scripts/i18n_sync.py          # Check status
+uv run python scripts/i18n_sync.py --apply  # Apply changes
 ```
 
 ## Quick Workflow

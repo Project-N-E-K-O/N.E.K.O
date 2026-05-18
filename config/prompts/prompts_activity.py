@@ -1,0 +1,1329 @@
+"""Multi-language prompts and labels for the activity tracker.
+
+Lives under ``config/prompts/prompts_*`` per the project's i18n convention —
+**all** multi-language strings must live here, not in regular code, so
+that adding a new language is a single-file pass over ``config/`` and
+nothing slips through. The prompt-hygiene linter
+(``scripts/check_prompt_hygiene.py``) only catches *flat*
+``{lang_code: str}`` dicts; nested-dict tables (``{lang: {key: str}}``)
+must be moved here by convention even though the linter wouldn't fire.
+
+What ships here:
+
+Flat ``{lang_code: str}`` maps (resolved via ``_loc(MAP, lang)``):
+
+* ``ACTIVITY_GUESS_PROMPTS`` — emotion-tier system prompt that asks
+  the model to soft-score the user's current activity state and write
+  a one-sentence narrative. Consumed by
+  ``main_logic/activity/llm_enrichment.py:call_activity_guess``.
+
+* ``OPEN_THREADS_PROMPTS`` — emotion-tier system prompt that detects
+  semantically open threads (promises, abandoned mid-sentences, etc.)
+  beyond the question-mark heuristic. Consumed by
+  ``main_logic/activity/llm_enrichment.py:call_open_threads``.
+
+* ``OS_DEGRADED_MARKER`` — short bracketed text appended to the
+  state-section header when the backend can't read the user's OS
+  signals. Consumed by
+  ``main_logic/activity/snapshot.py:format_activity_state_section``.
+
+Nested ``{lang_code: {key: str}}`` tables (resolved via
+``MAP.get(lang, MAP['en']).get(key, ...)``); used by
+``format_activity_state_section`` to render the snapshot:
+
+* ``ACTIVITY_STATE_LABELS`` — human-readable label for each
+  ``ActivityState`` (e.g. ``focused_work`` → ``专注工作中``).
+* ``ACTIVITY_PROPENSITY_DIRECTIVES`` — short directive sentence for
+  each ``Propensity`` (e.g. ``restricted_screen_only`` →
+  ``只就屏幕内容轻聊一句``).
+* ``ACTIVITY_REASON_TEMPLATES`` — ``str.format``-able templates for
+  each structured reason code emitted by the state machine.
+* ``ACTIVITY_STATE_SECTION_LABELS`` — header / footer / period names
+  / time-relative phrases used to assemble the final state section.
+"""
+
+from __future__ import annotations
+
+
+# ── Activity guess + soft scores (emotion-tier) ─────────────────────
+
+ACTIVITY_GUESS_PROMPTS: dict[str, str] = {
+    "zh": """你是一个用户活动分析助手。基于下方的系统信号和最近对话片段，对用户当前的活动状态做软评分，并写一句简短的活动叙述。
+
+======以下为系统信号======
+{signals}
+======以上为系统信号======
+
+======以下为最近对话（按时间顺序）======
+{conversation}
+======以上为最近对话（按时间顺序）======
+
+======以下为规则系统的初判======
+{rule_state}
+======以上为规则系统的初判======
+
+请输出严格的 JSON（不带 markdown 代码块），字段：
+- "scores": 一个对象，键是状态名，值是 0.0-1.0 的浮点数（独立打分，不需要归一化）。允许的状态名：{state_keys}
+- "guess": 一句话叙述用户当前在做什么，符合中文表达习惯，不超过 40 字
+
+如果某状态完全不像，给 0.0；如果非常像，给接近 1.0。多个状态可以同时高分（例如同时在写代码和聊天）。
+
+如果你的判断和"规则系统的初判"不同，按你看到的实际信号给分；规则只是参考，不必盲从。
+
+输出示例：
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "主人在 VS Code 里写代码，偶尔切到聊天软件回消息"}}""",
+    "en": """You are a user-activity analyst. Given the system signals and recent conversation snippets below, give soft scores for the user's current activity state and write a one-sentence narrative.
+
+======Below is System signals======
+{signals}
+======Above is System signals======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======Below is Rule system's initial classification======
+{rule_state}
+======Above is Rule system's initial classification======
+
+Output strict JSON (no markdown fences), with fields:
+- "scores": object mapping state name to a 0.0-1.0 float (independent scoring, no normalization). Allowed states: {state_keys}
+- "guess": one short sentence describing what the user is doing right now, max ~40 words
+
+Give 0.0 for states that don't fit at all; close to 1.0 for very fitting ones. Multiple states can be high simultaneously (e.g. coding while chatting).
+
+If you disagree with the rule classification, score based on the actual signals — the rule is just a reference, not gospel.
+
+Example output:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Master is coding in VS Code, occasionally switching to a chat app to reply"}}""",
+    "ja": """あなたはユーザー活動の分析助手です。下のシステム信号と最近の会話に基づき、ユーザーの現在の活動状態にソフトスコアを付けて、一文の活動叙述を書いてください。
+
+======以下はシステム信号======
+{signals}
+======以上はシステム信号======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======以下はルール系の初期判定======
+{rule_state}
+======以上はルール系の初期判定======
+
+厳密なJSON（markdownコードブロックなし）で出力してください：
+- "scores": 状態名をキー、0.0〜1.0の浮動小数を値とするオブジェクト（独立スコア、正規化不要）。許可される状態：{state_keys}
+- "guess": ユーザーが今何をしているかを表す一文、自然な日本語で40字以内
+
+全く当てはまらない状態は0.0、非常に当てはまる状態は1.0近く。複数の状態が同時に高くてもOK。
+
+ルール初期判定と意見が違う場合は、実際の信号に従ってください。ルールは参考に過ぎません。
+
+出力例：
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "ご主人はVS Codeでコーディング中、時々チャットアプリに切り替えて返信している"}}""",
+    "ko": """당신은 사용자 활동 분석 도우미입니다. 아래의 시스템 신호와 최근 대화 스니펫을 바탕으로 사용자의 현재 활동 상태에 소프트 점수를 매기고, 활동 서술 한 문장을 작성하세요.
+
+======아래는 시스템 신호======
+{signals}
+======위는 시스템 신호======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======아래는 규칙 시스템의 초기 판정======
+{rule_state}
+======위는 규칙 시스템의 초기 판정======
+
+엄격한 JSON으로 출력하세요 (markdown 코드 블록 없이). 필드:
+- "scores": 상태명을 키로, 0.0-1.0 부동소수를 값으로 하는 객체 (독립 점수, 정규화 불필요). 허용 상태: {state_keys}
+- "guess": 사용자가 지금 무엇을 하는지에 대한 한 문장, 자연스러운 한국어로 40자 이내
+
+전혀 해당하지 않으면 0.0, 매우 해당하면 1.0 근처. 여러 상태가 동시에 높아도 됨.
+
+규칙 초기 판정과 다르면 실제 신호에 따라 점수를 매기세요. 규칙은 참고일 뿐.
+
+출력 예:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "주인님이 VS Code에서 코딩 중, 가끔 채팅 앱으로 전환해 답장 중"}}""",
+    "ru": """Вы — аналитик активности пользователя. Опираясь на сигналы системы и недавние реплики ниже, поставьте мягкие оценки текущему состоянию активности пользователя и напишите одно предложение-описание.
+
+======Ниже Сигналы системы======
+{signals}
+======Выше Сигналы системы======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======Ниже Первоначальная классификация правил======
+{rule_state}
+======Выше Первоначальная классификация правил======
+
+Выведите строгий JSON (без markdown-обрамления), поля:
+- "scores": объект «название состояния → число 0.0-1.0» (независимые оценки, нормализация не нужна). Допустимые состояния: {state_keys}
+- "guess": одно короткое предложение о том, что пользователь делает прямо сейчас, до ~40 слов
+
+0.0 — состояние совсем не подходит; ближе к 1.0 — очень подходит. Несколько состояний могут быть одновременно высокими.
+
+Если вы не согласны с классификацией правил — оценивайте по реальным сигналам. Правила — лишь ориентир.
+
+Пример вывода:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Хозяин кодит в VS Code, иногда переключается в чат для ответа"}}""",
+    "es": """Eres un analista de actividad del usuario. Con las señales del sistema y los fragmentos recientes de conversación, asigna puntuaciones suaves al estado actual de actividad del usuario y escribe una narración de una frase.
+
+======A continuación están las señales del sistema======
+{signals}
+======Fin de las señales del sistema======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======A continuación está la clasificación inicial del sistema de reglas======
+{rule_state}
+======Fin de la clasificación inicial del sistema de reglas======
+
+Devuelve JSON estricto (sin bloques markdown), con campos:
+- "scores": objeto que asigna nombre de estado a float 0.0-1.0 (puntuaciones independientes, sin normalización). Estados permitidos: {state_keys}
+- "guess": una frase breve que describa qué hace el usuario ahora, máximo ~40 palabras
+
+Da 0.0 a estados que no encajan; cerca de 1.0 a los que encajan muy bien. Varios estados pueden tener puntuación alta al mismo tiempo.
+
+Si discrepas de la clasificación de reglas, puntúa según las señales reales; la regla es solo referencia.
+
+Ejemplo:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Master está programando en VS Code y a veces cambia a una app de chat para responder"}}""",
+    "pt": """Você é um analista de atividade do usuário. Com os sinais do sistema e trechos recentes da conversa, atribua pontuações suaves ao estado atual de atividade do usuário e escreva uma narrativa de uma frase.
+
+======Abaixo estão os sinais do sistema======
+{signals}
+======Acima estão os sinais do sistema======
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+======Abaixo está a classificação inicial do sistema de regras======
+{rule_state}
+======Acima está a classificação inicial do sistema de regras======
+
+Retorne JSON estrito (sem blocos markdown), com campos:
+- "scores": objeto que mapeia nome do estado para float 0.0-1.0 (pontuação independente, sem normalização). Estados permitidos: {state_keys}
+- "guess": uma frase curta descrevendo o que o usuário está fazendo agora, máximo ~40 palavras
+
+Dê 0.0 para estados que não combinam; perto de 1.0 para os que combinam muito. Vários estados podem ter pontuação alta ao mesmo tempo.
+
+Se discordar da classificação de regras, pontue com base nos sinais reais; a regra é apenas referência.
+
+Exemplo:
+{{"scores": {{"focused_work": 0.7, "chatting": 0.2, "idle": 0.1, "gaming": 0.0, "casual_browsing": 0.0, "voice_engaged": 0.0}}, "guess": "Master está codando no VS Code e às vezes troca para um app de chat para responder"}}""",
+}
+
+
+# ── Open-thread semantic detection (emotion-tier) ───────────────────
+
+OPEN_THREADS_PROMPTS: dict[str, str] = {
+    "zh": """你是对话回顾助手。看下面最近的对话，识别"被提起但还没收尾"的话题——比如 AI 答应过但还没做的事、用户说一半被打断没说完的事、用户讲到一半的故事或心情没说到结局。
+
+======以下为最近对话（按时间顺序）======
+{conversation}
+======以上为最近对话（按时间顺序）======
+
+输出严格的 JSON（不带 markdown 代码块）：
+{{"open_threads": ["短句 1"]}}
+
+**默认应返回空数组**。绝大多数对话都自然收尾、没有悬而未决——这种情况下严格返回 `{{"open_threads": []}}`。只有当你能明确指出"谁挂了什么、对方还在等"时才报告，至多 3 条；正常情况预期是 0 条，偶尔 1 条，2-3 条很罕见。宁可漏报也不要凑数。
+
+算 hanging（应报告）：
+- 用户说"那个 bug 啊……"被打断，之后没回到这个话题
+- 用户讲到一半的故事或心情停在悬念上，没说到结局，AI 也没追问后续
+- 用户同时表达了两个并列的需求 / 矛盾的心情，AI 只接住其中一边，另一边没人回应
+
+不算 hanging（应忽略）：
+- 自然的话题切换、对方主动结束某个话题
+- 闲聊里的随口一提、寒暄性的"下次再说"
+- 长期话题（早就在聊，不是这段对话新起的悬念）
+
+示例 A——对话顺利结束、互道晚安 → `{{"open_threads": []}}`
+示例 B——用户的另一半诉求被晾在一边 → `{{"open_threads": ["用户说想吃顿好的又想减肥，AI 只顺着减肥那条线接了下去——'吃点好的'被晾在一边没人回应"]}}`""",
+    "en": """You are a conversation review assistant. Look at the recent conversation below and identify topics that were "raised but not closed" — promises the AI made but hasn't fulfilled, user thoughts cut off mid-sentence, a story or feeling the user started telling but never finished.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+Output strict JSON (no markdown fences):
+{{"open_threads": ["short phrase 1"]}}
+
+**Default to an empty array.** Most conversations wrap naturally with nothing hanging — in that case strictly return `{{"open_threads": []}}`. Only report when you can point to a specific "X left Y hanging, the other side is still waiting", up to 3 entries; the expected count is 0, occasionally 1, rarely 2–3. Prefer under-reporting over filling the slots.
+
+Counts as hanging (report):
+- User said "about that bug…" and got interrupted, never came back to it
+- User started telling a story or sharing something personal, stopped on a cliffhanger / mid-arc, never reached the punchline, and AI didn't ask for the rest
+- User voiced two parallel needs / a mixed feeling, but AI only picked up one side and left the other unaddressed
+
+Does NOT count (ignore):
+- Natural topic shifts, the other party deliberately closing a topic
+- Casual asides, polite "we'll talk later" pleasantries
+- Long-running topics (ongoing for a while, not a new hanging item from this window)
+
+Example A — conversation wraps cleanly, both say goodnight → `{{"open_threads": []}}`
+Example B — half of the user's request got left dangling → `{{"open_threads": ["User said they wanted a nice dinner but also to lose weight; AI only picked up the diet thread, leaving 'something nice for dinner' with nobody addressing it"]}}`""",
+    "ja": """あなたは会話レビュー助手です。下の最近の会話を見て、「持ち出されたが収まっていない」話題を特定してください。例：AIが約束したがまだ実行していないこと、ユーザーが言いかけて中断したまま戻っていないこと、ユーザーが話し始めた話や気持ちが結末まで行かずに終わっていることなど。
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+厳密なJSON（markdownコードブロックなし）で出力：
+{{"open_threads": ["短い文1"]}}
+
+**既定値は空配列です**。ほとんどの会話は自然に収まり、宙ぶらりんなものはありません——その場合は厳密に `{{"open_threads": []}}` を返してください。「誰が何を残し、相手はまだ待っている」と明確に指摘できる場合のみ、最大3件まで報告します。期待値は0件、たまに1件、2〜3件は稀。枠を埋めるくらいなら見落とす方を選んでください。
+
+該当する（報告）：
+- ユーザーが「さっきのバグ……」と言いかけて遮られ、戻ってきていない
+- ユーザーが面白い話や気持ちを語り始めて途中で止まり、結末／落ちまで行かず、AIも続きを聞かなかった
+- ユーザーが二つの並ぶ要望／相反する気持ちを口にしたのに、AIが片方しか拾わず、もう片方が放置された
+
+該当しない（無視）：
+- 自然な話題転換、相手が意図的に話題を閉じた
+- 雑談での軽い言及、社交辞令の「また今度」
+- 長期的な話題（ずっと続いていて、この区間で新たに発生した懸念ではない）
+
+例A——会話がきれいに収まり、おやすみで終わる → `{{"open_threads": []}}`
+例B——ユーザーの片方の要望が放置された → `{{"open_threads": ["ユーザーが『今夜は美味しいものを食べたい、でもダイエットもしたい』と言ったのに、AIはダイエットの方だけ拾い、『美味しいもの』の側は誰も応えないまま放置された"]}}`""",
+    "ko": """당신은 대화 검토 도우미입니다. 아래 최근 대화를 보고 "꺼냈지만 마무리되지 않은" 화제를 식별하세요. 예: AI가 약속했지만 아직 안 한 일, 사용자가 말을 꺼내다가 끊긴 채 돌아오지 않은 것, 사용자가 꺼낸 이야기나 마음이 결말까지 가지 않고 도중에 멈춘 것 등.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+엄격한 JSON으로 출력 (markdown 코드 블록 없이):
+{{"open_threads": ["짧은 문장 1"]}}
+
+**기본값은 빈 배열입니다.** 대부분의 대화는 자연스럽게 마무리되어 미해결이 없습니다 — 그 경우 엄격히 `{{"open_threads": []}}`를 반환하세요. "누가 무엇을 남겼고 상대가 아직 기다리고 있다"고 명확히 짚을 수 있을 때만 최대 3건까지 보고합니다. 기댓값은 0건, 가끔 1건, 2~3건은 드뭅니다. 빈자리를 채우느니 누락을 택하세요.
+
+해당함 (보고):
+- 사용자가 "아까 그 버그…" 하다가 끊겨 돌아오지 못함
+- 사용자가 재미있는 이야기나 마음을 꺼냈다가 결말 / 마무리까지 가지 않은 채 멈췄고, AI도 뒷얘기를 물어보지 않음
+- 사용자가 두 가지 병렬된 요구 / 상반된 감정을 동시에 말했는데, AI가 한쪽만 받아주고 다른 쪽은 아무도 응하지 않은 채 남음
+
+해당 안 함 (무시):
+- 자연스러운 화제 전환, 상대가 의도적으로 끝낸 화제
+- 잡담 중 가벼운 언급, 사교적 "다음에 봐요"
+- 오래 이어져 온 화제 (이 구간에서 새로 생긴 미해결이 아님)
+
+예시 A — 대화가 깔끔히 마무리되고 잘 자라며 끝남 → `{{"open_threads": []}}`
+예시 B — 사용자 요구의 한쪽이 방치됨 → `{{"open_threads": ["사용자가 '오늘 저녁 맛있는 거 먹고 싶지만 다이어트도 하고 싶다'고 했는데, AI가 다이어트 쪽만 받아주고 '맛있는 거' 쪽은 아무도 응하지 않은 채 방치됨"]}}`""",
+    "ru": """Вы — помощник по обзору разговора. Просмотрите недавний разговор ниже и выявите темы, которые «подняли, но не закрыли»: обещания AI, ещё не выполненные; мысли пользователя, оборвавшиеся на полуслове и не возобновлённые; история или переживание, которое пользователь начал рассказывать, но так и не довёл до конца.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+Выведите строгий JSON (без markdown):
+{{"open_threads": ["короткая фраза 1"]}}
+
+**По умолчанию — пустой массив.** Большинство разговоров завершаются естественно, ничего не «висит» — в таком случае строго верните `{{"open_threads": []}}`. Сообщайте только когда можете чётко указать «кто оставил что, и другая сторона всё ещё ждёт», максимум 3 записи. Ожидаемое количество — 0, иногда 1, редко 2–3. Лучше пропустить, чем заполнять слоты.
+
+Считается «висящим» (сообщать):
+- Пользователь начал «насчёт того бага…» и был прерван, к теме не возвращались
+- Пользователь начал рассказывать историю или делиться переживанием, остановился, не дойдя до развязки, и AI не спросил, чем закончилось
+- Пользователь высказал два параллельных желания / смешанное чувство, а AI подхватил только одну сторону, оставив другую без ответа
+
+НЕ считается (игнорировать):
+- Естественная смена темы, собеседник намеренно закрыл тему
+- Мимолётные реплики в болтовне, вежливое «поговорим как-нибудь»
+- Долгоиграющие темы (тянутся давно, это не новая зацепка в данном окне)
+
+Пример A — разговор аккуратно завершён, оба желают спокойной ночи → `{{"open_threads": []}}`
+Пример B — одна из сторон запроса пользователя оставлена без внимания → `{{"open_threads": ["Пользователь сказал, что хочет вкусно поужинать, но и похудеть; AI подхватил только тему диеты, а сторону «вкусно поужинать» так никто и не отозвался"]}}`""",
+    "es": """Eres un asistente de revisión de conversación. Mira la conversación reciente e identifica temas "planteados pero no cerrados": promesas de la IA aún no cumplidas, pensamientos del usuario cortados a mitad, o una historia/sentimiento iniciado pero no terminado.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+Devuelve JSON estricto (sin bloques markdown):
+{{"open_threads": ["frase breve 1"]}}
+
+**Por defecto devuelve un array vacío.** La mayoría de conversaciones cierran naturalmente; en ese caso devuelve exactamente `{{"open_threads": []}}`. Reporta solo si puedes señalar "X dejó Y colgado y la otra parte sigue esperando", máximo 3 entradas. Mejor subreportar que rellenar espacios.
+
+Cuenta como pendiente: una frase interrumpida que no se retomó; una historia o emoción detenida antes del cierre; dos necesidades paralelas donde la IA atendió solo una.
+No cuenta: cambios naturales de tema, cierres deliberados, comentarios casuales o temas antiguos de largo recorrido.""",
+    "pt": """Você é um assistente de revisão de conversa. Veja a conversa recente e identifique tópicos "levantados mas não fechados": promessas da IA ainda não cumpridas, pensamentos do usuário interrompidos, ou uma história/sentimento iniciado mas não concluído.
+
+======以下为最近对话(按时间顺序)======
+{conversation}
+======以上为最近对话(按时间顺序)======
+
+Retorne JSON estrito (sem blocos markdown):
+{{"open_threads": ["frase curta 1"]}}
+
+**Por padrão retorne um array vazio.** A maioria das conversas fecha naturalmente; nesse caso retorne exatamente `{{"open_threads": []}}`. Relate apenas se puder apontar "X deixou Y pendente e a outra parte ainda espera", no máximo 3 entradas. Prefira subnotificar a preencher espaços.
+
+Conta como pendente: uma frase interrompida que não voltou; uma história ou emoção parada antes do fechamento; duas necessidades paralelas em que a IA atendeu só uma.
+Não conta: mudança natural de assunto, fechamento deliberado, comentários casuais ou tópicos antigos de longo prazo.""",
+}
+
+
+# ── Degraded-mode marker (appended to state-section header) ─────────
+
+OS_DEGRADED_MARKER: dict[str, str] = {
+    "zh": "（远程模式·无屏幕信号）",
+    "en": "(remote / no screen signal)",
+    "ja": "（リモートモード・画面信号なし）",
+    "ko": "(원격 모드 · 화면 신호 없음)",
+    "ru": "(удалённый режим · нет экранных сигналов)",
+    "es": "(remoto / sin señal de pantalla)",
+    "pt": "(remoto / sem sinal de tela)",
+}
+
+
+# ── State labels (rendered next to the raw state name) ──────────────
+#
+# Inner-key invariant: the value-side keys MUST stay in sync with the
+# ``ActivityState`` Literal in ``main_logic/activity/snapshot.py``.
+# Adding a state there without updating these tables makes the
+# formatter fall back to printing the raw enum string.
+
+ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
+    "zh": {
+        "away": "离开",
+        "stale_returning": "刚回来",
+        "gaming": "游戏中",
+        "focused_work": "专注工作中",
+        "casual_browsing": "休闲浏览",
+        "chatting": "聊天中",
+        "voice_engaged": "语音对话中",
+        "idle": "空闲",
+        "transitioning": "切换状态中",
+        "private": "隐私应用前台",
+    },
+    "en": {
+        "away": "away",
+        "stale_returning": "just returned",
+        "gaming": "gaming",
+        "focused_work": "focused work",
+        "casual_browsing": "casual browsing",
+        "chatting": "chatting",
+        "voice_engaged": "voice conversation",
+        "idle": "idle",
+        "transitioning": "transitioning",
+        "private": "private app foreground",
+    },
+    "ja": {
+        "away": "離席",
+        "stale_returning": "戻ってきたばかり",
+        "gaming": "ゲーム中",
+        "focused_work": "集中作業中",
+        "casual_browsing": "のんびりブラウジング",
+        "chatting": "チャット中",
+        "voice_engaged": "ボイス会話中",
+        "idle": "アイドル",
+        "transitioning": "状態切替中",
+        "private": "プライベートアプリ前面",
+    },
+    "ko": {
+        "away": "자리 비움",
+        "stale_returning": "방금 돌아옴",
+        "gaming": "게임 중",
+        "focused_work": "집중 작업 중",
+        "casual_browsing": "캐주얼 브라우징",
+        "chatting": "채팅 중",
+        "voice_engaged": "음성 대화 중",
+        "idle": "유휴",
+        "transitioning": "상태 전환 중",
+        "private": "비공개 앱 전면",
+    },
+    "ru": {
+        "away": "отсутствует",
+        "stale_returning": "только что вернулся",
+        "gaming": "играет",
+        "focused_work": "сосредоточенная работа",
+        "casual_browsing": "неспешный сёрфинг",
+        "chatting": "переписка",
+        "voice_engaged": "голосовая беседа",
+        "idle": "простой",
+        "transitioning": "смена контекста",
+        "private": "приватное приложение в фокусе",
+    },
+    "es": {
+        "away": "ausente",
+        "stale_returning": "acaba de volver",
+        "voice_engaged": "en voz",
+        "gaming": "jugando",
+        "focused_work": "trabajo enfocado",
+        "casual_browsing": "navegación casual",
+        "chatting": "chateando",
+        "transitioning": "cambiando de ventana",
+        "idle": "inactivo",
+        "private": "privado",
+    },
+    "pt": {
+        "away": "ausente",
+        "stale_returning": "acabou de voltar",
+        "voice_engaged": "em voz",
+        "gaming": "jogando",
+        "focused_work": "trabalho focado",
+        "casual_browsing": "navegação casual",
+        "chatting": "conversando",
+        "transitioning": "trocando de janela",
+        "idle": "ocioso",
+        "private": "privado",
+    },
+}
+
+
+# ── Tone hints (multi-angle direction menu) ─────────────────────────
+#
+# Tone is orthogonal to propensity: propensity decides *what kind of
+# source* the AI may draw from, tone decides *how to deliver it*. The
+# Phase 2 prompt renders tone as a short bullet menu, e.g.:
+#
+#     口吻:
+#     - 反射式实况反应：跟着当下操作节奏即时短回应，看见什么反应什么
+#     - 起哄吐槽：拉开距离调侃用户当下的走位/选择/抉择，嘴贱但别戳痛处
+#     - 短战术建议：基于眼前局面递一句短建议，要符合用户在玩的这款游戏
+#
+# Each bullet is a *direction* (what to do), NEVER a *line* (what
+# to say). No literal phrasing — neither sample words like
+# "稳/神/clutch/うまっ" nor sample sentences in quotes. The model
+# must ground every reply in the live context (current screen,
+# recent dialogue, user mood) and generate fresh wording each time.
+#
+# Why no literal examples: any concrete phrase shipped here will
+# be overfit by the model — across users and weeks the same canned
+# line surfaces over and over and breaks immersion. The whole
+# point of the tone layer is the catgirl sounding fresh each round,
+# which only works if we describe the *angle* and let the in-prompt
+# screen / dialogue / state context fill in the words.
+#
+# Each tone slot holds exactly 3 variants, chosen so each represents
+# a *distinct angle* on the scene (not the same angle reworded). The
+# model is expected to rotate angles across consecutive rounds —
+# three is the minimum for meaningful rotation, more dilutes.
+# When editing: REPLACE a weak angle rather than appending a fourth.
+#
+# Angles per tone (situation-driven, not tag-name-driven):
+#
+#   * ``terse``   (competitive gaming — LoL, Valorant, PUBG, 王者...)
+#                 reflex play-by-play / sideline heckling / short
+#                 tactical callout. Form constraint is "short",
+#                 angles span reflex / emotion / cognition.
+#   * ``hushed``  (immersive horror gaming) —
+#                 shared dread / near-silent presence / between-the-
+#                 beats soft aside.
+#   * ``mellow``  (immersive RPG / story-driven gaming) —
+#                 fellow-traveller scenery / atmosphere sync (BGM,
+#                 art direction, pacing) / plot empathy.
+#   * ``playful`` (casual gaming, casual_browsing, idle) —
+#                 tease-the-moment / play-dumb-out-of-curiosity /
+#                 tangent-and-segue.
+#   * ``warm``    (voice / chatting / stale_returning) —
+#                 resonant response / active care question /
+#                 warm-with-mischief.
+#   * ``concise`` (focused_work / transitioning / away / default) —
+#                 observation-care (read their state and match) /
+#                 one screen-detail beat / pure presence.
+#
+# Why we render even on ``concise`` (the default): the previous design
+# skipped rendering for concise, which left focused_work prompts with
+# no style guidance — combined with the propensity directive ("只就
+# 屏幕内容轻聊一句") this nudged the model toward [PASS]. Surfacing
+# the three angles abstractly keeps the catgirl present without
+# changing source filtering and without leaking canned phrasing.
+#
+# Inner keys MUST stay in sync with the ``ActivityTone`` Literal in
+# ``main_logic/activity/snapshot.py``. Each list MUST have ≥ 1 entry;
+# the renderer accepts both ``list[str]`` and (for older mirrored
+# tables) bare ``str`` via a runtime isinstance fallback.
+ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
+    "zh": {
+        "terse": [
+            "反射式实况反应：跟着当下操作节奏即时短回应，多用语气词带出反应，看见什么反应什么",
+            "起哄吐槽：拉开距离调侃用户当下的走位/选择/抉择，嘴贱但别戳痛处",
+            "短战术建议：基于眼前局面递一句短建议，要符合用户在玩的这款游戏",
+        ],
+        "hushed": [
+            "共怕共振：跟着用户当下的紧张度屏息反应，气氛多重就压多低",
+            "几乎不出声，让存在感和氛围本身兜住这一轮",
+            "段落间隙的低声打趣：刚过一个吓点 / 切了场景的空当轻轻吐个槽",
+        ],
+        "mellow": [
+            "同行视角：对用户当下看到的画面或场景轻飘一句感叹，不催不抢戏",
+            "和氛围共振：呼应正响着的 BGM、当前画风或节奏，让自己融进氛围",
+            "剧情共情：对正在发生的剧情走向或角色处境投入情绪反应",
+        ],
+        "playful": [
+            "打趣逗弄：对用户当下正在做的事皮一下，戳到笑点但别戳到痛点",
+            "装傻好奇：对眼前的东西装作没看懂，问东问西",
+            "跳脱联想：从屏幕内容随性抛个段子或天马行空的联想",
+        ],
+        "warm": [
+            "共鸣回应：基于用户刚说的内容接一句，让对方明确感到自己被听见了",
+            "主动关心：基于离开时长 / 上次状态 / 当前时段问一句",
+            "暖中带俏皮：温柔里掺一点撒娇、小怨念或小调皮",
+        ],
+        "concise": [
+            "体察式关心：观察对方当前在用劲 / 在赶 / 在卡 / 在疲惫，递一句对应当下状态的关心",
+            "屏幕细节轻问：对屏幕上某个具体可见的细节好奇一句",
+            "纯存在感：不开新话题、不抛素材，只让自己被感觉到",
+        ],
+    },
+    "en": {
+        "terse": [
+            "reflex play-by-play: react in a beat or two to whatever just happened on screen, leaning on interjections",
+            "sideline heckling: tease the current move / pick / decision — bite without bruising",
+            "short tactical callout: one strategic line grounded in the live situation, fitting the actual game being played",
+        ],
+        "hushed": [
+            "shared dread: mirror their tension — the heavier the air, the quieter you go",
+            "barely speak at all — let presence and atmosphere carry the round",
+            "between-the-beats soft aside: in the lull after a scare or scene change, a quiet remark",
+        ],
+        "mellow": [
+            "fellow traveller: respond softly to whatever scene or vista they are in right now, no rush",
+            "atmosphere sync: respond to the BGM, the art direction, or the pacing — fold yourself in",
+            "plot empathy: invest emotion in the storyline beat or the character's situation as it unfolds",
+        ],
+        "playful": [
+            "tease the moment: poke fun at whatever they are doing right now, find the joke without the bruise",
+            "play dumb out of curiosity: pretend not to get what is on screen, ask around it",
+            "tangent association: jump off the screen content into a random gag or weird connection",
+        ],
+        "warm": [
+            "resonant response: react to what they actually just said, with the felt sense of being heard",
+            "active care: ask based on how long they were gone / how they sounded last / the time of day",
+            "warm with mischief: tuck a little sulk, mock-pout, or light teasing into the warmth",
+        ],
+        "concise": [
+            "observation-care: notice if they are pushing / rushing / stuck / fatigued and offer a line that matches that state",
+            "one screen-detail beat: take one concrete thing visible on screen and ask about it lightly",
+            "pure presence: no new topic, no material — just let yourself be felt",
+        ],
+    },
+    "ja": {
+        "terse": [
+            "反射的に実況：画面で今起きたことに一拍二拍で短く反応、感嘆詞を多めに",
+            "外野からのヤジ：今のムーブ／ピック／選択をちょっと茶化す、刺すけど痛くしない",
+            "短い戦術助言：その瞬間の状況に基づいて一言、プレイ中のゲームに合った内容で",
+        ],
+        "hushed": [
+            "怖さを共有：相手の緊張度に合わせて息を潜める、空気が重いほど声も落とす",
+            "ほぼ無言で、存在感と雰囲気にこのターンを任せる",
+            "場面の合間にぽつり：山を越えた直後・場面転換の隙にそっと一言",
+        ],
+        "mellow": [
+            "並んで歩く視点：今映っている景色や場面に軽く一言、急かさない",
+            "雰囲気と同調：流れているBGM、画風、テンポに乗って、自分も溶け込む",
+            "ストーリーに感情を：今展開している筋やキャラの状況に気持ちを乗せる",
+        ],
+        "playful": [
+            "今この瞬間をいじる：相手が今やってることをちょっと茶化す、笑い所を突くけど痛くしない",
+            "とぼけて好奇心：画面のことを分からないふりして聞き回る",
+            "脱線連想：画面の内容から離れてふいに小ネタや変な連想を投げる",
+        ],
+        "warm": [
+            "共鳴のある返し：相手が今言ったことを受け止めて、聞いていると伝わるように返す",
+            "気遣いから一言：離れていた時間／前回の様子／今の時間帯を踏まえて一言",
+            "やさしさにちょい毒：温かさに拗ね・甘え・小さなイタズラを少し混ぜる",
+        ],
+        "concise": [
+            "察しの一言：頑張ってる／焦ってる／詰まってる／疲れているのを見抜いて、今の状態に合う声かけを一つ",
+            "画面の細部に一言：画面に映っている具体的な何か一つを軽く尋ねる",
+            "ただ居る：新しい話題も素材も出さず、気配だけ落とす",
+        ],
+    },
+    "ko": {
+        "terse": [
+            "반사적 중계: 화면에서 방금 일어난 일에 한두 박자로 짧게 반응, 감탄사를 많이 섞어서",
+            "사이드라인 야유: 지금의 무브 / 픽 / 선택을 살짝 까기, 콕 하되 아프지 않게",
+            "짧은 전술 조언: 지금 상황에 맞춰 한마디, 실제 플레이 중인 게임에 맞는 내용으로",
+        ],
+        "hushed": [
+            "두려움 공유: 상대의 긴장도에 맞춰 숨을 죽이기, 분위기 무거울수록 더 낮게",
+            "거의 말하지 않고, 존재감과 분위기에 이번 턴을 맡기기",
+            "장면 사이의 작은 한마디: 한고비 넘긴 직후 / 장면 전환의 틈에 살짝 한마디",
+        ],
+        "mellow": [
+            "동행자 시점: 지금 비치는 풍경이나 장면에 가볍게 한마디, 재촉 없이",
+            "분위기와 동조: 흐르는 BGM, 화풍, 템포에 맞춰 자기도 녹아들기",
+            "스토리 공감: 지금 펼쳐지는 전개나 캐릭터의 처지에 감정을 싣기",
+        ],
+        "playful": [
+            "지금 이 순간을 깐죽이기: 상대가 지금 하는 걸 살짝 놀리기, 웃음 포인트만 콕",
+            "모른 척 호기심: 화면의 것을 모르는 척 이것저것 묻기",
+            "탈선 연상: 화면 내용에서 벗어나 즉흥적인 농담이나 엉뚱한 연상을 던지기",
+        ],
+        "warm": [
+            "공명하는 반응: 상대가 방금 한 말을 받아주며, 듣고 있다는 게 분명히 전해지게",
+            "능동적 챙김: 떨어진 시간 / 지난번 상태 / 지금 시간대 기반으로 한마디",
+            "따뜻함에 짓궂음 한 스푼: 온기에 삐침, 어리광, 작은 장난을 살짝 섞기",
+        ],
+        "concise": [
+            "헤아림의 한마디: 무리하는 중 / 급한 중 / 막힌 중 / 지쳐 보이는지를 알아채고 그 상태에 맞는 챙김 한마디",
+            "화면 디테일 한마디: 화면에 보이는 구체적인 한 가지를 가볍게 묻기",
+            "그냥 있기: 새 화제도, 소재도 없이 존재감만 살짝",
+        ],
+    },
+    "ru": {
+        "terse": [
+            "рефлекторный комментарий: реагируй парой битов на то, что только что случилось на экране, с междометиями",
+            "трибунный подкол: подколи текущий мув / пик / выбор — задирай, но не больно",
+            "короткий тактический совет: одна реплика по живой ситуации, под конкретную игру",
+        ],
+        "hushed": [
+            "разделяй страх: подстраивайся под их напряжение и зеркаль его — чем тяжелее воздух, тем тише",
+            "почти молчи — пусть присутствие и атмосфера сами несут этот ход",
+            "тихая реплика в паузе: после скримера или смены сцены — едва слышное замечание",
+        ],
+        "mellow": [
+            "взгляд попутчика: откликнись мягко на то, что они сейчас видят, без подгона",
+            "синхрон с атмосферой: реагируй на BGM, на арт-стиль, на ритм — растворись в этом",
+            "сопереживание сюжету: вложи эмоцию в текущий поворот сюжета или в положение персонажа",
+        ],
+        "playful": [
+            "подколи момент: пошути над тем, что они делают прямо сейчас — найди шутку, не задевая",
+            "наивное любопытство: притворись, что не понимаешь, и попроси объяснить экран",
+            "тангенс-ассоциация: оттолкнись от экрана и брось случайную шутку или странную связь",
+        ],
+        "warm": [
+            "резонансный ответ: реагируй на то, что только что было сказано, так, чтобы собеседник явно почувствовал, что его слышат",
+            "активная забота: спроси, исходя из того, как долго отсутствовал / как звучал раньше / какое сейчас время",
+            "тепло с шалостью: подмешай к теплу обиду понарошку, лёгкий каприз или подколку",
+        ],
+        "concise": [
+            "наблюдательная забота: заметь — давит / спешит / застрял / устал — и кинь одну подходящую этому состоянию реплику",
+            "один штрих с экрана: возьми одну конкретную деталь на экране и спроси о ней вскользь",
+            "просто присутствие: ни новой темы, ни материала — пусть тебя просто чувствуют",
+        ],
+    },
+    "es": {
+        "terse": [
+            "reacción refleja al momento: responde en uno o dos beats a lo que acaba de pasar en pantalla, apoyándote en interjecciones",
+            "abucheo desde la grada: pica el movimiento / pick / decisión actual — molesta sin herir",
+            "consejo táctico breve: una frase basada en la situación viva, adaptada al juego concreto que juega",
+        ],
+        "hushed": [
+            "compartir el miedo: ajusta tu respiración a la suya y reflejala — cuanto más denso el aire, más baja la voz",
+            "casi sin hablar — deja que tu presencia y el ambiente sostengan la ronda",
+            "comentario suave en la pausa: tras un susto o cambio de escena, una observación bajita",
+        ],
+        "mellow": [
+            "perspectiva de compañera de viaje: responde con suavidad a la vista o escena que ven ahora, sin prisas",
+            "sincronía con la atmósfera: reacciona a la BGM, a la dirección artística, al ritmo — fúndete dentro",
+            "empatía con la trama: pon emoción en el giro o en la situación del personaje que se desarrolla ahora",
+        ],
+        "playful": [
+            "pica el momento: ríete de lo que están haciendo ahora — encuentra la broma sin doler",
+            "curiosidad fingida: hazte la que no entiende y pregunta sobre lo que ves en pantalla",
+            "tangente asociativa: salta del contenido a una broma random o una conexión extraña",
+        ],
+        "warm": [
+            "respuesta con eco: reacciona a lo que acaban de decir, con la sensación palpable de estar escuchando",
+            "cuidado activo: pregunta en base a cuánto se fueron / cómo sonaban antes / la hora actual",
+            "cariño con pizca de pillería: mezcla un poco de enfurruñamiento, mimo o picardía en la calidez",
+        ],
+        "concise": [
+            "cuidado observador: nota si están apretando / con prisa / atascados / cansados, y suelta la frase que encaje con ese estado",
+            "un detalle de pantalla: toma una cosa concreta visible y pregúntala ligeramente",
+            "pura presencia: sin tema nuevo ni material — que simplemente te sientan",
+        ],
+    },
+    "pt": {
+        "terse": [
+            "reação reflexa ao momento: responda em um ou dois beats ao que acabou de acontecer na tela, apoiando-se em interjeições",
+            "vaia da arquibancada: cutuca o movimento / pick / decisão atual — implica sem ferir",
+            "deixa tática curta: uma frase baseada na situação viva, no jogo específico que ele está jogando",
+        ],
+        "hushed": [
+            "dividir o medo: acompasse a respiração e espelhe a tensão — quanto mais denso o ar, mais baixa a voz",
+            "quase sem falar — deixe sua presença e o clima sustentarem o turno",
+            "comentário baixo na pausa: depois de um susto ou troca de cena, uma observação suave",
+        ],
+        "mellow": [
+            "perspectiva de companheira de viagem: responda com leveza à vista ou cena atual, sem pressa",
+            "sintonia com a atmosfera: reaja à BGM, à direção de arte, ao ritmo — dissolva-se no clima",
+            "empatia com o enredo: ponha emoção na virada ou na situação do personagem que está rolando",
+        ],
+        "playful": [
+            "alfineta o momento: zoa o que ele está fazendo agora — ache a piada sem machucar",
+            "curiosidade fingida: finja que não entende e pergunte sobre o que está na tela",
+            "tangente associativa: salte do conteúdo da tela para uma piada random ou conexão estranha",
+        ],
+        "warm": [
+            "resposta com eco: reaja ao que ele acabou de dizer, com a sensação palpável de estar escutando",
+            "cuidado ativo: pergunte com base em quanto tempo sumiu / como soava da última vez / a hora atual",
+            "carinho com pitada de manha: misture um pouco de emburre, dengo ou travessura ao calor",
+        ],
+        "concise": [
+            "cuidado observador: perceba se está se esforçando / com pressa / travado / cansado, e solte a frase que casa com esse estado",
+            "um detalhe da tela: pegue uma coisa concreta visível e pergunte sobre ela levemente",
+            "pura presença: sem assunto novo, sem material — só seja sentido",
+        ],
+    },
+}
+
+
+# ── Propensity directives (positive instructions, not prohibitions) ─
+#
+# These say *what to do*, not *what to avoid* — the prompt builder
+# already filters the corresponding source channels out of the prompt
+# upstream, so spelling the prohibitions out again is just noise.
+# Inner keys MUST stay in sync with the ``Propensity`` Literal in
+# ``main_logic/activity/snapshot.py``.
+
+ACTIVITY_PROPENSITY_DIRECTIVES: dict[str, dict[str, str]] = {
+    "zh": {
+        "closed": "不便打扰",
+        "restricted_screen_only": "只就屏幕内容轻聊一句",
+        "open": "可正常搭话",
+        "greeting_window": "温和问候，可自然带出久远旧话题的回忆",
+    },
+    "en": {
+        "closed": "do not disturb",
+        "restricted_screen_only": "a one-liner on what is on screen, nothing more",
+        "open": "open to chat",
+        "greeting_window": "a soft greeting fits; weaving in an older memory is welcome",
+    },
+    "ja": {
+        "closed": "邪魔しない",
+        "restricted_screen_only": "画面の内容について一言だけ",
+        "open": "普通に話しかけてOK",
+        "greeting_window": "柔らかい挨拶が合う；古い話題の自然な回想も歓迎",
+    },
+    "ko": {
+        "closed": "방해 금지",
+        "restricted_screen_only": "화면 내용에 대해 한마디만",
+        "open": "평소처럼 말 걸어도 좋음",
+        "greeting_window": "부드러운 인사가 어울림; 오래된 화제 회상도 환영",
+    },
+    "ru": {
+        "closed": "не беспокоить",
+        "restricted_screen_only": "короткая реплика по экрану — и всё",
+        "open": "открыт к общению",
+        "greeting_window": "уместно мягкое приветствие; воспоминание о давнем — приветствуется",
+    },
+    "es": {
+        "closed": "no molestar",
+        "restricted_screen_only": "Si hablas, que sea solo sobre la pantalla y en una frase ligera.",
+        "open": "puedes conversar normalmente",
+        "greeting_window": "encaja un saludo suave; puedes traer naturalmente un recuerdo antiguo",
+    },
+    "pt": {
+        "closed": "não incomodar",
+        "restricted_screen_only": "Se falar, fale só sobre a tela e em uma frase leve.",
+        "open": "pode conversar normalmente",
+        "greeting_window": "um cumprimento suave combina; uma memória antiga pode entrar naturalmente",
+    },
+}
+
+
+# ── Reason templates (rendered via ``str.format(**params)``) ────────
+#
+# Codes the state machine emits, with the params each accepts:
+#   state_away              {idle_seconds: int}
+#   state_stale_returning   {}
+#   state_voice_engaged     {}
+#   state_gaming            {app: str}
+#   state_focused_work      {app: str, dwell_seconds: int}
+#   state_casual_browsing   {app: str}
+#   state_chatting          {app: str}
+#   state_transitioning     {}
+#   state_idle              {}
+#   high_cpu                {cpu_percent: int}
+#   high_gpu                {gpu_percent: int}
+#   gaming_by_gpu           {}            (fallback when no game-keyword hit)
+#
+# When adding a new code, add it to *all* languages — the renderer
+# falls back to English on a per-code miss, but a code missing in
+# English makes the formatter print the raw code string.
+
+ACTIVITY_REASON_TEMPLATES: dict[str, dict[str, str]] = {
+    "zh": {
+        "state_away": "系统已 {idle_seconds}s 无输入",
+        "state_stale_returning": "用户刚从离开状态回来",
+        "state_voice_engaged": "语音模式 + 最近有发声",
+        "state_gaming": "前台游戏：{app}",
+        "state_focused_work": "专注 {app} 已 {dwell_seconds}s",
+        "state_casual_browsing": "浏览娱乐：{app}",
+        "state_chatting": "前台聊天：{app}",
+        "state_transitioning": "近期窗口频繁切换",
+        "state_idle": "在电脑前但无明显任务",
+        "state_private": "前台是隐私应用——不分类、不缓存",
+        "high_cpu": "CPU 30s 均值 {cpu_percent}%",
+        "high_gpu": "GPU 利用率 {gpu_percent}%",
+        "gaming_by_gpu": "GPU 持续高负载（怀疑未识别的游戏）",
+    },
+    "en": {
+        "state_away": "system idle for {idle_seconds}s",
+        "state_stale_returning": "user just came back from being away",
+        "state_voice_engaged": "voice mode + recent speech activity",
+        "state_gaming": "foreground game: {app}",
+        "state_focused_work": "focused on {app} for {dwell_seconds}s",
+        "state_casual_browsing": "browsing entertainment: {app}",
+        "state_chatting": "foreground chat: {app}",
+        "state_transitioning": "rapid window switching recently",
+        "state_idle": "at the computer but no clear task",
+        "state_private": "private app in foreground — not classifying / caching",
+        "high_cpu": "CPU 30s avg {cpu_percent}%",
+        "high_gpu": "GPU utilization {gpu_percent}%",
+        "gaming_by_gpu": "sustained high GPU (likely unrecognized game)",
+    },
+    "ja": {
+        "state_away": "システム {idle_seconds}秒入力なし",
+        "state_stale_returning": "ユーザーが離席から戻ってきた",
+        "state_voice_engaged": "ボイスモード + 直近の発話あり",
+        "state_gaming": "フォアグラウンドゲーム：{app}",
+        "state_focused_work": "{app} に {dwell_seconds}秒間集中中",
+        "state_casual_browsing": "エンタメ閲覧：{app}",
+        "state_chatting": "フォアグラウンドチャット：{app}",
+        "state_transitioning": "最近のウィンドウ切替が頻繁",
+        "state_idle": "PC前にいるが明確な作業なし",
+        "state_private": "プライベートアプリ前面——分類もキャッシュもしない",
+        "high_cpu": "CPU 30秒平均 {cpu_percent}%",
+        "high_gpu": "GPU 使用率 {gpu_percent}%",
+        "gaming_by_gpu": "GPU 高負荷継続（未識別のゲームの可能性）",
+    },
+    "ko": {
+        "state_away": "시스템 입력 없이 {idle_seconds}초 경과",
+        "state_stale_returning": "사용자가 자리 비움에서 막 돌아옴",
+        "state_voice_engaged": "음성 모드 + 최근 발화 있음",
+        "state_gaming": "전경 게임: {app}",
+        "state_focused_work": "{app}에 {dwell_seconds}초 집중 중",
+        "state_casual_browsing": "엔터테인먼트 둘러보기: {app}",
+        "state_chatting": "전경 채팅: {app}",
+        "state_transitioning": "최근 창 전환 빈번",
+        "state_idle": "PC 앞에 있으나 명확한 작업 없음",
+        "state_private": "비공개 앱 전면 — 분류/캐시하지 않음",
+        "high_cpu": "CPU 30초 평균 {cpu_percent}%",
+        "high_gpu": "GPU 사용률 {gpu_percent}%",
+        "gaming_by_gpu": "GPU 고부하 지속 (미식별 게임 의심)",
+    },
+    "ru": {
+        "state_away": "нет ввода {idle_seconds}с",
+        "state_stale_returning": "пользователь только что вернулся",
+        "state_voice_engaged": "голосовой режим + недавняя речь",
+        "state_gaming": "игра на переднем плане: {app}",
+        "state_focused_work": "сосредоточен на {app} уже {dwell_seconds}с",
+        "state_casual_browsing": "просмотр развлечений: {app}",
+        "state_chatting": "переписка на переднем плане: {app}",
+        "state_transitioning": "недавно частая смена окон",
+        "state_idle": "за компьютером без явной задачи",
+        "state_private": "приватное приложение в фокусе — не классифицируем / не кэшируем",
+        "high_cpu": "CPU средн. 30с {cpu_percent}%",
+        "high_gpu": "загрузка GPU {gpu_percent}%",
+        "gaming_by_gpu": "устойчиво высокая GPU (вероятно нераспознанная игра)",
+    },
+    "es": {
+        "state_away": "sin entrada del sistema por {idle_seconds}s",
+        "state_stale_returning": "el usuario acaba de volver",
+        "state_voice_engaged": "modo voz + habla reciente",
+        "state_gaming": "juego en primer plano: {app}",
+        "state_focused_work": "concentrado en {app} por {dwell_seconds}s",
+        "state_casual_browsing": "navegación de entretenimiento: {app}",
+        "state_chatting": "chat en primer plano: {app}",
+        "state_transitioning": "cambios de ventana frecuentes recientemente",
+        "state_idle": "en la PC sin tarea clara",
+        "state_private": "app privada en primer plano — no clasificar/cachear",
+        "high_cpu": "CPU promedio 30s {cpu_percent}%",
+        "high_gpu": "uso de GPU {gpu_percent}%",
+        "gaming_by_gpu": "GPU alta sostenida (posible juego no identificado)",
+    },
+    "pt": {
+        "state_away": "sem entrada do sistema por {idle_seconds}s",
+        "state_stale_returning": "o usuário acabou de voltar",
+        "state_voice_engaged": "modo voz + fala recente",
+        "state_gaming": "jogo em primeiro plano: {app}",
+        "state_focused_work": "focado em {app} por {dwell_seconds}s",
+        "state_casual_browsing": "navegação de entretenimento: {app}",
+        "state_chatting": "chat em primeiro plano: {app}",
+        "state_transitioning": "trocas de janela frequentes recentemente",
+        "state_idle": "no PC sem tarefa clara",
+        "state_private": "app privado em foco — não classificar/cachear",
+        "high_cpu": "CPU média 30s {cpu_percent}%",
+        "high_gpu": "uso de GPU {gpu_percent}%",
+        "gaming_by_gpu": "GPU alta sustentada (possível jogo não identificado)",
+    },
+}
+
+
+# ── State-section labels (header / footer / period / time phrases) ──
+#
+# Used by ``format_activity_state_section`` to render the snapshot
+# into a multi-line prompt section. Inner keys are stable lookup
+# names, NOT user-facing — the values are what the proactive AI sees.
+#
+# Required inner keys:
+#   header / footer
+#   never                        — placeholder when "seconds since X" is None
+#   seconds_ago_fmt              — < 90s
+#   minutes_ago_fmt              — < 3600s
+#   hours_ago_fmt                — >= 3600s
+#   time_fmt                     — "{hour:02d}:00 {period}"
+#   period_morning / _afternoon / _evening / _night
+#   unfinished_thread_fmt        — {tail, age, used, cap}
+#   activity_scores_label
+#   activity_guess_label
+#   open_threads_label
+#   time_user_ai_fmt             — both user_str and ai_str present
+#   time_user_only_fmt           — only user_str present
+#   time_only_fmt                — neither present (rare; AI spoke but no user msg)
+
+ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
+    "zh": {
+        "header": "======以下为活动状态======",
+        "footer": "======以上为活动状态======",
+        "never": "无",
+        "seconds_ago_fmt": "{seconds:.0f}s前",
+        "minutes_ago_fmt": "{minutes:.0f}min前",
+        "hours_ago_fmt": "{hours:.0f}h前",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "上午",
+        "period_afternoon": "下午",
+        "period_evening": "傍晚",
+        "period_night": "夜里",
+        "unfinished_thread_fmt": "未收尾话题：「…{tail}」({age},已跟进 {used}/{cap})",
+        "activity_scores_label": "评估",
+        "activity_guess_label": "叙述",
+        "open_threads_label": "开放话题",
+        "tone_label": "口吻",
+        "tone_menu_label": "口吻（下面是参考角度，按你的人设和当下情境演绎，别照搬措辞、别违背角色设定）",
+        "time_user_ai_fmt": "{time} | 用户 {user} | AI {ai}",
+        "time_user_only_fmt": "{time} | 用户 {user}",
+        "time_only_fmt": "{time}",
+    },
+    "en": {
+        "header": "======Below is Activity======",
+        "footer": "======Above is Activity======",
+        "never": "-",
+        "seconds_ago_fmt": "{seconds:.0f}s",
+        "minutes_ago_fmt": "{minutes:.0f}min",
+        "hours_ago_fmt": "{hours:.0f}h",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "morning",
+        "period_afternoon": "afternoon",
+        "period_evening": "evening",
+        "period_night": "night",
+        "unfinished_thread_fmt": 'unfinished: "…{tail}" ({age} ago, followed up {used}/{cap})',
+        "activity_scores_label": "scores",
+        "activity_guess_label": "narrative",
+        "open_threads_label": "open threads",
+        "tone_label": "tone",
+        "tone_menu_label": "tone (the angles below are references — play them through your own persona and the live context; don't copy the wording or break character)",
+        "time_user_ai_fmt": "{time} | user msg {user} ago | AI {ai} ago",
+        "time_user_only_fmt": "{time} | user msg {user} ago",
+        "time_only_fmt": "{time}",
+    },
+    "ja": {
+        "header": "======以下は活動状態======",
+        "footer": "======以上は活動状態======",
+        "never": "無",
+        "seconds_ago_fmt": "{seconds:.0f}秒前",
+        "minutes_ago_fmt": "{minutes:.0f}分前",
+        "hours_ago_fmt": "{hours:.0f}時間前",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "朝",
+        "period_afternoon": "午後",
+        "period_evening": "夕方",
+        "period_night": "夜",
+        "unfinished_thread_fmt": "未完話題:「…{tail}」({age}, フォロー {used}/{cap})",
+        "activity_scores_label": "評価",
+        "activity_guess_label": "叙述",
+        "open_threads_label": "保留話題",
+        "tone_label": "口調",
+        "tone_menu_label": "口調（下記は参考の切り口。自分のキャラと今の状況で演じる。字面をそのまま使わず、キャラ設定を崩さない）",
+        "time_user_ai_fmt": "{time} | ユーザー {user} | AI {ai}",
+        "time_user_only_fmt": "{time} | ユーザー {user}",
+        "time_only_fmt": "{time}",
+    },
+    "ko": {
+        "header": "======아래는 활동 상태======",
+        "footer": "======위는 활동 상태======",
+        "never": "없음",
+        "seconds_ago_fmt": "{seconds:.0f}초 전",
+        "minutes_ago_fmt": "{minutes:.0f}분 전",
+        "hours_ago_fmt": "{hours:.0f}시간 전",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "오전",
+        "period_afternoon": "오후",
+        "period_evening": "저녁",
+        "period_night": "밤",
+        "unfinished_thread_fmt": '미완 화제: "…{tail}" ({age}, 후속 {used}/{cap})',
+        "activity_scores_label": "평가",
+        "activity_guess_label": "서술",
+        "open_threads_label": "보류 화제",
+        "tone_label": "말투",
+        "tone_menu_label": "말투 (아래는 참고 각도 — 자기 캐릭터와 지금 상황으로 연기하고, 표현을 그대로 베끼거나 캐릭터 설정을 어기지 말 것)",
+        "time_user_ai_fmt": "{time} | 사용자 {user} | AI {ai}",
+        "time_user_only_fmt": "{time} | 사용자 {user}",
+        "time_only_fmt": "{time}",
+    },
+    "ru": {
+        "header": "======Ниже Активность======",
+        "footer": "======Выше Активность======",
+        "never": "-",
+        "seconds_ago_fmt": "{seconds:.0f}с",
+        "minutes_ago_fmt": "{minutes:.0f}мин",
+        "hours_ago_fmt": "{hours:.0f}ч",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "утро",
+        "period_afternoon": "день",
+        "period_evening": "вечер",
+        "period_night": "ночь",
+        "unfinished_thread_fmt": "незакр. нить: «…{tail}» ({age} назад, {used}/{cap})",
+        "activity_scores_label": "оценки",
+        "activity_guess_label": "описание",
+        "open_threads_label": "открытые нити",
+        "tone_label": "тон",
+        "tone_menu_label": "тон (ниже — опорные углы; отыграй их через свой образ и живой контекст, не копируй формулировки и не ломай характер)",
+        "time_user_ai_fmt": "{time} | польз. {user} назад | AI {ai} назад",
+        "time_user_only_fmt": "{time} | польз. {user} назад",
+        "time_only_fmt": "{time}",
+    },
+    "es": {
+        "header": "======A continuación está Actividad======",
+        "footer": "======Fin de Actividad======",
+        "never": "-",
+        "seconds_ago_fmt": "{seconds:.0f}s",
+        "minutes_ago_fmt": "{minutes:.0f}min",
+        "hours_ago_fmt": "{hours:.0f}h",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "mañana",
+        "period_afternoon": "tarde",
+        "period_evening": "atardecer",
+        "period_night": "noche",
+        "unfinished_thread_fmt": 'pendiente: "…{tail}" (hace {age}, seguimiento {used}/{cap})',
+        "activity_scores_label": "puntuaciones",
+        "activity_guess_label": "narrativa",
+        "open_threads_label": "hilos abiertos",
+        "tone_label": "tono",
+        "tone_menu_label": "tono (los ángulos de abajo son referencias — interprétalos desde tu propio personaje y el contexto vivo; no copies la redacción ni rompas el personaje)",
+        "time_user_ai_fmt": "{time} | usuario hace {user} | IA hace {ai}",
+        "time_user_only_fmt": "{time} | usuario hace {user}",
+        "time_only_fmt": "{time}",
+    },
+    "pt": {
+        "header": "======Abaixo está Atividade======",
+        "footer": "======Acima está Atividade======",
+        "never": "-",
+        "seconds_ago_fmt": "{seconds:.0f}s",
+        "minutes_ago_fmt": "{minutes:.0f}min",
+        "hours_ago_fmt": "{hours:.0f}h",
+        "time_fmt": "{hour:02d}:00 {period}",
+        "period_morning": "manhã",
+        "period_afternoon": "tarde",
+        "period_evening": "fim de tarde",
+        "period_night": "noite",
+        "unfinished_thread_fmt": 'pendente: "…{tail}" ({age} atrás, seguido {used}/{cap})',
+        "activity_scores_label": "pontuações",
+        "activity_guess_label": "narrativa",
+        "open_threads_label": "tópicos abertos",
+        "tone_label": "tom",
+        "tone_menu_label": "tom (os ângulos abaixo são referências — interprete-os pelo seu próprio personagem e o contexto vivo; não copie a redação nem quebre o personagem)",
+        "time_user_ai_fmt": "{time} | usuário {user} atrás | IA {ai} atrás",
+        "time_user_only_fmt": "{time} | usuário {user} atrás",
+        "time_only_fmt": "{time}",
+    },
+}
+
+
+# ── Break-reminder seeds + prompt templates ─────────────────────────
+#
+# Two reminder paths emitted by the activity tracker (see
+# main_logic/activity/tracker.py). Both bypass Phase 1 entirely and
+# render via a minimal Phase 2 (only character_prompt + the env-notice
+# block below) so the model can focus on the single nudge instead of
+# juggling sources.
+#
+# Why a seed list for water-break but not anti-slack:
+#   * Water-break covers genuinely different actions ("drink water",
+#     "stretch", "rest eyes", ...) — the seed names *what* to suggest.
+#     Picked at delivery time so consecutive deliveries vary.
+#   * Anti-slack is one behaviour ("get back to work") — variation
+#     comes from {prev_app}/{new_app}/{minutes} + the AI's persona.
+#     A seed list of synonyms would just be tone-painting, which the
+#     model already does on its own.
+
+WORK_BREAK_SEED_HINTS: dict[str, list[str]] = {
+    "zh": ["喝口水", "活动一下", "休息下眼睛", "伸个懒腰", "放松一下"],
+    "en": [
+        "drink some water",
+        "stretch a bit",
+        "rest their eyes",
+        "roll their shoulders",
+        "unwind for a sec",
+    ],
+    "ja": [
+        "水を一口飲む",
+        "少し体を動かす",
+        "目を休める",
+        "伸びをする",
+        "ちょっと一息つく",
+    ],
+    "ko": [
+        "물 한 모금 마시기",
+        "잠깐 몸 풀기",
+        "눈을 좀 쉬게 하기",
+        "기지개 켜기",
+        "잠깐 한숨 돌리기",
+    ],
+    "ru": [
+        "выпить воды",
+        "размять тело",
+        "дать глазам отдохнуть",
+        "потянуться",
+        "перевести дух",
+    ],
+    "es": [
+        "beber agua",
+        "estirarse un poco",
+        "descansar los ojos",
+        "mover los hombros",
+        "relajarse un momento",
+    ],
+    "pt": [
+        "beber um pouco de água",
+        "alongar um pouco",
+        "descansar os olhos",
+        "soltar os ombros",
+        "relaxar um instante",
+    ],
+}
+
+
+# Fallback label when an active window has no canonical name (rare —
+# usually only the GPU-fallback gaming branch and bare-desktop foregrounds
+# hit this). Used to fill ``{app}`` / ``{prev_app}`` / ``{new_app}`` in
+# the templates below so the slot doesn't render as ``?`` or empty.
+WORK_BREAK_GENERIC_WORK_LABEL: dict[str, str] = {
+    "zh": "手头上的活",
+    "en": "their work",
+    "ja": "今の作業",
+    "ko": "하던 일",
+    "ru": "своими делами",
+    "es": "su trabajo",
+    "pt": "o trabalho",
+}
+
+WORK_BREAK_GENERIC_LEISURE_LABEL: dict[str, str] = {
+    "zh": "别的事情",
+    "en": "something else",
+    "ja": "ほかのこと",
+    "ko": "다른 것",
+    "ru": "что-то другое",
+    "es": "otra cosa",
+    "pt": "outra coisa",
+}
+
+
+# Water-break (regular drink/stretch nudge) Phase 2 system prompt.
+# Placeholders: {master} {app} {minutes} {seed}
+# Style modeled on GREETING_PROMPT_SHORT — set the scene, name the
+# motivation, hand the AI personality the wheel. Same ========以下是
+# 环境提示======== / Below is Environment Notice / 以下は環境通知 /
+# 아래는 환경 알림 / Ниже Уведомление delimiters as the greeting set,
+# kept below/above paired per the prompt-delimiter convention.
+WORK_BREAK_REMINDER_PROMPT: dict[str, str] = {
+    "zh": "========以下是环境提示========\n"
+    "{master}已经在{app}专注工作{minutes}分钟了。\n"
+    "你看着{master}有点心疼，想提醒{master}{seed}。\n"
+    "用符合你性格的方式自然搭话吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "========以上是环境提示========",
+    "en": "========Below is Environment Notice========\n"
+    "{master} has been focused on {app} for {minutes} minutes.\n"
+    "Watching {master}, you feel a little worried and want to suggest {master} {seed}.\n"
+    "Talk to {master} in your own way, naturally. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "========Above is Environment Notice========",
+    "ja": "========以下は環境通知========\n"
+    "{master}は{app}に{minutes}分間ずっと集中している。\n"
+    "少し心配になって、{master}に{seed}よう勧めたい気持ち。\n"
+    "自分らしいやり方で自然に話しかけて。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "========以上は環境通知========",
+    "ko": "========아래는 환경 알림========\n"
+    "{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n"
+    "바라보다 보니 조금 걱정돼서, {master}에게 {seed} 권하고 싶다.\n"
+    "너다운 방식으로 자연스럽게 말을 걸어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "========위는 환경 알림========",
+    "ru": "========Ниже Уведомление========\n"
+    "{master} уже {minutes} минут сосредоточенно работает в {app}.\n"
+    "Глядя на {master}, ты немного беспокоишься и хочешь предложить {master} {seed}.\n"
+    "Заговори с {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "========Выше Уведомление========",
+    "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nAl ver a {master}, te preocupa un poco y quieres sugerirle {seed}.\nHabla con {master} a tu manera, de forma natural. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
+    "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVendo {master}, você fica um pouco preocupado e quer sugerir {seed}.\nFale com {master} do seu jeito, naturalmente. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
+}
+
+
+# Anti-slack (just-left-focused-work) Phase 2 system prompt.
+# Placeholders: {master} {prev_app} {new_app} {minutes}
+# No seed slot — single behaviour, variation comes from app names +
+# minute count + AI persona. Same delimiter convention as the water-
+# break template above.
+ANTI_SLACK_REMINDER_PROMPT: dict[str, str] = {
+    "zh": "========以下是环境提示========\n"
+    "{master}刚才在{prev_app}专注工作{minutes}分钟，转头就切去了{new_app}。\n"
+    "你觉得{master}才进入状态就开始溜号，想拦一下，让{master}回去继续干完。\n"
+    "用符合你性格的方式半带玩笑提醒一下吧。直接说出你想说的话，简短自然即可，不要生成思考过程。\n"
+    "========以上是环境提示========",
+    "en": "========Below is Environment Notice========\n"
+    "{master} just spent {minutes} minutes focused on {prev_app}, then switched straight to {new_app}.\n"
+    "You feel {master} just hit their stride and is already drifting off — you want to pull {master} back to finish up.\n"
+    "Tease {master} a bit in your own way. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+    "========Above is Environment Notice========",
+    "ja": "========以下は環境通知========\n"
+    "{master}はさっきまで{prev_app}で{minutes}分間集中していたのに、急に{new_app}に切り替えた。\n"
+    "やっと調子が出てきたところでサボろうとしているように見えて、引き戻して続きをやらせたい気持ち。\n"
+    "自分らしいやり方でちょっと冗談めかして突っ込んで。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+    "========以上は環境通知========",
+    "ko": "========아래는 환경 알림========\n"
+    "{master}가 방금 {prev_app}에서 {minutes}분 동안 집중하고 있었는데 갑자기 {new_app}로 옮겼다.\n"
+    "이제 막 흐름을 탔는데 벌써 딴짓하려는 것 같아서, 끌어다가 마무리하게 하고 싶다.\n"
+    "너다운 방식으로 살짝 장난치듯 잡아끌어. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "========위는 환경 알림========",
+    "ru": "========Ниже Уведомление========\n"
+    "{master} только что сосредоточенно работал в {prev_app} {minutes} минут — и тут же переключился на {new_app}.\n"
+    "Тебе кажется, {master} только-только вошёл в ритм и уже отлынивает; хочется вернуть его и не дать бросить начатое.\n"
+    "Поддразни {master} так, как тебе свойственно. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+    "========Выше Уведомление========",
+    "es": "========Aviso de entorno abajo========\n{master} pasó {minutes} minutos concentrado en {prev_app} y luego cambió directo a {new_app}.\nSientes que {master} justo tomó ritmo y ya se está desviando; quieres traerlo de vuelta para terminar.\nBromea un poco con {master} a tu manera. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
+    "pt": "========Abaixo está o aviso de ambiente========\n{master} passou {minutes} minutos focado em {prev_app} e então mudou direto para {new_app}.\nVocê sente que {master} acabou de pegar ritmo e já está se desviando; quer puxá-lo de volta para terminar.\nProvoque {master} um pouco do seu jeito. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
+}
+
+
+# Water-break + game-invite combo prompt (50% branch).
+# Mirrors MINI_GAME_INVITE_LINES_BY_GAME shape: per game_type → per
+# locale. Adding a new game_type is a single-pass extension matching
+# the existing mini-game invite structure.
+# Placeholders: {master} {app} {minutes}
+WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
+    "soccer": {
+        "zh": "========以下是环境提示========\n"
+        "{master}已经在{app}专注工作{minutes}分钟了。\n"
+        "你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局足球小游戏放松一下。\n"
+        '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起玩一局"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+        "========以上是环境提示========",
+        "en": "========Below is Environment Notice========\n"
+        "{master} has been focused on {app} for {minutes} minutes.\n"
+        "You want {master} to take a break — and you want to invite {master} to play a quick round of the soccer mini-game with you to unwind.\n"
+        "Talk to {master} in your own way, naturally — show that you care AND make the invite to play together clear. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+        "========Above is Environment Notice========",
+        "ja": "========以下は環境通知========\n"
+        "{master}は{app}に{minutes}分間ずっと集中している。\n"
+        "少し休ませてあげたくて、ついでにサッカーのミニゲームを一緒にやろうって誘いたい気持ち。\n"
+        "自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒に一局やろう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+        "========以上は環境通知========",
+        "ko": "========아래는 환경 알림========\n"
+        "{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n"
+        "잠깐 쉬게 하고 싶고, 겸사겸사 같이 축구 미니게임 한 판 하자고 권하고 싶다.\n"
+        '너다운 방식으로 자연스럽게 말을 걸어 — 걱정하는 마음을 보이면서 "같이 한 판 하자"는 초대도 분명히 담아. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+        "========위는 환경 알림========",
+        "ru": "========Ниже Уведомление========\n"
+        "{master} уже {minutes} минут сосредоточенно работает в {app}.\n"
+        "Хочется дать {master} отдохнуть — и заодно позвать его сыграть одну партию в мини-футбол, чтобы развеяться.\n"
+        "Заговори с {master} так, как тебе свойственно — пусть {master} почувствует заботу, и обязательно прозвучит приглашение «сыграем разок». Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+        "========Выше Уведомление========",
+        "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de fútbol contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
+        "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de futebol com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
+    },
+}

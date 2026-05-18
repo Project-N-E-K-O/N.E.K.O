@@ -185,8 +185,11 @@ def normalize_manifest_surface(
         "mode": mode,
         "permissions": normalized_permissions,
     }
-    if isinstance(raw_surface.get("title"), str) and raw_surface["title"].strip():
-        normalized["title"] = raw_surface["title"].strip()
+    title = raw_surface.get("title")
+    if isinstance(title, str) and title.strip():
+        normalized["title"] = title.strip()
+    elif isinstance(title, Mapping):
+        normalized["title"] = dict(title)
     if isinstance(entry, str) and entry.strip():
         normalized["entry"] = entry.strip()
     if open_in_value:
@@ -222,6 +225,84 @@ def resolve_surface_entry_path(plugin_meta: Mapping[str, object], entry: str) ->
         return candidate
     except Exception:
         return None
+
+
+def _surface_locale_candidates(locale: str | None) -> list[str]:
+    """Build locale fallback chain for picking translated surface files.
+
+    Convention: the unsuffixed `<entry>` file (no locale tag) is treated as
+    NEKO's default-locale (zh-CN) source, so `zh-CN` / `zh` callers return an
+    empty candidate list and `resolve_localized_surface_entry_path` falls
+    straight through to the default file. For other locales the order is:
+      exact → primary subtag → zh-CN (for other zh-* variants only) → en.
+    """
+    if not locale:
+        return []
+    raw = str(locale).strip()
+    if not raw:
+        return []
+    lower = raw.lower()
+    if lower in {"zh", "zh-cn"}:
+        return []
+
+    candidates: list[str] = []
+
+    def add(value: str | None) -> None:
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add(raw)
+    if "-" in raw:
+        add(raw.split("-", 1)[0])
+    if lower.startswith("zh-"):
+        add("zh-CN")
+    add("en")
+    return candidates
+
+
+def resolve_localized_surface_entry_path(
+    plugin_meta: Mapping[str, object],
+    entry: str,
+    locale: str | None = None,
+) -> tuple[Path | None, str | None]:
+    """Pick the best translated surface file for the requested locale.
+
+    Looks for sibling files named `<stem>.<locale>.<ext>` next to `<entry>`,
+    walking the fallback chain from `_surface_locale_candidates`. Returns
+    `(path, hit_locale)`; `hit_locale` is `None` when the unsuffixed default
+    file is used. Path traversal is rejected by reusing the same root check
+    as `resolve_surface_entry_path`.
+    """
+    base_path = resolve_surface_entry_path(plugin_meta, entry)
+    if base_path is None:
+        return None, None
+
+    config_path_obj = plugin_meta.get("config_path")
+    if not isinstance(config_path_obj, str) or not config_path_obj:
+        return base_path if base_path.is_file() else None, None
+
+    try:
+        root = Path(config_path_obj).parent.resolve()
+    except Exception:
+        return base_path if base_path.is_file() else None, None
+
+    stem = base_path.stem
+    suffix = base_path.suffix
+    parent = base_path.parent
+
+    for cand in _surface_locale_candidates(locale):
+        localized = parent / f"{stem}.{cand}{suffix}"
+        try:
+            resolved = localized.resolve()
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if resolved.is_file():
+            return resolved, cand
+
+    if base_path.is_file():
+        return base_path, None
+    return None, None
 
 
 def static_surface_url(plugin_id: str, mode: str, entry: str) -> str | None:

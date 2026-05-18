@@ -33,7 +33,7 @@
     "step": {
       "key": "step",
       "name": "Step-2（阶跃星辰）",
-      "description": "目前完全免费，内置联网搜索功能",
+      "description": "目前完全免费",
       "core_url": "wss://api.stepfun.com/v1/realtime",
       "core_model": "step-audio-2"
     },
@@ -49,6 +49,13 @@
       "description": "有免费额度，支持联网搜索，语音默认含水印滴滴声（可在智谱控制台手动关闭）",
       "core_url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
       "core_model": "glm-realtime-air"
+    },
+    "grok": {
+      "key": "grok",
+      "name": "Grok Voice（xAI）",
+      "description": "xAI 实时语音，国内无法直连，价格较高",
+      "core_url": "wss://api.x.ai/v1/realtime",
+      "core_model": "grok-voice-fast-1.0"
     }
   },
   "assist_api_providers": {
@@ -74,10 +81,10 @@
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "conversation_model": "qwen3.6-plus",
       "summary_model": "qwen3.6-plus",
-      "correction_model": "qwen3.6-plus",
+      "correction_model": "qwen3.6-plus-2026-04-02",
       "emotion_model": "qwen3.6-flash-2026-04-16",
-      "vision_model": "qwen3.6-plus",
-      "agent_model": "qwen3.6-plus"
+      "vision_model": "qwen3.6-plus-2026-04-02",
+      "agent_model": "qwen3.6-plus-2026-04-02"
     },
     "qwen_intl": {
       "key": "qwen_intl",
@@ -180,11 +187,11 @@
       "name": "豆包（字节跳动）",
       "description": "国内可用，价格适中，不支持自定义语音",
       "openrouter_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "conversation_model": "doubao-seed-2-0-lite-260215",
-      "summary_model": "doubao-seed-2-0-lite-260215",
-      "correction_model": "doubao-seed-2-0-lite-260215",
-      "emotion_model": "doubao-seed-2-0-mini-260215",
-      "vision_model": "doubao-seed-2-0-lite-260215",
+      "conversation_model": "doubao-seed-2-0-lite-260428",
+      "summary_model": "doubao-seed-2-0-lite-260428",
+      "correction_model": "doubao-seed-2-0-lite-260428",
+      "emotion_model": "doubao-seed-2-0-mini-260428",
+      "vision_model": "doubao-seed-2-0-lite-260428",
       "agent_model": "doubao-seed-2-0-pro-260215"
     },
     "minimax": {
@@ -276,6 +283,7 @@
     "doubao": "ASSIST_API_KEY_DOUBAO",
     "minimax": "ASSIST_API_KEY_MINIMAX",
     "minimax_intl": "ASSIST_API_KEY_MINIMAX_INTL",
+    "elevenlabs": "ASSIST_API_KEY_ELEVENLABS",
     "claude": "ASSIST_API_KEY_CLAUDE",
     "grok": "ASSIST_API_KEY_GROK",
     "openrouter": "ASSIST_API_KEY_OPENROUTER"
@@ -329,6 +337,10 @@
       "config_field": "assistApiKeyMinimaxIntl",
       "restricted": false
     },
+    "elevenlabs": {
+      "config_field": "assistApiKeyElevenlabs",
+      "restricted": true
+    },
     "claude": {
       "config_field": "assistApiKeyClaude",
       "restricted": true
@@ -360,6 +372,112 @@
     "sweetLady": "voice-tone-PGLmTEeUOu",
     "frailMaiden": "voice-tone-PGLmzXEX44",
     "childishMaiden": "voice-tone-PGLnVNQn7A",
-    "yui_cn": "voice-tone-QqMv39SYSW"
+    "yui_cn": "voice-tone-R6NtLH3Hk0"
+  },
+  "_comment_native_tts_voice_providers": "Shape: {providerKey: {catalog_prefix, default_voice, default_male_voice, catalog_value_is_display_name, voices, aliases, inherits}}. voices maps upstream voice_id to display label. Keep this list to voices available on realtime/free TTS paths; some HTTP-only or permission-gated official voices are intentionally omitted.",
+  "native_tts_voice_providers": {
+    "step": {
+      "catalog_prefix": "StepFun",
+      "default_voice": "qingchunshaonv",
+      "default_male_voice": "wenrounansheng",
+      "catalog_value_is_display_name": true,
+      "voices": {
+        "elegantgentle-female": "高雅女声",
+        "livelybreezy-female": "活力女声",
+        "qingchunshaonv": "青春少女",
+        "wenrounansheng": "温柔男声"
+      },
+      "aliases": {
+        "default": "qingchunshaonv",
+        "默认": "qingchunshaonv",
+        "female": "qingchunshaonv",
+        "woman": "qingchunshaonv",
+        "女": "qingchunshaonv",
+        "女声": "qingchunshaonv",
+        "中文女": "qingchunshaonv",
+        "male": "wenrounansheng",
+        "man": "wenrounansheng",
+        "男": "wenrounansheng",
+        "男声": "wenrounansheng",
+        "中文男": "wenrounansheng"
+      }
+    },
+    "free": {
+      "inherits": "step",
+      "catalog_prefix": "免费 API"
+    },
+    "gemini": {
+      "catalog_prefix": "Gemini",
+      "default_voice": "Leda",
+      "default_male_voice": "Puck",
+      "voices": {
+        "Achernar": "Female",
+        "Achird": "Male",
+        "Algenib": "Male",
+        "Algieba": "Male",
+        "Alnilam": "Male",
+        "Aoede": "Female",
+        "Autonoe": "Female",
+        "Callirrhoe": "Female",
+        "Charon": "Male",
+        "Despina": "Female",
+        "Enceladus": "Male",
+        "Erinome": "Female",
+        "Fenrir": "Male",
+        "Gacrux": "Female",
+        "Iapetus": "Male",
+        "Kore": "Female",
+        "Laomedeia": "Female",
+        "Leda": "Female",
+        "Orus": "Male",
+        "Pulcherrima": "Female",
+        "Puck": "Male",
+        "Rasalgethi": "Male",
+        "Sadachbia": "Male",
+        "Sadaltager": "Male",
+        "Schedar": "Male",
+        "Sulafat": "Female",
+        "Umbriel": "Male",
+        "Vindemiatrix": "Female",
+        "Zephyr": "Female",
+        "Zubenelgenubi": "Male"
+      },
+      "aliases": {
+        "male": "Puck",
+        "man": "Puck",
+        "masculine": "Puck",
+        "男": "Puck",
+        "男声": "Puck",
+        "中文男": "Puck",
+        "female": "Leda",
+        "woman": "Leda",
+        "feminine": "Leda",
+        "女": "Leda",
+        "女声": "Leda",
+        "中文女": "Leda"
+      }
+    },
+    "grok": {
+      "catalog_prefix": "Grok",
+      "default_voice": "eve",
+      "default_male_voice": "leo",
+      "voices": {
+        "eve": "Female",
+        "ara": "Female",
+        "leo": "Male",
+        "rex": "Male",
+        "sal": "Male"
+      },
+      "aliases": {
+        "male": "leo",
+        "man": "leo",
+        "男": "leo",
+        "男声": "leo",
+        "female": "eve",
+        "woman": "eve",
+        "女": "eve",
+        "女声": "eve"
+      }
+    }
   }
 }

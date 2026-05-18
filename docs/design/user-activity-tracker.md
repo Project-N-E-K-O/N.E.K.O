@@ -100,7 +100,7 @@ produces a state, just a no-op tick.
 | `greeting_window` | All channels | Encourage gentle greeting + 1d+ reminiscence |
 
 Phase 2 prompt rewrites map these directives into language directives
-(see `config/prompts_proactive.py` for the post-revision prompt).
+(see `config/prompts/prompts_proactive.py` for the post-revision prompt).
 
 ## Skip probability (probabilistic gate, distinct from propensity)
 
@@ -115,12 +115,22 @@ Defaults are derived from `(state, intensity, genre)` in
 
 | Combo | Default skip |
 |---|---|
-| `gaming + competitive` (any genre) | 0.3 |
+| `gaming + competitive` (any genre) | 0.0 |
 | `gaming + immersive + horror` | 0.3 |
 | `gaming + immersive` (other genre) | 0.0 |
 | `gaming + casual` | 0.0 |
 | `gaming + varied` / untagged | 0.0 |
 | Non-gaming states | 0.0 |
+
+Note: `competitive` used to default to `0.3` but produced negative user
+feedback (the AI vanishing during the user's longest gaming sessions
+defeats the companion product thesis). The quietness for
+`restricted_screen_only` propensity is now handled by the
+fixed-interval scheduler branch in `static/app-proactive.js` plus a
+backend `[0, 0.5×baseInterval]` sleep in `proactive_chat` — see the
+`restricted_screen_only` block in `main_routers/system_router.py`. Only
+`immersive_horror` keeps the full-skip default (atmosphere is more
+sensitive to interruption than information density).
 
 User overrides via `user_preferences.json`'s
 `__global_conversation__::activity::skip_probability_overrides` take
@@ -630,13 +640,13 @@ process lifetime, and gaming detection runs purely on keywords.
 `propensity_reasons` are stored as `(code, params)` tuples — language
 agnostic. Rendering happens at `format_activity_state_section` time
 via the `ACTIVITY_REASON_TEMPLATES` dict (zh / en / ja / ko / ru) in
-`config/prompts_activity.py`. This keeps state-machine code free of
+`config/prompts/prompts_activity.py`. This keeps state-machine code free of
 i18n concerns and avoids re-emitting the snapshot when the user's
 prompt language changes. The other three nested-dict tables for the
 activity tracker (`ACTIVITY_STATE_LABELS`,
 `ACTIVITY_PROPENSITY_DIRECTIVES`, `ACTIVITY_STATE_SECTION_LABELS`)
 live alongside it for the same reason — the project i18n convention
-puts every translatable string under `config/prompts_*` so adding a
+puts every translatable string under `config/prompts/prompts_*` so adding a
 new language is a single-directory pass.
 
 ## Emotion-tier LLM enrichment

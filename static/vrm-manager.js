@@ -855,7 +855,14 @@ class VRMManager {
 
         // 2) 应用朝向检测（保持和初次加载一致）
         if (window.VRMOrientationDetector && vrm) {
-            const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(vrm, null);
+            const versionDefaultRotation = this.core?.vrmVersion === '0.0'
+                ? { x: 0, y: Math.PI, z: 0 }
+                : null;
+            const detectedRotation = window.VRMOrientationDetector.detectAndFixOrientation(
+                vrm,
+                null,
+                { defaultRotation: versionDefaultRotation }
+            );
             window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
         }
 

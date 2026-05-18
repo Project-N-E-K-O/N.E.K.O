@@ -8,6 +8,20 @@
 
 // 常量
 const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
+const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
+const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
+const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
+
+function clearAvatarSidePanelHoverState(panel) {
+    if (!panel) return;
+    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
+    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+    if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
+}
+
+if (typeof window !== 'undefined') {
+    window.clearAvatarSidePanelHoverState = clearAvatarSidePanelHoverState;
+}
 
 /**
  * 注入指定前缀的 CSS 样式
@@ -235,8 +249,7 @@ function createPopup(manager, prefix, buttonId) {
     if (existingPopup) {
         const existingId = existingPopup.id;
         document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
-            if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-            if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+            clearAvatarSidePanelHoverState(panel);
             panel.remove();
         });
         if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
@@ -1543,6 +1556,8 @@ function createSidePanelContainer(manager, prefix, options = {}) {
 function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     const popupEl = sidePanel._popupElement || null;
     const ownerId = popupEl && popupEl.id ? popupEl.id : '';
+    let lastPointerPosition = null;
+    let isPointerTracking = false;
     const isTutorialHoverDisabled = () => {
         if (window.isInTutorial !== true) {
             return false;
@@ -1565,12 +1580,54 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
 
     if (ownerId) sidePanel.setAttribute('data-neko-sidepanel-owner', ownerId);
 
-    const collapseWithDelay = (delay = 80) => {
+    const rememberPointerPosition = (event) => {
+        if (!event || typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return;
+        lastPointerPosition = { x: event.clientX, y: event.clientY };
+    };
+
+    const startPointerTracking = () => {
+        if (isPointerTracking) return;
+        document.addEventListener('mousemove', rememberPointerPosition, true);
+        document.addEventListener('pointermove', rememberPointerPosition, true);
+        isPointerTracking = true;
+    };
+
+    const stopPointerTracking = () => {
+        if (!isPointerTracking) return;
+        document.removeEventListener('mousemove', rememberPointerPosition, true);
+        document.removeEventListener('pointermove', rememberPointerPosition, true);
+        isPointerTracking = false;
+    };
+    sidePanel._stopHoverPointerTracking = stopPointerTracking;
+
+    const isHoveringAnchorOrPanel = () => {
+        return anchorEl.matches(':hover') || sidePanel.matches(':hover');
+    };
+
+    const isPointerInTransferBridge = () => {
+        if (!lastPointerPosition || sidePanel.style.display === 'none') return false;
+        const anchorRect = anchorEl.getBoundingClientRect();
+        const panelRect = sidePanel.getBoundingClientRect();
+        if (!anchorRect || !panelRect || panelRect.width <= 0 || panelRect.height <= 0) return false;
+
+        const padding = AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX;
+        const left = Math.min(anchorRect.left, panelRect.left) - padding;
+        const right = Math.max(anchorRect.right, panelRect.right) + padding;
+        const top = Math.min(anchorRect.top, panelRect.top) - padding;
+        const bottom = Math.max(anchorRect.bottom, panelRect.bottom) + padding;
+        return lastPointerPosition.x >= left
+            && lastPointerPosition.x <= right
+            && lastPointerPosition.y >= top
+            && lastPointerPosition.y <= bottom;
+    };
+
+    const collapseWithDelay = (delay = AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS) => {
         if (isTutorialHoverDisabled()) {
             if (sidePanel._hoverCollapseTimer) {
                 clearTimeout(sidePanel._hoverCollapseTimer);
                 sidePanel._hoverCollapseTimer = null;
             }
+            stopPointerTracking();
             return;
         }
         const interactionGuardDelay = typeof sidePanel._getInteractionGuardDelay === 'function'
@@ -1580,10 +1637,29 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             ? Math.max(delay, interactionGuardDelay) + 80
             : delay;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
-        sidePanel._hoverCollapseTimer = setTimeout(() => {
-            if (!anchorEl.matches(':hover') && !sidePanel.matches(':hover')) sidePanel._collapse();
+        startPointerTracking();
+        const bridgeGraceStartedAt = Date.now();
+        const attemptCollapse = () => {
             sidePanel._hoverCollapseTimer = null;
-        }, normalizedDelay);
+            if (!sidePanel.isConnected || isTutorialHoverDisabled()) {
+                stopPointerTracking();
+                return;
+            }
+            if (isHoveringAnchorOrPanel()) {
+                stopPointerTracking();
+                return;
+            }
+            if (
+                isPointerInTransferBridge()
+                && Date.now() - bridgeGraceStartedAt < AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS
+            ) {
+                sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, 90);
+                return;
+            }
+            sidePanel._collapse();
+            stopPointerTracking();
+        };
+        sidePanel._hoverCollapseTimer = setTimeout(attemptCollapse, normalizedDelay);
     };
 
     const expandPanel = () => {
@@ -1593,15 +1669,18 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         }
         void document.body.offsetHeight;
         if (sidePanel._hoverCollapseTimer) { clearTimeout(sidePanel._hoverCollapseTimer); sidePanel._hoverCollapseTimer = null; }
+        stopPointerTracking();
         sidePanel._expand();
     };
     const collapsePanel = (e) => {
         if (isTutorialHoverDisabled()) return;
+        rememberPointerPosition(e);
         const target = e.relatedTarget;
         if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
     };
 
     anchorEl.addEventListener('mouseenter', expandPanel);
+    anchorEl.addEventListener('mousemove', rememberPointerPosition);
     anchorEl.addEventListener('mouseleave', collapsePanel);
     sidePanel.addEventListener('mouseenter', () => {
         expandPanel();
@@ -1614,12 +1693,15 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
         collapsePanel(e);
         if (manager.interaction) manager.interaction._isMouseOverButtons = false;
     });
+    sidePanel.addEventListener('mousemove', rememberPointerPosition);
 
     if (popupEl) {
         popupEl.addEventListener('mouseleave', (e) => {
+            rememberPointerPosition(e);
             const target = e.relatedTarget;
-            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay(60);
+            if (!target || (!anchorEl.contains(target) && !sidePanel.contains(target))) collapseWithDelay();
         });
+        popupEl.addEventListener('mousemove', rememberPointerPosition);
     }
 }
 
@@ -2429,8 +2511,7 @@ const AvatarPopupMixin = {
                 const closingPopupId = popup.id;
                 if (closingPopupId) {
                     document.querySelectorAll(`[data-neko-sidepanel-owner="${closingPopupId}"]`).forEach(panel => {
-                        if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                        if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                        clearAvatarSidePanelHoverState(panel);
                         panel.style.transition = 'none';
                         panel.style.opacity = '0';
                         panel.style.display = 'none';
@@ -2529,8 +2610,7 @@ const AvatarPopupMixin = {
             const popupId = popup.id;
             if (popupId) {
                 document.querySelectorAll(`[data-neko-sidepanel-owner="${popupId}"]`).forEach(panel => {
-                    if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
-                    if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+                    clearAvatarSidePanelHoverState(panel);
                     panel.style.transition = 'none';
                     panel.style.opacity = '0';
                     panel.style.display = 'none';

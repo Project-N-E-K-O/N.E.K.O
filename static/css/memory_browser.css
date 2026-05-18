@@ -1,5 +1,9 @@
 @import url('base.css');
 
+:root {
+    --scrollbar-width: 8px;
+}
+
 html,
 body {
     height: 100%;
@@ -997,13 +1001,19 @@ body.storage-location-memory-modal-open {
     border-radius: 20px;
     padding: 20px;
     background: #ffffff;
+    max-height: var(--memory-sidebar-height, calc(100vh - 190px));
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
 /* 聊天记录样式 */
 #memory-chat-edit {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding-right: 12px;
+    margin-right: -14px;
+    padding-right: 8px;
 }
 
 .chat-item {
@@ -1011,6 +1021,63 @@ body.storage-location-memory-modal-open {
     display: flex;
     align-items: flex-start;
     gap: 16px;
+    position: relative;
+}
+
+.chat-item + .chat-item {
+    padding-top: 18px;
+}
+
+.chat-item + .chat-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 6%;
+    right: 8%;
+    height: 1px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, rgba(64, 197, 241, 0.34), transparent);
+    transition: background 0.18s ease, opacity 0.18s ease;
+}
+
+.chat-item + .chat-item:hover::before {
+    background: linear-gradient(90deg, transparent, rgba(64, 197, 241, 0.54), transparent);
+}
+
+html.neko-window-maximized .chat-item + .chat-item {
+    padding-top: 22px;
+}
+
+html.neko-window-maximized .chat-item + .chat-item::before {
+    left: 0;
+    /* 最大化时为聊天记录滚动条预留额外间距。 */
+    right: calc(var(--scrollbar-width, 8px) + 4px);
+    height: 2px;
+    background: linear-gradient(90deg, rgba(64, 197, 241, 0.1), rgba(64, 197, 241, 0.46), rgba(64, 197, 241, 0.1));
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+html.neko-window-maximized .chat-item + .chat-item:hover::before {
+    background: linear-gradient(90deg, rgba(64, 197, 241, 0.16), rgba(64, 197, 241, 0.68), rgba(64, 197, 241, 0.16));
+}
+
+[data-theme="dark"] .chat-item + .chat-item::before {
+    background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.3), transparent);
+}
+
+[data-theme="dark"] .chat-item + .chat-item:hover::before {
+    background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.48), transparent);
+}
+
+[data-theme="dark"].neko-window-maximized .chat-item + .chat-item::before,
+[data-theme="dark"] .neko-window-maximized .chat-item + .chat-item::before {
+    background: linear-gradient(90deg, rgba(125, 211, 252, 0.08), rgba(125, 211, 252, 0.42), rgba(125, 211, 252, 0.08));
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.38);
+}
+
+[data-theme="dark"].neko-window-maximized .chat-item + .chat-item:hover::before,
+[data-theme="dark"] .neko-window-maximized .chat-item + .chat-item:hover::before {
+    background: linear-gradient(90deg, rgba(125, 211, 252, 0.14), rgba(125, 211, 252, 0.62), rgba(125, 211, 252, 0.14));
 }
 
 .chat-item-content {
@@ -1046,6 +1113,26 @@ body.storage-location-memory-modal-open {
     outline: none;
     border-color: #40C5F1;
     box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.1);
+}
+
+/* "较久前"尾段：视觉上比主体降一档，让阅读时第一眼就能看出这是 LLM 已归档的旧
+ * 事件。前置 label + 缩小字号 + 轻量背景；编辑功能保持完整。 */
+.memo-older-label {
+    display: block;
+    margin-top: 14px;
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+    color: #7fb8d4;
+    letter-spacing: 0.02em;
+}
+
+.memo-textarea--older {
+    min-height: 80px;
+    font-size: 0.92rem;
+    color: #5a9fbf;
+    background: #f6fbff;
+    border-style: dashed;
+    border-color: #cfe6f3;
 }
 
 .chat-bubble {
@@ -1202,7 +1289,7 @@ body.storage-location-memory-modal-open {
 
 /* 滚动条样式 */
 #memory-chat-edit::-webkit-scrollbar {
-    width: 8px;
+    width: var(--scrollbar-width, 8px);
 }
 
 #memory-chat-edit::-webkit-scrollbar-track {

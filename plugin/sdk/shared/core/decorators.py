@@ -18,7 +18,7 @@ from plugin.sdk.shared.constants import (
     NEKO_PLUGIN_TAG,
     PERSIST_ATTR,
 )
-from .events import EventMeta
+from .events import EventMeta, QuickActionConfig
 from .result_contract import (
     fields_from_schema,
     model_schema_from_type,
@@ -28,11 +28,12 @@ from .result_contract import (
 from .types import InputSchema, JsonValue
 
 F = TypeVar("F", bound=Callable[..., object])
-EntryKind = Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer"]
+EntryKind = Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer", "chat_command"]
 _SKIP_PARAMS = frozenset({"self", "cls", "kwargs", "_ctx", "args"})
 _PARAMS_MODEL_ATTR = "_neko_params_model"
 _AUTO_INFER_PARAMS_ATTR = "_neko_auto_infer_params"
 _AUTO_INFER_LLM_RESULT_ATTR = "_neko_auto_infer_llm_result"
+_QUICK_ACTION_CONFIG_ATTR = "_neko_quick_action_config"
 _TYPE_HINT_ERRORS = (NameError, TypeError, AttributeError, ValueError)
 _PY_TYPE_TO_JSON: dict[type, str] = {
     str: "string",
@@ -367,6 +368,7 @@ def plugin_entry(
     llm_result_model: type | None = None,
     fields: type | None = None,
     metadata: dict[str, object] | None = None,
+    quick_action: bool = False,
     _localns: Mapping[str, object] | None = None,
 ) -> Callable[[F], F]:
     if input_schema is not None and params is not None:
@@ -451,6 +453,12 @@ def plugin_entry(
             metadata=_json_compatible_mapping(metadata),
         )
         wrapped = _attach_event_meta(fn, meta)
+        # Read @quick_action config stored on fn by the decorator below
+        qa_cfg = getattr(fn, _QUICK_ACTION_CONFIG_ATTR, None)
+        if quick_action or isinstance(qa_cfg, QuickActionConfig):
+            meta.quick_action = True
+            if isinstance(qa_cfg, QuickActionConfig):
+                meta.quick_action_config = qa_cfg
         setattr(wrapped, _AUTO_INFER_PARAMS_ATTR, params is None and input_schema is None)
         setattr(wrapped, _AUTO_INFER_LLM_RESULT_ATTR, llm_model is None and normalized_llm_fields is None)
         if effective_params_model is not None:
@@ -584,6 +592,34 @@ class _PluginDecorators:
 plugin = _PluginDecorators()
 
 
+def quick_action(
+    *,
+    icon: str | None = None,
+    priority: int = 0,
+) -> Callable[[F], F]:
+    """标记一个 entry 为快捷操作，在命令面板中优先展示。
+
+    必须放在 @plugin_entry 下面（先执行），由 @plugin_entry 读取配置。
+
+    用法::
+
+        @plugin_entry(id="get_weather", name="获取天气")
+        @quick_action(icon="🌤️", priority=10)
+        async def get_weather(self, ...): ...
+
+    Args:
+        icon: 面板中显示的图标（emoji），覆盖默认 ⚡ 图标
+        priority: 排序权重（越大越靠前），默认 0
+    """
+    cfg = QuickActionConfig(icon=icon, priority=priority)
+
+    def _decorator(fn: F) -> F:
+        setattr(fn, _QUICK_ACTION_CONFIG_ATTR, cfg)
+        return fn
+
+    return _decorator
+
+
 __all__ = [
     "EVENT_META_ATTR",
     "EntryKind",
@@ -602,6 +638,7 @@ __all__ = [
     "on_event",
     "plugin",
     "plugin_entry",
+    "quick_action",
     "replace_entry",
     "timer_interval",
 ]

@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 服务器返回安全策略拦截或政策限制：{{msg}}",
         "API_1008_FALLBACK": "💥 会话断开(1008)：{{msg}}",
         "API_IDLE_TIMEOUT": "💥 语音连接因长时间无操作而断开，正在自动重连...",
+        "FREE_API_AUTO_CLOSE_VOICE": "免费 API 长时间未检测到语音，已自动关闭语音会话",
         "API_UNKNOWN_ERROR": "💥 API错误：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 记忆服务器未启动！请先运行 memory_server.py",
         "MEMORY_SERVER_CRASHED": "🧠 记忆服务器(端口{{port}})已崩溃。请重启 memory_server.py",
         "MEMORY_SERVER_COOLDOWN": "🧠 记忆服务正在恢复中，请稍候{{wait_time}}秒",
         "CONNECTION_REFUSED": "💥 服务器连接被拒绝。请检查API Key和网络连接。",
-        "API_KEY_REJECTED": "💥 API Key被服务器拒绝。请检查API Key是否与所选模型匹配。",
+        "API_KEY_REJECTED": "提供的 API Key 无效，请检查当前 API 设置。",
         "API_RATE_LIMIT_SESSION": "💥 API请求频率过高，请稍后再试。",
         "LLM_CONNECTION_FAILED": "💥 LLM API 连接失败。请检查网络连接和API配置。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 连接异常关闭: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 文本生成异常: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM未返回任何回复，请检查API连接和配置",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}正在前往另一个终端...",
-        "RELOAD_PAGE": "语音已更新，页面即将刷新",
+        "RELOAD_PAGE": "设定已更新，页面即将刷新",
+        "RELOAD_PAGE_VOICE": "语音已更新，页面即将刷新",
+        "RELOAD_PAGE_VOICE_STYLE": "音色已更新，页面即将刷新",
+        "RELOAD_PAGE_PERSONA": "人格设定已更新，页面即将刷新",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "角色设定已更新，页面即将刷新",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "云存档角色已更新，页面即将刷新",
         "AGENT_AUTO_DISABLED_COMPUTER": "已自动关闭键鼠控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "已自动关闭浏览器控制: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "猫爪 LLM 连接检查异常",
@@ -937,6 +943,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs（语音克隆，国内无法使用）",
             "claude": "Claude（Anthropic，国内无法使用）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（模型聚合，国内无法使用）"
@@ -972,6 +979,7 @@
             "doubao": "豆包（字节跳动）",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter"
@@ -1153,7 +1161,7 @@
             "select": "选择",
             "defaultClickAnim": "默认点击动画"
         },
-        "emotionConfig": "情感配置",
+        "emotionConfig": "情感",
         "saveSettings": "保存设置",
         "persistentExpression": "常驻表情（仅expression）:",
         "pleaseLoadModel": "请先加载模型",
@@ -1161,8 +1169,8 @@
         "delete": "删除",
         "savePersistent": "保存常驻表情",
         "persistentHint": "常驻表情会一直生效。",
-        "backToMain": "返回主页",
-        "importModel": "导入模型",
+        "backToMain": "主页",
+        "importModel": "导入",
         "motionPreview": "动作预览",
         "expressionPreview": "表情预览",
         "play": "播放",
@@ -1217,7 +1225,7 @@
         "exitFullscreen": "退出全屏",
         "modelType": "模型类型",
         "selectLive2DModel": "选择Live2D模型",
-        "selectVRMModel": "选择VRM模型",
+        "selectVRMModel": "VRM模型",
         "selectVRMFile": "选择VRM文件",
         "vrmModelListLoaded": "VRM 模型列表加载成功",
         "noVRMModelsFound": "未找到可用 VRM 模型",
@@ -1251,7 +1259,7 @@
             "speed": "速度:"
         },
         "mmdModel": {
-            "selectModel": "选择MMD模型",
+            "selectModel": "MMD模型",
             "deleteModel": "删除已导入MMD模型",
             "deleteModelTitle": "删除已导入MMD模型",
             "deleteWarning": "以下列出了所有已导入的用户MMD模型。选择要删除的模型（模型所在文件夹及纹理将一并删除）。",
@@ -1260,10 +1268,10 @@
             "deleteSelected": "删除选中"
         },
         "mmdAnimation": {
-            "selectAnimation": "选择VMD动画",
+            "selectAnimation": "VMD动画",
             "noAnimation": "无动画",
             "play": "播放",
-            "uploadAnimation": "导入VMD动画",
+            "uploadAnimation": "导入VMD",
             "deleteAnimation": "删除VMD动画",
             "deleteAnimationTitle": "删除已导入VMD动画",
             "deleteAnimationWarning": "以下列出了所有已导入的用户VMD动画文件。选择要删除的动画文件。",
@@ -1322,7 +1330,7 @@
         },
         "loadError": "错误: {{error}}",
         "parameterEditor": {
-            "title": "捏脸系统",
+            "title": "捏脸",
             "backToMain": "← 返回L2D设置",
             "backToL2DManager": "返回",
             "selectModel": "选择模型",
@@ -1418,7 +1426,8 @@
         "provider": {
             "cosyvoice": "阿里云 CosyVoice",
             "minimax": "MiniMax（国服）",
-            "minimax_intl": "MiniMax（国际服）"
+            "minimax_intl": "MiniMax（国际服）",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "选择本地音频文件（8秒最佳，请勿超过20秒，wav/mp3格式）",
         "customPrefix": "自定义前缀（必填，用于区分音色）",
@@ -1479,6 +1488,11 @@
         "deleteError": "删除失败：{{error}}",
         "freePresetLabel": "免费预设音色",
         "freePresetBadge": "预设",
+        "geminiNativeLabel": "Gemini 原生音色",
+        "geminiNativeBadge": "原生",
+        "nativePresetLabel": "{{provider}} 原生音色",
+        "nativePresetLabelGeneric": "原生预设音色",
+        "nativePresetBadge": "原生",
         "workshopSourceBadge": "创意工坊参考语音",
         "workshopSourceTitle": "创意工坊参考语音",
         "workshopSourceLoading": "正在加载参考语音...",
@@ -1546,6 +1560,7 @@
         "loadFailed": "加载失败",
         "noChatContent": "无聊天内容",
         "previousMemo": "先前对话的备忘录: ",
+        "olderSection": "较久前",
         "memoNone": "无。",
         "delete": "删除",
         "me": "我：",
@@ -1864,7 +1879,20 @@
         "switchFailed": "切换失败",
         "switchError": "切换猫娘时发生错误",
         "freePresetVoices": "免费预设音色",
+        "geminiNativeVoices": "Gemini 原生音色",
+        "nativePresetVoices": "{{provider}} 原生音色",
+        "nativePresetVoicesGeneric": "原生预设音色",
+        "savedVoiceFallback": "当前已保存音色",
         "gptsovitsVoices": "GPT-SoVITS 声音",
+        "elevenlabsVoices": "ElevenLabs 声音",
+        "gsvDiagNotEnabled": "GPT-SoVITS 未启用 (请在 API 设置勾选)",
+        "gsvDiagUrlMissing": "GPT-SoVITS URL 未配置 (请在 API 设置填写)",
+        "gsvDiagUrlInvalid": "GPT-SoVITS URL 未配置或不是 http(s)",
+        "gsvDiagUrlLocalhostOnly": "GPT-SoVITS URL 必须是 localhost",
+        "gsvDiagUnreachable": "GPT-SoVITS server 未运行或不可达",
+        "gsvDiagLoadFailed": "GPT-SoVITS 加载失败",
+        "gsvDiagEmpty": "GPT-SoVITS server 没有任何声音 (空列表)",
+        "gsvDiagTimeout": "GPT-SoVITS server 响应超时 (>3s)",
         "loadFailed": "加载角色数据失败",
         "renameError": "重命名失败: {{error}}",
         "renameMasterTitle": "重命名主人",
@@ -1940,6 +1968,7 @@
         "restartFailed": "重启失败: {{error}}",
         "configUpdated": "配置已更新，页面即将刷新",
         "autoMuteTimeout": "长时间无语音输入，已自动关闭麦克风",
+        "freeApiAutoCloseNotice": "免费 API 长时间未检测到语音，已自动关闭语音会话",
         "deviceSelected": "已选择 {{device}}",
         "micAccessDenied": "无法访问麦克风",
         "gameVoiceSttMicPermissionDenied": "游戏语音转写没有麦克风权限，请检查浏览器权限。",
@@ -2384,6 +2413,8 @@
         "sourceLabel": "教程来源",
         "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
         "languageLabel": "语言",
+        "tocTitle": "目录",
+        "tocEmpty": "暂无目录",
         "guideUnavailable": "教程内容为空。"
     },
     "subtitle": {
@@ -2426,6 +2457,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安装",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安装",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模块未加载",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模块未加载",
             "AGENT_NOT_INITIALIZED": "猫爪初始化失败",
             "AGENT_LLM_UNREACHABLE": "猫爪 LLM 连接失败",
             "AGENT_MODEL_NOT_CONFIGURED": "猫爪模型未配置",
@@ -3085,20 +3118,20 @@
                 "sayHello": "你好"
             },
             "lines": {
-                "introBasic": "这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！",
-                "takeoverCaptureCursor": "超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！",
-                "takeoverPluginPreviewHome": "还没完呢！你快看快看，这里还有超～～多好玩的插件呢！",
-                "takeoverPluginPreviewDashboard": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼～",
+                "introBasic": "这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！",
+                "takeoverCaptureCursor": "超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！",
+                "takeoverPluginPreviewHome": "还没完呢！你快看快看，这里还有超多好玩的插件呢！",
+                "takeoverPluginPreviewDashboard": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！",
                 "pluginDashboardPopupBlocked": "浏览器需要你亲自点一下这里打开插件面板。点一下这个“管理面板”，我就继续带你看。",
-                "takeoverSettingsPeekIntro": "当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。",
-                "takeoverSettingsPeekDetail": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！",
-                "takeoverSettingsPeekDetailPart1": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘或是修改记忆？",
-                "takeoverSettingsPeekDetailPart2": "等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉快关掉！",
-                "takeoverReturnControl": "好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～",
-                "interruptResistLight1": "喂！不要拽我啦，还没轮到你的回合呢！",
-                "interruptResistLight3": "等一下啦！还没结束呢，不要随便打断我啦！",
-                "interruptAngryExit": "人类~~~~！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！",
-                "introGreetingReply": "欢迎回家，喵~ 外面的世界很辛苦吧？在这个专属我们的小窝里，你可以放下所有的烦恼哦。我是林悠怡，接下来的熟悉过程请放心交给我，我会一步步牵着您的手慢慢来的。",
+                "takeoverSettingsPeekIntro": "当然啦，如果你想让本喵多和你聊聊天，也不是不行啦。给我多准备点小鱼干吧，嘿嘿。好了，不逗你啦，设置都在这个齿轮里。",
+                "takeoverSettingsPeekDetail": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！",
+                "takeoverSettingsPeekDetailPart1": "你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？",
+                "takeoverSettingsPeekDetailPart2": "等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！",
+                "takeoverReturnControl": "好啦好啦，不霸占你的电脑啦！控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵！",
+                "interruptResistLight1": "喂！不要拽我啦，现在还没轮到你的回合呢！",
+                "interruptResistLight3": "等一下啦！还没结束呢，不要这么随便打断我啦！",
+                "interruptAngryExit": "人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！",
+                "introGreetingReply": "微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！",
                 "introPractice": "现在你可以试试跟我说说话啦，看看我们是不是超有默契的喵～",
                 "introActivationHint": "点一下这里，我就能开始说话啦～"
             }
@@ -3665,7 +3698,7 @@
             "legacyDetected": "检测到旧版 CosyVoice 音色可能已失效，建议重新克隆语音。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新信息"
         }
     },
     "proactive": {
@@ -3679,7 +3712,7 @@
     },
     "cardExport": {
         "title": "卡面制作",
-        "loadingModel": "正在加载模型...",
+        "loadingModel": "正在加载模型，加载完成后才能保存或关闭",
         "selectCharacter": "选择角色",
         "selectCharacterHint": "-- 请选择角色 --",
         "loading": "加载中...",
@@ -3722,6 +3755,7 @@
         "savingCardFace": "保存中...",
         "autoSavingDefaultCardFace": "正在生成默认卡面...",
         "autoSaveDefaultCardFaceFailed": "默认卡面生成失败",
+        "modelStillLoading": "模型仍在加载，请加载完成后再保存",
         "saveCardFaceSuccess": "保存成功！",
         "saveCardFaceFailed": "保存失败: {{error}}",
         "saveCardFacePartialSuccess": "PNG 已保存，但元数据写入失败: {{error}}",
@@ -3889,9 +3923,58 @@
             "ready": "准备完成",
             "startButton": "开始"
         },
+        "startTutorial": {
+            "title": "玩法说明",
+            "move": "移动鼠标引导玩家角色。",
+            "charge": "靠近球时按住左键蓄力，松开射门。",
+            "range": "离球 {{distance}} 内才会触发踢球。",
+            "reset": "按 R 可以复位球和双方位置。",
+            "ai": "NEKO 的心情和难度会随局势变化。"
+        },
         "hint": {
-            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位",
-            "aiMood": "1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档"
+            "controls": "鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤{{distance}} 触发）· R 复位",
+            "aiMood": "NEKO 的心情和难度会随局势变化"
+        },
+        "debugControls": {
+            "bounds": "启用边界（出界规则）",
+            "voiceOutput": "播放 LLM 台词（项目语音）",
+            "voiceButton": "调试语音",
+            "voicePlaceholder": "调试：输入最终转写后回车",
+            "send": "发送",
+            "voiceStatusHidden": "调试 STT：隐藏"
+        },
+        "debug": {
+            "mouse": "鼠标：{{x}}, {{y}}",
+            "playerCenter": "玩家中心：{{x}}, {{y}}",
+            "aiCenter": "AI 中心：{{x}}, {{y}}  状态：{{mode}}",
+            "state": "回合：{{round}}  难度：{{difficulty}}  心情：{{mood}}  蓄力：{{charge}}%",
+            "ball": "球：({{x}}, {{y}})  速度={{speed}}",
+            "event": "{{age}}秒  {{label}}  @({{x}},{{y}})  速度=({{vx}},{{vy}})",
+            "roundCenter": "第 {{round}} 回合"
+        },
+        "moods": {
+            "calm": "平静",
+            "happy": "开心",
+            "angry": "生气",
+            "relaxed": "放松",
+            "sad": "悲伤",
+            "surprised": "惊讶"
+        },
+        "difficulties": {
+            "max": "最高",
+            "lv2": "二档",
+            "lv3": "三档",
+            "lv4": "四档"
+        },
+        "aiModes": {
+            "attack": "进攻",
+            "defend": "防守",
+            "clear": "解围"
+        },
+        "debugEvents": {
+            "player-kick": "玩家踢球",
+            "ai-kick": "AI 踢球",
+            "unstick": "球脱困"
         },
         "loading": {
             "beginStartDefault": "分析开局上下文…",

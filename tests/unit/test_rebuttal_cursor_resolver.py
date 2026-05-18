@@ -18,7 +18,7 @@ import pytest
 def _install_fresh_cursor_store(tmpdir: str):
     """Replace memory_server.cursor_store with one backed by tmpdir."""
     from memory.cursors import CursorStore
-    import memory_server
+    from app import memory_server
 
     mock_cm = MagicMock()
     mock_cm.memory_dir = tmpdir
@@ -32,7 +32,7 @@ def _install_fresh_cursor_store(tmpdir: str):
 @pytest.mark.asyncio
 async def test_resolve_returns_fallback_when_cursor_missing(tmp_path):
     _install_fresh_cursor_store(str(tmp_path))
-    import memory_server
+    from app import memory_server
 
     now = datetime(2026, 4, 17, 12, 0, 0)
     start = await memory_server._resolve_rebuttal_start_time("小天", now)
@@ -45,7 +45,7 @@ async def test_resolve_anchors_fallback_on_first_call(tmp_path):
     """首次启动 cursor=None 时必须把 fallback 落盘锚定，否则 LLM 连续失败
     会让 fallback 随 now 滑动、最早段消息被永久跳过。"""
     store = _install_fresh_cursor_store(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 
     now = datetime(2026, 4, 17, 12, 0, 0)
@@ -69,7 +69,7 @@ async def test_resolve_anchors_fallback_on_first_call(tmp_path):
 async def test_resolve_returns_persisted_cursor_when_in_past(tmp_path):
     """Normal path: cursor from 2 hours ago should be returned as-is."""
     store = _install_fresh_cursor_store(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 
     now = datetime(2026, 4, 17, 12, 0, 0)
@@ -85,7 +85,7 @@ async def test_resolve_fallback_and_self_heal_on_clock_rollback(tmp_path):
     """Cursor greater than now (clock rollback) → fallback returned AND cursor
     healed to `fallback`（非 now，保留本轮 [fallback, now] 的 LLM 重试语义）."""
     store = _install_fresh_cursor_store(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 
     now = datetime(2026, 4, 17, 12, 0, 0)
@@ -109,7 +109,7 @@ async def test_resolve_fallback_and_self_heal_on_clock_rollback(tmp_path):
 async def test_resolve_persists_healed_cursor_across_instances(tmp_path):
     """Self-heal must survive process restart — the overwrite is on disk, not just memory."""
     store = _install_fresh_cursor_store(str(tmp_path))
-    import memory_server
+    from app import memory_server
     from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL, CursorStore
 
     now = datetime(2026, 4, 17, 12, 0, 0)

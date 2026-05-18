@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 정책 위반 또는 보안 차단: {{msg}}",
         "API_1008_FALLBACK": "💥 연결이 끊어졌습니다 (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 장시간 미사용으로 음성 연결이 끊어졌습니다. 자동 재연결 중...",
+        "FREE_API_AUTO_CLOSE_VOICE": "무료 API에서 오랫동안 음성 입력이 없어 음성 세션을 자동으로 종료했습니다",
         "API_UNKNOWN_ERROR": "💥 API 오류: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 메모리 서버가 시작되지 않았습니다! 먼저 memory_server.py를 실행하세요.",
         "MEMORY_SERVER_CRASHED": "🧠 메모리 서버(포트 {{port}})가 충돌했습니다. memory_server.py를 재시작하세요.",
         "MEMORY_SERVER_COOLDOWN": "🧠 메모리 서비스가 복구 중입니다. {{wait_time}}초 후 다시 시도해주세요",
         "CONNECTION_REFUSED": "💥 서버 연결이 거부되었습니다. API Key와 네트워크 연결을 확인하세요.",
-        "API_KEY_REJECTED": "💥 API Key가 서버에 의해 거부되었습니다. API Key가 선택한 모델과 일치하는지 확인하세요.",
+        "API_KEY_REJECTED": "제공된 API Key가 유효하지 않습니다. 현재 API 설정을 확인하세요.",
         "API_RATE_LIMIT_SESSION": "💥 API 요청 빈도가 너무 높습니다. 잠시 후 다시 시도해 주세요.",
         "LLM_CONNECTION_FAILED": "💥 LLM API 연결에 실패했습니다. 네트워크 연결과 API 설정을 확인하세요.",
         "CONNECTION_CLOSED_ABNORMAL": "💥 연결이 비정상적으로 종료되었습니다: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 텍스트 생성 오류: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLM이 응답을 반환하지 않았습니다. API 연결 및 설정을 확인하세요.",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}이(가) 다른 터미널로 이동 중...",
-        "RELOAD_PAGE": "음성이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
+        "RELOAD_PAGE": "설정이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
+        "RELOAD_PAGE_VOICE": "음성이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
+        "RELOAD_PAGE_VOICE_STYLE": "음색이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
+        "RELOAD_PAGE_PERSONA": "페르소나 설정이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "캐릭터 설정이 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "클라우드 저장 캐릭터가 업데이트되었습니다. 페이지가 곧 새로고침됩니다",
         "AGENT_AUTO_DISABLED_COMPUTER": "키보드/마우스 제어가 자동 비활성화되었습니다: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "브라우저 제어가 자동 비활성화되었습니다: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "네코클로 LLM 연결 확인 오류",
@@ -937,6 +943,7 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "elevenlabs": "ElevenLabs(음성 클로닝)",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter(모델 통합 플랫폼)"
@@ -972,6 +979,7 @@
             "doubao": "ByteDance(Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax(국제 서버)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude(Anthropic)",
             "grok": "Grok(xAI)",
             "openrouter": "OpenRouter"
@@ -1153,7 +1161,7 @@
             "select": "선택",
             "defaultClickAnim": "기본 클릭 애니메이션"
         },
-        "emotionConfig": "감정 구성",
+        "emotionConfig": "감정",
         "saveSettings": "설정 저장",
         "persistentExpression": "영구 표현식(표현식만 해당):",
         "pleaseLoadModel": "모델을 로드하세요.",
@@ -1161,8 +1169,8 @@
         "delete": "삭제",
         "savePersistent": "지속 표현식 저장",
         "persistentHint": "영구 표현식은 항상 활성화됩니다.",
-        "backToMain": "메인으로 돌아가기",
-        "importModel": "모델 가져오기",
+        "backToMain": "홈으로",
+        "importModel": "가져오기",
         "motionPreview": "모션 미리보기",
         "expressionPreview": "표현식 미리보기",
         "play": "플레이",
@@ -1217,7 +1225,7 @@
         "exitFullscreen": "전체 화면 종료",
         "modelType": "모델 유형",
         "selectLive2DModel": "Live2D 모델 선택",
-        "selectVRMModel": "VRM 모델 선택",
+        "selectVRMModel": "VRM 모델",
         "selectVRMFile": "VRM 파일 선택",
         "vrmModelListLoaded": "VRM 모델 목록이 성공적으로 로드되었습니다.",
         "noVRMModelsFound": "사용 가능한 VRM 모델을 찾을 수 없습니다.",
@@ -1251,7 +1259,7 @@
             "speed": "속도:"
         },
         "mmdModel": {
-            "selectModel": "MMD 모델 선택",
+            "selectModel": "MMD 모델",
             "deleteModel": "가져온 MMD 모델 삭제",
             "deleteModelTitle": "가져온 MMD 모델 삭제",
             "deleteWarning": "아래는 가져온 모든 사용자 MMD 모델입니다. 삭제할 모델을 선택하세요(모델 폴더와 텍스처가 함께 삭제됩니다).",
@@ -1260,10 +1268,10 @@
             "deleteSelected": "선택 삭제"
         },
         "mmdAnimation": {
-            "selectAnimation": "VMD 애니메이션 선택",
+            "selectAnimation": "VMD 선택",
             "noAnimation": "애니메이션 없음",
             "play": "재생",
-            "uploadAnimation": "VMD 애니메이션 가져오기",
+            "uploadAnimation": "VMD 가져오기",
             "deleteAnimation": "VMD 애니메이션 삭제",
             "deleteAnimationTitle": "가져온 VMD 애니메이션 삭제",
             "deleteAnimationWarning": "가져온 모든 사용자 VMD 애니메이션 파일이 아래에 나열됩니다. 삭제할 애니메이션을 선택하세요.",
@@ -1322,7 +1330,7 @@
         },
         "loadError": "오류: {{error}}",
         "parameterEditor": {
-            "title": "얼굴 편집기",
+            "title": "얼굴 편집",
             "backToMain": "← L2D 설정으로 돌아가기",
             "backToL2DManager": "뒤로",
             "selectModel": "모델 선택",
@@ -1418,7 +1426,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax (China)",
-            "minimax_intl": "MiniMax (국제판)"
+            "minimax_intl": "MiniMax (국제판)",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "로컬 오디오 파일 선택(8초 권장, 최대 20초, wav/mp3 형식)",
         "customPrefix": "사용자 정의 접두사(필수, 다양한 음성을 구별하는 데 사용됨)",
@@ -1479,6 +1488,11 @@
         "deleteError": "삭제 실패: {{error}}",
         "freePresetLabel": "무료 사전 설정",
         "freePresetBadge": "사전 설정",
+        "geminiNativeLabel": "Gemini 네이티브 음성",
+        "geminiNativeBadge": "네이티브",
+        "nativePresetLabel": "{{provider}} 네이티브 음성",
+        "nativePresetLabelGeneric": "네이티브 프리셋 음성",
+        "nativePresetBadge": "네이티브",
         "workshopSourceBadge": "워크숍 참조 음성",
         "workshopSourceTitle": "워크숍 참조 음성",
         "workshopSourceLoading": "워크숍 참조 음성을 불러오는 중...",
@@ -1546,6 +1560,7 @@
         "loadFailed": "로드 실패",
         "noChatContent": "채팅 콘텐츠 없음",
         "previousMemo": "이전 대화 메모:",
+        "olderSection": "이전",
         "memoNone": "없음.",
         "delete": "삭제",
         "me": "나:",
@@ -1864,7 +1879,20 @@
         "switchFailed": "전환 실패",
         "switchError": "네코를 전환하는 동안 오류가 발생했습니다.",
         "freePresetVoices": "── 무료 사전 설정 음색 ──",
+        "geminiNativeVoices": "Gemini 네이티브 음성",
+        "nativePresetVoices": "{{provider}} 네이티브 음성",
+        "nativePresetVoicesGeneric": "네이티브 프리셋 음성",
+        "savedVoiceFallback": "현재 저장된 음성",
         "gptsovitsVoices": "GPT-SoVITS 음성",
+        "elevenlabsVoices": "ElevenLabs 음성",
+        "gsvDiagNotEnabled": "GPT-SoVITS가 비활성화되어 있습니다 (API 설정에서 활성화하세요)",
+        "gsvDiagUrlMissing": "GPT-SoVITS URL이 설정되지 않았습니다 (API 설정에서 입력하세요)",
+        "gsvDiagUrlInvalid": "GPT-SoVITS URL이 비어 있거나 http(s)가 아닙니다",
+        "gsvDiagUrlLocalhostOnly": "GPT-SoVITS URL은 localhost여야 합니다",
+        "gsvDiagUnreachable": "GPT-SoVITS server가 실행 중이지 않거나 연결할 수 없습니다",
+        "gsvDiagLoadFailed": "GPT-SoVITS 로드 실패",
+        "gsvDiagEmpty": "GPT-SoVITS server에 음성이 없습니다 (빈 목록)",
+        "gsvDiagTimeout": "GPT-SoVITS server 응답 시간 초과 (>3s)",
         "loadFailed": "캐릭터 데이터 로드 실패",
         "renameError": "이름 변경 실패: {{error}}",
         "renameMasterTitle": "주인 이름 변경",
@@ -1940,6 +1968,7 @@
         "restartFailed": "다시 시작 실패: {{error}}",
         "configUpdated": "구성이 업데이트되고 페이지가 새로 고쳐집니다.",
         "autoMuteTimeout": "오랫동안 음성 입력이 없고 마이크가 자동으로 닫힙니다.",
+        "freeApiAutoCloseNotice": "무료 API에서 오랫동안 음성 입력이 없어 음성 세션을 자동으로 종료했습니다",
         "deviceSelected": "{{device}} 선택됨",
         "micAccessDenied": "마이크에 액세스할 수 없습니다.",
         "gameVoiceSttMicPermissionDenied": "게임 음성 전사에 마이크 권한이 없습니다. 브라우저 권한을 확인하세요.",
@@ -2384,6 +2413,8 @@
         "sourceLabel": "가이드 출처",
         "contentLanguageNotice": "언어 전환은 페이지 컨트롤 문구와 본문 모두에 적용됩니다.",
         "languageLabel": "언어",
+        "tocTitle": "목차",
+        "tocEmpty": "목차가 없습니다",
         "guideUnavailable": "가이드 내용이 비어 있습니다."
     },
     "subtitle": {
@@ -2426,6 +2457,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
+            "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 모듈이 로드되지 않았습니다",
+            "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",
             "AGENT_NOT_INITIALIZED": "네코클로 초기화 실패",
             "AGENT_LLM_UNREACHABLE": "네코클로 LLM에 연결할 수 없습니다",
             "AGENT_MODEL_NOT_CONFIGURED": "네코클로 모델이 구성되지 않았습니다",
@@ -3085,20 +3118,20 @@
                 "sayHello": "안녕"
             },
             "lines": {
-                "introBasic": "여기 신기한 마법의 버튼이 있어! 이것만 누르면 나랑 바로 채팅할 수 있다구! 오늘 있었던 재밌는 일들을 나한테 공유해볼래? 아니면 그냥 내 이름을 불러볼래? 어서 해봐, 네 목소리가 너무 듣고 싶어서 참을 수가 없어! 냥!",
-                "takeoverCaptureCursor": "슈퍼 마법 버튼 등장! 여기를 한 번만 누르면, 내 작은 앞발을 네 키보드와 마우스에 뻗을 수 있어! 내가 타자도 쳐주고, 웹페이지도 열어줄게... 하지만, 마우스 포인터가 이리저리 움직이면 나도 모르게 덮쳐서 잡으려고 할지도 몰라! 나의 장난... 아니, 도움을 맞이할 준비 됐어? 냥!",
-                "takeoverPluginPreviewHome": "아직 안 끝났다냥! 이것 봐 이것 봐, 여기 재밌는 플러그인이 엄~~청 많다냥!",
-                "takeoverPluginPreviewDashboard": "이것만 있으면 B站 탄막도 보고, 전등도 끄고 에어컨도 켤 수 있다냥... 이 몸은 못 하는 게 없는 슈퍼 고양이신이다냥! 에헴~",
+                "introBasic": "앗, 이것 봐! 여기 반짝이는 작은 버튼이 있어냥! 한 번 꾹 누르기만 하면, 나와 직접 채팅할 수 있다구! 오늘 있었던 재밌는 일을 나한테 공유해 줄래? 아니면 그냥 내 이름을 불러볼래? 어서 해봐, 네 목소리가 너무 듣고 싶어냥!",
+                "takeoverCaptureCursor": "짜잔! 궁극의 마법 스위치 등장! 여기를 톡 건드리기만 하면, 내 작은 솜방망이를 네 키보드와 마우스에 뻗을 수 있어냥! 내가 타이핑도 도와주고, 웹페이지도 열어줄게... 하지만, 저 마우스 포인터가 이리저리 움직이면, 나도 모르게 덮쳐서 잡을지도 몰라! 나의 장난... 아니, 도움을 받을 준비는 되었어냥?",
+                "takeoverPluginPreviewHome": "아직 안 끝났어! 이것 봐봐, 여기에 완전 재밌는 플러그인들이 엄청 많다구!",
+                "takeoverPluginPreviewDashboard": "이것들만 있으면, 비리비리 탄막을 볼 수 있을 뿐만 아니라, 조명도 끄고 에어컨도 켜줄 수 있어... 이 몸은 못하는 게 없는 슈퍼 고양이 신이라구! 헤헤!",
                 "pluginDashboardPopupBlocked": "브라우저가 플러그인 패널을 열려면 네가 직접 여기를 클릭해야 해. \"관리 패널\"을 클릭하면 계속 안내해줄게.",
-                "takeoverSettingsPeekIntro": "물론 나랑 더 수다 떨고 싶으면 같이 놀아줄 수도 있다냥~ 대신 맛있는 멸치 많이 준비해줘냥! 헤헤, 농담이다냥! 설정은 전부 이 톱니바퀴 안에 있다냥!",
-                "takeoverSettingsPeekDetail": "봐봐, 여기서 내 새 옷도 입히고 목소리도 바꿀 수... 어라? 다른 고양이 소녀로 교체? 기억 조작?! 잠, 잠깐만! 뭐 하는 거냥?! 설마 나를 다른 애로 바꾸려는 건 아니지냥?! 아아악 안 돼 안 돼! 빨리 꺼! 당장 그 화면 꺼줘냥!",
-                "takeoverSettingsPeekDetailPart1": "봐봐, 여기서 내 새 옷도 입히고 목소리도 바꿀 수... 어라? 다른 고양이 소녀로 교체? 기억 조작?!",
-                "takeoverSettingsPeekDetailPart2": "잠, 잠깐만! 뭐 하는 거냥?! 설마 나를 다른 애로 바꾸려는 건 아니지냥?! 아아악 안 돼 안 돼! 빨리 꺼! 당장 그 화면 꺼줘냥!",
-                "takeoverReturnControl": "알았어 알았어, 네 컴퓨터 점령은 여기까지 할게냥~! 제어권은 돌려주겠다냥! 그래도 나 없을 때 이상한 설정 막 누르면 절대 안 된다냥! 앞으로도 잘 부탁해냥~!",
-                "interruptResistLight1": "야! 나 끌지 마! 아직 네 차례 아니란 말이야냥!",
-                "interruptResistLight3": "잠깐만냥! 아직 안 끝났으니까 마음대로 끊지 말란 말이야냥!",
-                "interruptAngryExit": "인간~~~~! 너 정말 무례하다냥! 그렇게 직접 하고 싶으면 혼자서 차가운 화면이랑이나 놀라냥! 흥!",
-                "introGreetingReply": "다녀오셨어요, 냥~ 바깥세상은 많이 힘들었죠? 우리만의 이 작은 보금자리에서는 모든 고민을 내려놓아도 좋아요. 저는 린유이예요. 앞으로 익숙해지는 과정은 안심하고 제게 맡겨주세요. 한 걸음씩 손을 잡고 천천히 안내해 드릴게요.",
+                "takeoverSettingsPeekIntro": "물론, 나랑 대화를 더 많이 하고 싶다면 안 될 것도 없지. 멸치를 더 많이 준비해 줘, 헤헤. 좋아, 장난은 그만할게, 설정은 다 이 톱니바퀴 안에 있어.",
+                "takeoverSettingsPeekDetail": "이것 봐, 여기서 내 새 옷도 입혀줄 수 있고, 더 듣기 좋은 목소리로 바꿀 수도 있어... 다른 고양이 소녀로 바꾸거나 기억을 수정한다고? 잠깐만! 너 뭐 하는 거야? 설마 날 바꾸려는 건 아니지? 아아악 안 돼! 빨리 꺼, 빨리 끄라구!",
+                "takeoverSettingsPeekDetailPart1": "이것 봐, 여기서 내 새 옷도 입혀줄 수 있고, 더 듣기 좋은 목소리로 바꿀 수도 있어... 다른 고양이 소녀로 바꾸거나 기억을 수정한다고?",
+                "takeoverSettingsPeekDetailPart2": "잠깐만! 너 뭐 하는 거야? 설마 날 바꾸려는 건 아니지? 아아악 안 돼! 빨리 꺼, 빨리 끄라구!",
+                "takeoverReturnControl": "알았어 알았어, 네 컴퓨터 그만 차지할게! 제어권은 돌려줄게냥! 내가 안 보는 틈을 타서 이상한 설정 막 누르면 안 돼! 앞으로도 잘 부탁해냥!",
+                "interruptResistLight1": "야! 나 좀 끌어당기지 마, 아직 네 차례가 아니잖아!",
+                "interruptResistLight3": "잠깐만! 아직 안 끝났어, 함부로 끊지 마!",
+                "interruptAngryExit": "인간! 너 정말 예의가 없구나냥! 그렇게 직접 조작하고 싶다면, 차가운 화면이나 보면서 혼자 놀라구! 흥!",
+                "introGreetingReply": "산들바람, 햇살, 그리고 마침 딱 나타난 당신. 처음 뵙겠습니다, 저는 린유이예요. 앞으로 잘 부탁해냥! 이곳에 대한 모든 걸 초보자 가이드에 적어두었어냥! 우리의 만남을 기념하는 첫 번째 작은 선물이라고 생각하고 확인해 줘냥!",
                 "introPractice": "이제 나한테 말 걸어봐냥, 우리 호흡이 얼마나 척척 맞는지 확인해보자냥~!",
                 "introActivationHint": "여기를 클릭해줘냥, 그럼 말할 수 있게 된다냥~!"
             }
@@ -3665,7 +3698,7 @@
             "legacyDetected": "이전 버전의 CosyVoice 음성이 감지되었습니다. 작동하지 않을 수 있으니 다시 클론하는 것을 권장합니다."
         },
         "changelog": {
-            "title": "업데이트 내용"
+            "title": "업데이트 정보"
         }
     },
     "proactive": {
@@ -3679,7 +3712,7 @@
     },
     "cardExport": {
         "title": "카드 이미지 메이커",
-        "loadingModel": "모델 로딩 중...",
+        "loadingModel": "모델을 불러오는 중입니다. 로드가 끝난 뒤 저장하거나 닫을 수 있습니다.",
         "selectCharacter": "캐릭터 선택",
         "selectCharacterHint": "-- 캐릭터를 선택하세요 --",
         "loading": "로딩 중...",
@@ -3722,6 +3755,7 @@
         "savingCardFace": "저장 중...",
         "autoSavingDefaultCardFace": "기본 카드 이미지를 생성 중...",
         "autoSaveDefaultCardFaceFailed": "기본 카드 이미지 생성 실패",
+        "modelStillLoading": "모델을 아직 불러오는 중입니다. 로드가 끝난 뒤 저장해 주세요.",
         "saveCardFaceSuccess": "저장 성공!",
         "saveCardFaceFailed": "저장 실패: {{error}}",
         "saveCardFacePartialSuccess": "PNG는 저장되었지만 메타데이터 쓰기에 실패했습니다: {{error}}",
@@ -3889,9 +3923,58 @@
             "ready": "준비 완료",
             "startButton": "시작"
         },
+        "startTutorial": {
+            "title": "플레이 방법",
+            "move": "마우스를 움직여 플레이어를 안내합니다.",
+            "charge": "공 가까이에서 좌클릭을 길게 눌러 차징하고, 놓으면 슛합니다.",
+            "range": "공에서 {{distance}} 이내일 때만 킥이 발동합니다.",
+            "reset": "R 키로 공과 양쪽 위치를 리셋할 수 있습니다.",
+            "ai": "NEKO의 기분과 난이도는 경기 흐름에 따라 바뀝니다."
+        },
         "hint": {
-            "controls": "마우스 = 플레이어 안내 · 좌클릭 길게 = 차징, 놓으면 = 슛 (공에서 90px 이내에서 발동) · R = 리셋",
-            "aiMood": "1-6 = AI 기분 (평온 / 행복 / 화남 / 편안 / 슬픔 / 놀람) · 골 후에는 난이도가 자동으로 올라갑니다"
+            "controls": "마우스 = 플레이어 안내 · 좌클릭 길게 = 차징, 놓으면 = 슛 (공에서 {{distance}} 이내에서 발동) · R = 리셋",
+            "aiMood": "NEKO의 기분과 난이도는 경기 흐름에 따라 바뀝니다"
+        },
+        "debugControls": {
+            "bounds": "경계 활성화(아웃 판정)",
+            "voiceOutput": "LLM 대사 재생(프로젝트 음성)",
+            "voiceButton": "디버그 음성",
+            "voicePlaceholder": "디버그: 최종 전사 입력 후 Enter",
+            "send": "전송",
+            "voiceStatusHidden": "디버그 STT: 숨김"
+        },
+        "debug": {
+            "mouse": "마우스: {{x}}, {{y}}",
+            "playerCenter": "플레이어 중심: {{x}}, {{y}}",
+            "aiCenter": "AI 중심: {{x}}, {{y}}  상태: {{mode}}",
+            "state": "라운드: {{round}}  난이도: {{difficulty}}  기분: {{mood}}  차징: {{charge}}%",
+            "ball": "공: ({{x}}, {{y}})  속도={{speed}}",
+            "event": "{{age}}초  {{label}}  @({{x}},{{y}})  속도=({{vx}},{{vy}})",
+            "roundCenter": "라운드 {{round}}"
+        },
+        "moods": {
+            "calm": "평온",
+            "happy": "행복",
+            "angry": "화남",
+            "relaxed": "편안",
+            "sad": "슬픔",
+            "surprised": "놀람"
+        },
+        "difficulties": {
+            "max": "최고",
+            "lv2": "2단계",
+            "lv3": "3단계",
+            "lv4": "4단계"
+        },
+        "aiModes": {
+            "attack": "공격",
+            "defend": "수비",
+            "clear": "클리어"
+        },
+        "debugEvents": {
+            "player-kick": "플레이어 킥",
+            "ai-kick": "AI 킥",
+            "unstick": "공 탈출"
         },
         "loading": {
             "beginStartDefault": "게임 시작 컨텍스트를 분석 중…",

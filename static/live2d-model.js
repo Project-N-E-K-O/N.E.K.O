@@ -107,6 +107,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._origCoreModelUpdate = null;
     this._coreModelRef = null;
     this._temporaryPoseOverride = null;
+    this._temporaryPoseOverrides = new Map();
 
     if (this._mouthTicker && ticker) {
         try {
@@ -298,44 +299,98 @@ Live2DManager.prototype.getCurrentModel = function() {
     return this.currentModel || null;
 };
 
-// 安装短期姿态覆盖槽。用于教程苏醒这类需要在渲染前最后写入的动作，
-// 避免被视线锁、眨眼、常驻表情或 motion update 覆盖。
-Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply) {
+// 安装短期姿态覆盖。多个来源可按注册顺序组合，避免并行动作互相顶掉。
+Live2DManager.prototype.setTemporaryPoseOverride = function(source, apply, options = {}) {
     if (typeof apply !== 'function') {
         return false;
     }
-    this._temporaryPoseOverride = {
-        source: String(source || 'temporary_pose'),
-        apply: apply
+    const normalizedSource = String(source || 'temporary_pose');
+    const entry = {
+        source: normalizedSource,
+        apply: apply,
+        priority: Number.isFinite(Number(options.priority)) ? Number(options.priority) : 0,
+        sequence: ((this._temporaryPoseOverrideSequence || 0) + 1)
     };
+    this._temporaryPoseOverrideSequence = entry.sequence;
+    if (!this._temporaryPoseOverrides || typeof this._temporaryPoseOverrides.set !== 'function') {
+        this._temporaryPoseOverrides = new Map();
+    }
+    if (this._temporaryPoseOverrides.has(normalizedSource)) {
+        this._temporaryPoseOverrides.delete(normalizedSource);
+    }
+    this._temporaryPoseOverrides.set(normalizedSource, entry);
+    this._temporaryPoseOverride = entry;
     return true;
 };
 
 Live2DManager.prototype.clearTemporaryPoseOverride = function(source) {
+    const overrides = this._temporaryPoseOverrides;
     const active = this._temporaryPoseOverride;
-    if (!active) {
+    if ((!overrides || typeof overrides.delete !== 'function' || overrides.size === 0) && !active) {
         return;
     }
     const normalizedSource = arguments.length === 0 ? '' : String(source);
-    if (normalizedSource === '' || active.source === normalizedSource) {
+    if (overrides && typeof overrides.clear === 'function' && (overrides.size > 0 || !active)) {
+        if (normalizedSource === '') {
+            overrides.clear();
+        } else {
+            overrides.delete(normalizedSource);
+        }
+        const remaining = Array.from(overrides.values());
+        this._temporaryPoseOverride = remaining.length ? remaining[remaining.length - 1] : null;
+        return;
+    }
+    if (normalizedSource === '' || (active && active.source === normalizedSource)) {
         this._temporaryPoseOverride = null;
     }
 };
 
 Live2DManager.prototype._applyTemporaryPoseOverride = function(coreModel) {
-    const active = this._temporaryPoseOverride;
-    if (!active || typeof active.apply !== 'function' || !coreModel) {
+    if (!coreModel) {
         return;
     }
-    try {
-        active.apply(coreModel, {
-            manager: this,
-            model: this.currentModel || null,
-            now: performance.now()
-        });
-    } catch (error) {
-        console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
-        this._temporaryPoseOverride = null;
+    const overrides = this._temporaryPoseOverrides && typeof this._temporaryPoseOverrides.values === 'function'
+        ? Array.from(this._temporaryPoseOverrides.values())
+        : [];
+    const entries = overrides.length ? overrides : (this._temporaryPoseOverride ? [this._temporaryPoseOverride] : []);
+    if (!entries.length) {
+        return;
+    }
+    entries.sort((left, right) => {
+        const leftPriority = Number.isFinite(Number(left && left.priority)) ? Number(left.priority) : 0;
+        const rightPriority = Number.isFinite(Number(right && right.priority)) ? Number(right.priority) : 0;
+        if (leftPriority !== rightPriority) {
+            return leftPriority - rightPriority;
+        }
+        const leftSequence = Number.isFinite(Number(left && left.sequence)) ? Number(left.sequence) : 0;
+        const rightSequence = Number.isFinite(Number(right && right.sequence)) ? Number(right.sequence) : 0;
+        return leftSequence - rightSequence;
+    });
+    const context = {
+        manager: this,
+        model: this.currentModel || null,
+        now: performance.now()
+    };
+    entries.forEach((entry) => {
+        if (!entry || typeof entry.apply !== 'function') {
+            return;
+        }
+        try {
+            entry.apply(coreModel, context);
+        } catch (error) {
+            console.warn('[Live2D] 临时姿态覆盖执行失败，已清理:', error);
+            if (this._temporaryPoseOverrides && typeof this._temporaryPoseOverrides.delete === 'function') {
+                this._temporaryPoseOverrides.delete(entry.source);
+                const remaining = Array.from(this._temporaryPoseOverrides.values());
+                this._temporaryPoseOverride = remaining.length ? remaining[remaining.length - 1] : null;
+            } else {
+                this._temporaryPoseOverride = null;
+            }
+        }
+    });
+    if (this._temporaryPoseOverrides && this._temporaryPoseOverrides.size > 0) {
+        const remaining = Array.from(this._temporaryPoseOverrides.values());
+        this._temporaryPoseOverride = remaining[remaining.length - 1] || null;
     }
 };
 
@@ -366,6 +421,8 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._lookAtCurrentX = 0;
     this._lookAtCurrentY = 0;
     this._temporaryPoseOverride = null;
+    this._temporaryPoseOverrides = new Map();
+    this._temporaryPoseOverrideSequence = 0;
     this._temporaryMotionSuspendToken = null;
     this._idleMotionFinishHandler = null;
     this._idleMotionFinishModel = null;
@@ -882,16 +939,48 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
-    if (window.nekoYuiGuideFaceForwardLock === true) {
-        this._lookAtTargetX = 0;
-        this._lookAtTargetY = 0;
-        this._lookAtCurrentX = 0;
-        this._lookAtCurrentY = 0;
+    if (window.nekoYuiGuideFaceForwardLock === true && window.nekoYuiGuideIntroVoiceLookAtActive !== true) {
+        if (this._lookAtTargetX === undefined || !Number.isFinite(this._lookAtTargetX)) {
+            this._lookAtTargetX = 0;
+        }
+        if (this._lookAtTargetY === undefined || !Number.isFinite(this._lookAtTargetY)) {
+            this._lookAtTargetY = 0;
+        }
+        if (this._lookAtCurrentX === undefined || !Number.isFinite(this._lookAtCurrentX)) {
+            this._lookAtCurrentX = 0;
+        }
+        if (this._lookAtCurrentY === undefined || !Number.isFinite(this._lookAtCurrentY)) {
+            this._lookAtCurrentY = 0;
+        }
+        const settleFactor = Math.min(1, Math.max(0.08, 4.8 * Math.max(0, Number(delta) || 0)));
+        this._lookAtTargetX += (0 - this._lookAtTargetX) * settleFactor;
+        this._lookAtTargetY += (0 - this._lookAtTargetY) * settleFactor;
+        this._lookAtCurrentX += (this._lookAtTargetX - this._lookAtCurrentX) * settleFactor;
+        this._lookAtCurrentY += (this._lookAtTargetY - this._lookAtCurrentY) * settleFactor;
+        const isCentered = Math.abs(this._lookAtTargetX) < 0.01
+            && Math.abs(this._lookAtTargetY) < 0.01
+            && Math.abs(this._lookAtCurrentX) < 0.01
+            && Math.abs(this._lookAtCurrentY) < 0.01;
+        const isParamCentered = (paramId, threshold) => {
+            try {
+                const idx = coreModel.getParameterIndex(paramId);
+                return idx < 0 || Math.abs(coreModel.getParameterValueByIndex(idx)) < threshold;
+            } catch (_) {
+                return true;
+            }
+        };
+        const areCoreLookAtParamsCentered = isParamCentered('ParamAngleX', 0.01)
+            && isParamCentered('ParamAngleY', 0.01)
+            && isParamCentered('ParamEyeBallX', 0.001)
+            && isParamCentered('ParamEyeBallY', 0.001);
+        if (window.nekoYuiGuideFaceForwardSuppressParamWrite === true && isCentered && areCoreLookAtParamsCentered) {
+            return;
+        }
         try {
-            coreModel.setParameterValueById('ParamAngleX', 0);
-            coreModel.setParameterValueById('ParamAngleY', 0);
-            coreModel.setParameterValueById('ParamEyeBallX', 0);
-            coreModel.setParameterValueById('ParamEyeBallY', 0);
+            coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
+            coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
+            coreModel.setParameterValueById('ParamEyeBallX', this._lookAtCurrentX / 30);
+            coreModel.setParameterValueById('ParamEyeBallY', this._lookAtCurrentY / 30);
         } catch (_) {}
         return;
     }
@@ -931,6 +1020,27 @@ Live2DManager.prototype._clearIdleMotionLoopTimers = function() {
     }
     this._idleMotionLoopTimers.forEach(timer => clearTimeout(timer));
     this._idleMotionLoopTimers.clear();
+};
+
+Live2DManager.prototype.getAvatarPerformanceAvatarIds = function() {
+    const ids = ['main-live2d'];
+    if (this.avatarPerformanceAvatarId) ids.push(this.avatarPerformanceAvatarId);
+    if (this.modelName) ids.push(this.modelName);
+    return Array.from(new Set(ids.map(id => String(id || '').trim()).filter(Boolean)));
+};
+
+Live2DManager.prototype.isAvatarPerformanceCapabilityLocked = function(capability) {
+    if (this._avatarPerformanceBypassLocks === true) return false;
+    const api = window.AvatarPerformance;
+    if (!api || typeof api.isCapabilityLocked !== 'function') return false;
+    const ids = this.getAvatarPerformanceAvatarIds();
+    return ids.some(id => {
+        try {
+            return api.isCapabilityLocked(id, capability);
+        } catch (_) {
+            return false;
+        }
+    });
 };
 
 Live2DManager.prototype.suspendTemporaryMotions = function(source, model) {
@@ -976,11 +1086,18 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
     this._clearIdleMotionLoopTimers();
 
     // 生成一个调度器，自带当前模型有效性校验与定时器回收
-    const scheduleIdleMotion = (delay) => {
+    const scheduleIdleMotion = (delay, options = {}) => {
+        if (options.replace === true) {
+            this._clearIdleMotionLoopTimers();
+        }
         const timer = setTimeout(() => {
             this._idleMotionLoopTimers.delete(timer);
             // 如果模型已销毁，或当前挂载的模型已经不是传入的这个模型，则直接取消
             if (this.currentModel !== model || model.destroyed || window._currentMotionPreviewId != null || this._temporaryMotionSuspendToken) {
+                return;
+            }
+            if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+                scheduleIdleMotion(1000, { replace: true });
                 return;
             }
             if (!motionManager.playing) {
@@ -1009,6 +1126,10 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
         if (this._temporaryMotionSuspendToken) {
             return;
         }
+        if (this.isAvatarPerformanceCapabilityLocked('motion')) {
+            scheduleIdleMotion(1000, { replace: true });
+            return;
+        }
         if (window._currentMotionPreviewId != null) {
             console.log('[Live2D] 预览模式中，忽略 motionFinish，不启动新 Idle');
             return;
@@ -1030,7 +1151,7 @@ Live2DManager.prototype.setupIdleMotionLoop = function(model) {
 
 // 播放待机动作（从用户保存的 Idle 动画或默认 Idle 随机选择）
 Live2DManager.prototype._playIdleMotion = async function(motionManager) {
-    if (this._temporaryMotionSuspendToken) {
+    if (this._temporaryMotionSuspendToken || this.isAvatarPerformanceCapabilityLocked('motion')) {
         return;
     }
     const expectedModel = this.currentModel;
@@ -1040,6 +1161,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
         && !expectedModel.destroyed
         && window._currentMotionPreviewId == null
         && !this._temporaryMotionSuspendToken
+        && !this.isAvatarPerformanceCapabilityLocked('motion')
     );
     const getRandomizedIndexes = (length) => {
         const indexes = [];
@@ -1750,7 +1872,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
-            if (!this._temporaryMotionSuspendToken && origMotionManagerUpdate) {
+            if (!this._temporaryMotionSuspendToken && !this.isAvatarPerformanceCapabilityLocked('motion') && origMotionManagerUpdate) {
                 try {
                     origMotionManagerUpdate(...args);
                 } catch (e) {
@@ -1816,7 +1938,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // === 注入点 1（物理引擎前）：视线微动 ===
             // 仅当 Motion 未接管时注入，让物理引擎能看到这些变化
             // 注意：呼吸由 SDK 原生 Breath 系统接管，无需我们干预
-            if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled) {
+            if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled && !this.isAvatarPerformanceCapabilityLocked('lookAt')) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRandomLookAt(delta);
             }
@@ -2008,6 +2130,9 @@ Live2DManager.prototype.installMouthOverride = function() {
                     return;
                 }
                 origCoreModelUpdate();
+                if (typeof this._applyTemporaryPoseOverride === 'function') {
+                    this._applyTemporaryPoseOverride(currentCoreModel);
+                }
             } catch (e) {
                 // 立即清理覆盖，避免无限递归
                 console.warn('调用保存的原始 update 方法失败，清理覆盖:', e.message || e);

@@ -75,6 +75,57 @@ function resolveBackendErrorMsg(data, status) {
     return (data && (data.detail || data.message || data.error)) || `API returned ${status}`;
 }
 
+function normalizeVoicePreviewLanguage(rawLanguage) {
+    const current = String(rawLanguage || '').trim().toLowerCase();
+    if (!current || current === 'auto') return 'zh-CN';
+    if (current === 'tchinese' || current.startsWith('zh-tw') || current.startsWith('zh-hk') || current.includes('hant')) return 'zh-TW';
+    if (current === 'schinese' || current.startsWith('zh')) return 'zh-CN';
+    if (current === 'english' || current.startsWith('en')) return 'en';
+    if (current === 'japanese' || current.startsWith('ja')) return 'ja';
+    if (current === 'koreana' || current === 'korean' || current.startsWith('ko')) return 'ko';
+    if (current === 'russian' || current.startsWith('ru')) return 'ru';
+    if (current === 'spanish' || current === 'latam' || current.startsWith('es')) return 'es';
+    if (current === 'portuguese' || current === 'brazilian' || current.startsWith('pt')) return 'pt';
+    return 'en';
+}
+
+function getNativeVoiceProviderLabel(nativeEntries) {
+    if (!Array.isArray(nativeEntries)) return '';
+    for (const [, voiceData] of nativeEntries) {
+        const label = voiceData && (voiceData.provider_label || voiceData.provider);
+        if (label) return String(label);
+    }
+    return '';
+}
+
+function formatNativeVoiceLabel(nativeEntries) {
+    const providerLabel = getNativeVoiceProviderLabel(nativeEntries);
+    if (providerLabel) {
+        return window.t
+            ? window.t('voice.nativePresetLabel', { provider: providerLabel })
+            : providerLabel + ' 原生音色';
+    }
+    return window.t ? window.t('voice.nativePresetLabelGeneric') : '原生预设音色';
+}
+
+function getVoicePreviewLanguage() {
+    const candidates = [
+        window.i18n && window.i18n.language,
+        window.localStorage && window.localStorage.getItem('i18nextLng'),
+        document.documentElement && document.documentElement.lang,
+        navigator.language,
+        window.localStorage && window.localStorage.getItem('locale')
+    ];
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = String(candidates[index] || '').trim();
+        if (candidate && candidate.toLowerCase() !== 'auto') {
+            return normalizeVoicePreviewLanguage(candidate);
+        }
+    }
+    return 'zh-CN';
+}
+
 function appendVoiceApplyStatus(resultDiv, message, className = '') {
     if (!resultDiv) return;
     if (resultDiv.textContent || resultDiv.childNodes.length) {
@@ -572,7 +623,7 @@ if (window.i18n && window.i18n.isInitialized) {
                 // 本地TTS服务器(ws/wss协议)不需要云端API Key
                 const ttsUrl = cfg.ttsModelUrl || '';
                 const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
-                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl);
+                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl || cfg.assistApiKeyElevenlabs);
                 if (!hasCloneApi) {
                     const modal = document.getElementById('noApiModal');
                     if (modal) modal.style.display = 'flex';
@@ -601,11 +652,18 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         const keyMap = {
             'minimax': 'voice.minimaxApiRequired',
             'minimax_intl': 'voice.minimaxIntlApiRequired',
+            'elevenlabs': 'voice.elevenlabsApiRequired',
+        };
+        const fallbackMap = {
+            'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
         };
         const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
         span.setAttribute('data-i18n', i18nKey);
         if (window.t) {
-            span.textContent = window.t(i18nKey);
+            const translated = window.t(i18nKey);
+            span.textContent = (translated && translated !== i18nKey) ? translated : (fallbackMap[provider] || translated);
+        } else if (fallbackMap[provider]) {
+            span.textContent = fallbackMap[provider];
         }
         // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
     }
@@ -981,11 +1039,31 @@ async function playPreview(voiceId, btn) {
 
     try {
         const storageKey = `voice_preview_${voiceId}`;
-        let audioSrc = localStorage.getItem(storageKey);
+        const previewLanguage = getVoicePreviewLanguage();
+        const cachedPreview = localStorage.getItem(storageKey);
+        let audioSrc = '';
+        if (cachedPreview) {
+            try {
+                const cachedData = JSON.parse(cachedPreview);
+                if (
+                    cachedData
+                    && cachedData.version === 2
+                    && cachedData.language === previewLanguage
+                    && typeof cachedData.audioSrc === 'string'
+                    && cachedData.audioSrc
+                ) {
+                    audioSrc = cachedData.audioSrc;
+                }
+            } catch (_) {
+                // 旧版缓存没有语言信息，忽略并重新生成，避免切换语言后继续播放旧试听。
+            }
+        }
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
+            const response = await fetch(
+                `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`
+            );
             const { data, nonJson, text } = await safeReadResponse(response);
             if (!response.ok) {
                 if (data && (data.error || data.detail)) {
@@ -1001,7 +1079,11 @@ async function playPreview(voiceId, btn) {
                 audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
                 // 保存到 localStorage
                 try {
-                    localStorage.setItem(storageKey, audioSrc);
+                    localStorage.setItem(storageKey, JSON.stringify({
+                        version: 2,
+                        language: previewLanguage,
+                        audioSrc
+                    }));
                 } catch (e) {
                     console.warn('Failed to save preview to localStorage:', e);
                     // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
@@ -1070,7 +1152,8 @@ async function loadVoices() {
         }
 
         if ((!data.voices || Object.keys(data.voices).length === 0) &&
-            (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
+            (!data.free_voices || Object.keys(data.free_voices).length === 0) &&
+            (!data.native_voices || Object.keys(data.native_voices).length === 0)) {
             const noVoicesText = window.t ? window.t('voice.noVoices') : '暂无已注册音色';
             container.textContent = '';
             const emptyDiv = document.createElement('div');
@@ -1203,7 +1286,7 @@ async function loadVoices() {
                 const divider = document.createElement('div');
                 divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
                 const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
-                divider.textContent = '── ' + freeLabel + ' ──';
+                divider.textContent = freeLabel;
                 container.appendChild(divider);
             }
 
@@ -1236,7 +1319,25 @@ async function loadVoices() {
                 idDiv.textContent = `ID: ${voiceId}`;
                 infoDiv.appendChild(idDiv);
 
+                const voiceActions = document.createElement('div');
+                voiceActions.className = 'voice-actions';
+
+                const previewBtn = document.createElement('button');
+                previewBtn.className = 'voice-preview-btn';
+                const previewText = window.t ? window.t('voice.preview') : '预览';
+                const previewImg = document.createElement('img');
+                previewImg.src = '/static/icons/sound.png';
+                previewImg.alt = '';
+                previewBtn.appendChild(previewImg);
+                previewBtn.appendChild(document.createTextNode(previewText));
+                previewBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    playPreview(voiceId, previewBtn);
+                };
+                voiceActions.appendChild(previewBtn);
+
                 item.appendChild(infoDiv);
+                item.appendChild(voiceActions);
                 item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
                 item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
                 item.addEventListener('keydown', (event) => {
@@ -1247,10 +1348,93 @@ async function loadVoices() {
                     }
                 });
 
-                // 免费预设音色：不支持预览和删除，但支持点击应用到当前角色
-
                 container.appendChild(item);
             });
+        }
+
+        // 渲染当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
+        // 去重范围：自定义注册音色 + 免费预设音色 ID，避免冲突时列表里重复条目和多重选中态。
+        // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+        if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+            const renderedVoiceIds = new Set(voicesArray.map((v) => String(v.voiceId).toLowerCase()));
+            if (data.free_voices) {
+                Object.values(data.free_voices).forEach((id) => {
+                    if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                });
+            }
+            const nativeEntries = Object.entries(data.native_voices)
+                .filter(([voiceId]) => !renderedVoiceIds.has(String(voiceId).toLowerCase()));
+            if (nativeEntries.length > 0) {
+                const hasPriorContent = voicesArray.length > 0
+                    || (data.free_voices && Object.keys(data.free_voices).length > 0);
+                if (hasPriorContent) {
+                    const divider = document.createElement('div');
+                    divider.style.cssText = 'border-top: 1px dashed #b0d4f1; margin: 12px 0; padding-top: 8px; color: #90b8d8; font-size: 12px; text-align: center;';
+                    divider.textContent = formatNativeVoiceLabel(nativeEntries);
+                    container.appendChild(divider);
+                }
+
+                nativeEntries.forEach(([voiceId, voiceData]) => {
+                    const item = document.createElement('div');
+                    item.className = 'voice-list-item';
+                    item.dataset.voiceId = voiceId;
+                    item.style.opacity = '0.85';
+                    item.tabIndex = 0;
+                    item.setAttribute('role', 'button');
+                    markSelectedVoiceItem(item, voiceId === currentVoiceId);
+
+                    const infoDiv = document.createElement('div');
+                    infoDiv.className = 'voice-info';
+
+                    const nameDiv = document.createElement('div');
+                    nameDiv.className = 'voice-name';
+                    const displayName = (voiceData && voiceData.prefix) || voiceId;
+                    nameDiv.textContent = displayName;
+                    const badge = document.createElement('span');
+                    badge.style.cssText = 'margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(140,120,220,0.25); color: #b8a4ff;';
+                    badge.textContent = window.t ? window.t('voice.nativePresetBadge') : '原生';
+                    nameDiv.appendChild(badge);
+                    infoDiv.appendChild(nameDiv);
+
+                    const idDiv = document.createElement('div');
+                    idDiv.className = 'voice-id';
+                    idDiv.textContent = `ID: ${voiceId}`;
+                    infoDiv.appendChild(idDiv);
+
+                    const voiceActions = document.createElement('div');
+                    voiceActions.className = 'voice-actions';
+
+                    const previewBtn = document.createElement('button');
+                    previewBtn.className = 'voice-preview-btn';
+                    const previewText = window.t ? window.t('voice.preview') : '预览';
+                    const previewImg = document.createElement('img');
+                    previewImg.src = '/static/icons/sound.png';
+                    previewImg.alt = '';
+                    previewBtn.appendChild(previewImg);
+                    previewBtn.appendChild(document.createTextNode(previewText));
+                    previewBtn.onclick = (event) => {
+                        event.stopPropagation();
+                        playPreview(voiceId, previewBtn);
+                    };
+                    voiceActions.appendChild(previewBtn);
+
+                    item.appendChild(infoDiv);
+                    item.appendChild(voiceActions);
+                    item.setAttribute('aria-label', window.t ? window.t('voice.applyVoiceAria', { name: displayName }) : `应用音色 ${displayName}`);
+                    item.addEventListener('click', () => applyVoiceToCurrentCharacter(voiceId, displayName, item));
+                    item.addEventListener('keydown', (event) => {
+                        if (event.target !== item) return;
+                        if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            applyVoiceToCurrentCharacter(voiceId, displayName, item);
+                        }
+                    });
+
+                    // Provider 原生音色：支持预览和点击应用，不支持删除
+
+                    container.appendChild(item);
+                });
+            }
         }
 
     } catch (error) {

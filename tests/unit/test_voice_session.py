@@ -143,6 +143,40 @@ async def test_stream_audio(realtime_client):
 
 
 @pytest.mark.unit
+async def test_clear_audio_buffer_sends_websocket_clear_event():
+    client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        sent.append(json.loads(payload))
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+
+    await client.clear_audio_buffer()
+
+    assert [event["type"] for event in sent] == ["input_audio_buffer.clear"]
+
+
+@pytest.mark.unit
+async def test_silence_reset_flushes_buffer_before_next_audio_append():
+    client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        sent.append(json.loads(payload))
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+    client._silence_reset_pending = True
+
+    await client.stream_audio(DUMMY_AUDIO_CHUNK)
+
+    types_sent = [event["type"] for event in sent]
+    assert types_sent[:2] == ["input_audio_buffer.clear", "input_audio_buffer.append"]
+
+
+@pytest.mark.unit
 async def test_receive_text_delta(realtime_client):
     """Test handling of incoming text delta events via handle_messages."""
     # Simulate a sequence of WebSocket messages that includes text deltas
@@ -471,6 +505,37 @@ async def test_signal_user_activity_end_gemini_server_vad_is_noop():
     await client.signal_user_activity_end()
 
     fake_session.send_realtime_input.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_gemini_connect_uses_supplied_native_voice():
+    """Gemini Live should receive the resolved native voice instead of Leda."""
+    pytest.importorskip("google.genai")
+
+    client = OmniRealtimeClient(
+        base_url="https://generativelanguage.googleapis.com",
+        api_key="sk-test",
+        model="gemini-2.0-flash-exp",
+        voice="中文男",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="gemini",
+    )
+
+    fake_session = AsyncMock()
+    fake_ctx = AsyncMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+    fake_genai_client = MagicMock()
+    fake_genai_client.aio.live.connect = MagicMock(return_value=fake_ctx)
+
+    with patch("main_logic.omni_realtime_client.genai") as mock_genai_module:
+        mock_genai_module.Client = MagicMock(return_value=fake_genai_client)
+        await client.connect(instructions="hi", native_audio=True)
+
+    config = fake_genai_client.aio.live.connect.call_args.kwargs["config"]
+    speech_config = config["speech_config"]
+    voice_name = speech_config.voice_config.prebuilt_voice_config.voice_name
+    assert voice_name == "Puck"
 
 
 @pytest.mark.unit

@@ -57,12 +57,16 @@
 
         console.log(window.t('console.statusToastShow'), message, window.t('console.statusToastDuration'), duration);
 
-        const statusToast = S.dom.statusToast;
-        const statusElement = S.dom.statusElement;
+        const statusToast = S.dom.statusToast || document.getElementById('status-toast');
+        const statusElement = S.dom.statusElement || document.getElementById('status');
 
         if (!statusToast) {
             console.error(window.t('console.statusToastNotFound'));
             return;
+        }
+        S.dom.statusToast = statusToast;
+        if (statusElement) {
+            S.dom.statusElement = statusElement;
         }
 
         // 清除之前的定时器
@@ -327,6 +331,7 @@
         icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
 
         const textDiv = document.createElement('div');
+        textDiv.className = 'prominent-notice-body';
         textDiv.style.cssText = [
             'font-size:16px',
             'font-weight:600',
@@ -338,8 +343,13 @@
             'flex:1 1 auto',
             'max-height:min(54vh,420px)',
             'overflow-y:auto',
+            'overflow-x:hidden',
             'overflow-wrap:anywhere',
-            'padding-right:12px',
+            'scrollbar-gutter:stable',
+            'scrollbar-width:thin',
+            'scrollbar-color:rgba(148,163,184,0.62) rgba(15,23,42,0.18)',
+            'padding-right:8px',
+            'overscroll-behavior:contain',
             'box-sizing:border-box',
         ].join(';');
         if (typeof window.renderMiniMarkdown === 'function') {
@@ -366,6 +376,23 @@
                 @keyframes pnOverlayIn { from{opacity:0} to{opacity:1} }
                 @keyframes pnBoxIn    { from{opacity:0;transform:scale(0.85)} to{opacity:1;transform:scale(1)} }
                 @keyframes pnOverlayOut { from{opacity:1} to{opacity:0} }
+                .prominent-notice-body::-webkit-scrollbar {
+                    width: 8px;
+                }
+                .prominent-notice-body::-webkit-scrollbar-track {
+                    background: transparent;
+                }
+                .prominent-notice-body::-webkit-scrollbar-thumb {
+                    background: rgba(148, 163, 184, 0.42);
+                    border-radius: 999px;
+                    border: 2px solid transparent;
+                    background-clip: padding-box;
+                }
+                .prominent-notice-body::-webkit-scrollbar-thumb:hover {
+                    background: rgba(148, 163, 184, 0.62);
+                    border: 2px solid transparent;
+                    background-clip: padding-box;
+                }
             `;
             document.head.appendChild(s);
         }
@@ -461,23 +488,38 @@
 
     mod.showReadyToSpeakToast = showReadyToSpeakToast;
 
+    function syncFloatingMicMuteButtonVisibility(manager, isActive) {
+        const muteButtonData = manager._floatingButtons && manager._floatingButtons['mic-mute'];
+        if (muteButtonData && typeof muteButtonData.updateVisibility === 'function') {
+            muteButtonData.updateVisibility(isActive);
+        } else if (muteButtonData && muteButtonData.button) {
+            muteButtonData.button.style.display = isActive ? 'flex' : 'none';
+        }
+    }
+
     // --- syncFloatingMicButtonState ---
     function syncFloatingMicButtonState(isActive) {
         const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
-                const { button, imgOff, imgOn } = manager._floatingButtons.mic;
-                if (button) {
-                    button.dataset.active = isActive ? 'true' : 'false';
-                    if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
-                        imgOn.style.opacity = isActive ? '1' : '0';
-                    }
-                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                        manager.updateSeparatePopupTriggerIcon('mic');
+                if (typeof manager.setButtonActive === 'function') {
+                    manager.setButtonActive('mic', isActive);
+                } else {
+                    const { button, imgOff, imgOn } = manager._floatingButtons.mic;
+                    if (button) {
+                        button.dataset.active = isActive ? 'true' : 'false';
+                        if (imgOff && imgOn) {
+                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOn.style.opacity = isActive ? '1' : '0';
+                        }
+                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                            manager.updateSeparatePopupTriggerIcon('mic');
+                        }
                     }
                 }
+
+                syncFloatingMicMuteButtonVisibility(manager, isActive);
             }
         }
     }
@@ -490,15 +532,19 @@
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
-                const { button, imgOff, imgOn } = manager._floatingButtons.screen;
-                if (button) {
-                    button.dataset.active = isActive ? 'true' : 'false';
-                    if (imgOff && imgOn) {
-                        imgOff.style.opacity = isActive ? '0' : '1';
-                        imgOn.style.opacity = isActive ? '1' : '0';
-                    }
-                    if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                        manager.updateSeparatePopupTriggerIcon('screen');
+                if (typeof manager.setButtonActive === 'function') {
+                    manager.setButtonActive('screen', isActive);
+                } else {
+                    const { button, imgOff, imgOn } = manager._floatingButtons.screen;
+                    if (button) {
+                        button.dataset.active = isActive ? 'true' : 'false';
+                        if (imgOff && imgOn) {
+                            imgOff.style.opacity = isActive ? '0' : '1';
+                            imgOn.style.opacity = isActive ? '1' : '0';
+                        }
+                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                            manager.updateSeparatePopupTriggerIcon('screen');
+                        }
                     }
                 }
             }
@@ -1188,6 +1234,109 @@
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 80;
     let multiWindowReturnBallDragState = null;
 
+    function waitForAnimationFrames(count) {
+        const remaining = Math.max(1, Number(count) || 1);
+        return new Promise(resolve => {
+            const step = (left) => {
+                if (left <= 0) {
+                    resolve();
+                    return;
+                }
+                requestAnimationFrame(() => step(left - 1));
+            };
+            step(remaining);
+        });
+    }
+
+    function isModelContainerVisible(containerId) {
+        const el = document.getElementById(containerId);
+        if (!el || el.classList.contains('hidden')) return false;
+        const style = window.getComputedStyle ? getComputedStyle(el) : el.style;
+        return style.display !== 'none' && style.visibility !== 'hidden';
+    }
+
+    async function saveReturnModelPosition(modelType) {
+        try {
+            if (modelType === 'mmd') {
+                const interaction = window.mmdManager && window.mmdManager.interaction;
+                if (interaction && typeof interaction._savePositionAfterInteraction === 'function') {
+                    await interaction._savePositionAfterInteraction();
+                }
+                return;
+            }
+            if (modelType === 'vrm') {
+                const interaction = window.vrmManager && window.vrmManager.interaction;
+                if (interaction && typeof interaction._savePositionAfterInteraction === 'function') {
+                    await interaction._savePositionAfterInteraction();
+                }
+                return;
+            }
+            if (window.live2dManager && typeof window.live2dManager._savePositionAfterInteraction === 'function') {
+                await window.live2dManager._savePositionAfterInteraction();
+            }
+        } catch (error) {
+            console.warn('[App] 保存回来后的模型位置失败:', error);
+        }
+    }
+
+    async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
+        // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
+        await waitForAnimationFrames(2);
+
+        let activeModelType = null;
+        try {
+            if (window.mmdManager && window.mmdManager.currentModel && isModelContainerVisible('mmd-container')) {
+                activeModelType = 'mmd';
+                const interaction = window.mmdManager.interaction;
+                if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
+                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
+                    if (!snapped && shouldSaveWhenUnchanged) {
+                        await saveReturnModelPosition('mmd');
+                    }
+                } else if (shouldSaveWhenUnchanged) {
+                    await saveReturnModelPosition('mmd');
+                }
+                return;
+            }
+
+            if (window.vrmManager && window.vrmManager.currentModel && isModelContainerVisible('vrm-container')) {
+                activeModelType = 'vrm';
+                const interaction = window.vrmManager.interaction;
+                if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
+                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
+                    if (snapped) {
+                        // VRM 的回弹方法只负责动画，最终位置需要由外层保存。
+                        await saveReturnModelPosition('vrm');
+                    } else if (shouldSaveWhenUnchanged) {
+                        await saveReturnModelPosition('vrm');
+                    }
+                } else if (shouldSaveWhenUnchanged) {
+                    await saveReturnModelPosition('vrm');
+                }
+                return;
+            }
+
+            if (window.live2dManager) {
+                activeModelType = 'live2d';
+                const liveModel = typeof window.live2dManager.getCurrentModel === 'function'
+                    ? window.live2dManager.getCurrentModel() : null;
+                if (liveModel && !liveModel.destroyed && typeof window.live2dManager._checkAndPerformSnap === 'function') {
+                    const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true });
+                    if (!snapped && shouldSaveWhenUnchanged) {
+                        await saveReturnModelPosition('live2d');
+                    }
+                } else if (shouldSaveWhenUnchanged) {
+                    await saveReturnModelPosition('live2d');
+                }
+            }
+        } catch (error) {
+            console.warn('[App] 回来后的边界回弹计算失败:', error);
+            if (shouldSaveWhenUnchanged && activeModelType) {
+                await saveReturnModelPosition(activeModelType);
+            }
+        }
+    }
+
     function cancelReturnBallReveal(container) {
         if (!container) return;
         const revealFrameId = container.__nekoReturnBallRevealFrame;
@@ -1689,7 +1838,11 @@
         }
 
         state.handleMouseDown = (event) => {
-            if (event.button !== 0) return;
+            if (event.button !== 0) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                return;
+            }
             beginDrag(event.screenX, event.screenY, event);
         };
         state.handleMouseMove = (event) => {
@@ -2197,6 +2350,7 @@
             // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
             const returnRect = event && event.detail && event.detail.returnButtonRect;
             const savedRect = window._savedGoodbyeRect;
+            let returnModelWasMoved = false;
             if (returnRect && savedRect) {
                 const returnCenterX = returnRect.left + returnRect.width / 2;
                 const returnCenterY = returnRect.top + returnRect.height / 2;
@@ -2208,10 +2362,10 @@
                 if (Math.abs(screenDx) > 5 || Math.abs(screenDy) > 5) {
                     console.log('[App] 返回按钮被拖拽，应用屏幕偏移:', Math.round(screenDx), Math.round(screenDy));
                     if (window.vrmManager && typeof window.vrmManager.applyScreenDelta === 'function') {
-                        window.vrmManager.applyScreenDelta(screenDx, screenDy);
+                        window.vrmManager.applyScreenDelta(screenDx, screenDy, { clamp: false });
                     }
                     if (window.mmdManager && typeof window.mmdManager.applyScreenDelta === 'function') {
-                        window.mmdManager.applyScreenDelta(screenDx, screenDy);
+                        window.mmdManager.applyScreenDelta(screenDx, screenDy, { clamp: false });
                     }
                     if (window.live2dManager) {
                         const liveModel = typeof window.live2dManager.getCurrentModel === 'function'
@@ -2221,6 +2375,7 @@
                             liveModel.y += screenDy;
                         }
                     }
+                    returnModelWasMoved = true;
                 }
             }
             window._savedGoodbyeRect = null;
@@ -2235,6 +2390,8 @@
                 console.error('[App] showCurrentModel 失败:', error);
                 showLive2d();
             }
+
+            await settleReturnedModelBounds(returnModelWasMoved);
 
             // 恢复 VRM canvas 的可见性
             const vrmCanvas = document.getElementById('vrm-canvas');

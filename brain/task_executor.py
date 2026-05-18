@@ -27,8 +27,13 @@ from config import (
     AGENT_PLUGIN_FULL_MAX_TOKENS,
     TASK_DETAIL_MAX_TOKENS,
 )
-from utils.llm_client import create_chat_llm, ChatOpenAI
-from config.prompts_agent import (
+from utils.llm_client import (
+    create_chat_llm,
+    ChatOpenAI,
+    set_active_character,
+    reset_active_character,
+)
+from config.prompts.prompts_agent import (
     UNIFIED_CHANNEL_SYSTEM_PROMPT,
     CHANNEL_DESC_QWENPAW,
     CHANNEL_DESC_OPENFANG,
@@ -37,7 +42,7 @@ from config.prompts_agent import (
     USER_PLUGIN_SYSTEM_PROMPT,
     USER_PLUGIN_COARSE_SCREEN_PROMPT,
 )
-from config.prompts_sys import _loc
+from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
 from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 from utils.config_manager import get_config_manager
@@ -235,6 +240,32 @@ class DirectTaskExecutor:
     def _normalize_correction_tool_name(self, value: Any) -> str:
         tool = str(value or "").strip().lower()
         return self._correction_tool_canonical.get(tool, "")
+
+    async def _set_character_context_token(self, lanlan_name: Optional[str]):
+        """Fetch master_name from the config manager and bind the active
+        character ``(master_name, lanlan_name)`` to the current async
+        context. The wrapped LLM clients (``utils.llm_client.ChatOpenAI``)
+        substitute ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders that
+        come in via plugin-supplied prompt fragments before the wire send.
+
+        Returns a token; pass to ``reset_active_character`` in a ``finally``
+        block. Best-effort on failure — if config_manager can't yield a
+        master_name, the token still binds with an empty master so partial
+        substitution (lanlan only) still works and the leak check WARNING
+        is at most a no-op.
+        """
+        master_name = ""
+        try:
+            cd = await self._config_manager.aget_character_data()
+            # aget_character_data returns a tuple; element 0 is master_name
+            if cd and len(cd) > 0 and isinstance(cd[0], str):
+                master_name = cd[0]
+        except Exception as exc:
+            logger.debug(
+                "[Agent] character-context fetch failed; placeholder substitution will be partial: %s: %s",
+                type(exc).__name__, exc,
+            )
+        return set_active_character(master_name, lanlan_name or "")
 
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
         """Allow agent_server to inject a custom async provider for plugin discovery."""
@@ -1547,6 +1578,32 @@ class DirectTaskExecutor:
         Plugin 单独判定；qwenpaw/openfang/browser/computer 合并为一次 LLM 调用。
         实际执行由 agent_server 统一 dispatch。
         """
+        # Bind active character for {MASTER_NAME}/{LANLAN_NAME} substitution
+        # in any LLM call made under this analyze_and_execute (assess_user_plugin
+        # / assess_unified_channels / classify_magic_intent / shortdesc gen,
+        # all on the inherited async context). Without this the brain LLM
+        # gets literal placeholders from plugin prompt fragments and the
+        # leak check fires a WARNING.
+        char_token = await self._set_character_context_token(lanlan_name)
+        try:
+            return await self._analyze_and_execute_inner(
+                messages=messages,
+                lanlan_name=lanlan_name,
+                agent_flags=agent_flags,
+                conversation_id=conversation_id,
+                lang=lang,
+            )
+        finally:
+            reset_active_character(char_token)
+
+    async def _analyze_and_execute_inner(
+        self,
+        messages: List[Dict[str, str]],
+        lanlan_name: Optional[str] = None,
+        agent_flags: Optional[Dict[str, bool]] = None,
+        conversation_id: Optional[str] = None,
+        lang: str = "en",
+    ) -> Optional[TaskResult]:
         task_id = str(uuid.uuid4())
 
         if agent_flags is None:
@@ -2227,19 +2284,28 @@ class DirectTaskExecutor:
         """
         Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
         This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
+
+        Same character-context binding as analyze_and_execute, since
+        ``_execute_user_plugin`` may dispatch to a plugin entry whose
+        callback chain ends with brain LLM calls (e.g. result digestion);
+        without this, those calls would leak {MASTER_NAME} placeholders.
         """
-        return await self._execute_user_plugin(
-            task_id=task_id,
-            plugin_id=plugin_id,
-            plugin_args=plugin_args,
-            entry_id=entry_id,
-            task_description=f"Direct plugin call {plugin_id}",
-            reason="direct_call",
-            lanlan_name=lanlan_name,
-            conversation_id=conversation_id,
-            latest_user_request=latest_user_request,
-            on_progress=on_progress,
-        )
+        char_token = await self._set_character_context_token(lanlan_name)
+        try:
+            return await self._execute_user_plugin(
+                task_id=task_id,
+                plugin_id=plugin_id,
+                plugin_args=plugin_args,
+                entry_id=entry_id,
+                task_description=f"Direct plugin call {plugin_id}",
+                reason="direct_call",
+                lanlan_name=lanlan_name,
+                conversation_id=conversation_id,
+                latest_user_request=latest_user_request,
+                on_progress=on_progress,
+            )
+        finally:
+            reset_active_character(char_token)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """保留接口兼容性，MCP 已移除，始终返回空。"""
