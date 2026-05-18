@@ -192,5 +192,9 @@ def test_proactive_chat_handler_no_longer_posts_reflect():
         "proactive_chat handler 里不能再 POST /reflect/{name} —— 合成已迁到 "
         "_periodic_reflection_synthesis_loop 后端循环；这条 mutation 放在 "
         "proactive 关键路径上会拖延 ~15s + 让 reflection 增长依赖前端。"
-        f"匹配到: {post_to_reflect.group(0) if post_to_reflect else ''!r}"
+        # 显式括号让 !r 应用范围一眼可见，省 reader 心算 conditional-expr +
+        # conversion-spec 的 precedence（PEP 498 已经定义了行为，但 future
+        # reader 一眼看不出来——CodeRabbit PR #1401 误报为 SyntaxError 就是
+        # 因为这个直觉负担，加括号杜绝同类困惑）
+        f"匹配到: {(post_to_reflect.group(0) if post_to_reflect else '')!r}"
     )
