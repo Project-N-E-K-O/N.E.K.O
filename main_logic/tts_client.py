@@ -68,18 +68,6 @@ def _resolve_qwen_realtime_tts_url() -> str:
     return f"{base_ws_url}?model={quote(model, safe='')}"
 
 
-def _qwen_intl_key_is_us_compatible_only(core_config: dict) -> bool:
-    """判断当前阿里国际 Key 是否只通过了美国 compatible-mode HTTP 路径。"""
-    if str(core_config.get("CORE_API_TYPE") or "").strip() != "qwen_intl":
-        return False
-    openrouter_url = str(core_config.get("OPENROUTER_URL") or "").lower()
-    if "dashscope-us.aliyuncs.com" not in openrouter_url:
-        return False
-    tts_key = str(core_config.get("AUDIO_API_KEY") or "").strip()
-    intl_key = str(core_config.get("ASSIST_API_KEY_QWEN_INTL") or "").strip()
-    return bool(tts_key and intl_key and tts_key == intl_key)
-
-
 def _record_tts_telemetry(model_name: str, char_count: int):
     """Record TTS usage telemetry via TokenTracker.
 
@@ -3970,9 +3958,6 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
-    if core_api_type == 'qwen_intl' and _qwen_intl_key_is_us_compatible_only(core_cfg):
-        logger.warning("阿里国际版当前使用美国 compatible-mode URL，跳过 Qwen 实时 TTS")
-        return dummy_tts_worker, None, None
     if core_api_type in ('qwen', 'qwen_intl'):
         return qwen_realtime_tts_worker, None, 'qwen'
     if core_api_type == 'free':
