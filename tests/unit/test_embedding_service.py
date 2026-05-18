@@ -295,16 +295,28 @@ def test_detect_avx_vnni_x86_falls_back_to_cpuinfo_when_probe_unavailable(
     assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
-def test_probe_avx_vnni_skips_non_x86():
-    """The probe targets the x86_64 CPUID encoding — on aarch64 / arm64
-    it must short-circuit to ``None`` so the ARM detector remains in
-    charge of those hosts.
+def test_probe_avx_vnni_skips_non_windows_and_non_x86(monkeypatch):
+    """The probe is scoped to Windows x86_64. On Linux it must NOT issue
+    CPUID — ``arch_prctl(ARCH_SET_CPUID, 0)`` (rr debugger, certain
+    sandboxes) turns ``cpuid`` into SIGSEGV, which Python's try/except
+    cannot catch and would hard-kill the process (Codex P1 on #1402).
+    On macOS Intel there is no chip in the wild with AVX-VNNI anyway,
+    and hardened runtime breaks PROT_EXEC. ARM hosts are handled by the
+    sibling :func:`_detect_int8_fast_path_arm` and must not enter the
+    x86 shellcode path.
     """
     from memory import embeddings as emb_mod
-    import unittest.mock as mock
 
-    with mock.patch.object(emb_mod.platform, "machine", return_value="aarch64"):
-        assert emb_mod._probe_avx_vnni_via_cpuid() is None
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
+    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Darwin")
+    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+
+    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
+    assert emb_mod._probe_avx_vnni_via_cpuid() is None
 
 
 def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():
