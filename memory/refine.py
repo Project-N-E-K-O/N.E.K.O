@@ -88,9 +88,13 @@ ApplyFn = Callable[[list[dict], list[dict], str], Awaitable[set[str]]]
 
 # Manager-supplied failure callback signature.
 # Args: cluster (annotated entries), cluster_hash.
-# Triggered when ``_resolve_cluster`` returns False (LLM/parse failure) or
-# raises. Manager bumps ``refine_attempts`` on each non-fact cluster member
-# (and saves persona/reflection file), so the next refine pass can filter
+# Triggered ONLY when ``_resolve_cluster`` returns False (LLM 输出空 /
+# parse 失败 / 非 list 等 LLM-decision 持续性问题)。**Exception 路径不调**
+# ——`_resolve_cluster` 内部 `await apply_fn(...)` 的 manager 端持久化异常
+# （cloudsave 维护态 / atomic_write IO / 锁竞争）+ LLM 网络 transient
+# 都按 transient 处理，不触发该回调（Codex P1 round-3 on PR #1412）。
+# Manager bumps ``refine_attempts`` on each non-fact cluster member (and
+# saves persona/reflection file), so the next refine pass can filter
 # out entries that have repeatedly failed (Site 4 liveness 兜底)。
 FailureFn = Callable[[list[dict], str], Awaitable[None]]
 
@@ -122,8 +126,12 @@ class MemoryRefineEngine:
 
         Embedding 不可用 → 返回零计数，no-op。
 
-        ``failure_fn``: 可选回调，``_resolve_cluster`` 返 False / 抛异常时
-        调用，传入 ``(cluster, cluster_hash)``。Manager 在回调里 bump
+        ``failure_fn``: 可选回调，**仅在** ``_resolve_cluster`` 返 False（LLM
+        输出空 / parse 失败 / 非 list 等 LLM-decision 持续性问题）时调用，
+        传入 ``(cluster, cluster_hash)``。Exception 路径按 transient 不调
+        回调——apply_fn 持久化失败 (cloudsave / IO / 锁) + LLM 网络瞬态
+        都属于跟 cluster 内容无关的瞬时故障，不该让 entry refine_attempts
+        被冤枉计数 (Codex P1 round-3 on PR #1412)。Manager 在回调里 bump
         ``refine_attempts`` 字段做 liveness 兜底——同 cluster 反复 LLM 失败
         N 次后 manager 在下次候选 gather 时把成员过滤掉，避免毒 cluster
         持续占用 starvation-first ordering 第一名空跑 LLM。
