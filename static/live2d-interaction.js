@@ -1254,30 +1254,19 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         
         this._clickEffectRestoreTimer = setTimeout(() => {
             this._clickEffectRestoreTimer = null;
-            
+
             // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
             if (this._currentClickEffectId !== clickEffectId) {
                 console.log('[ClickEffect] 临时效果已被新的情感覆盖，跳过恢复');
                 return;
             }
-            
-            console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态');
-            this._currentClickEffectId = null;
-            this._clickEffectMotion = null;
 
-            // 使用平滑过渡恢复到初始状态
-            // smoothResetToInitialState 会在第一帧 beforeModelUpdate 中捕获快照后，
-            // 再停止 motion/expression，确保过渡起点与屏幕一致，无视觉跳变。
-            if (typeof this.smoothResetToInitialState === 'function') {
-                this.smoothResetToInitialState().catch(e => {
-                    console.warn('[ClickEffect] 平滑恢复失败，回退到即时恢复:', e);
-                    if (typeof this.clearExpression === 'function') {
-                        this.clearExpression();
-                    }
-                });
-            } else if (typeof this.clearExpression === 'function') {
-                this.clearExpression();
-            }
+            console.log('[ClickEffect] 临时效果结束，平滑恢复到默认状态并恢复待机动作');
+            // 复用统一恢复入口：smoothReset/clearExpression + restoreLive2DIdleAnimationOnMainPage
+            // 与外层 triggerRandomEmotion 的恢复路径保持对偶，避免成功点击后丢失 saved idle motion
+            this._restoreClickEffectState({ restoreIdle: true }).catch(e => {
+                console.warn('[ClickEffect] 恢复点击效果状态失败:', e);
+            });
         }, duration);
 
         console.log(`[ClickEffect] 临时效果将在 ${duration}ms 后恢复`);
