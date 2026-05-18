@@ -413,6 +413,56 @@ async def test_apersist_monotonic_source_upgrade_ai_to_user():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_apersist_monotonic_source_upgrade_within_same_batch():
+    """Regression (Codex P2 round-10 on PR #1408)：同一次 Stage-1 extracted
+    payload 里若同 text 出现两次（先 ai_disclosure 后 user_observation），
+    `hash_to_existing` 必须在第一次写入后同步更新——否则第二次命中
+    `content_hash in existing_hashes` 时 `hash_to_existing.get()` 返 None，
+    monotonic upgrade 路径被跳过，user_observation 升级被静默丢弃。
+    """
+    from memory.facts import FactStore
+
+    fs = FactStore.__new__(FactStore)
+    fs._config_manager = MagicMock()
+    fs._time_indexed = None
+    fs._facts = {'悠怡': []}
+    fs._locks = {}
+    import threading
+    fs._locks['悠怡'] = threading.RLock()
+    fs.asave_facts = AsyncMock()
+
+    # 模拟单次 Stage-1 payload 包含同 text 两条：先 ai_disclosure 后 user_observation
+    extracted = [
+        {
+            'text': '主人喜欢猫', 'importance': 7, 'entity': 'master',
+            'source': 'ai_disclosure',
+        },
+        {
+            'text': '主人喜欢猫', 'importance': 7, 'entity': 'master',
+            'source': 'user_observation',
+        },
+    ]
+
+    out = await fs._apersist_new_facts(
+        '悠怡', extracted, default_source='ai_disclosure',
+    )
+
+    # 落盘只有 1 条（dedup 生效），且 source 升级到 user_observation
+    persisted = fs._facts['悠怡']
+    assert len(persisted) == 1, (
+        f"同 text 两条应 dedup 成 1 条，实际 {len(persisted)} 条"
+    )
+    assert persisted[0]['source'] == 'user_observation', (
+        f"第二次 user_observation 必须升级第一次的 ai_disclosure，"
+        f"实际 source={persisted[0]['source']!r}（说明 hash_to_existing 没在 batch 内同步）"
+    )
+    assert persisted[0]['signal_processed'] is False, (
+        "升级后 signal_processed 必须 reset 成 False 让 Stage-2 重新评估"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_apersist_no_downgrade_user_to_ai():
     """反向：撞已有 user_observation fact + 新 fact source=ai_disclosure
     → existing 不动（user 印证不可逆退回 ai_disclosure）。"""

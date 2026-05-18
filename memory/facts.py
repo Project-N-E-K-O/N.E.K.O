@@ -616,6 +616,13 @@ class FactStore:
             }
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
+            # 同步更新 hash_to_existing：若本 batch 后续还有同 text 的 fact
+            # 出现（如 LLM 偶发重复 / 同 batch 跨段抽到同一观察），下一轮命
+            # 中 `content_hash in existing_hashes` 时能拿到本轮刚写入的
+            # fact_entry 走 monotonic upgrade 路径。否则 hash_to_existing.
+            # get() 返 None → 跳过 upgrade，新观察的 user_observation 升级被
+            # 静默丢弃 (Codex P2 round-10 on PR #1408)。
+            hash_to_existing[content_hash] = fact_entry
             new_facts.append(fact_entry)
 
             if self._time_indexed is not None:
