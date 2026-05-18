@@ -883,6 +883,12 @@ class FactStore:
         # source 落到 evidence 计数器更新里。
         new_fact_ids = {f['id'] for f in new_facts if f.get('id')}
         validated: list[dict] = []
+        # 单次 Stage-2 调用可能返回 N 条 signal 都对同一 reflection 报告
+        # target_type 不一致——LLM 在猜命名规范（"persona.relationship"
+        # vs "persona" vs "persona.relationship.prom"），看到啥前缀就抄啥。
+        # 兜底逻辑一直按设计在跑，但每条一行 log 会刷屏；按 (LLM值→实际值)
+        # 去重计数，循环结束后一行汇总，方便看出"哪种猜法在被反复纠"。
+        target_type_fixes: dict[tuple[str | None, str], int] = {}
         for s in raw_signals:
             if not isinstance(s, dict):
                 continue
@@ -914,11 +920,10 @@ class FactStore:
                     continue
             obs = id_to_obs[candidate_full]
             if obs['target_type'] != ttype:
-                # LLM 说的 target_type 与实际不符 → 以实际为准（修正），
-                # 但仍记录原值便于 debug
-                logger.info(
-                    f"[FactStore] {lanlan_name}: Stage-2 target_type 修正 "
-                    f"{ttype}→{obs['target_type']} for {candidate_full}"
+                # LLM 说的 target_type 与实际不符 → 以实际为准（修正）。
+                # 不在 loop 里 log，循环结束统一汇总输出。
+                target_type_fixes[(ttype, obs['target_type'])] = (
+                    target_type_fixes.get((ttype, obs['target_type']), 0) + 1
                 )
             validated.append({
                 'source_fact_id': s.get('source_fact_id'),
@@ -929,6 +934,16 @@ class FactStore:
                 'signal': signal,
                 'reason': s.get('reason', ''),
             })
+        if target_type_fixes:
+            summary = ", ".join(
+                f"{src!r}→{dst}×{n}" if n > 1 else f"{src!r}→{dst}"
+                for (src, dst), n in sorted(
+                    target_type_fixes.items(), key=lambda kv: -kv[1]
+                )
+            )
+            logger.info(
+                f"[FactStore] {lanlan_name}: Stage-2 target_type 修正 {summary}"
+            )
         return validated
 
     async def aextract_facts_and_detect_signals(
