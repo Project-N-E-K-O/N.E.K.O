@@ -2134,18 +2134,33 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     _enrolled_model = _voice_meta.get('clone_model') if _voice_meta else None
     _voice_provider = _voice_meta.get('provider') if _voice_meta else None
 
-    dashscope.api_key = audio_api_key
+    # dashscope.api_key 和 dashscope.base_*_api_url 是模块级全局状态，同一进程内
+    # /voice_preview 端点 (characters_router.py) 和声音克隆 (utils/voice_clone.py)
+    # 也会改写它们。worker 只在启动时设一次，下次 _create_synthesizer 重连时会
+    # 继承到别人最后一次设置的地域/key，混用国内+国际场景下会出现"voice 没换
+    # 但请求打到错地域"的 401。地域 URL 先在启动时算好捕获到闭包里，每次
+    # _create_synthesizer 重新写一遍 module-global。
     try:
         _tts_api_config = get_config_manager().get_model_api_config('tts_custom')
         _dashscope_base_url = (_voice_meta or {}).get('dashscope_base_url') or _tts_api_config.get('base_url', '')
-        configure_dashscope_sdk_urls(dashscope, _dashscope_base_url, websocket_path="inference")
     except Exception as e:
-        logger.warning("DashScope TTS 地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+        logger.warning("DashScope TTS 地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
+        _dashscope_base_url = ""
+
+    def _apply_dashscope_region():
+        """每次重建 SpeechSynthesizer 前调用，保证 module-global 是 worker 自己的地域/key。"""
+        dashscope.api_key = audio_api_key
         try:
-            configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
-        except Exception as reset_error:
-            logger.error("DashScope TTS 默认地域重置失败: %s", reset_error, exc_info=True)
-            raise
+            configure_dashscope_sdk_urls(dashscope, _dashscope_base_url, websocket_path="inference")
+        except Exception as e:
+            logger.warning("DashScope TTS 地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+            try:
+                configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+            except Exception as reset_error:
+                logger.error("DashScope TTS 默认地域重置失败: %s", reset_error, exc_info=True)
+                raise
+
+    _apply_dashscope_region()
     
     # CosyVoice 不需要预连接，直接发送就绪信号
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")
@@ -2270,6 +2285,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if lang_hint and cosyvoice_model_supports_language_hints(clone_model):
             kwargs["language_hints"] = [lang_hint]
         callback.construct_start_time = time.time()
+        # 重连前重新写一次 module-global，覆盖 /voice_preview / voice_clone 等
+        # 同进程其他流程留下的地域/key（见 worker 顶部说明）。
+        _apply_dashscope_region()
         syn = SpeechSynthesizer(**kwargs)
         last_streaming_call_time = time.time()
         return syn
