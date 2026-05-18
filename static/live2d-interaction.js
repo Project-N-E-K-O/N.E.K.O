@@ -1197,6 +1197,8 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
     );
     this._clickEffectRestoreToken = (this._clickEffectRestoreToken || 0) + 1;
     const restoreToken = this._clickEffectRestoreToken;
+    // 跨 await 校验本次点击是否仍是当前 attempt：被更新的点击接管后立刻让出共享状态
+    const isCurrentPlayAttempt = () => this._clickEffectRestoreToken === restoreToken;
 
     // 清除之前的点击效果恢复定时器
     if (this._clickEffectRestoreTimer) {
@@ -1242,6 +1244,10 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             if (choiceFile && typeof this.playExpression === 'function') {
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
                 const expressionPlayed = await this.playExpression(emotion, choiceFile);
+                if (!isCurrentPlayAttempt()) {
+                    // 已被新的点击接管，不要继续写共享状态
+                    return false;
+                }
                 if (expressionPlayed !== false) {
                     didPlayEffect = true;
                 } else {
@@ -1269,12 +1275,16 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         }
 
         // 兜底：emotion 对不上任何 motion group 时，从所有可用 group 随机选一个
+        // 优先非 PreviewAll 分组；若仅 PreviewAll 有 motion（服务端注入的常见情况）则退而用它
         if ((!motions || motions.length === 0) && this.fileReferences && this.fileReferences.Motions) {
-            const allGroups = Object.keys(this.fileReferences.Motions).filter(
-                g => g !== 'PreviewAll' && Array.isArray(this.fileReferences.Motions[g]) && this.fileReferences.Motions[g].length > 0
-            );
-            if (allGroups.length > 0) {
-                motionGroup = allGroups[Math.floor(Math.random() * allGroups.length)];
+            const hasUsableMotions = (g) => Array.isArray(this.fileReferences.Motions[g]) && this.fileReferences.Motions[g].length > 0;
+            const allGroups = Object.keys(this.fileReferences.Motions);
+            const nonPreviewGroups = allGroups.filter(g => g !== 'PreviewAll' && hasUsableMotions(g));
+            const fallbackGroups = nonPreviewGroups.length > 0
+                ? nonPreviewGroups
+                : allGroups.filter(hasUsableMotions);
+            if (fallbackGroups.length > 0) {
+                motionGroup = fallbackGroups[Math.floor(Math.random() * fallbackGroups.length)];
                 motions = this.fileReferences.Motions[motionGroup];
             }
         }
@@ -1284,6 +1294,13 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             // pixi-live2d-display 的 motion(group, index, priority) 支持优先级参数
             try {
                 const motion = await this.currentModel.motion(motionGroup, undefined, priority);
+                if (!isCurrentPlayAttempt()) {
+                    // 已被新的点击接管：停掉本次刚启动的动作，避免后台占用，并放弃写共享状态
+                    if (motion && typeof motion.stop === 'function') {
+                        try { motion.stop(); } catch (_) {}
+                    }
+                    return false;
+                }
                 if (motion) {
                     console.log(`[ClickEffect] 播放临时动作: ${motionGroup}（优先级: ${priority}）`);
                     this._clickEffectMotion = motion;
@@ -1303,6 +1320,11 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                     restoreToken
                 });
             }
+            return false;
+        }
+
+        if (!isCurrentPlayAttempt()) {
+            // 走到这里说明 await 之间被新的点击接管了；不要再注册我们自己的恢复定时器
             return false;
         }
 

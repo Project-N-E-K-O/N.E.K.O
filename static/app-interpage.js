@@ -1043,7 +1043,12 @@
                     return;
                 }
                 if (motionFiles.length === 1) {
-                    live2dIdleAnimation = motionFiles[0];
+                    const singleMotion = typeof motionFiles[0] === 'string' ? motionFiles[0].trim() : '';
+                    if (!singleMotion) {
+                        console.log('[Live2D Main] 唯一的 motion 文件名为空，跳过恢复');
+                        return;
+                    }
+                    live2dIdleAnimation = singleMotion;
                     console.log('[Live2D Main] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
                 } else {
                     console.log('[Live2D Main] 没有保存的待机动作');
