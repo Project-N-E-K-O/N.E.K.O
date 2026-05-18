@@ -288,13 +288,18 @@
 
     function dispatchAssistantSpeechStart(turnId) {
         var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        // 新 chunk 入队 = 真实音频活动，无论是不是同一 turn 都要撤掉 stuck watchdog。
+        // 否则 choppy stream 里：第一段播完 arm 表 → 第二段到来仍是同一 turn 早 return →
+        // 表不撤 → 30s 到点时如果刚好在第 N 段间隙 → 误 fire cancel。
+        if (normalizedTurnId) {
+            clearStuckSpeakingFallback();
+        }
         if (!normalizedTurnId || S.assistantSpeechActiveTurnId === normalizedTurnId) {
             return;
         }
         S.assistantSpeechActiveTurnId = normalizedTurnId;
         S.assistantSpeechStartedTurnId = normalizedTurnId;
         clearAssistantTurnCompletionFallback();
-        clearStuckSpeakingFallback();
         logAudioLifecycle('dispatchAssistantSpeechStart', {
             turnId: normalizedTurnId
         });
