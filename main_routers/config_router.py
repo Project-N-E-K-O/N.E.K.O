@@ -1648,11 +1648,21 @@ async def _auto_resolve_provider_urls_for_save(
         "resolved_urls": {},
         "results": {},
     }
+    # 起点用 core_cfg 里已经存的 resolved 快照（前端这一次保存连带传上来的
+    # _resolvedProviderUrls + 上一次落盘的值），auto-resolve 只动本次 targets
+    # 里的 provider。其它 provider 之前测通的 URL 留着别扔——比如核心用 GPT
+    # 但 CosyVoice intl 还在用 assist:qwen_intl 的 US 端点，保存非 Qwen 设置
+    # 不该顺手清掉 intl 的地域记忆。
+    existing_resolved: dict[str, str] = {
+        str(k): str(v)
+        for k, v in (core_cfg.get("resolvedProviderUrls") or {}).items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
     if not targets:
-        core_cfg["resolvedProviderUrls"] = {}
+        core_cfg["resolvedProviderUrls"] = existing_resolved
         return summary
 
-    resolved_urls: dict[str, str] = {}
+    resolved_urls: dict[str, str] = dict(existing_resolved)
 
     pending_targets: dict[str, dict[str, Any]] = {}
     checked_resolved_urls = checked_resolved_urls if isinstance(checked_resolved_urls, dict) else {}
@@ -1708,6 +1718,11 @@ async def _auto_resolve_provider_urls_for_save(
             summary["resolved_urls"][target_key] = result["resolved_url"]
         else:
             summary["failed"] += 1
+            # 本次测失败的 target 必须把旧 resolved 也丢掉，避免下次继续打不通的旧 URL
+            # (CodeRabbit #3258131687 已要求过的语义)。其它没被 test 到的 provider
+            # 由 existing_resolved 保留，互不影响。
+            resolved_urls.pop(target_key, None)
+            summary["resolved_urls"].pop(target_key, None)
 
     core_cfg["resolvedProviderUrls"] = resolved_urls
     logger.info(

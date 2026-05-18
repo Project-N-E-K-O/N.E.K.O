@@ -409,8 +409,55 @@ class TestSchemaValidation:
         assert result["failed"] == 1
         assert core_cfg["resolvedProviderUrls"] == {}
 
-    async def test_save_auto_resolve_clears_urls_when_no_targets(self):
-        """没有候选目标时也清掉历史保存的地域 URL。"""
+    async def test_save_auto_resolve_keeps_unrelated_when_target_fails(self):
+        """target 测失败时丢掉它自己的旧 resolved，但不该误伤同一份 dict 里
+        其它 provider 的记忆。覆盖 CodeRabbit #3258131687 (失败丢旧值) 和
+        Codex #3258589662 (保留无关 provider) 的组合语义。
+        """
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {"config_field": "assistApiKeyQwenIntl"},
+            },
+        }
+        core_cfg = {
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                "assist:custom_unrelated": "https://example.com/v1",
+            },
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+            return_value={"success": False, "error": "auth_failed", "error_code": "auth_failed"},
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["failed"] == 1
+        assert core_cfg["resolvedProviderUrls"] == {
+            "assist:custom_unrelated": "https://example.com/v1",
+        }
+
+    async def test_save_auto_resolve_keeps_unrelated_resolved_when_no_targets(self):
+        """没有候选目标时保留历史 resolved URL：本次 save 没动 qwen_intl，
+        别把 CosyVoice intl runtime 还要用的 US 端点记忆顺手清掉
+        (Codex P1 #3258589662)。
+        """
         core_cfg = {
             "coreApi": "openai",
             "assistApi": "openai",
@@ -429,7 +476,9 @@ class TestSchemaValidation:
             result = await _auto_resolve_provider_urls_for_save(core_cfg)
 
         assert result["total"] == 0
-        assert core_cfg["resolvedProviderUrls"] == {}
+        assert core_cfg["resolvedProviderUrls"] == {
+            "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        }
 
 
 # ===========================================================================
