@@ -8,7 +8,8 @@ class _FakeConfigManager:
         return {
             "CORE_API_TYPE": "qwen_intl",
             "OPENROUTER_URL": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
-            "CORE_API_KEY": "sk-us-only",
+            "CORE_API_KEY": "sk-stale-core",
+            "AUDIO_API_KEY": "sk-us-only",
             "ASSIST_API_KEY_QWEN_INTL": "sk-us-only",
             "DISABLE_TTS": False,
         }
@@ -25,7 +26,7 @@ class _FakeConfigManager:
 
 
 def test_qwen_intl_us_compatible_only_key_skips_realtime_tts(monkeypatch):
-    """美国 compatible-mode Key 不能尝试连接新加坡 realtime TTS。"""
+    """美国 compatible-mode TTS Key 不能尝试连接新加坡 realtime TTS。"""
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _FakeConfigManager())
 
     worker, api_key_override, provider_key = tts_client.get_tts_worker(

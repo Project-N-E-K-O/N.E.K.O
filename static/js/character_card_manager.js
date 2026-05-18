@@ -8007,7 +8007,8 @@ function registerVoice() {
     formData.append('file', fileInput.files[0]);
     formData.append('prefix', prefix);
     const providerSelect = document.getElementById('voice-reference-provider-hint');
-    formData.append('provider', providerSelect ? providerSelect.value : 'cosyvoice');
+    const providerValue = providerSelect && providerSelect.value ? providerSelect.value.trim() : '';
+    formData.append('provider', providerValue || 'cosyvoice');
 
     fetch('/api/characters/voice_clone', {
         method: 'POST',

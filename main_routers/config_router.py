@@ -1649,13 +1649,10 @@ async def _auto_resolve_provider_urls_for_save(
         "results": {},
     }
     if not targets:
+        core_cfg["resolvedProviderUrls"] = {}
         return summary
 
-    resolved_urls = core_cfg.get("resolvedProviderUrls")
-    if not isinstance(resolved_urls, dict):
-        resolved_urls = {}
-    else:
-        resolved_urls = dict(resolved_urls)
+    resolved_urls: dict[str, str] = {}
 
     pending_targets: dict[str, dict[str, Any]] = {}
     checked_resolved_urls = checked_resolved_urls if isinstance(checked_resolved_urls, dict) else {}

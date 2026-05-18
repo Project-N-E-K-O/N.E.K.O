@@ -463,7 +463,7 @@ class QwenVoiceCloneClient:
         )
 
         if target_model is None:
-            target_model = get_cosyvoice_clone_model()
+            target_model = get_cosyvoice_clone_model(self.dashscope_base_url)
 
         dashscope.api_key = self.api_key
         configure_dashscope_sdk_urls(dashscope, self.dashscope_base_url, websocket_path="inference")

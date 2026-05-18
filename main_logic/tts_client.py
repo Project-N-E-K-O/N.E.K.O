@@ -75,9 +75,9 @@ def _qwen_intl_key_is_us_compatible_only(core_config: dict) -> bool:
     openrouter_url = str(core_config.get("OPENROUTER_URL") or "").lower()
     if "dashscope-us.aliyuncs.com" not in openrouter_url:
         return False
-    core_key = str(core_config.get("CORE_API_KEY") or "").strip()
+    tts_key = str(core_config.get("AUDIO_API_KEY") or "").strip()
     intl_key = str(core_config.get("ASSIST_API_KEY_QWEN_INTL") or "").strip()
-    return bool(core_key and intl_key and core_key == intl_key)
+    return bool(tts_key and intl_key and tts_key == intl_key)
 
 
 def _record_tts_telemetry(model_name: str, char_count: int):
@@ -2131,8 +2131,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
 
     # 从 voice 元数据中读取注册时使用的模型和地域 URL，缺失时回退到全局配置
     _voice_meta = _get_voice_meta(voice_id)
-    _enrolled_model = (_voice_meta or {}).get('clone_model') if _voice_meta else None
-    _voice_provider = (_voice_meta or {}).get('provider') if _voice_meta else None
+    _enrolled_model = _voice_meta.get('clone_model') if _voice_meta else None
+    _voice_provider = _voice_meta.get('provider') if _voice_meta else None
 
     dashscope.api_key = audio_api_key
     try:
@@ -2140,7 +2140,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         _dashscope_base_url = (_voice_meta or {}).get('dashscope_base_url') or _tts_api_config.get('base_url', '')
         configure_dashscope_sdk_urls(dashscope, _dashscope_base_url, websocket_path="inference")
     except Exception as e:
-        logger.debug("DashScope TTS 地域 URL 配置跳过: %s", e)
+        logger.warning("DashScope TTS 地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+        try:
+            configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+        except Exception as reset_error:
+            logger.error("DashScope TTS 默认地域重置失败: %s", reset_error, exc_info=True)
+            raise
     
     # CosyVoice 不需要预连接，直接发送就绪信号
     logger.info("CosyVoice TTS 已就绪，发送就绪信号")

@@ -3884,7 +3884,12 @@ async def get_voice_preview(
                 websocket_path="inference",
             )
         except Exception as e:
-            logger.debug("DashScope 预览地域 URL 配置跳过: %s", e)
+            logger.warning("DashScope 预览地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+            try:
+                configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+            except Exception as reset_error:
+                logger.error("DashScope 预览默认地域重置失败: %s", reset_error, exc_info=True)
+                raise
         try:
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
@@ -4295,7 +4300,7 @@ async def voice_clone(
         prefix: 音色前缀名
         ref_language: 参考音频的语言，可选值：ch, en, fr, de, ja, ko, ru
                       注意：这是参考音频的语言，不是目标语音的语言
-        provider: 服务商，可选值：cosyvoice (阿里百炼), cosyvoice_intl (阿里国际版), minimax (国服), minimax_intl (国际服)
+        provider: 服务商，可选值：cosyvoice (阿里百炼), cosyvoice_intl (阿里国际版), minimax (国服), minimax_intl (国际服), elevenlabs
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:

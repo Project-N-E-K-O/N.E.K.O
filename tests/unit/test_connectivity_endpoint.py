@@ -368,6 +368,69 @@ class TestSchemaValidation:
         assert result["success"] == 1
         assert core_cfg["resolvedProviderUrls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
 
+    async def test_save_auto_resolve_drops_stale_url_when_detection_fails(self):
+        """保存前检测失败时不能继续保留旧的地域 URL。"""
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {
+                "qwen_intl": {
+                    "name": "阿里国际版",
+                    "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "openrouter_urls": [
+                        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+                    ],
+                    "conversation_model": "qwen3.6-plus",
+                }
+            },
+            "api_key_registry": {
+                "qwen_intl": {
+                    "config_field": "assistApiKeyQwenIntl",
+                }
+            },
+        }
+        core_cfg = {
+            "assistApi": "qwen_intl",
+            "coreApiKey": "sk-core",
+            "assistApiKeyQwenIntl": "sk-intl",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+            },
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config), patch(
+            "main_routers.config_router._test_openai_compatible",
+            new_callable=AsyncMock,
+            return_value={"success": False, "error": "auth_failed", "error_code": "auth_failed"},
+        ):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["total"] == 1
+        assert result["failed"] == 1
+        assert core_cfg["resolvedProviderUrls"] == {}
+
+    async def test_save_auto_resolve_clears_urls_when_no_targets(self):
+        """没有候选目标时也清掉历史保存的地域 URL。"""
+        core_cfg = {
+            "coreApi": "openai",
+            "assistApi": "openai",
+            "coreApiKey": "sk-core",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+            },
+        }
+        fake_config = {
+            "core_api_providers": {},
+            "assist_api_providers": {},
+            "api_key_registry": {},
+        }
+
+        with patch("utils.api_config_loader.get_config", return_value=fake_config):
+            result = await _auto_resolve_provider_urls_for_save(core_cfg)
+
+        assert result["total"] == 0
+        assert core_cfg["resolvedProviderUrls"] == {}
+
 
 # ===========================================================================
 # 2. WebSocket connectivity mock scenarios (Req 1.3)

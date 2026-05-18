@@ -1927,6 +1927,7 @@ async function runConnectivityCheckBeforeSave(params) {
     try {
         const summary = await ConnectivityManager.testAll();
         params.resolvedProviderUrls = _resolvedProviderUrls;
+        // 后端保存前复用本轮已测 URL，避免重复请求。
         params.connectivityCheckedProviderUrls = summary && summary.resolvedProviderUrls
             ? summary.resolvedProviderUrls
             : {};
@@ -1934,6 +1935,7 @@ async function runConnectivityCheckBeforeSave(params) {
     } catch (error) {
         console.warn('[ConnectivityManager] 保存前自动检测失败:', error);
         params.resolvedProviderUrls = _resolvedProviderUrls;
+        // 检测失败时仍显式传空对象，让后端自行重新解析。
         params.connectivityCheckedProviderUrls = {};
         return {
             total: 0,
@@ -2811,13 +2813,14 @@ const ConnectivityManager = {
         });
         // 取消同一 cacheId 的前一次未完成请求（使用 scoped cacheId 避免不同上下文互相干扰）
         if (cacheId && this._abortControllers[cacheId]) {
-            this._abortControllers[cacheId]._cancelledByNewerTest = true;
-            this._abortControllers[cacheId].abort();
+            this._abortControllers[cacheId].cancelledByNewerTest = true;
+            this._abortControllers[cacheId].controller.abort();
         }
 
         const controller = new AbortController();
+        const controllerState = { controller, cancelledByNewerTest: false };
         if (cacheId) {
-            this._abortControllers[cacheId] = controller;
+            this._abortControllers[cacheId] = controllerState;
         }
 
         // 前端 15 秒超时
@@ -2851,7 +2854,7 @@ const ConnectivityManager = {
 
             clearTimeout(timeoutId);
             // Only delete if map still points to this controller (avoid race with newer request)
-            if (cacheId && this._abortControllers[cacheId] === controller) {
+            if (cacheId && this._abortControllers[cacheId] === controllerState) {
                 delete this._abortControllers[cacheId];
             }
 
@@ -2875,12 +2878,12 @@ const ConnectivityManager = {
             };
         } catch (err) {
             clearTimeout(timeoutId);
-            if (cacheId && this._abortControllers[cacheId] === controller) {
+            if (cacheId && this._abortControllers[cacheId] === controllerState) {
                 delete this._abortControllers[cacheId];
             }
 
             if (err.name === 'AbortError') {
-                if (controller._cancelledByNewerTest) {
+                if (controllerState.cancelledByNewerTest) {
                     return {
                         success: false,
                         cancelled: true,

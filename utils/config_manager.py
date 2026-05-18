@@ -3122,6 +3122,11 @@ class ConfigManager:
         finally:
             if not isinstance(core_cfg, dict):
                 core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
+        config['RESOLVED_PROVIDER_URLS'] = (
+            dict(core_cfg.get('resolvedProviderUrls'))
+            if isinstance(core_cfg.get('resolvedProviderUrls'), dict)
+            else {}
+        )
 
         # API Keys — 仅对与 coreApi/assistApi 匹配的服务商回退到 CORE_API_KEY
         if core_cfg.get('coreApiKey'):
@@ -3596,11 +3601,25 @@ class ConfigManager:
                     base_url = core_config.get('OPENROUTER_URL', '')
                 else:
                     qwen_profile = get_assist_api_profiles().get(qwen_provider, {})
-                    base_url = qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', ''))
+                    resolved_urls = core_config.get('RESOLVED_PROVIDER_URLS')
+                    resolved_core_cfg = {
+                        'resolvedProviderUrls': resolved_urls if isinstance(resolved_urls, dict) else {},
+                    }
+                    base_url = (
+                        self._get_saved_provider_url(
+                            resolved_core_cfg,
+                            'assist',
+                            qwen_provider,
+                            qwen_profile,
+                            'OPENROUTER_URL',
+                            'OPENROUTER_URLS',
+                        )
+                        or qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', ''))
+                    )
                 return {
                     'model': core_config.get(mapping['default_model'], ''), # 占位值，下游会覆盖成实际模型
                     'api_key': qwen_api_key,
-                    'base_url': base_url, # 占位值，下游会覆盖成实际 URL
+                    'base_url': base_url,
                     'is_custom': False,
                 }
 

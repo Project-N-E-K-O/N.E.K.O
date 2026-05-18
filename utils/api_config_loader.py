@@ -421,7 +421,23 @@ def get_cosyvoice_clone_model(provider: str | None = None) -> str:
     ``cosyvoice-v3.5-plus``，需要使用国际区域可用的 v3 系列模型。
     """
     normalized_provider = str(provider or '').strip().lower()
-    if normalized_provider in {'cosyvoice_intl', 'qwen_intl', 'intl', 'international'}:
+    intl_aliases = {
+        'cosyvoice_intl',
+        'qwen_intl',
+        'qwen_us',
+        'intl',
+        'international',
+        'us',
+        'usa',
+        'united_states',
+        'dashscope_us',
+        'dashscope-us',
+    }
+    if (
+        normalized_provider in intl_aliases
+        or "dashscope-intl.aliyuncs.com" in normalized_provider
+        or "dashscope-us.aliyuncs.com" in normalized_provider
+    ):
         return (
             get_default_models().get('cosyvoice_intl_clone_model')
             or _COSYVOICE_INTL_CLONE_MODEL_DEFAULT

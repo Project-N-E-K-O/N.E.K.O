@@ -76,3 +76,27 @@ def test_follow_core_non_omni_still_uses_core_provider_http_url():
         assert cm.get_core_config()["CONVERSATION_MODEL_URL"] == "https://api.openai.com/v1"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_tts_custom_non_active_qwen_intl_uses_saved_resolved_url():
+    """非当前 assist 的阿里国际 TTS 也要使用保存过的可用地域 URL。"""
+    us_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(config_dir, {
+            "coreApiKey": "sk-openai-core",
+            "coreApi": "openai",
+            "assistApi": "openai",
+            "assistApiKeyOpenai": "sk-openai-assist",
+            "assistApiKeyQwenIntl": "sk-intl",
+            "resolvedProviderUrls": {
+                "assist:qwen_intl": us_url,
+            },
+        })
+
+        tts_config = cm.get_model_api_config("tts_custom")
+
+        assert tts_config["api_key"] == "sk-intl"
+        assert tts_config["base_url"] == us_url
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
