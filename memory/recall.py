@@ -497,26 +497,42 @@ class MemoryRecallReranker:
         # (N, D) @ (D, Q) → (N, Q)
         scores_mat = candidate_matrix @ query_matrix.T
 
-        # Per-query top-K + union dedup + total cap. 保留 "first-seen" 顺序——
-        # query 顺序 × within-query rank → 重要 query 的高分 anchor 在前。
         n_candidates = scores_mat.shape[0]
         effective_k = max(0, min(per_query_k, n_candidates))
-        if effective_k == 0:
+        if effective_k == 0 or total_cap <= 0:
             return []
 
-        seen_ids: set[str] = set()
-        result: list[dict] = []
+        # Stage A：先把每条 query 的 top-K 候选 doc index 列表算出来——只算不截断，
+        # 不参与 cap 决策（cap 留给 stage B round-robin 时统一执行）。
+        per_query_picks: list[list[int]] = []  # 每元素是 list[survivor_idx]
         for q_idx in range(scores_mat.shape[1]):
             col = scores_mat[:, q_idx]
             if effective_k >= n_candidates:
                 top_idx = np.argsort(-col)
             else:
-                # argpartition O(N) 拿到无序 top-K，再对这 K 个排序
+                # argpartition O(N) 拿无序 top-K，再对这 K 个 argsort
                 unsorted_top = np.argpartition(-col, effective_k - 1)[:effective_k]
                 top_idx = unsorted_top[np.argsort(-col[unsorted_top])]
-            for idx in top_idx:
-                cand_idx = cand_survivor_indices[int(idx)]
-                doc = survivors[cand_idx]
+            per_query_picks.append([cand_survivor_indices[int(i)] for i in top_idx])
+
+        # Stage B：round-robin 取每轮每个 query 的第 r 名 → dedup 入池 → 满 cap
+        # 退出。fairness 关键点：cap 截断**只能发生在 round-robin 之后**，绝不
+        # 在 per-query 内部 early-return——否则前几个 query 会吃光全部 slot、
+        # 后面 query 一条 anchor 都拿不到，退化成 max-pool 那种 cold-topic
+        # 饥饿（PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜了先
+        # 判定的 fact"）。
+        #
+        # round-robin 之后 dedup 入池的 ordering（query 内 #1 → query 间 #1 →
+        # query 内 #2 → ...）也跟"first-seen = query 顺序 × within-query rank"
+        # 的老语义不一样：现在的 ordering 是 "每条 query 的 #1 先于任何 query
+        # 的 #2"，更贴近 prompt 里"每条 unabsorbed 平等享有 anchor"的设计意图。
+        seen_ids: set[str] = set()
+        result: list[dict] = []
+        for rank in range(effective_k):
+            for picks in per_query_picks:
+                if rank >= len(picks):
+                    continue
+                doc = survivors[picks[rank]]
                 doc_id = doc.get('id')
                 if not doc_id or doc_id in seen_ids:
                     continue

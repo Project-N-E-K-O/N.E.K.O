@@ -958,9 +958,86 @@ async def test_per_query_topk_respects_total_cap():
         per_query_k=2, total_cap=4,
     )
     assert len(out) == 4, f"total_cap=4 没截断；实际返回 {len(out)} 条"
-    # First-seen 顺序：q0 的 top-2 应该最先入选
+    # Round-robin 顺序：先每条 query 各出 #1，所以截到 4 时拿到的是
+    # q0~q3 的 #1（c0_h1, c1_h1, c2_h1, c3_h1）——q0 的 #2 (c0_h2) 必须
+    # 留给下一轮，但 cap 在 round 0 内就触发 → c0_h2 不该出现。
     ids = [o["id"] for o in out]
-    assert ids[0] == "c0_h1" and ids[1] == "c0_h2"
+    assert ids == ["c0_h1", "c1_h1", "c2_h1", "c3_h1"], (
+        f"round-robin ordering 违约；实际: {ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_cap_does_not_starve_late_queries():
+    """fairness regression：``total_cap`` 截断**只能**发生在 round-robin
+    之后，不能在 per-query 内部 early-return。否则前几个 query 吃光所有
+    slot，后面 query 一条 anchor 都拿不到——退化成 max-pool 那种 cold-
+    topic 饥饿。PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜
+    了先判定的 fact"。
+
+    Setup: 5 query 各指向独立方向，每方向 2 个 candidate（high1, high2）。
+    per_query_k=2 + total_cap=5 → 期望 round-robin 拿到 5 个 query 各自
+    的 #1（c0_h1..c4_h1），任何 _h2 都不该出现（cap 在 round 0 就满了）。
+    """
+    def _onehot(dim, idx):
+        v = [0.0] * dim
+        v[idx] = 1.0
+        return v
+
+    qmap = {f"q{i}": _onehot(5, i) for i in range(5)}
+    svc = _FakeService(
+        available=True,
+        model_id="fake-5d-int8",
+        vector_factory=lambda text: qmap.get(text, [0.0] * 5),
+    )
+    r = _make_reranker(svc)
+    obs = []
+    for i in range(5):
+        obs.append(_obs(
+            f"c{i}_h1", f"t{i}_h1",
+            embedding=_onehot(5, i), model_id="fake-5d-int8",
+        ))
+        v = _onehot(5, i)
+        v[(i + 1) % 5] = 0.2
+        obs.append(_obs(
+            f"c{i}_h2", f"t{i}_h2",
+            embedding=v, model_id="fake-5d-int8",
+        ))
+
+    out = await r.aretrieve_per_query_topk(
+        obs, [f"q{i}" for i in range(5)],
+        per_query_k=2, total_cap=5,
+    )
+    ids = [o["id"] for o in out]
+    # 每个 query 至少出 1 条 anchor（fairness 核心保证）
+    for i in range(5):
+        assert f"c{i}_h1" in ids, (
+            f"q{i} 在 cap=5 + 5 queries 下被饿死；ids={ids}。"
+            f"这就是用户在 PR #1401 thread 抓到的 fairness 退化——'便宜了先"
+            f"判定的 fact'。"
+        )
+    # _h2 都还在等下一轮，不该出现
+    for i in range(5):
+        assert f"c{i}_h2" not in ids
+
+
+@pytest.mark.asyncio
+async def test_per_query_topk_total_cap_zero_returns_empty():
+    """``total_cap <= 0`` 时必须直接返 []，不能因为先 append 后 check 而
+    漏出 1 条结果（CodeRabbit Minor on PR #1401）。"""
+    qmap = {"q": [1.0, 0.0]}
+    svc = _FakeService(
+        available=True,
+        vector_factory=lambda text: qmap.get(text, [0.0, 0.0]),
+    )
+    r = _make_reranker(svc)
+    obs = [_obs("a", "ta", embedding=[1.0, 0.0])]
+    assert await r.aretrieve_per_query_topk(
+        obs, ["q"], per_query_k=2, total_cap=0,
+    ) == []
+    assert await r.aretrieve_per_query_topk(
+        obs, ["q"], per_query_k=2, total_cap=-5,
+    ) == []
 
 
 @pytest.mark.asyncio
