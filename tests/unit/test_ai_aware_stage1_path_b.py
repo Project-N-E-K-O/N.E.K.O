@@ -321,11 +321,17 @@ async def test_stage2_filters_out_ai_disclosure_facts():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_path_b_cold_start_lookback_derived_from_constants():
-    """B cold start 时 last_b 推算 = last_a_msg_ts - N×IDLE_MIN，
-    不需要独立的 LOOKBACK_MINUTES config。"""
+    """B cold start 时 last_b 推算 = last_a_msg_ts - max(N_TICKS, N_TURNS)×IDLE_MIN，
+    不需要独立的 LOOKBACK_MINUTES config。
+    取 max 而不是单 N_TICKS 是为了 cover sparse turn 场景下 A 两 tick 跨度
+    >> IDLE_MIN 的情况——若只看 N_TICKS×IDLE_MIN，cold start last_b 会落在
+    A 真正处理过的范围之内，B 永久 skip 那段前的 AI-only msg（Codex P2
+    round-6 on PR #1408）。
+    """
     from app import memory_server
     from config import (
         EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+        EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
         EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     )
 
@@ -343,21 +349,79 @@ async def test_path_b_cold_start_lookback_derived_from_constants():
         await memory_server._run_path_b('悠怡', state)
 
     # 验证 aretrieve_original_by_timeframe 被调，start_time 正好是
-    # last_a_msg_ts - N × IDLE_MINUTES（cold-start lookback 推算）
+    # last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MIN（cold-start lookback）
     fake_time_manager.aretrieve_original_by_timeframe.assert_awaited_once()
     call_kwargs = fake_time_manager.aretrieve_original_by_timeframe.await_args
     start_time = call_kwargs.args[1]
     end_time = call_kwargs.args[2]
+    expected_n = max(
+        EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+        EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
+    )
     expected_lookback = timedelta(
-        minutes=EVIDENCE_AI_AWARE_EVERY_N_A_TICKS * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+        minutes=expected_n * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
     )
     assert start_time == last_a_msg_ts - expected_lookback, (
-        f"cold start lookback 必须 = N×IDLE_MIN = {expected_lookback}, "
-        f"实际 start={start_time}, end={end_time}, last_a={last_a_msg_ts}"
+        f"cold start lookback 必须 = max(N_TICKS, N_TURNS)×IDLE_MIN = "
+        f"{expected_lookback}, 实际 start={start_time}, end={end_time}, "
+        f"last_a={last_a_msg_ts}"
     )
     assert end_time == last_a_msg_ts, (
         "B 窗口下游边界必须是 last_a_msg_ts（A 实际处理过的最晚 msg），"
         "不是 wall-clock now"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_path_b_cold_start_uses_max_of_ticks_and_turns():
+    """Regression (Codex P2 round-6 on PR #1408)：cold-start lookback 必须
+    取 max(N_TICKS, N_TURNS) × IDLE_MIN，而不能只用 N_TICKS。否则在 sparse
+    turn 场景（turn-count gate 触发的 A tick 跨度 >> piggyback 估算）下，
+    cold start last_b 落在 A 真正处理范围之内 → B 永久 skip 那段前的
+    AI-only msg。
+
+    用 N_TURNS 远大于 N_TICKS（默认 10 vs 3）来锁死这个语义：若实现只用
+    N_TICKS，本测试会失败。
+    """
+    from app import memory_server
+    from config import (
+        EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+        EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
+        EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
+    )
+
+    # 仅在默认配置 N_TURNS > N_TICKS 时此 regression 才有意义
+    assert EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS > EVIDENCE_AI_AWARE_EVERY_N_A_TICKS, (
+        "本 test 依赖默认 N_TURNS > N_TICKS，否则 max 两者退化、测不出区别"
+    )
+
+    last_a_msg_ts = datetime(2026, 5, 18, 12, 0, 0)
+    state = {'last_a_msg_ts': last_a_msg_ts}
+
+    fake_time_manager = MagicMock()
+    fake_time_manager.aretrieve_original_by_timeframe = AsyncMock(return_value=[])
+
+    with patch.object(memory_server, 'time_manager', fake_time_manager):
+        await memory_server._run_path_b('悠怡', state)
+
+    start_time = fake_time_manager.aretrieve_original_by_timeframe.await_args.args[1]
+    # 关键：实际用的 lookback 必须 >= N_TURNS × IDLE_MIN（严格 > N_TICKS × IDLE_MIN）
+    n_turns_lookback = timedelta(
+        minutes=EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+    )
+    n_ticks_lookback = timedelta(
+        minutes=EVIDENCE_AI_AWARE_EVERY_N_A_TICKS * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+    )
+    actual_lookback = last_a_msg_ts - start_time
+    assert actual_lookback >= n_turns_lookback, (
+        f"cold-start lookback ({actual_lookback}) 必须 >= N_TURNS×IDLE_MIN "
+        f"({n_turns_lookback}) 才能 cover sparse turn 场景"
+    )
+    assert actual_lookback > n_ticks_lookback, (
+        f"cold-start lookback ({actual_lookback}) 必须严格 > N_TICKS×IDLE_MIN "
+        f"({n_ticks_lookback})——否则等于只看了 piggyback 估算，sparse "
+        f"turn 场景下 A 真处理范围更老的 AI-only msg 会永久 skip"
     )
 
 

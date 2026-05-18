@@ -1822,7 +1822,8 @@ async def _run_path_b(name: str, state: dict) -> None:
 
     设计要点：
       1. 窗口 = [last_b_check_ts, last_a_msg_ts]。cold start last_b 推算 =
-         last_a_msg_ts - N × IDLE_MINUTES（保守覆盖 A 已经处理过的范围）
+         last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MINUTES（取两种 A 触发
+         节律的较保守值，cover sparse turn 场景）
       2. SQL 层 LIMIT MAX_AI_AWARE_WINDOW_MSGS 防极端长窗口爆 prompt
       3. 已知 fact 池：从 facts.json 拉 created_at ≥ last_b 的 fact（不设
          上界——A idle delay 让最新一批 A facts 的 created_at 略晚于
@@ -1852,12 +1853,22 @@ async def _run_path_b(name: str, state: dict) -> None:
 
     last_b = state.get('last_b_check_ts')
     if last_b is None:
-        # Cold start：B 第一次 trigger 时已等了 EVIDENCE_AI_AWARE_EVERY_N_A_TICKS
-        # 个 A tick。每个 A tick 平均覆盖 EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES 分钟
-        # （idle gate 阈值），所以 A 已覆盖范围 ≈ N × IDLE_MINUTES 分钟。
-        # 用这个推算作为 B 第一次窗口起点。
+        # Cold start lookback：B 第一次 trigger 时 last_b 无值，需要估个起点。
+        # A tick 不一定按 IDLE gate 节律走——也可能被 turn-count gate
+        # (EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS 累积) 触发，或在 sparse turn
+        # 场景（user 间歇性发声、turn 间隔 >> IDLE_MIN）下两 tick 之间跨度
+        # 远超 IDLE_MIN。只按 piggyback 估算 (N_TICKS × IDLE_MIN) 会让 cold
+        # start 起点落在 A 真正处理过的范围之内，B 永久 skip 那段之前的
+        # AI-only msg（Codex P2 round-6 on PR #1408）。
+        # 修法：取 max(piggyback 节律, turn-count 节律) × IDLE_MIN 当估算
+        # 上限。默认下 max(3, 10) × 10min = 100min。LIMIT 兜底防爆 prompt，
+        # Stage-1 dedup hash 防双写——overshoot 是安全的。
+        cold_start_ticks_estimate = max(
+            EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+            EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
+        )
         estimated_a_coverage = timedelta(
-            minutes=EVIDENCE_AI_AWARE_EVERY_N_A_TICKS * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+            minutes=cold_start_ticks_estimate * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
         )
         last_b = last_a_msg_ts - estimated_a_coverage
 
