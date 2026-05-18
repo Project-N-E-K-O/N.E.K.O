@@ -922,8 +922,12 @@ class FactStore:
             if obs['target_type'] != ttype:
                 # LLM 说的 target_type 与实际不符 → 以实际为准（修正）。
                 # 不在 loop 里 log，循环结束统一汇总输出。
-                target_type_fixes[(ttype, obs['target_type'])] = (
-                    target_type_fixes.get((ttype, obs['target_type']), 0) + 1
+                # ttype 来自 LLM JSON，理论上是 str/None；hallucinate 成
+                # list/dict 时直接进 dict key 会 TypeError 把整个 Stage-2 拖崩
+                # （codex review #1414）。用 repr 把非 hashable 值兜成 str。
+                key_ttype = ttype if ttype is None or isinstance(ttype, str) else repr(ttype)
+                target_type_fixes[(key_ttype, obs['target_type'])] = (
+                    target_type_fixes.get((key_ttype, obs['target_type']), 0) + 1
                 )
             validated.append({
                 'source_fact_id': s.get('source_fact_id'),
