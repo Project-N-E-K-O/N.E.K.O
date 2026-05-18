@@ -1217,14 +1217,16 @@ class OmniOfflineClient:
             
             user_message = HumanMessage(content=content)
             logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
-            
+
             # Clear pending images after using them
             self._pending_images.clear()
         else:
             # Text-only message
             user_message = HumanMessage(content=text.strip())
-        
+
         self._conversation_history.append(user_message)
+        if has_images:
+            self._evict_old_images()
         
         # Callback for user input
         if self.on_input_transcript:
@@ -1793,6 +1795,37 @@ class OmniOfflineClient:
     def has_pending_images(self) -> bool:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
+
+    def _evict_old_images(self, keep_turns: int = 2) -> None:
+        # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
+        # 仅留文本。base64 图片在 vision tokenizer 下约 1.5k~3k tokens/张，
+        # 多轮累积会把 input 推到 128k+。
+        image_turn_indices = [
+            idx for idx, msg in enumerate(self._conversation_history)
+            if isinstance(msg, HumanMessage) and isinstance(msg.content, list)
+            and any(isinstance(item, dict) and item.get("type") == "image_url" for item in msg.content)
+        ]
+        if len(image_turn_indices) <= keep_turns:
+            return
+
+        evicted_imgs = 0
+        for idx in image_turn_indices[:-keep_turns]:
+            old = self._conversation_history[idx]
+            kept_parts = []
+            for item in old.content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    evicted_imgs += 1
+                else:
+                    kept_parts.append(item)
+            if len(kept_parts) == 1 and isinstance(kept_parts[0], dict) and kept_parts[0].get("type") == "text":
+                self._conversation_history[idx] = HumanMessage(content=kept_parts[0].get("text", ""))
+            else:
+                self._conversation_history[idx] = HumanMessage(content=kept_parts)
+
+        logger.info(
+            f"🖼️ Evicted {evicted_imgs} image(s) from {len(image_turn_indices) - keep_turns} older turn(s); "
+            f"kept images in last {keep_turns} turn(s)"
+        )
     
     # ------------------------------------------------------------------
     # LLM message injection channels

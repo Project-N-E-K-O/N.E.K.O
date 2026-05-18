@@ -112,8 +112,8 @@
                 <el-table-column :label="$t('runs.exportContent')">
                   <template #default="scope">
                     <div v-if="scope.row.type === 'text'" class="export-text">{{ scope.row.text }}</div>
-                    <div v-else-if="scope.row.type === 'url'"><a :href="scope.row.url" target="_blank">{{ scope.row.url }}</a></div>
-                    <div v-else-if="scope.row.type === 'binary_url'"><a :href="scope.row.binary_url" target="_blank">{{ scope.row.binary_url }}</a></div>
+                    <div v-else-if="scope.row.type === 'url'"><a :href="scope.row.url" @click.prevent="openExternalUrl(scope.row.url)">{{ scope.row.url }}</a></div>
+                    <div v-else-if="scope.row.type === 'binary_url'"><a :href="scope.row.binary_url" @click.prevent="openExternalUrl(scope.row.binary_url)">{{ scope.row.binary_url }}</a></div>
                     <div v-else-if="scope.row.type === 'json'" class="export-json">
                       <el-collapse>
                         <el-collapse-item :title="scope.row.label || scope.row.description || 'JSON'">
@@ -147,6 +147,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
 import { useRunsStore } from '@/stores/runs'
+import { openExternalUrl } from '@/utils/openExternal'
 
 const runsStore = useRunsStore()
 const { t } = useI18n()
