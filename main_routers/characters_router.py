@@ -4482,7 +4482,10 @@ async def voice_clone(
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
     # ---------- 公共流程：MD5 去重 ----------
-    existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+    if provider in ('cosyvoice', 'cosyvoice_intl'):
+        existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
+    else:
+        existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
     if existing:
         voice_id, voice_data = existing
         logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -4794,7 +4797,7 @@ async def voice_clone_direct(request: Request):
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
             # 3. MD5 去重检查
-            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
             if existing:
                 voice_id, voice_data = existing
                 logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")

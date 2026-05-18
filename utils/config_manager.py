@@ -2576,6 +2576,34 @@ class ConfigManager:
                 return (vid, vdata)
         return None
 
+    def find_cosyvoice_voice_by_audio_md5(
+        self,
+        provider: str,
+        audio_md5: str,
+        ref_language: str | None = None,
+    ):
+        """按 CosyVoice 当前与旧版存储分区查找参考音频 MD5。"""
+        runtime = self.get_cosyvoice_clone_runtime(provider)
+        storage_keys = []
+        seen = set()
+
+        def _add(storage_key: str):
+            storage_key = (storage_key or '').strip()
+            if storage_key and storage_key not in seen:
+                seen.add(storage_key)
+                storage_keys.append(storage_key)
+
+        _add(runtime.get('storage_key', ''))
+        if runtime.get('provider') == 'cosyvoice_intl':
+            # 旧版国际版曾按原始 API Key 入库，MD5 去重也必须兼容该分区。
+            _add(runtime.get('api_key', ''))
+
+        for storage_key in storage_keys:
+            existing = self.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                return existing
+        return None
+
     def delete_voice_for_current_api(self, voice_id):
         """删除当前 TTS 配置下的指定音色（含独立服务商音色）"""
         voice_storage = self.load_voice_storage()

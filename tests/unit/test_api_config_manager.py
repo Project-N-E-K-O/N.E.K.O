@@ -698,6 +698,33 @@ class TestVoiceCloneKeyResolution:
         assert runtime['base_url'] == us_url
         assert runtime['storage_key'].startswith('__COSYVOICE_INTL__')
 
+    @pytest.mark.unit
+    def test_cosyvoice_intl_md5_dedupe_checks_legacy_raw_key_bucket(self, config_manager):
+        """国际版 MD5 去重必须兼容旧版 raw API Key 分区。"""
+        intl_key = 'sk-qwen-intl-legacy'
+        audio_md5 = 'md5-legacy-audio'
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-cn',
+            'assistApiKeyQwenIntl': intl_key,
+            'enableCustomApi': False,
+        })
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice_intl')
+        config_manager.save_voice_for_api_key(intl_key, 'voice-old-intl', {
+            'voice_id': 'voice-old-intl',
+            'provider': 'cosyvoice_intl',
+            'audio_md5': audio_md5,
+            'ref_language': 'en',
+        })
+
+        assert runtime['storage_key'] != intl_key
+        assert config_manager.find_voice_by_audio_md5(runtime['storage_key'], audio_md5, 'en') is None
+        existing = config_manager.find_cosyvoice_voice_by_audio_md5('cosyvoice_intl', audio_md5, 'en')
+        assert existing is not None
+        assert existing[0] == 'voice-old-intl'
+
 
 # ---------------------------------------------------------------------------
 # 11. follow_core / follow_assist must NOT be misclassified as 'local' realtime
