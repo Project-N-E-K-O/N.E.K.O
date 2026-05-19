@@ -178,7 +178,7 @@ class PluginPacker:
         pack_rules = load_pack_rules(source.pyproject_toml)
         plugin_payload_dir = paths.plugins_dir / source.plugin_id
         plugin_payload_dir.mkdir(parents=True, exist_ok=True)
-        packaged_files = self.copy_plugin_runtime_files(
+        staged_files = self.copy_plugin_runtime_files(
             source.plugin_dir,
             plugin_payload_dir,
             rules=pack_rules,
@@ -191,7 +191,7 @@ class PluginPacker:
             payload_dir=paths.payload_dir,
             plugin_payload_dir=plugin_payload_dir,
             profiles_dir=paths.profiles_dir,
-            packaged_files=packaged_files,
+            staged_files=staged_files,
             profile_files=profile_files,
             payload_hash=payload_hash,
         )
@@ -201,12 +201,12 @@ class PluginPacker:
         sources: list[PluginSource],
         paths: PackPaths,
     ) -> PayloadBuildResult:
-        packaged_files: list[Path] = []
+        staged_files: list[Path] = []
         for source in sources:
             plugin_payload_dir = paths.plugins_dir / source.plugin_id
             plugin_payload_dir.mkdir(parents=True, exist_ok=True)
             pack_rules = load_pack_rules(source.pyproject_toml)
-            packaged_files.extend(
+            staged_files.extend(
                 self.copy_plugin_runtime_files(
                     source.plugin_dir,
                     plugin_payload_dir,
@@ -222,7 +222,7 @@ class PluginPacker:
             payload_dir=paths.payload_dir,
             plugin_payload_dir=paths.plugins_dir / sources[0].plugin_id,
             profiles_dir=paths.profiles_dir,
-            packaged_files=packaged_files,
+            staged_files=staged_files,
             profile_files=profile_files,
             payload_hash=payload_hash,
         )
@@ -348,7 +348,7 @@ class PluginPacker:
             package_path=package_path,
             staging_dir=paths.staging_root if keep_staging else None,
             profile_files=payload.profile_files if keep_staging else [],
-            packaged_files=payload.packaged_files if keep_staging else [],
+            staged_files=payload.staged_files if keep_staging else [],
             payload_hash=payload.payload_hash,
         )
 

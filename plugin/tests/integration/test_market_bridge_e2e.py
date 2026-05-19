@@ -179,8 +179,8 @@ def bridge_e2e_env(
     from plugin.server.application.plugin_cli import service as plugin_cli_service
     from plugin.server.routes import market_bridge as market_bridge_module
 
-    monkeypatch.setattr(plugin_cli_service, "_UNPACK_PLUGINS_ROOT", user_root)
-    monkeypatch.setattr(plugin_cli_service, "_UNPACK_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(plugin_cli_service, "_INSTALL_PLUGINS_ROOT", user_root)
+    monkeypatch.setattr(plugin_cli_service, "_INSTALL_PROFILES_ROOT", profiles_root)
     monkeypatch.setattr(plugin_cli_service, "_TARGET_ROOT", packages_root)
     monkeypatch.setattr(market_bridge_module, "USER_PLUGIN_CONFIG_ROOT", user_root)
 

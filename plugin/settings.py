@@ -205,10 +205,22 @@ PROCESS_TERMINATE_TIMEOUT = _get_float_env("NEKO_PROCESS_TERMINATE_TIMEOUT", 0.5
 
 # ========== 插件市场配置 ==========
 
-# 插件市场 URL。配置后插件管理面板会显示"插件市场"入口。
+# 插件市场 API URL。配置后插件管理面板会显示"插件市场"入口。
 # Env: NEKO_MARKET_URL, default="http://localhost:8000"（本地开发默认值）
 # 生产部署时通过环境变量覆盖为线上 Market 地址；设为空字符串则隐藏市场入口。
 MARKET_URL = os.getenv("NEKO_MARKET_URL", "http://localhost:8000").strip()
+
+# 插件市场 Web URL。插件管理器打开详情页时使用这个地址，而 API 请求仍走
+# MARKET_URL + /api/v1。本地开发默认前端 Vite 端口 5173；生产未显式配置时
+# 默认与 MARKET_URL 同源。
+# Env: NEKO_MARKET_WEB_URL
+_market_web_url_env = os.getenv("NEKO_MARKET_WEB_URL")
+if _market_web_url_env is not None:
+    MARKET_WEB_URL = _market_web_url_env.strip()
+elif MARKET_URL.rstrip("/") in {"http://localhost:8000", "http://127.0.0.1:8000"}:
+    MARKET_WEB_URL = "http://localhost:5173"
+else:
+    MARKET_WEB_URL = MARKET_URL
 
 # 允许的 Market CORS 来源（逗号分隔）。
 # 用于允许 Market 前端跨域调用本地 /market/* 端点。

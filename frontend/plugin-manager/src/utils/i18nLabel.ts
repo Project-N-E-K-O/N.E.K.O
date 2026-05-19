@@ -18,6 +18,39 @@
  */
 export type LocalizedText = string | Record<string, string>
 
+export interface PluginI18nMessages {
+  default_locale?: string
+  messages?: Record<string, Record<string, string>>
+}
+
+export function resolvePluginI18nMessage(
+  i18n: PluginI18nMessages | null | undefined,
+  key: string,
+  locale: string,
+  fallback: string = '',
+): string {
+  const messages = i18n?.messages
+  if (!messages || !key) return fallback
+
+  const primary = String(locale).split(/[-_]/)[0]
+  const candidates = [
+    locale,
+    primary && primary !== locale ? primary : undefined,
+    i18n?.default_locale,
+    'en-US',
+    'en',
+  ].filter((item): item is string => typeof item === 'string' && item.length > 0)
+
+  for (const candidate of candidates) {
+    const message = messages[candidate]?.[key]
+    if (typeof message === 'string' && message.length > 0) {
+      return message
+    }
+  }
+
+  return fallback
+}
+
 export function resolveLocalizedText(
   value: LocalizedText | null | undefined,
   locale: string,

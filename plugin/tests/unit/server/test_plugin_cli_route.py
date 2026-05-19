@@ -43,7 +43,22 @@ def _copy_fixture_plugin(tmp_path: Path, fixture_name: str) -> Path:
     source = FIXTURE_PLUGINS_ROOT / fixture_name
     target = tmp_path / fixture_name
     shutil.copytree(source, target)
+    if fixture_name == "bundle_alpha":
+        _write_vendor_dist(target, "shared-lib", "2.0.0")
+        _write_vendor_dist(target, "alpha-only", "0.1.0")
+    elif fixture_name == "bundle_beta":
+        _write_vendor_dist(target, "shared-lib", "2.0.0")
+        _write_vendor_dist(target, "beta-only", "0.5.0")
     return target
+
+
+def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
+    dist_dir = plugin_dir / "vendor" / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture
@@ -179,8 +194,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", target_dir)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -262,7 +277,7 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """省略 plugins_root/profiles_root 时，默认落盘到 _UNPACK_*_ROOT 下。"""
+    """省略 plugins_root/profiles_root 时，默认落盘到 _INSTALL_*_ROOT 下。"""
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     package_path = tmp_path / "simple_plugin.neko-plugin"
     pack_plugin(plugin_dir, package_path)
@@ -273,8 +288,8 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", default_plugins_root)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", default_profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", default_plugins_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", default_profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

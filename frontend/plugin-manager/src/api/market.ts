@@ -18,6 +18,7 @@ import axios from 'axios'
 import type { AxiosInstance } from 'axios'
 
 let _marketBaseUrl: string | null = null
+let _marketWebBaseUrl: string | null = null
 let _marketClient: AxiosInstance | null = null
 
 /** Market 上 latest_version 嵌套对象（v2 schema）。 */
@@ -223,13 +224,20 @@ async function getMarketBaseUrl(): Promise<string | null> {
   try {
     const res = await axios.get('/market/status', { timeout: 3000 })
     if (res.data?.market_url) {
-      _marketBaseUrl = res.data.market_url
+      _marketBaseUrl = normalizeBaseUrl(res.data.market_url)
+      _marketWebBaseUrl = normalizeBaseUrl(res.data.market_web_url || res.data.market_url)
       return _marketBaseUrl
     }
   } catch {
     // 本地服务不可达或未配置
   }
   return null
+}
+
+async function getMarketWebBaseUrl(): Promise<string | null> {
+  if (_marketWebBaseUrl !== null) return _marketWebBaseUrl
+  await getMarketBaseUrl()
+  return _marketWebBaseUrl
 }
 
 /** 获取 Market HTTP 客户端。 */
@@ -251,6 +259,7 @@ async function getClient(): Promise<AxiosInstance | null> {
 /** 重置缓存（Market URL 变更或需要切换环境时调用）。 */
 export function resetMarketClient(): void {
   _marketBaseUrl = null
+  _marketWebBaseUrl = null
   _marketClient = null
 }
 
@@ -355,5 +364,9 @@ export async function fetchMarketPluginVersions(
 
 /** 获取 Market URL（供外部链接使用）。 */
 export async function getMarketUrl(): Promise<string | null> {
-  return getMarketBaseUrl()
+  return getMarketWebBaseUrl()
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '')
 }

@@ -264,10 +264,13 @@ class PluginCliService:
             # or the bytes were tampered with in transit.
             actual_sha256 = hashlib.sha256(content).hexdigest().lower()
 
-            # Step 3 — unpack.
+            # Step 3 — install/unpack into the user plugin root.
             saved_path = str(saved["path"])
-            unpack_result = await self.unpack(
-                package=saved_path, on_conflict=on_conflict
+            unpack_result = await self.install(
+                package=saved_path,
+                plugins_root=None,
+                profiles_root=None,
+                on_conflict=on_conflict,
             )
             target_dir, target_plugin_id = self._extract_unpack_target(
                 unpack_result
@@ -434,8 +437,10 @@ class PluginCliService:
         """
 
         unpacked_plugins = unpack_result.get("unpacked_plugins")
+        if unpacked_plugins is None:
+            unpacked_plugins = unpack_result.get("installed_plugins")
         if not isinstance(unpacked_plugins, list) or not unpacked_plugins:
-            raise ValueError("unpack returned no plugins")
+            raise ValueError("install returned no plugins")
         first = unpacked_plugins[0]
         if not isinstance(first, dict):
             raise ValueError("unpack returned malformed unpacked_plugins entry")

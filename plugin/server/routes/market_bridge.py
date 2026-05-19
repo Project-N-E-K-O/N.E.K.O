@@ -35,7 +35,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.settings import MARKET_URL, USER_PLUGIN_CONFIG_ROOT
+from plugin.settings import MARKET_URL, MARKET_WEB_URL, USER_PLUGIN_CONFIG_ROOT
 
 router = APIRouter(prefix="/market", tags=["market-bridge"])
 logger = get_logger("server.routes.market_bridge")
@@ -88,6 +88,7 @@ class MarketStatusResponse(BaseModel):
     installed_count: int = 0
     token_required: bool = True
     market_url: str = ""
+    market_web_url: str = ""
 
 
 class MarketInstallRequest(BaseModel):
@@ -199,7 +200,11 @@ async def market_status():
     except Exception:
         count = 0
 
-    return MarketStatusResponse(installed_count=count, market_url=MARKET_URL)
+    return MarketStatusResponse(
+        installed_count=count,
+        market_url=MARKET_URL,
+        market_web_url=MARKET_WEB_URL,
+    )
 
 
 @router.post("/install", response_model=MarketInstallResponse)

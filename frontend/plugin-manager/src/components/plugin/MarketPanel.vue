@@ -544,7 +544,7 @@ function handlePageChange(page: number) {
 
 function handlePluginClick(plugin: MarketWorkbenchItem): void {
   if (marketBaseUrl.value) {
-    const path = plugin.slug ? `/plugin/${plugin.slug}` : `/plugin/${plugin.rawId}`
+    const path = `/#/plugin/${encodeURIComponent(String(plugin.rawId))}`
     window.open(`${marketBaseUrl.value}${path}`, '_blank')
   } else if (plugin.github_repo) {
     window.open(plugin.github_repo, '_blank')
