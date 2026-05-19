@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 from plugin.plugins.galgame_plugin.store import GalgameStore
 from plugin.plugins.galgame_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
@@ -596,8 +597,27 @@ def _tutorial_store() -> GalgameStore:
     if _tutorial_store_instance is not None:
         return _tutorial_store_instance
     plugin_dir = Path(__file__).resolve().parent
+    legacy_store_path = plugin_dir / "data" / "galgame_store.json"
+    runtime_store_path = (
+        resolve_runtime_data_root()
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json"
+    )
+    store_path = runtime_store_path
+    if legacy_store_path.exists() and not runtime_store_path.exists():
+        try:
+            runtime_store_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_store_path.write_bytes(legacy_store_path.read_bytes())
+        except OSError:
+            logger.warning(
+                "tutorial progress store migration failed; using legacy store",
+                exc_info=True,
+            )
+            store_path = legacy_store_path
     _tutorial_store_instance = GalgameStore(
-        plugin_dir / "data" / "galgame_store.json",
+        store_path,
         logger,
     )
     return _tutorial_store_instance

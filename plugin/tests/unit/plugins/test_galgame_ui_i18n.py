@@ -23,6 +23,13 @@ STATIC_I18N_JS = (
     / "static"
     / "i18n.js"
 )
+STATIC_INDEX_HTML = (
+    Path(__file__).resolve().parents[3]
+    / "plugins"
+    / "galgame_plugin"
+    / "static"
+    / "index.html"
+)
 
 EXPECTED_BUNDLE_LOCALES = ["zh-CN", "zh-TW", "en", "ja", "ru", "ko"]
 
@@ -43,6 +50,19 @@ def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
             f"{locale}: missing={missing[:20]} extra={extra[:20]}"
         )
         assert all(isinstance(value, str) and value for value in bundle.values())
+
+
+def test_rapidocr_language_buttons_use_full_i18n_keys() -> None:
+    html = STATIC_INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'id="rapidocrLangChBtn"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.ch"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.japan"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.korean"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.en"' in html
+    assert "ui.install.rapidocr.lang.ch_short" not in html
+    assert "ui.install.rapidocr.lang.japan_short" not in html
+    assert "ui.install.rapidocr.lang.korean_short" not in html
 
 
 def test_galgame_ui_i18n_zh_tw_route_locale_normalization() -> None:
@@ -71,6 +91,71 @@ def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monk
     response = asyncio.run(module.get_galgame_ui_locale("galgame_plugin"))
 
     assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
+
+
+def test_tutorial_store_uses_runtime_data_root(monkeypatch, tmp_path: Path) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == (
+        runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    )
+
+
+def test_tutorial_store_migrates_legacy_source_store(monkeypatch, tmp_path: Path) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = (
+        fake_plugin_dir
+        / "data"
+        / "galgame_store.json"
+    )
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+
+    install_routes._tutorial_store()
+
+    assert runtime_path.read_text(encoding="utf-8") == legacy_path.read_text(encoding="utf-8")
+
+
+def test_tutorial_store_uses_legacy_store_when_migration_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+
+    original_mkdir = Path.mkdir
+
+    def fail_runtime_mkdir(self, *args, **kwargs):
+        if self == runtime_root / "plugins" / "galgame_plugin" / "data":
+            raise OSError("blocked")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_runtime_mkdir)
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == legacy_path
 
 
 def test_galgame_ui_i18n_zh_tw_is_traditional_chinese_not_zh_cn_copy() -> None:

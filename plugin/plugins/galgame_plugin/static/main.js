@@ -5316,7 +5316,7 @@ function renderRapidOcrLangBar(rapidocr) {
     btn.classList.toggle('active', langType === lang);
     btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
     btn.setAttribute('tabindex', langType === lang ? '0' : '-1');
-    btn.disabled = rapidOcrLangRequestPending;
+    btn.disabled = rapidOcrLangRequestPending || autoDetect;
   });
 
   const checkbox = document.getElementById('rapidocrAutoDetectCheck');

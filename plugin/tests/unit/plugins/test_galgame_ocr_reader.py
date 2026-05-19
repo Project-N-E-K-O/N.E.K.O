@@ -49,6 +49,7 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     SelectedOcrBackendPlan,
     _OcrLangDetector,
     _classify_cjk_text,
+    _is_window_on_primary_monitor,
     _rapidocr_text_from_output,
     _score_ocr_text,
 )
@@ -2145,6 +2146,74 @@ def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> No
     assert frame == "fallback-frame"
     assert backend.last_backend_kind == "dxcam"
     assert backend.last_backend_detail == "printwindow_unavailable_fallback"
+
+
+@pytest.mark.parametrize(
+    ("rect", "expected"),
+    [
+        ((0, 0, 1920, 1080), (True, "")),
+        ((1920, 0, 3840, 1080), (False, "window_entirely_in_right_secondary_monitor")),
+        ((-1920, 0, 0, 1080), (False, "window_entirely_in_left_secondary_monitor")),
+        ((0, 1080, 1920, 2160), (False, "window_entirely_in_bottom_secondary_monitor")),
+        ((0, -1080, 1920, 0), (False, "window_entirely_in_top_secondary_monitor")),
+        ((100, 100, 2000, 1000), (False, "window_spans_across_primary_and_secondary_monitor")),
+    ],
+)
+def test_pyautogui_primary_monitor_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    rect: tuple[int, int, int, int],
+    expected: tuple[bool, str],
+) -> None:
+    monkeypatch.setitem(sys.modules, "pyautogui", SimpleNamespace(size=lambda: (1920, 1080)))
+
+    assert _is_window_on_primary_monitor(rect) == expected
+
+
+def test_pyautogui_capture_uses_screenshot_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image
+
+    screenshot_calls: list[tuple[int, int, int, int]] = []
+
+    def screenshot(*, region):
+        screenshot_calls.append(region)
+        return Image.new("RGB", (region[2], region[3]), "white")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pyautogui",
+        SimpleNamespace(size=lambda: (1920, 1080), screenshot=screenshot),
+    )
+    monkeypatch.setattr(galgame_ocr_reader, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(galgame_ocr_reader, "_target_screen_capture_rect", lambda _target: (10, 20, 210, 120))
+
+    frame = galgame_ocr_reader.PyAutoGuiCaptureBackend().capture_frame(
+        _window()[0],
+        galgame_ocr_reader.OcrCaptureProfile(
+            top_ratio=0.0,
+            bottom_inset_ratio=0.0,
+            left_inset_ratio=0.0,
+            right_inset_ratio=0.0,
+        ),
+    )
+
+    assert screenshot_calls == [(10, 20, 200, 100)]
+    assert frame.size == (200, 100)
+
+
+def test_pyautogui_capture_rejects_secondary_monitor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "pyautogui",
+        SimpleNamespace(size=lambda: (1920, 1080), screenshot=lambda **_kwargs: None),
+    )
+    monkeypatch.setattr(galgame_ocr_reader, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(galgame_ocr_reader, "_target_screen_capture_rect", lambda _target: (1920, 0, 3840, 1080))
+
+    with pytest.raises(RuntimeError, match="pyautogui: window_entirely_in_right_secondary_monitor"):
+        galgame_ocr_reader.PyAutoGuiCaptureBackend().capture_frame(
+            _window()[0],
+            galgame_ocr_reader.OcrCaptureProfile(),
+        )
 
 
 def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
