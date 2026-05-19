@@ -791,7 +791,7 @@ def inspect_rapidocr_installation(
         "runtime_error": runtime_error,
         "missing_model_files": missing_files,
         "missing_model_total_size": total_size_estimate,
-        "model_download_source": _BAIDU_YUN_RAPIDOCR_URL,
+        "model_download_source": _RAPIDOCR_MODELSCOPE_BASE,
     }
 
 
@@ -1119,8 +1119,7 @@ async def download_rapidocr_models(
     """Download all model files required for the (ocr_version, lang_type) selection.
 
     Bundled (PP-OCRv4 + ch) is a no-op. Otherwise downloads each missing file
-    from the Baidu Cloud RapidOCR model share first, falling back to the
-    original ModelScope URL when Baidu Cloud cannot provide or serve the file.
+    from the original ModelScope URL in the model registry.
     Files are written into model_cache_dir, verified with SHA256, and reported
     through progress events.
     Failures preserve specific error text (HTTP status, timeout, network) so
@@ -1221,53 +1220,28 @@ async def download_rapidocr_models(
     downloaded_bytes = 0
     downloaded: list[str] = []
     downloaded_sources: dict[str, str] = {}
-    fallback_used = False
-    baidu_error: str | None = None
     async with httpx.AsyncClient(
         timeout=timeout_seconds,
         trust_env=True,
         follow_redirects=True,
     ) as client:
-        try:
-            baidu_dlinks = await _baidu_rapidocr_model_dlinks(client, pending)
-        except Exception as exc:  # noqa: BLE001 - fallback keeps automatic download usable
-            baidu_dlinks = {}
-            baidu_error = f"{type(exc).__name__}: {exc}"
-            logger.warning(
-                "failed to resolve RapidOCR model links from Baidu Cloud; "
-                "falling back to ModelScope",
-                exc_info=True,
-            )
-
         for index, spec in enumerate(pending):
             asset_name = spec["name"]
             destination = Path(spec["target_path"])
             destination.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = destination.with_suffix(destination.suffix + ".part")
-            attempts: list[tuple[str, str, dict[str, str]]] = []
-            baidu_dlink = baidu_dlinks.get(asset_name)
-            if baidu_dlink:
-                attempts.append((
-                    "baidu_cloud",
-                    baidu_dlink,
-                    {
-                        "Accept": "application/octet-stream",
-                        "Referer": _BAIDU_YUN_RAPIDOCR_URL,
-                        "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
-                    },
-                ))
-            attempts.append((
+            attempts: list[tuple[str, str, dict[str, str]]] = [(
                 "modelscope",
                 str(spec["url"]),
                 {
                     "Accept": "application/octet-stream",
                     "User-Agent": "N.E.K.O/galgame_plugin",
                 },
-            ))
+            )]
 
             attempt_errors: list[str] = []
             for attempt_index, (source, url, headers) in enumerate(attempts):
-                source_label = "Baidu Cloud" if source == "baidu_cloud" else "ModelScope"
+                source_label = "ModelScope"
                 running_message = (
                     f"Downloading {asset_name} from {source_label} "
                     f"({index + 1}/{len(pending)})"
@@ -1362,9 +1336,6 @@ async def download_rapidocr_models(
                     downloaded_bytes += int(spec.get("size") or asset_downloaded)
                     downloaded.append(asset_name)
                     downloaded_sources[asset_name] = source
-                    fallback_used = fallback_used or source == "modelscope" and (
-                        baidu_error is not None or bool(baidu_dlink)
-                    )
                     break
                 except Exception as exc:  # noqa: BLE001 - try the next configured source
                     tmp_path.unlink(missing_ok=True)
@@ -1380,8 +1351,6 @@ async def download_rapidocr_models(
                         )
                         continue
 
-                    if baidu_error and not any(item.startswith("Baidu Cloud:") for item in attempt_errors):
-                        attempt_errors.insert(0, f"Baidu Cloud link lookup: {baidu_error}")
                     err_message = (
                         f"failed to download {asset_name}; attempted "
                         + "; ".join(attempt_errors)
@@ -1461,8 +1430,4 @@ async def download_rapidocr_models(
     unique_sources = set(downloaded_sources.values())
     if len(unique_sources) == 1:
         result["source"] = next(iter(unique_sources))
-    if baidu_error:
-        result["baidu_error"] = baidu_error
-    if fallback_used:
-        result["fallback_used"] = True
     return result

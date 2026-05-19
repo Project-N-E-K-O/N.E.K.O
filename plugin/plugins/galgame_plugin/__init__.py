@@ -5166,7 +5166,7 @@ class GalgamePlugin(NekoPluginBase):
     @plugin_entry(
         id="galgame_download_rapidocr_models",
         name=tr("entries.galgame_download_rapidocr_models.name", default='下载 RapidOCR 模型'),
-        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择优先从百度云下载缺失的 RapidOCR 模型文件到插件模型缓存目录，下载失败时自动回退至 ModelScope。bundled 默认（ch+PP-OCRv4）不需要下载。'),
+        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从 ModelScope 下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
         input_schema={
             "type": "object",
             "properties": {

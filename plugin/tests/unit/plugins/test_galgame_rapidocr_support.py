@@ -134,6 +134,29 @@ def test_required_rapidocr_model_files_defaults_to_bundled_ch(tmp_path: Path) ->
     assert files == []
 
 
+def test_inspect_rapidocr_installation_reports_modelscope_download_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rapidocr_support.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin=str(tmp_path / "rapidocr_onnxruntime" / "__init__.py")),
+    )
+
+    status = rapidocr_support.inspect_rapidocr_installation(
+        install_target_dir_raw=str(tmp_path / "RapidOCR"),
+        lang_type="en",
+        ocr_version="PP-OCRv4",
+        platform_fn=lambda: True,
+    )
+
+    assert status["detail"] == "missing_model_files"
+    assert status["can_download_models"] is True
+    assert "modelscope.cn" in status["model_download_source"]
+    assert "baidu" not in status["model_download_source"].lower()
+
+
 def test_load_rapidocr_runtime_uses_imported_package_models_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -176,7 +199,7 @@ def test_load_rapidocr_runtime_uses_imported_package_models_dir(
 
 
 @pytest.mark.asyncio
-async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
+async def test_download_rapidocr_models_uses_modelscope_urls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -187,7 +210,6 @@ async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
         ocr_version="PP-OCRv4",
     )
     file_bytes = {spec["name"]: spec["name"].encode("utf-8") for spec in expected_files}
-    dlink_by_name = {name: f"https://d.pcs.baidu.com/file/{name}" for name in file_bytes}
     for spec in expected_files:
         spec["sha256"] = ""
     monkeypatch.setattr(
@@ -197,71 +219,15 @@ async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
     )
     monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
 
-    async def _fake_dlinks(_client, pending):
-        assert {spec["name"] for spec in pending} == set(file_bytes)
-        return {spec["name"]: dlink_by_name[spec["name"]] for spec in pending}
+    async def _unexpected_dlinks(_client, _pending):
+        raise AssertionError("Baidu Cloud should not be used for automatic RapidOCR downloads")
 
-    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _fake_dlinks)
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        name = Path(request.url.path).name
-        return httpx.Response(200, content=file_bytes[name])
-
-    class _PatchedAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(_handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(rapidocr_support.httpx, "AsyncClient", _PatchedAsyncClient)
-
-    result = await rapidocr_support.download_rapidocr_models(
-        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
-        install_target_dir_raw=str(install_target),
-        lang_type="en",
-        ocr_version="PP-OCRv4",
-    )
-
-    assert sorted(result["downloaded"]) == sorted(file_bytes)
-    assert result["source"] == "baidu_cloud"
-    assert set(result["sources"].values()) == {"baidu_cloud"}
-    assert result.get("fallback_used") is not True
-    assert result.get("baidu_error") in (None, "")
-    for name, content in file_bytes.items():
-        assert (install_target / "models" / name).read_bytes() == content
-
-
-@pytest.mark.asyncio
-async def test_download_rapidocr_models_falls_back_to_modelscope_when_baidu_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_target = tmp_path / "RapidOCR"
-    expected_files = rapidocr_support.required_rapidocr_model_files(
-        install_target_dir_raw=str(install_target),
-        lang_type="en",
-        ocr_version="PP-OCRv4",
-    )
-    file_bytes = {spec["name"]: f"modelscope:{spec['name']}".encode("utf-8") for spec in expected_files}
-    for spec in expected_files:
-        spec["sha256"] = ""
-    monkeypatch.setattr(
-        rapidocr_support,
-        "required_rapidocr_model_files",
-        lambda **_kwargs: [dict(spec) for spec in expected_files],
-    )
-    monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
-
-    async def _failing_dlinks(_client, _pending):
-        raise RuntimeError("baidu share unavailable")
-
-    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _failing_dlinks)
-
+    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _unexpected_dlinks)
     requested_urls: list[str] = []
 
     def _handler(request: httpx.Request) -> httpx.Response:
         requested_urls.append(str(request.url))
         name = Path(request.url.path).name
-        assert name in file_bytes
         assert "modelscope.cn" in request.url.host
         return httpx.Response(200, content=file_bytes[name])
 
@@ -281,8 +247,64 @@ async def test_download_rapidocr_models_falls_back_to_modelscope_when_baidu_fail
 
     assert sorted(result["downloaded"]) == sorted(file_bytes)
     assert result["source"] == "modelscope"
-    assert result["fallback_used"] is True
-    assert "baidu share unavailable" in result["baidu_error"]
+    assert set(result["sources"].values()) == {"modelscope"}
+    assert "fallback_used" not in result
+    assert "baidu_error" not in result
     assert requested_urls == [spec["url"] for spec in expected_files]
     for name, content in file_bytes.items():
         assert (install_target / "models" / name).read_bytes() == content
+
+
+@pytest.mark.asyncio
+async def test_download_rapidocr_models_reports_modelscope_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    expected_files = rapidocr_support.required_rapidocr_model_files(
+        install_target_dir_raw=str(install_target),
+        lang_type="en",
+        ocr_version="PP-OCRv4",
+    )
+    file_bytes = {spec["name"]: f"modelscope:{spec['name']}".encode("utf-8") for spec in expected_files}
+    for spec in expected_files:
+        spec["sha256"] = ""
+    monkeypatch.setattr(
+        rapidocr_support,
+        "required_rapidocr_model_files",
+        lambda **_kwargs: [dict(spec) for spec in expected_files],
+    )
+    monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
+
+    async def _unexpected_dlinks(_client, _pending):
+        raise AssertionError("Baidu Cloud should not be used for automatic RapidOCR downloads")
+
+    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _unexpected_dlinks)
+
+    requested_urls: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        name = Path(request.url.path).name
+        assert name in file_bytes
+        assert "modelscope.cn" in request.url.host
+        return httpx.Response(503, content=b"unavailable")
+
+    class _PatchedAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(rapidocr_support.httpx, "AsyncClient", _PatchedAsyncClient)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await rapidocr_support.download_rapidocr_models(
+            logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+            install_target_dir_raw=str(install_target),
+            lang_type="en",
+            ocr_version="PP-OCRv4",
+        )
+
+    assert "ModelScope" in str(exc_info.value)
+    assert "Baidu" not in str(exc_info.value)
+    assert requested_urls == [expected_files[0]["url"]]
