@@ -267,6 +267,10 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert not (tmp_path / "market_demo").exists()
     assert 'id = "market_demo"' in (repo_dir / "plugin.toml").read_text(encoding="utf-8")
     assert "store.db" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+    assert (repo_dir / ".github" / "workflows" / "verify.yml").is_file()
+    release_workflow = repo_dir / ".github" / "workflows" / "release.yml"
+    assert release_workflow.is_file()
+    assert "softprops/action-gh-release" in release_workflow.read_text(encoding="utf-8")
 
     messages = [message for _level, message in validate_plugin_dir(repo_dir, strict=True)]
     assert not any("does not match directory name" in message for message in messages)
@@ -276,6 +280,66 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     captured = capsys.readouterr()
     assert "repo:   n.e.k.o_plugin_market_demo" in captured.out
     assert "[OK] market_demo: check found" in captured.out
+
+
+def test_market_release_check_enforces_repo_and_tag_conventions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        neko_plugin_cli.main(
+            [
+                "init-repo",
+                "market_demo",
+                "--plugins-root",
+                str(tmp_path),
+                "--no-git",
+                "--neko-repo",
+                "Project-N-E-K-O/N.E.K.O",
+            ]
+        )
+        == 0
+    )
+
+    monkeypatch.setenv("GITHUB_REPOSITORY", "alice/n.e.k.o_plugin_market_demo")
+    monkeypatch.setenv("GITHUB_REF_NAME", "v0.1.0")
+    assert (
+        neko_plugin_cli.main(
+            [
+                "check",
+                "market_demo",
+                "--plugins-root",
+                str(tmp_path),
+                "--release",
+                "--market-release",
+                "--skip-tests",
+                "--target-dir",
+                str(tmp_path / "target"),
+            ]
+        )
+        == 0
+    )
+
+    monkeypatch.setenv("GITHUB_REF_NAME", "v9.9.9")
+    assert (
+        neko_plugin_cli.main(
+            [
+                "check",
+                "market_demo",
+                "--plugins-root",
+                str(tmp_path),
+                "--release",
+                "--market-release",
+                "--skip-tests",
+                "--target-dir",
+                str(tmp_path / "target-bad"),
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    assert "release tag v9.9.9 does not match plugin.toml version 0.1.0" in captured.err
 
 
 def test_init_repo_rejects_uppercase_market_plugin_id(tmp_path: Path) -> None:

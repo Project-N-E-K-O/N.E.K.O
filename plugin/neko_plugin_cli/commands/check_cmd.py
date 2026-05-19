@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
@@ -46,12 +47,20 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
         action="store_true",
         help="Do not run plugin tests during --release checks",
     )
+    parser.add_argument(
+        "--market-release",
+        action="store_true",
+        help="With --release, also enforce plugin market GitHub repository and tag conventions",
+    )
     parser.set_defaults(handler=handle, _defaults=defaults)
 
 
 def handle(args: argparse.Namespace) -> int:
+    if args.market_release and not args.release:
+        print("[FAIL] check --market-release requires --release", file=sys.stderr)
+        return 1
     if args.release:
-        args._command_label = "check --release"
+        args._command_label = "check --release --market-release" if args.market_release else "check --release"
         return release_cmd.handle_release_check(args)
 
     args._command_label = "check"

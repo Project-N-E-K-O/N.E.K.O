@@ -119,6 +119,9 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         workflow_path = workflow_dir / "verify.yml"
         workflow_path.write_text(_render_verify_workflow(spec), encoding="utf-8", newline="\n")
         created.append(workflow_path)
+        release_workflow_path = workflow_dir / "release.yml"
+        release_workflow_path.write_text(_render_release_workflow(spec), encoding="utf-8", newline="\n")
+        created.append(release_workflow_path)
 
     return created
 
@@ -183,6 +186,12 @@ def generate_repo_support_files(
         _write_support_file(
             workflow_dir / "verify.yml",
             _render_verify_workflow(spec),
+            created=created,
+            overwrite=overwrite,
+        )
+        _write_support_file(
+            workflow_dir / "release.yml",
+            _render_release_workflow(spec),
             created=created,
             overwrite=overwrite,
         )
@@ -516,6 +525,18 @@ uv run python -m plugin.neko_plugin_cli.cli check {spec.plugin_id}
 uv run python -m plugin.neko_plugin_cli.cli check -r {spec.plugin_id}
 ```
 
+## Market release
+
+Push a tag matching `plugin.toml` version to create a GitHub Release asset:
+
+```bash
+git tag v{spec.version}
+git push origin v{spec.version}
+```
+
+The generated `.github/workflows/release.yml` uploads `{spec.plugin_id}.neko-plugin`.
+Use that GitHub Release URL when publishing a version in the plugin market.
+
 ## Entry
 
 ```toml
@@ -678,6 +699,79 @@ jobs:
           path: |
             neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
             neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.check-release.txt
+'''
+
+
+def _render_release_workflow(spec: PluginSpec) -> str:
+    return f'''name: Release N.E.K.O Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_ID: {spec.plugin_id}
+  NEKO_REPOSITORY: {spec.neko_repository}
+  NEKO_REF: {spec.neko_ref}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin repository
+        uses: actions/checkout@v4
+        with:
+          path: plugin-repo
+
+      - name: Checkout N.E.K.O
+        uses: actions/checkout@v4
+        with:
+          repository: ${{{{ env.NEKO_REPOSITORY }}}}
+          ref: ${{{{ env.NEKO_REF }}}}
+          path: neko
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Mount plugin into N.E.K.O tree
+        run: |
+          rm -rf "neko/plugin/plugins/${{PLUGIN_ID}}"
+          mkdir -p neko/plugin/plugins
+          cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
+
+      - name: Market release check
+        working-directory: neko
+        run: |
+          mkdir -p plugin/neko_plugin_cli/target
+          uv run python -m plugin.neko_plugin_cli.cli check -r --market-release "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.market-release-check.txt"
+
+      - name: Write release summary
+        working-directory: neko
+        run: |
+          PACKAGE="plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
+          PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
+          {{
+            echo "## N.E.K.O Plugin Release"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Plugin ID | ${{PLUGIN_ID}} |"
+            echo "| Tag | ${{GITHUB_REF_NAME}} |"
+            echo "| Package | ${{PLUGIN_ID}}.neko-plugin |"
+            echo "| Package SHA256 | ${{PACKAGE_SHA256}} |"
+          }} >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
+            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.market-release-check.txt
 '''
 
 

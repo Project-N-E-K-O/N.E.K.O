@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from .validate_cmd import validate_plugin_dir
 
 
 Issue = tuple[str, str]
+_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 
 
 def handle_check(args: argparse.Namespace) -> int:
@@ -51,6 +53,8 @@ def handle_release_check(args: argparse.Namespace) -> int:
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
         issues = validate_plugin_dir(plugin_dir, strict=True)
+        if getattr(args, "market_release", False):
+            issues.extend(_diagnose_market_release(plugin_dir, plugin_id=source.plugin_id, version=source.version))
         errors = [issue for issue in issues if issue[0] == "error"]
         if errors:
             print(f"[FAIL] {source.plugin_id}: {command_label} blocked by validation errors", file=sys.stderr)
@@ -113,6 +117,41 @@ def _diagnose_repository(plugin_dir: Path) -> list[Issue]:
         issues.append(("warning", "git status failed"))
     elif status.stdout.strip():
         issues.append(("warning", "git working tree has uncommitted changes"))
+
+    return issues
+
+
+def _diagnose_market_release(plugin_dir: Path, *, plugin_id: str, version: str) -> list[Issue]:
+    issues: list[Issue] = []
+    expected_repo = f"{_MARKET_REPO_PREFIX}{plugin_id}"
+    github_repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    repo_name = github_repository.rsplit("/", 1)[-1] if github_repository else plugin_dir.name
+
+    if repo_name != expected_repo:
+        issues.append(("error", f"market repository name must be {expected_repo}, got {repo_name}"))
+
+    ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+    if ref_name:
+        ref_version = ref_name[1:] if ref_name.startswith(("v", "V")) else ref_name
+        if ref_version != version:
+            issues.append(("error", f"release tag {ref_name} does not match plugin.toml version {version}"))
+    else:
+        issues.append(("warning", "GITHUB_REF_NAME is missing; tag/version alignment was not checked"))
+
+    if github_repository and "/" not in github_repository:
+        issues.append(("error", "GITHUB_REPOSITORY must look like owner/repo"))
+
+    release_workflow = plugin_dir / ".github" / "workflows" / "release.yml"
+    if not release_workflow.is_file():
+        issues.append(("error", ".github/workflows/release.yml is missing"))
+
+    if (plugin_dir / ".git").exists():
+        remote = _run_git(["remote", "get-url", "origin"], cwd=plugin_dir)
+        remote_url = remote.stdout.strip()
+        if remote.returncode != 0 or not remote_url:
+            issues.append(("warning", "git remote 'origin' is not configured"))
+        elif "github.com" not in remote_url:
+            issues.append(("error", "git remote 'origin' must point to GitHub for market release"))
 
     return issues
 
@@ -184,9 +223,14 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             ".vscode/settings.json",
             ".vscode/tasks.json",
             ".github/workflows/verify.yml",
+            ".github/workflows/release.yml",
             ".gitignore",
         }:
             return f"neko-plugin setup-repo {label} --github-actions"
+    if message.startswith("market repository name must be "):
+        return "use neko-plugin init-repo <plugin_id> and create the GitHub repo with the generated n.e.k.o_plugin_<plugin_id> name"
+    if message.startswith("release tag ") and "does not match plugin.toml version" in message:
+        return "update plugin.toml [plugin].version or push a matching tag such as v0.1.0"
     if message == "[plugin.sdk] is missing":
         return "add a [plugin.sdk] table to plugin.toml with recommended and supported SDK ranges"
     if message.startswith("plugin.entry should usually start with"):
