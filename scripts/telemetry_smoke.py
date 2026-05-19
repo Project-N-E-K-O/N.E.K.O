@@ -576,6 +576,7 @@ def main():
                 try:
                     await task
                 except _asyncio.CancelledError:
+                    # 期望路径 —— cancel 主动制造的 CancelledError，吞掉是 idiomatic
                     pass
 
         _asyncio.run(_periodic_wake_test())
@@ -592,6 +593,73 @@ def main():
             "loop must check instrument.has_data() not just self._dirty"
         )
         print(f"  ✓ periodic loop picked up instrument-only: {rows_i}")
+
+        # --------------------------------------------------------------
+        # [4h] Regression: Codex P2 round-5 — retry 不能拖走新 instrument
+        #
+        # 场景：daily-bearing payload server commit 但 client timeout
+        # → _pending_batch_seq=A 保留供 retry。期间新 counter 累积 (Y2)。
+        # 如果 retry 把 Y2 一起塞进 payload，batch_id=A 已经在 server
+        # seen_batches，整个 batch 被 dedupe，Y2 跟着丢（已 clear-on-read）。
+        # 修复：retry 不 snapshot instrument，Y2 留在 buffer 等下窗口。
+        # --------------------------------------------------------------
+        print("\n[4h] Regression: retry doesn't drag fresh instruments...")
+        Instrument._instance = None
+        TokenTracker._instance = None
+        tracker_j = TokenTracker.get_instance()
+
+        # Step A: daily-bearing 失败 → batch_seq 保留
+        tt_mod._TELEMETRY_SERVER_URL = "http://127.0.0.1:1"
+        tracker_j.record(model="gpt-4o-mini", prompt_tokens=222,
+                         completion_tokens=33, total_tokens=255,
+                         cached_tokens=0, call_type="conversation")
+        tracker_j._last_report_time = 0
+        tracker_j.save()
+        time.sleep(0.3)
+        retained_seq = tracker_j._pending_batch_seq
+        assert retained_seq is not None, "daily failure must preserve batch_seq"
+        print(f"  daily failed, batch_seq retained = {retained_seq[:12]}...")
+
+        # Step B: 灌新 counter 到 buffer
+        counter("fresh_after_retry", 1, surface="index_wide")
+        inst_j = Instrument.get_instance()
+        assert inst_j.has_data(), "fresh counter should be in buffer"
+
+        # Step C: 恢复 URL，触发 retry（buffer 里有 fresh counter）
+        tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
+        tracker_j._last_report_time = 0
+        tracker_j.save()
+        time.sleep(0.5)
+
+        # 关键断言：retry 跑完后 fresh counter **必须仍在 buffer**
+        # 如果 retry 把它 snapshot 拿走，server dedupe 返 duplicate，fresh
+        # counter 永远不会到 server。
+        assert inst_j.has_data(), (
+            "P2 round-5 regression: fresh counter consumed by retry snapshot. "
+            "Retry must skip instrument snapshot to avoid dedupe-induced loss."
+        )
+        # 而且 batch_seq 应该被清了（retry 成功）
+        assert tracker_j._pending_batch_seq is None, (
+            "retry should succeed (server hasn't actually seen this batch_id "
+            "in our test setup) and clear batch_seq"
+        )
+        print("  ✓ retry kept fresh counter in buffer")
+
+        # Step D: 下一窗口（新 batch_seq）发 fresh counter
+        tracker_j._last_report_time = 0
+        tracker_j.save()
+        time.sleep(0.5)
+        conn_j = sqlite3.connect(db_path)
+        rows_j = conn_j.execute(
+            "SELECT metric_key, value FROM instrument_counters "
+            "WHERE metric_key LIKE 'fresh_after_retry%'"
+        ).fetchall()
+        conn_j.close()
+        assert len(rows_j) >= 1, (
+            "P2 round-5 regression: fresh counter never reached server even "
+            "in the window after retry"
+        )
+        print(f"  ✓ fresh counter landed in next window: {rows_j}")
 
         # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表

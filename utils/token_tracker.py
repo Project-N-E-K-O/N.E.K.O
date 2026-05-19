@@ -1243,9 +1243,14 @@ class TokenTracker:
         except Exception:
             has_instruments = False
 
-        # 取出待发送数据。同时分配/复用 batch_seq —— 失败重传保留同一 seq
-        # 才能让 server seen_batches dedupe；新窗口（_pending_batch_seq=None）
-        # 才分配新值，保证不同窗口 batch_id 不会相撞。
+        # 取出待发送数据。同时区分两种状态：
+        #   is_retry=False：新窗口，分配新 batch_seq，正常带 instrument snapshot
+        #   is_retry=True ：上次失败遗留下来的重传，复用同一 batch_seq，**不**
+        #                   附带任何新 instrument —— retry 的 batch_id 已经
+        #                   在 server seen_batches 里，整个 batch 会被 dedupe
+        #                   返回 duplicate，跟进去的 instrument 会被一起静默
+        #                   丢掉。把新 instrument 留在 buffer，下个新窗口
+        #                   （新 batch_seq）单独发出去。
         with self._lock:
             if not self._unsent_daily and not has_instruments:
                 return
@@ -1253,6 +1258,7 @@ class TokenTracker:
             send_records = self._unsent_records
             self._unsent_daily = {}
             self._unsent_records = []
+            is_retry = self._pending_batch_seq is not None
             if self._pending_batch_seq is None:
                 self._pending_batch_seq = secrets.token_hex(8)
             batch_seq = self._pending_batch_seq
@@ -1260,15 +1266,14 @@ class TokenTracker:
         # stale batch_seq 时要用（见 except 路径注释）。
         had_unsent_payload = bool(send_daily or send_records)
 
-        # 现在确定要发，clear-on-read 拿 instrument snapshot。如果上报失败，
-        # 这部分数据丢失（设计取舍：counter / histogram 是窗口聚合，丢一个
-        # 60s 窗口对趋势影响小，不值得维护 unsent 队列）。
+        # 仅新窗口才 snapshot instrument。重传时跳过保留 buffer 等下窗口。
         instruments_snapshot: dict = {}
-        try:
-            from utils.instrument import snapshot as _instrument_snapshot
-            instruments_snapshot = _instrument_snapshot()
-        except Exception as e:
-            logger.debug(f"Token tracker: instrument snapshot failed (non-critical): {e}")
+        if not is_retry:
+            try:
+                from utils.instrument import snapshot as _instrument_snapshot
+                instruments_snapshot = _instrument_snapshot()
+            except Exception as e:
+                logger.debug(f"Token tracker: instrument snapshot failed (non-critical): {e}")
 
         try:
             if not self._device_id:
