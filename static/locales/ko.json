@@ -1853,7 +1853,7 @@
         "aiAssistStep3Hint": "적용할 필드를 체크하세요. 칩을 클릭하면 단일 필드를 재생성하거나 새 값을 직접 편집할 수 있습니다. \"적용 및 저장\"하면 체크된 필드가 폼에 기록되어 저장됩니다.",
         "aiAssistOriginal": "원본",
         "aiAssistRefineRandom": "🎲 다시 랜덤",
-        "aiAssistRefineRandomInstr": "다른 필드와의 일관성을 유지하면서 이 필드를 완전히 재무작위화",
+        "aiAssistRefineRandomInstr": "다른 필드와의 일관성을 유지하면서 이 필드를 완전히 무작위화",
         "aiAssistRefineTsundere": "더 츤데레로",
         "aiAssistRefineTsundereInstr": "더 츤데레하고 대비를 강조",
         "aiAssistRefineGentle": "더 부드럽게",
