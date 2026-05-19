@@ -100,6 +100,14 @@ def _drop_client_pendings(lanlan_name: str, *, reason: str) -> None:
             )
 
 
+def _drop_websocket_aliases(lanlan_name: str, websocket: Any) -> None:
+    for old_name, client in list(_clients.items()):
+        if old_name == lanlan_name or client.websocket is not websocket:
+            continue
+        _clients.pop(old_name, None)
+        _drop_client_pendings(old_name, reason="was replaced by new renderer")
+
+
 class CaptureBridgeError(RuntimeError):
     """Raised when a capture request cannot be fulfilled by the bridge."""
 
@@ -119,6 +127,8 @@ def mark_capture_client(lanlan_name: str, websocket: Any, payload: dict[str, Any
     if not _coerce_bool(payload.get("available")):
         unmark_capture_client(lanlan_name, expected_websocket=websocket)
         return
+
+    _drop_websocket_aliases(lanlan_name, websocket)
 
     existing = _clients.get(lanlan_name)
     if existing is not None and existing.websocket is not websocket:

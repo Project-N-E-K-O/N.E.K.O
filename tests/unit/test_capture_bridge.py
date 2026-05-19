@@ -101,6 +101,30 @@ def test_mark_unavailable_from_stale_websocket_does_not_clear_new_registration()
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_mark_same_websocket_under_new_name_drops_old_registration():
+    sock = _Sock()
+    capture_bridge.mark_capture_client("old-neko", sock, _payload(True))
+
+    task = asyncio.create_task(
+        capture_bridge.request_capture_screenshot(
+            {"target_id": "1", "pid": 100, "title": "t"},
+            timeout=5.0,
+        )
+    )
+    await sock.send_event.wait()
+
+    capture_bridge.mark_capture_client("new-neko", sock, _payload(True))
+
+    with pytest.raises(capture_bridge.CaptureBridgeError) as exc_info:
+        await task
+    assert "was replaced by new renderer" in str(exc_info.value)
+    assert list(capture_bridge._clients) == ["new-neko"]
+    assert "old-neko" not in capture_bridge._pending_by_client
+    assert capture_bridge._clients["new-neko"].websocket is sock
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_unmark_resolves_pending_futures_with_error():
     sock = _Sock()
     capture_bridge.mark_capture_client("neko", sock, _payload(True))
