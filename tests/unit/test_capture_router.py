@@ -67,6 +67,19 @@ def test_capture_bridge_renderer_ignores_placeholder_target_id_before_source_mat
     assert guard_index < placeholder_index < reset_index < match_index
 
 
+def test_capture_bridge_renderer_uses_exact_target_id_source_matching():
+    source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
+    matcher_index = source.index("var sourceIdMatchesTarget = function")
+    exact_match_index = source.index("sourceId === expected", matcher_index)
+    token_match_index = source.index("tokens[idx] === expected", exact_match_index)
+    use_matcher_index = source.index("sourceIdMatchesTarget(sources[i], targetId)", token_match_index)
+    title_fallback_index = source.index("name.indexOf(lowerTitle)", use_matcher_index)
+
+    assert "source.id.indexOf(targetId)" not in source
+    assert matcher_index < exact_match_index < token_match_index < use_matcher_index
+    assert use_matcher_index < title_fallback_index
+
+
 def test_capture_bridge_renderer_normalises_structured_capture_results_before_response():
     source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
     normalizer_index = source.index("var normalizeCaptureBridgeImage = function")

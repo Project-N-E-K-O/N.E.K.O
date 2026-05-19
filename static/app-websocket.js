@@ -2117,6 +2117,17 @@
                             }
                             return false;
                         };
+                        var sourceIdMatchesTarget = function (source, targetValue) {
+                            if (!source || !targetValue) return false;
+                            var expected = String(targetValue);
+                            var sourceId = String(source.id || '');
+                            if (sourceId === expected) return true;
+                            var tokens = sourceId.split(/[^0-9A-Za-z]+/);
+                            for (var idx = 0; idx < tokens.length; idx++) {
+                                if (tokens[idx] === expected) return true;
+                            }
+                            return false;
+                        };
                         var normalizeCaptureBridgeImage = function (result) {
                             if (typeof result === 'string') return result || null;
                             if (!result || typeof result !== 'object') return null;
@@ -2152,12 +2163,12 @@
                                 sendResp({ success: false, error: 'source_not_found' });
                                 return;
                             }
-                            // Match priority: target_id substring > exact pid/token > title substring.
+                            // Match priority: target_id exact/source-token > exact pid/token > title substring.
                             // Never blindly pick the first window.
                             var matched = null;
                             if (targetId) {
                                 for (var i = 0; i < sources.length; i++) {
-                                    if (sources[i].id && sources[i].id.indexOf(targetId) !== -1) {
+                                    if (sourceIdMatchesTarget(sources[i], targetId)) {
                                         matched = sources[i];
                                         break;
                                     }
