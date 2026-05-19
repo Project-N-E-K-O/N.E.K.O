@@ -90,6 +90,7 @@
   "ui.character_profile.hint_no_game": "Сначала привяжите или обнаружьте игровую цель в разделе распознавания.",
   "ui.character_profile.hint_no_profiles": "Для текущей игры нет доступных профилей персонажей.",
   "ui.character_profile.hint_loaded": "Загружено профилей персонажей: {count}.",
+  "ui.character_profile.hint_auto_matched": "Подобран профиль: {game}",
   "ui.character_profile.hint_load_failed": "Не удалось загрузить список персонажей: {error}",
   "ui.character_profile.error_select_required": "Сначала выберите персонажа.",
   "ui.flash.saving_character_mode": "Сохранение настроек профиля персонажа...",

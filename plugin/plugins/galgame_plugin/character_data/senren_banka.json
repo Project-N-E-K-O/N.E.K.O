@@ -1,6 +1,35 @@
 {
   "game_id": "senren_banka",
   "game_title": "千恋＊万花",
+  "aliases": [
+    "senren_banka",
+    "senren-banka",
+    "senren banka",
+    "千恋万花",
+    "千恋＊万花",
+    "千恋*万花",
+    "Senren＊Banka",
+    "Senren Banka"
+  ],
+  "match": {
+    "process_names": [
+      "SenrenBanka.exe",
+      "SenrenBanka",
+      "senrenbanka"
+    ],
+    "game_title_contains": [
+      "千恋万花",
+      "千恋＊万花",
+      "Senren＊Banka",
+      "Senren Banka"
+    ],
+    "window_title_contains": [
+      "千恋万花",
+      "千恋＊万花",
+      "Senren＊Banka",
+      "Senren Banka"
+    ]
+  },
   "last_updated": "2026-05-18",
   "characters": {
     "叢雨": {

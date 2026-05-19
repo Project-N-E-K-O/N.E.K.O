@@ -4446,7 +4446,15 @@ function normalizeCharacterProfileSnapshot(payload = {}, status = latestStatus) 
       .filter((item) => item.name)
     : [];
   return {
-    game_id: String(payload.game_id || status?.bound_game_id || '').trim(),
+    game_id: String(
+      payload.profile_game_id
+      || payload.game_id
+      || status?.character_profile_game_id
+      || status?.bound_game_id
+      || '',
+    ).trim(),
+    profile_game_id: String(payload.profile_game_id || status?.character_profile_game_id || '').trim(),
+    match_reason: String(payload.match_reason || status?.character_profile_match_reason || '').trim(),
     characters,
     summary: String(payload.summary || ''),
     degraded: Boolean(payload.degraded),
@@ -4463,6 +4471,25 @@ function selectedCharacterNameFromPanel(characters) {
   return current && characters.some((item) => item.name === current) ? current : '';
 }
 
+function characterProfileRefreshKeyForStatus(status = latestStatus) {
+  const ocrRuntime = status?.ocr_reader_runtime && typeof status.ocr_reader_runtime === 'object'
+    ? status.ocr_reader_runtime
+    : {};
+  const memoryRuntime = status?.memory_reader_runtime && typeof status.memory_reader_runtime === 'object'
+    ? status.memory_reader_runtime
+    : {};
+  return [
+    status?.character_profile_game_id,
+    status?.bound_game_id,
+    status?.active_game_id,
+    ocrRuntime.game_id,
+    ocrRuntime.effective_process_name || ocrRuntime.process_name,
+    ocrRuntime.effective_window_title || ocrRuntime.window_title,
+    memoryRuntime.game_id,
+    memoryRuntime.process_name,
+  ].map((item) => String(item || '').trim()).join('|');
+}
+
 function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCharacterProfileSnapshot) {
   const statusNode = document.getElementById('characterProfileStatusText');
   const hintNode = document.getElementById('characterProfileHint');
@@ -4477,8 +4504,11 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
   const mode = String(status?.character_mode || 'off').trim() || 'off';
   const fixedName = String(status?.character_fixed_name || '').trim();
   const boundGameId = String(status?.bound_game_id || '').trim();
+  const profileGameId = String(status?.character_profile_game_id || snapshot?.profile_game_id || '').trim();
+  const profileKey = profileGameId || boundGameId;
+  const matchReason = String(status?.character_profile_match_reason || snapshot?.match_reason || '').trim();
   const snapshotGameId = String(snapshot?.game_id || '').trim();
-  const characters = boundGameId && (!snapshotGameId || snapshotGameId === boundGameId) && Array.isArray(snapshot?.characters)
+  const characters = profileKey && (!snapshotGameId || snapshotGameId === profileKey) && Array.isArray(snapshot?.characters)
     ? snapshot.characters
     : [];
   const characterCount = characters.length || Number(status?.character_profile_count || 0);
@@ -4490,7 +4520,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
 
   if (mode === 'fixed' && fixedName) {
     statusNode.textContent = uiTf('ui.character_profile.status_fixed', '固定角色：{name}', { name: fixedName });
-  } else if (!boundGameId || (!characters.length && snapshot && !characterCount)) {
+  } else if (!profileKey || (!characters.length && snapshot && !characterCount)) {
     statusNode.textContent = uiT('ui.character_profile.status_unavailable', '无可用档案');
   } else {
     statusNode.textContent = uiT('ui.character_profile.status_off', '关闭');
@@ -4498,7 +4528,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
 
   if (!characters.length) {
     select.replaceChildren(new Option(
-      boundGameId
+      profileKey
         ? uiT('ui.character_profile.select_placeholder', '等待加载角色列表')
         : uiT('ui.character_profile.no_game_option', '请先绑定游戏'),
       '',
@@ -4517,7 +4547,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
     select.value = nextSelection;
   }
 
-  if (!boundGameId) {
+  if (!profileKey) {
     hintNode.textContent = uiT('ui.character_profile.hint_no_game', '请先在“插件识别”里绑定或检测到游戏目标。');
   } else if (snapshot?.diagnostic) {
     hintNode.textContent = uiTf('ui.character_profile.hint_load_failed', '角色列表加载失败：{error}', {
@@ -4528,26 +4558,26 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
   } else if (!characters.length) {
     hintNode.textContent = uiT('ui.character_profile.hint_no_profiles', '当前游戏没有可用角色档案。');
   } else {
-    hintNode.textContent = uiTf('ui.character_profile.hint_loaded', '已加载 {count} 个角色档案。', {
+    const loadedText = uiTf('ui.character_profile.hint_loaded', '已加载 {count} 个角色档案。', {
       count: characters.length,
     });
+    hintNode.textContent = profileGameId && matchReason && !boundGameId
+      ? `${loadedText} ${uiTf('ui.character_profile.hint_auto_matched', '已匹配档案：{game}', { game: profileGameId })}`
+      : loadedText;
   }
 
   const selectedName = String(select.value || '').trim();
-  fixedButton.disabled = !boundGameId || !characters.length || !selectedName;
+  fixedButton.disabled = !profileKey || !characters.length || !selectedName;
   offButton.disabled = mode === 'off' && !fixedName;
-  refreshButton.disabled = !boundGameId || Boolean(characterProfileRefreshInFlight);
+  refreshButton.disabled = Boolean(characterProfileRefreshInFlight);
 }
 
 function shouldRefreshCharacterProfilesForStatus(status) {
-  const boundGameId = String(status?.bound_game_id || '').trim();
-  if (!boundGameId) {
-    return false;
-  }
+  const profileKey = characterProfileRefreshKeyForStatus(status);
   if (!latestCharacterProfileSnapshot) {
     return true;
   }
-  if (boundGameId !== lastCharacterProfileGameId) {
+  if (profileKey !== lastCharacterProfileGameId) {
     return true;
   }
   const statusCount = Number(status?.character_profile_count || 0);
@@ -4562,19 +4592,15 @@ function refreshCharacterProfiles({ force = false, silent = true } = {}) {
     return characterProfileRefreshInFlight;
   }
 
-  const boundGameId = String(latestStatus?.bound_game_id || '').trim();
-  if (!boundGameId) {
-    latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({ game_id: '', characters: [] }, latestStatus);
-    lastCharacterProfileGameId = '';
-    lastCharacterProfileRefreshAt = Date.now();
-    renderCharacterProfilePanel(latestStatus);
-    return Promise.resolve(false);
-  }
+  const refreshKey = characterProfileRefreshKeyForStatus(latestStatus);
+  const profileKey = String(
+    latestStatus?.character_profile_game_id || latestStatus?.bound_game_id || '',
+  ).trim();
 
   const now = Date.now();
   if (
     !force
-    && boundGameId === lastCharacterProfileGameId
+    && refreshKey === lastCharacterProfileGameId
     && now - lastCharacterProfileRefreshAt < CHARACTER_PROFILE_REFRESH_TTL_MS
   ) {
     renderCharacterProfilePanel(latestStatus);
@@ -4585,16 +4611,16 @@ function refreshCharacterProfiles({ force = false, silent = true } = {}) {
     timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS,
   }).then((payload) => {
     latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot(payload, latestStatus);
-    lastCharacterProfileGameId = boundGameId;
+    lastCharacterProfileGameId = refreshKey;
     lastCharacterProfileRefreshAt = Date.now();
     renderCharacterProfilePanel(latestStatus);
     return true;
   }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
-    lastCharacterProfileGameId = boundGameId;
+    lastCharacterProfileGameId = refreshKey;
     lastCharacterProfileRefreshAt = Date.now();
     latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({
-      game_id: boundGameId,
+      game_id: profileKey,
       characters: [],
       degraded: true,
       diagnostic: message,

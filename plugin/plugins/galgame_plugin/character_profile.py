@@ -13,6 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 from .context_tokens import count_tokens_heuristic
 
@@ -40,6 +41,12 @@ _L1_IDENTITY_CAP: int = 40
 _TOP_LEVEL_REQUIRED: frozenset[str] = frozenset({"game_id", "characters"})
 
 _TRAIT_TEXT_RE = re.compile(r"\s+")
+_MATCH_SPACE_RE = re.compile(r"\s+")
+
+
+def _match_key(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return _MATCH_SPACE_RE.sub("", normalized.strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +82,15 @@ class ImportResult:
     warnings: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CharacterProfileMatch:
+    """Best profile file match for a runtime game/window signal."""
+
+    game_id: str
+    reason: str
+    source_value: str = ""
+
+
 class CharacterProfileManager:
     """Service for loading and rendering character profiles.
 
@@ -92,6 +108,7 @@ class CharacterProfileManager:
         self._data_dir = Path(data_dir)
         self._logger = logger or logging.getLogger(__name__)
         self._cache: dict[str, dict[str, Any]] = {}
+        self._metadata_cache: dict[str, dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------
     # Loading
@@ -169,8 +186,108 @@ class CharacterProfileManager:
         """Drop cached entries; useful when switching games or after import."""
         if game_id is None:
             self._cache.clear()
+            self._metadata_cache = None
             return
         self._cache.pop((game_id or "").strip(), None)
+        self._metadata_cache = None
+
+    def resolve_profile_match(
+        self,
+        signals: list[dict[str, Any]],
+    ) -> CharacterProfileMatch | None:
+        """Resolve runtime game/window signals to the best profile ``game_id``."""
+        metadata = self._profile_metadata()
+        if not metadata:
+            return None
+
+        ordered_signals = [signal for signal in signals if isinstance(signal, dict)]
+        for signal in ordered_signals:
+            raw_game_id = str(signal.get("game_id") or "").strip()
+            if not raw_game_id:
+                continue
+            signal_key = _match_key(raw_game_id)
+            for profile_id, meta in metadata.items():
+                if signal_key in {_match_key(profile_id), _match_key(meta.get("game_id"))}:
+                    return CharacterProfileMatch(
+                        game_id=profile_id,
+                        reason="exact_game_id",
+                        source_value=raw_game_id,
+                    )
+
+        alias_index: dict[str, tuple[str, str]] = {}
+        title_index: list[tuple[str, str, str]] = []
+        process_index: list[tuple[str, str, str]] = []
+        window_index: list[tuple[str, str, str]] = []
+        for profile_id, meta in metadata.items():
+            for alias in meta.get("aliases", []):
+                alias_key = _match_key(alias)
+                if alias_key:
+                    alias_index.setdefault(alias_key, (profile_id, str(alias)))
+            for title in meta.get("game_title_contains", []):
+                title_key = _match_key(title)
+                if title_key:
+                    title_index.append((profile_id, title_key, str(title)))
+            for process in meta.get("process_names", []):
+                process_key = _match_key(process)
+                if process_key:
+                    process_index.append((profile_id, process_key, str(process)))
+            for title in meta.get("window_title_contains", []):
+                title_key = _match_key(title)
+                if title_key:
+                    window_index.append((profile_id, title_key, str(title)))
+
+        for signal in ordered_signals:
+            for value_name in ("game_id", "game_title"):
+                value = str(signal.get(value_name) or "").strip()
+                matched = alias_index.get(_match_key(value))
+                if matched:
+                    profile_id, alias = matched
+                    return CharacterProfileMatch(
+                        game_id=profile_id,
+                        reason="alias",
+                        source_value=alias or value,
+                    )
+
+        for signal in ordered_signals:
+            value = str(signal.get("game_title") or "").strip()
+            value_key = _match_key(value)
+            if not value_key:
+                continue
+            for profile_id, title_key, title in title_index:
+                if title_key and title_key in value_key:
+                    return CharacterProfileMatch(
+                        game_id=profile_id,
+                        reason="game_title_contains",
+                        source_value=title or value,
+                    )
+
+        for signal in ordered_signals:
+            value = str(signal.get("process_name") or "").strip()
+            value_key = _match_key(Path(value).name)
+            if not value_key:
+                continue
+            value_stem_key = _match_key(Path(value).stem)
+            for profile_id, process_key, process in process_index:
+                if process_key in {value_key, value_stem_key} or process_key in value_key:
+                    return CharacterProfileMatch(
+                        game_id=profile_id,
+                        reason="process_name",
+                        source_value=process or value,
+                    )
+
+        for signal in ordered_signals:
+            value = str(signal.get("window_title") or "").strip()
+            value_key = _match_key(value)
+            if not value_key:
+                continue
+            for profile_id, title_key, title in window_index:
+                if title_key and title_key in value_key:
+                    return CharacterProfileMatch(
+                        game_id=profile_id,
+                        reason="window_title_contains",
+                        source_value=title or value,
+                    )
+        return None
 
     # ------------------------------------------------------------------
     # Scene queries
@@ -529,6 +646,50 @@ class CharacterProfileManager:
                 errors=(f"{path.name} JSON 解析失败: {exc.msg}",)
             )
         return self._validate_payload(data, is_user=is_user, source=path.name)
+
+    def _profile_metadata(self) -> dict[str, dict[str, Any]]:
+        if self._metadata_cache is not None:
+            return dict(self._metadata_cache)
+        metadata: dict[str, dict[str, Any]] = {}
+        try:
+            paths = sorted(self._data_dir.glob("*.json"))
+        except OSError:
+            paths = []
+        for path in paths:
+            if path.name.endswith(".user.json"):
+                continue
+            try:
+                if path.stat().st_size > MAX_PROFILE_SIZE_BYTES:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict) or not isinstance(data.get("characters"), dict):
+                continue
+            game_id = str(data.get("game_id") or path.stem).strip()
+            match = data.get("match")
+            match_obj = match if isinstance(match, dict) else {}
+
+            def _strings(value: object) -> list[str]:
+                if isinstance(value, list):
+                    return [
+                        str(item).strip()
+                        for item in value
+                        if str(item or "").strip()
+                    ]
+                if isinstance(value, str) and value.strip():
+                    return [value.strip()]
+                return []
+
+            metadata[path.stem] = {
+                "game_id": game_id,
+                "aliases": _strings(data.get("aliases")),
+                "game_title_contains": _strings(match_obj.get("game_title_contains")),
+                "process_names": _strings(match_obj.get("process_names")),
+                "window_title_contains": _strings(match_obj.get("window_title_contains")),
+            }
+        self._metadata_cache = dict(metadata)
+        return metadata
 
     def _validate_payload(
         self,

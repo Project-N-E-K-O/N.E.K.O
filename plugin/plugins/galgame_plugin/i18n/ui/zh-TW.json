@@ -90,6 +90,7 @@
   "ui.character_profile.hint_no_game": "請先在「外掛識別」裡繫結或檢測到遊戲目標。",
   "ui.character_profile.hint_no_profiles": "目前遊戲沒有可用角色檔案。",
   "ui.character_profile.hint_loaded": "已載入 {count} 個角色檔案。",
+  "ui.character_profile.hint_auto_matched": "已匹配檔案：{game}",
   "ui.character_profile.hint_load_failed": "角色列表載入失敗：{error}",
   "ui.character_profile.error_select_required": "請先選擇角色。",
   "ui.flash.saving_character_mode": "正在儲存角色檔案設定...",

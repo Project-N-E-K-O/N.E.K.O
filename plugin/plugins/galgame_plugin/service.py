@@ -2533,9 +2533,14 @@ def _build_status_payload_unchecked(
         "advance_speed": getattr(state, "advance_speed", "medium"),
         "bound_game_id": state.bound_game_id,
         "available_game_ids": list(state.available_game_ids),
+        "active_game_id": state.active_game_id,
         "character_mode": str(getattr(state, "character_mode", "off") or "off"),
         "character_fixed_name": str(getattr(state, "character_fixed_name", "") or ""),
         "character_profile_count": len(getattr(state, "character_profiles", {}) or {}),
+        "character_profile_game_id": str(getattr(state, "character_profile_game_id", "") or ""),
+        "character_profile_match_reason": str(
+            getattr(state, "character_profile_match_reason", "") or ""
+        ),
         "character_mode_stale": bool(getattr(state, "character_mode_stale", False)),
         "active_session_id": state.active_session_id,
         "active_data_source": state.active_data_source,

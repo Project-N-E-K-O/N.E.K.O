@@ -90,6 +90,7 @@
   "ui.character_profile.hint_no_game": "先に「プラグイン認識」でゲーム対象をバインドまたは検出してください。",
   "ui.character_profile.hint_no_profiles": "現在のゲームに利用可能なキャラクタープロフィールはありません。",
   "ui.character_profile.hint_loaded": "{count} 件のキャラクタープロフィールを読み込みました。",
+  "ui.character_profile.hint_auto_matched": "一致したプロフィール：{game}",
   "ui.character_profile.hint_load_failed": "キャラクター一覧の読み込みに失敗しました：{error}",
   "ui.character_profile.error_select_required": "先にキャラクターを選択してください。",
   "ui.flash.saving_character_mode": "キャラクタープロフィール設定を保存中...",

@@ -811,6 +811,8 @@ def test_status_payload_exposes_lightweight_character_profile_state(
             "丛雨": {"identity": "刀灵"},
             "茉子": {"identity": "忍者"},
         },
+        character_profile_game_id="senren_banka",
+        character_profile_match_reason="window_title_contains",
         character_mode_stale=True,
     )
     _patch_status_dependencies(monkeypatch)
@@ -824,6 +826,8 @@ def test_status_payload_exposes_lightweight_character_profile_state(
     assert payload["character_mode"] == "fixed"
     assert payload["character_fixed_name"] == "丛雨"
     assert payload["character_profile_count"] == 2
+    assert payload["character_profile_game_id"] == "senren_banka"
+    assert payload["character_profile_match_reason"] == "window_title_contains"
     assert payload["character_mode_stale"] is True
     assert "character_profiles" not in payload
 

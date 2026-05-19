@@ -210,6 +210,50 @@ def test_load_game_profiles_cached_on_second_call(
     assert third["preset_loaded"] is False
 
 
+def test_resolve_profile_match_prefers_exact_game_id(
+    manager: CharacterProfileManager, tmp_path: Path
+) -> None:
+    _write(tmp_path / "demo_game.json", VALID_PRESET)
+
+    match = manager.resolve_profile_match([{"game_id": "demo_game"}])
+
+    assert match is not None
+    assert match.game_id == "demo_game"
+    assert match.reason == "exact_game_id"
+
+
+def test_resolve_profile_match_uses_alias_and_window_title(
+    manager: CharacterProfileManager, tmp_path: Path
+) -> None:
+    payload = {
+        **VALID_PRESET,
+        "aliases": ["千恋万花"],
+        "match": {
+            "process_names": ["SenrenBanka.exe"],
+            "window_title_contains": ["千恋＊万花"],
+        },
+    }
+    _write(tmp_path / "senren_banka.json", payload)
+
+    alias_match = manager.resolve_profile_match([{"game_id": "千恋万花"}])
+    window_match = manager.resolve_profile_match(
+        [{"window_title": "千恋＊万花 - Steam"}]
+    )
+    process_match = manager.resolve_profile_match(
+        [{"process_name": "SenrenBanka.exe"}]
+    )
+
+    assert alias_match is not None
+    assert alias_match.game_id == "senren_banka"
+    assert alias_match.reason == "alias"
+    assert window_match is not None
+    assert window_match.game_id == "senren_banka"
+    assert window_match.reason == "window_title_contains"
+    assert process_match is not None
+    assert process_match.game_id == "senren_banka"
+    assert process_match.reason == "process_name"
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------

@@ -90,6 +90,7 @@
   "ui.character_profile.hint_no_game": "Bind or detect a game target in Plugin Recognition first.",
   "ui.character_profile.hint_no_profiles": "No character profiles are available for the current game.",
   "ui.character_profile.hint_loaded": "{count} character profile(s) loaded.",
+  "ui.character_profile.hint_auto_matched": "Matched profile: {game}",
   "ui.character_profile.hint_load_failed": "Failed to load character list: {error}",
   "ui.character_profile.error_select_required": "Select a character first.",
   "ui.flash.saving_character_mode": "Saving character profile settings...",

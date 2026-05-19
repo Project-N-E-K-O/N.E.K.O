@@ -46,6 +46,8 @@ class GalgameSharedState:
     character_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     active_scene_characters: list[str] = field(default_factory=list)
     character_profile_version: str = ""
+    character_profile_game_id: str = ""
+    character_profile_match_reason: str = ""
     character_mode: str = "off"
     character_fixed_name: str = ""
     character_mode_stale: bool = False

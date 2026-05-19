@@ -1147,6 +1147,8 @@ class GalgamePlugin(NekoPluginBase):
                 "character_profiles": dict(state.character_profiles),
                 "active_scene_characters": list(state.active_scene_characters),
                 "character_profile_version": state.character_profile_version,
+                "character_profile_game_id": state.character_profile_game_id,
+                "character_profile_match_reason": state.character_profile_match_reason,
                 "character_mode": state.character_mode,
                 "character_fixed_name": state.character_fixed_name,
                 "character_mode_stale": state.character_mode_stale,
@@ -1201,6 +1203,8 @@ class GalgamePlugin(NekoPluginBase):
             "character_profiles": json_copy(raw["character_profiles"]),
             "active_scene_characters": json_copy(raw["active_scene_characters"]),
             "character_profile_version": raw["character_profile_version"],
+            "character_profile_game_id": raw["character_profile_game_id"],
+            "character_profile_match_reason": raw["character_profile_match_reason"],
             "character_mode": raw["character_mode"],
             "character_fixed_name": raw["character_fixed_name"],
             "character_mode_stale": raw["character_mode_stale"],
@@ -1922,6 +1926,20 @@ class GalgamePlugin(NekoPluginBase):
             assign_if_live_unchanged(
                 "character_profile_version",
                 str(payload.get("character_profile_version", state.character_profile_version) or ""),
+            )
+            assign_if_live_unchanged(
+                "character_profile_game_id",
+                str(payload.get("character_profile_game_id", state.character_profile_game_id) or ""),
+            )
+            assign_if_live_unchanged(
+                "character_profile_match_reason",
+                str(
+                    payload.get(
+                        "character_profile_match_reason",
+                        state.character_profile_match_reason,
+                    )
+                    or ""
+                ),
             )
             assign_if_live_unchanged("character_mode", character_mode)
             assign_if_live_unchanged(
@@ -2898,7 +2916,12 @@ class GalgamePlugin(NekoPluginBase):
             )
         return self._character_profile_manager
 
-    def _activate_character_profiles(self, game_id: str) -> dict[str, Any]:
+    def _activate_character_profiles(
+        self,
+        game_id: str,
+        *,
+        match_reason: str = "exact_game_id",
+    ) -> dict[str, Any]:
         """Lazy-load preset+user profiles for ``game_id`` into shared state.
 
         Initializes runtime overlay entries for any newly seen characters from
@@ -2913,6 +2936,8 @@ class GalgamePlugin(NekoPluginBase):
         with self._state_lock:
             self._state.character_profiles = json_copy(profiles)
             self._state.character_profile_version = version
+            self._state.character_profile_game_id = normalized if profiles else ""
+            self._state.character_profile_match_reason = match_reason if profiles else ""
             runtime = dict(self._state.character_runtime_state or {})
             for name, profile in profiles.items():
                 if name not in runtime:
@@ -2920,6 +2945,7 @@ class GalgamePlugin(NekoPluginBase):
                         name, profile
                     )
             self._state.character_runtime_state = runtime
+            runtime_state = json_copy(self._state.character_runtime_state)
             self._state_dirty = True
             self._cached_snapshot = None
         try:
@@ -2931,7 +2957,7 @@ class GalgamePlugin(NekoPluginBase):
             )
             self._persist.persist_config_override(
                 STORE_CHARACTER_RUNTIME_STATE,
-                json_copy(self._state.character_runtime_state),
+                runtime_state,
             )
         except Exception:  # noqa: BLE001 — persistence failure must not crash the call
             self.logger.warning(
@@ -2951,6 +2977,138 @@ class GalgamePlugin(NekoPluginBase):
                 normalized,
                 "; ".join(load["warnings"]),
             )
+        return load
+
+    def _clear_character_profiles(self) -> None:
+        with self._state_lock:
+            self._state.character_profiles = {}
+            self._state.character_profile_version = ""
+            self._state.character_profile_game_id = ""
+            self._state.character_profile_match_reason = ""
+            self._state.character_runtime_state = {}
+            self._state_dirty = True
+            self._cached_snapshot = None
+        try:
+            self._persist.persist_config_override(STORE_CHARACTER_PROFILES, {})
+            self._persist.persist_config_override(STORE_CHARACTER_PROFILE_VERSION, "")
+            self._persist.persist_config_override(STORE_CHARACTER_RUNTIME_STATE, {})
+        except Exception:  # noqa: BLE001
+            self.logger.warning("failed to persist character profile clear", exc_info=True)
+
+    @staticmethod
+    def _append_character_profile_signal(
+        signals: list[dict[str, Any]],
+        *,
+        game_id: object = "",
+        game_title: object = "",
+        process_name: object = "",
+        window_title: object = "",
+    ) -> None:
+        signal = {
+            "game_id": str(game_id or "").strip(),
+            "game_title": str(game_title or "").strip(),
+            "process_name": str(process_name or "").strip(),
+            "window_title": str(window_title or "").strip(),
+        }
+        if any(signal.values()) and signal not in signals:
+            signals.append(signal)
+
+    def _character_profile_match_signals(self) -> list[dict[str, Any]]:
+        with self._state_lock:
+            bound_game_id = str(self._state.bound_game_id or "")
+            active_game_id = str(self._state.active_game_id or "")
+            active_meta = json_copy(self._state.active_session_meta or {})
+            ocr_runtime = json_copy(self._state.ocr_reader_runtime or {})
+            memory_runtime = json_copy(self._state.memory_reader_runtime or {})
+            available_game_ids = list(self._state.available_game_ids or [])
+
+        signals: list[dict[str, Any]] = []
+        self._append_character_profile_signal(signals, game_id=bound_game_id)
+        self._append_character_profile_signal(signals, game_id=active_game_id)
+        if isinstance(active_meta, dict):
+            metadata = active_meta.get("metadata")
+            metadata_obj = metadata if isinstance(metadata, dict) else {}
+            self._append_character_profile_signal(
+                signals,
+                game_id=active_meta.get("game_id"),
+                game_title=active_meta.get("game_title"),
+                process_name=metadata_obj.get("game_process_name"),
+                window_title=metadata_obj.get("window_title"),
+            )
+        if isinstance(ocr_runtime, dict):
+            self._append_character_profile_signal(
+                signals,
+                game_id=ocr_runtime.get("game_id"),
+                game_title=ocr_runtime.get("game_title"),
+                process_name=(
+                    ocr_runtime.get("effective_process_name")
+                    or ocr_runtime.get("process_name")
+                ),
+                window_title=(
+                    ocr_runtime.get("effective_window_title")
+                    or ocr_runtime.get("window_title")
+                ),
+            )
+        if isinstance(memory_runtime, dict):
+            self._append_character_profile_signal(
+                signals,
+                game_id=memory_runtime.get("game_id"),
+                game_title=memory_runtime.get("game_title"),
+                process_name=memory_runtime.get("process_name"),
+            )
+        for game_id in available_game_ids:
+            self._append_character_profile_signal(signals, game_id=game_id)
+        return signals
+
+    def _load_character_profiles_for_current_context(
+        self,
+        *,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        manager = self._get_character_profile_manager()
+        signals = self._character_profile_match_signals()
+        match = manager.resolve_profile_match(signals)
+        with self._state_lock:
+            current_profiles = dict(self._state.character_profiles or {})
+            current_profile_game_id = str(self._state.character_profile_game_id or "")
+            current_match_reason = str(self._state.character_profile_match_reason or "")
+            bound_game_id = str(self._state.bound_game_id or "")
+        if (
+            current_profiles
+            and not force
+            and current_profile_game_id
+            and match is not None
+            and match.game_id == current_profile_game_id
+        ):
+            return {
+                "profiles": current_profiles,
+                "version": "",
+                "errors": [],
+                "warnings": [],
+                "resolved_game_id": current_profile_game_id,
+                "match_reason": current_match_reason,
+                "matched": True,
+                "cached": True,
+            }
+        if match is None:
+            if current_profiles and not bound_game_id:
+                self._clear_character_profiles()
+            return {
+                "profiles": {},
+                "version": "",
+                "errors": ["no matching character profile"],
+                "warnings": [],
+                "resolved_game_id": "",
+                "match_reason": "",
+                "matched": False,
+            }
+        load = self._activate_character_profiles(
+            match.game_id,
+            match_reason=match.reason,
+        )
+        load["resolved_game_id"] = match.game_id
+        load["match_reason"] = match.reason
+        load["matched"] = True
         return load
 
     def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
@@ -5982,6 +6140,8 @@ class GalgamePlugin(NekoPluginBase):
             self._state.bound_game_id = normalized
             self._state.character_profiles = {}
             self._state.character_profile_version = ""
+            self._state.character_profile_game_id = ""
+            self._state.character_profile_match_reason = ""
             self._state.character_runtime_state = {}
             self._state_dirty = True
             self._cached_snapshot = None
@@ -7096,28 +7256,27 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(f"invalid character mode: {mode!r}"))
 
         with self._state_lock:
-            bound_game_id = str(self._state.bound_game_id or "")
             current_profiles = dict(self._state.character_profiles or {})
 
         if mode_normalized == "fixed":
             name = (character_name or "").strip()
             if not name:
                 return Err(SdkError("fixed mode requires character_name"))
+            load = self._load_character_profiles_for_current_context()
+            loaded_profiles = dict(load.get("profiles") or {})
+            if loaded_profiles:
+                current_profiles = loaded_profiles
             if not current_profiles:
-                if not bound_game_id:
-                    return Err(
-                        SdkError("no game bound; cannot load character profiles")
-                    )
-                load = self._activate_character_profiles(bound_game_id)
                 current_profiles = dict(load.get("profiles") or {})
-                if not current_profiles:
-                    errors = load.get("errors") or []
-                    return Err(
-                        SdkError(
-                            f"no character profiles available for {bound_game_id}",
-                            details={"errors": list(errors)},
-                        )
+                errors = load.get("errors") or []
+                resolved_game_id = str(load.get("resolved_game_id") or "")
+                return Err(
+                    SdkError(
+                        "no character profiles available"
+                        + (f" for {resolved_game_id}" if resolved_game_id else ""),
+                        details={"errors": list(errors)},
                     )
+                )
             if name not in current_profiles:
                 return Err(SdkError(f"character {name!r} not found in profiles"))
 
@@ -7174,10 +7333,15 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
         with self._state_lock:
             bound_game_id = str(self._state.bound_game_id or "")
+            profile_game_id = str(self._state.character_profile_game_id or "")
+            match_reason = str(self._state.character_profile_match_reason or "")
             profiles = dict(self._state.character_profiles or {})
-        if not profiles and bound_game_id:
-            load = self._activate_character_profiles(bound_game_id)
-            profiles = dict(load.get("profiles") or {})
+        load = self._load_character_profiles_for_current_context(force=True)
+        loaded_profiles = dict(load.get("profiles") or {})
+        if loaded_profiles or not profiles:
+            profiles = loaded_profiles
+            profile_game_id = str(load.get("resolved_game_id") or "")
+            match_reason = str(load.get("match_reason") or "")
         items = [
             {
                 "name": name,
@@ -7187,7 +7351,9 @@ class GalgamePlugin(NekoPluginBase):
         ]
         return Ok(
             {
-                "game_id": bound_game_id,
+                "game_id": profile_game_id or bound_game_id,
+                "profile_game_id": profile_game_id,
+                "match_reason": match_reason,
                 "characters": items,
                 "summary": f"{len(items)} character(s) available",
             }
@@ -7220,7 +7386,6 @@ class GalgamePlugin(NekoPluginBase):
             mode = str(self._state.character_mode or "off")
             profiles = dict(self._state.character_profiles or {})
             runtime = dict(self._state.character_runtime_state or {})
-            bound_game_id = str(self._state.bound_game_id or "")
         if mode == "off":
             return Ok(
                 {
@@ -7235,8 +7400,8 @@ class GalgamePlugin(NekoPluginBase):
         target = (name or "").strip()
         if not target:
             return Err(SdkError("character name required"))
-        if not profiles and bound_game_id:
-            load = self._activate_character_profiles(bound_game_id)
+        if not profiles:
+            load = self._load_character_profiles_for_current_context()
             profiles = dict(load.get("profiles") or {})
             with self._state_lock:
                 runtime = dict(self._state.character_runtime_state or {})
