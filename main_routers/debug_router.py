@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -299,8 +300,19 @@ def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in raw.items():
         if k in _CLIENT_NUMERIC_FIELDS:
-            if v is None or isinstance(v, (int, float)) and not isinstance(v, bool):
+            if v is None:
                 out[k] = v
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                # 拒 NaN / Infinity / 1e10000：stdlib json 默认会输出 "NaN" /
+                # "Infinity" 字面量（非标准 JSON），前端 JSON.parse / 第三方
+                # jsonl 工具直接挂。try-except 同时兜超大 int（10**500 等）：
+                # math.isfinite 内部把 int 转 float 时会 OverflowError，那种
+                # 数字在「只记计数」语义里也不该出现，一并丢。
+                try:
+                    if math.isfinite(v):
+                        out[k] = v
+                except (OverflowError, TypeError):
+                    pass
         elif k in _CLIENT_BOOL_FIELDS:
             if isinstance(v, bool):
                 out[k] = v
