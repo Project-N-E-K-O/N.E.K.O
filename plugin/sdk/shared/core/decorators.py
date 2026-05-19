@@ -599,7 +599,8 @@ def quick_action(
 ) -> Callable[[F], F]:
     """标记一个 entry 为快捷操作，在命令面板中优先展示。
 
-    必须放在 @plugin_entry 下面（先执行），由 @plugin_entry 读取配置。
+    可放在 @plugin_entry 上方或下方。若 @plugin_entry 已经先执行，本装饰器
+    会直接更新已有 entry metadata。
 
     用法::
 
@@ -614,6 +615,10 @@ def quick_action(
     cfg = QuickActionConfig(icon=icon, priority=priority)
 
     def _decorator(fn: F) -> F:
+        meta = getattr(fn, EVENT_META_ATTR, None)
+        if isinstance(meta, EventMeta):
+            meta.quick_action = True
+            meta.quick_action_config = cfg
         setattr(fn, _QUICK_ACTION_CONFIG_ATTR, cfg)
         return fn
 

@@ -19,7 +19,11 @@ if (!HTMLElement.prototype.scrollTo) {
 }
 
 if (typeof window.ResizeObserver === 'undefined') {
+  // Match the real `ResizeObserver(callback)` signature so callers like
+  // `new ResizeObserver(measure)` aren't falsely flagged as passing a
+  // superfluous argument by signature-based static analysis (CodeQL).
   class ResizeObserverStub {
+    constructor(_cb?: ResizeObserverCallback) {}
     observe() {}
     unobserve() {}
     disconnect() {}

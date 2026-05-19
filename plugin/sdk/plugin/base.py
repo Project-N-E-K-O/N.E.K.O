@@ -14,7 +14,6 @@ from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, 
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
-from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
@@ -47,6 +46,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self.i18n = self._load_plugin_i18n()
         self._static_ui_config: dict[str, Any] | None = None
         self._list_actions: list[dict[str, Any]] = []
+        self._last_attachments: list[dict] = []
         self._dynamic_entries: dict[str, dict[str, Any]] = {}
         # plugin_id-scoped registry of LLM tools we've claimed locally.
         # Tracks (name -> LlmToolMeta) so we can re-emit IPC notifications
@@ -112,6 +112,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return Path(config_path).parent if config_path is not None else Path.cwd()
 
     def data_path(self, *parts: str) -> Path:
+        from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
         base = resolve_plugin_data_dir(self.ctx)
         return base.joinpath(*parts) if parts else base
 
@@ -145,6 +146,48 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
     async def export_push(self, **kwargs: Any) -> object:
         return await self.ctx.export_push(**kwargs)
+
+    async def export_push_image(self, **kwargs: Any) -> object:
+        return await self.ctx.export_push_image(**kwargs)
+
+    def get_attachments(self) -> list[dict]:
+        """Return image attachments forwarded from the user's chat message."""
+        try:
+            result = self.ctx.get_attachments()
+            if isinstance(result, list):
+                self._last_attachments = list(result)
+                return list(self._last_attachments)
+        except Exception:
+            pass  # ctx may not support get_attachments; fall back to cache
+        return list(self._last_attachments)
+
+    def get_user_language(self) -> str:
+        try:
+            getter = getattr(self.ctx, "get_user_language", None)
+            if callable(getter):
+                return str(getter() or "")
+        except Exception:
+            pass  # ctx may not implement get_user_language; return empty
+        return ""
+
+    def set_user_language(self, lang: str) -> None:
+        try:
+            setter = getattr(self.ctx, "set_user_language", None)
+            if callable(setter):
+                setter(lang)
+        except Exception:
+            pass  # best-effort; language state is non-critical
+
+    async def fetch_user_language(self, *, timeout: float = 5.0) -> str:
+        try:
+            result = await self.system_info.get_user_language(timeout=timeout)
+            if result.is_ok():
+                lang = str(result.value)
+                self.set_user_language(lang)
+                return lang
+        except Exception:
+            pass  # non-critical; fall back to cached/context language
+        return self.get_user_language()
 
     async def finish(self, **kwargs: Any) -> Any:
         return await self.ctx.finish(**kwargs)
