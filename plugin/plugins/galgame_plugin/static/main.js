@@ -6452,7 +6452,14 @@ async function setRapidOcrLang(payload = {}) {
     if (nextPayload) {
       setRapidOcrLang(nextPayload);
     } else {
-      setRapidOcrLangControlsDisabled(false);
+      const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+      const latestRapidOcr = latestStatus && latestStatus.rapidocr ? latestStatus.rapidocr : {};
+      const autoDetect = checkbox ? checkbox.checked : latestRapidOcr.auto_detect_lang !== false;
+      if (latestStatus && latestStatus.rapidocr) {
+        renderRapidOcrLangBar({ ...latestRapidOcr, auto_detect_lang: autoDetect });
+      } else if (!autoDetect && !rapidOcrLangRequestPending) {
+        setRapidOcrLangControlsDisabled(false);
+      }
     }
     if (saved && !nextPayload) {
       await refreshAll({ preserveFlash: true, forceInsights: true });

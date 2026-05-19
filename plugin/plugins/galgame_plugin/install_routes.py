@@ -592,6 +592,20 @@ _TUTORIAL_DEFAULTS = {
 _tutorial_store_instance: GalgameStore | None = None
 
 
+def _copy_legacy_tutorial_progress_if_missing(
+    legacy_store_path: Path,
+    runtime_store_path: Path,
+) -> None:
+    legacy_store = GalgameStore(legacy_store_path, logger)
+    legacy_progress = legacy_store.load_tutorial_progress()
+    if not isinstance(legacy_progress, dict):
+        return
+    runtime_store = GalgameStore(runtime_store_path, logger)
+    if runtime_store.load_tutorial_progress() is not None:
+        return
+    runtime_store.save_tutorial_progress(legacy_progress)
+
+
 def _tutorial_store() -> GalgameStore:
     global _tutorial_store_instance
     if _tutorial_store_instance is not None:
@@ -613,6 +627,18 @@ def _tutorial_store() -> GalgameStore:
         except OSError:
             logger.warning(
                 "tutorial progress store migration failed; using legacy store",
+                exc_info=True,
+            )
+            store_path = legacy_store_path
+    elif legacy_store_path.exists():
+        try:
+            _copy_legacy_tutorial_progress_if_missing(
+                legacy_store_path,
+                runtime_store_path,
+            )
+        except OSError:
+            logger.warning(
+                "tutorial progress store merge failed; using legacy store",
                 exc_info=True,
             )
             store_path = legacy_store_path
