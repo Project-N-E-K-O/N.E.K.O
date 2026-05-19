@@ -185,6 +185,34 @@ def _append_to_log(snap: dict[str, Any]) -> None:
 # Watchdog 后台任务
 # ---------------------------------------------------------------------------
 
+def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
+    """Server tick 时回头吸收最近一条 client-only entry（如果在窗口内）。
+
+    时序约束：debug-health.js 首次 POST 在 t=30s，watchdog 首次 tick 在 t=60s，
+    之后两边都按 5min 节奏跑——所以 client POST 通常落在「下一个」server tick
+    **之前** 30s 左右。client POST 端选择 append client-only entry 暂存；server
+    tick 此处主动吸收：把暂存的 client payload merge 到当前 server snapshot，
+    并把暂存条目从 ring 里 pop 掉（避免砍半 ring 保留期）。
+
+    若 client 没启用（用户没开 localStorage），这里啥也不做，ring 全是
+    server-only entry，~200 条 ≈ 16 小时不变。"""
+    if not _HEALTH_RING:
+        return
+    last = _HEALTH_RING[-1]
+    # 「client-only」标识：缺 asyncio_tasks 键（server snapshot 永远有）
+    if "asyncio_tasks" in last:
+        return
+    client_payload = last.get("client")
+    if client_payload is None:
+        return
+    # 吸收窗口：一个 watchdog 间隔。本应只有 ~30s 距离，但容忍 client 启动晚
+    # / 浏览器 throttle 等导致的偏移。再远就放过，避免吸收上上轮的残留。
+    if float(server_snap.get("ts") or 0) - float(last.get("ts") or 0) > _WATCHDOG_INTERVAL_SECONDS:
+        return
+    server_snap["client"] = client_payload
+    _HEALTH_RING.pop()
+
+
 async def _watchdog_loop() -> None:
     """5-min 周期采样。任何单轮异常吞掉继续——多日跑下来不能因为一次失败掉队。"""
     # 启动后先睡一段，避开冷启动 noise（asyncio task 数在 startup 阶段会高一下）。
@@ -195,6 +223,7 @@ async def _watchdog_loop() -> None:
     while True:
         try:
             snap = _collect_snapshot()
+            _absorb_recent_client_payload(snap)
             _HEALTH_RING.append(snap)
             _append_to_log(snap)
         except asyncio.CancelledError:
@@ -245,38 +274,15 @@ async def debug_health() -> dict[str, Any]:
 async def debug_health_client(payload: dict[str, Any]) -> dict[str, Any]:
     """前端 ``debug-health.js`` POST 上来的浏览器侧快照。
 
-    Merge 语义（不是 append）：服务端 watchdog 和前端 debug-health.js 都是
-    5-min 周期，如果直接 append 一条新 entry，ring 实际保留窗口就被砍半
-    （200 条 ÷ 2 = 100 个采样周期），跟头注释里写的「~16 小时」对不上。
-    这里改成：找最近一条**还没绑过 client** 的 server entry，若 ts 距今 <
-    watchdog 间隔则把 payload 挂到它的 ``client`` 字段；找不到才单独 append。
-    这样一行 jsonl = 一个采样周期内的 server+client 完整状态，画图更直观。"""
+    简单 append client-only entry——**不要**往前往回 merge 已存在的 server
+    snapshot（曾尝试过，被 codex 指出会把 client sample 绑到 4.5 分钟之前的
+    server tick，时间轴错位）。正确语义：client POST 暂存条目，等下一次
+    server tick 在 _absorb_recent_client_payload 里把它吸收 + pop，合成一条
+    完整的 server+client entry。这样既不错配时间，也不砍 ring 保留期。"""
     try:
-        now = time.time()
-        merged = False
-        if _HEALTH_RING:
-            # 倒序找：最常见路径是命中 ring 末项（server tick 刚过 + client 推送）
-            for i in range(len(_HEALTH_RING) - 1, -1, -1):
-                cand = _HEALTH_RING[i]
-                # 判定「server entry」：有 asyncio_tasks 字段（即使 None 也算，
-                # 这是 _collect_snapshot 永远写的键）。client-only 条目没有它。
-                if "asyncio_tasks" not in cand:
-                    continue
-                if cand.get("client") is not None:
-                    # 这条已经绑过 client，再往前找；保持 1:1 配对
-                    continue
-                if now - float(cand.get("ts") or 0) > _WATCHDOG_INTERVAL_SECONDS:
-                    # 距今超过一个周期：已经是上一轮的 entry，不再 merge 避免
-                    # 跨周期错配。直接走 append 分支。
-                    break
-                cand["client"] = payload
-                _append_to_log(cand)
-                merged = True
-                break
-        if not merged:
-            entry = {"ts": now, "client": payload}
-            _HEALTH_RING.append(entry)
-            _append_to_log(entry)
-        return {"ok": True, "merged": merged}
+        entry = {"ts": time.time(), "client": payload}
+        _HEALTH_RING.append(entry)
+        _append_to_log(entry)
+        return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
