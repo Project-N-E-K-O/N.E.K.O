@@ -719,6 +719,36 @@
         S.pendingTextTurnSubmitAt = 0;
     }
 
+    // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
+    // buffer 收尾：标 bubble 为 sent、清 pending music、structured 流 drop 掉
+    // 残余 buffer（自己有 renderer），realistic 流把残余 trim 后 enqueue。
+    // 之前两边各写一份导致这次 PR 修 agent_callback `return` 时才发现行为不
+    // 一致；抽成共享 helper 防止下次又单边演进。
+    function flushRealisticBufferOnTurnEnd() {
+        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+        }
+        window._pendingMusicCommand = '';
+        if (window._structuredGeminiStreaming) {
+            window._realisticGeminiBuffer = '';
+            window._structuredGeminiStreaming = false;
+            return;
+        }
+        var rest = typeof window._realisticGeminiBuffer === 'string'
+            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            : '';
+        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        window._realisticGeminiBuffer = '';
+        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+        if (trimmed) {
+            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+            window._realisticGeminiQueue.push(trimmed);
+            if (typeof window.processRealisticQueue === 'function') {
+                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+            }
+        }
+    }
+
     function clearPendingUserActivityCancel() {
         if (_pendingUserActivityCancelTimer) {
             clearTimeout(_pendingUserActivityCancelTimer);
@@ -2122,35 +2152,7 @@
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        window._pendingMusicCommand = '';
-                        // 与下方非-agent_callback 的 `turn end` 分支保持一致：
-                        // structured 流不要 flush 残余 buffer（自己的 renderer 负责），
-                        // 但 **不能 return** —— 后面 emit neko-assistant-turn-end /
-                        // clearPendingAssistantTurnStart / 字幕翻译都要照常跑。
-                        // 早期这里写的是 `return`，导致 structured 主动消息从来不发
-                        // turn-end 事件：waitForAssistantTurnEnd 干等 15s，gal 选项
-                        // 刷新等其它 turn-end 监听者也吃不到这条路径。
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                        } else {
-                            var rest = typeof window._realisticGeminiBuffer === 'string'
-                                ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                                : '';
-                            rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                            window._realisticGeminiBuffer = '';
-                            var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                            if (trimmed) {
-                                window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                                window._realisticGeminiQueue.push(trimmed);
-                                if (typeof window.processRealisticQueue === 'function') {
-                                    window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                                }
-                            }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
@@ -2217,28 +2219,7 @@
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                        } else {
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
