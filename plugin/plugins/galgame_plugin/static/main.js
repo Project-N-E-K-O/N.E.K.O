@@ -4503,7 +4503,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
         : uiT('ui.character_profile.no_game_option', '请先绑定游戏'),
       '',
     ));
-  } else if (document.activeElement !== select) {
+  } else {
     const options = characters.map((item) => {
       const label = item.identity
         ? uiTf('ui.character_profile.option_with_identity', '{name} - {identity}', {
@@ -4554,7 +4554,7 @@ function shouldRefreshCharacterProfilesForStatus(status) {
   const snapshotCount = Array.isArray(latestCharacterProfileSnapshot.characters)
     ? latestCharacterProfileSnapshot.characters.length
     : 0;
-  return statusCount > 0 && statusCount !== snapshotCount;
+  return statusCount !== snapshotCount;
 }
 
 function refreshCharacterProfiles({ force = false, silent = true } = {}) {
@@ -4566,6 +4566,7 @@ function refreshCharacterProfiles({ force = false, silent = true } = {}) {
   if (!boundGameId) {
     latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({ game_id: '', characters: [] }, latestStatus);
     lastCharacterProfileGameId = '';
+    lastCharacterProfileRefreshAt = Date.now();
     renderCharacterProfilePanel(latestStatus);
     return Promise.resolve(false);
   }
@@ -4590,6 +4591,8 @@ function refreshCharacterProfiles({ force = false, silent = true } = {}) {
     return true;
   }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
+    lastCharacterProfileGameId = boundGameId;
+    lastCharacterProfileRefreshAt = Date.now();
     latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({
       game_id: boundGameId,
       characters: [],

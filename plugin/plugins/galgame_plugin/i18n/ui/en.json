@@ -74,7 +74,7 @@
   "ui.settings.control.ocr": "OCR Rhythm",
   "ui.settings.control.vision": "Visual Assistance",
   "ui.character_profile.title": "Character Profile",
-  "ui.character_profile.desc": "Fix one character as the Agent perspective, or disable character profiles.",
+  "ui.character_profile.desc": "Assign a character as the Agent's perspective, or disable character profiles.",
   "ui.character_profile.mode_label": "Character profile mode",
   "ui.character_profile.status_waiting": "Waiting for status refresh",
   "ui.character_profile.status_off": "Off",
