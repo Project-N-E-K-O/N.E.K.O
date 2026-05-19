@@ -1136,36 +1136,16 @@
                         var gameEvent = gameMeta.event || {};
                         console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
                     }
-                    // Detect "mid-turn new response item": realtime LLM can emit
-                    // multiple `response.created` within a single dialog turn
-                    // (so `_is_first_text_chunk` flips True again on the server
-                    // and we receive a second `isNewMessage=true` carrying the
-                    // SAME `turn_id` as the still-open turn). Treating that as
-                    // a brand-new dialog turn destructively resets bubble /
-                    // attachment tracking that should span the whole turn —
-                    // segment 2's bubble gets created in isolation, segment 1's
-                    // tracking is orphaned, and `response_discarded` cleanup
-                    // can no longer reach segment 1's bubble. Symptom: the
-                    // second segment's text fails to render (or briefly
-                    // renders and is then evicted) while its audio plays.
-                    //
-                    // Detection signal: compare incoming turn_id against
-                    // `window.realisticGeminiCurrentTurnId`, which is written
-                    // by THIS handler on every chunk (line below) and only
-                    // cleared by character switch / response_discarded — it
-                    // survives ensureAssistantTurnStarted (which nukes
-                    // S.assistantPendingTurnServerId via
-                    // clearPendingAssistantTurnStart the moment seg1's first
-                    // bubble opens, so that field is null by the time seg2
-                    // arrives and is NOT a usable signal here).
-                    var normalizedNewTurnId = normalizeAssistantTurnId(response.turn_id);
-                    var normalizedOpenTurnId = normalizeAssistantTurnId(window.realisticGeminiCurrentTurnId);
-                    var isMidTurnRestart = isNewMessage
-                        && normalizedNewTurnId
-                        && normalizedOpenTurnId
-                        && normalizedNewTurnId === normalizedOpenTurnId
-                        && S.assistantTurnId;
-                    if (isNewMessage && !isMidTurnRestart) {
+                    if (isNewMessage) {
+                        // 同一 dialog turn 内 LLM 也可能再开一段新的 response item
+                        // （realtime LLM 的 response.created 每次都把
+                        // _is_first_text_chunk 复位为 True，所以 seg2 首 chunk
+                        // 也以 isNewMessage=true 抵达，turn_id 跟 seg1 相同）。
+                        // adapter 用 startNewSegment 抽象统一把每段当独立 utterance
+                        // 处理，这里 lifecycle 也对偶 per-segment：每段重发
+                        // neko-assistant-turn-start，让 avatar-reaction-bubble /
+                        // subtitle / audio-playback 等 listeners 都拿到独立通知，
+                        // 客户端 turn id 也跟着换。
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
@@ -1174,13 +1154,8 @@
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
                         S.assistantTurnId = null;
-                        S.assistantPendingTurnServerId = normalizedNewTurnId;
+                        S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
-                    } else if (isMidTurnRestart) {
-                        logAssistantLifecycle('ws:gemini_response:mid_turn_restart', {
-                            turnId: normalizedNewTurnId,
-                            clientTurnId: S.assistantTurnId
-                        });
                     }
                     if (!S.assistantTurnId
                             && S.assistantTurnAwaitingBubble
