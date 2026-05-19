@@ -68,5 +68,21 @@
   "install.dxcam.ok": "DXcam installation completed",
   "install.dxcam.fail": "DXcam installation failed",
   "errors.not_configured": "galgame_plugin is not configured",
-  "errors.install_in_progress": "{component} installation is already in progress"
+  "errors.install_in_progress": "{component} installation is already in progress",
+  "entries.galgame_get_character_profile.name": "Get character profile",
+  "entries.galgame_get_character_profile.description": "Return a preset character profile for the specified galgame character.",
+  "entries.galgame_set_character_mode.name": "Set character mode",
+  "entries.galgame_set_character_mode.description": "Switch character profile mode between off and a fixed character.",
+  "entries.galgame_get_character_list.name": "List galgame characters",
+  "entries.galgame_get_character_list.description": "Return available preset characters for the current game.",
+  "entries.galgame_import_character_data.name": "Import character data",
+  "entries.galgame_import_character_data.description": "Import a user-provided character profile JSON file.",
+  "entries.galgame_get_scene_context.name": "Get scene context",
+  "entries.galgame_get_scene_context.description": "Return current scene summary, key lines, visible characters, and confirmed choices.",
+  "entries.galgame_get_story_so_far.name": "Get story so far",
+  "entries.galgame_get_story_so_far.description": "Return cross-scene memory and recent story progress.",
+  "entries.galgame_get_recent_lines.name": "Get recent lines",
+  "entries.galgame_get_recent_lines.description": "Return recent stable and observed dialogue lines.",
+  "entries.galgame_get_push_history.name": "Get push history",
+  "entries.galgame_get_push_history.description": "Return recent context push metadata without raw dialogue text."
 }

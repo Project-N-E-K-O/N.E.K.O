@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from _galgame_character_data import CHARACTER_DATA_DIR
+from plugin.plugins.galgame_plugin import GalgamePlugin
+from plugin.plugins.galgame_plugin.character_profile import CharacterProfileManager
+from plugin.plugins.galgame_plugin.state import build_initial_state
+from plugin.plugins.galgame_plugin.models import (
+    ADVANCE_SPEED_MEDIUM,
+    MODE_COMPANION,
+    STORE_CHARACTER_PROFILE_VERSION,
+    STORE_CHARACTER_PROFILES,
+    STORE_CHARACTER_RUNTIME_STATE,
+    STORE_CROSS_SCENE_MEMORY,
+)
+
+
+pytestmark = pytest.mark.plugin_unit
+
+
+def _plugin_with_character_profiles() -> GalgamePlugin:
+    plugin = GalgamePlugin.__new__(GalgamePlugin)
+    plugin._cfg = SimpleNamespace()
+    plugin._state = build_initial_state(
+        mode=MODE_COMPANION,
+        push_notifications=True,
+        advance_speed=ADVANCE_SPEED_MEDIUM,
+    )
+    plugin._state_lock = threading.Lock()
+    plugin._state_dirty = True
+    plugin._cached_snapshot = None
+    plugin._character_profile_manager = CharacterProfileManager(
+        data_dir=CHARACTER_DATA_DIR
+    )
+    plugin._persist = SimpleNamespace(
+        persist_config_override=lambda *_args, **_kwargs: None
+    )
+    plugin.logger = SimpleNamespace(
+        warning=lambda *_args, **_kwargs: None,
+        info=lambda *_args, **_kwargs: None,
+    )
+    return plugin
+
+
+def _plugin_with_persist_writes() -> tuple[GalgamePlugin, list[tuple[str, object]]]:
+    plugin = _plugin_with_character_profiles()
+    writes: list[tuple[str, object]] = []
+    plugin._persist = SimpleNamespace(
+        persist_config_override=lambda key, value: writes.append((key, value))
+    )
+    return plugin, writes
+
+
+@pytest.mark.asyncio
+async def test_character_list_auto_matches_ocr_window_title_without_bound_game(
+) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.ocr_reader_runtime = {
+        "status": "active",
+        "game_id": "ocr-unknown",
+        "window_title": "千恋＊万花",
+        "process_name": "unknown.exe",
+    }
+
+    result = await plugin.galgame_get_character_list()
+
+    assert result.is_ok()
+    payload = result.value
+    assert payload["profile_game_id"] == "senren_banka"
+    assert payload["match_reason"] == "window_title_contains"
+    assert [item["name"] for item in payload["characters"]] == ["叢雨"]
+
+
+@pytest.mark.asyncio
+async def test_fixed_character_mode_auto_loads_profiles_without_bound_game(
+) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.memory_reader_runtime = {
+        "status": "active",
+        "game_id": "mem-unknown",
+        "process_name": "SenrenBanka.exe",
+    }
+
+    result = await plugin.galgame_set_character_mode(
+        mode="fixed",
+        character_name="叢雨",
+    )
+
+    assert result.is_ok()
+    assert plugin._state.character_mode == "fixed"
+    assert plugin._state.character_fixed_name == "叢雨"
+    assert plugin._state.character_profile_game_id == "senren_banka"
+
+
+@pytest.mark.asyncio
+async def test_character_list_reports_empty_when_no_profile_matches(
+) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.ocr_reader_runtime = {
+        "status": "active",
+        "game_id": "ocr-unknown",
+        "window_title": "Unrelated Game",
+        "process_name": "unrelated.exe",
+    }
+
+    result = await plugin.galgame_get_character_list()
+
+    assert result.is_ok()
+    payload = result.value
+    assert payload["profile_game_id"] == ""
+    assert payload["characters"] == []
+
+
+@pytest.mark.asyncio
+async def test_available_game_ids_do_not_fallback_match_profiles() -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.available_game_ids = ["senren_banka"]
+    plugin._state.ocr_reader_runtime = {
+        "status": "active",
+        "game_id": "ocr-unknown",
+        "window_title": "Unrelated Game",
+        "process_name": "unrelated.exe",
+    }
+
+    result = await plugin.galgame_get_character_list()
+
+    assert result.is_ok()
+    payload = result.value
+    assert payload["profile_game_id"] == ""
+    assert payload["characters"] == []
+
+
+def test_commit_state_persists_strategy_memory_fields() -> None:
+    plugin, writes = _plugin_with_persist_writes()
+    payload = plugin._snapshot_state(include_private_context=True)
+    payload["cross_scene_memory"] = {
+        "characters": {"鍙㈤洦": {"arc": "new arc", "confidence": 0.8}}
+    }
+    payload["character_runtime_state"] = {
+        "鍙㈤洦": {
+            "game_id": "senren_banka",
+            "current_emotion": "guarded",
+        }
+    }
+
+    plugin._commit_state(payload)
+
+    assert (STORE_CROSS_SCENE_MEMORY, payload["cross_scene_memory"]) in writes
+    assert (
+        STORE_CHARACTER_RUNTIME_STATE,
+        payload["character_runtime_state"],
+    ) in writes
+
+
+def test_activate_character_profiles_rebuilds_runtime_for_new_game() -> None:
+    plugin, writes = _plugin_with_persist_writes()
+    profile_name = next(
+        iter(
+            plugin._character_profile_manager.load_game_profiles("senren_banka")[
+                "profiles"
+            ]
+        )
+    )
+    plugin._state.character_profile_game_id = "other_game"
+    plugin._state.character_runtime_state = {
+        profile_name: {
+            "game_id": "other_game",
+            "current_emotion": "stale from another game",
+        }
+    }
+
+    load = plugin._activate_character_profiles("senren_banka")
+
+    assert load["profiles"]
+    runtime = plugin._state.character_runtime_state[profile_name]
+    assert runtime["game_id"] == "senren_banka"
+    assert runtime["current_emotion"] != "stale from another game"
+    assert (STORE_CHARACTER_RUNTIME_STATE, plugin._state.character_runtime_state) in writes
+
+
+@pytest.mark.asyncio
+async def test_bind_game_clears_persisted_character_profile_state() -> None:
+    plugin, writes = _plugin_with_persist_writes()
+    plugin._state.available_game_ids = ["senren_banka"]
+    plugin._state.character_profiles = {"鍙㈤洦": {"identity": "old"}}
+    plugin._state.character_profile_version = "old-version"
+    plugin._state.character_profile_game_id = "senren_banka"
+    plugin._state.character_profile_match_reason = "exact_game_id"
+    plugin._state.character_runtime_state = {
+        "鍙㈤洦": {"game_id": "senren_banka", "current_emotion": "old"}
+    }
+    plugin._config_service = SimpleNamespace(
+        persist_preferences=lambda **_kwargs: None
+    )
+
+    async def _poll_bridge(**_kwargs):
+        return None
+
+    plugin._poll_bridge = _poll_bridge
+
+    result = await plugin.galgame_bind_game(game_id="senren_banka")
+
+    assert result.is_ok()
+    assert plugin._state.character_profiles == {}
+    assert plugin._state.character_profile_version == ""
+    assert plugin._state.character_profile_game_id == ""
+    assert plugin._state.character_profile_match_reason == ""
+    assert plugin._state.character_runtime_state == {}
+    assert (STORE_CHARACTER_PROFILES, {}) in writes
+    assert (STORE_CHARACTER_PROFILE_VERSION, "") in writes
+    assert (STORE_CHARACTER_RUNTIME_STATE, {}) in writes
