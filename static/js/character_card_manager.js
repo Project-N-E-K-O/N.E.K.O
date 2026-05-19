@@ -10600,7 +10600,8 @@ function _cardAssistRenderStep3(shell, state, form, originalName, isNew) {
             _cardAssistSetBusy(shell.footer, true);
             try {
                 _cardAssistApplyToForm(form, state.generated, selectedKeys, originalName, isNew);
-                // 触发保存：新建态需要有档案名，否则提示用户
+                // 触发保存：新建态需要有档案名，否则只能提示用户后退出，
+                // 不能继续走 success 流程否则用户会以为已落库。
                 const nameInput = form.querySelector('input[name="档案名"]');
                 if (isNew && !form._autoCreated && (!nameInput || !nameInput.value.trim())) {
                     if (typeof showAlertDialog === 'function') {
@@ -10609,13 +10610,17 @@ function _cardAssistRenderStep3(shell, state, form, originalName, isNew) {
                             { type: 'warning' }
                         );
                     }
-                } else {
-                    // saveCatgirlFromPanel 失败分支自己已经 showMessage，所以这里
-                    // 不再二次报错，只是不要关向导/弹成功提示。
-                    const saved = await saveCatgirlFromPanel(form, originalName, isNew);
-                    if (!saved) {
-                        return;
-                    }
+                    // 字段已写进表单（用户能直接接着填档案名 + 手动保存），
+                    // 收起向导即可；不要叠一个"已应用"的 success toast 让用户
+                    // 误以为已经存到磁盘。
+                    _cardAssistClose(shell.overlay);
+                    return;
+                }
+                // saveCatgirlFromPanel 失败分支自己已经 showMessage，所以这里
+                // 不再二次报错，只是不要关向导/弹成功提示。
+                const saved = await saveCatgirlFromPanel(form, originalName, isNew);
+                if (!saved) {
+                    return;
                 }
                 _cardAssistClose(shell.overlay);
                 if (typeof showAlertDialog === 'function') {
