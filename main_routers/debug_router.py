@@ -56,21 +56,18 @@ _WATCHDOG_INTERVAL_SECONDS = 5 * 60  # 5 分钟
 # ---------------------------------------------------------------------------
 
 def _safe_rss_mb() -> float | None:
-    """读取当前进程 RSS（MB）。psutil 优先，失败回退 resource（POSIX）。
+    """读取当前进程**当前** RSS（MB）；只在 psutil 可用时返回，否则 None。
 
-    Windows 没有 ``resource.getrusage`` 的 RSS 字段，所以纯打包发行版
-    （Nuitka 不带 psutil 的话）这里会返回 None——不致命。"""
+    历史里曾用 ``resource.getrusage(...).ru_maxrss`` 做 fallback，但那是
+    **lifetime peak**——一旦上去就不下降。用来画 leak 趋势会把一次性内存
+    高峰永久误读成 leak，比没有这个字段还误导。所以**宁可返回 None**也不
+    走 ru_maxrss。打包发行版默认就带 psutil，源码模式 ``uv sync`` 也会装。"""
     try:
         import psutil  # type: ignore
         return psutil.Process().memory_info().rss / (1024 * 1024)
     except Exception:
-        pass
-    try:
-        import resource  # type: ignore  # POSIX-only
-        # ru_maxrss 在 macOS 是 bytes，在 Linux 是 KB——我们粗略当 KB 处理，
-        # macOS 上数值会偏大 1024 倍，但用户绝大多数是 Windows，不影响主用例。
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    except Exception:
+        # 故意吞：拿不到 RSS 不应拖垮诊断功能。曲线上看 rss_mb=null 就知道是
+        # 环境缺 psutil，不会和「真有 leak」混淆。
         return None
 
 
@@ -91,9 +88,12 @@ def _safe_conv_history_lengths() -> dict[str, int]:
                 if history is not None:
                     out[name] = len(history)
             except Exception:
+                # 单 lanlan 失败不影响其他：可能正在 end_session / hot-swap，
+                # core / session 暂态为 None，下一轮自然恢复。
                 continue
     except Exception:
-        pass
+        # shared_state 启动早期可能还没 ready；故意吞，零侵入。
+        return out
     return out
 
 
@@ -102,6 +102,7 @@ def _safe_ack_waiters_size() -> int | None:
         from main_logic.agent_event_bus import _ack_waiters
         return len(_ack_waiters)
     except Exception:
+        # 故意吞：agent_event_bus 模块未加载 / 重构改名都允许优雅降级。
         return None
 
 
@@ -113,9 +114,11 @@ def _safe_proactive_history_size() -> dict[str, int]:
             try:
                 out[name] = len(dq)
             except Exception:
+                # 单条 deque 取 len 失败极小概率：跳过不让整轮废。
                 continue
     except Exception:
-        pass
+        # 故意吞：system_router 未加载 / 内部命名变更都允许优雅降级。
+        return out
     return out
 
 
@@ -155,6 +158,8 @@ def _resolve_log_path() -> Path | None:
         if config_dir:
             return Path(config_dir) / "debug_health.jsonl"
     except Exception:
+        # shared_state 没 ready / config_manager 未注入：落到下面 sys.argv[0]
+        # 兜底路径。本身就是诊断文件，写哪里都比不写好。
         pass
     # 兜底：launcher 旁
     try:
@@ -240,17 +245,38 @@ async def debug_health() -> dict[str, Any]:
 async def debug_health_client(payload: dict[str, Any]) -> dict[str, Any]:
     """前端 ``debug-health.js`` POST 上来的浏览器侧快照。
 
-    我们不做存储——只是把它合进下一轮 watchdog snapshot 的 ``client`` 字段，
-    或者直接 echo 进 ring buffer 末项。这样后端 ring 同时记录服务端 + 浏览器侧
-    counter，导出一个文件即可看到完整曲线。"""
+    Merge 语义（不是 append）：服务端 watchdog 和前端 debug-health.js 都是
+    5-min 周期，如果直接 append 一条新 entry，ring 实际保留窗口就被砍半
+    （200 条 ÷ 2 = 100 个采样周期），跟头注释里写的「~16 小时」对不上。
+    这里改成：找最近一条**还没绑过 client** 的 server entry，若 ts 距今 <
+    watchdog 间隔则把 payload 挂到它的 ``client`` 字段；找不到才单独 append。
+    这样一行 jsonl = 一个采样周期内的 server+client 完整状态，画图更直观。"""
     try:
-        # 把 client snapshot 挂在最近一条服务端 snapshot 上；没有就单独占一条。
-        entry = {
-            "ts": time.time(),
-            "client": payload,
-        }
-        _HEALTH_RING.append(entry)
-        _append_to_log(entry)
-        return {"ok": True}
+        now = time.time()
+        merged = False
+        if _HEALTH_RING:
+            # 倒序找：最常见路径是命中 ring 末项（server tick 刚过 + client 推送）
+            for i in range(len(_HEALTH_RING) - 1, -1, -1):
+                cand = _HEALTH_RING[i]
+                # 判定「server entry」：有 asyncio_tasks 字段（即使 None 也算，
+                # 这是 _collect_snapshot 永远写的键）。client-only 条目没有它。
+                if "asyncio_tasks" not in cand:
+                    continue
+                if cand.get("client") is not None:
+                    # 这条已经绑过 client，再往前找；保持 1:1 配对
+                    continue
+                if now - float(cand.get("ts") or 0) > _WATCHDOG_INTERVAL_SECONDS:
+                    # 距今超过一个周期：已经是上一轮的 entry，不再 merge 避免
+                    # 跨周期错配。直接走 append 分支。
+                    break
+                cand["client"] = payload
+                _append_to_log(cand)
+                merged = True
+                break
+        if not merged:
+            entry = {"ts": now, "client": payload}
+            _HEALTH_RING.append(entry)
+            _append_to_log(entry)
+        return {"ok": True, "merged": merged}
     except Exception as e:
         return {"ok": False, "error": str(e)}

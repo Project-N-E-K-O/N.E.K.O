@@ -1332,6 +1332,9 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
 _MAIN_LIMITED_MODE_ALLOWED_PREFIXES = (
     "/static/",
     "/api/storage/location/",
+    # 诊断观测：limited-mode 本身就是要排查的故障形态之一（启动阻断），
+    # 这时候反而最需要 /api/debug/health 能读到 ring + watchdog 落盘。
+    "/api/debug/",
 )
 
 
