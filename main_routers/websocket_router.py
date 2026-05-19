@@ -172,6 +172,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         from utils.instrument import counter as _instr_counter
         _instr_counter("ws_connect", lanlan_name=lanlan_name)
     except Exception:
+        # 埋点失败绝不阻塞 WS 业务路径 —— 计数丢一条比让用户连不上服务严重程度
+        # 差几个数量级。imports 失败的可能性主要在打包环境下 utils 不齐时。
         pass
     _ws_connect_ts = time.time()
 
@@ -415,6 +417,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if _ws_dur > 0:
                 _instr_histogram("ws_session_sec", _ws_dur, lanlan_name=lanlan_name)
         except Exception:
+            # finally 阶段 telemetry 失败不能再 raise —— 已经在 cleanup 路径上，
+            # 抛异常会污染调用栈让真正的 WS error 看不到。
             pass
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"

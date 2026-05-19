@@ -703,6 +703,11 @@ class TokenTracker:
         self._report_interval = _TELEMETRY_REPORT_INTERVAL
         self._unsent_daily: dict = {}  # 尚未成功上报到服务器的增量
         self._unsent_records: list = []
+        # batch_seq：当前正在上报或重传中的窗口标识。新窗口首次进入 _report_to_server
+        # 时分配一次（secrets.token_hex），失败重传时保留同一个值，让 server
+        # seen_batches 能 dedupe "网络 timeout 但 server 已经 commit" 的重传。
+        # 成功 200 后清空，下次窗口再分配新 seq。跟 _unsent_daily 一起持久化。
+        self._pending_batch_seq: Optional[str] = None
         self._has_recorded_app_start: bool = False  # 🔒 app_start 单次上报锁
         self._session_start_ts: float = 0.0  # session_end 计算 duration 用
         self._session_process: str = "unknown"
@@ -773,22 +778,39 @@ class TokenTracker:
                 # 直接传秒；instrument bounds 是数字通用，没绑定单位
                 _instr_histogram("session_duration_sec", duration, process=self._session_process)
         except Exception:
+            # instrument import / emit 失败不能让进程退出卡住 —— 实在丢一条
+            # 也比 atexit 抛出强（atexit 异常会让 SIGTERM 退出码变化）。
             pass
 
-        # ── 2) save() 把 daily_stats + 上面刚 emit 的 instrument snapshot 一起发 ──
+        # ── 2) Bypass 60s throttle —— atexit 是最后机会，错过没下次 ──
+        # _report_to_server 内部 ``now - self._last_report_time < interval``
+        # 在短 session（启动后不到 60s 就退出）下会阻止上报，让刚 emit 的
+        # session_end counter / histogram 永远留在 instrument buffer。这里
+        # 显式归零让那条 if 一定不命中。会带来一个理论副作用：如果 atexit
+        # 之前距上次成功上报 < 60s，这次再发一份；server seen_batches 靠
+        # batch_seq dedupe，所以不会双倍计数。
+        with self._lock:
+            self._last_report_time = 0.0
+
+        # ── 3) save() 把 daily_stats + 上面刚 emit 的 instrument snapshot 一起发 ──
         try:
             # save() first: persists delta to disk and attempts remote report
             # (best-effort final push). Then disable remote URL so no further
             # network calls happen during interpreter teardown.
             self.save()
         except Exception:
+            # save 失败不抛进 atexit（同上）。失败时 unsent 已经被持久化，
+            # 下次进程启动会重传。
             pass
 
-        # ── 3) flush event_logger —— event 不走远程 instrument 通道，本地 jsonl 兜底 ──
+        # ── 4) flush event_logger —— event 不走远程 instrument 通道，本地 jsonl 兜底 ──
         try:
             from utils.event_logger import EventLogger
             EventLogger.get_instance().flush()
         except Exception:
+            # event_logger flush 失败丢的是本地 jsonl 的稀疏事件，下次启动
+            # 没有恢复路径 —— 但 counter/histogram 已经走 instrument 通道
+            # 发出去了，这里失败影响的只是诊断细节，不阻塞 atexit。
             pass
         finally:
             global _TELEMETRY_SERVER_URL
@@ -808,6 +830,7 @@ class TokenTracker:
                 return
             loaded_daily = data.get("daily", {})
             loaded_records = data.get("records", [])
+            loaded_batch_seq = data.get("batch_seq")
             if loaded_daily:
                 with self._lock:
                     for day_key, day_val in loaded_daily.items():
@@ -818,6 +841,11 @@ class TokenTracker:
                     self._unsent_records.extend(loaded_records)
                     if len(self._unsent_records) > 200:
                         self._unsent_records = self._unsent_records[-200:]
+                    # 恢复 batch_seq：进程上次没发出去的窗口，重启后下次上报
+                    # 仍用同一 seq，让 server seen_batches 能 dedupe 那次的
+                    # 不确定成败（client 进程被 kill 时 server 可能已 commit）。
+                    if isinstance(loaded_batch_seq, str) and loaded_batch_seq:
+                        self._pending_batch_seq = loaded_batch_seq
                 logger.debug(f"Token tracker: loaded {len(loaded_daily)} days of unsent telemetry from disk")
             # 加载成功后删除文件，避免下次重复加载
             p.unlink(missing_ok=True)
@@ -830,6 +858,9 @@ class TokenTracker:
         调用时机：
         1. save() 成功后，如果有 unsent 数据等待远程上报
         2. atexit 兜底时（通过 save → _report_to_server → 失败 → 持久化）
+
+        持久化 batch_seq 一起：失败 + 进程崩 + 重启后 → 重传用同一 seq，
+        让 server seen_batches dedupe 不确定成败的 commit。
         """
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
@@ -842,6 +873,7 @@ class TokenTracker:
                 data = {
                     "daily": copy.deepcopy(self._unsent_daily),
                     "records": list(self._unsent_records[-200:]),
+                    "batch_seq": self._pending_batch_seq,
                     "saved_at": time.time(),
                 }
             atomic_write_json(self._unsent_queue_path, data)
@@ -1065,6 +1097,8 @@ class TokenTracker:
             _instr_event("session_start", process=process)
             _instr_counter("session_start", process=process)
         except Exception:
+            # 埋点失败不能挡 app 启动 —— 老 record() 路径下面已经跑过，
+            # DAU 仍能从 by_call_type='app_start' 统计出来，不会丢用户。
             pass
 
         self.record(
@@ -1112,7 +1146,10 @@ class TokenTracker:
             try:
                 self._report_to_server(delta_daily, delta_records)
             except Exception:
-                pass  # 远程失败不影响 idle path
+                # 远程失败不影响 idle path —— 已经没本地数据要写，错误就是
+                # 纯网络的，下次 60s 周期或 atexit 会再试。_report_to_server
+                # 自己内部已有失败 unsent 持久化逻辑，这里不重复打日志。
+                pass
             return
 
         try:
@@ -1206,7 +1243,9 @@ class TokenTracker:
         except Exception:
             has_instruments = False
 
-        # 取出待发送数据
+        # 取出待发送数据。同时分配/复用 batch_seq —— 失败重传保留同一 seq
+        # 才能让 server seen_batches dedupe；新窗口（_pending_batch_seq=None）
+        # 才分配新值，保证不同窗口 batch_id 不会相撞。
         with self._lock:
             if not self._unsent_daily and not has_instruments:
                 return
@@ -1214,6 +1253,9 @@ class TokenTracker:
             send_records = self._unsent_records
             self._unsent_daily = {}
             self._unsent_records = []
+            if self._pending_batch_seq is None:
+                self._pending_batch_seq = secrets.token_hex(8)
+            batch_seq = self._pending_batch_seq
 
         # 现在确定要发，clear-on-read 拿 instrument snapshot。如果上报失败，
         # 这部分数据丢失（设计取舍：counter / histogram 是窗口聚合，丢一个
@@ -1266,25 +1308,25 @@ class TokenTracker:
             ts = time.time()
             sig = _compute_telemetry_signature(payload_json, ts)
 
-            # batch_id 用于 server seen_batches 幂等去重，必须在"同一份重试数据"
-            # 上稳定。device_id_legacy 依赖 uuid.getnode()，在多网卡机器上枚举
-            # 顺序不保证，重试期间可能漂；如果把它纳入 batch_id 计算，原本应该
-            # 被 dedupe 的重发会变成新 batch 被累加，daily_aggregates 双倍计数。
-            # 因此 batch_id 只覆盖核心幂等字段，签名仍覆盖完整 payload。
+            # batch_id 用于 server seen_batches 幂等去重，必须满足两个目标：
+            #   (a) 失败重传 / 网络 timeout（server commit 了 client 没收到 200）
+            #       下次重发同一份 daily 时 batch_id 必须**不变**，让 server
+            #       识别重复 commit 并跳过。
+            #   (b) 不同窗口（含纯 instrument-only 窗口、daily 都空时）的
+            #       batch_id 必须**唯一**，否则被前一窗口的 seen_batches dedupe
+            #       误伤，后续 instrument 数据全丢。
             #
-            # instruments 也必须入 hash —— 当 daily_stats 和 recent_records 都空
-            # （纯前端 counter 触发的窗口），少了它 batch_core 对同一设备每个
-            # 窗口都算出同一个 hash，server seen_batches 一旦记录就把所有后续
-            # instrument-only 上报全部 dedupe 掉。instruments 是 clear-on-read
-            # 不会在重试中复现，所以加入 hash 不会破坏失败重传的 dedupe（重传
-            # 时 instruments 为空，hash 自然不同；而首次上报的 instruments 内容
-            # 也不会跟其它窗口相同，保证每个窗口的 hash 都唯一）。
+            # batch_seq 同时满足：进程内首次进入此窗口时分配新值，失败重传
+            # （含进程 kill 后重启）保留同一 seq，成功 200 后清空。把 seq 放进
+            # hash，daily / records / instruments 自己不需要进 hash —— 尤其
+            # instruments 是 clear-on-read、不会在重传中复现，把它进 hash 反而
+            # 破坏 (a)。device_id_legacy 也不进：它依赖 uuid.getnode()，多网卡
+            # 机器枚举顺序不稳定，进 hash 会让重传变成新 batch 被累加。
+            # 签名 (HMAC) 仍覆盖完整 payload。
             batch_core = {
                 "device_id": payload["device_id"],
                 "app_version": payload["app_version"],
-                "daily_stats": payload["daily_stats"],
-                "recent_records": payload["recent_records"],
-                "instruments": payload.get("instruments"),
+                "batch_seq": batch_seq,
             }
             batch_id = hashlib.sha256(
                 json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()
@@ -1314,7 +1356,9 @@ class TokenTracker:
             with urllib.request.urlopen(req, timeout=_TELEMETRY_TIMEOUT) as resp:
                 if resp.status == 200:
                     self._last_report_time = now
-                    # 发送成功，删除 unsent 队列文件
+                    # 发送成功：清 batch_seq，下次窗口重新分配；清 unsent 文件。
+                    with self._lock:
+                        self._pending_batch_seq = None
                     self._unsent_queue_path.unlink(missing_ok=True)
                     logger.debug("Token tracker: telemetry reported successfully")
                     return
@@ -1323,7 +1367,9 @@ class TokenTracker:
 
         except Exception as e:
             logger.debug(f"Token tracker: telemetry report failed (non-critical): {e}")
-            # 发送失败，放回 unsent 数据 + 持久化
+            # 发送失败：放回 unsent + 持久化。**不清** _pending_batch_seq ——
+            # 下次重试用同一 seq，让 server seen_batches dedupe "网络 timeout
+            # 但 server 已经 commit" 的不确定成败重传。
             with self._lock:
                 for day_key, day_delta in send_daily.items():
                     if day_key not in self._unsent_daily:

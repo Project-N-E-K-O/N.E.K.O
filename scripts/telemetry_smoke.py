@@ -84,6 +84,8 @@ def _wait_for_health(timeout: float = 10.0) -> bool:
             if status == 200:
                 return True
         except Exception:
+            # health probe 在 server 启动期会反复抛连接拒绝，这是预期 —— 继续
+            # poll 直到 deadline。
             pass
         time.sleep(0.2)
     return False
@@ -126,6 +128,8 @@ def main():
                 print("--- server output ---")
                 print(out[-4000:])
             except Exception:
+                # 终止 server 进程或读它的 output 本身失败：我们正要 return 1
+                # 退出 smoke，再 raise 没意义。
                 pass
             return 1
         print("✓ server healthy")
@@ -310,7 +314,6 @@ def main():
         # 都将为空）。如果 batch_id 不含 instruments，两次 snapshot 算出同一
         # hash → 第二次会被 seen_batches dedupe，server 端只看到第一次的数据。
         tracker_d = TokenTracker.get_instance()
-        seen_before = set()
         for batch_n in range(2):
             counter("window_only_counter", 1, surface="index_wide", batch_n=batch_n)
             # 强行触发上报：把节流计时重置
@@ -381,6 +384,119 @@ def main():
         # 把 URL 重新启用，下面的 [5/5] dashboard 测试还要用
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         print("  ✓ session_end counter + duration histogram both reached server")
+
+        # --------------------------------------------------------------
+        # [4d] Regression: Codex P1 round-2 — daily 重传幂等
+        #
+        # 网络 timeout（server commit 了 client 没收到 200）场景：client 用
+        # 同一个 batch_seq 重传，server seen_batches 必须 dedupe，daily 不能
+        # 被双倍计数。手动构造两份 batch_id 完全相同的 payload 验证 server
+        # 行为；同时单独检查 client 在失败时 _pending_batch_seq 不被清空。
+        # --------------------------------------------------------------
+        print("\n[4d] Regression: daily retry idempotency (batch_seq stability)...")
+        Instrument._instance = None
+        TokenTracker._instance = None
+        tracker_f = TokenTracker.get_instance()
+        # Step A: 用 bad URL 让首次上报失败，验证 _pending_batch_seq 保留
+        good_url = tt_mod._TELEMETRY_SERVER_URL
+        tt_mod._TELEMETRY_SERVER_URL = "http://127.0.0.1:1"
+        tracker_f.record(model="gpt-4o-mini", prompt_tokens=111,
+                         completion_tokens=22, total_tokens=133,
+                         cached_tokens=0, call_type="conversation")
+        tracker_f._last_report_time = 0
+        tracker_f.save()
+        time.sleep(0.3)
+        seq_after_fail = tracker_f._pending_batch_seq
+        assert seq_after_fail is not None, (
+            "P1 round-2 regression: _pending_batch_seq must persist after failure"
+        )
+        print(f"  ✓ failure preserved batch_seq = {seq_after_fail[:12]}...")
+        # Step B: 恢复 URL，重传应成功并清 batch_seq
+        tt_mod._TELEMETRY_SERVER_URL = good_url
+        tracker_f._last_report_time = 0
+        tracker_f.save()
+        time.sleep(0.3)
+        assert tracker_f._pending_batch_seq is None, (
+            "P1 round-2 regression: _pending_batch_seq must clear after success"
+        )
+        print("  ✓ success cleared batch_seq")
+
+        # Step C: 模拟"server commit 但 client 没收到 200，client 重发"。
+        # 手动 POST 两次 batch_id 完全相同的 payload，验证 server dedupe 工作。
+        dev_f = "f" * 64
+        seq_test = "deadbeef12345678"
+        bc = {"device_id": dev_f, "app_version": "retry-test", "batch_seq": seq_test}
+        bid_test = hashlib.sha256(
+            json.dumps(bc, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()[:32]
+        today_iso = time.strftime("%Y-%m-%d")
+        daily_f = {
+            today_iso: {
+                "total_prompt_tokens": 7777, "total_completion_tokens": 100,
+                "total_tokens": 7877, "cached_tokens": 0,
+                "call_count": 1, "error_count": 0,
+                "by_model": {}, "by_call_type": {},
+            }
+        }
+        payload_f = {
+            "device_id": dev_f, "app_version": "retry-test",
+            "branch": "main", "locale": "zh-CN", "timezone": "UTC",
+            "distribution": "source", "steam_user_id": "",
+            "daily_stats": daily_f, "recent_records": [],
+        }
+        s1, _ = _sign_and_submit(payload_f, gzip_it=False, batch_id=bid_test)
+        s2, r2 = _sign_and_submit(payload_f, gzip_it=False, batch_id=bid_test)
+        print(f"  first POST: HTTP {s1} | retry (same batch_id): HTTP {s2} {r2[:80]!r}")
+        assert s1 == 200 and s2 == 200
+        assert b"duplicate" in r2, (
+            "P1 round-2 regression: server must dedupe same batch_id"
+        )
+        conn_f = sqlite3.connect(db_path)
+        row_f = conn_f.execute(
+            "SELECT total_tokens FROM daily_aggregates "
+            "WHERE device_id=? AND model='_total' AND call_type='_total'",
+            (dev_f,),
+        ).fetchone()
+        conn_f.close()
+        assert row_f is not None
+        assert row_f[0] == 7877, (
+            f"P1 round-2 regression: daily double-counted on retry — "
+            f"got {row_f[0]}, expected 7877"
+        )
+        print(f"  ✓ daily NOT double-counted on retry: total_tokens={row_f[0]}")
+
+        # --------------------------------------------------------------
+        # [4e] Regression: Codex P2 round-2 — short-session atexit bypass throttle
+        # --------------------------------------------------------------
+        print("\n[4e] Regression: short-session atexit bypasses throttle...")
+        Instrument._instance = None
+        TokenTracker._instance = None
+        tracker_g = TokenTracker.get_instance()
+        tracker_g.record_app_start(process="smoke_short_session")
+        tracker_g._session_start_ts = time.time() - 2.0  # 2s 短 session
+        # 先一次成功上报，让 _last_report_time = now（throttle 窗口刚开始）
+        counter("short_session_anchor", 1)
+        tracker_g._last_report_time = 0
+        tracker_g.save()
+        time.sleep(0.3)
+        assert tracker_g._last_report_time > 0, "anchor save should set _last_report_time"
+        # 此刻距下次允许还差 60s。如果 _atexit_save 不 bypass throttle，
+        # session_end emit 之后的 save() 会被 throttle gate 挡掉。
+        tracker_g._atexit_save()
+        time.sleep(0.3)
+        conn_g = sqlite3.connect(db_path)
+        rows_g = conn_g.execute(
+            "SELECT metric_key, value FROM instrument_counters "
+            "WHERE metric_key LIKE 'session_end%smoke_short_session%'"
+        ).fetchall()
+        conn_g.close()
+        assert len(rows_g) >= 1, (
+            "P2 round-2 regression: session_end missing from short-session atexit "
+            "— throttle bypass not working"
+        )
+        print(f"  ✓ short-session session_end reached server: {rows_g}")
+        # 恢复 URL 给后续 [5/5] 用
+        tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
 
         # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
