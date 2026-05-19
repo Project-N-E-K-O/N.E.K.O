@@ -1149,7 +1149,7 @@
                     if (isAutostartRetentionSkin) {
                         if (buttonConfig.value === 'accept') {
                             bindAutostartRetentionState(button, 'state-happy');
-                        } else if (buttonConfig.value === 'later') {
+                        } else if (buttonConfig.value === 'later' || buttonConfig.value === 'never') {
                             bindAutostartRetentionState(button, 'state-sad');
                         }
                     }

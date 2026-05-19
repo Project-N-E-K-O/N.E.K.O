@@ -1277,7 +1277,7 @@ def test_autostart_prompt_uses_30_min_threshold_and_3_day_later_cooldown(tmp_pat
 
 
 @pytest.mark.unit
-def test_autostart_never_decision_is_rejected_after_button_removal(tmp_path):
+def test_autostart_never_decision_is_accepted_when_submitted(tmp_path):
     config = DummyConfig(tmp_path)
 
     prompt = process_autostart_prompt_heartbeat(
@@ -1286,16 +1286,18 @@ def test_autostart_never_decision_is_rejected_after_button_removal(tmp_path):
         now_ms=1_000,
     )
 
-    with pytest.raises(ValueError, match="invalid decision"):
-        record_autostart_prompt_decision(
-            {"decision": "never", "prompt_token": prompt["prompt_token"]},
-            config_manager=config,
-            now_ms=2_000,
-        )
+    response = record_autostart_prompt_decision(
+        {"decision": "never", "prompt_token": prompt["prompt_token"]},
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert response["state"]["status"] == "never"
+    assert response["state"]["never_remind"] is True
 
 
 @pytest.mark.unit
-def test_autostart_legacy_never_state_no_longer_suppresses_prompt(tmp_path):
+def test_autostart_legacy_never_state_still_suppresses_prompt(tmp_path):
     config = DummyConfig(tmp_path)
     save_autostart_prompt_state(
         {
@@ -1313,10 +1315,10 @@ def test_autostart_legacy_never_state_no_longer_suppresses_prompt(tmp_path):
         now_ms=2_000,
     )
 
-    assert response["should_prompt"] is True
-    assert response["prompt_reason"] == "usage_timeout"
-    assert response["state"]["status"] == "observing"
-    assert response["state"]["never_remind"] is False
+    assert response["should_prompt"] is False
+    assert response["prompt_reason"] == "never_remind"
+    assert response["state"]["status"] == "never"
+    assert response["state"]["never_remind"] is True
 
 
 @pytest.mark.unit
@@ -1708,6 +1710,77 @@ def test_autostart_decision_is_idempotent_for_repeated_token(tmp_path):
     assert first["state"]["deferred_until"] == 2_000 + runtime_config["later_cooldown_ms"]
     assert second["state"]["deferred_until"] == 2_000 + runtime_config["later_cooldown_ms"]
     assert second["state"]["funnel_counts"]["later"] == 1
+
+
+@pytest.mark.unit
+def test_autostart_can_offer_never_after_three_later_decisions(tmp_path):
+    config = DummyConfig(tmp_path)
+    runtime_config = load_autostart_prompt_runtime_config(config)
+    now_ms = 1_000
+
+    latest_decision = None
+    for _ in range(3):
+        heartbeat = process_autostart_prompt_heartbeat(
+            {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+            config_manager=config,
+            now_ms=now_ms,
+        )
+        assert heartbeat["should_prompt"] is True
+
+        latest_decision = record_autostart_prompt_decision(
+            {"decision": "later", "prompt_token": heartbeat["prompt_token"]},
+            config_manager=config,
+            now_ms=now_ms + 100,
+        )
+        now_ms = latest_decision["state"]["deferred_until"] + 1
+
+    assert latest_decision is not None
+    assert latest_decision["state"]["funnel_counts"]["later"] == 3
+    assert latest_decision["state"]["can_never_remind"] is True
+
+    next_prompt = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": 0},
+        config_manager=config,
+        now_ms=now_ms + runtime_config["later_cooldown_ms"],
+    )
+
+    assert next_prompt["should_prompt"] is True
+    assert next_prompt["prompt_reason"] == "usage_timeout"
+    assert next_prompt["state"]["can_never_remind"] is True
+
+
+@pytest.mark.unit
+def test_autostart_never_decision_persists_never_remind_state(tmp_path):
+    config = DummyConfig(tmp_path)
+    heartbeat = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    decision = record_autostart_prompt_decision(
+        {"decision": "never", "prompt_token": heartbeat["prompt_token"]},
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert decision["state"]["status"] == "never"
+    assert decision["state"]["never_remind"] is True
+    assert decision["state"]["funnel_counts"]["never"] == 1
+
+    blocked = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=30 * 24 * 60 * 60 * 1000,
+    )
+
+    assert blocked["should_prompt"] is False
+    assert blocked["prompt_reason"] == "never_remind"
+    assert blocked["prompt_token"] is None
+
+    state = load_autostart_prompt_state(config)
+    assert state["status"] == "never"
+    assert state["never_remind"] is True
 
 
 @pytest.mark.unit

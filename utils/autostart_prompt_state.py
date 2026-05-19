@@ -47,11 +47,15 @@ AUTOSTART_PROMPT_LEGACY_STATE_FILENAME = "autostart_prompt.json"
 AUTOSTART_PROMPT_STATE_KIND = "autostart_prompt"
 AUTOSTART_MIN_PROMPT_FOREGROUND_MS = 30 * 60 * 1000
 AUTOSTART_LATER_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000
+AUTOSTART_NEVER_AFTER_LATER_COUNT = 3
+AUTOSTART_MAX_PROMPT_SHOWS_AFTER_NEVER_ELIGIBLE = 10
 AUTOSTART_MAX_RECENT_HEARTBEAT_TOKENS = 16
 
 AUTOSTART_PROMPT_EXTRA_FIELDS = (
     "autostart_enabled",
     "enabled_at",
+    "can_never_remind",
+    "funnel_counts",
 )
 
 DEFAULT_AUTOSTART_PROMPT_STATE = {
@@ -147,17 +151,20 @@ def _normalize_autostart_prompt_state(raw_state: Any) -> dict[str, Any]:
         state["recent_heartbeat_tokens"] = _normalize_recent_heartbeat_tokens(
             state.get("recent_heartbeat_tokens")
         )
+        state["can_never_remind"] = (
+            clamp_int(state.get("funnel_counts", {}).get("later"))
+            >= AUTOSTART_NEVER_AFTER_LATER_COUNT
+        )
 
     def _resolve_status(state: dict[str, Any]) -> None:
-        if state["never_remind"]:
-            state["never_remind"] = False
-        if state["status"] == "never":
-            state["status"] = "observing"
         if state["autostart_enabled"] or state["completed_at"] > 0:
             state["autostart_enabled"] = True
             if state["enabled_at"] <= 0 and state["completed_at"] > 0:
                 state["enabled_at"] = state["completed_at"]
             state["status"] = "completed"
+        elif state["never_remind"] or state["status"] == "never":
+            state["never_remind"] = True
+            state["status"] = "never"
         elif state["started_at"] > 0:
             state["status"] = "started"
 
@@ -251,7 +258,18 @@ def _compute_autostart_prompt_eligibility(
         return False, "autostart_enabled"
     if state["status"] == "started":
         return False, "autostart_pending"
-    if state["shown_count"] >= max_prompt_shows:
+    if state["never_remind"] or state["status"] == "never":
+        return False, "never_remind"
+    later_count = clamp_int(state.get("funnel_counts", {}).get("later"))
+    effective_max_prompt_shows = max_prompt_shows
+    if later_count >= AUTOSTART_NEVER_AFTER_LATER_COUNT:
+        effective_max_prompt_shows = max(
+            effective_max_prompt_shows,
+            AUTOSTART_MAX_PROMPT_SHOWS_AFTER_NEVER_ELIGIBLE,
+        )
+    elif later_count > 0:
+        effective_max_prompt_shows = max(effective_max_prompt_shows, later_count + 1)
+    if state["shown_count"] >= effective_max_prompt_shows:
         return False, "show_limit_reached"
     if (
         state["status"] == "prompted"
@@ -560,7 +578,7 @@ def record_autostart_prompt_decision(
         limit=64,
     ).lower()
 
-    if decision not in {"accept", "later"}:
+    if decision not in {"accept", "later", "never"}:
         raise ValueError("invalid decision")
     if not prompt_token:
         raise ValueError("invalid prompt_token")
@@ -580,7 +598,14 @@ def record_autostart_prompt_decision(
             max_prompt_shows=runtime_config["max_prompt_shows"],
         )
 
-        if decision == "later":
+        if decision == "never":
+            changed |= clear_started_via_prompt_state(state)
+            state["never_remind"] = True
+            state["status"] = "never"
+            state["deferred_until"] = 0
+            state["last_error"] = ""
+            changed |= increment_funnel_count(state, "never")
+        elif decision == "later":
             changed |= clear_started_via_prompt_state(state)
             state["status"] = "deferred"
             state["deferred_until"] = now_ms_value + runtime_config["later_cooldown_ms"]

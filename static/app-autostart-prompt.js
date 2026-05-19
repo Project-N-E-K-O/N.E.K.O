@@ -51,6 +51,7 @@
         pendingChatTurns: 0,
         pendingVoiceSessions: 0,
         deferredUntil: 0,
+        canNeverRemind: false,
         autostartEnabled: false,
         autostartSupported: true,
         autostartStatusLoaded: false,
@@ -138,18 +139,21 @@
         const previous = {
             autostartEnabled: state.autostartEnabled,
             deferredUntil: state.deferredUntil,
+            canNeverRemind: state.canNeverRemind,
         };
         const status = serverState.status ? String(serverState.status).toLowerCase() : '';
         const serverAutostartEnabled = serverState.autostart_enabled === true;
         const completedAt = normalizeMs(serverState.completed_at);
 
         state.deferredUntil = normalizeMs(serverState.deferred_until);
+        state.canNeverRemind = serverState.can_never_remind === true;
         if (!state.autostartStatusAuthoritative) {
             state.autostartEnabled = serverAutostartEnabled || status === 'completed' || completedAt > 0;
         }
 
         const changed = previous.autostartEnabled !== state.autostartEnabled
-            || previous.deferredUntil !== state.deferredUntil;
+            || previous.deferredUntil !== state.deferredUntil
+            || previous.canNeverRemind !== state.canNeverRemind;
 
         if (changed || source === 'initial-state') {
             logFlow('state-sync', {
@@ -157,6 +161,7 @@
                 status: status || null,
                 autostartEnabled: state.autostartEnabled,
                 deferredUntil: state.deferredUntil || 0,
+                canNeverRemind: state.canNeverRemind,
             });
         }
     }
@@ -781,6 +786,25 @@
         state.promptOpen = true;
         state.lastPromptTokenSeen = promptToken;
         let promptVoice = null;
+        const buttons = [
+            {
+                value: 'later',
+                text: translate('autostartPrompt.later', '以后提醒'),
+                variant: 'secondary'
+            },
+            {
+                value: 'accept',
+                text: translate('autostartPrompt.startNow', '开启自启动'),
+                variant: 'primary'
+            }
+        ];
+        if (state.canNeverRemind) {
+            buttons.unshift({
+                value: 'never',
+                text: translate('autostartPrompt.never', '不再提示'),
+                variant: 'secondary'
+            });
+        }
         const stopPromptVoice = function () {
             if (promptVoice && typeof promptVoice.stop === 'function') {
                 promptVoice.stop();
@@ -809,20 +833,13 @@
                     return postShownAck(promptToken);
                 },
                 onResolve: stopPromptVoice,
-                buttons: [
-                    {
-                        value: 'later',
-                        text: translate('autostartPrompt.later', '以后提醒'),
-                        variant: 'secondary'
-                    },
-                    {
-                        value: 'accept',
-                        text: translate('autostartPrompt.startNow', '开启自启动'),
-                        variant: 'primary'
-                    }
-                ]
+                buttons: buttons
             });
 
+            if (decision === 'never') {
+                await postDecision({ decision: 'never', prompt_token: promptToken });
+                return;
+            }
             if (decision === 'later') {
                 await postDecision({ decision: 'later', prompt_token: promptToken });
                 return;

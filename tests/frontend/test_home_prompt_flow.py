@@ -421,6 +421,142 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
 
 
 @pytest.mark.frontend
+def test_autostart_prompt_offers_never_after_backend_allows_it(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__requestLog = [];
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'backend',
+                    };
+                },
+                enable: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: true,
+                        authoritative: true,
+                        provider: 'backend',
+                    };
+                },
+            };
+        """,
+        fetch_js="""
+            window.__requestLog.push({
+                url: requestUrl,
+                method: method,
+                body: body,
+            });
+
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    prompt_reason: 'tutorial_completed',
+                    prompt_token: null,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: body && body.decision === 'never' ? 'never' : 'deferred',
+                        never_remind: body && body.decision === 'never',
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+        """,
+    )
+
+    expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1, timeout=5000)
+    expect(mock_page.get_by_role("button", name="不再提示")).to_be_visible()
+    expect(mock_page.get_by_role("button", name="以后提醒")).to_be_visible()
+    expect(mock_page.get_by_role("button", name="开启自启动")).to_be_visible()
+
+    mock_page.get_by_role("button", name="不再提示").click()
+    expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
+
+    request_log = mock_page.evaluate("() => window.__requestLog")
+    autostart_decisions = [
+        entry for entry in request_log
+        if entry["url"] == "/api/autostart-prompt/decision"
+    ]
+
+    assert autostart_decisions
+    assert autostart_decisions[-1]["body"]["decision"] == "never"
+
+
+@pytest.mark.frontend
 def test_home_prompt_later_locally_suppresses_repeat_before_autostart_prompt(
     mock_page: Page,
 ):
