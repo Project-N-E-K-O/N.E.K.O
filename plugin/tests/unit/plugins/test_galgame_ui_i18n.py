@@ -204,6 +204,47 @@ def test_tutorial_store_keeps_runtime_store_when_legacy_merge_is_invalid(
     }
 
 
+def test_tutorial_store_keeps_runtime_store_when_legacy_merge_read_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+    runtime_path.write_text('{"tutorial_progress": {"completed": false}}', encoding="utf-8")
+
+    original_load_tutorial_progress = install_routes.GalgameStore.load_tutorial_progress
+
+    def load_tutorial_progress(self):
+        if self._store_path == legacy_path:
+            raise OSError("legacy store unavailable")
+        return original_load_tutorial_progress(self)
+
+    monkeypatch.setattr(
+        install_routes.GalgameStore,
+        "load_tutorial_progress",
+        load_tutorial_progress,
+    )
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == runtime_path
+    assert store._store_path != legacy_path
+    assert json.loads(runtime_path.read_text(encoding="utf-8")) == {
+        "tutorial_progress": {"completed": False},
+    }
+
+
 def test_tutorial_store_uses_legacy_store_when_migration_fails(
     monkeypatch,
     tmp_path: Path,
