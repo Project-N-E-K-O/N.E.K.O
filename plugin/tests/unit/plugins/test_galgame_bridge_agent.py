@@ -185,6 +185,104 @@ async def test_game_llm_agent_peek_status_does_not_commit_session_transition(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Which way should we go?",
+            scene_id="scene-a",
+            line_id="line-1",
+        ),
+    )
+    await agent.tick(shared)
+    pending = agent._enqueue_outbound_message(
+        kind="cat_consultation",
+        content="Which route fits the current scene?",
+        scene_id="scene-a",
+        route_id="",
+        priority=5,
+        metadata={
+            "consultation": True,
+            "consultation_reason": "choice",
+            "consultation_character": "Yukino",
+        },
+    )
+    agent._mark_message(pending, status="delivered", delivered=True)
+
+    response = await agent.send_message(shared, message="Prefer the right path for now.")
+
+    assert response["cat_opinion"]["opinion"] == "Prefer the right path for now."
+    assert shared["cat_opinions"][0]["reason"] == "choice"
+    assert pending["status"] == "acked"
+    assert pending["metadata"]["cat_opinion_recorded"] is True
+    assert fake_gateway.reply_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_passes_cat_opinions_to_choice_planning(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "choice-1", "text": "left", "index": 0, "enabled": True},
+        {"choice_id": "choice-2", "text": "right", "index": 1, "enabled": True},
+    ]
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Which way should we go?",
+            scene_id="scene-a",
+            line_id="line-1",
+            choices=choices,
+            is_menu_open=True,
+        ),
+    )
+    shared["cat_opinions"] = [
+        {
+            "opinion": "Prefer the right path for the current objective.",
+            "scene_id": "scene-a",
+            "reason": "choice",
+            "ts": 10.0,
+            "metadata": {},
+        }
+    ]
+    agent._planning_choice_signature = (
+        ("choice-1", "left", 0),
+        ("choice-2", "right", 1),
+    )
+
+    await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
+
+    assert (
+        "Prefer the right path"
+        in fake_gateway.suggest_calls[-1]["cat_opinion_context"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_exposes_configured_summary_thresholds(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

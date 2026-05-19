@@ -14,6 +14,7 @@ from .agent_consultation import (
     build_consult_prompt,
     decide_consultation,
     inject_cat_opinion,
+    render_cat_opinions_for_strategy,
     summarize_character_voice,
 )
 from .cross_scene_memory import (
@@ -1534,6 +1535,7 @@ class GameLLMAgent:
         context: dict[str, Any],
         now: float,
     ) -> None:
+        context = self._with_cat_opinions_for_strategy(shared, context)
         try:
             suggestion = await asyncio.wait_for(
                 self._llm_gateway.suggest_choice(context),
@@ -3635,6 +3637,72 @@ class GameLLMAgent:
             "selected_choice": json_copy(selected),
         }
 
+    def _pending_cat_consultation_message(self) -> dict[str, Any] | None:
+        for outbound in reversed(self._outbound_messages):
+            if str(outbound.get("kind") or "") != "cat_consultation":
+                continue
+            if str(outbound.get("acked_at") or ""):
+                return None
+            if str(outbound.get("status") or "") not in {"delivered", "completed"}:
+                return None
+            return outbound
+        return None
+
+    def _with_cat_opinions_for_strategy(
+        self,
+        shared: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        rendered = render_cat_opinions_for_strategy(shared)
+        if not rendered:
+            return context
+        enriched = dict(context)
+        enriched["cat_opinion_context"] = rendered
+        queue = shared.get("cat_opinions")
+        if isinstance(queue, list):
+            enriched["cat_opinions"] = json_copy(queue)
+        return enriched
+
+    def _apply_pending_cat_consultation_reply(
+        self,
+        shared: dict[str, Any],
+        *,
+        message: str,
+    ) -> dict[str, Any] | None:
+        pending = self._pending_cat_consultation_message()
+        text = str(message or "").strip()
+        if pending is None or not text:
+            return None
+        metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+        scene_id = str(metadata.get("scene_id") or "")
+        reason = str(metadata.get("consultation_reason") or "")
+        record = self.receive_cat_opinion(
+            shared,
+            text,
+            scene_id=scene_id,
+            reason=reason,
+        )
+        if record is None:
+            return None
+        self._mark_message(
+            pending,
+            status="acked",
+            acked=True,
+            metadata={"cat_opinion_recorded": True},
+        )
+        self._recent_pushes = self._recent_push_records()
+        status = self._compute_status(shared)
+        self._last_status = status
+        return {
+            "action": "send_message",
+            "result": "已记录猫娘意见，将作为后续选择和推进策略的参考。",
+            "status": status,
+            "degraded": False,
+            "diagnostic": "",
+            "input_source": self._current_input_source(shared),
+            "cat_opinion": record,
+        }
+
     def _build_retry_strategy(
         self,
         shared: dict[str, Any],
@@ -4459,6 +4527,15 @@ class GameLLMAgent:
                 self._mark_message(inbound, status="completed", delivered=True)
                 choice_payload["message"] = json_copy(inbound)
                 return choice_payload
+
+            consultation_payload = self._apply_pending_cat_consultation_reply(
+                shared,
+                message=message,
+            )
+            if consultation_payload is not None:
+                self._mark_message(inbound, status="completed", delivered=True)
+                consultation_payload["message"] = json_copy(inbound)
+                return consultation_payload
 
             reply_context = self._build_agent_reply_context(shared, prompt=message)
             status_snapshot = self._compute_status(shared)
@@ -6721,12 +6798,13 @@ class GameLLMAgent:
         *,
         scene_id: str = "",
         reason: str = "",
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Public entry point so the plugin's inbound handler can route a cat
         reply into ``shared['cat_opinions']``. Idempotent on empty input."""
-        inject_cat_opinion(
+        record = inject_cat_opinion(
             shared, opinion=opinion, scene_id=scene_id, reason=reason
         )
+        return record.to_dict() if record is not None else None
 
     def _maybe_update_cross_scene_memory(
         self,
