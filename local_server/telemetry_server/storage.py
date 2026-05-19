@@ -18,11 +18,40 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
+
+_logger = logging.getLogger("telemetry.storage")
+
+
+def _bucket_quantile(buckets: list, bounds: list, q: float) -> dict:
+    """近似分位数：找累计样本数首次 >= q*total 的桶，返回该桶上界。
+
+    Args:
+        buckets: 桶 count 列表，最后一个是溢出桶（>最右 bound）
+        bounds: 桶上界列表，len(bounds) == len(buckets) - 1
+        q: 分位数（0~1）
+
+    Returns:
+        {"upper_bound": 数值或 None, "bucket_index": int}
+        upper_bound None 表示落在溢出桶（无上界）。
+    """
+    total = sum(buckets) if buckets else 0
+    if total <= 0:
+        return {"upper_bound": None, "bucket_index": -1}
+    target = q * total
+    cum = 0
+    for i, c in enumerate(buckets):
+        cum += c
+        if cum >= target:
+            upper = bounds[i] if i < len(bounds) else None
+            return {"upper_bound": upper, "bucket_index": i}
+    return {"upper_bound": None, "bucket_index": len(buckets) - 1}
 
 
 class TelemetryStorage:
@@ -109,6 +138,42 @@ class TelemetryStorage:
                     batch_id    TEXT PRIMARY KEY,
                     received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
                 );
+
+                -- ---- Instrument aggregates ----
+                -- Counter：按 (天, 设备, metric_key) 唯一，value 累加。metric_key
+                -- 是客户端 utils/instrument._make_key 的产物，形如 "name" 或
+                -- "name|dim1=v1,dim2=v2"。维度切片靠 dashboard 端 SQL LIKE
+                -- 或后续加专门的 dims 列做拆分。
+                CREATE TABLE IF NOT EXISTS instrument_counters (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stat_date  TEXT    NOT NULL,
+                    device_id  TEXT    NOT NULL,
+                    metric_key TEXT    NOT NULL,
+                    value      REAL    NOT NULL DEFAULT 0,
+                    updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+                    UNIQUE(stat_date, device_id, metric_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ic_date ON instrument_counters(stat_date);
+                CREATE INDEX IF NOT EXISTS idx_ic_key  ON instrument_counters(metric_key);
+
+                -- Histogram：count / sum / buckets（JSON 数组）累加。bounds
+                -- 在客户端固定（utils/instrument._HIST_BOUNDS），后续若改
+                -- 需要数据迁移；当前用 ON CONFLICT 简单覆盖最新 bounds，
+                -- 历史 buckets 维度不一致时由查询端按 metric_key 自检。
+                CREATE TABLE IF NOT EXISTS instrument_histograms (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stat_date  TEXT    NOT NULL,
+                    device_id  TEXT    NOT NULL,
+                    metric_key TEXT    NOT NULL,
+                    count      INTEGER NOT NULL DEFAULT 0,
+                    sum        REAL    NOT NULL DEFAULT 0,
+                    buckets    TEXT    NOT NULL DEFAULT '[]',
+                    bounds     TEXT    NOT NULL DEFAULT '[]',
+                    updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
+                    UNIQUE(stat_date, device_id, metric_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_ih_date ON instrument_histograms(stat_date);
+                CREATE INDEX IF NOT EXISTS idx_ih_key  ON instrument_histograms(metric_key);
             """)
             # 老库 devices 表上线时还没有 branch/locale/timezone/distribution/steam_user_id
             # 列。CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式
@@ -158,7 +223,8 @@ class TelemetryStorage:
                     daily_stats: dict, batch_id: str | None = None,
                     branch: str = "unknown", locale: str = "unknown",
                     timezone: str = "unknown", distribution: str = "unknown",
-                    steam_user_id: str = ""):
+                    steam_user_id: str = "",
+                    instruments: dict | None = None):
         today = date.today().isoformat()
         with self._transaction() as conn:
             if batch_id:
@@ -220,6 +286,126 @@ class TelemetryStorage:
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
             """, (device_id, app_version, branch, locale, timezone, distribution, steam_user_id))
+
+            # Instrument 累加（同事务内）：失败回滚整批，daily_stats 不会
+            # 在 instruments 失败时半截入库。
+            if instruments:
+                self._apply_instruments(conn, device_id, instruments, fallback_stat_date=today)
+
+    def store_instruments(self, device_id: str, instruments: dict | None,
+                          fallback_stat_date: str | None = None) -> None:
+        """累加 instrument snapshot 的独立入口（自己开 transaction）。
+
+        通常由 store_event 在自己的事务里调 _apply_instruments；此入口给
+        独立测试 / 离线导入 / 跨表回填等场景用。
+        """
+        if not instruments:
+            return
+        with self._transaction() as conn:
+            self._apply_instruments(conn, device_id, instruments, fallback_stat_date)
+
+    def _apply_instruments(self, conn, device_id: str, instruments: dict | None,
+                           fallback_stat_date: str | None = None) -> None:
+        """累加 instrument snapshot（counter + histogram）。须在已开 transaction 的 conn 上调用。
+
+        Args:
+            conn: 调用方持有的事务连接
+            device_id: 上报设备
+            instruments: 客户端 utils/instrument.Instrument.snapshot() 的产物，
+                结构: {window_start, window_end, bounds, counters, histograms}
+            fallback_stat_date: 若 instruments 不带时间窗口或解析失败，用此值
+                作 stat_date（一般传 'today'）。
+
+        失败处理：单条 metric 解析失败不影响其它，整段失败抛 sqlite3 异常
+        由调用方 transaction 回滚。
+        """
+        if not instruments or not isinstance(instruments, dict):
+            return
+
+        # stat_date 选 window_end 那天（窗口末尾决定归属，避免跨午夜把
+        # 第二天初的事件算到第一天）。失败回退到 fallback_stat_date。
+        stat_date = fallback_stat_date or date.today().isoformat()
+        try:
+            window_end = instruments.get("window_end")
+            if isinstance(window_end, (int, float)) and window_end > 0:
+                from datetime import datetime as _dt
+                stat_date = _dt.fromtimestamp(window_end).date().isoformat()
+        except (TypeError, ValueError, OSError):
+            pass
+
+        counters = instruments.get("counters") or {}
+        histograms = instruments.get("histograms") or {}
+        bounds = instruments.get("bounds") or []
+        bounds_json = json.dumps(bounds, ensure_ascii=False)
+
+        # ---- counters ----
+        for metric_key, value in counters.items():
+            if not isinstance(metric_key, str) or not isinstance(value, (int, float)):
+                continue
+            if len(metric_key) > 256:
+                # 防御：客户端误传超长 key。截断不合并 —— 截断后可能跟
+                # 已有 key 冲突 UPSERT，污染数据。直接丢。
+                continue
+            conn.execute("""
+                INSERT INTO instrument_counters (stat_date, device_id, metric_key, value)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(stat_date, device_id, metric_key) DO UPDATE SET
+                    value      = value + excluded.value,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')
+            """, (stat_date, device_id, metric_key, float(value)))
+
+        # ---- histograms ----
+        for metric_key, h in histograms.items():
+            if not isinstance(metric_key, str) or not isinstance(h, dict):
+                continue
+            if len(metric_key) > 256:
+                continue
+            count = h.get("count", 0)
+            hsum = h.get("sum", 0.0)
+            buckets = h.get("buckets") or []
+            if not isinstance(count, (int, float)) or not isinstance(hsum, (int, float)):
+                continue
+            if not isinstance(buckets, list):
+                continue
+
+            # SQL 不擅长 array element-wise 加；读出现有 buckets，
+            # Python 端合并，再写回。同一 transaction 内保证一致性。
+            row = conn.execute(
+                "SELECT buckets FROM instrument_histograms "
+                "WHERE stat_date = ? AND device_id = ? AND metric_key = ?",
+                (stat_date, device_id, metric_key),
+            ).fetchone()
+
+            merged_buckets = list(buckets)
+            if row is not None:
+                try:
+                    existing = json.loads(row["buckets"])
+                    if isinstance(existing, list):
+                        # 长度不一致时取 max 并 zero-pad —— 给客户端
+                        # 改桶定义留缓冲（迁移期混合数据不爆炸）。
+                        n = max(len(existing), len(buckets))
+                        merged_buckets = [
+                            (existing[i] if i < len(existing) else 0)
+                            + (buckets[i] if i < len(buckets) else 0)
+                            for i in range(n)
+                        ]
+                except (json.JSONDecodeError, TypeError, ValueError) as e:
+                    _logger.debug(f"storage: histogram bucket merge fallback for {metric_key}: {e}")
+                    merged_buckets = list(buckets)
+
+            buckets_json = json.dumps(merged_buckets, ensure_ascii=False)
+            conn.execute("""
+                INSERT INTO instrument_histograms
+                    (stat_date, device_id, metric_key, count, sum, buckets, bounds)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stat_date, device_id, metric_key) DO UPDATE SET
+                    count      = count + excluded.count,
+                    sum        = sum   + excluded.sum,
+                    buckets    = excluded.buckets,
+                    bounds     = excluded.bounds,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')
+            """, (stat_date, device_id, metric_key, int(count), float(hsum),
+                  buckets_json, bounds_json))
 
     @staticmethod
     def _upsert_aggregate(conn, device_id, stat_date, model, call_type,
@@ -432,6 +618,91 @@ class TelemetryStorage:
             "dau_trend": dau_trend,
             "new_device_trend": new_trend,
         }
+
+    # ----- Instrument 查询 -----
+
+    def get_top_counters(self, days: int = 7, limit: int = 50) -> list[dict]:
+        """跨设备汇总最近 N 天的 counter 总量，按总量降序。
+
+        返回 [{"metric_key": ..., "total": ..., "devices": ...}]。
+        """
+        conn = self._get_conn()
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        rows = conn.execute("""
+            SELECT metric_key,
+                   SUM(value) as total,
+                   COUNT(DISTINCT device_id) as devices
+            FROM instrument_counters
+            WHERE stat_date >= ?
+            GROUP BY metric_key
+            ORDER BY total DESC
+            LIMIT ?
+        """, (cutoff, limit)).fetchall()
+        return [{"metric_key": r["metric_key"], "total": r["total"], "devices": r["devices"]}
+                for r in rows]
+
+    def get_histogram_summary(self, days: int = 7, limit: int = 50) -> list[dict]:
+        """跨设备汇总最近 N 天的 histogram。
+
+        返回 [{"metric_key", "count", "sum", "avg", "p50_bucket", "p95_bucket", "bounds"}]。
+        p50/p95 桶用累积桶 + 桶数除以总样本数定位，精度受桶粒度限制 —— 用于
+        监控趋势够用，要精确分位数请查原始 events 表。
+        """
+        conn = self._get_conn()
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        # 同一 metric_key 不同设备的 buckets 合并：拿出原始行后 Python 端 sum。
+        rows = conn.execute("""
+            SELECT metric_key, count, sum, buckets, bounds
+            FROM instrument_histograms
+            WHERE stat_date >= ?
+        """, (cutoff,)).fetchall()
+
+        agg: dict = {}
+        for r in rows:
+            key = r["metric_key"]
+            slot = agg.setdefault(key, {"count": 0, "sum": 0.0, "buckets": [], "bounds": None})
+            slot["count"] += r["count"] or 0
+            slot["sum"] += r["sum"] or 0.0
+            try:
+                bk = json.loads(r["buckets"]) if r["buckets"] else []
+            except (json.JSONDecodeError, TypeError):
+                bk = []
+            if not isinstance(bk, list):
+                bk = []
+            # 长度对齐合并（同 _apply_instruments 的策略）
+            n = max(len(slot["buckets"]), len(bk))
+            slot["buckets"] = [
+                (slot["buckets"][i] if i < len(slot["buckets"]) else 0)
+                + (bk[i] if i < len(bk) else 0)
+                for i in range(n)
+            ]
+            if slot["bounds"] is None and r["bounds"]:
+                try:
+                    bnd = json.loads(r["bounds"])
+                    if isinstance(bnd, list):
+                        slot["bounds"] = bnd
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        out = []
+        for key, slot in agg.items():
+            count = slot["count"]
+            avg = (slot["sum"] / count) if count > 0 else 0.0
+            buckets = slot["buckets"]
+            bounds = slot["bounds"] or []
+            p50 = _bucket_quantile(buckets, bounds, 0.5)
+            p95 = _bucket_quantile(buckets, bounds, 0.95)
+            out.append({
+                "metric_key": key,
+                "count": count,
+                "sum": slot["sum"],
+                "avg": round(avg, 2),
+                "p50_bucket": p50,
+                "p95_bucket": p95,
+                "bounds": bounds,
+            })
+        out.sort(key=lambda x: -x["count"])
+        return out[:limit]
 
     # ----- 导出 -----
 

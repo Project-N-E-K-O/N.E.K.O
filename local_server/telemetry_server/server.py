@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gzip
 import html
+import io
 import json
 import logging
 import os
@@ -42,7 +44,10 @@ from storage import TelemetryStorage
 HMAC_SECRET = os.getenv("TELEMETRY_HMAC_SECRET", DEFAULT_HMAC_SECRET)
 DB_PATH = os.getenv("TELEMETRY_DB_PATH", "./data/telemetry.db")
 ADMIN_TOKEN = os.getenv("TELEMETRY_ADMIN_TOKEN", "")
-MAX_BODY_SIZE = 512 * 1024  # 512 KB
+MAX_BODY_SIZE = 512 * 1024  # 512 KB（线路上的字节上限，gzip 后通常 ≤50KB）
+# 解压后的字节上限。客户端典型 payload 5-50KB raw，未来加埋点也压得住 1MB；
+# 设 2MB 给余量，同时挡 zip bomb（gzip 比 1:1000 也只能撑到 2MB）。
+MAX_DECOMPRESSED_SIZE = 2 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # 初始化
@@ -62,6 +67,34 @@ app = FastAPI(
     redoc_url=None,
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST", "GET"], allow_headers=["*"])
+
+
+def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
+    """按 ``Content-Encoding`` header 解压请求体。
+
+    向下兼容：header 缺失或为 'identity' 时透传原始 bytes，让老客户端
+    （v1 一直发的是裸 JSON）继续工作。
+
+    防 zip bomb：流式 read，看到超过 MAX_DECOMPRESSED_SIZE 立刻拒绝，
+    不让 gzip.decompress 在内存里展开任意大小的数据。
+    """
+    enc = (content_encoding or "").strip().lower()
+    if enc in ("", "identity"):
+        return body_bytes
+    if enc != "gzip":
+        raise HTTPException(415, f"Unsupported Content-Encoding: {enc}")
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(body_bytes), mode="rb") as gz:
+            # 多读 1 字节用来判定是否超过 cap —— 超了直接 413，省得把整个
+            # bomb 解到内存里。
+            decompressed = gz.read(MAX_DECOMPRESSED_SIZE + 1)
+        if len(decompressed) > MAX_DECOMPRESSED_SIZE:
+            raise HTTPException(413, "Decompressed payload too large")
+        return decompressed
+    except HTTPException:
+        raise
+    except (OSError, EOFError, gzip.BadGzipFile) as e:
+        raise HTTPException(400, f"Invalid gzip body: {e}")
 
 
 def _extract_token(request: Request) -> str:
@@ -89,11 +122,14 @@ def require_admin(request: Request):
 
 @app.post("/api/v1/telemetry", response_model=SubmitResponse)
 async def submit_telemetry(request: Request):
-    """接收遥测数据。验证流程：body 大小 → 时间戳 → HMAC 签名 → 速率限制 → 存储。"""
-    # Body 大小
+    """接收遥测数据。验证流程：body 大小 → 解压 → 时间戳 → HMAC 签名 → 速率限制 → 存储。"""
+    # Body 大小（wire size，gzip 后通常 ≤50KB，给 512KB 余量）
     body_bytes = await request.body()
     if len(body_bytes) > MAX_BODY_SIZE:
         raise HTTPException(413, "Payload too large")
+
+    # 解压（如 Content-Encoding: gzip）；老客户端不带 header 直接透传
+    body_bytes = _decompress_if_gzip(body_bytes, request.headers.get("Content-Encoding", ""))
 
     try:
         body_json = body_bytes.decode("utf-8")
@@ -148,6 +184,13 @@ async def submit_telemetry(request: Request):
     # 存储
     try:
         daily_stats_dict = {k: model_to_dict(v) for k, v in submission.payload.daily_stats.items()}
+        # instruments 是 Optional —— 老客户端不带这个字段时 submission.payload.instruments
+        # 为 None。Pydantic v1/v2 兼容：用 model_to_dict 拆掉嵌套 model。
+        instruments_dict = (
+            model_to_dict(submission.payload.instruments)
+            if submission.payload.instruments is not None
+            else None
+        )
         storage.store_event(
             device_id=device_id,
             app_version=submission.payload.app_version,
@@ -159,6 +202,7 @@ async def submit_telemetry(request: Request):
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
             steam_user_id=steam_user_id,
+            instruments=instruments_dict,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
@@ -231,6 +275,8 @@ async def admin_dashboard(request: Request, days: int = 30):
     stats = storage.get_global_stats(days=days)
     devices = storage.get_active_devices(days=7, limit=20)
     user_metrics = storage.get_user_metrics(days=days)
+    top_counters = storage.get_top_counters(days=days, limit=30)
+    histograms = storage.get_histogram_summary(days=days, limit=30)
 
     # 传递 token 到导出链接（URL-encode 防止特殊字符截断查询串）
     tk = quote(_extract_token(request), safe="")
@@ -325,6 +371,35 @@ async def admin_dashboard(request: Request, days: int = 30):
             <td>{d['recent_tokens']:,}</td>
         </tr>"""
 
+    # Instrument tables —— counter / histogram 跨设备汇总
+    counter_rows = ""
+    for c in top_counters:
+        counter_rows += f"""<tr>
+            <td>{esc(c['metric_key'])}</td>
+            <td>{int(c['total']):,}</td>
+            <td>{c['devices']:,}</td>
+        </tr>"""
+    if not counter_rows:
+        counter_rows = '<tr><td colspan="3" style="color:#484f58">No counter data yet</td></tr>'
+
+    histogram_rows = ""
+    for h in histograms:
+        p50 = h['p50_bucket']
+        p95 = h['p95_bucket']
+        p50_txt = (f"≤{p50['upper_bound']}" if p50['upper_bound'] is not None
+                   else f"bucket#{p50['bucket_index']}+")
+        p95_txt = (f"≤{p95['upper_bound']}" if p95['upper_bound'] is not None
+                   else f"bucket#{p95['bucket_index']}+")
+        histogram_rows += f"""<tr>
+            <td>{esc(h['metric_key'])}</td>
+            <td>{h['count']:,}</td>
+            <td>{h['avg']:,}</td>
+            <td>{p50_txt}</td>
+            <td>{p95_txt}</td>
+        </tr>"""
+    if not histogram_rows:
+        histogram_rows = '<tr><td colspan="5" style="color:#484f58">No histogram data yet</td></tr>'
+
     page_html = f"""<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"><title>N.E.K.O Telemetry Dashboard</title>
@@ -406,6 +481,18 @@ async def admin_dashboard(request: Request, days: int = 30):
 <table>
   <tr><th>Device</th><th>Version</th><th>Last Seen</th><th>Calls</th><th>Tokens</th></tr>
   {device_rows}
+</table>
+
+<h2>Top Counters (last {days} days)</h2>
+<table>
+  <tr><th>Metric</th><th>Total</th><th>Devices</th></tr>
+  {counter_rows}
+</table>
+
+<h2>Histograms — p50 / p95 (last {days} days)</h2>
+<table>
+  <tr><th>Metric</th><th>Count</th><th>Avg</th><th>p50 bucket</th><th>p95 bucket</th></tr>
+  {histogram_rows}
 </table>
 
 </body></html>"""

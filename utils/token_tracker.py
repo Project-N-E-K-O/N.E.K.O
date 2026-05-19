@@ -22,6 +22,7 @@ import atexit
 import asyncio
 import copy
 import functools
+import gzip
 import hashlib
 import hmac
 import json
@@ -193,6 +194,12 @@ _TELEMETRY_REPORT_INTERVAL = 60
 
 # 上报超时
 _TELEMETRY_TIMEOUT = 10  # 秒
+
+# Gzip 上报阈值：< 1KB 的 payload 不压缩。gzip 头 + CRC 有 ~20B 固定开销，
+# 小 payload 压缩比往往 < 2x，不值得。典型 daily_stats payload 5-50KB raw，
+# gzip 后通常压到 1/5-1/10。服务端 v2 起支持 Content-Encoding: gzip；老服
+# 务端不解析就直接 415，故首次发布要 server 先升级再开客户端 gzip。
+_TELEMETRY_GZIP_THRESHOLD = 1024
 
 
 def _get_app_version_from_changelog() -> str:
@@ -697,6 +704,8 @@ class TokenTracker:
         self._unsent_daily: dict = {}  # 尚未成功上报到服务器的增量
         self._unsent_records: list = []
         self._has_recorded_app_start: bool = False  # 🔒 app_start 单次上报锁
+        self._session_start_ts: float = 0.0  # session_end 计算 duration 用
+        self._session_process: str = "unknown"
 
         # 首次启动：迁移旧版 per-instance 文件
         self._migrate_legacy_files()
@@ -744,6 +753,34 @@ class TokenTracker:
             # (best-effort final push). Then disable remote URL so no further
             # network calls happen during interpreter teardown.
             self.save()
+        except Exception:
+            pass
+        # 在 flush 之前把 session_end 落进 buffer。同步 counter + histogram
+        # 走远程聚合：counter 用于"启动了多少次 / 结束了多少次"配对（差值 =
+        # 异常退出数），histogram 用于 session_duration 分布看用户停留时长。
+        try:
+            from utils.instrument import (
+                event as _instr_event,
+                counter as _instr_counter,
+                histogram as _instr_histogram,
+            )
+            duration = (time.time() - self._session_start_ts) if self._session_start_ts > 0 else 0.0
+            _instr_event(
+                "session_end",
+                process=self._session_process,
+                duration_sec=round(duration, 1),
+            )
+            _instr_counter("session_end", process=self._session_process)
+            if duration > 0:
+                # 直接传秒；instrument bounds 是数字通用，没绑定单位
+                _instr_histogram("session_duration_sec", duration, process=self._session_process)
+        except Exception:
+            pass
+        # 顺手 flush 稀疏事件 —— 这里如果丢，下次启动就没法恢复（event_logger
+        # 没有自己的 unsent queue），所以哪怕 save() 失败也单独尝试。
+        try:
+            from utils.event_logger import EventLogger
+            EventLogger.get_instance().flush()
         except Exception:
             pass
         finally:
@@ -996,16 +1033,32 @@ class TokenTracker:
 
         return {"date": today, "stats": merged}
 
-    def record_app_start(self):
+    def record_app_start(self, process: str = "main_server"):
         """记录客户端启动事件（app_start）。
 
         用于统计 DAU，与 LLM 调用分开计数。
         保证在单次进程生命周期内只上报一次（线程安全）。
+
+        除了沿用老的 ``record(call_type='app_start')`` 路径（dashboard 的
+        by_call_type 还在用），同时打一个 instrument 事件 ``session_start``，
+        以及把启动时刻塞进 self 让 _atexit_save 能算 session_end 的 duration。
         """
         with self._lock:
             if self._has_recorded_app_start:
                 return
             self._has_recorded_app_start = True
+            self._session_start_ts = time.time()
+            self._session_process = process
+
+        # 新埋点：sparse event 走本地 events.jsonl（诊断），同时打 counter
+        # 走远程聚合通道（dashboard 看 DAU / session 总数）。event 因为带
+        # context 字段、暂未集成进远程上报；counter 是聚合数字、走 60s 通道。
+        try:
+            from utils.instrument import event as _instr_event, counter as _instr_counter
+            _instr_event("session_start", process=process)
+            _instr_counter("session_start", process=process)
+        except Exception:
+            pass
 
         self.record(
             model="app_start",
@@ -1121,14 +1174,32 @@ class TokenTracker:
         if now - self._last_report_time < self._report_interval:
             return
 
+        # peek instrument 累积 —— 即使 daily_stats 是空的（用户没触发 LLM 调
+        # 用，但有前端互动 counter），只要 instrument 里有东西，就值得发一次。
+        try:
+            from utils.instrument import has_data as _instrument_has_data
+            has_instruments = _instrument_has_data()
+        except Exception:
+            has_instruments = False
+
         # 取出待发送数据
         with self._lock:
-            if not self._unsent_daily:
+            if not self._unsent_daily and not has_instruments:
                 return
             send_daily = self._unsent_daily
             send_records = self._unsent_records
             self._unsent_daily = {}
             self._unsent_records = []
+
+        # 现在确定要发，clear-on-read 拿 instrument snapshot。如果上报失败，
+        # 这部分数据丢失（设计取舍：counter / histogram 是窗口聚合，丢一个
+        # 60s 窗口对趋势影响小，不值得维护 unsent 队列）。
+        instruments_snapshot: dict = {}
+        try:
+            from utils.instrument import snapshot as _instrument_snapshot
+            instruments_snapshot = _instrument_snapshot()
+        except Exception as e:
+            logger.debug(f"Token tracker: instrument snapshot failed (non-critical): {e}")
 
         try:
             if not self._device_id:
@@ -1161,6 +1232,11 @@ class TokenTracker:
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }
+            # instrument snapshot 走 optional 字段：老 server 不识别会 ignore，
+            # 新 server 原样存进 events.payload，dashboard 端可后续解析。HMAC
+            # 签名覆盖整个 payload dict，所以加字段不影响验签。
+            if instruments_snapshot:
+                payload["instruments"] = instruments_snapshot
             payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
             ts = time.time()
@@ -1187,11 +1263,19 @@ class TokenTracker:
                 "batch_id": batch_id,
             }
             body = json.dumps(submission, ensure_ascii=False).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+
+            # >= 1KB 才 gzip：小 payload 不划算（见 _TELEMETRY_GZIP_THRESHOLD 注释）。
+            # mtime=0 让同一 body 总是产出相同压缩字节，便于 diff 调试和 fuzzing
+            # 期不会因为时间戳差异看起来像两次上报。
+            if len(body) >= _TELEMETRY_GZIP_THRESHOLD:
+                body = gzip.compress(body, compresslevel=6, mtime=0)
+                headers["Content-Encoding"] = "gzip"
 
             req = urllib.request.Request(
                 f"{_TELEMETRY_SERVER_URL}/api/v1/telemetry",
                 data=body,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=_TELEMETRY_TIMEOUT) as resp:
@@ -1243,6 +1327,17 @@ class TokenTracker:
             await asyncio.sleep(self._save_interval)
             if self._dirty:
                 await asyncio.to_thread(self.save)
+            # 顺手让 event_logger 落地稀疏事件 buffer + 跑 retention 清理。
+            # 即使本周期 token_tracker 没有 dirty，event_logger 也可能有
+            # session/crash 之类的事件等着写 —— 不挂在 self._dirty 后面，避免
+            # 纯前端互动（不触发 LLM 调用）的事件被一直憋在内存里。
+            # event_logger.flush 自带节流（cleanup 5min 一次），nothing-to-do
+            # 路径 ~微秒级。
+            try:
+                from utils.event_logger import EventLogger
+                await asyncio.to_thread(EventLogger.get_instance().flush)
+            except Exception as e:
+                logger.debug(f"Token tracker: event_logger flush failed (non-critical): {e}")
 
     # ---- helpers ----
 
@@ -1465,11 +1560,61 @@ def _add_to_blocklist(base_url: str):
         logger.info(f"Token tracker: added base_url to stream_options blocklist: {base_url[:60]}...")
 
 
+def _install_crash_excepthook():
+    """注入全局 sys.excepthook，把 unhandled exception 打成 crash 事件。
+
+    用 chain 模式：保留原 hook（系统默认会把 traceback 打到 stderr），自己
+    只在最前面加一层 telemetry 上报。这样不破坏现有的 logging / 错误显示
+    逻辑，只是顺便记一笔。
+
+    幂等：install 多次只生效一次（避免 main_server / memory_server 都 import
+    时多套 chain 套娃）。
+    """
+    import sys
+    if getattr(sys, "_neko_crash_hook_installed", False):
+        return
+    _orig_excepthook = sys.excepthook
+
+    def _crash_excepthook(exc_type, exc_value, exc_tb):
+        try:
+            # KeyboardInterrupt 是用户主动 ctrl-c，不算 crash
+            if not issubclass(exc_type, KeyboardInterrupt):
+                import traceback as _tb
+                import hashlib as _hl
+                from utils.instrument import event as _e, counter as _c
+                tb_text = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+                # traceback_hash 是 12 字符摘要：足以 dedupe 同源 crash，不
+                # 反向还原 stack（隐私）。dashboard 看哪个 hash 最频繁即可。
+                tb_hash = _hl.sha256(tb_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+                _e("crash", error_class=exc_type.__name__, traceback_hash=tb_hash)
+                _c("crash", error_class=exc_type.__name__)
+                # 强制 flush event_logger —— 进程接下来可能立刻 die，不 flush
+                # 就丢了。flush 自身有 try/except 不会再抛。
+                from utils.event_logger import EventLogger
+                EventLogger.get_instance().flush()
+        except Exception:
+            pass
+        # 让默认 hook 继续打 stack —— 不打断现有行为
+        try:
+            _orig_excepthook(exc_type, exc_value, exc_tb)
+        except Exception:
+            pass
+
+    sys.excepthook = _crash_excepthook
+    sys._neko_crash_hook_installed = True
+    logger.info("Token tracker: crash excepthook installed")
+
+
 def install_hooks():
     """
     安装 OpenAI SDK monkey-patch，自动追踪所有 chat.completions.create 调用的 token 用量。
     同时覆盖 LangChain 底层调用（因为 LangChain ChatOpenAI 底层调用 OpenAI SDK）。
+
+    顺便：装 sys.excepthook 抓 unhandled exception 打 crash 事件。
     """
+    # crash hook 跟 openai 库无关，独立装；幂等。
+    _install_crash_excepthook()
+
     try:
         from openai.resources.chat.completions import Completions, AsyncCompletions
     except ImportError:

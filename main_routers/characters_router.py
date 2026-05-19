@@ -2788,11 +2788,21 @@ async def set_persona_onboarding_state(request: Request):
     if error_response is not None:
         return error_response
     config_manager = get_config_manager()
+    status_in = str((payload or {}).get("status") or "").strip()
     state = await asyncio.to_thread(
         mark_initial_personality_state,
-        str((payload or {}).get("status") or "").strip(),
+        status_in,
         config_manager=config_manager,
     )
+    # Telemetry：onboarding 漏斗的关键节点。status 是低基数 enum
+    # （pending / persona_chosen / completed 等），event 记录每步完成 +
+    # counter 用于跨用户的步骤完成率比较。诊断 D1 流失的核心数据。
+    try:
+        from utils.instrument import event as _instr_event, counter as _instr_counter
+        _instr_event("onboarding_step", status=status_in[:32])
+        _instr_counter("onboarding_step", status=status_in[:32])
+    except Exception:
+        pass
     return {
         "success": True,
         "state": state,

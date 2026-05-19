@@ -85,11 +85,93 @@ def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
     return bool(blocking)
 
 
+# ---- Telemetry helpers ----
+
+# Dim 字段安全限制 —— 前端是 untrusted 输入，必须挡掉：
+# - 高基数维度（如把消息内容塞进 dim）会污染 instrument counter map
+# - 超长 key / value 浪费上报带宽
+# 32B key / 64B value 对所有合理的 enum 标签都够用；超的截断而不是丢，
+# 保留 prefix 至少能切片诊断（如果某个错误 dim 反复触发，前缀也能看出来源）。
+_TELEM_MAX_DIMS = 8
+_TELEM_KEY_MAX = 32
+_TELEM_VAL_MAX = 64
+_TELEM_NAME_MAX = 64
+_TELEM_EVENT_FIELDS_MAX = 16
+_TELEM_EVENT_VAL_MAX = 128
+
+
+def _sanitize_dims(d, value_max: int) -> dict:
+    """把前端传入的 dims dict 过滤成 instrument 能吃的安全形式。
+
+    丢弃：非 dict / 非字符串 key / 非 (str/int/float/bool) value / 超量 key。
+    截断：超长 string value。
+    """
+    out: dict = {}
+    if not isinstance(d, dict):
+        return out
+    for k, v in d.items():
+        if len(out) >= _TELEM_MAX_DIMS:
+            break
+        if not isinstance(k, str) or len(k) == 0 or len(k) > _TELEM_KEY_MAX:
+            continue
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:value_max]
+        # 其它类型（list / dict / None）丢弃
+    return out
+
+
+def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
+    """把前端 WS telemetry message 转交 utils.instrument。"""
+    try:
+        kind = message.get("kind")
+        name = message.get("name")
+        if not isinstance(name, str) or not name:
+            return
+        name = name[:_TELEM_NAME_MAX]
+
+        # lanlan_name 是后端权威值，强制写入 dim，覆盖前端可能伪造的字段
+        from utils.instrument import counter as _c, histogram as _h, event as _e
+
+        if kind == "counter":
+            dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
+            dims["lanlan_name"] = lanlan_name
+            val = message.get("value", 1)
+            val = val if isinstance(val, (int, float)) else 1
+            _c(name, val, **dims)
+        elif kind == "histogram":
+            val = message.get("value")
+            if not isinstance(val, (int, float)):
+                return
+            dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
+            dims["lanlan_name"] = lanlan_name
+            _h(name, val, **dims)
+        elif kind == "event":
+            fields = _sanitize_dims(message.get("fields"), _TELEM_EVENT_VAL_MAX)
+            # event fields 可以多一点
+            fields["lanlan_name"] = lanlan_name
+            _e(name, **fields)
+        # 其它 kind 静默丢弃
+    except Exception as e:
+        logger.debug(f"WS telemetry handler error (non-critical): {e}")
+
+
 @router.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     await websocket.accept()
+    # Telemetry：WS 连接计数。lanlan_name 是用户在用哪个角色（低基数，最多
+    # 几个固定值），保留作为 dim 用于"哪个角色最被打开"分析。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("ws_connect", lanlan_name=lanlan_name)
+    except Exception:
+        pass
+    _ws_connect_ts = time.time()
 
     # 检查角色是否存在，如果不存在则通知前端并关闭连接
     if lanlan_name not in session_manager:
@@ -134,6 +216,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
         _fire_task(mgr.trigger_agent_callbacks())
 
+    # finally 块要在所有路径上能读到这个变量，包括 BaseException 抢断
+    # try-else 链的情形（SystemExit / KeyboardInterrupt 都不走 else）。
+    _ws_disconnect_reason = "unknown"
     try:
         while True:
             data = await websocket.receive_text()
@@ -148,14 +233,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 break
             message = json.loads(data)
             action = message.get("action")
-            
+
             # 处理语言设置（可以在任何消息中携带）
             if "language" in message:
                 user_language = message.get("language")
                 session_manager[lanlan_name].set_user_language(user_language)
                 logger.info(f"收到用户语言设置: {user_language}")
-            
+
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
+
+            # ── Telemetry dispatch（前端 counter / histogram / event 通道）──
+            # 前端 static/app-telemetry.js 通过 action="telemetry" 投递数据；
+            # 这里转交 utils.instrument，跟 Python 端发出去的走同一上报通道。
+            # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
+            if action == "telemetry":
+                _handle_ws_telemetry(message, lanlan_name=lanlan_name)
+                continue
 
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
@@ -296,15 +389,31 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {websocket.client}")
+        _ws_disconnect_reason = "client_disconnect"
     except Exception as e:
         error_message = f"WebSocket handler error: {e}"
         logger.error(f"💥 {error_message}")
+        _ws_disconnect_reason = "handler_error"
         try:
             if lanlan_name in session_manager:
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "SERVER_ERROR"}))
         except: # noqa
             pass
+    else:
+        # 进 finally 时既不是 disconnect 也不是异常 —— 实际上 while True 循环
+        # 内只有 break 才到这；break 路径上面都设过 reason；这里兜底防 NameError。
+        _ws_disconnect_reason = "normal_break"
     finally:
+        # Telemetry：连接生命周期。reason 是低基数 enum，duration 进 histogram
+        # 看用户实际停留时长（D2-D7 流失诊断的关键指标之一）。
+        try:
+            from utils.instrument import counter as _instr_counter, histogram as _instr_histogram
+            _ws_dur = time.time() - _ws_connect_ts
+            _instr_counter("ws_disconnect", lanlan_name=lanlan_name, reason=_ws_disconnect_reason)
+            if _ws_dur > 0:
+                _instr_histogram("ws_session_sec", _ws_dur, lanlan_name=lanlan_name)
+        except Exception:
+            pass
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
         _ws_disconnect_time[lanlan_name] = time.time()

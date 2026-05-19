@@ -8,7 +8,7 @@ Telemetry Server — 数据模型
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Pydantic v1/v2 兼容
 PYDANTIC_V2 = int(getattr(__import__('pydantic'), 'VERSION', '1.0').split('.')[0]) >= 2
@@ -68,6 +68,32 @@ class RecentRecord(BaseModel):
     ok: bool = True
 
 
+class HistogramStat(BaseModel):
+    """单个 histogram 指标的桶分布。"""
+    count: int = 0
+    sum: float = 0.0
+    buckets: List[int] = Field(default_factory=list)
+
+
+class InstrumentSnapshot(BaseModel):
+    """客户端 utils/instrument 的 60s 窗口 snapshot。
+
+    counters / histograms 的 key 是 ``name`` 或 ``name|k1=v1,k2=v2``。
+    bounds 是 histogram 桶边界数组，len == 任一 histogram.buckets 长度 - 1
+    （多出来的那个桶是溢出桶）。
+
+    服务端当前不强 schema 化（events.payload 列原样保存 JSON），dashboard /
+    aggregation 是后续 Batch 的工作。这里声明只是为了让 server 代码能从
+    submission.payload.instruments 类型安全地访问字段，不被当成 unknown
+    field 静默忽略。
+    """
+    window_start: float = 0.0
+    window_end: float = 0.0
+    bounds: List[float] = Field(default_factory=list)
+    counters: Dict[str, float] = Field(default_factory=dict)
+    histograms: Dict[str, HistogramStat] = Field(default_factory=dict)
+
+
 class TelemetryEvent(BaseModel):
     """客户端上报的遥测负载。"""
     device_id: str = Field(..., min_length=16, max_length=128)
@@ -86,6 +112,9 @@ class TelemetryEvent(BaseModel):
     steam_user_id: str = Field(default="", max_length=24)
     daily_stats: Dict[str, DailyStats] = Field(default_factory=dict)
     recent_records: List[RecentRecord] = Field(default_factory=list)
+    # 通用 counter / histogram 累积窗口（utils/instrument）。Optional —
+    # 客户端只在窗口非空时发送，老客户端完全不会带这个字段。
+    instruments: Optional[InstrumentSnapshot] = None
 
 
 class TelemetrySubmission(BaseModel):
