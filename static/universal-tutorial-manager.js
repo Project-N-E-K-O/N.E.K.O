@@ -194,6 +194,8 @@ class UniversalTutorialManager {
         this._tutorialPointerBlockOptions = { capture: true, passive: false };
         this._isTutorialPointerBlocked = false;
         this._isDestroyed = false;
+        this._desktopYuiGuideSkipHandler = this.handleDesktopYuiGuideSkipRequest.bind(this);
+        window.addEventListener('neko:yui-guide:desktop-skip-request', this._desktopYuiGuideSkipHandler);
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -773,16 +775,62 @@ class UniversalTutorialManager {
         this.setTutorialEndReason(reason);
 
         if (this.driver) {
-            this.driver.destroy();
+            const driver = this.driver;
+            try {
+                driver.destroy();
+            } catch (error) {
+                console.warn('[Tutorial] driver destroy 失败，执行兜底结束:', error);
+                this.driver = null;
+                this.onTutorialEnd();
+                return;
+            }
+            window.setTimeout(() => {
+                if (this._tutorialEndHandled) {
+                    return;
+                }
+
+                const skipButtonStillVisible = !!document.getElementById('neko-tutorial-skip-btn');
+                if (this.driver === driver || this.isTutorialRunning || window.isInTutorial || skipButtonStillVisible) {
+                    console.warn('[Tutorial] driver destroy 未触发结束回调，执行兜底结束');
+                    this.driver = null;
+                    this.onTutorialEnd();
+                }
+            }, 120);
             return;
         }
 
         this.onTutorialEnd();
     }
 
+    handleDesktopYuiGuideSkipRequest(event) {
+        if (this._isDestroyed) {
+            return;
+        }
+
+        const detail = event && event.detail && typeof event.detail === 'object'
+            ? event.detail
+            : {};
+        const skipButtonVisible = !!document.getElementById('neko-tutorial-skip-btn');
+        if (!this.isTutorialRunning && !window.isInTutorial && !skipButtonVisible) {
+            return;
+        }
+
+        this.logPromptFlow('desktop-yui-guide-skip-request', {
+            page: this.currentPage,
+            session_id: detail.sessionId || '',
+            source: detail.source || 'desktop',
+        });
+        void this.handleTutorialSkipRequest();
+    }
+
     async destroy(reason = 'destroy') {
         this.setTutorialEndReason(reason);
         this._isDestroyed = true;
+
+        if (this._desktopYuiGuideSkipHandler) {
+            window.removeEventListener('neko:yui-guide:desktop-skip-request', this._desktopYuiGuideSkipHandler);
+            this._desktopYuiGuideSkipHandler = null;
+        }
 
         if (this.driver) {
             try {

@@ -2,6 +2,8 @@
 
 本文按首页新手教程期间文本输出的先后顺序，记录当前高亮和 ghost cursor 的流程情况。它只描述首页教程的文本、spotlight/highlight、ghost cursor、真实 UI 点击和流程交接；YUI 模型动作演出看 `home-tutorial-yui-guide-performance-owner-stage-breakdown.md`，通用动作运行时维护规则看 `avatar-performance-module-maintenance.md`。
 
+通用生命周期模块和页面专属适配层的边界看 `home-yui-guide-lifecycle-modularization.md`。本文里的 scene 顺序、目标 DOM、ghost cursor 路径和真实 UI 点击属于首页 Yui 教程专属适配；圆形/矩形高亮生命周期、轻微打断、生气退出、跳过按钮、临时切模等通用生命周期不得在本文对应代码里重新复制实现。
+
 若本文与当前代码冲突，以当前代码为准。主要代码入口：
 
 1. `static/yui-guide-steps.js`：scene 顺序、台词 key、默认 cursor target。
@@ -184,15 +186,24 @@ ghost cursor 流程一：
 
 1. dashboard handoff 成功后，首页 overlay 清掉 action spotlight 和 persistent spotlight。
 2. 首页不再继续强调猫爪面板，插件 dashboard 自己负责内部演示。
-3. dashboard 旁白完成后，通知插件 dashboard narration finished。
-4. 回到首页后关闭或收起临时打开的猫爪面板、用户插件侧面板和插件 dashboard 窗口。
-5. 恢复猫爪总开关和用户插件开关到接管前状态。
+3. 插件 dashboard 内部高亮 `main` 区域，并由 `frontend/plugin-manager/src/yui-guide-runtime.ts` 驱动页面内 ghost cursor。
+4. dashboard 旁白完成后，通知插件 dashboard narration finished。
+5. 回到首页后关闭或收起临时打开的猫爪面板、用户插件侧面板和插件 dashboard 窗口。
+6. 恢复猫爪总开关和用户插件开关到接管前状态。
 
 ghost cursor 流程二：
 
 1. 进入 dashboard 讲解时保存首页 cursor 位置。
 2. 首页 ghost cursor 隐藏。
-3. dashboard 完成并回到首页后，如果有保存位置，cursor 在原位置恢复显示。
+3. 插件 dashboard 页面内的 ghost cursor 由插件页 runtime 独立创建、移动、暂停和清理。
+4. dashboard 完成并回到首页后，如果有保存位置，cursor 在原位置恢复显示。
+
+打断分支补充：
+
+1. 轻微打断时，插件 dashboard 页面内的 `main` 高亮和 ghost cursor 应暂停当前动画，等待轻微抵抗语音结束后恢复原 dashboard 预览。
+2. 生气退出时，插件 dashboard 页面内的 `main` 高亮和 ghost cursor 必须在触发瞬间消失，不能等语音结束。
+3. 生气退出语音完整播放后，插件 dashboard 发送 skip request，效果等同用户点击跳过按钮；不得发送 `plugin-dashboard:done`。
+4. 以上插件 dashboard 页面内行为是 `frontend/plugin-manager/src/yui-guide-runtime.ts` 的专属适配，不是新的通用生命周期模块。
 
 弹窗受阻文本：
 
@@ -344,14 +355,18 @@ ghost cursor 流程：
 
 1. 清理当前 scene timers。
 2. 禁用 interrupts。
-3. overlay 保持 taking-over，并设置 angry 状态。
-4. 隐藏插件 preview 和普通气泡。
-5. 语音结束后请求教程终止。
+3. 触发瞬间清理当前高亮和插件 preview，隐藏普通气泡。
+4. overlay 保持 taking-over，并设置 angry 状态。
+5. 如果插件 dashboard 已打开，插件页本地 `main` spotlight 也必须立即清掉。
+6. 生气退出台词语音完整播放后，走和跳过按钮一致的 skip / destroy 路径。
+7. 该分支不是正常完成分支，不能发送或等价处理为 `plugin-dashboard:done`。
 
 ghost cursor 流程：
 
-1. 当前 scene 的 cursor 动画不再继续。
-2. angry exit 当前不新增独立 cursor 轨迹；重点是停止教程并恢复页面。
+1. 触发瞬间停止当前 scene 的 cursor 动画，并隐藏 ghost cursor。
+2. angry exit 当前不新增独立 cursor 轨迹。
+3. 如果插件 dashboard 已打开，插件页 runtime 调用 `stopGhostCursorAnimation()` 移除 cursor 的可见状态、点击星星和轨迹粒子。
+4. 生气退出语音播放期间不恢复主线 cursor；语音结束后执行 skip 清理。
 
 ## 高亮类型速查
 
@@ -371,5 +386,6 @@ ghost cursor 流程：
 4. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
 5. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。
 6. 打断分支要暂停并恢复当前 scene，不能把抵抗文本当成新的主线 step。
-7. 如果某个目标找不到，当前流程应安全跳过或走 fallback，不能卡死教程。
-8. 外置聊天窗模式没有首页输入框激活，但后续台词、高亮和 takeover 主线仍继续。
+7. 生气退出分支语义等同“语音后跳过”：触发时立即清视觉，语音结束后走 skip，不能走 done。
+8. 如果某个目标找不到，当前流程应安全跳过或走 fallback，不能卡死教程。
+9. 外置聊天窗模式没有首页输入框激活，但后续台词、高亮和 takeover 主线仍继续。

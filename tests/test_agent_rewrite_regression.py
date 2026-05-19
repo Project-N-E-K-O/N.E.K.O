@@ -350,6 +350,8 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
 def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    highlight_source = Path("static/tutorial-highlight-controller.js").read_text(encoding="utf-8")
+    interrupt_source = Path("static/tutorial-interrupt-controller.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -359,6 +361,8 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
         "is-placement-",
         "isCircularFloatingButtonElement(element)",
         "geometry === 'circle' || isCircularFloatingButtonElement(element)",
+        "setSpotlightSuppressed(active)",
+        "if (this.spotlightsSuppressed)",
     ):
         assert expected in overlay_source
 
@@ -368,11 +372,36 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
         "主页引导 ",
         "isCircularFloatingButtonSpotlight(element)",
         "applyCircularFloatingButtonSpotlightHint(persistentSpotlightTarget)",
-        "'[id$=\"-btn-mic\"], [id$=\"-btn-agent\"], [id$=\"-btn-settings\"]'",
-        "this.applyCircularFloatingButtonSpotlightHint(primaryTarget)",
         "this.applyCircularFloatingButtonSpotlightHint(this.customSecondarySpotlightTarget)",
+        "this.highlightController.applyGuideHighlights(config)",
+        "this.interruptController.playLightResistance(x, y, options)",
+        "this.interruptController.abortAsAngryExit(source)",
+        "createInterruptController()",
+        "TutorialInterruptController 未加载",
+        "this.overlay.setSpotlightSuppressed(true);",
     ):
         assert expected in director_source
+
+    for expected in (
+        "window.TutorialHighlightController",
+        "'[id$=\"-btn-mic\"], [id$=\"-btn-agent\"], [id$=\"-btn-settings\"]'",
+        "applyCircularFloatingButtonSpotlightHint(element)",
+        "data-yui-guide-spotlight-geometry",
+        "data-yui-guide-virtual-spotlight",
+        "this.destroyed = true;",
+    ):
+        assert expected in highlight_source
+
+    for expected in (
+        "window.TutorialInterruptController",
+        "playLightResistance(x, y, options)",
+        "abortAsAngryExit(source)",
+        "recordExperienceMetric",
+        "interrupt_resist_light",
+        "interrupt_angry_exit",
+        "|| this.isStopping()",
+    ):
+        assert expected in interrupt_source
 
     for expected in (
         ".yui-guide-bubble-meta",
@@ -422,6 +451,7 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
 
     assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in tutorial_source
     assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in director_source
+    combined_source = tutorial_source + "\n" + director_source + "\n" + plugin_runtime_source
 
     for expected in (
         "const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';",
@@ -431,8 +461,49 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
         "const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'",
         "skipButtonScreenRect?: ScreenRect | null",
         "this.homeSkipButtonScreenRect = payload.skipButtonScreenRect",
+        "nekoYuiGuideDesktopBridge?:",
+        "requestTutorialSkip?:",
+        "requestTutorialInterrupt?:",
+        "hasDesktopTutorialInterruptBridge()",
+        "canRequestHomeInterruptPlayback()",
+        "&& !this.canRequestHomeInterruptPlayback()",
+        "this.requestPluginDashboardSkip({",
+        "bridge.requestTutorialInterrupt({",
+        "DESKTOP_INTERRUPT_ACK_EVENT",
+        "DESKTOP_NARRATION_FINISHED_EVENT",
+        "handleDesktopInterruptAckEvent(event)",
+        "handleDesktopNarrationFinishedEvent(event)",
+        "PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS",
+        "const isCurrentWithoutAngryExit = () => isCurrent() && !this.angryExitTriggered",
+        "stopGhostCursorAnimation()",
+        "this.cursorShell.classList.remove('is-visible')",
+        "moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrentWithoutAngryExit)",
+        "animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrentWithoutAngryExit)",
+        "runEllipse(mainContainer, ellipseDurationMs, isCurrentWithoutAngryExit)",
+        "while (isCurrentWithoutAngryExit() && !this.homeNarrationFinished)",
+        "|| this.angryExitTriggered",
+        "source: 'plugin_dashboard_angry_exit'",
+        "reason: 'angry_exit'",
+        "if (this.angryExitTriggered) {\n      clearHomeNarrationFallbackTimer()\n      return\n    }",
+        "const pausedForInterrupt = this.scenePausedForResistance || !!this.pendingInterruptAck",
+        "homeNarrationFallbackRemainingMs -= Math.max(0, now - homeNarrationFallbackLastTickAt)",
+        "NARRATION_RESUME_MIN_REMAINING_MS",
+        "getSafeNarrationResumeAudioOffsetMs(currentGuideAudio)",
+        "source: 'plugin_dashboard_button'",
+        "neko:yui-guide:desktop-skip-request",
+        "neko:yui-guide:desktop-interrupt-request",
+        "neko:yui-guide:desktop-interrupt-ack",
+        "neko:yui-guide:desktop-narration-finished",
+        "onDesktopPluginDashboardInterruptRequest(event)",
+        "dispatchDesktopPluginDashboardInterruptAck(ackPayload)",
+        "dispatchDesktopPluginDashboardNarrationFinished(payload)",
+        "await this.abortAsAngryExit('pointer_interrupt');\n                postAck();",
+        "handleDesktopYuiGuideSkipRequest(event)",
     ):
-        assert expected in (director_source + "\n" + plugin_runtime_source)
+        assert expected in combined_source
+
+    assert "const speechPromise = wait(budgetMs)" not in plugin_runtime_source
+    assert "this.notify(DONE_EVENT, this.activeSessionId)\n    this.cleanup()" not in plugin_runtime_source
 
 
 def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
@@ -571,6 +642,8 @@ _YUI_RUNTIME_SCRIPTS = (
     "yui-guide-overlay.js",
     "yui-guide-page-handoff.js",
     "tutorial-interaction-takeover.js",
+    "tutorial-highlight-controller.js",
+    "tutorial-interrupt-controller.js",
     "yui-guide-director.js",
 )
 
@@ -582,6 +655,8 @@ _HOME_YUI_RUNTIME_SCRIPTS = (
     "yui-guide-avatar-stage.js",
     "yui-guide-wakeup.js",
     "tutorial-interaction-takeover.js",
+    "tutorial-highlight-controller.js",
+    "tutorial-interrupt-controller.js",
     "yui-guide-director.js",
 )
 
@@ -630,6 +705,8 @@ def test_home_template_loads_yui_wakeup_before_director():
             "yui-guide-avatar-stage.js",
             "yui-guide-wakeup.js",
             "tutorial-interaction-takeover.js",
+            "tutorial-highlight-controller.js",
+            "tutorial-interrupt-controller.js",
             "yui-guide-director.js",
             "tutorial-skip-controller.js",
             "tutorial-avatar-reload-controller.js",
@@ -940,6 +1017,7 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
 
 def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    interrupt_source = Path("static/tutorial-interrupt-controller.js").read_text(encoding="utf-8")
     avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -950,10 +1028,15 @@ def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reen
     assert "if (this.guideInterruptPresentationActive) {" in director_source
     assert "this.emotionBridge.clear();" in director_source
     assert "startGuideMouthMotion(voiceKey, options)" in director_source
-    assert "this.applyGuideEmotion(performance.emotion || 'surprised', {" in director_source
-    assert "this.applyGuideEmotion(performance.emotion || 'angry', {" in director_source
+    assert "performance.emotion || 'surprised'" in interrupt_source
+    assert "performance.emotion || 'angry'" in interrupt_source
     assert "return null;" in director_source
     assert "restoreCurrentScenePresentation(options)" in director_source
+    assert "this.platformCapabilities.windowBoundsSource === 'electron-window-bounds'" in director_source
+    assert "NARRATION_RESUME_BACKTRACK_MS" in director_source
+    assert "NARRATION_RESUME_MIN_REMAINING_MS" in director_source
+    assert "applyNarrationResumePoint(narration, playbackSnapshot)" in director_source
+    assert "narration.resumeIndex = audioProgressIndex;" in director_source
 
     assert "home-yui-guide-interrupt-resist" in avatar_source
     assert "home-yui-guide-angry-exit" in avatar_source
@@ -996,9 +1079,14 @@ def test_emotion_manager_templates_use_static_asset_version_for_tutorial_runtime
 
 def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+    manager_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
+    assert '_PROJECT_ROOT / "static/tutorial-highlight-controller.js"' in source
+    assert '_PROJECT_ROOT / "static/tutorial-interrupt-controller.js"' in source
     assert '_PROJECT_ROOT / "static/tutorial-skip-controller.js"' in source
     assert '_PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js"' in source
+    assert "driver destroy 未触发结束回调" in manager_source
+    assert "skipButtonStillVisible" in manager_source
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():
@@ -1293,6 +1381,7 @@ def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalize
 
 def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    interrupt_source = Path("static/tutorial-interrupt-controller.js").read_text(encoding="utf-8")
 
     assert "neko_home_tutorial_experience_metrics_v1" in director_source
     assert "window.homeTutorialExperienceMetrics" in director_source
@@ -1300,7 +1389,8 @@ def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
     assert "recordExperienceMetric('scene_complete'" in director_source
     assert "recordExperienceMetric('scene_failed'" in director_source
     assert "recordExperienceMetric('skip'" in director_source
-    assert "recordExperienceMetric('angry_exit'" in director_source
+    assert "'angry_exit'" in interrupt_source
+    assert "recordExperienceMetric" in interrupt_source
     assert "recordExperienceMetric('handoff_failed'" in director_source
     assert ".localStorage.setItem(" in director_source
 

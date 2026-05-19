@@ -14,6 +14,8 @@ _UNIVERSAL_TUTORIAL_DEPENDENCIES = (
 )
 _YUI_DIRECTOR_DEPENDENCIES = (
     "tutorial-interaction-takeover.js",
+    "tutorial-highlight-controller.js",
+    "tutorial-interrupt-controller.js",
 )
 _PAGE_BOOTSTRAP_TEMPLATE = """
 () => {

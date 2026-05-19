@@ -15,6 +15,8 @@ const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
 const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const DESKTOP_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack'
+const DESKTOP_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished'
 const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
@@ -36,6 +38,8 @@ const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14
 const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160
 const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2
 const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420
+const NARRATION_RESUME_BACKTRACK_MS = 320
+const NARRATION_RESUME_MIN_REMAINING_MS = 1400
 const CURSOR_CLICK_STAR_COUNT = 7
 const CURSOR_CLICK_STAR_LIFETIME_MS = 760
 const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 420
@@ -57,6 +61,8 @@ const CURSOR_TRAIL_HEAD_RADIUS = 15
 const CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl] as const
 const PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS = 780
 const PLUGIN_DASHBOARD_SCROLL_PHASE_MS = 2000
+const PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS = 1800
+const PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS = 30000
 // Negative values mean inward/inset padding for the plugin-main spotlight.
 const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
@@ -133,6 +139,22 @@ type StartPluginDashboardTutorialOptions = {
 }
 
 type StartPluginDashboardTutorialOptionsFactory = () => StartPluginDashboardTutorialOptions
+
+type DesktopTutorialSkipPayload = {
+  sessionId?: string
+  reason?: string
+  source?: string
+  detail?: Record<string, unknown>
+}
+
+declare global {
+  interface Window {
+    nekoYuiGuideDesktopBridge?: {
+      requestTutorialSkip?: (payload?: DesktopTutorialSkipPayload) => Promise<boolean> | boolean
+      requestTutorialInterrupt?: (payload?: DesktopTutorialSkipPayload) => Promise<boolean> | boolean
+    }
+  }
+}
 
 function normalizeOrigin(value: string) {
   const normalizedValue = String(value || '').trim()
@@ -1388,6 +1410,8 @@ class PluginDashboardGuideRuntime {
   pendingInterruptAck: PendingInterruptAck | null = null
   preactivationTimeoutId: number | null = null
   homeSkipButtonScreenRect: ScreenRect | null = null
+  desktopSkipButton: HTMLButtonElement | null = null
+  desktopSkipButtonCleanup: (() => void) | null = null
   lastForwardedSkipAt = 0
   lastForwardedSkipScreenX = NaN
   lastForwardedSkipScreenY = NaN
@@ -1652,6 +1676,131 @@ class PluginDashboardGuideRuntime {
     this.syncBackdropViewport()
   }
 
+  hasDesktopTutorialSkipBridge() {
+    return !!(
+      window.nekoYuiGuideDesktopBridge
+      && typeof window.nekoYuiGuideDesktopBridge.requestTutorialSkip === 'function'
+    )
+  }
+
+  hasDesktopTutorialInterruptBridge() {
+    return !!(
+      window.nekoYuiGuideDesktopBridge
+      && typeof window.nekoYuiGuideDesktopBridge.requestTutorialInterrupt === 'function'
+    )
+  }
+
+  canRequestHomeInterruptPlayback() {
+    if (this.hasDesktopTutorialInterruptBridge()) {
+      return true
+    }
+    return !!(
+      window.opener
+      && !window.opener.closed
+      && (openerMessageOrigin || getTrustedOpenerOrigin())
+    )
+  }
+
+  requestPluginDashboardSkip(detail?: Record<string, unknown>) {
+    const normalizedDetail = detail && typeof detail === 'object' ? detail : {}
+    const payload: DesktopTutorialSkipPayload = {
+      sessionId: this.activeSessionId,
+      reason: 'skip',
+      source: 'plugin_dashboard',
+      detail: normalizedDetail,
+    }
+    const bridge = window.nekoYuiGuideDesktopBridge
+    if (bridge && typeof bridge.requestTutorialSkip === 'function') {
+      try {
+        const result = bridge.requestTutorialSkip(payload)
+        if (result && typeof (result as Promise<boolean>).then === 'function') {
+          void (result as Promise<boolean>).then((handled) => {
+            if (!handled) {
+              this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+            }
+          }).catch(() => {
+            this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+          })
+          return true
+        }
+        if (result === true) {
+          return true
+        }
+      } catch (_) {}
+    }
+
+    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, normalizedDetail)
+    return true
+  }
+
+  ensureDesktopSkipButton() {
+    if (!this.root || this.desktopSkipButton || !this.hasDesktopTutorialSkipBridge()) {
+      return
+    }
+
+    const button = document.createElement('button')
+    button.type = 'button'
+    const label = resolveGuideLocale() === 'zh' ? '跳过' : 'Skip'
+    button.textContent = label
+    button.setAttribute('aria-label', label)
+    button.style.position = 'fixed'
+    button.style.top = '18px'
+    button.style.right = '18px'
+    button.style.zIndex = '2147483647'
+    button.style.pointerEvents = 'auto'
+    button.style.border = '0'
+    button.style.borderRadius = '999px'
+    button.style.padding = '8px 14px'
+    button.style.background = 'rgba(8, 18, 44, 0.86)'
+    button.style.color = '#eef7ff'
+    button.style.boxShadow = '0 10px 28px rgba(8, 17, 40, 0.28)'
+    button.style.fontSize = '13px'
+    button.style.fontWeight = '600'
+    button.style.cursor = 'pointer'
+
+    let skipHandled = false
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation()
+      }
+      if (typeof event.stopPropagation === 'function') {
+        event.stopPropagation()
+      }
+      if (skipHandled) {
+        return
+      }
+      skipHandled = true
+      button.disabled = true
+      button.setAttribute('aria-disabled', 'true')
+      this.requestPluginDashboardSkip({
+        source: 'plugin_dashboard_button',
+      })
+    }
+
+    button.addEventListener('pointerdown', handleSkip)
+    button.addEventListener('click', handleSkip)
+    this.root.appendChild(button)
+    this.desktopSkipButton = button
+    this.desktopSkipButtonCleanup = () => {
+      button.removeEventListener('pointerdown', handleSkip)
+      button.removeEventListener('click', handleSkip)
+    }
+  }
+
+  clearDesktopSkipButton() {
+    if (this.desktopSkipButtonCleanup) {
+      this.desktopSkipButtonCleanup()
+    }
+    this.desktopSkipButtonCleanup = null
+    if (this.desktopSkipButton && this.desktopSkipButton.parentNode) {
+      this.desktopSkipButton.parentNode.removeChild(this.desktopSkipButton)
+    }
+    this.desktopSkipButton = null
+  }
+
   notify(type: string, sessionId: string, detail?: Record<string, unknown>, requestId?: string) {
     try {
       const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
@@ -1681,18 +1830,18 @@ class PluginDashboardGuideRuntime {
     } catch (_) {}
   }
 
-  handleInterruptAckMessage(event: MessageEvent) {
-    if (!isAllowedOpenerEvent(event)) {
-      return
-    }
-
-    const data = event.data
-    if (!data || typeof data !== 'object' || data.type !== INTERRUPT_ACK_EVENT) {
+  handleInterruptAckData(data: unknown) {
+    const payload = data && typeof data === 'object'
+      ? data as { type?: unknown; requestId?: unknown }
+      : null
+    if (!payload || payload.type !== INTERRUPT_ACK_EVENT) {
       return
     }
 
     const pending = this.pendingInterruptAck
-    const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    const requestId = typeof payload.requestId === 'string'
+      ? payload.requestId
+      : ''
     if (!pending || !requestId || pending.requestId !== requestId) {
       return
     }
@@ -1700,7 +1849,28 @@ class PluginDashboardGuideRuntime {
     this.clearPendingInterruptAck(true)
   }
 
-  requestHomeInterruptPlayback(
+  handleInterruptAckMessage(event: MessageEvent) {
+    if (!isAllowedOpenerEvent(event)) {
+      return
+    }
+
+    this.handleInterruptAckData(event.data)
+  }
+
+  handleDesktopInterruptAckEvent(event: Event) {
+    const detail = (event as CustomEvent).detail
+    this.handleInterruptAckData(detail)
+  }
+
+  handleDesktopNarrationFinishedEvent(event: Event) {
+    const detail = (event as CustomEvent).detail
+    const sessionId = detail && typeof detail.sessionId === 'string' ? detail.sessionId : ''
+    if (sessionId) {
+      this.markHomeNarrationFinished(sessionId)
+    }
+  }
+
+  async requestHomeInterruptPlayback(
     detail: {
       kind: 'interrupt_resist_light' | 'interrupt_angry_exit'
       text: string
@@ -1711,18 +1881,16 @@ class PluginDashboardGuideRuntime {
       y?: number
     },
   ) {
-    if (!window.opener || window.opener.closed) {
-      return Promise.resolve(false)
-    }
-
-    const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
-    if (!targetOrigin) {
-      return Promise.resolve(false)
-    }
-
     this.clearPendingInterruptAck(false)
     const requestId = `plugin-dashboard-interrupt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    const timeoutMs = clamp(estimateSpeechDurationMs(detail.text) + 4000, 4000, 12000)
+    const timeoutExtraMs = detail.kind === 'interrupt_angry_exit'
+      ? PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS
+      : 4000
+    const timeoutMs = clamp(
+      estimateSpeechDurationMs(detail.text) + timeoutExtraMs,
+      4000,
+      detail.kind === 'interrupt_angry_exit' ? 60000 : 12000,
+    )
 
     return new Promise<boolean>((resolve) => {
       const timeoutId = window.setTimeout(() => {
@@ -1738,11 +1906,53 @@ class PluginDashboardGuideRuntime {
         timeoutId,
       }
 
-      try {
-        this.notify(INTERRUPT_REQUEST_EVENT, this.activeSessionId, detail, requestId)
-      } catch (_) {
-        this.clearPendingInterruptAck(false)
+      const sendPostMessageFallback = () => {
+        if (!this.pendingInterruptAck || this.pendingInterruptAck.requestId !== requestId) {
+          return
+        }
+
+        if (!window.opener || window.opener.closed) {
+          this.clearPendingInterruptAck(false)
+          return
+        }
+
+        const targetOrigin = openerMessageOrigin || getTrustedOpenerOrigin()
+        if (!targetOrigin) {
+          this.clearPendingInterruptAck(false)
+          return
+        }
+
+        try {
+          this.notify(INTERRUPT_REQUEST_EVENT, this.activeSessionId, detail, requestId)
+        } catch (_) {
+          this.clearPendingInterruptAck(false)
+        }
       }
+
+      const bridge = window.nekoYuiGuideDesktopBridge
+      if (bridge && typeof bridge.requestTutorialInterrupt === 'function') {
+        try {
+          const handled = bridge.requestTutorialInterrupt({
+            sessionId: this.activeSessionId,
+            reason: 'interrupt',
+            source: 'plugin_dashboard',
+            detail: {
+              requestId,
+              ...detail,
+            },
+          })
+          void Promise.resolve(handled).then((result) => {
+            if (result !== true) {
+              sendPostMessageFallback()
+            }
+          }).catch(() => {
+            sendPostMessageFallback()
+          })
+          return
+        } catch (_) {}
+      }
+
+      sendPostMessageFallback()
     })
   }
 
@@ -1885,7 +2095,7 @@ class PluginDashboardGuideRuntime {
     this.lastForwardedSkipAt = now
     this.lastForwardedSkipScreenX = screenX
     this.lastForwardedSkipScreenY = screenY
-    this.notify(SKIP_REQUEST_EVENT, this.activeSessionId, {
+    this.requestPluginDashboardSkip({
       source: 'plugin_dashboard',
       screenX,
       screenY,
@@ -2640,6 +2850,20 @@ class PluginDashboardGuideRuntime {
     this.cursorInner.classList.remove('is-clicking')
   }
 
+  stopGhostCursorAnimation() {
+    this.cancelCursorMotion()
+    this.resetCursorVisualState()
+    if (this.cursorShell) {
+      this.cursorShell.classList.remove('is-visible')
+      this.cursorShell.style.transitionDuration = '0ms'
+    }
+    this.cursorTransitionActive = false
+    this.cursorPosition = null
+    this.lastCursorTarget = null
+    this.cursorTrailLastPoint = null
+    this.cursorTrailLastAt = 0
+  }
+
   async animateScroll(container: HTMLElement, deltaY: number, durationMs: number, isCurrent?: () => boolean) {
     const startedAt = performance.now()
     const initialTop = container.scrollTop
@@ -2947,13 +3171,30 @@ class PluginDashboardGuideRuntime {
       return true
     }
 
-    narration.resumeAudioOffsetMs = currentGuideAudio && Number.isFinite(currentGuideAudio.currentTime)
-      ? Math.max(0, Math.round(currentGuideAudio.currentTime * 1000))
-      : 0
+    narration.resumeAudioOffsetMs = this.getSafeNarrationResumeAudioOffsetMs(currentGuideAudio)
     narration.interrupted = true
     this.clearNarrationResumeTimer()
     stopCurrentGuideSpeech()
     return true
+  }
+
+  getSafeNarrationResumeAudioOffsetMs(audio: HTMLAudioElement | null) {
+    if (!audio || !Number.isFinite(audio.currentTime)) {
+      return 0
+    }
+
+    const rawOffsetMs = Math.max(0, Math.round(audio.currentTime * 1000))
+    const durationMs = Number.isFinite(audio.duration) && audio.duration > 0
+      ? Math.round(audio.duration * 1000)
+      : 0
+    const maxResumeOffsetMs = durationMs > 0
+      ? Math.max(0, durationMs - NARRATION_RESUME_MIN_REMAINING_MS)
+      : rawOffsetMs
+    return clamp(
+      rawOffsetMs - NARRATION_RESUME_BACKTRACK_MS,
+      0,
+      maxResumeOffsetMs,
+    )
   }
 
   scheduleNarrationResume() {
@@ -3125,7 +3366,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    if (!this.hasDesktopTutorialSkipBridge() && typeof document.hasFocus === 'function' && !document.hasFocus()) {
       return
     }
 
@@ -3157,7 +3398,11 @@ class PluginDashboardGuideRuntime {
     this.noteUserCursorRevealAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
-    if (this.homeNarrationOwnedByOpener && !this.homeNarrationFinished) {
+    if (
+      this.homeNarrationOwnedByOpener
+      && !this.homeNarrationFinished
+      && !this.canRequestHomeInterruptPlayback()
+    ) {
       return
     }
 
@@ -3337,11 +3582,10 @@ class PluginDashboardGuideRuntime {
     this.angryExitTriggered = true
     this.interruptsEnabled = false
     this.cancelActiveNarration()
-    this.cancelCursorMotion()
+    this.stopGhostCursorAnimation()
     this.scriptedMotionInterruptDistance = 0
     this.scriptedMotionInterruptWindowStartedAt = 0
     this.clearSpotlight()
-    this.resetCursorVisualState()
     this.setAngryVisual(true)
     this.homeNarrationFinished = false
     const handledByHome = await this.requestHomeInterruptPlayback({
@@ -3374,8 +3618,11 @@ class PluginDashboardGuideRuntime {
     if (!isSameSession()) {
       return
     }
-    this.notify(DONE_EVENT, this.activeSessionId)
-    this.cleanup()
+    this.requestPluginDashboardSkip({
+      source: 'plugin_dashboard_angry_exit',
+      reason: 'angry_exit',
+      interruptCount: this.interruptCount,
+    })
   }
 
   cleanup() {
@@ -3451,6 +3698,7 @@ class PluginDashboardGuideRuntime {
     document.removeEventListener('click', this.boundInteractionGuard, true)
     document.removeEventListener('dblclick', this.boundInteractionGuard, true)
     document.removeEventListener('contextmenu', this.boundInteractionGuard, true)
+    this.clearDesktopSkipButton()
     this.clearSpotlight()
     if (this.root && this.root.parentNode) {
       this.root.parentNode.removeChild(this.root)
@@ -3482,6 +3730,8 @@ class PluginDashboardGuideRuntime {
     this.lastCursorTarget = null
     this.running = false
     this.activeSessionId = ''
+    this.desktopSkipButton = null
+    this.desktopSkipButtonCleanup = null
     this.interruptsEnabled = false
     this.scenePausedForResistance = false
     this.homeNarrationFinished = false
@@ -3540,6 +3790,7 @@ class PluginDashboardGuideRuntime {
     this.homeNarrationOwnedByOpener = false
     const isCurrent = () => this.isCurrentRun(sessionId)
     this.activateOverlayShell()
+    this.ensureDesktopSkipButton()
     window.addEventListener('resize', this.boundScheduleSpotlightRefresh, true)
     window.addEventListener('scroll', this.boundScheduleSpotlightRefresh, true)
     // 用 pointer 事件而非 mouse 事件采样：interactionGuard 把 touchstart/move/end 都拦掉了，
@@ -3622,10 +3873,48 @@ class PluginDashboardGuideRuntime {
       : 0
     const budgetMs = Math.max(0, totalNarrationDurationMs - elapsedBeforeMotionMs)
     this.homeNarrationOwnedByOpener = true
-    const speechPromise = wait(budgetMs)
-    void speechPromise.finally(() => {
-      this.markHomeNarrationFinished(sessionId)
-    })
+    const isCurrentWithoutAngryExit = () => isCurrent() && !this.angryExitTriggered
+    const homeNarrationFallbackActiveMs = clamp(
+      budgetMs + PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS,
+      PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS,
+      120000,
+    )
+    let homeNarrationFallbackTimer: number | null = null
+    let homeNarrationFallbackCancelled = false
+    let homeNarrationFallbackRemainingMs = homeNarrationFallbackActiveMs
+    let homeNarrationFallbackLastTickAt = Date.now()
+    const clearHomeNarrationFallbackTimer = () => {
+      homeNarrationFallbackCancelled = true
+      if (homeNarrationFallbackTimer !== null) {
+        window.clearTimeout(homeNarrationFallbackTimer)
+        homeNarrationFallbackTimer = null
+      }
+    }
+    const tickHomeNarrationFallback = () => {
+      if (
+        homeNarrationFallbackCancelled
+        || this.homeNarrationFinished
+        || this.angryExitTriggered
+        || !isCurrent()
+      ) {
+        return
+      }
+
+      const now = Date.now()
+      const pausedForInterrupt = this.scenePausedForResistance || !!this.pendingInterruptAck
+      if (!pausedForInterrupt) {
+        homeNarrationFallbackRemainingMs -= Math.max(0, now - homeNarrationFallbackLastTickAt)
+      }
+      homeNarrationFallbackLastTickAt = now
+      if (homeNarrationFallbackRemainingMs <= 0) {
+        homeNarrationFallbackTimer = null
+        this.markHomeNarrationFinished(sessionId)
+        return
+      }
+
+      homeNarrationFallbackTimer = window.setTimeout(tickHomeNarrationFallback, 250)
+    }
+    homeNarrationFallbackTimer = window.setTimeout(tickHomeNarrationFallback, 250)
     const baseMoveToMainDurationMs = PLUGIN_DASHBOARD_MOVE_TO_MAIN_MS
     const baseScrollDownDurationMs = Math.round(PLUGIN_DASHBOARD_SCROLL_PHASE_MS / 2)
     const baseScrollUpDurationMs = PLUGIN_DASHBOARD_SCROLL_PHASE_MS - baseScrollDownDurationMs
@@ -3642,38 +3931,72 @@ class PluginDashboardGuideRuntime {
       ellipseDurationMs = 0
     }
 
-    if (!isCurrent()) {
+    if (!isCurrentWithoutAngryExit()) {
+      clearHomeNarrationFallbackTimer()
       return
     }
     this.setSpotlight(mainContainer)
     if (moveToMainDurationMs > 0) {
-      await this.moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.moveCursorToElementWithRecovery(mainContainer, moveToMainDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
     if (scrollDownDurationMs > 0) {
-      await this.animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.animateScroll(mainContainer, 150, scrollDownDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
     if (scrollUpDurationMs > 0) {
-      await this.animateScroll(mainContainer, -150, scrollUpDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.animateScroll(mainContainer, -150, scrollUpDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
     if (ellipseDurationMs > 0) {
-      await this.runEllipse(mainContainer, ellipseDurationMs, isCurrent)
-      if (!isCurrent()) {
+      await this.runEllipse(mainContainer, ellipseDurationMs, isCurrentWithoutAngryExit)
+      if (!isCurrentWithoutAngryExit()) {
+        clearHomeNarrationFallbackTimer()
         return
       }
     }
-    if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+
+    while (isCurrentWithoutAngryExit() && !this.homeNarrationFinished) {
+      this.setSpotlight(mainContainer)
+      await this.runEllipse(mainContainer, PLUGIN_DASHBOARD_IDLE_ELLIPSE_MS, isCurrentWithoutAngryExit)
+      if (!isCurrent()) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+      if (this.angryExitTriggered) {
+        clearHomeNarrationFallbackTimer()
+        return
+      }
+      if (!this.homeNarrationFinished) {
+        await wait(80)
+      }
+    }
+
+    if (this.angryExitTriggered) {
+      clearHomeNarrationFallbackTimer()
       return
     }
+
+    try {
+      if (!(await this.waitForHomeNarrationFinished(sessionId, isCurrent))) {
+        return
+      }
+    } finally {
+      clearHomeNarrationFallbackTimer()
+    }
     if (!isCurrent()) {
+      return
+    }
+    if (this.angryExitTriggered) {
       return
     }
 
@@ -4122,6 +4445,13 @@ export function initPluginDashboardYuiGuideRuntime() {
   const runtime = new PluginDashboardGuideRuntime()
   let receivedStartMessage = false
   runtime.preactivatePendingOverlay()
+
+  window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, (event) => {
+    runtime.handleDesktopInterruptAckEvent(event)
+  }, true)
+  window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, (event) => {
+    runtime.handleDesktopNarrationFinishedEvent(event)
+  }, true)
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data

@@ -225,6 +225,8 @@
     const TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY = 'tutorial.yuiGuide.lines.takeoverSettingsPeekDetailPart2';
     const DEFAULT_SPOTLIGHT_PADDING = 6;
     const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X = 15;
+    const NARRATION_RESUME_BACKTRACK_MS = 320;
+    const NARRATION_RESUME_MIN_REMAINING_MS = 1400;
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
     const PLUGIN_DASHBOARD_HANDOFF_EVENT = 'neko:yui-guide:plugin-dashboard:start';
     const PLUGIN_DASHBOARD_READY_EVENT = 'neko:yui-guide:plugin-dashboard:ready';
@@ -233,6 +235,8 @@
     const PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished';
     const PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request';
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
+    const DESKTOP_PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack';
+    const DESKTOP_PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished';
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
@@ -2435,12 +2439,17 @@
             this.scenePausedForResistance = false;
             this.scenePausedAt = 0;
             this.scenePauseResolvers = [];
-            this.virtualSpotlights = new Map();
-            this.preciseHighlightElements = new Set();
-            this.spotlightVariantElements = new Set();
-            this.spotlightGeometryHintElements = new Set();
-            this.retainedExtraSpotlightElements = [];
-            this.sceneExtraSpotlightElements = [];
+            if (!window.TutorialHighlightController || typeof window.TutorialHighlightController.createController !== 'function') {
+                throw new Error('TutorialHighlightController must be loaded before YuiGuideDirector');
+            }
+            this.highlightController = window.TutorialHighlightController.createController({
+                document: document,
+                window: window,
+                overlay: this.overlay,
+                defaultPadding: DEFAULT_SPOTLIGHT_PADDING,
+                resolveElement: (selector) => this.resolveElement(selector)
+            });
+            this.interruptController = this.createInterruptController();
             this.activeGuideEmotion = '';
             this.guideInterruptPresentationActive = false;
             this.pluginDashboardHandoff = null;
@@ -2469,6 +2478,7 @@
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
             this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
             this.remoteTerminationRequestHandler = this.onRemoteTerminationRequest.bind(this);
+            this.desktopPluginDashboardInterruptHandler = this.onDesktopPluginDashboardInterruptRequest.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
             const capabilityApi = window.homeTutorialPlatformCapabilities;
             this.platformCapabilities = capabilityApi && typeof capabilityApi.create === 'function'
@@ -2522,12 +2532,75 @@
             window.addEventListener('pagehide', this.pageHideHandler, true);
             window.addEventListener('neko:yui-guide:external-chat-ready', this.externalChatReadyHandler, true);
             window.addEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
+            window.addEventListener('neko:yui-guide:desktop-interrupt-request', this.desktopPluginDashboardInterruptHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
         }
 
         isStopping() {
             return !!(this.destroyed || this.angryExitTriggered || this.terminationRequested);
+        }
+
+        createInterruptController() {
+            if (!window.TutorialInterruptController || typeof window.TutorialInterruptController.createController !== 'function') {
+                console.warn('[YuiGuide] TutorialInterruptController 未加载，打断分支降级为空操作');
+                return {
+                    playLightResistance: () => Promise.resolve(),
+                    abortAsAngryExit: (source) => {
+                        this.recordExperienceMetric('angry_exit', {
+                            sceneId: this.currentSceneId || 'interrupt_angry_exit',
+                            reason: source || 'pointer_interrupt',
+                            interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0))
+                        });
+                        this.requestTermination(source || 'angry_exit', 'angry_exit');
+                        return Promise.resolve();
+                    },
+                    destroy: () => {}
+                };
+            }
+
+            return window.TutorialInterruptController.createController({
+                overlay: this.overlay,
+                cursor: this.cursor,
+                callbacks: {
+                    isDestroyed: () => this.destroyed,
+                    isStopping: () => this.isStopping(),
+                    isResistancePaused: () => this.scenePausedForResistance,
+                    isAngryExitTriggered: () => this.angryExitTriggered,
+                    setAngryExitTriggered: (active) => {
+                        this.angryExitTriggered = active === true;
+                    },
+                    getInterruptCount: () => this.interruptCount,
+                    getCurrentSceneId: () => this.currentSceneId,
+                    getLastPointerPoint: () => this.lastPointerPoint,
+                    getStep: (stepId) => this.getStep(stepId),
+                    resolveResistanceVoices: (performance) => this.resolvePerformanceResistanceVoices(performance),
+                    resolveBubbleText: (performance) => this.resolvePerformanceBubbleText(performance),
+                    capturePresentationSnapshot: () => this.captureCurrentGuidePresentationSnapshot(),
+                    pauseCurrentSceneForResistance: () => this.pauseCurrentSceneForResistance(),
+                    interruptNarrationForResistance: () => this.interruptNarrationForResistance(),
+                    resumeCurrentSceneAfterResistance: () => this.resumeCurrentSceneAfterResistance(),
+                    restoreGuidePresentationSnapshot: (snapshot) => this.restoreGuidePresentationSnapshot(snapshot),
+                    getActiveNarration: () => this.activeNarration,
+                    scheduleNarrationResume: (options) => this.scheduleNarrationResume(options),
+                    restoreCurrentScenePresentation: (options) => this.restoreCurrentScenePresentation(options),
+                    prepareResistanceCursorReveal: (options) => this.prepareResistanceCursorReveal(options),
+                    appendGuideChatMessage: (message, options) => this.appendGuideChatMessage(message, options),
+                    applyGuideEmotion: (emotion, options) => this.applyGuideEmotion(emotion, options),
+                    runInterruptResistPerformance: (options) => this.runInterruptResistPerformance(options),
+                    runAngryExitPerformance: (options) => this.runAngryExitPerformance(options),
+                    speakResistanceLine: (message, options) => this.voiceQueue.speak(message, options),
+                    speakGuideLine: (message, options) => this.speakGuideLine(message, options),
+                    recordExperienceMetric: (eventName, payload) => this.recordExperienceMetric(eventName, payload),
+                    clearSceneTimers: () => this.clearSceneTimers(),
+                    disableInterrupts: () => this.disableInterrupts(),
+                    cancelActiveNarration: () => this.cancelActiveNarration(),
+                    beginGuideInterruptPresentation: () => this.beginGuideInterruptPresentation(),
+                    setTutorialTakingOver: (active) => this.setTutorialTakingOver(active),
+                    notifyPluginDashboardNarrationFinished: () => this.notifyPluginDashboardNarrationFinished(),
+                    requestTermination: (reason, tutorialReason) => this.requestTermination(reason, tutorialReason)
+                }
+            });
         }
 
         setTutorialTakingOver(active) {
@@ -3324,53 +3397,11 @@
         }
 
         getElementRect(element) {
-            if (!element || typeof element.getBoundingClientRect !== 'function') {
-                return null;
-            }
-
-            const rect = element.getBoundingClientRect();
-            if (!rect || rect.width <= 0 || rect.height <= 0) {
-                return null;
-            }
-
-            return rect;
+            return this.highlightController.getElementRect(element);
         }
 
         createVirtualSpotlight(key, rect, options) {
-            if (!key || !rect) {
-                return null;
-            }
-
-            const normalizedOptions = options || {};
-            const padding = Number.isFinite(normalizedOptions.padding) ? normalizedOptions.padding : DEFAULT_SPOTLIGHT_PADDING;
-            const radius = Number.isFinite(normalizedOptions.radius) ? normalizedOptions.radius : 20;
-            const elementKey = String(key);
-            let element = this.virtualSpotlights.get(elementKey) || null;
-            if (!element) {
-                element = document.createElement('div');
-                element.setAttribute('data-yui-guide-virtual-spotlight', elementKey);
-                Object.assign(element.style, {
-                    position: 'fixed',
-                    pointerEvents: 'none',
-                    opacity: '0',
-                    zIndex: '-1'
-                });
-                document.body.appendChild(element);
-                this.virtualSpotlights.set(elementKey, element);
-            }
-
-            const left = Math.max(0, Math.floor(rect.left));
-            const top = Math.max(0, Math.floor(rect.top));
-            const right = Math.min(window.innerWidth, Math.ceil(rect.right));
-            const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom));
-            element.style.left = left + 'px';
-            element.style.top = top + 'px';
-            element.style.width = Math.max(0, right - left) + 'px';
-            element.style.height = Math.max(0, bottom - top) + 'px';
-            element.style.borderRadius = radius + 'px';
-            element.setAttribute('data-yui-guide-spotlight-padding', String(padding));
-            element.setAttribute('data-yui-guide-spotlight-radius', String(radius));
-            return element;
+            return this.highlightController.createVirtualSpotlight(key, rect, options);
         }
 
         createPluginManagementEntrySpotlight(button) {
@@ -3391,214 +3422,71 @@
         }
 
         createUnionSpotlight(key, elements, options) {
-            const rect = unionRects((Array.isArray(elements) ? elements : []).map((element) => this.getElementRect(element)));
-            return rect ? this.createVirtualSpotlight(key, rect, options) : null;
+            return this.highlightController.createUnionSpotlight(key, elements, options);
         }
 
         clearVirtualSpotlight(key) {
-            if (!key) {
-                return;
-            }
-
-            const element = this.virtualSpotlights.get(String(key));
-            if (element && element.parentNode) {
-                element.parentNode.removeChild(element);
-            }
-            this.virtualSpotlights.delete(String(key));
+            this.highlightController.clearVirtualSpotlight(key);
         }
 
         clearAllVirtualSpotlights() {
-            this.virtualSpotlights.forEach((element) => {
-                if (element && element.parentNode) {
-                    element.parentNode.removeChild(element);
-                }
-            });
-            this.virtualSpotlights.clear();
+            this.highlightController.clearAllVirtualSpotlights();
         }
 
         clearPreciseHighlights() {
-            this.preciseHighlightElements.forEach((element) => {
-                if (!element || !element.classList) {
-                    return;
-                }
-
-                element.classList.remove('yui-guide-precise-highlight');
-                element.removeAttribute('data-yui-guide-precise-highlight');
-            });
-            this.preciseHighlightElements.clear();
+            this.highlightController.clearPreciseHighlights();
         }
 
         setPreciseHighlightTargets(elements) {
-            const targets = (Array.isArray(elements) ? elements : [])
-                .filter((element) => !!element && !!element.classList);
-
-            this.clearPreciseHighlights();
-            targets.forEach((element) => {
-                element.classList.add('yui-guide-precise-highlight');
-                element.setAttribute('data-yui-guide-precise-highlight', 'true');
-                this.preciseHighlightElements.add(element);
-            });
+            this.highlightController.setPreciseHighlightTargets(elements);
         }
 
         clearSpotlightVariantHints() {
-            this.spotlightVariantElements.forEach((element) => {
-                if (!element || typeof element.removeAttribute !== 'function') {
-                    return;
-                }
-
-                element.removeAttribute('data-yui-guide-spotlight-variant');
-            });
-            this.spotlightVariantElements.clear();
+            this.highlightController.clearSpotlightVariantHints();
         }
 
         clearSpotlightGeometryHints() {
-            this.spotlightGeometryHintElements.forEach((element) => {
-                if (!element || typeof element.removeAttribute !== 'function') {
-                    return;
-                }
-
-                element.removeAttribute('data-yui-guide-spotlight-padding');
-                element.removeAttribute('data-yui-guide-spotlight-radius');
-                element.removeAttribute('data-yui-guide-spotlight-geometry');
-            });
-            this.spotlightGeometryHintElements.clear();
+            this.highlightController.clearSpotlightGeometryHints();
         }
 
         setSpotlightGeometryHint(element, options) {
-            if (!element || typeof element.setAttribute !== 'function') {
-                return;
-            }
-
-            const normalizedOptions = options || {};
-            const padding = Number.isFinite(normalizedOptions.padding) ? normalizedOptions.padding : null;
-            const radius = Number.isFinite(normalizedOptions.radius) ? normalizedOptions.radius : null;
-            const geometry = typeof normalizedOptions.geometry === 'string'
-                ? normalizedOptions.geometry.trim().toLowerCase()
-                : '';
-
-            if (padding !== null) {
-                element.setAttribute('data-yui-guide-spotlight-padding', String(padding));
-            } else {
-                element.removeAttribute('data-yui-guide-spotlight-padding');
-            }
-
-            if (radius !== null) {
-                element.setAttribute('data-yui-guide-spotlight-radius', String(radius));
-            } else {
-                element.removeAttribute('data-yui-guide-spotlight-radius');
-            }
-
-            if (geometry) {
-                element.setAttribute('data-yui-guide-spotlight-geometry', geometry);
-            } else {
-                element.removeAttribute('data-yui-guide-spotlight-geometry');
-            }
-
-            this.spotlightGeometryHintElements.add(element);
+            this.highlightController.setSpotlightGeometryHint(element, options);
         }
 
         setSpotlightVariantHints(entries) {
-            this.clearSpotlightVariantHints();
-            (Array.isArray(entries) ? entries : []).forEach((entry) => {
-                const element = entry && entry.element;
-                const variant = entry && entry.variant;
-                if (!element || typeof element.setAttribute !== 'function' || !variant) {
-                    return;
-                }
-
-                element.setAttribute('data-yui-guide-spotlight-variant', String(variant));
-                this.spotlightVariantElements.add(element);
-            });
+            this.highlightController.setSpotlightVariantHints(entries);
         }
 
         syncExtraSpotlights() {
-            const nextElements = [];
-            const seen = new Set();
-            [this.retainedExtraSpotlightElements, this.sceneExtraSpotlightElements].forEach((elements) => {
-                (Array.isArray(elements) ? elements : []).forEach((element) => {
-                    const isVirtualSpotlight = !!(
-                        element
-                        && typeof element.getAttribute === 'function'
-                        && element.getAttribute('data-yui-guide-virtual-spotlight')
-                    );
-                    if (
-                        !element
-                        || typeof element.getBoundingClientRect !== 'function'
-                        || (!isVirtualSpotlight && element.isConnected === false)
-                        || seen.has(element)
-                    ) {
-                        return;
-                    }
-                    seen.add(element);
-                    this.applyCircularFloatingButtonSpotlightHint(element);
-                    nextElements.push(element);
-                });
-            });
-            this.overlay.setExtraSpotlights(nextElements);
+            this.highlightController.syncExtraSpotlights();
         }
 
         addRetainedExtraSpotlight(element) {
-            if (!element || typeof element.getBoundingClientRect !== 'function') {
-                return;
-            }
-
-            if (!this.retainedExtraSpotlightElements.includes(element)) {
-                this.retainedExtraSpotlightElements.push(element);
-            }
-            this.syncExtraSpotlights();
+            this.highlightController.addRetainedExtraSpotlight(element);
         }
 
         replaceRetainedExtraSpotlight(matcher, element) {
-            const normalizedMatcher = typeof matcher === 'function'
-                ? matcher
-                : (candidate) => candidate === matcher;
-            this.retainedExtraSpotlightElements = this.retainedExtraSpotlightElements.filter((candidate) => {
-                try {
-                    return !normalizedMatcher(candidate);
-                } catch (_) {
-                    return true;
-                }
-            });
-            if (element && typeof element.getBoundingClientRect === 'function') {
-                this.retainedExtraSpotlightElements.push(element);
-            }
-            this.syncExtraSpotlights();
+            this.highlightController.replaceRetainedExtraSpotlight(matcher, element);
         }
 
         removeRetainedExtraSpotlight(matcher) {
-            const normalizedMatcher = typeof matcher === 'function'
-                ? matcher
-                : (candidate) => candidate === matcher;
-            this.retainedExtraSpotlightElements = this.retainedExtraSpotlightElements.filter((candidate) => {
-                try {
-                    return !normalizedMatcher(candidate);
-                } catch (_) {
-                    return true;
-                }
-            });
-            this.syncExtraSpotlights();
+            this.highlightController.removeRetainedExtraSpotlight(matcher);
         }
 
         clearRetainedExtraSpotlights() {
-            this.retainedExtraSpotlightElements = [];
-            this.syncExtraSpotlights();
+            this.highlightController.clearRetainedExtraSpotlights();
         }
 
         setSceneExtraSpotlights(elements) {
-            this.sceneExtraSpotlightElements = (Array.isArray(elements) ? elements : [])
-                .filter((element) => !!element && typeof element.getBoundingClientRect === 'function');
-            this.syncExtraSpotlights();
+            this.highlightController.setSceneExtraSpotlights(elements);
         }
 
         clearSceneExtraSpotlights() {
-            this.sceneExtraSpotlightElements = [];
-            this.syncExtraSpotlights();
+            this.highlightController.clearSceneExtraSpotlights();
         }
 
         clearAllExtraSpotlights() {
-            this.retainedExtraSpotlightElements = [];
-            this.sceneExtraSpotlightElements = [];
-            this.overlay.clearExtraSpotlights();
+            this.highlightController.clearAllExtraSpotlights();
         }
 
         cleanupTutorialReturnButtons() {
@@ -3754,45 +3642,15 @@
         }
 
         getFloatingButtonShell(element) {
-            if (!element) {
-                return null;
-            }
-
-            if (typeof element.closest === 'function') {
-                const shell = element.closest(
-                    '#live2d-btn-mic, #vrm-btn-mic, #mmd-btn-mic, ' +
-                    '#live2d-btn-agent, #vrm-btn-agent, #mmd-btn-agent, ' +
-                    '#live2d-btn-settings, #vrm-btn-settings, #mmd-btn-settings, ' +
-                    '[id$="-btn-mic"], [id$="-btn-agent"], [id$="-btn-settings"]'
-                );
-                if (shell) {
-                    return shell;
-                }
-            }
-
-            return element;
+            return this.highlightController.getFloatingButtonShell(element);
         }
 
         isCircularFloatingButtonSpotlight(element) {
-            const target = this.getFloatingButtonShell(element) || element;
-            if (!target || typeof target.id !== 'string') {
-                return false;
-            }
-
-            return /-btn-(mic|agent|settings)$/.test(target.id);
+            return this.highlightController.isCircularFloatingButtonSpotlight(element);
         }
 
         applyCircularFloatingButtonSpotlightHint(element) {
-            if (!this.isCircularFloatingButtonSpotlight(element)) {
-                return false;
-            }
-
-            const target = this.getFloatingButtonShell(element) || element;
-            this.setSpotlightGeometryHint(target, {
-                padding: 4,
-                geometry: 'circle'
-            });
-            return true;
+            return this.highlightController.applyCircularFloatingButtonSpotlightHint(element);
         }
 
         getSettingsPeekTargets() {
@@ -3901,93 +3759,15 @@
         }
 
         normalizeHighlightTarget(target, fallbackKey) {
-            if (!target) {
-                return null;
-            }
-
-            if (Array.isArray(target)) {
-                return this.createUnionSpotlight(fallbackKey || 'highlight-union', target, {
-                    padding: DEFAULT_SPOTLIGHT_PADDING,
-                    radius: 18
-                });
-            }
-
-            if (typeof target === 'string') {
-                return this.resolveElement(target);
-            }
-
-            if (target && typeof target === 'object') {
-                if (target.element) {
-                    return target.element;
-                }
-                if (target.selector) {
-                    return this.resolveElement(target.selector);
-                }
-                if (Array.isArray(target.elements)) {
-                    return this.createUnionSpotlight(
-                        target.key || fallbackKey || 'highlight-union',
-                        target.elements,
-                        target.options || {}
-                    );
-                }
-                if (target.rect) {
-                    return this.createVirtualSpotlight(
-                        target.key || fallbackKey || 'highlight-rect',
-                        target.rect,
-                        target.options || {}
-                    );
-                }
-            }
-
-            return target;
+            return this.highlightController.normalizeHighlightTarget(target, fallbackKey);
         }
 
         applyGuideHighlights(config) {
-            const normalized = config || {};
-            const keyBase = normalized.key || 'guide-highlight';
-            const persistentTarget = Object.prototype.hasOwnProperty.call(normalized, 'persistent')
-                ? this.normalizeHighlightTarget(normalized.persistent, keyBase + '-persistent')
-                : null;
-            const primaryTarget = Object.prototype.hasOwnProperty.call(normalized, 'primary')
-                ? this.normalizeHighlightTarget(normalized.primary, keyBase + '-primary')
-                : null;
-            const secondaryTarget = Object.prototype.hasOwnProperty.call(normalized, 'secondary')
-                ? this.normalizeHighlightTarget(normalized.secondary, keyBase + '-secondary')
-                : null;
-
-            if (Object.prototype.hasOwnProperty.call(normalized, 'persistent')) {
-                if (persistentTarget) {
-                    this.applyCircularFloatingButtonSpotlightHint(persistentTarget);
-                    this.overlay.setPersistentSpotlight(persistentTarget);
-                } else {
-                    this.overlay.clearPersistentSpotlight();
-                }
+            const highlights = this.highlightController.applyGuideHighlights(config);
+            if (Object.prototype.hasOwnProperty.call(config || {}, 'secondary')) {
+                this.customSecondarySpotlightTarget = highlights.secondary || null;
             }
-
-            if (Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
-                if (primaryTarget) {
-                    this.applyCircularFloatingButtonSpotlightHint(primaryTarget);
-                    this.overlay.activateSpotlight(primaryTarget);
-                } else {
-                    this.overlay.clearActionSpotlight();
-                }
-            }
-
-            if (Object.prototype.hasOwnProperty.call(normalized, 'secondary')) {
-                this.customSecondarySpotlightTarget = secondaryTarget || null;
-                if (secondaryTarget) {
-                    this.applyCircularFloatingButtonSpotlightHint(secondaryTarget);
-                    this.overlay.activateSecondarySpotlight(secondaryTarget);
-                } else if (!Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
-                    this.overlay.clearActionSpotlight();
-                }
-            }
-
-            return {
-                persistent: persistentTarget,
-                primary: primaryTarget,
-                secondary: secondaryTarget
-            };
+            return highlights;
         }
 
         clearIntroFlow() {
@@ -4909,15 +4689,48 @@
             }
 
             const playbackSnapshot = this.voiceQueue.capturePlaybackSnapshot();
-            narration.resumeAudioOffsetMs = playbackSnapshot
-                && Number.isFinite(playbackSnapshot.currentTimeMs)
-                ? Math.max(0, playbackSnapshot.currentTimeMs)
-                : 0;
+            this.applyNarrationResumePoint(narration, playbackSnapshot);
 
             narration.interrupted = true;
             this.clearNarrationResumeTimer();
             this.voiceQueue.stop();
             return true;
+        }
+
+        applyNarrationResumePoint(narration, playbackSnapshot) {
+            if (!narration || !playbackSnapshot || !Number.isFinite(playbackSnapshot.currentTimeMs)) {
+                if (narration) {
+                    narration.resumeAudioOffsetMs = 0;
+                }
+                return;
+            }
+
+            const textLength = typeof narration.text === 'string' ? narration.text.length : 0;
+            const configuredDurationMs = this.getGuideVoiceDurationMs(narration.voiceKey, resolveGuideLocale());
+            const durationMs = Number.isFinite(playbackSnapshot.durationMs) && playbackSnapshot.durationMs > 0
+                ? Math.round(playbackSnapshot.durationMs)
+                : (Number.isFinite(configuredDurationMs) && configuredDurationMs > 0 ? Math.round(configuredDurationMs) : 0);
+            const rawOffsetMs = Math.max(0, Math.round(playbackSnapshot.currentTimeMs));
+            const maxResumeOffsetMs = durationMs > 0
+                ? Math.max(0, durationMs - NARRATION_RESUME_MIN_REMAINING_MS)
+                : rawOffsetMs;
+            const resumeAudioOffsetMs = clamp(
+                rawOffsetMs - NARRATION_RESUME_BACKTRACK_MS,
+                0,
+                maxResumeOffsetMs
+            );
+            narration.resumeAudioOffsetMs = resumeAudioOffsetMs;
+
+            if (durationMs <= 0 || textLength <= 0) {
+                return;
+            }
+
+            const audioProgressIndex = clamp(
+                Math.floor((resumeAudioOffsetMs / durationMs) * textLength),
+                0,
+                Math.max(0, textLength - 1)
+            );
+            narration.resumeIndex = audioProgressIndex;
         }
 
         scheduleNarrationResume(options) {
@@ -7240,18 +7053,45 @@
             });
         }
 
+        dispatchDesktopPluginDashboardInterruptAck(payload) {
+            try {
+                window.dispatchEvent(new CustomEvent(DESKTOP_PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT, {
+                    detail: payload && typeof payload === 'object' ? payload : {}
+                }));
+            } catch (error) {
+                console.warn('[YuiGuide] 发送桌面插件面板 interrupt ack 失败:', error);
+            }
+        }
+
+        dispatchDesktopPluginDashboardNarrationFinished(payload) {
+            try {
+                window.dispatchEvent(new CustomEvent(DESKTOP_PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT, {
+                    detail: payload && typeof payload === 'object' ? payload : {}
+                }));
+            } catch (error) {
+                console.warn('[YuiGuide] 发送桌面插件面板 narration finished 失败:', error);
+            }
+        }
+
         notifyPluginDashboardNarrationFinished() {
             const handoff = this.pluginDashboardHandoff;
+            if (!handoff || !handoff.sessionId) {
+                return;
+            }
+
+            const payload = {
+                type: PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT,
+                sessionId: handoff.sessionId
+            };
+            this.dispatchDesktopPluginDashboardNarrationFinished(payload);
+
             const windowRef = handoff && handoff.windowRef ? handoff.windowRef : null;
-            if (!handoff || !windowRef || windowRef.closed || !handoff.sessionId) {
+            if (!windowRef || windowRef.closed) {
                 return;
             }
 
             try {
-                windowRef.postMessage({
-                    type: PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT,
-                    sessionId: handoff.sessionId
-                }, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
+                windowRef.postMessage(payload, handoff.targetOrigin || this.getPluginDashboardExpectedOrigin());
             } catch (error) {
                 console.warn('[YuiGuide] 向插件面板发送 narration finished 失败:', error);
             }
@@ -7944,6 +7784,12 @@
             if (this.wakeup && typeof this.wakeup.cancel === 'function') {
                 this.wakeup.cancel('termination');
             }
+            if (this.interruptController && typeof this.interruptController.destroy === 'function') {
+                this.interruptController.destroy();
+            }
+            if (this.overlay && typeof this.overlay.setSpotlightSuppressed === 'function') {
+                this.overlay.setSpotlightSuppressed(true);
+            }
             this.clearIntroFlow();
             this.voiceQueue.stop();
             this.clearAllVirtualSpotlights();
@@ -7951,6 +7797,9 @@
             this.clearSpotlightVariantHints();
             this.clearSpotlightGeometryHints();
             this.clearAllExtraSpotlights();
+            if (this.highlightController && typeof this.highlightController.destroy === 'function') {
+                this.highlightController.destroy();
+            }
             this.cleanupTutorialReturnButtons();
             this.customSecondarySpotlightTarget = null;
             if (this.page === 'home') {
@@ -9573,7 +9422,11 @@
                 return;
             }
 
-            if (this.page === 'home' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+            const shouldRequireDocumentFocus = !(
+                this.platformCapabilities
+                && this.platformCapabilities.windowBoundsSource === 'electron-window-bounds'
+            );
+            if (shouldRequireDocumentFocus && this.page === 'home' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
                 return;
             }
 
@@ -9721,153 +9574,38 @@
             }
         }
 
+        prepareResistanceCursorReveal() {
+            if (this.userCursorRevealed) {
+                this.revealUserCursor();
+                return;
+            }
+
+            if (this.resistanceCursorTimer) {
+                window.clearTimeout(this.resistanceCursorTimer);
+            }
+            this.restoreHiddenCursorAfterResistance = document.body.classList.contains('yui-taking-over')
+                || document.documentElement.style.cursor === 'none'
+                || document.body.style.cursor === 'none';
+            document.documentElement.style.cursor = '';
+            document.body.style.cursor = '';
+            document.body.classList.add('yui-resistance-cursor-reveal');
+            this.resistanceCursorTimer = window.setTimeout(() => {
+                this.resistanceCursorTimer = null;
+                document.body.classList.remove('yui-resistance-cursor-reveal');
+                if (!this.destroyed && !this.angryExitTriggered && this.restoreHiddenCursorAfterResistance) {
+                    document.documentElement.style.cursor = 'none';
+                    document.body.style.cursor = 'none';
+                }
+                this.restoreHiddenCursorAfterResistance = false;
+            }, 3000);
+        }
+
         playLightResistance(x, y, options) {
-            if (this.scenePausedForResistance) {
-                return Promise.resolve();
-            }
-
-            const suppressCursorReaction = !!(options && options.suppressCursorReaction);
-            const suppressCursorReveal = !!(options && options.suppressCursorReveal);
-
-            if (!suppressCursorReveal) {
-                if (this.userCursorRevealed) {
-                    this.revealUserCursor();
-                } else {
-                    if (this.resistanceCursorTimer) {
-                        window.clearTimeout(this.resistanceCursorTimer);
-                    }
-                    this.restoreHiddenCursorAfterResistance = document.body.classList.contains('yui-taking-over')
-                        || document.documentElement.style.cursor === 'none'
-                        || document.body.style.cursor === 'none';
-                    document.documentElement.style.cursor = '';
-                    document.body.style.cursor = '';
-                    document.body.classList.add('yui-resistance-cursor-reveal');
-                    this.resistanceCursorTimer = window.setTimeout(() => {
-                        this.resistanceCursorTimer = null;
-                        document.body.classList.remove('yui-resistance-cursor-reveal');
-                        if (!this.destroyed && !this.angryExitTriggered && this.restoreHiddenCursorAfterResistance) {
-                            document.documentElement.style.cursor = 'none';
-                            document.body.style.cursor = 'none';
-                        }
-                        this.restoreHiddenCursorAfterResistance = false;
-                    }, 3000);
-                }
-            }
-
-            const resistanceStep = this.getStep('interrupt_resist_light');
-            if (!resistanceStep) {
-                return Promise.resolve();
-            }
-
-            const performance = resistanceStep.performance || {};
-            const voices = this.resolvePerformanceResistanceVoices(performance);
-            const resistanceVoiceKeys = ['interrupt_resist_light_1', 'interrupt_resist_light_3'];
-            const resistanceVoiceIndex = Math.max(0, Math.min(resistanceVoiceKeys.length - 1, this.interruptCount - 1));
-            const defaultResistanceText = this.resolvePerformanceBubbleText(performance);
-            const message = voices.length > 0
-                ? voices[(this.interruptCount - 1) % voices.length]
-                : defaultResistanceText || '不要拽我啦，还没结束呢！';
-            const presentationSnapshot = this.captureCurrentGuidePresentationSnapshot();
-
-            this.pauseCurrentSceneForResistance();
-            this.interruptNarrationForResistance();
-
-            this.overlay.hideBubble();
-            this.appendGuideChatMessage(message, {
-                textKey: resistanceVoiceKeys[resistanceVoiceIndex] === 'interrupt_resist_light_3'
-                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-                    : 'tutorial.yuiGuide.lines.interruptResistLight1',
-                voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || '',
-                streamPauseWithScene: false
-            });
-            this.applyGuideEmotion(performance.emotion || 'surprised', {
-                allowDuringInterrupt: true
-            });
-            const cursorResistancePromise = suppressCursorReaction
-                ? Promise.resolve()
-                : this.cursor.resistTo(x, y);
-            const resistanceVoiceKey = resistanceVoiceKeys[resistanceVoiceIndex] || '';
-            const interruptPerformancePromise = this.runInterruptResistPerformance({
-                x: x,
-                y: y,
-                voiceKey: resistanceVoiceKey
-            }).catch(() => null);
-            return Promise.all([
-                this.voiceQueue.speak(message, {
-                    voiceKey: resistanceVoiceKey
-                }),
-                cursorResistancePromise,
-                interruptPerformancePromise
-            ]).finally(() => {
-                this.resumeCurrentSceneAfterResistance();
-                const didRestorePresentationSnapshot = this.restoreGuidePresentationSnapshot(presentationSnapshot);
-                const narration = this.activeNarration;
-                if (narration && narration.interrupted) {
-                    this.scheduleNarrationResume({
-                        skipEmotion: didRestorePresentationSnapshot
-                    });
-                    return;
-                }
-
-                this.restoreCurrentScenePresentation({
-                    skipEmotion: didRestorePresentationSnapshot
-                });
-            });
+            return this.interruptController.playLightResistance(x, y, options);
         }
 
         async abortAsAngryExit(source) {
-            if (this.destroyed || this.angryExitTriggered) {
-                return;
-            }
-
-            this.recordExperienceMetric('angry_exit', {
-                sceneId: this.currentSceneId || 'interrupt_angry_exit',
-                reason: source || 'pointer_interrupt',
-                interruptCount: Math.max(0, Math.floor(Number.isFinite(this.interruptCount) ? this.interruptCount : 0))
-            });
-            this.angryExitTriggered = true;
-            this.clearSceneTimers();
-            this.disableInterrupts();
-            this.cancelActiveNarration();
-            this.beginGuideInterruptPresentation();
-
-            const angryStep = this.getStep('interrupt_angry_exit');
-            const performance = (angryStep && angryStep.performance) || {};
-            const bubbleText = this.resolvePerformanceBubbleText(performance);
-            const lastPointerPoint = this.lastPointerPoint && Number.isFinite(this.lastPointerPoint.x) && Number.isFinite(this.lastPointerPoint.y)
-                ? this.lastPointerPoint
-                : null;
-
-            this.setTutorialTakingOver(true);
-            this.overlay.setAngry(true);
-            this.overlay.hidePluginPreview();
-            this.overlay.hideBubble();
-            this.appendGuideChatMessage(bubbleText || '人类！你真的很没礼貌喵！', {
-                textKey: performance.bubbleTextKey || '',
-                voiceKey: performance.voiceKey,
-                streamPauseWithScene: false,
-                streamAllowDuringAngryExit: true
-            });
-            this.applyGuideEmotion(performance.emotion || 'angry', {
-                allowDuringInterrupt: true
-            });
-            const angryExitPerformancePromise = this.runAngryExitPerformance({
-                x: lastPointerPoint ? lastPointerPoint.x : null,
-                y: lastPointerPoint ? lastPointerPoint.y : null,
-                voiceKey: performance.voiceKey
-            }).catch(() => null);
-            await Promise.all([
-                this.speakGuideLine(bubbleText || '', {
-                    voiceKey: performance.voiceKey
-                }),
-                angryExitPerformancePromise
-            ]);
-            this.notifyPluginDashboardNarrationFinished();
-            if (this.destroyed) {
-                return;
-            }
-
-            this.requestTermination(source || 'angry_exit', 'angry_exit');
+            return this.interruptController.abortAsAngryExit(source);
         }
 
         requestTermination(reason, tutorialReason) {
@@ -9941,6 +9679,12 @@
             if (this.wakeup && typeof this.wakeup.destroy === 'function') {
                 this.wakeup.destroy();
             }
+            if (this.interruptController && typeof this.interruptController.destroy === 'function') {
+                this.interruptController.destroy();
+            }
+            if (this.overlay && typeof this.overlay.setSpotlightSuppressed === 'function') {
+                this.overlay.setSpotlightSuppressed(true);
+            }
             this.disableInterrupts();
             if (this.voiceQueue && typeof this.voiceQueue.destroy === 'function') {
                 this.voiceQueue.destroy();
@@ -9954,6 +9698,9 @@
             this.clearSpotlightVariantHints();
             this.clearSpotlightGeometryHints();
             this.clearAllExtraSpotlights();
+            if (this.highlightController && typeof this.highlightController.destroy === 'function') {
+                this.highlightController.destroy();
+            }
             this.cleanupTutorialReturnButtons();
             this.customSecondarySpotlightTarget = null;
             this.clearGuidePresentation();
@@ -9981,6 +9728,7 @@
             window.removeEventListener('pagehide', this.pageHideHandler, true);
             window.removeEventListener('neko:yui-guide:external-chat-ready', this.externalChatReadyHandler, true);
             window.removeEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
+            window.removeEventListener('neko:yui-guide:desktop-interrupt-request', this.desktopPluginDashboardInterruptHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
         }
@@ -10127,16 +9875,19 @@
                 ? handoff.targetOrigin
                 : this.getPluginDashboardExpectedOrigin();
             const postAck = () => {
+                const ackPayload = {
+                    type: PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT,
+                    sessionId: typeof data.sessionId === 'string' ? data.sessionId : '',
+                    requestId: requestId
+                };
+                this.dispatchDesktopPluginDashboardInterruptAck(ackPayload);
+
                 if (!windowRef || windowRef.closed) {
                     return;
                 }
 
                 try {
-                    windowRef.postMessage({
-                        type: PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT,
-                        sessionId: typeof data.sessionId === 'string' ? data.sessionId : '',
-                        requestId: requestId
-                    }, targetOrigin);
+                    windowRef.postMessage(ackPayload, targetOrigin);
                 } catch (error) {
                     console.warn('[YuiGuide] 向插件面板发送 interrupt ack 失败:', error);
                 }
@@ -10166,8 +9917,8 @@
             }
 
             if (kind === 'interrupt_angry_exit') {
-                postAck();
                 await this.abortAsAngryExit('pointer_interrupt');
+                postAck();
                 return;
             }
 
@@ -10202,6 +9953,43 @@
             }
 
             postAck();
+        }
+
+        onDesktopPluginDashboardInterruptRequest(event) {
+            if (this.destroyed) {
+                return;
+            }
+
+            const payload = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            const requestId = typeof payload.requestId === 'string'
+                ? payload.requestId
+                : (payload.detail && typeof payload.detail.requestId === 'string' ? payload.detail.requestId : '');
+            if (!requestId) {
+                return;
+            }
+
+            const handoff = this.pluginDashboardHandoff;
+            if (!handoff || !handoff.sessionId) {
+                return;
+            }
+
+            const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+            if (sessionId && handoff.sessionId && sessionId !== handoff.sessionId) {
+                return;
+            }
+
+            const detail = payload.detail && typeof payload.detail === 'object'
+                ? Object.assign({}, payload.detail)
+                : {};
+            delete detail.requestId;
+            void this.handlePluginDashboardInterruptRequest(null, handoff, {
+                type: PLUGIN_DASHBOARD_INTERRUPT_REQUEST_EVENT,
+                sessionId: sessionId,
+                requestId: requestId,
+                detail: detail
+            });
         }
 
         onWindowMessage(event) {

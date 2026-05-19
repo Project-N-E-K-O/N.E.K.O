@@ -214,6 +214,7 @@
             this.extraSpotlightElements = [];
             this.extraSpotlightEntries = [];
             this.highlightedElements = new Set();
+            this.spotlightsSuppressed = false;
             this.spotlightRefreshTimer = null;
             this.boundRefreshSpotlight = this.refreshSpotlight.bind(this);
             this.spotlightRefreshRaf = null;
@@ -553,6 +554,10 @@
 
         setExtraSpotlights(elements) {
             this.ensureRoot();
+            if (this.spotlightsSuppressed) {
+                this.clearSpotlight();
+                return;
+            }
             this.extraSpotlightElements = (Array.isArray(elements) ? elements : [])
                 .filter((element) => !!element && typeof element.getBoundingClientRect === 'function');
             this.refreshSpotlight();
@@ -1094,8 +1099,19 @@
             this.previewList.innerHTML = '';
         }
 
+        setSpotlightSuppressed(active) {
+            this.spotlightsSuppressed = active === true;
+            if (this.spotlightsSuppressed) {
+                this.clearSpotlight();
+            }
+        }
+
         setPersistentSpotlight(element) {
             this.ensureRoot();
+            if (this.spotlightsSuppressed) {
+                this.clearSpotlight();
+                return;
+            }
             this.persistentHighlightedElement = element || null;
             this.syncHighlightedElementClasses();
             this.refreshSpotlight();
@@ -1104,6 +1120,10 @@
 
         activateSpotlight(element) {
             this.ensureRoot();
+            if (this.spotlightsSuppressed) {
+                this.clearSpotlight();
+                return;
+            }
             this.actionHighlightedElement = element || null;
             this.secondaryActionHighlightedElement = null;
             this.syncHighlightedElementClasses();
@@ -1113,6 +1133,10 @@
 
         activateSecondarySpotlight(element) {
             this.ensureRoot();
+            if (this.spotlightsSuppressed) {
+                this.clearSpotlight();
+                return;
+            }
             this.secondaryActionHighlightedElement = element || null;
             this.syncHighlightedElementClasses();
             this.refreshSpotlight();
