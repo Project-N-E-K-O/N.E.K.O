@@ -3718,7 +3718,7 @@ class GameLLMAgent:
     def _cat_opinion_snapshot(self, shared: dict[str, Any]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
-        shared_queue = shared.get("cat_opinions")
+        shared_queue = shared.pop("cat_opinions", None)
         sources = []
         if isinstance(shared_queue, list):
             sources.append(shared_queue)
@@ -6849,6 +6849,8 @@ class GameLLMAgent:
         session_id = str(shared.get("active_session_id") or "")
 
         async def _deliver_consult() -> bool:
+            if session_id and session_id != self._observed_session_id:
+                return False
             return await self._push_agent_message(
                 shared,
                 kind="cat_consultation",

@@ -427,10 +427,66 @@ async def test_game_llm_agent_passes_cat_opinions_to_choice_planning(
 
     await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
 
+    assert "cat_opinions" not in shared
     assert (
         "Prefer the right path"
         in fake_gateway.suggest_calls[-1]["cat_opinion_context"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_skips_stale_consultation_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    pushed: list[dict[str, object]] = []
+
+    async def _fake_push_agent_message(_shared: dict[str, object], **kwargs) -> bool:
+        pushed.append(dict(kwargs))
+        return True
+
+    monkeypatch.setattr(agent, "_push_agent_message", _fake_push_agent_message)
+    monkeypatch.setattr(
+        agent,
+        "_build_consult_inputs",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            character_mode="fixed",
+            character_fixed_name="Yukino",
+            profile_known=True,
+            visible_choices=("left", "right"),
+            scene_changed=True,
+            lines_since_last_consult=0,
+            now=time.monotonic(),
+            last_consult_ts=0.0,
+        ),
+    )
+    monkeypatch.setattr(agent, "_resolve_character_profile", lambda _name: {"identity": {}})
+    agent._observed_session_id = "sess-a"
+    shared = _shared_state(session_id="sess-a")
+
+    await agent._maybe_consult_cat(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+        scene_changed=True,
+    )
+    tasks = list(agent._consultation_tasks)
+    assert tasks
+
+    agent._observed_session_id = "sess-b"
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert pushed == []
+    assert agent._consultation_tasks == set()
 
 
 @pytest.mark.asyncio
