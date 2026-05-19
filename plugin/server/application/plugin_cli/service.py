@@ -12,9 +12,9 @@ from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.public import (
     analyze_bundle_plugins,
     inspect_package,
-    pack_bundle,
-    pack_plugin,
-    unpack_package,
+    build_bundle,
+    build_plugin,
+    install_package,
 )
 from plugin.server.application.install_source import (
     InstallSourceError,
@@ -30,12 +30,12 @@ from plugin.settings import (
 )
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-# 源仓库内置插件目录：用于 list/pack（只读扫描）。
+# 源仓库内置插件目录：用于 list/build（只读扫描）。
 _RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
-# unpack（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
-_UNPACK_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
-_UNPACK_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
-# pack/upload 产物（``.neko-plugin`` / ``.neko-bundle``）落地目录：
+# install（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
+_INSTALL_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
+_INSTALL_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
+# build/upload 产物（``.neko-plugin`` / ``.neko-bundle``）落地目录：
 # 必须落到用户可写的我的文档目录，否则 Nuitka 打包安装到 Program Files 后会失败。
 _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
@@ -63,7 +63,7 @@ class PluginCliService:
     async def list_local_packages(self) -> dict[str, object]:
         return await asyncio.to_thread(self._list_local_packages_sync)
 
-    async def pack(
+    async def build(
         self,
         *,
         mode: str = "selected",
@@ -78,7 +78,7 @@ class PluginCliService:
         version: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
-            self._pack_sync,
+            self._build_sync,
             mode=mode,
             plugin=plugin,
             plugins=plugins,
@@ -97,7 +97,7 @@ class PluginCliService:
     async def verify(self, *, package: str) -> dict[str, object]:
         return await asyncio.to_thread(self._verify_sync, package=package)
 
-    async def unpack(
+    async def install(
         self,
         *,
         package: str,
@@ -106,7 +106,7 @@ class PluginCliService:
         on_conflict: str = "rename",
     ) -> dict[str, object]:
         return await asyncio.to_thread(
-            self._unpack_sync,
+            self._install_sync,
             package=package,
             plugins_root=plugins_root,
             profiles_root=profiles_root,
@@ -131,29 +131,62 @@ class PluginCliService:
         """Save an uploaded package file to the target directory.
 
         Returns metadata about the saved file including its server-side path,
-        which can be passed to ``unpack`` or ``inspect``.
+        which can be passed to ``install`` or ``inspect``.
         """
         return await asyncio.to_thread(self._save_uploaded_package_sync, filename=filename, content=content)
 
-    async def upload_and_unpack(
+    async def upload_and_install(
         self,
         *,
         filename: str,
         content: bytes,
         on_conflict: str = "rename",
+        install_source_override: dict | None = None,
     ) -> dict[str, object]:
-        """Upload a package file and immediately unpack it.
+        """Upload a package file and immediately install it.
 
-        Combines ``save_uploaded_package`` and ``unpack`` into a single operation
+        Combines ``save_uploaded_package`` and ``install`` into a single operation
         for convenience.
+
+        After a successful install, records the install source in the
+        install-source lock (design §7 / Req 9). When ``install_source_override``
+        is ``None`` (the default, used by the direct ``/plugin-cli/upload-and-install``
+        route), the entry is recorded with ``channel="imported"`` and
+        ``source_detail.package_filename`` / ``source_detail.package_sha256``
+        derived from the upload. When ``install_source_override`` is provided
+        (used by ``market_bridge`` — design Fix 8), it drives the subsequent
+        call to ``record_market`` instead, bypassing the imported channel
+        entirely so the lock file never passes through an ``imported →
+        market`` intermediate state.
+
+        If the install-source manager is unavailable, degraded, or
+        otherwise raises during recording, the response body still
+        returns the original upload + install payload plus an
+        ``install_source_warning`` field describing the issue (Req 9.6
+        / 10.8). The HTTP status stays 200 — install-source failures
+        must never mask a successful install.
         """
+        import hashlib
+
         save_result = await self.save_uploaded_package(filename=filename, content=content)
         saved_path = str(save_result["path"])
-        unpack_result = await self.unpack(package=saved_path, on_conflict=on_conflict)
-        return {
+        install_result = await self.install(package=saved_path, on_conflict=on_conflict)
+
+        package_sha256 = hashlib.sha256(content).hexdigest().lower()
+        warning = await self._record_install_source_best_effort(
+            install_result=install_result,
+            package_filename=filename,
+            package_sha256=package_sha256,
+            override=install_source_override,
+        )
+
+        payload: dict[str, object] = {
             "upload": save_result,
-            "unpack": unpack_result,
+            "install": install_result,
         }
+        if warning is not None:
+            payload["install_source_warning"] = warning
+        return payload
 
     async def upload_and_install(
         self,
@@ -583,7 +616,7 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="list_packages") from exc
 
-    def _pack_sync(
+    def _build_sync(
         self,
         *,
         mode: str,
@@ -604,7 +637,7 @@ class PluginCliService:
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
 
             if out and mode != "bundle" and len(plugin_dirs) != 1:
-                raise ValueError("'out' can only be used when packing a single plugin")
+                raise ValueError("'out' can only be used when building a single plugin")
 
             if mode == "bundle":
                 resolved_bundle_id = bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
@@ -617,7 +650,7 @@ class PluginCliService:
                         field="out",
                     )
                 )
-                result = pack_bundle(
+                result = build_bundle(
                     plugin_dirs,
                     output_path,
                     bundle_id=resolved_bundle_id,
@@ -626,16 +659,16 @@ class PluginCliService:
                     version=version or "0.1.0",
                     keep_staging=keep_staging,
                 )
-                packed = [result.model_dump(mode="json")]
+                built = [result.model_dump(mode="json")]
                 return {
-                    "packed": packed,
-                    "packed_count": len(packed),
+                    "built": built,
+                    "built_count": len(built),
                     "failed": [],
                     "failed_count": 0,
                     "ok": True,
                 }
 
-            packed: list[dict[str, object]] = []
+            built: list[dict[str, object]] = []
             failed: list[dict[str, object]] = []
             for plugin_dir in plugin_dirs:
                 output_path = (
@@ -644,24 +677,24 @@ class PluginCliService:
                     else resolved_target_dir / f"{plugin_dir.name}.neko-plugin"
                 )
                 try:
-                    result = pack_plugin(
+                    result = build_plugin(
                         plugin_dir,
                         output_path,
                         keep_staging=keep_staging,
                     )
-                    packed.append(result.model_dump(mode="json"))
+                    built.append(result.model_dump(mode="json"))
                 except Exception as exc:
                     failed.append({"plugin": plugin_dir.name, "error": str(exc)})
 
             return {
-                "packed": packed,
-                "packed_count": len(packed),
+                "built": built,
+                "built_count": len(built),
                 "failed": failed,
                 "failed_count": len(failed),
                 "ok": not failed,
             }
         except Exception as exc:
-            raise self._domain_error_from_exception(exc, action="pack") from exc
+            raise self._domain_error_from_exception(exc, action="build") from exc
 
     def _inspect_sync(self, *, package: str) -> dict[str, object]:
         try:
@@ -681,7 +714,7 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="verify") from exc
 
-    def _unpack_sync(
+    def _install_sync(
         self,
         *,
         package: str,
@@ -691,16 +724,16 @@ class PluginCliService:
     ) -> dict[str, object]:
         try:
             plugins_root_path = (
-                _require_within(Path(plugins_root).expanduser().resolve(), _UNPACK_PLUGINS_ROOT, field="plugins_root")
+                _require_within(Path(plugins_root).expanduser().resolve(), _INSTALL_PLUGINS_ROOT, field="plugins_root")
                 if plugins_root
-                else _UNPACK_PLUGINS_ROOT
+                else _INSTALL_PLUGINS_ROOT
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), _UNPACK_PROFILES_ROOT, field="profiles_root")
+                _require_within(Path(profiles_root).expanduser().resolve(), _INSTALL_PROFILES_ROOT, field="profiles_root")
                 if profiles_root
-                else _UNPACK_PROFILES_ROOT
+                else _INSTALL_PROFILES_ROOT
             )
-            result = unpack_package(
+            result = install_package(
                 self._resolve_package_path(package),
                 plugins_root=plugins_root_path,
                 profiles_root=profiles_root_path,
@@ -708,7 +741,7 @@ class PluginCliService:
             )
             return result.model_dump(mode="json")
         except Exception as exc:
-            raise self._domain_error_from_exception(exc, action="unpack") from exc
+            raise self._domain_error_from_exception(exc, action="install") from exc
 
     def _analyze_sync(
         self,
@@ -805,7 +838,7 @@ class PluginCliService:
                 raise ValueError(f"Please provide plugins when mode={mode}")
             return [self._resolve_plugin_dir_candidate(item) for item in plugins]
 
-        raise ValueError("Unsupported pack mode")
+        raise ValueError("Unsupported build mode")
 
     def _resolve_plugin_dir_candidate(self, raw: str) -> Path:
         candidate = Path(raw).expanduser()
@@ -837,6 +870,70 @@ class PluginCliService:
 
         raise FileNotFoundError(f"package file not found: {raw}")
 
+    async def _record_install_source_best_effort(
+        self,
+        *,
+        install_result: dict,
+        package_filename: str,
+        package_sha256: str,
+        override: dict | None,
+    ) -> str | None:
+        """Best-effort record the install source in the lock file (design §7.3).
+
+        Returns ``None`` on success or a short human-readable warning
+        string on failure (to be surfaced as ``install_source_warning``
+        per Req 9.6 / 10.8). This helper intentionally never raises: a
+        broken install-source subsystem must not mask a successful
+        plugin install.
+        """
+        try:
+            from plugin.server.application.install_source import (
+                get_install_source_manager,
+            )
+        except Exception as exc:
+            return f"install_source_import_failed: {exc}"
+
+        mgr = get_install_source_manager()
+        if mgr is None:
+            return "install_source_manager_unavailable"
+        if mgr.is_degraded:
+            return f"install_source_manager_degraded: {mgr.degrade_reason}"
+
+        try:
+            await asyncio.to_thread(
+                _record_install_source_for_install_result,
+                mgr,
+                install_result,
+                package_filename,
+                package_sha256,
+                override,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "record_install_source failed: err_type={}, err={}",
+                type(exc).__name__,
+                str(exc),
+            )
+            # Design §13 Fix 12: for BUILTIN_CHANNEL_LOCKED errors,
+            # surface a specifically-shaped warning so ops can grep for
+            # internal bug triggers.
+            try:
+                from plugin.server.application.install_source import InstallSourceError
+
+                if isinstance(exc, InstallSourceError):
+                    if exc.code == "BUILTIN_CHANNEL_LOCKED":
+                        details = exc.details
+                        return (
+                            "internal_error: attempted to mutate builtin channel, "
+                            f"plugin_id={details.get('plugin_id', '')} "
+                            f"directory={details.get('directory_name', '')}"
+                        )
+                    return f"{exc.code}: {exc.message}"
+            except Exception:
+                pass  # classification failed; use generic fallback below
+            return f"unexpected: {exc}"
+
     def _domain_error_from_exception(self, exc: Exception, *, action: str) -> ServerDomainError:
         if isinstance(exc, ServerDomainError):
             return exc
@@ -865,3 +962,46 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _record_install_source_for_install_result(
+    mgr,
+    install_result: dict,
+    package_filename: str,
+    package_sha256: str,
+    override: dict | None,
+) -> None:
+    """Walk ``install_result["installed_plugins"]`` and call the appropriate
+    ``record_*`` method on ``mgr`` for each one (design §7.3).
+
+    Raises :class:`InstallSourceError` with code ``"UNSUPPORTED_OVERRIDE"``
+    when the caller supplies an ``override`` whose ``channel`` is not one
+    of the supported values. Other ``InstallSourceError`` codes (e.g.
+    ``PATH_OUTSIDE_ROOTS``, ``BUILTIN_CHANNEL_LOCKED``) propagate from
+    the manager.
+    """
+    from plugin.server.application.install_source import InstallSourceError
+
+    installed_plugins = install_result.get("installed_plugins", [])
+    for installed in installed_plugins:
+        target_dir = Path(installed["target_dir"])
+        if override is None:
+            mgr.record_import(
+                directory_path=target_dir,
+                package_filename=package_filename,
+                package_sha256=package_sha256,
+            )
+        elif override.get("channel") == "market":
+            detail = override.get("market_detail", {})
+            mgr.record_market(
+                directory_path=target_dir,
+                plugin_market_id=detail.get("plugin_market_id", ""),
+                version=detail.get("version", ""),
+                package_url=detail.get("package_url", ""),
+            )
+        else:
+            raise InstallSourceError(
+                "UNSUPPORTED_OVERRIDE",
+                f"unsupported override channel={override.get('channel')}",
+                details={"override": override},
+            )
