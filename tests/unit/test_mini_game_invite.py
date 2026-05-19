@@ -213,6 +213,21 @@ def test_in_cooldown_decline_releases_past_decline_threshold():
     assert sr._mini_game_invite_in_cooldown(LANLAN) is False
 
 
+def test_in_cooldown_legacy_state_falls_back_to_accept_threshold():
+    """last_response_choice 缺失 / None → 走 accept (2h) 阈值，不会被无端拉到 5h。
+
+    pin 住「遗留 state（升级前已有 responded_at 但没 last_response_choice 字段）
+    现网生效后不会因为 fallback 选 decline 阈值而把已经过了 2h 的用户继续卡 3h」
+    的契约。如果未来 fallback 改成 decline，这条会红。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    long_ago = time.time() - 3 * 3600
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
+    state['chats_since_response'] = sr.MINI_GAME_INVITE_COOLDOWN_CHATS
+    state['last_response_choice'] = None
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _mini_game_invite_advance_response
 # ─────────────────────────────────────────────────────────────────────────────
