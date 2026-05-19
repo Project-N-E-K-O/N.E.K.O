@@ -156,9 +156,8 @@ class CharacterProfileManager:
                 "user_loaded": bool,
             }
 
-        Preset validation failures yield ``profiles={}`` and surface the error.
-        If no preset file exists, a valid user file is accepted as the complete
-        profile set. User failures fall back to preset (per plan: 用户 JSON 坏了不影响使用).
+        Preset validation failures fall back to a valid user file when present.
+        User failures fall back to preset (per plan: 用户 JSON 坏了不影响使用).
         """
 
         normalized = _normalize_game_id_for_path(game_id)
@@ -191,13 +190,17 @@ class CharacterProfileManager:
                 user=user_result.profiles if user_result.valid else {},
             )
             version = self._pick_version(preset_result.version, user_result.version)
-        elif user_result.valid and not preset_path.exists():
+        elif user_result.valid and (
+            not preset_path.exists() or not preset_result.profiles
+        ):
             merged = dict(user_result.profiles)
             version = user_result.version
+            if preset_path.exists() and errors:
+                warnings.extend(f"preset JSON ignored: {err}" for err in errors)
             errors = []
         else:
             merged = {}
-            version = preset_result.version or None
+            version = preset_result.version or ""
 
         result = {
             "profiles": merged,

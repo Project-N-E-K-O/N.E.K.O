@@ -160,6 +160,55 @@ async def test_character_list_loads_user_only_profile_for_bound_game(
 
 
 @pytest.mark.asyncio
+async def test_imported_user_profiles_survive_empty_preset_placeholder(
+    tmp_path,
+) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._character_profile_manager = CharacterProfileManager(data_dir=tmp_path)
+    plugin._state.bound_game_id = "custom_game"
+    (tmp_path / "custom_game.json").write_text(
+        json.dumps({"game_id": "custom_game", "characters": {}}),
+        encoding="utf-8",
+    )
+    source = tmp_path / "import.json"
+    source.write_text(
+        json.dumps(
+            {
+                "game_id": "custom_game",
+                "last_updated": "2026-05-20",
+                "characters": {
+                    "自定义角色": {
+                        "identity": "用户导入的自定义角色",
+                        "character_voice": {
+                            "core_traits": [
+                                {
+                                    "trait": "谨慎",
+                                    "speech_effect": "先确认事实再回答",
+                                }
+                            ],
+                        },
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    import_result = await plugin.galgame_import_character_data(
+        file_path=str(source),
+        game_id="custom_game",
+    )
+    list_result = await plugin.galgame_get_character_list()
+
+    assert import_result.is_ok()
+    assert list_result.is_ok()
+    payload = list_result.value
+    assert payload["profile_game_id"] == "custom_game"
+    assert [item["name"] for item in payload["characters"]] == ["自定义角色"]
+
+
+@pytest.mark.asyncio
 async def test_available_game_ids_do_not_fallback_match_profiles() -> None:
     plugin = _plugin_with_character_profiles()
     plugin._state.available_game_ids = ["missing_game"]

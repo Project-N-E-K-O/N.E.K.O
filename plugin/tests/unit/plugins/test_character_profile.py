@@ -208,6 +208,36 @@ def test_load_game_profiles_broken_user_falls_back_to_preset(
     assert any("user JSON ignored" in w for w in result["warnings"])
 
 
+def test_load_game_profiles_user_only_with_empty_preset_placeholder(
+    manager: CharacterProfileManager, tmp_path: Path
+) -> None:
+    _write(tmp_path / "demo_game.json", {"game_id": "demo_game", "characters": {}})
+    user_payload = {
+        "game_id": "demo_game",
+        "last_updated": "2026-05-20",
+        "characters": {
+            "自定义角色": {
+                "identity": "用户导入的自定义角色",
+                "character_voice": {
+                    "core_traits": [
+                        {"trait": "谨慎", "speech_effect": "先确认事实再回答"}
+                    ],
+                },
+            },
+        },
+    }
+    _write(tmp_path / "demo_game.user.json", user_payload)
+
+    result = manager.load_game_profiles("demo_game")
+
+    assert result["preset_loaded"] is False
+    assert result["user_loaded"] is True
+    assert result["errors"] == []
+    assert set(result["profiles"].keys()) == {"自定义角色"}
+    assert result["version"] == "2026-05-20"
+    assert any("preset JSON ignored" in w for w in result["warnings"])
+
+
 def test_load_game_profiles_oversize_rejected(
     manager: CharacterProfileManager, tmp_path: Path
 ) -> None:
