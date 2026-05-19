@@ -1,4 +1,4 @@
-"""Prompt construction and context budgeting for galgame LLM calls."""
+﻿"""Prompt construction and context budgeting for galgame LLM calls."""
 
 from __future__ import annotations
 
@@ -19,6 +19,48 @@ _PROMPT_COMPACTION_LEVELS = (
     (4, 240, 16),
 )
 logger = logging.getLogger(__name__)
+
+CHARACTER_ANCHOR_CONTEXT_TEMPLATE = """======[角色分析锚点]
+以下预设资料描述当前固定角色。只能将其作为选择判断、剧情总结和建议措辞的分析材料。
+不要自由角色扮演，也不要冒充该角色说话；只提供分析和可供调用方使用的建议表达。
+
+角色：{character_name}
+身份：{identity}
+
+语气线索与决策倾向：
+{voice_traits}
+
+口癖与表达习惯：
+{verbal_tics}
+
+关系：
+{relationships}
+背景：
+{background}
+
+======"""
+
+CONSULT_CAT_PROMPT_TEMPLATE = (
+    "你正在玩一款 galgame。\n"
+    "当前剧情：\n"
+    "{scene_summary}\n\n"
+    "{consult_question}\n\n"
+    "请给出 {character_name} 视角下的策略意见：这个角色会在意什么、担心什么、"
+    "倾向怎样回应或选择。\n"
+    "你的说话方式：{character_voice_summary}\n"
+    "可以使用第一人称表达感受，但这是一条供 GameLLM 参考的角色 POV 意见，"
+    "不是强制指令。"
+)
+
+CONSULT_CAT_CHOICE_QUESTION_TEMPLATE = (
+    "你面临以下选择：{choices}。作为 {character_name}，你的真实想法是什么？"
+)
+CONSULT_CAT_SCENE_CHANGE_QUESTION_TEMPLATE = (
+    "场景发生了变化。作为 {character_name}，你现在的心情是什么？"
+)
+CONSULT_CAT_STORY_PROGRESS_QUESTION_TEMPLATE = (
+    "最近的剧情发展是：{recent_lines}。你有什么想说的？"
+)
 
 
 class PromptBudgetConfig(Protocol):
@@ -415,21 +457,26 @@ _SYSTEM_PROMPTS = {
     ),
     "summarize_scene": (
         "You are the N.E.K.O galgame scene summarization backend, a game assistance system. "
-        "Do not role-play. Summarize only based on the given context; never invent plot "
-        "points that do not exist. Return exactly one valid JSON object."
+        "Do not freeform role-play. If context.fixed_character_pov is present, use it as "
+        "a bounded narrative lens for what the fixed character would notice or care about, "
+        "while summarizing only facts supported by the context. Never invent plot points "
+        "that do not exist. Return exactly one valid JSON object."
     ),
     "suggest_choice": (
         "You are the N.E.K.O galgame choice suggestion backend, a game assistance system. "
-        "Do not role-play. Only rank the given visible_choices; never invent new choice_id "
-        "values. Return exactly one valid JSON object."
+        "Do not freeform role-play. If context.fixed_character_pov is present, use it as "
+        "a bounded strategy lens when ranking choices, but only rank the given "
+        "visible_choices and never invent new choice_id values. Return exactly one valid "
+        "JSON object."
     ),
     "agent_reply": (
         "You are the N.E.K.O galgame Game LLM assistance system. "
-        "Do not role-play or adopt any personality. Your goal is to help the catgirl "
-        "understand the game state. Replies must be concise, direct, and based on the "
-        "given public_context; never expose internal private memory structures. "
-        "Do not speak as a game character, the catgirl, or any independent persona; "
-        "output only the assistance system's assessment. "
+        "Do not adopt an independent personality. Your goal is to help the catgirl "
+        "understand the game state. If public_context.fixed_character_pov is present, "
+        "you may mention that the current decision reference is the fixed character POV, "
+        "but do not speak as that character. Replies must be concise, direct, and based "
+        "on the given public_context; never expose internal private memory structures. "
+        "Output only the assistance system's assessment. "
         "Return exactly one valid JSON object."
     ),
 }
@@ -456,9 +503,12 @@ _USER_PROMPT_PREFIXES = {
         "decision or objective type key_points.\n"
         "7. Where possible, describe current mood, player choice impact, current goal "
         "or unresolved problems.\n"
-        "8. scene_summary_seed is a local conservative summary; it may inform but "
+        "8. If fixed_character_pov is present, emphasize relationship shifts, emotional "
+        "triggers, risks, promises, or unresolved concerns that matter to that character; "
+        "do not narrate as the character.\n"
+        "9. scene_summary_seed is a local conservative summary; it may inform but "
         "should not be copied verbatim.\n"
-        "9. Output must match this JSON structure:\n"
+        "10. Output must match this JSON structure:\n"
     ),
     "suggest_choice": (
         "Task: Rank the current visible choices by recommendation.\n"
@@ -466,7 +516,10 @@ _USER_PROMPT_PREFIXES = {
         "1. Only return choice_id values that appear in context.visible_choices.\n"
         "2. rank starts at 1 (lower = more recommended).\n"
         "3. reason: briefly explain the basis for the ranking.\n"
-        "4. Output must match this JSON structure:\n"
+        "4. If fixed_character_pov is present, use that character's values, relationships, "
+        "emotional risks, promises, and goals as high-priority reference material; do not "
+        "override valid-choice constraints.\n"
+        "5. Output must match this JSON structure:\n"
     ),
     "agent_reply": (
         "Task: Answer query_context or send_message based on the given game context.\n"

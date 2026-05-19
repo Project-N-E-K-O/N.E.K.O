@@ -119,7 +119,7 @@ def _mock_selection_required_state(
     migration_pending: bool = False,
     last_error: str = "",
 ) -> None:
-    effective_recommended_root = recommended_root or current_root
+    effective_recommended_root = current_root if recommended_root is None else recommended_root
     if legacy_sources is None:
         effective_legacy_sources = []
     elif isinstance(legacy_sources, str):
@@ -162,7 +162,7 @@ def _mock_selection_required_state(
                     "recommended_root": effective_recommended_root,
                     "legacy_sources": effective_legacy_sources,
                     "anchor_root": effective_recommended_root,
-                    "cloudsave_root": f"{effective_recommended_root}/cloudsave",
+                    "cloudsave_root": f"{effective_recommended_root}/cloudsave" if effective_recommended_root else "",
                     "selection_required": True,
                     "migration_pending": migration_pending,
                     "recovery_required": recovery_required,
@@ -466,6 +466,38 @@ def test_storage_location_selection_view_hides_internal_paths_and_supports_folde
     submit_other_button = page.get_by_role("button", name="提交该位置")
     expect(custom_input).to_have_value(picked_root, timeout=10_000)
     expect(submit_other_button).to_be_enabled(timeout=10_000)
+
+
+@pytest.mark.frontend
+def test_storage_location_selection_view_disables_recommended_button_without_recommended_root(
+    mock_page: Page,
+    running_server: str,
+):
+    page = mock_page
+    select_requests = {"count": 0}
+    _mock_selection_required_state(page, recommended_root="")
+
+    def handle_select(route):
+        select_requests["count"] += 1
+        route.fulfill(status=500, content_type="application/json", body='{"ok": false}')
+
+    page.route("**/api/storage/location/select", handle_select)
+    page.goto(f"{running_server}/", wait_until="domcontentloaded")
+
+    _continue_storage_intro(page)
+    recommended_button = page.get_by_role("button", name="使用推荐路径")
+    expect(recommended_button).to_be_disabled(timeout=10_000)
+    page.evaluate(
+        """
+        () => {
+            const button = document.querySelector('.storage-location-selection-actions .storage-location-btn--primary');
+            if (button) button.click();
+        }
+        """
+    )
+    page.wait_for_timeout(250)
+
+    assert select_requests["count"] == 0
 
 
 @pytest.mark.frontend
@@ -1302,7 +1334,7 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
             window.__nekoOpenPathCalls = [];
             window.nekoHost = {
                 openPath: async (payload) => {
-                    window.__nekoOpenPathCalls.push(payload);
+                    window.__nekoOpenPathCalls.push(payload && payload.path);
                     return { ok: true };
                 },
             };
@@ -1442,9 +1474,20 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     expect(completion_paths.nth(0)).to_have_text(target_root, timeout=10_000)
     expect(completion_paths.nth(1)).to_have_text(source_root, timeout=10_000)
     expect(cleanup_button).to_be_visible(timeout=10_000)
-    expect(completion_card.get_by_role("button", name="打开当前目录")).to_have_count(0)
-    expect(completion_card.get_by_role("button", name="打开旧目录")).to_have_count(0)
+    open_target_button = completion_card.get_by_role("button", name="打开当前路径")
+    open_retained_button = completion_card.get_by_role("button", name="打开旧数据目录")
+    expect(open_target_button).to_be_visible(timeout=10_000)
+    expect(open_retained_button).to_be_visible(timeout=10_000)
     expect(completion_card.locator(".storage-location-actions button", has_text="关闭")).to_have_count(0)
+
+    open_target_button.click()
+    open_retained_button.click()
+    page.wait_for_function(
+        "window.__nekoOpenPathCalls && window.__nekoOpenPathCalls.length === 2",
+        timeout=10_000,
+    )
+    assert page.evaluate("window.__nekoOpenPathCalls") == [target_root, source_root]
+    assert cleanup_requests["count"] == 0
 
     before_drag = completion_card.bounding_box()
     assert before_drag is not None

@@ -2147,6 +2147,204 @@ def test_win32_capture_backend_explicit_selection_falls_back_with_detail() -> No
     assert backend.last_backend_detail == "printwindow_unavailable_fallback"
 
 
+def test_smart_capture_backend_non_windows_background_uses_filtered_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return False
+
+        def capture_frame(self, target, profile):  # pragma: no cover
+            self.calls += 1
+            raise AssertionError(f"{self.kind} should not capture")
+
+    class _ElectronBackend:
+        kind = "electron"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):
+            self.calls += 1
+            return "electron-frame"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    mss = _Backend("mss")
+    electron = _ElectronBackend()
+    backend._printwindow_backend = _Backend("printwindow")
+    backend._backends = [mss, electron]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "electron-frame"
+    assert electron.calls == 1
+    assert mss.calls == 0
+    assert backend.last_backend_kind == "electron"
+    assert backend.last_backend_detail == "selected"
+
+
+def test_smart_capture_backend_linux_wayland_background_fails_without_window_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PixelBackend:
+        kind = "mss"
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):  # pragma: no cover
+            raise AssertionError("pixel backend should not capture background target")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [_PixelBackend()]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    with pytest.raises(RuntimeError, match="background_capture_requires_window_backend"):
+        backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+
+def test_smart_capture_backend_linux_x11_background_allows_pixel_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool) -> None:
+            self.kind = kind
+            self.available = available
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, target, profile):
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [
+        _Backend("electron", available=False),
+        _Backend("mss", available=True),
+    ]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "mss-frame"
+    assert backend.last_backend_kind == "mss"
+    assert backend.last_backend_detail == "electron_unavailable_fallback"
+
+
+def test_smart_capture_backend_macos_background_allows_pixel_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PixelBackend:
+        kind = "mss"
+
+        def is_available(self) -> bool:
+            return True
+
+        def capture_frame(self, target, profile):
+            return "mss-frame"
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [_PixelBackend()]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "mss-frame"
+    assert backend.last_backend_kind == "mss"
+
+
+def test_smart_capture_backend_non_windows_foreground_prefers_window_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool) -> None:
+            self.kind = kind
+            self.available = available
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, target, profile):
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    backend._backends = [
+        _Backend("mss", available=True),
+        _Backend("electron", available=False),
+        _Backend("pyautogui", available=True),
+    ]
+
+    target = _window()[0]
+    target.is_foreground = True
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "mss-frame"
+    assert backend.last_backend_kind == "mss"
+    assert backend.last_backend_detail == "electron_unavailable_fallback"
+
+
+def test_smart_capture_backend_windows_background_keeps_printwindow_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Backend:
+        def __init__(self, kind: str, *, available: bool = True) -> None:
+            self.kind = kind
+            self.available = available
+            self.calls = 0
+
+        def is_available(self) -> bool:
+            return self.available
+
+        def capture_frame(self, target, profile):
+            self.calls += 1
+            return f"{self.kind}-frame"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    backend = galgame_ocr_reader.Win32CaptureBackend(selection="smart")
+    printwindow = _Backend("printwindow")
+    dxcam = _Backend("dxcam")
+    backend._printwindow_backend = printwindow
+    backend._dxcam_backend = dxcam
+    backend._backends = [dxcam, _Backend("mss"), _Backend("pyautogui"), printwindow]
+
+    target = _window()[0]
+    target.is_foreground = False
+
+    frame = backend.capture_frame(target, galgame_ocr_reader.OcrCaptureProfile())
+
+    assert frame == "printwindow-frame"
+    assert printwindow.calls == 1
+    assert dxcam.calls == 0
+    assert backend.last_backend_kind == "printwindow"
+
+
 def test_dxcam_camera_creation_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
     camera = object()
     calls = 0
@@ -3818,6 +4016,113 @@ def test_ocr_window_scan_inventory_uses_ttl_cache(tmp_path: Path) -> None:
         now["value"] += 5.1
         assert manager._scan_window_inventory()[0]
         assert calls["count"] == 2
+    finally:
+        manager._shutdown_capture_worker()
+
+
+def test_ocr_window_inventory_preserves_non_windows_scanner_foreground(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    foreground = DetectedGameWindow(
+        hwnd=501,
+        title="Foreground Game",
+        process_name="Game.exe",
+        pid=7501,
+        width=1280,
+        height=720,
+        area=1280 * 720,
+        is_foreground=True,
+    )
+    background = DetectedGameWindow(
+        hwnd=502,
+        title="Background Game",
+        process_name="Game.exe",
+        pid=7502,
+        width=1280,
+        height=720,
+        area=1280 * 720,
+        is_foreground=False,
+    )
+
+    def fail_windows_foreground_api() -> int:
+        raise AssertionError("Windows foreground API should not run off Windows")
+
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_foreground_window_handle",
+        fail_windows_foreground_api,
+    )
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        platform_fn=lambda: False,
+        window_scanner=lambda: [background, foreground],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    try:
+        eligible, excluded = manager._scan_window_inventory()
+        selection = manager._select_target_window(eligible, excluded_windows=excluded)
+        assert eligible[0].hwnd == foreground.hwnd
+        assert eligible[0].is_foreground is True
+        assert selection.target is not None
+        assert selection.target.hwnd == foreground.hwnd
+        assert selection.selection_detail == "foreground_window"
+    finally:
+        manager._shutdown_capture_worker()
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_tick_skips_win32_foreground_probe_on_non_windows(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    game_window = DetectedGameWindow(
+        hwnd=501,
+        title="Foreground Game",
+        process_name="Game.exe",
+        pid=7501,
+        width=1280,
+        height=720,
+        area=1280 * 720,
+        is_foreground=True,
+    )
+
+    def fail_windows_foreground_api() -> int:
+        raise AssertionError("Windows foreground API should not run off Windows")
+
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "_foreground_window_handle",
+        fail_windows_foreground_api,
+    )
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: False,
+        window_scanner=lambda: [game_window],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    try:
+        result = await manager.tick(
+            bridge_sdk_available=False,
+            memory_reader_runtime={},
+        )
+        assert result.runtime["status"] == "active"
+        assert result.runtime["process_name"] == "Game.exe"
+        assert result.runtime["target_is_foreground"] is True
     finally:
         manager._shutdown_capture_worker()
 

@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ Marca d'água de áudio CogTTS (bipe) detectada. Para desativar a marca d'água, acesse o console Zhipu e configure-o manualmente.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "URL da API GPT-SoVITS não configurada. Ative e configure o TTS personalizado nas configurações da API.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "O URL da API GPT-SoVITS deve ser localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Chave de API de áudio (AUDIO_API_KEY) não configurada",
+        "TTS_AUDIO_API_KEY_MISSING": "A API Key do provedor de voz selecionado não está configurada. Adicione-a nas configurações de API.",
         "TTS_VOICE_NOT_REGISTERED": "Este personagem não tem voz registrada",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Parâmetros obrigatórios ausentes",
         "TTS_GPT_SOVITS_URL_REQUIRED": "O URL da API GPT-SoVITS é obrigatório",
@@ -1032,6 +1032,10 @@
             "cancel": "Cancelar",
             "continue": "Continuar salvando"
         },
+        "aliyunUsApiWarning": {
+            "title": "Aviso da API dos EUA da Alibaba",
+            "message": "Você está usando a API dos EUA da Alibaba, que não oferece suporte a TTS nem voz em tempo real. Recomendamos mudar para a API de Singapura da Alibaba."
+        },
         "conversationModelConfig": "Configuração do modelo de diálogo de texto",
         "summaryModelConfig": "Configuração resumida do modelo",
         "correctionModelConfig": "Configuração do modelo de correção",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "Vá para configurações de API",
         "noApiKeyPrompt": "Nenhuma chave API para clonagem de voz foi configurada. Você gostaria de configurar um?",
         "dismissNoApiPrompt": "Mais tarde",
-        "alibabaApiRequired": "Este recurso requer o modelo CosyVoice. Salve a chave de API do Alibaba Bailian nas configurações de chaves de API (não é necessário ativar a Assist API) ou configure um servidor de voz local.",
+        "alibabaApiRequired": "Este recurso requer o modelo Alibaba Bailian CosyVoice. Salve a chave de API do Alibaba Bailian nas configurações de chaves de API (não é necessário ativar a Assist API) ou configure um servidor de voz local.",
+        "alibabaIntlApiRequired": "Este recurso requer o modelo Alibaba International CosyVoice. Salve a chave de API do Alibaba International nas configurações de chaves de API (não é necessário ativar a Assist API).",
         "minimaxApiRequired": "Este recurso requer o modelo MiniMax (China). Salve a chave de API MiniMax nas configurações de chaves de API (não é necessário ativar a Assist API).",
         "minimaxIntlApiRequired": "Este recurso requer o modelo MiniMax (Internacional). Salve a chave de API internacional MiniMax nas configurações de chaves de API (não é necessário ativar a Assist API).",
         "providerLabel": "Provedor de clone de voz",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Internacional)",
             "elevenlabs": "ElevenLabs"
@@ -1719,6 +1725,9 @@
         "maintenanceWaitingStatus": "Esta página ficará aqui e tentará novamente automaticamente até o serviço se recuperar.",
         "maintenanceWaitingSubtitle": "Fechando. Os dados serão migrados após o fechamento e o serviço será reiniciado automaticamente.",
         "migrationPending": "Foi detectado um plano de migração inacabado. A página inicial continuará bloqueada até o serviço voltar a ficar utilizável.",
+        "openPathFailed": "Este ambiente não consegue abrir a pasta. Acesse o caminho manualmente.",
+        "openRetainedRoot": "Abrir diretório de dados antigo",
+        "openTargetRoot": "Abrir caminho ativo",
         "pickFolder": "Escolher pasta",
         "pickFolderUnavailable": "O seletor de pastas do sistema não está disponível. Digite o caminho manualmente.",
         "pickFolderFailed": "Não foi possível abrir o seletor de pastas. Digite o caminho manualmente.",
@@ -1740,6 +1749,7 @@
         "progressVerifying": "Verificando os resultados da migração",
         "progressWaitingShutdown": "Fechando",
         "rebindPreviewNotice": "O backend confirmou que o caminho original voltou a estar acessível. O app será reiniciado nesse caminho. Desta vez, nenhum dado de execução será copiado.",
+        "recommendedPath": "Caminho recomendado",
         "selectedPath": "Caminho selecionado",
         "recoveryRequired": "Foi detectado um estado de armazenamento recuperável. Confirme o local de armazenamento desta inicialização antes de continuar.",
         "recoverySourceUnavailable": "O caminho de dados original está indisponível. Reconecte-o ou mude explicitamente para o caminho padrão recomendado.",
@@ -1771,7 +1781,8 @@
         "targetFreeSpace": "Espaço livre no volume de destino",
         "targetLabel": "Caminho ativo",
         "unknownBytes": "Ainda não estimado",
-        "useCurrent": "Manter o caminho atual"
+        "useCurrent": "Manter o caminho atual",
+        "useRecommended": "Usar caminho recomendado"
     },
     "character": {
         "manager": "Gerenciador de personagens",
@@ -2456,6 +2467,7 @@
             "AGENT_PRECHECK_PENDING": "Verificação de conectividade em andamento...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API do agente não configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui não instalado",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sessão de exibição da área de trabalho indisponível",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso do navegador não instalado",
             "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use não carregado",
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use não carregado",

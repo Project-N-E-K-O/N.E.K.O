@@ -19,8 +19,10 @@ Scope:
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -170,6 +172,38 @@ def test_permanent_connectivity_reasons_set():
     assert "AGENT_ENDPOINT_NOT_CONFIGURED" in PERMANENT_CONNECTIVITY_REASONS
     # Transient must NOT be in the permanent set:
     assert "AGENT_LLM_UNREACHABLE" not in PERMANENT_CONNECTIVITY_REASONS
+
+
+def test_pyautogui_display_error_is_not_reported_as_missing(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    monkeypatch.setattr(cu_module, "pyautogui", None)
+    monkeypatch.setattr(
+        cu_module,
+        "_PYAUTOGUI_IMPORT_ERROR",
+        Exception("DisplayConnectionError: Authorization required, but no authorization protocol specified"),
+    )
+
+    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
+
+
+def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    fake_pyautogui = SimpleNamespace(size=lambda: (3840, 2400))
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pyautogui":
+            return fake_pyautogui
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(cu_module, "pyautogui", None)
+    monkeypatch.setattr(cu_module, "_PYAUTOGUI_IMPORT_ERROR", Exception("previous display failure"))
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert cu_module._load_pyautogui() is fake_pyautogui
+    assert cu_module._PYAUTOGUI_IMPORT_ERROR is None
 
 
 def test_check_connectivity_returns_tuple_on_missing_config(monkeypatch: pytest.MonkeyPatch):

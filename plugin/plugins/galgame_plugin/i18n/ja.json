@@ -68,5 +68,21 @@
   "install.dxcam.ok": "DXcam のインストールが完了しました",
   "install.dxcam.fail": "DXcam のインストールに失敗しました",
   "errors.not_configured": "galgame_plugin が設定されていません",
-  "errors.install_in_progress": "{component} のインストールはすでに進行中です"
+  "errors.install_in_progress": "{component} のインストールはすでに進行中です",
+  "entries.galgame_get_character_profile.name": "キャラクタープロフィールを取得",
+  "entries.galgame_get_character_profile.description": "指定した galgame キャラクターのプリセットプロフィールを返します。",
+  "entries.galgame_set_character_mode.name": "キャラクターモードを設定",
+  "entries.galgame_set_character_mode.description": "キャラクタープロフィールをオフまたは固定キャラクターモードに切り替えます。",
+  "entries.galgame_get_character_list.name": "galgame キャラクター一覧",
+  "entries.galgame_get_character_list.description": "現在のゲームで利用できるプリセットキャラクターを返します。",
+  "entries.galgame_import_character_data.name": "キャラクターデータをインポート",
+  "entries.galgame_import_character_data.description": "ユーザー提供のキャラクタープロフィール JSON ファイルをインポートします。",
+  "entries.galgame_get_scene_context.name": "シーンコンテキストを取得",
+  "entries.galgame_get_scene_context.description": "現在のシーン概要、重要な台詞、表示中のキャラクター、確定済み選択肢を返します。",
+  "entries.galgame_get_story_so_far.name": "ここまでの物語を取得",
+  "entries.galgame_get_story_so_far.description": "シーンをまたぐ記憶と最近の物語進行を返します。",
+  "entries.galgame_get_recent_lines.name": "最近の台詞を取得",
+  "entries.galgame_get_recent_lines.description": "最近の安定台詞と観測された候補台詞を返します。",
+  "entries.galgame_get_push_history.name": "プッシュ履歴を取得",
+  "entries.galgame_get_push_history.description": "原文台詞を含まない最近のコンテキストプッシュメタデータを返します。"
 }

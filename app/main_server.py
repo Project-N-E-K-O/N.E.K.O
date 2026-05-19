@@ -155,7 +155,10 @@ def initialize_steamworks():
         if 'logger' in globals():
             logger.info(f"Steamworks初始化成功，应用ID: {actual_app_id}")
             logger.info(f"Steam客户端运行状态: {steamworks.IsSteamRunning()}")
-            logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            try:
+                logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            except Exception as overlay_error:
+                logger.info("Steam覆盖层状态不可用，跳过覆盖层诊断: %s", overlay_error)
         
         return steamworks
     except Exception as e:
@@ -723,6 +726,19 @@ async def _handle_agent_event(event: dict):
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
+                    # Plugin-supplied direct_reply text bypasses the LLM and
+                    # speaks/types verbatim. Plugin authors may write
+                    # ``{MASTER_NAME}``/``{LANLAN_NAME}`` placeholders since
+                    # they don't know which session their text will route to;
+                    # expand here so the placeholder doesn't reach TTS/UI
+                    # literally. (See main_logic.core.apply_role_placeholders
+                    # for the contract — same helper as the LLM-injection path
+                    # so all plugin-text exits share one spelling.)
+                    detail_text = core.apply_role_placeholders(
+                        detail_text,
+                        lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                        master_name=getattr(mgr, "master_name", "") or "",
+                    )
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
@@ -870,9 +886,19 @@ async def _handle_agent_event(event: dict):
                         # return — otherwise we emit turn-end without a matching
                         # turn-start (frontend never opened the assistant
                         # lifecycle), corrupting proactive rescheduling.
+                        # Same role-placeholder contract as the direct_reply
+                        # path: blind-passthrough text reaches the chat bubble
+                        # verbatim without going through the LLM, so the
+                        # placeholder has to be expanded here or the literal
+                        # ``{MASTER_NAME}`` token would render in the bubble.
+                        passthrough_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         passthrough_dispatched = bool(
                             await mgr.passthrough_to_chat_bubble(
-                                raw_text,
+                                passthrough_text,
                                 request_id=event.get("task_id") or None,
                                 source=passthrough_source,
                             )
@@ -917,9 +943,18 @@ async def _handle_agent_event(event: dict):
                     )
                 elif _is_websocket_connected(ws):
                     try:
+                        # HUD agent_notification renders verbatim to the user;
+                        # expand role placeholders so plugin authors can write
+                        # ``"通知 {MASTER_NAME}..."`` without the literal token
+                        # showing up in the toast.
+                        notif_text = core.apply_role_placeholders(
+                            text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         notif = {
                             "type": "agent_notification",
-                            "text": text,
+                            "text": notif_text,
                             "source": "brain",
                             "status": cb_status,
                         }

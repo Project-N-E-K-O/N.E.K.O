@@ -1844,6 +1844,10 @@ position: relative;
 z-index: 2;
 }
 
+#sidebar > .menu-section:not(.character-card-cover-section) {
+transform: translateX(10px);
+}
+
 .info-text {
 font-size: 12px;
 color: #666;
@@ -4195,7 +4199,7 @@ margin-top: 10px;
     text-align: center;
     font-size: 14px;
     font-weight: 700;
-    color: #2c3e50;
+    color: #40C5F1;
     margin: 0 0 8px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -4435,6 +4439,8 @@ margin-top: 10px;
     height: 65vh;
     max-height: 80vh;
     border-radius: 12px;
+    --panel-card-face-height: clamp(360px, 56vh, 560px);
+    --panel-card-face-width: calc(var(--panel-card-face-height) * 0.75);
 }
 
 .catgirl-panel-wrapper.phase-center {
@@ -4444,7 +4450,7 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only.phase-center {
-    width: calc(65vh * 0.75);
+    width: var(--panel-card-face-width);
     height: 65vh;
 }
 
@@ -4461,7 +4467,7 @@ margin-top: 10px;
 
 /* 左侧卡面无白色边框模式 */
 .catgirl-panel-wrapper.card-only .catgirl-panel-left {
-    width: calc(65vh * 0.75);
+    width: var(--panel-card-face-width);
     padding: 0;
     border-right: none;
     background: #fafcff;
@@ -4484,8 +4490,8 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
-    width: calc(65vh * 0.75);
-    height: 65vh;
+    width: var(--panel-card-face-width);
+    height: var(--panel-card-face-height);
     border-radius: 0;
     flex-shrink: 0;
     margin: 0;
@@ -5007,8 +5013,8 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only .catgirl-panel-card-image {
-    width: calc(65vh * 0.75);
-    height: 65vh;
+    width: var(--panel-card-face-width);
+    height: var(--panel-card-face-height);
     border-radius: 0;
 }
 
@@ -5702,6 +5708,376 @@ margin-top: 10px;
     padding-bottom: 40px;
 }
 
+/* 角色卡设定页：统一左右衔接与表单网格 */
+.catgirl-panel-wrapper.card-only.phase-expand {
+    background: linear-gradient(90deg, #edf9ff 0, #f8fcff 27%, #ffffff 38%);
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
+    position: relative;
+    background:
+        linear-gradient(180deg, rgba(232, 246, 252, 0.96) 0%, rgba(248, 252, 255, 0.96) 72%, #ffffff 100%);
+    border-right: 0;
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -28px;
+    width: 28px;
+    height: 100%;
+    background: linear-gradient(90deg, rgba(35, 121, 156, 0.14), rgba(255, 255, 255, 0));
+    pointer-events: none;
+    z-index: 4;
+}
+
+.catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-right {
+    background: linear-gradient(180deg, #ffffff 0%, #fbfeff 100%);
+}
+
+.catgirl-panel-right .panel-tab-settings {
+    padding: 24px 28px 18px;
+    --settings-label-col: clamp(116px, 12vw, 148px);
+    --settings-action-col: clamp(148px, 10vw, 160px);
+    --settings-column-gap: 14px;
+}
+
+.catgirl-panel-right .panel-tab-settings form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 100%;
+    padding-bottom: 28px;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper {
+    display: grid;
+    grid-template-columns:
+        var(--settings-label-col)
+        minmax(260px, 1fr)
+        var(--settings-action-col)
+        var(--settings-action-col);
+    align-items: center;
+    column-gap: var(--settings-column-gap);
+    row-gap: 8px;
+    margin-bottom: 0;
+    padding: 0;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper label {
+    min-width: 0;
+    max-width: none;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: #27b8ea;
+    font-size: 1rem;
+    font-weight: 800;
+    line-height: 1.25;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper > label {
+    grid-column: 1;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper label::before {
+    content: '';
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    background: url('/static/icons/paw_ui.png') center / contain no-repeat;
+    opacity: 0.78;
+}
+
+.catgirl-panel-right .panel-tab-settings .profile-row label::before {
+    background-image: url('/static/icons/edit.png');
+}
+
+.catgirl-panel-right .panel-tab-settings .personality-row label::before {
+    background-image: url('/static/icons/character_icon.png');
+}
+
+.catgirl-panel-right .panel-tab-settings .voice-row label::before {
+    background-image: url('/static/icons/sound.png');
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row {
+    grid-column: 2 / 4;
+    min-height: 46px;
+    min-width: 0;
+    width: 100%;
+    border: 2px solid #aee5ff;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.catgirl-panel-right .panel-tab-settings .profile-row:not(:has(> .btn.sm)) .field-row {
+    grid-column: 2 / 5;
+}
+
+.catgirl-panel-right .panel-tab-settings .personality-row .field-row {
+    grid-column: 2;
+}
+
+.catgirl-panel-right .panel-tab-settings .custom-row .field-row,
+.catgirl-panel-right .panel-tab-settings .field-row.has-scrollbar {
+    border-radius: 18px;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row input,
+.catgirl-panel-right .panel-tab-settings .field-row select,
+.catgirl-panel-right .panel-tab-settings .field-row textarea,
+.catgirl-panel-right .panel-tab-settings .voice-select-header {
+    min-height: 38px;
+    padding: 7px 16px;
+    font-size: 0.95rem;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row textarea {
+    border-radius: 16px;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row:has(select[name="voice_id"]) {
+    flex: initial !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper > .btn.sm,
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper .btn.delete {
+    grid-column: 4;
+    justify-self: stretch;
+    justify-content: center;
+    min-width: 0;
+    width: 100%;
+    height: 42px;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding: 0 18px;
+    font-size: 0.92rem;
+    font-weight: 800;
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.18);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-select-action {
+    grid-column: 3;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action {
+    grid-column: 4;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action.btn.delete {
+    background: linear-gradient(135deg, #6bdcff, #5aa9ff);
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.2);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action.btn.delete:hover:not(:disabled) {
+    background: linear-gradient(135deg, #7fe5ff, #68b6ff);
+    box-shadow: 0 10px 22px rgba(64, 197, 241, 0.28);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action.btn.delete:active:not(:disabled) {
+    background: linear-gradient(135deg, #42c8f5, #4d9ef0);
+    box-shadow: 0 3px 8px rgba(64, 197, 241, 0.2);
+}
+
+.catgirl-panel-right .panel-tab-settings .voice-register-action {
+    padding-inline: 12px;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper .btn.delete {
+    box-shadow: 0 8px 18px rgba(255, 82, 82, 0.16);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper > .btn.sm img,
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm img,
+.catgirl-panel-right .panel-tab-settings .settings-action-row .btn.sm img {
+    width: 18px !important;
+    height: 18px !important;
+    object-fit: contain;
+    margin-right: 2px !important;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper > .btn.sm span,
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm span,
+.catgirl-panel-right .panel-tab-settings .settings-action-row .btn.sm span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.catgirl-panel-right .panel-tab-settings .btn.sm .cancel-icon {
+    width: 16px !important;
+    height: 16px !important;
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row,
+.catgirl-panel-right .panel-tab-settings .settings-action-row {
+    display: grid !important;
+    grid-template-columns:
+        var(--settings-label-col)
+        minmax(260px, 1fr)
+        var(--settings-action-col)
+        var(--settings-action-col);
+    align-items: center;
+    column-gap: var(--settings-column-gap);
+    row-gap: 8px;
+    margin: 2px 0 0 !important;
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row > div,
+.catgirl-panel-right .panel-tab-settings .settings-action-row > div {
+    display: none;
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm,
+.catgirl-panel-right .panel-tab-settings .settings-action-row .btn.sm {
+    justify-self: stretch;
+    justify-content: center;
+    min-width: 0;
+    width: 100%;
+    height: 44px;
+    padding: 0 16px;
+    margin: 0 !important;
+    font-size: 0.95rem;
+    font-weight: 800;
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.2);
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm {
+    grid-column: 4;
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-action-row .settings-save-action {
+    grid-column: 3;
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-action-row .settings-cancel-action {
+    grid-column: 4;
+}
+
+.catgirl-panel-right .panel-tab-settings .settings-action-row {
+    padding-top: 2px;
+}
+
+.catgirl-panel-right .panel-tab-settings .voice-row {
+    z-index: 5;
+}
+
+@media (max-width: 1100px) {
+    .catgirl-panel-right .panel-tab-settings {
+        --settings-label-col: minmax(96px, 124px);
+        --settings-action-col: 148px;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper {
+        grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row,
+    .catgirl-panel-right .panel-tab-settings .settings-action-row {
+        grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row,
+    .catgirl-panel-right .panel-tab-settings .profile-row:not(:has(> .btn.sm)) .field-row,
+    .catgirl-panel-right .panel-tab-settings .personality-row .field-row {
+        grid-column: 2;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper > .btn.sm,
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper .btn.delete {
+        grid-column: 2;
+        justify-self: end;
+        width: min(100%, var(--settings-action-col));
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm,
+    .catgirl-panel-right .panel-tab-settings .settings-action-row .btn.sm {
+        grid-column: 2;
+        justify-self: end;
+        width: min(100%, var(--settings-action-col));
+    }
+
+    .catgirl-panel-right .panel-tab-settings .personality-row {
+        grid-template-columns: var(--settings-label-col) minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row .field-row {
+        grid-column: 2 / 4;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-select-action,
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action {
+        width: 100%;
+        justify-self: stretch;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-select-action {
+        grid-column: 2;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action {
+        grid-column: 3;
+    }
+}
+
+@media (max-width: 768px) {
+    .catgirl-panel-right .panel-tab-settings {
+        padding: 18px 16px;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper {
+        grid-template-columns: 1fr;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row,
+    .catgirl-panel-right .panel-tab-settings .settings-action-row {
+        grid-template-columns: 1fr;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row,
+    .catgirl-panel-right .panel-tab-settings .profile-row:not(:has(> .btn.sm)) .field-row,
+    .catgirl-panel-right .panel-tab-settings .personality-row .field-row {
+        grid-column: 1;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper > .btn.sm,
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper .btn.delete {
+        grid-column: 1;
+        justify-self: stretch;
+        width: 100%;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm,
+    .catgirl-panel-right .panel-tab-settings .settings-action-row .btn.sm {
+        grid-column: 1;
+        justify-self: stretch;
+        width: 100%;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .personality-row {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > label,
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row .field-row {
+        grid-column: 1 / 3;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-select-action {
+        grid-column: 1;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action {
+        grid-column: 2;
+    }
+}
+
 /* 面板右侧滚动条样式 */
 .catgirl-panel-right .panel-tab-content::-webkit-scrollbar {
     width: 6px;
@@ -5938,8 +6314,8 @@ margin-top: 10px;
 /* ===== 卡面信息 / 角色卡操作（面板左侧） ===== */
 .card-meta-block {
     width: calc(100% - 16px);
-    margin: 8px 8px 0;
-    padding: 8px 12px;
+    margin: 10px 8px 0;
+    padding: 10px 12px;
     background: #fff;
     border: 1px solid #eaf0f6;
     border-radius: 8px;
@@ -5947,11 +6323,11 @@ margin-top: 10px;
     display: flex;
     flex-direction: column;
     justify-content: flex-start;
-    gap: 4px;
+    gap: 6px;
     box-sizing: border-box;
     flex: 1 1 auto;
-    min-height: 0;
-    font-size: 11px;
+    min-height: 104px;
+    font-size: 16px;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
@@ -5978,7 +6354,7 @@ margin-top: 10px;
 }
 
 .card-meta-title {
-    font-size: 11px;
+    font-size: 16px;
     font-weight: 700;
     color: #4a90b8;
     letter-spacing: 0.5px;
@@ -5991,7 +6367,7 @@ margin-top: 10px;
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 15px;
     color: #555;
     line-height: 1.3;
 }
@@ -6000,7 +6376,7 @@ margin-top: 10px;
     color: #888;
     flex-shrink: 0;
     min-width: 36px;
-    font-size: 10.5px;
+    font-size: 15px;
 }
 
 .card-meta-value {
@@ -6022,7 +6398,7 @@ margin-top: 10px;
     padding: 2px 6px;
     border: 1px solid #dde6ee;
     border-radius: 5px;
-    font-size: 11px;
+    font-size: 15px;
     background: #f9fcff;
     transition: border-color 0.2s, background 0.2s;
 }
@@ -6038,7 +6414,7 @@ margin-top: 10px;
     display: inline-block;
     padding: 1px 8px;
     border-radius: 10px;
-    font-size: 10.5px;
+    font-size: 14px;
     font-weight: 600;
     color: #fff;
     flex-shrink: 0;
@@ -6059,7 +6435,7 @@ margin-top: 10px;
 .card-meta-placeholder {
     text-align: center;
     color: #aaa;
-    font-size: 12px;
+    font-size: 15px;
     padding: 8px 0;
     font-style: italic;
 }
@@ -6069,7 +6445,7 @@ margin-top: 10px;
     width: calc(100% - 16px);
     margin: 6px 8px 10px;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 6px;
     box-sizing: border-box;
     flex-shrink: 0;
@@ -6102,8 +6478,8 @@ margin-top: 10px;
 }
 
 .card-panel-action-btn.export-btn {
-    background: linear-gradient(135deg, #6ec5a8, #88d4bd);
-    box-shadow: 0 2px 5px rgba(110, 197, 168, 0.3);
+    background: #40C5F1;
+    box-shadow: 0 2px 5px rgba(64, 197, 241, 0.3);
 }
 
 .card-panel-action-btn.switch-btn {
@@ -6743,4 +7119,28 @@ margin-top: 10px;
 [data-theme="dark"] .cards-container .tag {
     background: rgba(56, 189, 248, 0.16);
     color: #bae6fd;
+}
+
+[data-theme="dark"] .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left::after {
+    background: linear-gradient(90deg, rgba(3, 7, 18, 0.34), rgba(31, 42, 54, 0));
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row {
+    background: #18222c;
+    border-color: rgba(125, 211, 252, 0.24);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper label::before {
+    filter: drop-shadow(0 0 4px rgba(125, 211, 252, 0.18));
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action.btn.delete {
+    background: linear-gradient(135deg, #178fba, #2563eb);
+    box-shadow: 0 8px 18px rgba(14, 116, 144, 0.28);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action.btn.delete:hover:not(:disabled) {
+    background: linear-gradient(135deg, #1da8d8, #2f72ff);
+    box-shadow: 0 10px 22px rgba(14, 116, 144, 0.34);
 }

@@ -2227,12 +2227,16 @@ class ConfigManager:
         """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
 
         - cosyvoice: tts_custom 配置的 api_key
+        - cosyvoice_intl: ASSIST_API_KEY_QWEN_INTL（阿里国际版）
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         """
         if provider == 'cosyvoice':
             tts_config = self.get_model_api_config('tts_custom')
             key = (tts_config.get('api_key') or '').strip()
+            return key or None
+        if provider == 'cosyvoice_intl':
+            key = (self.get_cosyvoice_clone_runtime(provider).get('api_key') or '').strip()
             return key or None
         if provider in ('minimax', 'minimax_intl'):
             core_config = self.get_core_config()
@@ -2257,6 +2261,92 @@ class ConfigManager:
                 return None
             return key or None
         return None
+
+    def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
+        """返回声音克隆页显式选择的阿里国内/国际运行时配置。"""
+        normalized_provider = str(provider or 'cosyvoice').strip().lower()
+        if normalized_provider not in ('cosyvoice', 'cosyvoice_intl'):
+            normalized_provider = 'cosyvoice'
+
+        qwen_provider = 'qwen_intl' if normalized_provider == 'cosyvoice_intl' else 'qwen'
+        key_field = 'ASSIST_API_KEY_QWEN_INTL' if qwen_provider == 'qwen_intl' else 'ASSIST_API_KEY_QWEN'
+        core_config = self.get_core_config()
+        api_key = (core_config.get(key_field) or '').strip()
+
+        profile = get_assist_api_profiles().get(qwen_provider, {})
+        raw_core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
+        try:
+            file_data = self.load_json_config('core_config.json', {})
+            if isinstance(file_data, dict):
+                raw_core_cfg.update(file_data)
+        except Exception:
+            pass
+
+        base_url = self._get_saved_provider_url(
+            raw_core_cfg,
+            'assist',
+            qwen_provider,
+            profile,
+            'OPENROUTER_URL',
+            'OPENROUTER_URLS',
+        )
+        if not base_url:
+            base_url = profile.get('OPENROUTER_URL', '')
+
+        if normalized_provider == 'cosyvoice' and not api_key:
+            try:
+                legacy_tts_config = self.get_model_api_config('tts_custom')
+            except Exception:
+                legacy_tts_config = {}
+            legacy_key = (legacy_tts_config.get('api_key') or '').strip()
+            legacy_url = (legacy_tts_config.get('base_url') or '').strip()
+            if legacy_key and not (
+                'dashscope-intl.aliyuncs.com' in legacy_url
+                or 'dashscope-us.aliyuncs.com' in legacy_url
+            ):
+                api_key = legacy_key
+                if legacy_url:
+                    base_url = legacy_url
+
+        if normalized_provider == 'cosyvoice_intl' and api_key:
+            suffix = api_key[-8:] if len(api_key) >= 8 else api_key
+            storage_key = f'__COSYVOICE_INTL__{suffix}'
+        else:
+            storage_key = api_key
+
+        return {
+            'provider': normalized_provider,
+            'qwen_provider': qwen_provider,
+            'api_key': api_key,
+            'base_url': base_url,
+            'storage_key': storage_key,
+            'provider_label': '阿里国际版CosyVoice' if normalized_provider == 'cosyvoice_intl' else '阿里百炼CosyVoice',
+        }
+
+    def _get_cosyvoice_storage_keys(self) -> list[tuple[str, str]]:
+        """返回当前阿里国内/国际 API Key 对应的 voice_storage key。"""
+        voice_storage = self.load_voice_storage()
+        result: list[tuple[str, str]] = []
+        seen = set()
+
+        def _add(bucket: str, provider: str):
+            if bucket and bucket in voice_storage and bucket not in seen:
+                seen.add(bucket)
+                result.append((bucket, provider))
+
+        domestic_runtime = self.get_cosyvoice_clone_runtime('cosyvoice')
+        _add(domestic_runtime.get('storage_key', ''), 'cosyvoice')
+
+        intl_runtime = self.get_cosyvoice_clone_runtime('cosyvoice_intl')
+        intl_storage_key = intl_runtime.get('storage_key', '')
+        _add(intl_storage_key, 'cosyvoice_intl')
+
+        # 旧版国际版曾按原始 API Key 入库，存在时纳入当前视图以免音色丢失。
+        intl_raw_key = (intl_runtime.get('api_key') or '').strip()
+        if intl_raw_key and intl_raw_key != intl_storage_key:
+            _add(intl_raw_key, 'cosyvoice_intl')
+
+        return result
 
     def _get_minimax_storage_keys(self) -> list[str]:
         """返回当前 MiniMax API Key 对应的 voice_storage key 列表。
@@ -2308,6 +2398,8 @@ class ConfigManager:
             return 'minimax_intl'
         if storage_key.startswith('__MINIMAX__'):
             return 'minimax'
+        if storage_key.startswith('__COSYVOICE_INTL__'):
+            return 'cosyvoice_intl'
         return 'cosyvoice'
 
     def get_voices_for_current_api(self, for_listing: bool = False):
@@ -2317,10 +2409,10 @@ class ConfigManager:
         1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
         2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
         3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
-        结果中同时合并 MiniMax 和 ElevenLabs 音色。
+        结果中同时合并阿里国际版、MiniMax 和 ElevenLabs 音色。
 
         返回的每个 voice_data 都保证包含 ``provider`` 字段
-        （``local`` / ``minimax`` / ``minimax_intl`` / ``elevenlabs`` / ``cosyvoice``）。
+        （``local`` / ``minimax`` / ``minimax_intl`` / ``elevenlabs`` / ``cosyvoice`` / ``cosyvoice_intl``）。
 
         ``for_listing=True`` 时启用面向 UI 列表的过滤：免费版下跳过 *云端* 主分区
         （CosyVoice / Qwen），因为这些音色需付费 API Key 鉴权（运行时走
@@ -2363,11 +2455,35 @@ class ConfigManager:
                     all_voices = voice_storage.get(storage_key, {})
                     result = dict(all_voices)
 
+        cosyvoice_storage_keys = []
+        if not is_local_tts and not hide_cloud_main:
+            cosyvoice_storage_keys = self._get_cosyvoice_storage_keys()
+
         # 确保主分区音色有 provider 字段
         default_provider = self._infer_provider_from_storage_key(storage_key) if storage_key else 'cosyvoice'
+        for cosy_key, cosy_provider in cosyvoice_storage_keys:
+            if cosy_key == storage_key:
+                default_provider = cosy_provider
+                break
         for vdata in result.values():
-            if isinstance(vdata, dict) and 'provider' not in vdata:
-                vdata['provider'] = default_provider
+            if isinstance(vdata, dict):
+                if 'provider' not in vdata:
+                    vdata['provider'] = default_provider
+                elif default_provider == 'cosyvoice_intl' and vdata.get('provider') == 'cosyvoice':
+                    vdata['provider'] = 'cosyvoice_intl'
+
+        # 合并阿里国际版音色，并确保 provider 字段与分区一致
+        for ck, cosy_provider in cosyvoice_storage_keys:
+            if ck == storage_key:
+                continue
+            cosy_voices = voice_storage.get(ck, {})
+            for vid, vdata in cosy_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and (
+                        'provider' not in vdata or ck.startswith('__COSYVOICE_INTL__')
+                    ):
+                        vdata['provider'] = cosy_provider
+                    result[vid] = vdata
 
         # 合并 MiniMax 音色，并确保 provider 字段
         for mk in self._get_minimax_storage_keys():
@@ -2460,17 +2576,53 @@ class ConfigManager:
                 return (vid, vdata)
         return None
 
+    def find_cosyvoice_voice_by_audio_md5(
+        self,
+        provider: str,
+        audio_md5: str,
+        ref_language: str | None = None,
+    ):
+        """按 CosyVoice 当前与旧版存储分区查找参考音频 MD5。"""
+        runtime = self.get_cosyvoice_clone_runtime(provider)
+        storage_keys = []
+        seen = set()
+
+        def _add(storage_key: str):
+            storage_key = (storage_key or '').strip()
+            if storage_key and storage_key not in seen:
+                seen.add(storage_key)
+                storage_keys.append(storage_key)
+
+        _add(runtime.get('storage_key', ''))
+        if runtime.get('provider') == 'cosyvoice_intl':
+            # 旧版国际版曾按原始 API Key 入库，MD5 去重也必须兼容该分区。
+            _add(runtime.get('api_key', ''))
+
+        for storage_key in storage_keys:
+            existing = self.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            if existing:
+                return existing
+        return None
+
     def delete_voice_for_current_api(self, voice_id):
-        """删除当前 TTS 配置下的指定音色（含 MiniMax 音色）"""
+        """删除当前 TTS 配置下的指定音色（含独立服务商音色）"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查 MiniMax / ElevenLabs 存储
+        # 先检查带前缀的独立服务商存储
         for storage_key in list(voice_storage.keys()):
             if (
                 storage_key.startswith('__MINIMAX__')
                 or storage_key.startswith('__MINIMAX_INTL__')
                 or storage_key.startswith('__ELEVENLABS__')
+                or storage_key.startswith('__COSYVOICE_INTL__')
             ) and voice_id in voice_storage.get(storage_key, {}):
+                del voice_storage[storage_key][voice_id]
+                self.save_voice_storage(voice_storage)
+                return True
+
+        # 再检查当前阿里国内/国际 API Key 的原始分区
+        for storage_key, _provider in self._get_cosyvoice_storage_keys():
+            if voice_id in voice_storage.get(storage_key, {}):
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
@@ -2852,6 +3004,45 @@ class ConfigManager:
         base_path = pref.path.rstrip('/')
         return f"{out_scheme}://{pref.netloc}{base_path}{orig.path}"
 
+    @staticmethod
+    def _provider_url_candidates(profile: dict, url_key: str, list_key: str) -> list[str]:
+        """读取 provider 的主 URL 和候选 URL，去空去重后保持顺序。"""
+        raw_candidates = [profile.get(url_key)]
+        configured_candidates = profile.get(list_key)
+        if isinstance(configured_candidates, list):
+            raw_candidates.extend(configured_candidates)
+        elif isinstance(configured_candidates, str):
+            raw_candidates.append(configured_candidates)
+
+        result = []
+        seen = set()
+        for raw_url in raw_candidates:
+            url = str(raw_url or '').strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            result.append(url)
+        return result
+
+    def _get_saved_provider_url(
+        self,
+        core_cfg: dict,
+        scope: str,
+        provider_key: str,
+        profile: dict,
+        url_key: str,
+        list_key: str,
+    ) -> str:
+        """返回连通性测试保存过且仍属于当前 provider 候选集的 URL。"""
+        resolved_urls = core_cfg.get('resolvedProviderUrls')
+        if not isinstance(resolved_urls, dict):
+            return ''
+        saved_url = str(resolved_urls.get(f'{scope}:{provider_key}') or '').strip()
+        if not saved_url:
+            return ''
+        candidates = set(self._provider_url_candidates(profile, url_key, list_key))
+        return saved_url if saved_url in candidates else ''
+
     def get_core_config(self):
         """动态读取核心配置"""
         # 从 config 模块导入所有默认配置值
@@ -2959,6 +3150,11 @@ class ConfigManager:
         finally:
             if not isinstance(core_cfg, dict):
                 core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
+        config['RESOLVED_PROVIDER_URLS'] = (
+            dict(core_cfg.get('resolvedProviderUrls'))
+            if isinstance(core_cfg.get('resolvedProviderUrls'), dict)
+            else {}
+        )
 
         # API Keys — 仅对与 coreApi/assistApi 匹配的服务商回退到 CORE_API_KEY
         if core_cfg.get('coreApiKey'):
@@ -3049,6 +3245,11 @@ class ConfigManager:
         core_profile = core_api_profiles.get(core_api_value)
         if core_profile:
             config.update(core_profile)
+            resolved_core_url = self._get_saved_provider_url(
+                core_cfg, 'core', core_api_value, core_profile, 'CORE_URL', 'CORE_URLS'
+            )
+            if resolved_core_url:
+                config['CORE_URL'] = resolved_core_url
 
         # Assist API profile
         assist_api_value = core_cfg.get('assistApi')
@@ -3068,6 +3269,11 @@ class ConfigManager:
 
         if assist_profile:
             config.update(assist_profile)
+            resolved_assist_url = self._get_saved_provider_url(
+                core_cfg, 'assist', assist_api_value, assist_profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+            )
+            if resolved_assist_url:
+                config['OPENROUTER_URL'] = resolved_assist_url
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
@@ -3124,6 +3330,40 @@ class ConfigManager:
             # API Key 字段：根据用户选择的 provider 决定是否覆盖：
             #   - follow_core / follow_assist / ''（老配置无此字段）→ 保留上方派生的值
             #   - 具体服务商或 'custom' → 允许覆盖（空串合法，本地服务商可能不需要 key）
+            def _resolve_follow_model_url(prefix: str, provider: str) -> str:
+                """按当前 provider 重新计算 follow_* 的 URL，避免使用历史保存的旧地域。"""
+                if provider == 'follow_assist':
+                    return config.get('OPENROUTER_URL', '')
+                if provider != 'follow_core':
+                    return ''
+
+                if prefix == 'omni':
+                    return config.get('CORE_URL', '')
+
+                follow_core_profile = assist_api_profiles.get(core_api_value)
+                if isinstance(follow_core_profile, dict):
+                    resolved_url = self._get_saved_provider_url(
+                        core_cfg,
+                        'assist',
+                        core_api_value,
+                        follow_core_profile,
+                        'OPENROUTER_URL',
+                        'OPENROUTER_URLS',
+                    )
+                    return resolved_url or follow_core_profile.get('OPENROUTER_URL', '')
+
+                if isinstance(core_profile, dict):
+                    resolved_url = self._get_saved_provider_url(
+                        core_cfg,
+                        'core',
+                        core_api_value,
+                        core_profile,
+                        'CORE_URL',
+                        'CORE_URLS',
+                    )
+                    return resolved_url or core_profile.get('CORE_URL', '')
+                return ''
+
             _custom_api_fields = [
                 # (前端字段前缀, 模型config键, URL config键, API Key config键)
                 ('conversation', 'CONVERSATION_MODEL', 'CONVERSATION_MODEL_URL', 'CONVERSATION_MODEL_API_KEY'),
@@ -3168,9 +3408,14 @@ class ConfigManager:
 
                 # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
                 if not skip_url_for_follow:
-                    cfg_url = core_cfg.get(f'{prefix}ModelUrl')
-                    if cfg_url is not None:
-                        config[url_key] = cfg_url or config.get(url_key, '')
+                    if is_follow:
+                        followed_url = _resolve_follow_model_url(prefix, provider)
+                        if followed_url:
+                            config[url_key] = followed_url
+                    else:
+                        cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                        if cfg_url is not None:
+                            config[url_key] = cfg_url or config.get(url_key, '')
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
@@ -3365,13 +3610,44 @@ class ConfigManager:
         # 自定义音色(CosyVoice)的特殊回退逻辑：优先尝试用户保存的 Qwen Cosyvoice API，
         # 只有在缺少 Qwen Cosyvoice API 时才再回退到辅助 API（CosyVoice 目前是唯一支持 voice clone 的）
         if model_type == 'tts_custom':
-            qwen_api_key = (core_config.get('ASSIST_API_KEY_QWEN') or '').strip()
-            if qwen_api_key:
-                qwen_profile = get_assist_api_profiles().get('qwen', {})
+            active_assist = str(core_config.get('assistApi') or '').strip()
+            qwen_candidates = []
+            if active_assist in ('qwen', 'qwen_intl'):
+                qwen_candidates.append(active_assist)
+            qwen_candidates.extend(['qwen', 'qwen_intl'])
+
+            seen_qwen = set()
+            for qwen_provider in qwen_candidates:
+                if qwen_provider in seen_qwen:
+                    continue
+                seen_qwen.add(qwen_provider)
+                key_field = 'ASSIST_API_KEY_QWEN_INTL' if qwen_provider == 'qwen_intl' else 'ASSIST_API_KEY_QWEN'
+                qwen_api_key = (core_config.get(key_field) or '').strip()
+                if not qwen_api_key:
+                    continue
+                if qwen_provider == active_assist:
+                    base_url = core_config.get('OPENROUTER_URL', '')
+                else:
+                    qwen_profile = get_assist_api_profiles().get(qwen_provider, {})
+                    resolved_urls = core_config.get('RESOLVED_PROVIDER_URLS')
+                    resolved_core_cfg = {
+                        'resolvedProviderUrls': resolved_urls if isinstance(resolved_urls, dict) else {},
+                    }
+                    base_url = (
+                        self._get_saved_provider_url(
+                            resolved_core_cfg,
+                            'assist',
+                            qwen_provider,
+                            qwen_profile,
+                            'OPENROUTER_URL',
+                            'OPENROUTER_URLS',
+                        )
+                        or qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', ''))
+                    )
                 return {
-                    'model': core_config.get(mapping['default_model'], ''), # Placeholder only, will be overridden by the actual model
+                    'model': core_config.get(mapping['default_model'], ''), # 占位值，下游会覆盖成实际模型
                     'api_key': qwen_api_key,
-                    'base_url': qwen_profile.get('OPENROUTER_URL', core_config.get('OPENROUTER_URL', '')), # Placeholder only, will be overridden by the actual url
+                    'base_url': base_url,
                     'is_custom': False,
                 }
 

@@ -539,6 +539,71 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 > `delivery` / `ai_behavior` 只控制时机（立即起 turn / 等下次用户开口 / 完全静默），
 > 不再决定外层 prompt 的措辞。两个轴正交，组合 6 种都合理。
 
+#### 写"角色感知文本"：`{MASTER_NAME}` / `{LANLAN_NAME}` 占位符
+
+插件通过 `finish()` 的 `data.summary` / `data.detail`、`push_message()` 的
+`parts[*].text` 等渠道把字符串塞进对话 LLM 上下文（或在 `direct_reply` 时直接进
+TTS / 聊天气泡）。这些字符串里**不要硬编码** `"用户"` / `"user"` / `"master"`
+/ `"主人"` —— 会导致两个问题：
+
+- **口吻别扭**：主 AI 看到"向用户汇报…"会原样照念"向用户继续叙述"，而不是用
+  实际的 `master_name`，听感生硬、出戏。
+- **多角色失真**：每个 `LLMSessionManager` 有自己的 `lanlan_name`；一个插件
+  广播给多个角色时，硬编码会让所有角色用同一份措辞。
+
+##### 占位符契约
+
+在 `summary` / `detail` / `parts[*].text` 里直接写：
+
+| 占位符 | 替换成 |
+|---|---|
+| `{MASTER_NAME}` | 当前会话的 `master_name`（用户起的名字） |
+| `{LANLAN_NAME}` | 当前会话的角色名 |
+
+宿主在 LLM 注入点（`main_logic.core.apply_role_placeholders`）按目标 session 展
+开。**不能在插件侧自己替换**——`push_message` 的 visibility 过滤是宿主端的，
+插件不知道这条消息最终落到哪个 session，也就拿不到正确的 name。
+
+##### 例子
+
+```python
+# ✅ 推荐：让宿主按 session 展开
+await self.finish(data={
+    "summary": "立即基于最新画面向 {MASTER_NAME} 叙述刚才发生的事",
+})
+
+self.push_message(parts=[{
+    "type": "text",
+    "text": "{MASTER_NAME} 刚刚发了一条弹幕：『...』",
+}], ai_behavior="respond")
+
+# ❌ 不推荐：硬编码，口吻泛化 + 多角色失真
+await self.finish(data={"summary": "立即向用户叙述..."})
+self.push_message(parts=[{"type": "text", "text": "主人发了一条弹幕..."}], ...)
+```
+
+##### 实现细节
+
+- **替换语义是 `str.replace`，不是 `str.format`**：`detail` 里嵌 JSON 片段 /
+  代码 / 含 `{` 的用户原文都不会触发 `KeyError`。
+- **空 name 时占位符保持字面量**：宿主拿不到 name（极少见的初始化阶段）时，
+  `{MASTER_NAME}` 留在原文，不会替换成空串造成"向 ... 汇报"这种破句。
+- **拼写固定**：用 **`{MASTER_NAME}` / `{LANLAN_NAME}`**（大写、下划线、单层
+  花括号）。`prompts_chara.py` 里用的也是这套；不要写 `{master_name}` /
+  `{master}` / `{MASTER}`——那些是宿主内部模板的 `.format(...)` 占位符，不跨
+  插件边界。
+
+##### 适用范围
+
+| 渠道 | 是否展开 |
+|---|---|
+| `finish(data={"summary": ..., "detail": ...})` | ✅ |
+| `push_message(parts=[{"type": "text", ...}])` 进 LLM 上下文 | ✅ |
+| `task_result` + `direct_reply=True`（绕过 LLM 直接 TTS） | ✅ |
+| `push_message(visibility=["chat"], ai_behavior="blind")` 直进聊天气泡 | ✅ |
+| `push_message(visibility=["hud"])` HUD toast 文本 | ✅ |
+| 静态描述字段（`plugin.toml` 的 `description`、入口的 `name` 等） | ❌ 不展开（这些是给开发者 / UI 看的，不进对话渠道） |
+
 #### LLM 结果字段过滤
 
 通过 `llm_result_fields` 控制主 LLM 能看到结果中的哪些字段：

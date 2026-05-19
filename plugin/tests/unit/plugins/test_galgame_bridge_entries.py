@@ -38,15 +38,23 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_download_rapidocr_models",
         "galgame_evaluate_ocr_screen_awareness_model",
         "galgame_explain_line",
+        "galgame_get_character_list",
+        "galgame_get_character_profile",
         "galgame_get_history",
         "galgame_get_ocr_screen_awareness_snapshot",
+        "galgame_get_push_history",
+        "galgame_get_recent_lines",
+        "galgame_get_scene_context",
         "galgame_get_snapshot",
         "galgame_get_status",
+        "galgame_get_story_so_far",
+        "galgame_import_character_data",
         "galgame_install_textractor",
         "galgame_list_memory_reader_processes",
         "galgame_list_ocr_windows",
         "galgame_open_ui",
         "galgame_rollback_ocr_capture_profile",
+        "galgame_set_character_mode",
         "galgame_set_llm_vision",
         "galgame_set_memory_reader_target",
         "galgame_set_mode",
@@ -250,6 +258,121 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
     assert isinstance(agent_reply, Ok)
     assert agent_reply.value["action"] == "query_context"
     assert "scene query" in agent_reply.value["result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_story_so_far_uses_existing_scene_summaries(tmp_path: Path) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(
+            scene_memory=[
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "summary": "雪乃和主角确认放学后的约定。",
+                    "push_seq": 7,
+                },
+                {
+                    "scene_id": "scene-b",
+                    "route_id": "",
+                    "summary": "两人来到中庭，谈起接下来要调查的线索。",
+                    "push_seq": 11,
+                },
+            ]
+        )
+    )
+
+    result = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(result, Ok)
+    assert result.value["available"] is True
+    assert "雪乃和主角确认放学后的约定" in result.value["story_so_far"]
+    assert "两人来到中庭" in result.value["story_so_far"]
+    assert result.value["last_updated_seq"] == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_story_so_far_keeps_newer_recorded_summary_when_layer1_is_stale(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(
+            scene_memory=[
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "summary": "old layer1 scene summary",
+                    "push_seq": 7,
+                },
+            ]
+        )
+    )
+
+    plugin._record_story_progress_from_scene_summary(
+        scene_id="scene-a",
+        summary="new line-count progress summary",
+        push_seq=12,
+    )
+
+    result = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(result, Ok)
+    assert result.value["available"] is True
+    assert "new line-count progress summary" in result.value["story_so_far"]
+    assert "old layer1 scene summary" not in result.value["story_so_far"]
+    assert result.value["last_updated_seq"] == 12
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_story_so_far_refreshes_zero_seq_scene_summaries(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    scene_memory: list[dict[str, object]] = [
+        {
+            "scene_id": "scene-a",
+            "route_id": "",
+            "summary": "first in-memory summary without push seq",
+        },
+    ]
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(scene_memory=scene_memory)
+    )
+
+    first = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(first, Ok)
+    assert "first in-memory summary" in first.value["story_so_far"]
+    assert first.value["last_updated_seq"] == 0
+    plugin._query_rate_limits["galgame_get_story_so_far"].clear()
+
+    scene_memory.append(
+        {
+            "scene_id": "scene-b",
+            "route_id": "",
+            "summary": "second in-memory summary without push seq",
+        }
+    )
+
+    second = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(second, Ok)
+    assert "first in-memory summary" in second.value["story_so_far"]
+    assert "second in-memory summary" in second.value["story_so_far"]
+    assert second.value["last_updated_seq"] == 0
 
 
 @pytest.mark.asyncio

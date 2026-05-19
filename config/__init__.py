@@ -660,6 +660,10 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
         'CORE_MODEL': "qwen3-omni-flash-realtime",
     },
+    'qwen_intl': {
+        'CORE_URL': "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+        'CORE_MODEL': "qwen3-omni-flash-realtime",
+    },
     'glm': {
         'CORE_URL': "wss://open.bigmodel.cn/api/paas/v4/realtime",
         'CORE_MODEL': "glm-realtime-air",
@@ -697,6 +701,19 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
+        'EMOTION_MODEL': "qwen3.6-flash-2026-04-16",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
+    },
+    'qwen_intl': {
+        'OPENROUTER_URL': "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        'OPENROUTER_URLS': [
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        ],
         'CONVERSATION_MODEL' : "qwen3.6-plus",
         'SUMMARY_MODEL': "qwen3.6-plus",
         'CORRECTION_MODEL': "qwen3.6-plus",
@@ -1109,6 +1126,18 @@ MEMORY_RECHECK_MAX_ATTEMPTS = 5
 - 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
 - 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
   排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+
+MEMORY_LIVENESS_MAX_ATTEMPTS = 5
+"""LLM 终态失败 N 次后强推 progress marker / dead-letter 的统一上限。
+- 适用场景：所有"同点 input + 无 counter + LLM 永久失败 → 永久卡死"的后台
+  路径。包括 signal extraction path A/B、rebuttal feedback、persona
+  corrections resolve、fact dedup resolve、refine cluster、outbox handler。
+- 治理思路：参考 `MEMORY_RECHECK_MAX_ATTEMPTS` (schema 重判 dead-letter) 的
+  套路，把"同一 cursor / 队头 / cluster_hash / op 反复打 LLM"收敛掉，避免
+  毒窗口 / 毒 payload 让整条 pipeline 哑火。
+- 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
+- 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
+  跨过偶发 transient failure 够用；再多就属于真正 poison。"""
 
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
@@ -1600,13 +1629,20 @@ MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.12
 - 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
 - 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
 
-MINI_GAME_INVITE_COOLDOWN_SECONDS = 3600
-"""一次邀请被回应后的最小静默秒数（默认 1h）。
+MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS = 2 * 3600
+"""accept 后的最小静默秒数（默认 2h）。
 - 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
-- 上游：_mini_game_invite_in_cooldown 时间侧判定。
-- 历史：原 24h，PR follow-up #1 改成 1h —— 24h 太长、用户日常重启或重新打开
-  app 都可能跨进过该窗口又被首次打开计数器骗回 force-trigger，体感邀请密度
-  反而抖动；1h 是「一次会话内不重复打扰」的合理平衡。"""
+- 上游：_mini_game_invite_in_cooldown 时间侧判定（state.last_response_choice='accept'）。
+- 历史：原统一 1h（PR follow-up #1 从 24h 降下来），后再拆成 accept/decline 双
+  阈值——accept 体感"刚玩完一局"短一些（2h），decline 表达"不感兴趣"延长到 5h
+  避免短期复扰；之间没有 chats 门差异，10 条仍共用。"""
+
+MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS = 5 * 3600
+"""decline 后的最小静默秒数（默认 5h）。
+- 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
+- 上游：_mini_game_invite_in_cooldown 时间侧判定（state.last_response_choice='decline'）。
+- 比 accept 长是因为 decline 是明确"不想玩"信号，短期复扰体感差；5h 跨过一般
+  的"刚拒绝完几分钟又问"窗口，又不至于一整天彻底沉默。"""
 
 MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
 """新用户在第 N 次「成功投递的主动搭话」时强制触发 mini-game 邀请。
@@ -1628,7 +1664,8 @@ MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
 """一次邀请被回应后，需要再经过的"成功投递的主动搭话"次数。
-- 与 MINI_GAME_INVITE_COOLDOWN_SECONDS 同时满足才解禁；任一不满足都继续抑制。
+- 与 MINI_GAME_INVITE_COOLDOWN_AFTER_{ACCEPT,DECLINE}_SECONDS 同时满足才解禁；
+  任一不满足都继续抑制。chats 门 accept/decline 共用，不按 choice 拆。
 - 上游：_mini_game_invite_in_cooldown 计数侧判定。"""
 
 MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
@@ -1975,7 +2012,8 @@ __all__ = [
     'PROACTIVE_CHAT_HISTORY_MAX',
     'MINI_GAME_INVITE_ENABLED',
     'MINI_GAME_INVITE_TRIGGER_PROBABILITY',
-    'MINI_GAME_INVITE_COOLDOWN_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS',
     'MINI_GAME_INVITE_COOLDOWN_CHATS',
     'MINI_GAME_INVITE_NEW_USER_FORCE_AT',
     'MINI_GAME_INVITE_AVAILABLE_GAMES',
