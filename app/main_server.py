@@ -1491,6 +1491,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
+from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state # noqa
 
 
@@ -1541,6 +1542,7 @@ app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
+app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）
 app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
@@ -2027,6 +2029,14 @@ async def on_startup():
                     _last = _now
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
+
+        # 诊断观测 watchdog：5-min 周期采集 counter 写内存 ring buffer，
+        # NEKO_DEBUG_HEALTH_LOG=1 时同时落盘 jsonl。详见 main_routers/debug_router.py。
+        # 无条件启动 —— 单 task + 5-min 周期，开销远低于 heartbeat。
+        try:
+            _start_debug_health_watchdog()
+        except Exception as _e:
+            logger.debug(f"[debug_health] start watchdog failed: {_e}")
 
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
