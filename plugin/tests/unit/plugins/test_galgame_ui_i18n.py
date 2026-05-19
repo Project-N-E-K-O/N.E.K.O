@@ -72,6 +72,7 @@ def test_rapidocr_language_buttons_use_full_i18n_keys() -> None:
     assert "ui.install.rapidocr.lang.ch_short" not in html
     assert "ui.install.rapidocr.lang.japan_short" not in html
     assert "ui.install.rapidocr.lang.korean_short" not in html
+    assert "ui.install.rapidocr.lang.en_short" not in html
 
 
 def test_galgame_ui_i18n_zh_tw_route_locale_normalization() -> None:
@@ -198,6 +199,9 @@ def test_tutorial_store_keeps_runtime_store_when_legacy_merge_is_invalid(
 
     assert store._store_path == runtime_path
     assert store._store_path != legacy_path
+    assert json.loads(runtime_path.read_text(encoding="utf-8")) == {
+        "tutorial_progress": {"completed": False},
+    }
 
 
 def test_tutorial_store_uses_legacy_store_when_migration_fails(
