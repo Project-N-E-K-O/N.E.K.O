@@ -48,7 +48,7 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 |------|------|------|
 | `ws_url` | `ws://localhost:48909` | agent server WebSocket 地址 |
 | `reconnect_interval_seconds` | `5.0` | WS 断开后等待多久重连 |
-| `task_timeout_seconds` | `25.0` | `minecraft_task` 单次调用最长等待 agent 完成的秒数；超时返回 `{status: "timeout"}` 给 LLM |
+| `task_timeout_seconds` | `120.0` | `minecraft_task` 单次调用最长等待 agent 完成的秒数；超时返回 `{status: "timeout"}` 给 LLM。默认 120s 给 mine/craft 类多步动作留余量（实测 60–90s 较常见）；先前 25s 默认在挖矿场景下普遍误超时 |
 | `system_prompt_interval_seconds` | `5.0` | 自动 nudge 循环的最小间隔；不影响 `main_server` 自身的对话节奏控制 |
 | `skip_system_prompt_if_busy` | `true` | 任务进行中跳过 nudge，避免堆叠 |
 | `stream_screenshots_to_llm` | `true` | 收到 agent 截图就立即 push 到模型视觉上下文（`ai_behavior="read"`） |

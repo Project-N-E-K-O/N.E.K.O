@@ -202,6 +202,7 @@ class OmniRealtimeClient:
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,
         on_new_message: Optional[Callable[[], Awaitable[None]]] = None,
+        on_sid_rotate: Optional[Callable[[], Awaitable[None]]] = None,
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
         on_output_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_connection_error: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -225,6 +226,7 @@ class OmniRealtimeClient:
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
         self.on_new_message = on_new_message
+        self.on_sid_rotate = on_sid_rotate
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
         self.turn_detection_mode = turn_detection_mode
@@ -372,9 +374,14 @@ class OmniRealtimeClient:
         self._is_gemini = self._api_type.lower() == 'gemini'
 
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
-        # Gemini (direct) and lanlan.app+free (Gemini proxy) do NOT have server VAD
-        self._has_server_vad = not self._is_gemini and not (
-            'lanlan.app' in (base_url or '') and 'free' in self._model_lower
+        # Gemini (direct), lanlan.app+free (Gemini proxy), 以及 livestream 模式
+        # （主播自建 server_prefix 上游同样是 Gemini 系，不发 OpenAI 协议的 VAD 帧）
+        # 一律按"无 server VAD"处理。否则 handle_messages 走不到 speech_stopped
+        # 那条 on_new_message 路径，多轮对话 sid 不轮换，TTS 在 turn 2 起静音。
+        self._has_server_vad = (
+            not self._is_gemini
+            and not ('lanlan.app' in (base_url or '') and 'free' in self._model_lower)
+            and not bool(livestream_mode)
         )
 
         # Whether this client supports native image input
@@ -623,10 +630,10 @@ class OmniRealtimeClient:
     
     async def clear_audio_buffer(self):
         """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
-        clear_event = {
-            "type": "input_audio_buffer.clear"
-        }
-        await self.send_event(clear_event)
+        if self._is_gemini:
+            logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
+            return
+        await self.send_event({"type": "input_audio_buffer.clear"})
         logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
@@ -2076,6 +2083,19 @@ class OmniRealtimeClient:
                     self._image_sent_this_turn = False
                     if self.on_response_done:
                         await self.on_response_done()
+                    # No-server-VAD providers (Gemini-proxy: lanlan.app+free /
+                    # livestream) never emit input_audio_buffer.speech_stopped,
+                    # so handle_messages' on_new_message path on speech_stopped
+                    # never fires and current_speech_id never rotates between
+                    # turns. Without rotation, TTS upstream silently drops text
+                    # after the first tts.response.done closes the initial sid.
+                    # Hook here at response.done (Gemini's turn_complete, the
+                    # only reliable end-of-AI-turn signal in those proxies) and
+                    # call the lightweight rotate-only path — full
+                    # handle_new_message would clip trailing TTS audio and
+                    # mis-fire USER_INPUT (no user input actually happened).
+                    if not self._has_server_vad and self.on_sid_rotate:
+                        await self.on_sid_rotate()
                 elif event_type == "response.created":
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()

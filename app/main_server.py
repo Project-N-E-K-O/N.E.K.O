@@ -86,7 +86,8 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
 
-logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
+_main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
+logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
 
 if _IS_MAIN_PROCESS:
     _ssl_precheck = probe_ssl_environment()

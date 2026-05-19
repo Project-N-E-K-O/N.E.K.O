@@ -750,12 +750,6 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         llm_near_match_cache_ttl_seconds=_coerce_float(
             llm_obj.get("llm_near_match_cache_ttl_seconds"), 15.0, minimum=0.0
         ),
-        llm_temperature_agent_reply=_coerce_float(
-            llm_obj.get("temperature_agent_reply"), 0.2, minimum=0.0
-        ),
-        llm_temperature_default=_coerce_float(
-            llm_obj.get("temperature_default"), 0.0, minimum=0.0
-        ),
         llm_max_tokens_agent_reply=_coerce_int(
             llm_obj.get("max_tokens_agent_reply"), 900, minimum=1
         ),

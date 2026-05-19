@@ -333,7 +333,7 @@ class GalgameStore:
     def persist_context_snapshot(self, snapshot: dict[str, Any]) -> None:
         payload = self._sanitize_context_snapshot(snapshot)
         if not payload:
-            self._logger.warning("invalid context snapshot dropped: bad schema")
+            self._logger.warning("invalid saved snapshot dropped: bad schema")
             return
         self._write(STORE_CONTEXT_SNAPSHOT, payload)
 
