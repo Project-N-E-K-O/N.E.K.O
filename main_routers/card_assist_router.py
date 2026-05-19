@@ -183,20 +183,22 @@ async def clarify(request: Request):
                              "raw": content[:500]}, status_code=502)
 
     # Normalize: clamp options, fill missing flags.
+    # NOTE: do not name the loop var `q` — the async-blocking linter heuristically
+    # flags `q.get(...)` as a queue.Queue.get() call and fails CI.
     normalized = []
-    for idx, q in enumerate(questions[:4]):
-        if not isinstance(q, dict):
+    for idx, qd in enumerate(questions[:4]):
+        if not isinstance(qd, dict):
             continue
-        qid = str(q.get("id") or f"q{idx+1}").strip() or f"q{idx+1}"
-        label = str(q.get("label") or "").strip()
+        qid = str(qd.get("id") or f"q{idx+1}").strip() or f"q{idx+1}"
+        label = str(qd.get("label") or "").strip()
         if not label:
             continue
-        header = str(q.get("header") or label[:8]).strip()
-        opts = q.get("options") or []
+        header = str(qd.get("header") or label[:8]).strip()
+        opts = qd.get("options") or []
         if not isinstance(opts, list):
             opts = []
         clean_opts = [str(o).strip() for o in opts if str(o).strip()][:4]
-        allow_custom = bool(q.get("allowCustom", True))
+        allow_custom = bool(qd.get("allowCustom", True))
         normalized.append({
             "id": qid,
             "header": header,
