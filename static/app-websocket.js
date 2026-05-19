@@ -2109,12 +2109,6 @@
                             if (directPid !== undefined && directPid !== null && String(directPid) === expected) {
                                 return true;
                             }
-                            var sourceId = String(source.id || '');
-                            if (sourceId === expected) return true;
-                            var tokens = sourceId.split(/[^0-9A-Za-z]+/);
-                            for (var idx = 0; idx < tokens.length; idx++) {
-                                if (tokens[idx] === expected) return true;
-                            }
                             return false;
                         };
                         var sourceIdMatchesTarget = function (source, targetValue) {

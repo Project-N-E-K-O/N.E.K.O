@@ -80,6 +80,21 @@ def test_capture_bridge_renderer_uses_exact_target_id_source_matching():
     assert use_matcher_index < title_fallback_index
 
 
+def test_capture_bridge_renderer_pid_matching_ignores_source_id_tokens():
+    source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
+    pid_matcher_index = source.index("var sourcePidMatches = function")
+    target_matcher_index = source.index("var sourceIdMatchesTarget = function", pid_matcher_index)
+    pid_matcher_source = source[pid_matcher_index:target_matcher_index]
+    pid_match_index = source.index("sourcePidMatches(sources[j], pidStr)", target_matcher_index)
+    title_fallback_index = source.index("name.indexOf(lowerTitle)", pid_match_index)
+
+    assert "source.id" not in pid_matcher_source
+    assert "sourceId" not in pid_matcher_source
+    assert "tokens" not in pid_matcher_source
+    assert "source.pid || source.processId || source.ownerPid" in pid_matcher_source
+    assert pid_match_index < title_fallback_index
+
+
 def test_capture_bridge_renderer_normalises_structured_capture_results_before_response():
     source = APP_WEBSOCKET_JS.read_text(encoding="utf-8")
     normalizer_index = source.index("var normalizeCaptureBridgeImage = function")
