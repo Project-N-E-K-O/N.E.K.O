@@ -126,17 +126,31 @@ async def _invoke_assist(prompt: str) -> tuple[str | None, dict | None]:
     return content, None
 
 
+# 系统保留字段，对 LLM 来说都是噪声 / 不属于「角色设定」的部分：
+#   - "档案名"：表单上的元数据 input 的固定 name（见 character_card_manager.js
+#     里 `form.querySelector('input[name="档案名"]')`），是写死的中文 literal 而
+#     非按 locale 翻译的字段，所以这里也用中文 literal。
+#   - live2d / live3d / vrm / mmd：模型文件配置
+#   - voice_id / model_type / system_prompt：运行时配置 / 系统提示词
+# `_*` 前缀（如 `_reserved`）也一并跳过。
+_RESERVED_CARD_FIELDS: frozenset[str] = frozenset({
+    "档案名",
+    "live2d", "live3d", "vrm", "mmd",
+    "voice_id", "model_type", "system_prompt",
+})
+
+
+def _is_reserved_card_field(key: Any) -> bool:
+    s = str(key)
+    return s.startswith("_") or s in _RESERVED_CARD_FIELDS
+
+
 def _format_card_for_prompt(card: Any, max_chars: int = 1200) -> str:
     """Render the existing card dict as compact JSON for prompt injection.
     Truncates very long cards so we don't blow the token budget."""
     if not isinstance(card, dict):
         return "{}"
-    # Strip system-reserved keys; they're noise for the LLM.
-    filtered = {k: v for k, v in card.items()
-                if not str(k).startswith("_") and k not in ("live2d", "live3d", "vrm",
-                                                              "mmd", "voice_id",
-                                                              "system_prompt",
-                                                              "model_type")}
+    filtered = {k: v for k, v in card.items() if not _is_reserved_card_field(k)}
     try:
         text = json.dumps(filtered, ensure_ascii=False, indent=2)
     except Exception:
@@ -167,18 +181,15 @@ def _resolve_target_keys(payload: Dict[str, Any], lang: str,
     """
     raw = payload.get("target_field_keys")
     if isinstance(raw, list) and raw:
-        keys = [str(x).strip() for x in raw if str(x).strip()]
+        keys = [str(x).strip() for x in raw
+                if str(x).strip() and not _is_reserved_card_field(x)]
         if keys:
             return keys
     if isinstance(current_card, dict) and current_card:
         keys = [
             str(k).strip()
             for k in current_card.keys()
-            if str(k).strip()
-            and not str(k).startswith("_")
-            and str(k) not in {"live2d", "live3d", "vrm", "mmd",
-                               "voice_id", "system_prompt", "model_type",
-                               "档案名"}
+            if str(k).strip() and not _is_reserved_card_field(k)
         ]
         if keys:
             return keys
