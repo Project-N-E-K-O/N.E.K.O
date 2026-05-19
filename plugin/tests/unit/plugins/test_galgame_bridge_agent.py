@@ -236,9 +236,41 @@ async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
 
     assert response["cat_opinion"]["opinion"] == "Prefer the right path for now."
     assert shared["cat_opinions"][0]["reason"] == "choice"
+    assert agent._cat_opinions[0]["opinion"] == "Prefer the right path for now."
     assert pending["status"] == "acked"
     assert pending["metadata"]["cat_opinion_recorded"] is True
     assert len(fake_gateway.reply_calls) == 1
+
+    choices = [
+        {"choice_id": "choice-1", "text": "left", "index": 0, "enabled": True},
+        {"choice_id": "choice-2", "text": "right", "index": 1, "enabled": True},
+    ]
+    next_snapshot = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Choose now.",
+            scene_id="scene-a",
+            line_id="line-2",
+            choices=choices,
+            is_menu_open=True,
+        ),
+    )
+    agent._planning_choice_signature = (
+        ("choice-1", "left", 0),
+        ("choice-2", "right", 1),
+    )
+
+    await agent._run_choice_planning_inline(
+        next_snapshot,
+        context={},
+        now=time.monotonic(),
+    )
+
+    assert "cat_opinions" not in next_snapshot
+    assert (
+        "Prefer the right path"
+        in fake_gateway.suggest_calls[-1]["cat_opinion_context"]
+    )
 
 
 @pytest.mark.asyncio

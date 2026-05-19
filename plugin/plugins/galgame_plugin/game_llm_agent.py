@@ -11,6 +11,7 @@ from .agent_consultation import (
     CONSULT_REASON_CHOICE,
     CONSULT_REASON_SCENE_CHANGE,
     ConsultInputs,
+    MAX_CAT_OPINIONS,
     build_consult_prompt,
     decide_consultation,
     inject_cat_opinion,
@@ -741,6 +742,7 @@ class GameLLMAgent:
         self._last_cat_consult_ts: float = 0.0
         self._lines_seen_for_consult: int = 0
         self._last_consult_seen_line_count: int = 0
+        self._cat_opinions: list[dict[str, Any]] = []
         self._push_seq_counter: int = 0
         self._cross_scene_memory_dirty: bool = False
         self._push_composer = PushComposer(logger=self._logger)
@@ -1095,6 +1097,7 @@ class GameLLMAgent:
         self._observed_session_id = ""
         self._observed_session_fingerprint = {}
         self._reset_consult_state()
+        self._cat_opinions.clear()
         self._last_session_transition_type = ""
         self._last_session_transition_reason = ""
         self._last_session_transition_fields = {}
@@ -3674,15 +3677,43 @@ class GameLLMAgent:
         shared: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        rendered = render_cat_opinions_for_strategy(shared)
+        cat_opinions = self._cat_opinion_snapshot(shared)
+        if not cat_opinions:
+            return context
+        local_shared = dict(shared)
+        local_shared["cat_opinions"] = cat_opinions
+        rendered = render_cat_opinions_for_strategy(local_shared)
         if not rendered:
             return context
         enriched = dict(context)
         enriched["cat_opinion_context"] = rendered
-        queue = shared.get("cat_opinions")
-        if isinstance(queue, list):
-            enriched["cat_opinions"] = json_copy(queue)
+        enriched["cat_opinions"] = json_copy(cat_opinions)
         return enriched
+
+    def _cat_opinion_snapshot(self, shared: dict[str, Any]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        shared_queue = shared.get("cat_opinions")
+        sources = []
+        if isinstance(shared_queue, list):
+            sources.append(shared_queue)
+        sources.append(self._cat_opinions)
+        for source in sources:
+            for entry in source:
+                if not isinstance(entry, dict):
+                    continue
+                item = dict(entry)
+                key = (
+                    str(item.get("opinion") or ""),
+                    str(item.get("scene_id") or ""),
+                    str(item.get("reason") or ""),
+                    str(item.get("ts") or ""),
+                )
+                if not key[0] or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        return json_copy(merged[-MAX_CAT_OPINIONS:])
 
     def _apply_pending_cat_consultation_reply(
         self,
@@ -4645,6 +4676,7 @@ class GameLLMAgent:
                 self._cancel_summary_tasks()
                 self._scene_tracker.reset(scene_id=str(snapshot.get("scene_id") or ""))
                 self._summary_debug.clear()
+                self._cat_opinions.clear()
                 self._last_delivered_summary_key = ""
                 self._last_delivered_summary_seq = 0
                 self._last_delivered_summary_scene_id = ""
@@ -6835,9 +6867,12 @@ class GameLLMAgent:
     ) -> dict[str, Any] | None:
         """Public entry point so the plugin's inbound handler can route a cat
         reply into ``shared['cat_opinions']``. Idempotent on empty input."""
+        opinion_state = {"cat_opinions": json_copy(self._cat_opinions)}
         record = inject_cat_opinion(
-            shared, opinion=opinion, scene_id=scene_id, reason=reason
+            opinion_state, opinion=opinion, scene_id=scene_id, reason=reason
         )
+        self._cat_opinions = json_copy(opinion_state.get("cat_opinions") or [])
+        shared["cat_opinions"] = json_copy(self._cat_opinions)
         return record.to_dict() if record is not None else None
 
     def _maybe_update_cross_scene_memory(
