@@ -1187,11 +1187,15 @@
     // → 用户在切语音的瞬间看到一条"Text generation interrupted (ReadError)"。
     // gal 模式点选项后紧跟着点麦克风时最容易踩。15s 兜底，防止卡死的流永远不结束。
     function isAssistantTextResponseInFlight() {
-        return !!(
-            S.assistantTurnId ||
-            S.assistantTurnAwaitingBubble ||
-            (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId)
-        );
+        // 与 _isGreetingCheckBlocked (app-websocket.js:2889) 对齐：turn-end 后
+        // assistantTurnId 不会被清空（要等下一条用户消息或角色切换才清），
+        // 必须靠 assistantTurnCompletedId 区分"已收尾"和"还在跑"。
+        // 否则"回复跑完，用户停顿一会儿再点麦克风"会被误判成在路上，
+        // 干等到 15s timeout 才进语音。
+        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        if (S.assistantTurnAwaitingBubble) return true;
+        if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
+        return false;
     }
 
     function waitForAssistantTurnEnd(timeoutMs) {
