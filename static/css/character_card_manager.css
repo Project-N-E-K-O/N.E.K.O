@@ -6954,7 +6954,7 @@ margin-top: 10px;
     color: #1f2937;
     font-size: 14px;
     padding-top: 4px;
-    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .card-assist-row-values {
@@ -6971,7 +6971,7 @@ margin-top: 10px;
     background: #f9fafb;
     border-radius: 6px;
     line-height: 1.5;
-    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .card-assist-row-original-tag {

@@ -158,15 +158,24 @@ async def _invoke_assist(prompt: str) -> tuple[str | None, dict | None]:
     llm, err = _build_assist_llm()
     if err is not None:
         return None, err
+    # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
+    # 已经拿到的 resp 当成 llm_call_failed 丢掉。
     try:
-        try:
-            resp = await llm.ainvoke(prompt)
-        finally:
-            await llm.aclose()
+        resp = await llm.ainvoke(prompt)
     except Exception as exc:
         logger.warning("card-assist: LLM ainvoke failed: %s", exc)
+        try:
+            await llm.aclose()
+        except Exception as close_exc:
+            logger.warning("card-assist: LLM aclose after ainvoke failure: %s",
+                           close_exc)
         return None, {"success": False, "error": "llm_call_failed",
                       "message": str(exc)}
+    try:
+        await llm.aclose()
+    except Exception as close_exc:
+        # aclose 失败不要影响这一次的结果，下次请求会拿新 client。
+        logger.warning("card-assist: LLM aclose failed (ignored): %s", close_exc)
     content = (getattr(resp, "content", None) or "").strip()
     if not content:
         return None, {"success": False, "error": "llm_empty_response"}
@@ -396,10 +405,12 @@ async def generate(request: Request):
                              "raw": content[:500]}, status_code=502)
 
     # Coerce every value to a non-empty string; drop empties.
+    # 同时挡掉模型可能误吐回来的保留字段（"档案名"/"voice_id"/...），否则前端
+    # 按 textarea[name=] 回写时会污染元数据/运行配置而不是普通角色设定。
     cleaned: Dict[str, str] = {}
     for k, v in fields.items():
         key = str(k).strip()
-        if not key or key.startswith("_"):
+        if not key or _is_reserved_card_field(key):
             continue
         if isinstance(v, (list, tuple)):
             val = ", ".join(str(x).strip() for x in v if str(x).strip())
@@ -433,6 +444,12 @@ async def refine(request: Request):
     field_key = str(body.get("field_key") or "").strip()
     if not field_key:
         return JSONResponse({"success": False, "error": "field_key_required"},
+                            status_code=400)
+    # field_key 直接来自请求体，要和 _format_card_for_prompt / generate 的
+    # 清洗保持一致 —— 别让客户端绕过来 refine "档案名"/"voice_id"/"system_prompt"。
+    if _is_reserved_card_field(field_key):
+        return JSONResponse({"success": False, "error": "field_key_reserved",
+                             "message": f"field_key '{field_key}' is reserved"},
                             status_code=400)
     instruction = str(body.get("instruction") or "").strip()
     if not instruction:

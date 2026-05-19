@@ -10344,6 +10344,7 @@ async function openCardAssistWizard(form, originalName, isNew) {
         originalSnapshot: {},   // current form values keyed by field name
         targetFieldKeys: [],    // form 上所有可见字段 name，按出现顺序去重
         selected: {},           // {fieldKey: bool}
+        pendingRefines: new Set(),  // 进行中的字段微调 Promise，Apply 前必须 await 完
     };
     state.originalSnapshot = _cardAssistCollectCurrentFormData(form);
     state.targetFieldKeys = _cardAssistCollectFieldKeys(form);
@@ -10599,6 +10600,11 @@ function _cardAssistRenderStep3(shell, state, form, originalName, isNew) {
             }
             _cardAssistSetBusy(shell.footer, true);
             try {
+                // 等所有未完成的 refine 跑完再把 state.generated 落库 ——
+                // 避免 "我点了更傲娇又秒点应用并保存，落库的反而是微调前的值"。
+                if (state.pendingRefines && state.pendingRefines.size) {
+                    await Promise.allSettled(Array.from(state.pendingRefines));
+                }
                 _cardAssistApplyToForm(form, state.generated, selectedKeys, originalName, isNew);
                 // 触发保存：新建态需要有档案名，否则只能提示用户后退出，
                 // 不能继续走 success 流程否则用户会以为已落库。
@@ -10738,33 +10744,44 @@ async function _cardAssistRefineField(key, instruction, row, state) {
     if (!row || row.dataset.busy === '1') return;
     row.dataset.busy = '1';
     row.classList.add('card-assist-row-busy');
+    // 把任务塞进 state.pendingRefines，Apply 流程会等所有 pending refine 跑完
+    // 才把 state.generated 落库；否则用户点完"更傲娇"立刻"应用并保存"，
+    // 落库的还是微调前的旧值，但向导里 textarea 一会儿又变成新值，UI 和保存
+    // 结果就分叉了。
+    const task = (async function () {
+        try {
+            const ctx = Object.assign({}, state.originalSnapshot, state.generated);
+            const resp = await _cardAssistFetch('/api/card-assist/refine', {
+                field_key: key,
+                instruction: instruction,
+                current_card: ctx,
+                locale: _cardAssistCurrentLocale(),
+            });
+            const newVal = resp.value || '';
+            state.generated[key] = newVal;
+            const editor = row.querySelector('.card-assist-row-new');
+            if (editor) {
+                editor.value = newVal;
+                _cardAssistAutoResize(editor);
+            }
+        } catch (err) {
+            console.warn('[card-assist] refine failed:', err);
+            if (typeof showAlertDialog === 'function') {
+                showAlertDialog(
+                    _cardAssistT('character.aiAssistRefineFailed', '微调失败：') + (err && err.message || err),
+                    { type: 'error' }
+                );
+            }
+        } finally {
+            row.dataset.busy = '0';
+            row.classList.remove('card-assist-row-busy');
+        }
+    })();
+    if (state && state.pendingRefines) state.pendingRefines.add(task);
     try {
-        // 把当前已生成的内容当作 current_card 传过去，让单字段重生有上下文
-        const ctx = Object.assign({}, state.originalSnapshot, state.generated);
-        const resp = await _cardAssistFetch('/api/card-assist/refine', {
-            field_key: key,
-            instruction: instruction,
-            current_card: ctx,
-            locale: _cardAssistCurrentLocale(),
-        });
-        const newVal = resp.value || '';
-        state.generated[key] = newVal;
-        const editor = row.querySelector('.card-assist-row-new');
-        if (editor) {
-            editor.value = newVal;
-            _cardAssistAutoResize(editor);
-        }
-    } catch (err) {
-        console.warn('[card-assist] refine failed:', err);
-        if (typeof showAlertDialog === 'function') {
-            showAlertDialog(
-                _cardAssistT('character.aiAssistRefineFailed', '微调失败：') + (err && err.message || err),
-                { type: 'error' }
-            );
-        }
+        await task;
     } finally {
-        row.dataset.busy = '0';
-        row.classList.remove('card-assist-row-busy');
+        if (state && state.pendingRefines) state.pendingRefines.delete(task);
     }
 }
 
