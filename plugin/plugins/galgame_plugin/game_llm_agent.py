@@ -730,6 +730,7 @@ class GameLLMAgent:
         self._pending_choice_advice: dict[str, Any] | None = None
         self._summary_tasks: set[asyncio.Task[bool]] = set()
         self._summary_task_meta: dict[asyncio.Task[bool], dict[str, Any]] = {}
+        self._consultation_tasks: set[asyncio.Task[bool]] = set()
         self._summary_generation = 0
         self._summary_debug: dict[str, Any] = {}
         self._failure_memory: list[dict[str, Any]] = []
@@ -921,6 +922,23 @@ class GameLLMAgent:
         self._summary_tasks.clear()
         self._summary_task_meta.clear()
 
+    async def _cancel_consultation_tasks(self) -> None:
+        if not self._consultation_tasks:
+            return
+        current = asyncio.current_task()
+        tasks = [
+            task
+            for task in list(self._consultation_tasks)
+            if task is not current
+        ]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            self._consultation_tasks.discard(task)
+
     @staticmethod
     def _summary_delivery_key(
         *,
@@ -1090,6 +1108,7 @@ class GameLLMAgent:
         self._last_interruption = {}
         self._pending_choice_advice = None
         self._cancel_summary_tasks()
+        await self._cancel_consultation_tasks()
         self._failure_memory.clear()
         self._recent_local_inputs.clear()
         self._virtual_mouse_stats.clear()
@@ -1410,6 +1429,7 @@ class GameLLMAgent:
             self._planning_task.cancel()
             await asyncio.gather(self._planning_task, return_exceptions=True)
             self._planning_task = None
+        await self._cancel_consultation_tasks()
         self._planning_candidates = []
         self._planning_choice_signature = ()
         self._planning_started_at = 0.0
@@ -3642,9 +3662,16 @@ class GameLLMAgent:
             "selected_choice": json_copy(selected),
         }
 
-    def _pending_cat_consultation_message(self) -> dict[str, Any] | None:
+    def _pending_cat_consultation_message(
+        self,
+        *,
+        message_id: str = "",
+    ) -> dict[str, Any] | None:
+        target_id = str(message_id or "").strip()
         for outbound in reversed(self._outbound_messages):
             if str(outbound.get("kind") or "") != "cat_consultation":
+                continue
+            if target_id and str(outbound.get("message_id") or "") != target_id:
                 continue
             if str(outbound.get("acked_at") or ""):
                 continue
@@ -3653,24 +3680,22 @@ class GameLLMAgent:
             return outbound
         return None
 
-    @staticmethod
     def _is_explicit_cat_consultation_reply(
+        self,
         inbound: dict[str, Any],
-        pending: dict[str, Any] | None,
-    ) -> bool:
-        if pending is None:
-            return False
+    ) -> dict[str, Any] | None:
         metadata = inbound.get("metadata") if isinstance(inbound.get("metadata"), dict) else {}
         reply_to = str(metadata.get("reply_to_message_id") or "").strip()
-        pending_id = str(pending.get("message_id") or "").strip()
-        if reply_to and pending_id and reply_to == pending_id:
-            return True
+        if reply_to:
+            return self._pending_cat_consultation_message(message_id=reply_to)
         sender_role = str(metadata.get("sender_role") or "").strip().lower()
-        return bool(metadata.get("consultation_reply")) and sender_role in {
+        if bool(metadata.get("consultation_reply")) and sender_role in {
             "cat",
             "catgirl",
             "character",
-        }
+        }:
+            return self._pending_cat_consultation_message()
+        return None
 
     def _with_cat_opinions_for_strategy(
         self,
@@ -4581,6 +4606,18 @@ class GameLLMAgent:
         try:
             await self._interrupt_for_inbound_message(inbound)
             self._recover_retryable_error_if_ready(time.monotonic())
+            pending_consultation = self._is_explicit_cat_consultation_reply(inbound)
+            if pending_consultation is not None:
+                consultation_payload = self._apply_pending_cat_consultation_reply(
+                    shared,
+                    message=message,
+                    pending=pending_consultation,
+                )
+                if consultation_payload is not None:
+                    self._mark_message(inbound, status="completed", delivered=True)
+                    consultation_payload["message"] = json_copy(inbound)
+                    return consultation_payload
+
             control_payload = self._handle_low_frequency_control_message(shared, message=message)
             if control_payload is not None:
                 self._mark_message(inbound, status="completed", delivered=True)
@@ -4592,18 +4629,6 @@ class GameLLMAgent:
                 self._mark_message(inbound, status="completed", delivered=True)
                 choice_payload["message"] = json_copy(inbound)
                 return choice_payload
-
-            pending_consultation = self._pending_cat_consultation_message()
-            if self._is_explicit_cat_consultation_reply(inbound, pending_consultation):
-                consultation_payload = self._apply_pending_cat_consultation_reply(
-                    shared,
-                    message=message,
-                    pending=pending_consultation,
-                )
-                if consultation_payload is not None:
-                    self._mark_message(inbound, status="completed", delivered=True)
-                    consultation_payload["message"] = json_copy(inbound)
-                    return consultation_payload
 
             reply_context = self._build_agent_reply_context(shared, prompt=message)
             status_snapshot = self._compute_status(shared)
@@ -6839,8 +6864,11 @@ class GameLLMAgent:
             )
 
         def _advance_consult_state(task: asyncio.Task[bool]) -> None:
+            self._consultation_tasks.discard(task)
             try:
                 delivered = bool(task.result())
+            except asyncio.CancelledError:
+                return
             except Exception as exc:  # noqa: BLE001
                 self._logger.warning("cat consultation delivery task failed: {}", exc)
                 return
@@ -6855,6 +6883,7 @@ class GameLLMAgent:
             )
 
         task = asyncio.create_task(_deliver_consult())
+        self._consultation_tasks.add(task)
         task.add_done_callback(_advance_consult_state)
 
     def receive_cat_opinion(

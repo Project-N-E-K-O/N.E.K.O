@@ -220,6 +220,19 @@ async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
         },
     )
     agent._mark_message(pending, status="delivered", delivered=True)
+    newer_pending = agent._enqueue_outbound_message(
+        kind="cat_consultation",
+        content="A later consultation should not steal this reply.",
+        scene_id="scene-b",
+        route_id="",
+        priority=5,
+        metadata={
+            "consultation": True,
+            "consultation_reason": "scene_changed",
+            "consultation_character": "Yukino",
+        },
+    )
+    agent._mark_message(newer_pending, status="delivered", delivered=True)
 
     ordinary = await agent.send_message(shared, message="What is happening right now?")
 
@@ -228,23 +241,41 @@ async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
     assert pending["status"] == "delivered"
     assert len(fake_gateway.reply_calls) == 1
 
-    response = await agent.send_message(
-        shared,
-        message="Prefer the right path for now.",
-        reply_to_message_id=str(pending["message_id"]),
-    )
-
-    assert response["cat_opinion"]["opinion"] == "Prefer the right path for now."
-    assert shared["cat_opinions"][0]["reason"] == "choice"
-    assert agent._cat_opinions[0]["opinion"] == "Prefer the right path for now."
-    assert pending["status"] == "acked"
-    assert pending["metadata"]["cat_opinion_recorded"] is True
-    assert len(fake_gateway.reply_calls) == 1
-
     choices = [
         {"choice_id": "choice-1", "text": "left", "index": 0, "enabled": True},
         {"choice_id": "choice-2", "text": "right", "index": 1, "enabled": True},
     ]
+    shared["latest_snapshot"] = _session_state(
+        speaker="Yukino",
+        text="Choose now.",
+        scene_id="scene-a",
+        line_id="line-choice",
+        choices=choices,
+        is_menu_open=True,
+    )
+    agent._pending_choice_advice = {
+        "choice_signature": (
+            ("choice-1", "left", 0),
+            ("choice-2", "right", 1),
+        ),
+        "candidates": [dict(choice) for choice in choices],
+        "requested_at": time.monotonic(),
+        "line_id": "line-choice",
+    }
+    response = await agent.send_message(
+        shared,
+        message="choose 2, but as consultation feedback.",
+        reply_to_message_id=str(pending["message_id"]),
+    )
+
+    assert response["cat_opinion"]["opinion"] == "choose 2, but as consultation feedback."
+    assert shared["cat_opinions"][0]["reason"] == "choice"
+    assert agent._cat_opinions[0]["opinion"] == "choose 2, but as consultation feedback."
+    assert pending["status"] == "acked"
+    assert newer_pending["status"] == "delivered"
+    assert pending["metadata"]["cat_opinion_recorded"] is True
+    assert len(fake_gateway.reply_calls) == 1
+    assert agent._pending_choice_advice is not None
     next_snapshot = _shared_state(
         snapshot=_session_state(
             speaker="Yukino",
@@ -268,9 +299,30 @@ async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
 
     assert "cat_opinions" not in next_snapshot
     assert (
-        "Prefer the right path"
+        "choose 2, but as consultation feedback"
         in fake_gateway.suggest_calls[-1]["cat_opinion_context"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_reset_cancels_consultation_tasks(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    task = asyncio.create_task(asyncio.sleep(60))
+    agent._consultation_tasks.add(task)
+
+    await agent._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+
+    assert task.cancelled()
+    assert agent._consultation_tasks == set()
 
 
 @pytest.mark.asyncio
