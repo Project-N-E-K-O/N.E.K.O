@@ -1105,6 +1105,63 @@ def test_home_tutorial_reset_also_clears_backend_prompt_state():
     assert "/api/tutorial-prompt/reset" in tutorial_source
 
 
+def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
+    template_source = Path("templates/index.html").read_text(encoding="utf-8")
+    reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/index.css").read_text(encoding="utf-8")
+
+    assert "/static/avatar-floating-guide-reset.js" in template_source
+    assert "home-tutorial-reset-controls" in template_source
+    for day in range(1, 5):
+        assert f'data-home-tutorial-reset-day="{day}"' in template_source
+
+    assert "neko_avatar_floating_guide_v1" in reset_source
+    assert "neko:avatar-floating-guide-reset" in reset_source
+    assert "window.universalTutorialManager.resetPageTutorial('home')" in reset_source
+    assert "completedRounds = omitRound(state.completedRounds, round)" in reset_source
+    assert "skippedRounds = omitRound(state.skippedRounds, round)" in reset_source
+    assert "pendingRound = round" in reset_source
+    assert "manualResetRound = round" in reset_source
+    assert "await startAvatarFloatingGuideDay(round" in reset_source
+    assert "manager.beginTutorialAvatarOverride()" in reset_source
+    assert "manager.restoreTutorialAvatarOverride()" in reset_source
+    assert "appendTutorialTextToChat(step, day)" in reset_source
+    assert "action: 'yui_guide_append_chat_message'" in reset_source
+    assert "host.appendMessage(message)" in reset_source
+    assert "waitForTutorialAvatarEnvironment()" in reset_source
+    assert "forceShowTutorialAvatar(manager)" in reset_source
+    assert "window.showCurrentModel()" in reset_source
+    assert "window.TutorialInteractionTakeover.createController" in reset_source
+    assert "interactionTakeover.setActive(true)" in reset_source
+    assert "interactionTakeover.enableFaceForwardLock()" in reset_source
+    assert "interactionTakeover.setExternalizedChatButtonsDisabled(true)" in reset_source
+    assert "interactionTakeover.destroy()" in reset_source
+    assert "window.TutorialHighlightController.createController" in reset_source
+    assert "highlightController.applyGuideHighlights" in reset_source
+    assert "highlightController.setPreciseHighlightTargets" in reset_source
+    assert "highlightController.destroy()" in reset_source
+    assert "window.TutorialSkipController.createController" in reset_source
+    assert "skipController.show" in reset_source
+    assert "skipController.destroy()" in reset_source
+    assert "window.TutorialInterruptController.createController" in reset_source
+    assert "interruptController.playLightResistance" in reset_source
+    assert "interruptController.abortAsAngryExit" in reset_source
+    assert "interruptController.destroy()" in reset_source
+    assert "voiceKey: 'avatar_floating_day2_screen_entry'" in reset_source
+    assert "cursorAction: 'click'" in reset_source
+    assert "operation: 'safe-click'" in reset_source
+    assert "runStepShowcase(step, token)" in reset_source
+    assert "safeClickTarget(target)" in reset_source
+    assert "closeFloatingPanels()" in reset_source
+    assert "window.startAvatarFloatingGuideDay = startAvatarFloatingGuideDay" in reset_source
+    assert "window.resetHomeTutorialDay = resetHomeTutorialDay" in reset_source
+    assert "pointer-events: auto" in style_source
+    assert "home-avatar-floating-guide-player" in style_source
+    assert "home-avatar-floating-guide-cursor" in style_source
+    assert 'data-home-avatar-floating-guide-role="action"' in style_source
+    assert 'data-home-avatar-floating-guide-highlight="true"' in style_source
+
+
 def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
 
