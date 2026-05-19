@@ -1953,12 +1953,16 @@ Live2DManager.prototype.installMouthOverride = function() {
         }
         return idx >= 0 ? { id: paramId, resolvedId, idx, value } : null;
     };
+    const runtimeBreathParams = this._resolveRuntimeBreathParams(coreModel);
+    const runtimeBreathParamIds = new Set(runtimeBreathParams);
+    const isRuntimeBreathParamId = (id) => runtimeBreathParamIds.has(id);
     const isRuntimeManagedSavedParam = (entry) => {
         if (!entry) return true;
         const ids = [entry.id, entry.resolvedId].filter(Boolean);
         return ids.some(id => this._isEyeBlinkParamId(id)) ||
             ids.some(id => lipSyncParams.includes(id)) ||
-            ids.some(id => visibilityParams.includes(id));
+            ids.some(id => visibilityParams.includes(id)) ||
+            ids.some(isRuntimeBreathParamId);
     };
     const isPersistentSavedParam = (entry, persistentIds) => {
         if (!entry || !persistentIds) return false;
@@ -2015,7 +2019,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     try { preUpdateParams[p.id] = coreModel.getParameterValueByIndex(p.idx); } catch (_) {}
                 }
             }
-            const breathParams = this._resolveRuntimeBreathParams(coreModel);
+            const breathParams = runtimeBreathParams;
             for (const id of breathParams) {
                 try {
                     const idx = coreModel.getParameterIndex(id);
@@ -2183,6 +2187,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                             for (const p of params) {
                                 if (lipSyncParams.includes(p.Id)) continue;
                                 if (this._isEyeBlinkParamId(p.Id)) continue;
+                                if (isRuntimeBreathParamId(p.Id)) continue;
                                 try {
                                     coreModel.setParameterValueById(p.Id, p.Value);
                                 } catch (_) {}
@@ -2258,6 +2263,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         for (const p of params) {
                             if (lipSyncParams.includes(p.Id)) continue;
                             if (this._isEyeBlinkParamId(p.Id)) continue;
+                            if (isRuntimeBreathParamId(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
