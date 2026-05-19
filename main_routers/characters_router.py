@@ -5341,43 +5341,17 @@ async def export_catgirl_card(name: str):
                         except Exception as _conv_err:
                             logger.warning(f"[导出角色卡] 卡面非 PNG 且重新编码失败，回退到合成图: {_conv_err}")
                             png_data = None
+                    if png_data is not None:
+                        png_data = await asyncio.to_thread(_strip_legacy_card_face_header, png_data)
                 except Exception as _read_err:
                     logger.warning(f"[导出角色卡] 读取已保存卡面失败，回退到合成图: {_read_err}")
                     png_data = None
 
             if png_data is None:
                 # 回退：合成一张默认长方形角色卡图片
-                from PIL import Image, ImageDraw, ImageFont
+                from PIL import Image
                 width, height = 600, 800
                 img = Image.new('RGB', (width, height), color='#E8F4F8')
-                draw = ImageDraw.Draw(img)
-                header_height = height // 6
-                draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-                font_size = 36
-                font = None
-                font_candidates = [
-                    "msyhbd.ttc", "Microsoft YaHei Bold.ttf", "simhei.ttf",
-                    "msyh.ttc", "Microsoft YaHei.ttf", "simsun.ttc",
-                    "NotoSansCJK-Regular.ttc", "wqy-microhei.ttc"
-                ]
-                for font_name in font_candidates:
-                    try:
-                        font = ImageFont.truetype(font_name, font_size)
-                        break
-                    except (OSError, IOError):
-                        continue
-
-                if font is None:
-                    font = ImageFont.load_default()
-                    logger.warning("[导出角色卡] 未找到支持中文的系统字体，可能会显示为方框")
-
-                text = name
-                bbox = draw.textbbox((0, 0), text, font=font)
-                text_height = bbox[3] - bbox[1]
-                text_x = 30
-                text_y = (header_height - text_height) // 2 - bbox[1]
-                draw.text((text_x, text_y), text, fill='white', font=font)
                 png_path = temp_path / 'character_card.png'
                 img.save(png_path, 'PNG')
                 with open(png_path, 'rb') as f:
@@ -6119,6 +6093,34 @@ async def put_card_meta(name: str, request: Request):
     return JSONResponse({'success': True, 'meta': existing})
 
 
+def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
+    """Return old saved card faces without the obsolete blue name header."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image_data)) as img:
+            img.load()
+            width, height = img.size
+            header_height = height // 6
+            if width <= 0 or header_height <= 0:
+                return image_data
+
+            rgb = img.convert('RGB')
+            top_mean = rgb.crop((0, 0, width, header_height)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+            header_color = (64, 197, 241)
+            if max(abs(top_mean[i] - header_color[i]) for i in range(3)) > 24:
+                return image_data
+
+            cropped = img.convert('RGBA').crop((0, header_height, width, height))
+            normalized = cropped.resize((width, height), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            normalized.save(out, 'PNG')
+            return out.getvalue()
+    except Exception as exc:
+        logger.warning("legacy card face normalization failed: %s", exc)
+        return image_data
+
+
 @router.get('/catgirl/{name}/card-face')
 async def get_card_face(name: str):
     """获取角色的自定义卡面图片"""
@@ -6133,6 +6135,7 @@ async def get_card_face(name: str):
         return JSONResponse({'success': False, 'error': '卡面不存在'}, status_code=404)
 
     image_data = await asyncio.to_thread(face_path.read_bytes)
+    image_data = await asyncio.to_thread(_strip_legacy_card_face_header, image_data)
     return Response(content=image_data, media_type='image/png', headers={'Cache-Control': 'no-store'})
 
 
@@ -6238,7 +6241,7 @@ async def export_catgirl_with_portrait(
     import tempfile
     from pathlib import Path
     from urllib.parse import quote
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image
 
     temp_dir = None
     try:
@@ -6385,51 +6388,12 @@ async def export_catgirl_with_portrait(
 
             width, height = 600, 800
             card_img = Image.new('RGBA', (width, height), color='#E8F4F8')
-            draw = ImageDraw.Draw(card_img)
 
-            header_height = height // 6
-            draw.rectangle([0, 0, width, header_height], fill='#40C5F1')
-
-            font_size = 42
-            font = None
-            font_candidates = [
-                ("msyhbd.ttc", font_size),
-                ("Microsoft YaHei Bold.ttf", font_size),
-                ("simhei.ttf", font_size),
-                ("simsun.ttc", font_size),
-                ("msyh.ttc", font_size),
-                ("Microsoft YaHei.ttf", font_size),
-                ("NotoSansCJK-Regular.ttc", font_size),
-                ("wqy-microhei.ttc", font_size),
-            ]
-            for font_name, size in font_candidates:
-                try:
-                    font = ImageFont.truetype(font_name, size)
-                    logger.info(f"[导出角色卡] 使用字体: {font_name}")
-                    break
-                except Exception as e:
-                    logger.warning(f"[导出角色卡] 字体加载失败: {font_name}, 错误: {e}")
-                    continue
-            if font is None:
-                font = ImageFont.load_default()
-                logger.warning("[导出角色卡] 使用默认字体")
-
-            bbox = draw.textbbox((0, 0), _name, font=font)
-            text_height = bbox[3] - bbox[1]
-            text_x = 40
-            text_y = (header_height - text_height) // 2 - bbox[1]
-
-            shadow_offset = 2
-            draw.text((text_x + shadow_offset, text_y + shadow_offset), _name, fill='#00000040', font=font)
-            draw.text((text_x, text_y), _name, fill='white', font=font)
-
-            # 4. 合成立绘到角色卡
-            # 立绘区域：紧贴顶部蓝色区域下方到卡片底部，与前端预览一致
-            portrait_area_y = header_height
+            portrait_area_y = 0
             portrait_area_width = width
-            portrait_area_height = height - header_height
+            portrait_area_height = height
 
-            # 前端已按 (width × portrait_area_height) 渲染立绘，直接缩放到目标尺寸后粘贴
+            # 前端已按完整卡面尺寸渲染立绘，直接缩放到目标尺寸后粘贴
             portrait_resized = portrait_img.resize((portrait_area_width, portrait_area_height), Image.Resampling.LANCZOS)
             logger.info(f"[导出角色卡] 立绘调整后尺寸: {portrait_resized.size}, 粘贴位置: (0, {portrait_area_y})")
 

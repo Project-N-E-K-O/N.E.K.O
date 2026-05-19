@@ -352,30 +352,10 @@ body {
 
 #card-preview:active { cursor: grabbing; }
 
-#card-header-area {
-    height: calc(100% / 6);
-    background: #40C5F1;
-    display: flex;
-    align-items: center;
-    padding: 0 20px;
-    position: relative;
-    z-index: 1;
-}
-
-#card-preview-name {
-    color: white;
-    font-size: 20px;
-    font-weight: 700;
-    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.25);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 #card-portrait-area {
     position: relative;
     width: 100%;
-    height: calc(100% - 100% / 6);
+    height: 100%;
     overflow: hidden;
     background: #daeef4;
 }

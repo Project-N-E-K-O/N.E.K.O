@@ -1248,8 +1248,7 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
 
     const cardW = 600;
     const cardH = 800;
-    const headerH = Math.floor(cardH / 6);
-    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
+    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
     throwIfCancelled();
     const sourceCanvas = modelImage.canvas;
     const output = document.createElement('canvas');
@@ -1261,23 +1260,13 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
     ctx.fillStyle = '#E8F4F8';
     ctx.fillRect(0, 0, cardW, cardH);
 
-    ctx.fillStyle = '#40C5F1';
-    ctx.fillRect(0, 0, cardW, headerH);
-
-    ctx.font = 'bold 42px "Microsoft YaHei", "SimHei", "PingFang SC", sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-    ctx.fillText(lanlanName, 42, headerH / 2 + 2);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(lanlanName, 40, headerH / 2);
-
     drawImageCover(
         ctx,
         sourceCanvas,
         0,
-        headerH,
+        0,
         cardW,
-        cardH - headerH,
+        cardH,
         modelImage.drawOptions || {}
     );
 

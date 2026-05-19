@@ -4410,19 +4410,7 @@ function openCatgirlPanel(card, originEl) {
         };
         actions.appendChild(exportBtn);
 
-        const switchBtn = document.createElement('button');
-        switchBtn.type = 'button';
-        switchBtn.className = 'card-panel-action-btn switch-btn';
         const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
-        switchBtn.disabled = isCurrentChara;
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
-        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
-        switchBtn.onclick = function (e) {
-            e.stopPropagation();
-            workshopSwitchCatgirl(name);
-        };
-        actions.appendChild(switchBtn);
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
@@ -4769,19 +4757,7 @@ function buildCreatedCatgirlPanelActions(name) {
     };
     actions.appendChild(exportBtn);
 
-    const switchBtn = document.createElement('button');
-    switchBtn.type = 'button';
-    switchBtn.className = 'card-panel-action-btn switch-btn';
     const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
-    switchBtn.disabled = isCurrentChara;
-    switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
-    switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-        + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
-    switchBtn.onclick = function (e) {
-        e.stopPropagation();
-        workshopSwitchCatgirl(name);
-    };
-    actions.appendChild(switchBtn);
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
@@ -4940,7 +4916,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 档案名
     const baseWrapper = document.createElement('div');
-    baseWrapper.className = 'field-row-wrapper';
+    baseWrapper.className = 'field-row-wrapper profile-row';
 
     const baseLabel = document.createElement('label');
     const profileNameText = (window.t && typeof window.t === 'function') ? window.t('character.profileName') : '档案名';
@@ -4974,10 +4950,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     if (!isNew) {
         const renameBtn = document.createElement('button');
         renameBtn.type = 'button';
-        renameBtn.className = 'btn sm';
+        renameBtn.className = 'btn sm row-action-btn rename-action';
         renameBtn.id = 'rename-catgirl-btn';
-        renameBtn.style.marginLeft = '8px';
-        renameBtn.style.minWidth = '120px';
         const renameText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">' + window.t('character.rename') + '</span>'
             : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
@@ -5033,7 +5007,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         if (val === null || val === undefined) return;
 
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const deleteFieldText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
@@ -5057,7 +5031,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
+        delBtn.className = 'btn sm delete row-action-btn delete-action';
         delBtn.innerHTML = deleteFieldText;
         delBtn.addEventListener('click', function () {
             wrapper.remove();
@@ -5076,7 +5050,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 新增设定按钮区
     const addFieldArea = document.createElement('div');
-    addFieldArea.className = 'btn-area add-field-area';
+    addFieldArea.className = 'btn-area add-field-area settings-toolbar-row';
     addFieldArea.style.display = 'flex';
     addFieldArea.style.alignItems = 'center';
     addFieldArea.style.marginTop = '10px';
@@ -5094,9 +5068,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const addFieldBtn = document.createElement('button');
     addFieldBtn.type = 'button';
-    addFieldBtn.className = 'btn sm add';
+    addFieldBtn.className = 'btn sm add settings-primary-action';
     addFieldBtn.id = 'panel-add-catgirl-field-btn';
-    addFieldBtn.style.minWidth = '120px';
     const addFieldText = (window.t && typeof window.t === 'function')
         ? '<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addField">' + window.t('character.addField') + '</span>'
         : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
@@ -5123,7 +5096,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             return;
         }
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const deleteFieldText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
@@ -5146,7 +5119,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
+        delBtn.className = 'btn sm delete row-action-btn delete-action';
         delBtn.innerHTML = deleteFieldText;
         delBtn.addEventListener('click', function () {
             wrapper.remove();
@@ -5227,7 +5200,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
 
     const personalityWrapper = document.createElement('div');
-    personalityWrapper.className = 'field-row-wrapper';
+    personalityWrapper.className = 'field-row-wrapper personality-row';
     const personalityLabel = document.createElement('label');
     personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
     personalityLabel.style.fontSize = '1rem';
@@ -5252,11 +5225,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const personalitySelectBtn = document.createElement('button');
     personalitySelectBtn.type = 'button';
-    personalitySelectBtn.className = 'btn sm';
-    personalitySelectBtn.style.marginLeft = '8px';
-    personalitySelectBtn.style.minWidth = '120px';
+    personalitySelectBtn.className = 'btn sm row-action-btn personality-select-action';
     personalitySelectBtn.dataset.testid = 'character-personality-select';
-    personalitySelectBtn.textContent = window.t ? window.t('character.personalitySelect') : '选择人格';
+    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span>'
+        + (window.t ? window.t('character.personalitySelect') : '选择人格') + '</span>';
     personalitySelectBtn.disabled = !!isNew;
     personalitySelectBtn.addEventListener('click', async function () {
         if (isNew) {
@@ -5274,11 +5246,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const personalityClearBtn = document.createElement('button');
     personalityClearBtn.type = 'button';
-    personalityClearBtn.className = 'btn sm delete';
-    personalityClearBtn.style.marginLeft = '8px';
-    personalityClearBtn.style.minWidth = '120px';
+    personalityClearBtn.className = 'btn sm delete row-action-btn personality-clear-action';
     personalityClearBtn.dataset.testid = 'character-personality-clear';
-    personalityClearBtn.textContent = window.t ? window.t('character.personalityClear') : '恢复默认';
+    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span>'
+        + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
     personalityClearBtn.disabled = !personalitySelection.hasOverride;
     personalityClearBtn.addEventListener('click', async function () {
         if (!name || personalityClearBtn.disabled) {
@@ -5326,7 +5297,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 音色设定
     const voiceWrapper = document.createElement('div');
-    voiceWrapper.className = 'field-row-wrapper';
+    voiceWrapper.className = 'field-row-wrapper voice-row';
     const voiceLabel = document.createElement('label');
     voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
     voiceLabel.style.fontSize = '1rem';
@@ -5337,10 +5308,6 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.overflow = 'visible';
     voiceRow.style.position = 'relative';
     voiceRow.style.alignItems = 'center';
-    voiceRow.style.flex = '1 1 360px';
-    voiceRow.style.width = 'auto';
-    voiceRow.style.minWidth = '240px';
-    voiceRow.style.maxWidth = '560px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
     voiceSelect.className = 'form-control voice-native-select';
@@ -5367,9 +5334,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     // 注册新声音按钮
     const registerVoiceBtn = document.createElement('button');
     registerVoiceBtn.type = 'button';
-    registerVoiceBtn.className = 'btn sm';
-    registerVoiceBtn.style.marginLeft = '8px';
-    registerVoiceBtn.style.minWidth = '120px';
+    registerVoiceBtn.className = 'btn sm row-action-btn voice-register-action';
     const registerVoiceText = (window.t && typeof window.t === 'function')
         ? '<img src="/static/icons/sound.png" alt="" class="sound-icon"> <span data-i18n="character.registerNewVoice">' + window.t('character.registerNewVoice') + '</span>'
         : '<img src="/static/icons/sound.png" alt="" class="sound-icon"> 注册新声音';
@@ -5404,7 +5369,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 操作按钮区
     const btnArea = document.createElement('div');
-    btnArea.className = 'btn-area';
+    btnArea.className = 'btn-area settings-action-row';
     btnArea.style.display = 'flex';
     btnArea.style.alignItems = 'center';
     btnArea.style.marginTop = '10px';
@@ -5422,22 +5387,23 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
     saveButton.id = 'save-button';
-    saveButton.className = 'btn sm';
-    saveButton.style.minWidth = '120px';
+    saveButton.className = 'btn sm settings-save-action';
     if (!isNew) saveButton.style.display = 'none';
-    saveButton.textContent = isNew
-        ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
-        : (window.t ? window.t('character.saveChanges') : '保存修改');
+    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span>'
+        + (isNew
+            ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
+            : (window.t ? window.t('character.saveChanges') : '保存修改'))
+        + '</span>';
     saveButton.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
     btnArea.appendChild(saveButton);
 
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
     cancelButton.id = 'cancel-button';
-    cancelButton.className = 'btn sm';
-    cancelButton.style.minWidth = '120px';
+    cancelButton.className = 'btn sm settings-cancel-action';
     if (!isNew) cancelButton.style.display = 'none';
-    cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span>'
+        + (window.t ? window.t('character.cancel') : '取消') + '</span>';
     cancelButton.onclick = function () {
         if (saveButton) saveButton.style.display = 'none';
         if (cancelButton) cancelButton.style.display = 'none';

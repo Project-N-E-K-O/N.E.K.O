@@ -36,6 +36,12 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/yui-guide-avatar-stage.js",
     _PROJECT_ROOT / "static/yui-guide-wakeup.js",
     _PROJECT_ROOT / "static/yui-guide-director.js",
+    _PROJECT_ROOT / "static/css/character_card_manager.css",
+    _PROJECT_ROOT / "static/js/character_card_manager.js",
+    _PROJECT_ROOT / "static/css/card_maker.css",
+    _PROJECT_ROOT / "static/js/card_maker.js",
+    _PROJECT_ROOT / "static/css/model_manager.css",
+    _PROJECT_ROOT / "static/js/model_manager.js",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
@@ -115,6 +121,7 @@ def _render_model_manager(request: Request):
     return templates.TemplateResponse("templates/model_manager.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
@@ -206,7 +213,11 @@ async def chara_manager_redirect(request: Request):
 @router.get('/character_card_manager', response_class=HTMLResponse)
 async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/character_card_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/character_card_manager.html", {
+        "request": request,
+        "lanlan_name": lanlan_name,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
@@ -269,6 +280,7 @@ async def get_card_maker_page(request: Request):
     return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
