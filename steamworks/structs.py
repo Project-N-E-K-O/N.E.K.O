@@ -50,6 +50,16 @@ class SteamUGCQueryCompleted_t(Structure):
 
 
 class SteamUGCDetails_t(Structure):
+    # Steam SDK 在 callback / 详情结构体上用 #pragma pack(push, 4)
+    # （VALVE_CALLBACK_PACK_SMALL），uint64 字段会按 4 字节对齐。Python
+    # ctypes 默认走 8 字节自然对齐，于是 m_ulSteamIDOwner 等 uint64
+    # 字段会被读偏 4 字节。表现：steamIDOwner 低 32 位永远是 0x01100001
+    # （Public/Individual/Desktop 的 universe|type|instance 位），高
+    # 32 位拼上 m_rtimeCreated 的 4 字节，作为伪 Steam ID 喂给
+    # GetFriendPersonaName 时，Steam 客户端会返回一个不固定的 sentinel
+    # 字符串（实测在本机返回 "ZeroGravity"），导致所有创意工坊条目都
+    # 显示成同一个错误作者。
+    _pack_ = 4
     _fields_ = [
         ("publishedFileId", c_uint64),
         ("result", c_int),

@@ -456,26 +456,173 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     return {}
 
 
+# 本地 Steam 用户身份缓存：(steam_id, persona_name)，TTL 5 分钟
+# 用于检测 GetFriendPersonaName 返回值是否被 fallback 成本地用户名。
+_local_steam_identity_cache: tuple[int | None, str | None] | None = None
+_local_steam_identity_cache_ts: float = 0.0
+_LOCAL_IDENTITY_TTL = 300
+
+# Steam Community 公开 XML 接口的 persona name 缓存
+# { steam_id(int): (name_or_None, _cache_ts) }
+_persona_web_cache: dict[int, tuple[str | None, float]] = {}
+_PERSONA_WEB_TTL = 3600
+
+
+def _get_local_steam_identity(steamworks) -> tuple[int | None, str | None]:
+    """获取本地 Steam 用户的 (steam_id, persona_name)，带短期缓存。
+
+    Steamworks 在未通过 RequestUserInformation 请求过的 Steam ID 上调用
+    GetFriendPersonaName 时，可能 fallback 返回本地用户的 persona name —
+    这会让所有非好友工坊条目都显示成本地用户（典型症状：开发者上传的
+    所有卡片都显示成发行账号本人）。这里读出本地用户信息，便于上游做
+    伪造检测。
+    """
+    global _local_steam_identity_cache, _local_steam_identity_cache_ts
+    if (
+        _local_steam_identity_cache is not None
+        and time.time() - _local_steam_identity_cache_ts < _LOCAL_IDENTITY_TTL
+    ):
+        return _local_steam_identity_cache
+    local_id: int | None = None
+    local_name: str | None = None
+    try:
+        raw_id = steamworks.Users.GetSteamID()
+        local_id = int(raw_id) if raw_id else None
+    except Exception as e:
+        logger.debug(f"读取本地 Steam ID 失败: {e}")
+    try:
+        raw_name = steamworks.Friends.GetPlayerName()
+        if isinstance(raw_name, bytes):
+            raw_name = raw_name.decode('utf-8', errors='replace')
+        local_name = (raw_name or '').strip() or None
+    except Exception as e:
+        logger.debug(f"读取本地 Steam persona name 失败: {e}")
+    _local_steam_identity_cache = (local_id, local_name)
+    _local_steam_identity_cache_ts = time.time()
+    return _local_steam_identity_cache
+
+
 def _resolve_author_name(steamworks, owner_id: int) -> str | None:
     """
-    将 Steam ID 解析为显示名称。
-    
+    将 Steam ID 解析为显示名称（同步路径，仅依赖 Friends API）。
+
+    Steamworks 的 GetFriendPersonaName 对未通过 RequestUserInformation
+    预热过的非好友 Steam ID，可能返回 "[unknown]" 或——更糟——本地用户
+    的 persona name。后者会让所有创意工坊条目都显示成开发者本人。这里
+    做硬性过滤；返回 None 时由 ``_fetch_persona_via_steam_web`` 走 Web
+    API 兜底。
+
     Returns:
-        str | None: 用户名或 None（解析失败时）
+        str | None: 用户名或 None（解析失败 / 被判定为伪造时）
     """
     if not owner_id:
         return None
     try:
         persona_name = steamworks.Friends.GetFriendPersonaName(owner_id)
-        if persona_name:
-            if isinstance(persona_name, bytes):
-                persona_name = persona_name.decode('utf-8', errors='replace')
-            # 过滤空串和纯数字 ID；保留 [unknown] 作为合法 fallback
-            if persona_name and persona_name.strip() and persona_name != str(owner_id):
-                return persona_name.strip()
     except Exception as e:
         logger.debug(f"解析 Steam ID {owner_id} 名称失败: {e}")
-    return None
+        return None
+    if isinstance(persona_name, bytes):
+        persona_name = persona_name.decode('utf-8', errors='replace')
+    persona_name = (persona_name or '').strip()
+    if not persona_name:
+        return None
+    # 占位符与纯数字 ID 串
+    if persona_name == '[unknown]' or persona_name == str(owner_id):
+        return None
+    # 伪造检测：返回值等于本地 persona，但 owner_id 不是本地 Steam ID
+    local_id, local_name = _get_local_steam_identity(steamworks)
+    if local_name and persona_name == local_name and local_id and owner_id != local_id:
+        logger.debug(
+            f"忽略 owner_id={owner_id} 的伪造 persona '{persona_name}' "
+            f"(等于本地用户 {local_id}/{local_name})"
+        )
+        return None
+    return persona_name
+
+
+async def _fetch_persona_via_steam_web(owner_id: int) -> str | None:
+    """通过 steamcommunity.com 公开 XML 接口拉取 persona name。
+
+    用于在 Steamworks Friends API 因未走 RequestUserInformation 而无法
+    解析时兜底。该端点对所有公开个人资料都可访问，无需 API key；带 1
+    小时模块级缓存避免反复请求同一 owner。
+
+    Returns:
+        str | None: 解析出的 persona name；网络失败 / 私人资料 / 解析失败 → None
+    """
+    if not owner_id:
+        return None
+    cached = _persona_web_cache.get(owner_id)
+    if cached is not None and time.time() - cached[1] < _PERSONA_WEB_TTL:
+        return cached[0]
+    name: str | None = None
+    try:
+        import re as _re
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            resp = await client.get(
+                f"https://steamcommunity.com/profiles/{owner_id}/",
+                params={"xml": "1"},
+                headers={"User-Agent": "Mozilla/5.0 N.E.K.O Workshop"},
+            )
+            if resp.status_code == 200:
+                match = _re.search(
+                    r"<steamID>\s*<!\[CDATA\[(.*?)\]\]>\s*</steamID>",
+                    resp.text,
+                    _re.DOTALL,
+                )
+                if match:
+                    candidate = match.group(1).strip()
+                    if candidate:
+                        name = candidate
+    except Exception as e:
+        logger.debug(f"Steam Web 获取 persona name 失败 (owner_id={owner_id}): {e}")
+    _persona_web_cache[owner_id] = (name, time.time())
+    return name
+
+
+async def _resolve_missing_author_names(items_info: list[dict]) -> None:
+    """对 items_info 中缺失 authorName 的条目，并发走 Web API 兜底回填。
+
+    in-place 修改 items_info；同时把解析出的名字写回 ``_ugc_details_cache``，
+    避免下次列表请求又落到同一兜底路径。
+    """
+    missing: list[tuple[dict, int]] = []
+    for it in items_info:
+        if it.get('authorName'):
+            continue
+        raw_owner = it.get('steamIDOwner') or ''
+        try:
+            owner_id = int(raw_owner) if raw_owner else 0
+        except (TypeError, ValueError):
+            owner_id = 0
+        if owner_id:
+            missing.append((it, owner_id))
+    if not missing:
+        return
+    unique_owners = list({owner_id for _, owner_id in missing})
+    results = await asyncio.gather(
+        *[_fetch_persona_via_steam_web(oid) for oid in unique_owners],
+        return_exceptions=True,
+    )
+    name_by_owner: dict[int, str] = {}
+    for oid, res in zip(unique_owners, results):
+        if isinstance(res, str) and res:
+            name_by_owner[oid] = res
+    if not name_by_owner:
+        return
+    for it, owner_id in missing:
+        name = name_by_owner.get(owner_id)
+        if not name:
+            continue
+        it['authorName'] = name
+        try:
+            item_id_int = int(it.get('publishedFileId') or 0)
+        except (TypeError, ValueError):
+            item_id_int = 0
+        if item_id_int and item_id_int in _ugc_details_cache:
+            _ugc_details_cache[item_id_int]['authorName'] = name
 
 
 def _safe_text(value) -> str:
@@ -1876,13 +2023,22 @@ async def get_subscribed_workshop_items():
                     logger.error(f"添加基本物品信息也失败了: {basic_error}")
                 # 继续处理下一个物品
                 continue
-        
+
+        # 对于 Friends API 没能解析出 authorName 的物品（典型是
+        # GetFriendPersonaName 把非好友 owner 误回成本地用户名，被
+        # _resolve_author_name 判伪丢弃），走 Steam Community 公开 XML
+        # 接口兜底，并发查询并写回 items / 缓存。
+        try:
+            await _resolve_missing_author_names(items_info)
+        except Exception as fallback_err:
+            logger.debug(f"Web API 补全 authorName 时出错（忽略）: {fallback_err}")
+
         return {
             "success": True,
             "items": items_info,
             "total": len(items_info)
         }
-        
+
     except Exception as e:
         logger.error(f"获取订阅物品列表时出错: {e}")
         return JSONResponse({
@@ -2457,7 +2613,13 @@ async def get_workshop_item_details(item_id: str):
                     "percentage": (bytes_downloaded / bytes_total * 100) if bytes_total > 0 and downloading else 0
                 }
             }
-            
+
+            # 走 Web API 兜底补全 authorName（Friends API 在非好友 owner 上常返回伪造值）
+            try:
+                await _resolve_missing_author_names([item_info])
+            except Exception as fallback_err:
+                logger.debug(f"Web API 补全单条 authorName 出错（忽略）: {fallback_err}")
+
             return {
                 "success": True,
                 "item": item_info
