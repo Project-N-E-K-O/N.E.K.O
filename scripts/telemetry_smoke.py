@@ -544,6 +544,56 @@ def main():
         print(f"  ✓ new window after failure landed: {rows_h}")
 
         # --------------------------------------------------------------
+        # [4g] Regression: Codex P2 round-4 — periodic loop wakes for instrument-only
+        #
+        # 纯前端互动用户 _dirty 永远是 False。如果 _periodic_save_loop 只在
+        # _dirty=True 时调 save()，instrument 数据只能等 atexit 才发，不是
+        # 设计的 60s 节奏。loop 必须同时检查 instrument.has_data。
+        # --------------------------------------------------------------
+        print("\n[4g] Regression: periodic loop wakes for instrument-only data...")
+        import asyncio as _asyncio
+
+        async def _periodic_wake_test():
+            Instrument._instance = None
+            TokenTracker._instance = None
+            tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
+            tracker_i = TokenTracker.get_instance()
+            # 加速 loop：500ms 一个 tick 让 smoke 不用等 60s
+            tracker_i._save_interval = 0.5
+            tracker_i._last_report_time = 0
+            tracker_i.start_periodic_save()
+
+            # 只灌 counter（不触发 _dirty） —— 模拟纯前端互动
+            counter("periodic_wake_test", 1, scenario="instrument_only")
+
+            # 等够 2 个 tick 让 loop 至少跑一次
+            await _asyncio.sleep(1.3)
+
+            # 停 task 防泄漏（smoke 进程下来还要做后续步骤）
+            task = tracker_i._save_task
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except _asyncio.CancelledError:
+                    pass
+
+        _asyncio.run(_periodic_wake_test())
+
+        conn_i = sqlite3.connect(db_path)
+        rows_i = conn_i.execute(
+            "SELECT metric_key, value FROM instrument_counters "
+            "WHERE metric_key LIKE 'periodic_wake_test%'"
+        ).fetchall()
+        conn_i.close()
+        assert len(rows_i) >= 1, (
+            "P2 round-4 regression: periodic loop did not wake for "
+            "instrument-only data; counter never reached server. "
+            "loop must check instrument.has_data() not just self._dirty"
+        )
+        print(f"  ✓ periodic loop picked up instrument-only: {rows_i}")
+
+        # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
         # --------------------------------------------------------------
         print("\n[5/5] Fetching dashboard HTML...")

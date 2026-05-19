@@ -1416,7 +1416,23 @@ class TokenTracker:
     async def _periodic_save_loop(self):
         while True:
             await asyncio.sleep(self._save_interval)
-            if self._dirty:
+            # 两种触发 save() 的条件：
+            #   (a) self._dirty —— 有 LLM token delta 要本地写盘 + 远程上报
+            #   (b) instrument has_data —— 纯前端互动（前端 ws telemetry /
+            #       ws_connect / 各种 feature counter）不会让 _dirty=True，
+            #       但 instrument 已经累积了一窗口需要 60s 节奏上报
+            # save() 内部对 (b) 走 report-only path（跳过本地 write，只调
+            # _report_to_server）；对 (a) 走完整 write + report。
+            need_save = self._dirty
+            if not need_save:
+                try:
+                    from utils.instrument import has_data as _instrument_has_data
+                    need_save = _instrument_has_data()
+                except Exception:
+                    # has_data 在锁内只做 dict bool 检查，正常不会抛；
+                    # import 失败 fall through，本轮跳过，下轮重试。
+                    pass
+            if need_save:
                 await asyncio.to_thread(self.save)
             # 顺手让 event_logger 落地稀疏事件 buffer + 跑 retention 清理。
             # 即使本周期 token_tracker 没有 dirty，event_logger 也可能有
