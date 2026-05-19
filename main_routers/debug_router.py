@@ -194,23 +194,30 @@ def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
     tick 此处主动吸收：把暂存的 client payload merge 到当前 server snapshot，
     并把暂存条目从 ring 里 pop 掉（避免砍半 ring 保留期）。
 
+    多条 client-only：同一周期内可能有多条 client POST（多标签页 / beforeunload
+    补发 + 定时上报）。while 循环把尾部连续 client-only 全部 pop，避免落下孤儿；
+    最终只保留**最新**一条 payload merge 进 server snapshot——最新 = 最后到达
+    = 最贴近 server tick 时点，诊断价值最高。
+
     若 client 没启用（用户没开 localStorage），这里啥也不做，ring 全是
     server-only entry，~200 条 ≈ 16 小时不变。"""
-    if not _HEALTH_RING:
-        return
-    last = _HEALTH_RING[-1]
-    # 「client-only」标识：缺 asyncio_tasks 键（server snapshot 永远有）
-    if "asyncio_tasks" in last:
-        return
-    client_payload = last.get("client")
-    if client_payload is None:
-        return
-    # 吸收窗口：一个 watchdog 间隔。本应只有 ~30s 距离，但容忍 client 启动晚
-    # / 浏览器 throttle 等导致的偏移。再远就放过，避免吸收上上轮的残留。
-    if float(server_snap.get("ts") or 0) - float(last.get("ts") or 0) > _WATCHDOG_INTERVAL_SECONDS:
-        return
-    server_snap["client"] = client_payload
-    _HEALTH_RING.pop()
+    absorbed_client: dict[str, Any] | None = None
+    server_ts = float(server_snap.get("ts") or 0)
+    # 倒序消化尾部连续 client-only 条目；保留最新（第一次循环取到的）payload。
+    while _HEALTH_RING:
+        last = _HEALTH_RING[-1]
+        # 「client-only」标识：缺 asyncio_tasks 键（server snapshot 永远有）
+        if "asyncio_tasks" in last:
+            break
+        # 超出吸收窗口的属于「上上轮残留」，不动它（也不吸收 payload）让 ring
+        # 自然按 maxlen 排出，避免强行 pop 破坏历史顺序。
+        if server_ts - float(last.get("ts") or 0) > _WATCHDOG_INTERVAL_SECONDS:
+            break
+        if absorbed_client is None and last.get("client") is not None:
+            absorbed_client = last["client"]
+        _HEALTH_RING.pop()
+    if absorbed_client is not None:
+        server_snap["client"] = absorbed_client
 
 
 async def _watchdog_loop() -> None:
@@ -270,19 +277,59 @@ async def debug_health() -> dict[str, Any]:
     }
 
 
+# 端点接受的客户端 payload 白名单。HTTP 边界做这层约束有两个理由：
+# (1) 协议契约——「只记计数」必须在边界强制而不是依赖前端自觉，否则任何调用方
+#     都能往 ring/jsonl 写入大对象或敏感字段；
+# (2) 文件占用——单次 payload bound 住，长跑 jsonl 不会被异常调用爆出 GB 级。
+# 字段名跟 static/debug-health.js 的 ``collectSnapshot()`` 同步。新增字段时
+# 两边一起改，未在白名单的会被静默丢弃。
+_CLIENT_NUMERIC_FIELDS = frozenset({
+    "ts", "live_intervals", "live_timeouts", "raf_fps_60s",
+    "dom_nodes", "js_heap_mb", "ws_state",
+    "proactive_backoff_level", "agent_task_map_size",
+})
+_CLIENT_BOOL_FIELDS = frozenset({"proactive_running", "is_recording"})
+_CLIENT_STRING_FIELDS_WITH_CAP = {"location": 128}
+
+
+def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
+    """裁剪客户端 payload 到白名单字段；非预期类型 / 超长字符串丢弃或截断。"""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        if k in _CLIENT_NUMERIC_FIELDS:
+            if v is None or isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[k] = v
+        elif k in _CLIENT_BOOL_FIELDS:
+            if isinstance(v, bool):
+                out[k] = v
+        elif k in _CLIENT_STRING_FIELDS_WITH_CAP:
+            if isinstance(v, str):
+                cap = _CLIENT_STRING_FIELDS_WITH_CAP[k]
+                out[k] = v[:cap]
+        # 其余字段静默丢弃——「只记计数」契约由这里强制
+    return out
+
+
 @router.post("/api/debug/health/client")
 async def debug_health_client(payload: dict[str, Any]) -> dict[str, Any]:
     """前端 ``debug-health.js`` POST 上来的浏览器侧快照。
 
-    简单 append client-only entry——**不要**往前往回 merge 已存在的 server
-    snapshot（曾尝试过，被 codex 指出会把 client sample 绑到 4.5 分钟之前的
-    server tick，时间轴错位）。正确语义：client POST 暂存条目，等下一次
-    server tick 在 _absorb_recent_client_payload 里把它吸收 + pop，合成一条
-    完整的 server+client entry。这样既不错配时间，也不砍 ring 保留期。"""
+    流程：
+    - 边界白名单裁剪（``_sanitize_client_payload``），强制「只记计数」契约。
+    - Append client-only entry 到内存 ring 暂存——**不**立刻写 jsonl，避免
+      下次 server tick 吸收时 jsonl 出现「暂存 + 合并」双行污染时间轴。
+    - 写 jsonl 的责任完全交给 watchdog：吸收成功就一条 merged 行，吸收
+      不到（窗口外或 server 未启）也会被 ring 自然 drop。
+
+    错配修复历史：曾尝试在这里倒序找 server entry merge，被 codex 指出会
+    把 client sample 绑到 4.5min 前的旧 snapshot，时间轴错位 270s。所以
+    改成「server tick 反向吸收」，详见 ``_absorb_recent_client_payload``。"""
     try:
-        entry = {"ts": time.time(), "client": payload}
+        sanitized = _sanitize_client_payload(payload)
+        entry = {"ts": time.time(), "client": sanitized}
         _HEALTH_RING.append(entry)
-        _append_to_log(entry)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
