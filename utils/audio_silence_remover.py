@@ -449,9 +449,9 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
             if not audio_streams:
                 raise ValueError('文件中没有音频流')
             stream = audio_streams[0]
-            sample_rate = stream.sample_rate
 
-            resampler = av.AudioResampler(format='s16', layout='mono', rate=sample_rate)
+            sample_rate = 0
+            resampler: av.AudioResampler | None = None
             audio_chunks: list[np.ndarray] = []
 
             def _drain(resampled):
@@ -466,7 +466,19 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
 
             for packet in container.demux(stream):
                 for frame in packet.decode():
+                    if resampler is None:
+                        # 优先用流元数据；某些容器/编码下 stream.sample_rate
+                        # 会缺失或为 0，此时回退到首个解码帧的采样率
+                        sample_rate = int(stream.sample_rate or frame.sample_rate or 0)
+                        if sample_rate <= 0:
+                            raise ValueError('无法确定音频采样率')
+                        resampler = av.AudioResampler(
+                            format='s16', layout='mono', rate=sample_rate
+                        )
                     _drain(resampler.resample(frame))
+
+            if resampler is None:
+                raise ValueError('音频数据为空')
             _drain(resampler.resample(None))
 
             if not audio_chunks:
