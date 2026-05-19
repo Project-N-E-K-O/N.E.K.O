@@ -3291,6 +3291,19 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
+        # Livestream 上游是 free 路 Gemini 系，服务端始终承担原生 TTS。客户端
+        # 角色卡的 voice_id 不论是不是 free preset，都不应该再开外部 TTS——
+        # 否则文本会被客户端按整句喂给 tts_proxy，丢掉服务端 Gemini → core_proxy
+        # → CV3 那条真 bistream 路径的首音频延迟优势。
+        #
+        # PR #1369 在原 free-preset gate 第三个条件里 OR 了 livestream-active，
+        # 但前两个 AND（_is_free_preset_voice / core_api_type='free'）没拆，
+        # 导致 livestream + 非 free preset 音色（克隆 / 空 voice_id / 主播
+        # 自定义未识别为 preset）仍会 fallback 到外部 TTS。这里独立早退兜底。
+        # _is_livestream_active 内部已经 gate 了 core_api_type='free'。
+        if self._is_livestream_active():
+            logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
+            return False
         base_url = realtime_config.get('base_url', '')
         if should_block_free_native_voice(
             self.core_api_type, self.voice_id, base_url,
@@ -3309,14 +3322,8 @@ class LLMSessionManager:
         if (
             self._is_free_preset_voice
             and self.core_api_type == 'free'
-            and ('lanlan.tech' in realtime_config.get('base_url', '') or self._is_livestream_active())
+            and 'lanlan.tech' in realtime_config.get('base_url', '')
         ):
-            # livestream 启用后 base_url 被重写成主播自建 server_prefix
-            # （非 lanlan.tech 域），导致原 lanlan.tech 字面量判定失效，会 fallback
-            # 到外部 TTS 流水线。但 livestream 上游同样是 free 路 Gemini 系，
-            # 原生音色（voice_id 由 livestream_config 覆盖成 neon 等）直接走
-            # session config 即可，不需要再开外部 TTS。把 livestream-active
-            # 视为与 lanlan.tech 对偶的免费原生音色路径。
             logger.info(f"{log_prefix}🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
             return False
         if self.voice_id or has_custom_tts_config:
