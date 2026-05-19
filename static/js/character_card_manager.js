@@ -5092,6 +5092,28 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     addFieldSpacer.style.flex = '1';
     addFieldArea.appendChild(addFieldSpacer);
 
+    // AI 辅助生成按钮（位于「新增设定」左侧）
+    const aiAssistBtn = document.createElement('button');
+    aiAssistBtn.type = 'button';
+    aiAssistBtn.className = 'btn sm ai-assist';
+    aiAssistBtn.id = 'panel-ai-assist-catgirl-btn';
+    aiAssistBtn.style.minWidth = '140px';
+    const aiAssistText = (window.t && typeof window.t === 'function')
+        ? '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">' + window.t('character.aiAssist') + '</span>'
+        : '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">AI 辅助生成</span>';
+    aiAssistBtn.innerHTML = aiAssistText;
+    aiAssistBtn.onclick = function () {
+        try {
+            openCardAssistWizard(form, name, isNew);
+        } catch (err) {
+            console.error('[card-assist] open wizard failed:', err);
+            if (typeof showAlertDialog === 'function') {
+                showAlertDialog(String(err && err.message || err), { type: 'error' });
+            }
+        }
+    };
+    addFieldArea.appendChild(aiAssistBtn);
+
     const addFieldBtn = document.createElement('button');
     addFieldBtn.type = 'button';
     addFieldBtn.className = 'btn sm add';
@@ -10169,6 +10191,620 @@ function panelAttachAutoSaveListener(input, catgirlName) {
             }
         }, 0);
     });
+}
+
+// ===================== AI 辅助生成猫娘设定（向导窗口） =====================
+
+const CARD_ASSIST_RESERVED_KEYS = ['档案名', 'voice_id', '_reserved', 'live2d', 'live3d', 'vrm', 'mmd', 'system_prompt', 'model_type'];
+
+function _cardAssistT(key, fallback, vars) {
+    if (window.t && typeof window.t === 'function') {
+        try {
+            const v = window.t(key, vars || undefined);
+            if (typeof v === 'string' && v && v !== key) return v;
+        } catch (_) { /* fall through */ }
+    }
+    return fallback;
+}
+
+function _cardAssistCurrentLocale() {
+    try {
+        const lang = (typeof getCurrentUiLanguage === 'function') ? getCurrentUiLanguage() : '';
+        return lang || 'en';
+    } catch (_) { return 'en'; }
+}
+
+function _cardAssistCollectCurrentFormData(form) {
+    const data = {};
+    if (!form) return data;
+    const fd = new FormData(form);
+    for (const [k, v] of fd.entries()) {
+        if (!k || CARD_ASSIST_RESERVED_KEYS.includes(k)) continue;
+        const val = typeof v === 'string' ? v.trim() : v;
+        if (val) data[k] = val;
+    }
+    return data;
+}
+
+async function _cardAssistFetch(path, payload) {
+    const resp = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    let body = null;
+    try { body = await resp.json(); } catch (_) { body = null; }
+    if (!resp.ok || !body || body.success === false) {
+        const err = (body && (body.message || body.error)) || ('HTTP ' + resp.status);
+        const e = new Error(err);
+        e.code = body && body.error;
+        throw e;
+    }
+    return body;
+}
+
+function _cardAssistBuildShell(titleText) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal card-assist-modal';
+    overlay.style.display = 'flex';
+
+    const content = document.createElement('div');
+    content.className = 'modal-content card-assist-content';
+    content.onclick = function (e) { e.stopPropagation(); };
+
+    const header = document.createElement('div');
+    header.className = 'modal-header card-assist-header';
+    const title = document.createElement('h3');
+    title.className = 'modal-title card-assist-title';
+    title.textContent = titleText;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-close card-assist-close';
+    closeBtn.type = 'button';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.onclick = function () { _cardAssistClose(overlay); };
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'modal-body card-assist-body';
+
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer card-assist-footer';
+
+    content.appendChild(header);
+    content.appendChild(body);
+    content.appendChild(footer);
+    overlay.appendChild(content);
+
+    overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) _cardAssistClose(overlay);
+    });
+
+    return { overlay, title, body, footer, closeBtn };
+}
+
+function _cardAssistOpen(overlay) {
+    document.body.appendChild(overlay);
+    document.documentElement.style.overflowY = 'hidden';
+}
+
+function _cardAssistClose(overlay) {
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    document.documentElement.style.overflowY = '';
+}
+
+function _cardAssistSetBusy(footer, busy) {
+    footer.querySelectorAll('button').forEach(function (b) { b.disabled = !!busy; });
+}
+
+function _cardAssistMakeButton(label, variant, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn ' + (variant || 'secondary');
+    btn.textContent = label;
+    btn.onclick = onClick;
+    return btn;
+}
+
+async function openCardAssistWizard(form, originalName, isNew) {
+    if (!form) return;
+    const titleText = _cardAssistT('character.aiAssistTitle', 'AI 辅助生成猫娘设定');
+    const shell = _cardAssistBuildShell(titleText);
+    _cardAssistOpen(shell.overlay);
+
+    const state = {
+        description: '',
+        questions: [],
+        answers: {},
+        generated: {},          // {fieldKey: value}
+        originalSnapshot: {},   // current form values keyed by field name
+        selected: {},           // {fieldKey: bool}
+    };
+    state.originalSnapshot = _cardAssistCollectCurrentFormData(form);
+
+    _cardAssistRenderStep1(shell, state, form, originalName, isNew);
+}
+
+function _cardAssistRenderStep1(shell, state, form, originalName, isNew) {
+    shell.body.innerHTML = '';
+    shell.footer.innerHTML = '';
+
+    const stepLabel = document.createElement('div');
+    stepLabel.className = 'card-assist-step-label';
+    stepLabel.textContent = _cardAssistT('character.aiAssistStep1', '第 1 步 / 共 3 步 · 描述你想要的角色');
+    shell.body.appendChild(stepLabel);
+
+    const hint = document.createElement('p');
+    hint.className = 'card-assist-hint';
+    hint.textContent = _cardAssistT('character.aiAssistStep1Hint',
+        '用一句话描述你心中的猫娘。例如：「一只来自江户时代的傲娇小狐妖，喜欢茶道」。AI 会根据你的描述追问几个关键问题。');
+    shell.body.appendChild(hint);
+
+    const ta = document.createElement('textarea');
+    ta.className = 'card-assist-description-input';
+    ta.rows = 4;
+    ta.placeholder = _cardAssistT('character.aiAssistDescPlaceholder',
+        '描述你想要的猫娘（例：来自江户时代的傲娇小狐妖，喜欢茶道）');
+    ta.value = state.description || '';
+    shell.body.appendChild(ta);
+
+    const errorBox = document.createElement('div');
+    errorBox.className = 'card-assist-error';
+    shell.body.appendChild(errorBox);
+
+    const cancelBtn = _cardAssistMakeButton(
+        _cardAssistT('common.cancel', '取消'),
+        'btn-secondary',
+        function () { _cardAssistClose(shell.overlay); }
+    );
+    const continueBtn = _cardAssistMakeButton(
+        _cardAssistT('character.aiAssistContinue', '继续 →'),
+        'btn-primary',
+        async function () {
+            const desc = (ta.value || '').trim();
+            if (!desc) {
+                errorBox.textContent = _cardAssistT('character.aiAssistDescRequired', '请先描述一下你想要的角色');
+                return;
+            }
+            state.description = desc;
+            errorBox.textContent = '';
+            _cardAssistSetBusy(shell.footer, true);
+            continueBtn.textContent = _cardAssistT('character.aiAssistThinking', '生成澄清问题中…');
+            try {
+                const resp = await _cardAssistFetch('/api/card-assist/clarify', {
+                    description: desc,
+                    current_card: state.originalSnapshot,
+                    locale: _cardAssistCurrentLocale(),
+                });
+                state.questions = resp.questions || [];
+                if (!state.questions.length) {
+                    throw new Error(_cardAssistT('character.aiAssistNoQuestions', '未生成澄清问题，请稍后重试'));
+                }
+                state.answers = {};
+                _cardAssistRenderStep2(shell, state, form, originalName, isNew);
+            } catch (err) {
+                _cardAssistShowError(errorBox, err);
+            } finally {
+                _cardAssistSetBusy(shell.footer, false);
+                continueBtn.textContent = _cardAssistT('character.aiAssistContinue', '继续 →');
+            }
+        }
+    );
+    shell.footer.appendChild(cancelBtn);
+    shell.footer.appendChild(continueBtn);
+
+    setTimeout(function () { ta.focus(); }, 50);
+}
+
+function _cardAssistRenderStep2(shell, state, form, originalName, isNew) {
+    shell.body.innerHTML = '';
+    shell.footer.innerHTML = '';
+
+    const stepLabel = document.createElement('div');
+    stepLabel.className = 'card-assist-step-label';
+    stepLabel.textContent = _cardAssistT('character.aiAssistStep2', '第 2 步 / 共 3 步 · 回答澄清问题');
+    shell.body.appendChild(stepLabel);
+
+    const hint = document.createElement('p');
+    hint.className = 'card-assist-hint';
+    hint.textContent = _cardAssistT('character.aiAssistStep2Hint',
+        '点击 chip 选择常见选项，或在文本框里填自定义答案。两者都填时以文本框为准。');
+    shell.body.appendChild(hint);
+
+    const questionsWrap = document.createElement('div');
+    questionsWrap.className = 'card-assist-questions';
+    shell.body.appendChild(questionsWrap);
+
+    state.questions.forEach(function (q) {
+        const qWrap = document.createElement('div');
+        qWrap.className = 'card-assist-question';
+
+        const header = document.createElement('div');
+        header.className = 'card-assist-question-header';
+        const tag = document.createElement('span');
+        tag.className = 'card-assist-question-tag';
+        tag.textContent = q.header || q.id;
+        const label = document.createElement('span');
+        label.className = 'card-assist-question-label';
+        label.textContent = q.label;
+        header.appendChild(tag);
+        header.appendChild(label);
+        qWrap.appendChild(header);
+
+        const chipRow = document.createElement('div');
+        chipRow.className = 'card-assist-chip-row';
+        const customInput = document.createElement('input');
+        customInput.type = 'text';
+        customInput.className = 'card-assist-custom-input';
+        customInput.placeholder = _cardAssistT('character.aiAssistCustomPlaceholder', '或填写自定义答案…');
+
+        (q.options || []).forEach(function (opt) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'card-assist-chip';
+            chip.textContent = opt;
+            chip.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                chipRow.querySelectorAll('.card-assist-chip').forEach(function (c) { c.classList.remove('selected'); });
+                chip.classList.add('selected');
+                state.answers[q.id] = opt;
+                customInput.value = '';
+            });
+            chipRow.appendChild(chip);
+        });
+        qWrap.appendChild(chipRow);
+
+        if (q.allowCustom !== false) {
+            customInput.addEventListener('input', function () {
+                if (customInput.value.trim()) {
+                    chipRow.querySelectorAll('.card-assist-chip').forEach(function (c) { c.classList.remove('selected'); });
+                    state.answers[q.id] = customInput.value.trim();
+                } else {
+                    delete state.answers[q.id];
+                }
+            });
+            qWrap.appendChild(customInput);
+        }
+
+        questionsWrap.appendChild(qWrap);
+    });
+
+    const errorBox = document.createElement('div');
+    errorBox.className = 'card-assist-error';
+    shell.body.appendChild(errorBox);
+
+    const backBtn = _cardAssistMakeButton(
+        _cardAssistT('character.aiAssistBack', '← 上一步'),
+        'btn-secondary',
+        function () { _cardAssistRenderStep1(shell, state, form, originalName, isNew); }
+    );
+    const generateBtn = _cardAssistMakeButton(
+        _cardAssistT('character.aiAssistGenerate', '生成草稿 →'),
+        'btn-primary',
+        async function () {
+            errorBox.textContent = '';
+            _cardAssistSetBusy(shell.footer, true);
+            const originalLabel = generateBtn.textContent;
+            generateBtn.textContent = _cardAssistT('character.aiAssistGenerating', '正在生成草稿…');
+            try {
+                const resp = await _cardAssistFetch('/api/card-assist/generate', {
+                    description: state.description,
+                    answers: state.answers,
+                    current_card: state.originalSnapshot,
+                    locale: _cardAssistCurrentLocale(),
+                });
+                state.generated = resp.fields || {};
+                state.selected = {};
+                Object.keys(state.generated).forEach(function (k) { state.selected[k] = true; });
+                if (!Object.keys(state.generated).length) {
+                    throw new Error(_cardAssistT('character.aiAssistNoFields', '生成结果为空，请稍后重试'));
+                }
+                _cardAssistRenderStep3(shell, state, form, originalName, isNew);
+            } catch (err) {
+                _cardAssistShowError(errorBox, err);
+            } finally {
+                _cardAssistSetBusy(shell.footer, false);
+                generateBtn.textContent = originalLabel;
+            }
+        }
+    );
+    shell.footer.appendChild(backBtn);
+    shell.footer.appendChild(generateBtn);
+}
+
+function _cardAssistRenderStep3(shell, state, form, originalName, isNew) {
+    shell.body.innerHTML = '';
+    shell.footer.innerHTML = '';
+
+    const stepLabel = document.createElement('div');
+    stepLabel.className = 'card-assist-step-label';
+    stepLabel.textContent = _cardAssistT('character.aiAssistStep3', '第 3 步 / 共 3 步 · 预览与微调');
+    shell.body.appendChild(stepLabel);
+
+    const hint = document.createElement('p');
+    hint.className = 'card-assist-hint';
+    hint.textContent = _cardAssistT('character.aiAssistStep3Hint',
+        '勾选要应用的字段。可点击 chip 对单个字段重新生成，或直接编辑新值。点「应用并保存」会把勾选的字段写入表单并保存。');
+    shell.body.appendChild(hint);
+
+    const table = document.createElement('div');
+    table.className = 'card-assist-preview-table';
+    shell.body.appendChild(table);
+
+    Object.keys(state.generated).forEach(function (key) {
+        const row = _cardAssistBuildFieldRow(key, state, table, originalName);
+        table.appendChild(row);
+    });
+
+    const errorBox = document.createElement('div');
+    errorBox.className = 'card-assist-error';
+    shell.body.appendChild(errorBox);
+
+    const backBtn = _cardAssistMakeButton(
+        _cardAssistT('character.aiAssistBack', '← 上一步'),
+        'btn-secondary',
+        function () { _cardAssistRenderStep2(shell, state, form, originalName, isNew); }
+    );
+    const applyBtn = _cardAssistMakeButton(
+        _cardAssistT('character.aiAssistApply', '应用并保存'),
+        'btn-primary',
+        async function () {
+            errorBox.textContent = '';
+            const selectedKeys = Object.keys(state.generated).filter(function (k) { return state.selected[k]; });
+            if (!selectedKeys.length) {
+                errorBox.textContent = _cardAssistT('character.aiAssistNothingSelected', '至少要勾选一个字段才能应用');
+                return;
+            }
+            _cardAssistSetBusy(shell.footer, true);
+            try {
+                _cardAssistApplyToForm(form, state.generated, selectedKeys, originalName, isNew);
+                // 触发保存：新建态需要有档案名，否则提示用户
+                const nameInput = form.querySelector('input[name="档案名"]');
+                if (isNew && !form._autoCreated && (!nameInput || !nameInput.value.trim())) {
+                    if (typeof showAlertDialog === 'function') {
+                        await showAlertDialog(
+                            _cardAssistT('character.aiAssistFillNameFirst', '已写入表单，请填写档案名后再保存'),
+                            { type: 'warning' }
+                        );
+                    }
+                } else {
+                    try {
+                        await saveCatgirlFromPanel(form, originalName, isNew);
+                    } catch (saveErr) {
+                        console.error('[card-assist] save after apply failed:', saveErr);
+                    }
+                }
+                _cardAssistClose(shell.overlay);
+                if (typeof showAlertDialog === 'function') {
+                    showAlertDialog(
+                        _cardAssistT('character.aiAssistApplied', 'AI 生成的设定已应用到表单'),
+                        { type: 'success' }
+                    );
+                }
+            } catch (err) {
+                _cardAssistShowError(errorBox, err);
+            } finally {
+                _cardAssistSetBusy(shell.footer, false);
+            }
+        }
+    );
+    shell.footer.appendChild(backBtn);
+    shell.footer.appendChild(applyBtn);
+}
+
+function _cardAssistBuildFieldRow(key, state, table, originalName) {
+    const row = document.createElement('div');
+    row.className = 'card-assist-row';
+    row.dataset.key = key;
+
+    const checkboxLabel = document.createElement('label');
+    checkboxLabel.className = 'card-assist-checkbox';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = state.selected[key] !== false;
+    checkbox.addEventListener('change', function () { state.selected[key] = checkbox.checked; });
+    checkboxLabel.appendChild(checkbox);
+
+    const keyLabel = document.createElement('div');
+    keyLabel.className = 'card-assist-row-key';
+    keyLabel.textContent = key;
+
+    const valuesWrap = document.createElement('div');
+    valuesWrap.className = 'card-assist-row-values';
+
+    const originalVal = state.originalSnapshot[key];
+    if (originalVal) {
+        const originalEl = document.createElement('div');
+        originalEl.className = 'card-assist-row-original';
+        originalEl.innerHTML = '<span class="card-assist-row-original-tag">' +
+            _cardAssistT('character.aiAssistOriginal', '原值') + '</span> ' +
+            _cardAssistEscapeHtml(String(originalVal));
+        valuesWrap.appendChild(originalEl);
+    }
+
+    const newEditor = document.createElement('textarea');
+    newEditor.className = 'card-assist-row-new';
+    newEditor.rows = 1;
+    newEditor.value = state.generated[key] || '';
+    newEditor.addEventListener('input', function () {
+        state.generated[key] = newEditor.value;
+        _cardAssistAutoResize(newEditor);
+    });
+    setTimeout(function () { _cardAssistAutoResize(newEditor); }, 0);
+    valuesWrap.appendChild(newEditor);
+
+    const chipBar = document.createElement('div');
+    chipBar.className = 'card-assist-row-chips';
+    const refineOptions = [
+        { instruction: _cardAssistT('character.aiAssistRefineRandomInstr', '完全重新随机生成，保持与其他字段的整体调性一致'),
+          label: _cardAssistT('character.aiAssistRefineRandom', '🎲 再随机') },
+        { instruction: _cardAssistT('character.aiAssistRefineTsundereInstr', '变得更傲娇一些，更有反差萌'),
+          label: _cardAssistT('character.aiAssistRefineTsundere', '更傲娇') },
+        { instruction: _cardAssistT('character.aiAssistRefineGentleInstr', '变得更温柔治愈一些'),
+          label: _cardAssistT('character.aiAssistRefineGentle', '更温柔') },
+    ];
+    refineOptions.forEach(function (opt) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'card-assist-chip card-assist-refine-chip';
+        chip.textContent = opt.label;
+        chip.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            _cardAssistRefineField(key, opt.instruction, row, state);
+        });
+        chipBar.appendChild(chip);
+    });
+    const customChip = document.createElement('button');
+    customChip.type = 'button';
+    customChip.className = 'card-assist-chip card-assist-refine-chip card-assist-refine-custom';
+    customChip.textContent = _cardAssistT('character.aiAssistRefineCustom', '✎ 自定义…');
+    customChip.addEventListener('click', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        let instruction = '';
+        if (typeof showPrompt === 'function') {
+            instruction = await showPrompt(
+                _cardAssistT('character.aiAssistRefineCustomPrompt', '想怎么调整这个字段？'),
+                '',
+                _cardAssistT('character.aiAssistRefineCustomTitle', '自定义微调指令')
+            );
+        } else {
+            instruction = window.prompt(_cardAssistT('character.aiAssistRefineCustomPrompt', '想怎么调整这个字段？'));
+        }
+        instruction = (instruction || '').trim();
+        if (!instruction) return;
+        _cardAssistRefineField(key, instruction, row, state);
+    });
+    chipBar.appendChild(customChip);
+    valuesWrap.appendChild(chipBar);
+
+    row.appendChild(checkboxLabel);
+    row.appendChild(keyLabel);
+    row.appendChild(valuesWrap);
+
+    return row;
+}
+
+async function _cardAssistRefineField(key, instruction, row, state) {
+    if (!row || row.dataset.busy === '1') return;
+    row.dataset.busy = '1';
+    row.classList.add('card-assist-row-busy');
+    try {
+        // 把当前已生成的内容当作 current_card 传过去，让单字段重生有上下文
+        const ctx = Object.assign({}, state.originalSnapshot, state.generated);
+        const resp = await _cardAssistFetch('/api/card-assist/refine', {
+            field_key: key,
+            instruction: instruction,
+            current_card: ctx,
+            locale: _cardAssistCurrentLocale(),
+        });
+        const newVal = resp.value || '';
+        state.generated[key] = newVal;
+        const editor = row.querySelector('.card-assist-row-new');
+        if (editor) {
+            editor.value = newVal;
+            _cardAssistAutoResize(editor);
+        }
+    } catch (err) {
+        console.warn('[card-assist] refine failed:', err);
+        if (typeof showAlertDialog === 'function') {
+            showAlertDialog(
+                _cardAssistT('character.aiAssistRefineFailed', '微调失败：') + (err && err.message || err),
+                { type: 'error' }
+            );
+        }
+    } finally {
+        row.dataset.busy = '0';
+        row.classList.remove('card-assist-row-busy');
+    }
+}
+
+function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isNew) {
+    if (!form || !selectedKeys || !selectedKeys.length) return;
+    const addFieldArea = form.querySelector('.add-field-area');
+    selectedKeys.forEach(function (key) {
+        if (!key || CARD_ASSIST_RESERVED_KEYS.includes(key)) return;
+        const value = String(generated[key] == null ? '' : generated[key]);
+        let textarea = form.querySelector('textarea[name="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+        if (textarea) {
+            textarea.value = value;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+            // 字段不存在 → 复用「新增设定」分支的 DOM 构造
+            const wrapper = document.createElement('div');
+            wrapper.className = 'field-row-wrapper custom-row';
+
+            const labelEl = document.createElement('label');
+            if (typeof _panelSetFieldLabel === 'function') {
+                _panelSetFieldLabel(labelEl, key);
+            } else {
+                labelEl.textContent = key;
+            }
+            wrapper.appendChild(labelEl);
+
+            const fr = document.createElement('div');
+            fr.className = 'field-row';
+            const textareaEl = document.createElement('textarea');
+            textareaEl.name = key;
+            textareaEl.rows = 1;
+            textareaEl.value = value;
+            fr.appendChild(textareaEl);
+            wrapper.appendChild(fr);
+
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'btn sm delete';
+            const delLabel = (window.t && typeof window.t === 'function')
+                ? window.t('character.deleteField')
+                : '删除设定';
+            delBtn.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + delLabel + '</span>';
+            delBtn.addEventListener('click', function () { wrapper.remove(); });
+            wrapper.appendChild(delBtn);
+
+            if (addFieldArea && addFieldArea.parentNode === form) {
+                form.insertBefore(wrapper, addFieldArea);
+            } else {
+                form.appendChild(wrapper);
+            }
+            if (typeof _panelAttachTextareaAutoResize === 'function') {
+                _panelAttachTextareaAutoResize(textareaEl);
+            }
+            if (!isNew && originalName && typeof panelAttachAutoSaveListener === 'function') {
+                panelAttachAutoSaveListener(textareaEl, originalName);
+            }
+            textareaEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    });
+    // 让用户看到 Save / Cancel
+    const sb = form.querySelector('#save-button');
+    const cb = form.querySelector('#cancel-button');
+    if (sb) sb.style.display = '';
+    if (cb) cb.style.display = '';
+}
+
+function _cardAssistAutoResize(textarea) {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = (textarea.scrollHeight + 2) + 'px';
+}
+
+function _cardAssistShowError(errorBox, err) {
+    if (!errorBox) return;
+    let msg = (err && err.message) || String(err || '');
+    if (err && err.code === 'assist_api_not_configured') {
+        msg = _cardAssistT('character.aiAssistApiMissing',
+            '辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。');
+    }
+    errorBox.textContent = msg;
+}
+
+function _cardAssistEscapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ===================== 云存档同步与生命周期 =====================

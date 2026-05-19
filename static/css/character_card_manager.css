@@ -6744,3 +6744,339 @@ margin-top: 10px;
     background: rgba(56, 189, 248, 0.16);
     color: #bae6fd;
 }
+
+/* ===================== AI 辅助生成（按钮 + 向导窗口） ===================== */
+
+.btn.sm.ai-assist {
+    background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 50%, #3b82f6 100%);
+    color: #fff;
+    border: 1px solid transparent;
+    box-shadow: 0 1px 4px rgba(99, 102, 241, 0.35);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.btn.sm.ai-assist:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.5);
+    transform: translateY(-1px);
+}
+
+.btn.sm.ai-assist:active:not(:disabled) {
+    transform: translateY(0);
+    filter: brightness(0.96);
+}
+
+.btn.sm.ai-assist .ai-assist-icon {
+    font-size: 13px;
+    line-height: 1;
+}
+
+.card-assist-modal .modal-content {
+    max-width: 880px;
+    max-height: 88vh;
+}
+
+.card-assist-body {
+    padding: 18px 22px;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.card-assist-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 22px;
+    border-top: 1px solid #e5e7eb;
+    background: #fafafa;
+}
+
+.card-assist-step-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #6366f1;
+    margin-bottom: 6px;
+}
+
+.card-assist-hint {
+    margin: 0 0 14px 0;
+    color: #555;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.card-assist-description-input {
+    width: 100%;
+    min-height: 96px;
+    padding: 10px 12px;
+    border: 1px solid #d4d4d8;
+    border-radius: 8px;
+    font-size: 14px;
+    box-sizing: border-box;
+    resize: vertical;
+    font-family: inherit;
+}
+
+.card-assist-description-input:focus {
+    outline: none;
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
+
+.card-assist-error {
+    color: #dc2626;
+    font-size: 13px;
+    margin-top: 8px;
+    min-height: 1em;
+}
+
+.card-assist-questions {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.card-assist-question {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: #fff;
+}
+
+.card-assist-question-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.card-assist-question-tag {
+    background: #e0e7ff;
+    color: #4338ca;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.card-assist-question-label {
+    color: #1f2937;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.card-assist-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.card-assist-chip {
+    background: #f3f4f6;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    font-family: inherit;
+}
+
+.card-assist-chip:hover:not(:disabled) {
+    background: #e0e7ff;
+    border-color: #a5b4fc;
+    color: #4338ca;
+}
+
+.card-assist-chip.selected,
+[data-theme="dark"] .card-assist-chip.selected {
+    background: #6366f1 !important;
+    border-color: #4f46e5 !important;
+    color: #fff !important;
+}
+
+.card-assist-custom-input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid #d4d4d8;
+    border-radius: 6px;
+    font-size: 13px;
+    box-sizing: border-box;
+    font-family: inherit;
+}
+
+.card-assist-custom-input:focus {
+    outline: none;
+    border-color: #6366f1;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.18);
+}
+
+.card-assist-preview-table {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.card-assist-row {
+    display: grid;
+    grid-template-columns: 28px 110px 1fr;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #fff;
+    align-items: flex-start;
+    transition: opacity 0.2s;
+}
+
+.card-assist-row.card-assist-row-busy {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.card-assist-checkbox {
+    padding-top: 4px;
+    cursor: pointer;
+}
+
+.card-assist-row-key {
+    font-weight: 600;
+    color: #1f2937;
+    font-size: 14px;
+    padding-top: 4px;
+    word-break: break-word;
+}
+
+.card-assist-row-values {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.card-assist-row-original {
+    font-size: 12px;
+    color: #6b7280;
+    padding: 4px 8px;
+    background: #f9fafb;
+    border-radius: 6px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.card-assist-row-original-tag {
+    color: #9ca3af;
+    font-weight: 600;
+    margin-right: 4px;
+}
+
+.card-assist-row-new {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    font-size: 13px;
+    box-sizing: border-box;
+    background: #f5f3ff;
+    color: #1f2937;
+    resize: vertical;
+    min-height: 32px;
+    line-height: 1.5;
+    font-family: inherit;
+    overflow: hidden;
+}
+
+.card-assist-row-new:focus {
+    outline: none;
+    border-color: #6366f1;
+    background: #fff;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.18);
+}
+
+.card-assist-row-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.card-assist-refine-chip {
+    font-size: 11px;
+    padding: 2px 8px;
+}
+
+/* Dark mode */
+[data-theme="dark"] .btn.sm.ai-assist {
+    box-shadow: 0 1px 4px rgba(99, 102, 241, 0.45);
+}
+
+[data-theme="dark"] .card-assist-footer {
+    background: #1f2937;
+    border-top-color: #374151;
+}
+
+[data-theme="dark"] .card-assist-hint {
+    color: #cbd5e1;
+}
+
+[data-theme="dark"] .card-assist-description-input,
+[data-theme="dark"] .card-assist-custom-input {
+    background: #0f172a;
+    color: #e5e7eb;
+    border-color: #334155;
+}
+
+[data-theme="dark"] .card-assist-question {
+    background: #111827;
+    border-color: #1f2937;
+}
+
+[data-theme="dark"] .card-assist-question-tag {
+    background: rgba(99, 102, 241, 0.25);
+    color: #c7d2fe;
+}
+
+[data-theme="dark"] .card-assist-question-label {
+    color: #e5e7eb;
+}
+
+[data-theme="dark"] .card-assist-chip {
+    background: #1f2937;
+    color: #cbd5e1;
+    border-color: #334155;
+}
+
+[data-theme="dark"] .card-assist-chip:hover:not(:disabled) {
+    background: rgba(99, 102, 241, 0.25);
+    color: #e0e7ff;
+    border-color: #6366f1;
+}
+
+[data-theme="dark"] .card-assist-row {
+    background: #111827;
+    border-color: #1f2937;
+}
+
+[data-theme="dark"] .card-assist-row-key {
+    color: #e5e7eb;
+}
+
+[data-theme="dark"] .card-assist-row-original {
+    background: #0f172a;
+    color: #94a3b8;
+}
+
+[data-theme="dark"] .card-assist-row-new {
+    background: #0f172a;
+    color: #e5e7eb;
+    border-color: #4338ca;
+}
