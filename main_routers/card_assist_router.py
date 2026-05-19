@@ -17,6 +17,8 @@ auxiliary LLM, falling back to the bundled free tier). Modeled on
 from __future__ import annotations
 
 import json
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter, Request
@@ -34,6 +36,9 @@ from .shared_state import get_config_manager
 
 logger = get_module_logger(__name__, "CardAssist")
 
+# Repo root for resolving `config/characters/<locale>.json` template paths.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 router = APIRouter(prefix="/api/card-assist", tags=["card-assist"])
 
 
@@ -44,7 +49,11 @@ _LLM_TIMEOUT_SECONDS = 60.0
 
 def _resolve_language(payload_locale: str | None) -> str:
     """Map a frontend locale (e.g. 'zh-CN', 'en-US') to the short prompt
-    language code ('zh' / 'en'). Falls back to the global language setting."""
+    language code ('zh' / 'en'). Falls back to the global language setting.
+
+    Prompt is currently only authored in zh & en; ja/ko/ru/pt/es get the en
+    prompt (target field keys still pull the locale's own template — see
+    `_resolve_locale_code` + `_load_template_keys_for_locale`)."""
     if payload_locale:
         code = payload_locale.strip().lower()
         if code.startswith("zh"):
@@ -55,6 +64,44 @@ def _resolve_language(payload_locale: str | None) -> str:
         glob = (get_global_language() or "").strip().lower()
         if glob.startswith("zh"):
             return "zh"
+    except Exception:
+        pass
+    return "en"
+
+
+# Locale tag → `config/characters/<file>.json` filename. Keep in sync with
+# the files actually present in `config/characters/`.
+_SUPPORTED_LOCALE_FILES = {
+    "en": "en", "en-us": "en", "en-gb": "en",
+    "zh-cn": "zh-CN", "zh-hans": "zh-CN", "zh": "zh-CN",
+    "zh-tw": "zh-TW", "zh-hant": "zh-TW", "zh-hk": "zh-TW",
+    "ja": "ja", "ja-jp": "ja",
+    "ko": "ko", "ko-kr": "ko",
+    "pt": "pt", "pt-br": "pt", "pt-pt": "pt",
+    "ru": "ru", "ru-ru": "ru",
+    "es": "es", "es-es": "es", "es-mx": "es",
+}
+
+
+def _resolve_locale_code(payload_locale: str | None) -> str:
+    """Pick the closest matching `config/characters/<x>.json` filename for
+    the payload locale. Falls back to the global language setting, then `en`.
+    """
+    if payload_locale:
+        code = payload_locale.strip().lower()
+        if code in _SUPPORTED_LOCALE_FILES:
+            return _SUPPORTED_LOCALE_FILES[code]
+        # primary subtag (e.g. "ja-JP" → "ja", "pt-BR" → "pt")
+        primary = code.split("-", 1)[0]
+        if primary in _SUPPORTED_LOCALE_FILES:
+            return _SUPPORTED_LOCALE_FILES[primary]
+    try:
+        glob = (get_global_language() or "").strip().lower()
+        if glob in _SUPPORTED_LOCALE_FILES:
+            return _SUPPORTED_LOCALE_FILES[glob]
+        primary = glob.split("-", 1)[0]
+        if primary in _SUPPORTED_LOCALE_FILES:
+            return _SUPPORTED_LOCALE_FILES[primary]
     except Exception:
         pass
     return "en"
@@ -160,24 +207,56 @@ def _format_card_for_prompt(card: Any, max_chars: int = 1200) -> str:
     return text
 
 
-# 不同 locale 的角色卡模板字段名不同（en 用 "Gender"/"Age"，zh 用 "性别"/"年龄"）。
-# 前端走 textarea[name=...] 精确匹配应用生成结果，prompt 必须告诉 LLM 使用这些
-# 真实 key，否则会以"新增字段"形式平行插入，旧字段值不会被覆盖。前端会把表单
-# 上看到的字段名一并发过来；这里只在前端没发时按 prompt 语言兜底。
-_DEFAULT_TARGET_KEYS_BY_LANG = {
-    "zh": ["昵称", "性别", "年龄", "种族", "自称",
-           "核心特质", "行为特点", "厌恶", "一句话台词"],
-    "en": ["Nickname", "Gender", "Age", "Race", "Self-Reference",
-           "Core Traits", "Behavioral Traits", "Dislikes", "Signature Line"],
-}
+# 不同 locale 的角色卡模板字段名不同（en 用 "Gender"/"Age"，zh-CN 用 "性别"/"年龄"，
+# ja 用 "ニックネーム"/"性別" 等等）。前端走 textarea[name=...] 精确匹配应用生成
+# 结果，prompt 必须告诉 LLM 使用这些真实 key，否则会以"新增字段"形式平行插入。
+# 前端会把表单上看到的字段名一并发过来；空白新建卡的兜底从模板文件读取，硬
+# 编码每个 locale 的字段表迟早会和 `config/characters/<x>.json` 漂移。
+
+_HARDCODED_EN_FALLBACK = [
+    "Nickname", "Gender", "Age", "Race", "Self-Reference",
+    "Core Traits", "Behavioral Traits", "Dislikes", "Signature Line",
+]
 
 
-def _resolve_target_keys(payload: Dict[str, Any], lang: str,
+def _characters_template_path(locale_code: str) -> Path:
+    return REPO_ROOT / "config" / "characters" / f"{locale_code}.json"
+
+
+@lru_cache(maxsize=16)
+def _load_template_keys_for_locale(locale_code: str) -> tuple[str, ...]:
+    """Pull the field-name list out of `config/characters/<locale>.json` —
+    structure is `{'猫娘': {<char_name>: {<field>: <value>, ...}}}`, take the
+    first character's non-reserved keys in order. Returns empty tuple on any
+    failure (missing file / corrupted JSON / unexpected shape); caller falls
+    back to the hardcoded en list.
+    """
+    p = _characters_template_path(locale_code)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("card-assist: failed to load template %s: %s", p, exc)
+        return ()
+    girls = data.get("猫娘") if isinstance(data, dict) else None
+    if not isinstance(girls, dict) or not girls:
+        return ()
+    first = next(iter(girls.values()), None)
+    if not isinstance(first, dict):
+        return ()
+    keys = [
+        str(k) for k in first.keys()
+        if str(k).strip() and not _is_reserved_card_field(k)
+    ]
+    return tuple(keys)
+
+
+def _resolve_target_keys(payload: Dict[str, Any], locale_code: str,
                          current_card: Any) -> list[str]:
     """Return the field-key list the LLM must use, in priority order:
     1) explicit payload["target_field_keys"] from the frontend (truthy strings only)
     2) keys present in the existing card (less reliable for empty new-card forms)
-    3) locale default (zh / en).
+    3) locale template's field names (read from config/characters/<locale>.json)
+    4) hardcoded en fallback (last resort if the template file is missing/broken).
     """
     raw = payload.get("target_field_keys")
     if isinstance(raw, list) and raw:
@@ -193,8 +272,10 @@ def _resolve_target_keys(payload: Dict[str, Any], lang: str,
         ]
         if keys:
             return keys
-    return list(_DEFAULT_TARGET_KEYS_BY_LANG.get(lang)
-                or _DEFAULT_TARGET_KEYS_BY_LANG["en"])
+    tmpl_keys = _load_template_keys_for_locale(locale_code)
+    if tmpl_keys:
+        return list(tmpl_keys)
+    return list(_HARDCODED_EN_FALLBACK)
 
 
 @router.post("/clarify")
@@ -283,13 +364,14 @@ async def generate(request: Request):
         answers = {}
 
     lang = _resolve_language(body.get("locale"))
+    locale_code = _resolve_locale_code(body.get("locale"))
     current_card = body.get("current_card")
     current_card_text = _format_card_for_prompt(current_card)
     try:
         answers_text = json.dumps(answers, ensure_ascii=False, indent=2)
     except Exception:
         answers_text = str(answers)
-    target_keys = _resolve_target_keys(body, lang, current_card)
+    target_keys = _resolve_target_keys(body, locale_code, current_card)
     target_keys_text = " / ".join(target_keys)
 
     template = get_card_assist_generate_prompt(lang)
