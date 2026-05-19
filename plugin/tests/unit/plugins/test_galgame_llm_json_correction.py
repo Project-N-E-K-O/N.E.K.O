@@ -23,8 +23,9 @@ class RecordingBackend(GalgameLLMBackend):
         *,
         operation: str,
         messages: list[dict[str, str]],
+        tier: str | None = None,
     ) -> str:
-        self.calls.append({"operation": operation, "messages": list(messages)})
+        self.calls.append({"operation": operation, "messages": list(messages), "tier": tier})
         if not self._responses:
             raise AssertionError("unexpected extra llm call")
         return self._responses.pop(0)

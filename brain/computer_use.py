@@ -41,10 +41,41 @@ try:
 except Exception:
     pass
 
-try:
-    import pyautogui
-except Exception:
-    pyautogui = None
+pyautogui = None
+_PYAUTOGUI_IMPORT_ERROR: Optional[Exception] = None
+
+
+def _load_pyautogui():
+    """Import pyautogui lazily so Linux display authorization can recover."""
+    global pyautogui, _PYAUTOGUI_IMPORT_ERROR
+    if pyautogui is not None:
+        return pyautogui
+    try:
+        import pyautogui as loaded_pyautogui
+    except Exception as exc:
+        _PYAUTOGUI_IMPORT_ERROR = exc
+        return None
+    pyautogui = loaded_pyautogui
+    _PYAUTOGUI_IMPORT_ERROR = None
+    return pyautogui
+
+
+def _pyautogui_unavailable_reason() -> str:
+    text = str(_PYAUTOGUI_IMPORT_ERROR or "").lower()
+    if any(token in text for token in (
+        "displayconnectionerror",
+        "can't connect to display",
+        "cannot connect to display",
+        "authorization required",
+        "no authorization protocol",
+        "display",
+        "xlib",
+    )):
+        return "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
+    return "AGENT_PYAUTOGUI_NOT_INSTALLED"
+
+
+_load_pyautogui()
 
 
 # ─── Connectivity probe error classification ────────────────────────────
@@ -554,11 +585,12 @@ class ComputerUseAdapter:
         self.cots: List[Dict[str, str]] = []
 
         try:
-            if pyautogui is None:
-                self.last_error = "pyautogui not available (no display)"
+            pyautogui_module = _load_pyautogui()
+            if pyautogui_module is None:
+                self.last_error = f"pyautogui unavailable: {_pyautogui_unavailable_reason()}"
                 return
 
-            self.screen_width, self.screen_height = pyautogui.size()
+            self.screen_width, self.screen_height = pyautogui_module.size()
 
             self._system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
                 platform=platform.system(),
@@ -702,9 +734,9 @@ class ComputerUseAdapter:
         if not model_cfg.get("base_url") or not model_cfg.get("model"):
             ok = False
             reasons.append("AGENT_ENDPOINT_NOT_CONFIGURED")
-        if pyautogui is None:
+        if _load_pyautogui() is None:
             ok = False
-            reasons.append("AGENT_PYAUTOGUI_NOT_INSTALLED")
+            reasons.append(_pyautogui_unavailable_reason())
         if not self.init_ok:
             ok = False
             reasons.append("AGENT_NOT_INITIALIZED")

@@ -132,6 +132,12 @@ STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
 STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
 STORE_TUTORIAL_PROGRESS = "tutorial_progress"
 STORE_CONTEXT_SNAPSHOT = "context_snapshot"
+STORE_CHARACTER_PROFILES = "character_profiles"
+STORE_CHARACTER_PROFILE_VERSION = "character_profile_version"
+STORE_CHARACTER_MODE = "character_mode"
+STORE_CHARACTER_FIXED_NAME = "character_fixed_name"
+STORE_CROSS_SCENE_MEMORY = "cross_scene_memory"
+STORE_CHARACTER_RUNTIME_STATE = "character_runtime_state"
 STORE_KEYS = (
     STORE_BOUND_GAME_ID,
     STORE_MODE,
@@ -160,6 +166,12 @@ STORE_KEYS = (
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_TUTORIAL_PROGRESS,
     STORE_CONTEXT_SNAPSHOT,
+    STORE_CHARACTER_PROFILES,
+    STORE_CHARACTER_PROFILE_VERSION,
+    STORE_CHARACTER_MODE,
+    STORE_CHARACTER_FIXED_NAME,
+    STORE_CROSS_SCENE_MEMORY,
+    STORE_CHARACTER_RUNTIME_STATE,
 )
 
 DEFAULT_SAVE_CONTEXT = {
@@ -522,8 +534,6 @@ class GalgameLLMConfig:
     llm_target_entry_ref: str = ""
     llm_vision_enabled: bool = False
     llm_vision_max_image_px: int = 768
-    llm_temperature_agent_reply: float = 0.2
-    llm_temperature_default: float = 0.0
     llm_max_tokens_agent_reply: int = 900
     llm_max_tokens_default: int = 1200
     context_max_tokens: int = 6000
@@ -662,8 +672,6 @@ class GalgameConfig:
         "llm_target_entry_ref": ("llm", "llm_target_entry_ref"),
         "llm_vision_enabled": ("llm", "llm_vision_enabled"),
         "llm_vision_max_image_px": ("llm", "llm_vision_max_image_px"),
-        "llm_temperature_agent_reply": ("llm", "llm_temperature_agent_reply"),
-        "llm_temperature_default": ("llm", "llm_temperature_default"),
         "llm_max_tokens_agent_reply": ("llm", "llm_max_tokens_agent_reply"),
         "llm_max_tokens_default": ("llm", "llm_max_tokens_default"),
         "context_max_tokens": ("llm", "context_max_tokens"),

@@ -147,9 +147,34 @@ class NekoPluginBase(_SharedNekoPluginBase):
         return await self.ctx.export_push(**kwargs)
 
     async def finish(self, **kwargs: Any) -> Any:
+        """Mark the current task done and hand a summary back to the host.
+
+        Role-aware text contract: ``summary`` / ``detail`` (and any text in
+        ``parts``) MAY contain ``{MASTER_NAME}`` / ``{LANLAN_NAME}``
+        placeholders. The host expands them at the LLM-injection boundary
+        (and at the verbatim ``direct_reply`` exit), per session. Plugin code
+        can't pick the right name itself — visibility filtering decides which
+        ``LLMSessionManager`` receives the text, so substitution has to be
+        host-side.
+
+        Use this for character-aware text like
+        ``"立即基于最新画面向 {MASTER_NAME} 叙述..."`` instead of hardcoded
+        ``"用户"`` / ``"master"`` / ``"主人"``, which feel generic and
+        misbehave on multi-character setups. See PLUGIN_DEVELOPMENT_GUIDE.md
+        ("Writing role-aware text") for details.
+        """
         return await self.ctx.finish(**kwargs)
 
     def push_message(self, **kwargs: Any) -> object:
+        """Stream a message from the plugin into the dialog channel.
+
+        Role-aware text contract: ``text`` / ``summary`` / ``detail`` (and
+        any text in ``parts``) MAY contain ``{MASTER_NAME}`` /
+        ``{LANLAN_NAME}`` placeholders; the host substitutes them at the
+        injection boundary, per session. See :meth:`finish` for the rationale
+        and PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for the
+        full guide.
+        """
         return self.ctx.push_message(**kwargs)
 
     def include_router(self, router, *, prefix: str = "") -> None:

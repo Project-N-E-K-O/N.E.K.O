@@ -25,6 +25,10 @@
     // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
     const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
 
+    function getDefaultRenderQuality() {
+        return S.renderQuality || 'medium';
+    }
+
     /**
      * 获取对话相关设置（仅包含需要同步到服务器的设置）
      * 注意：不包含 renderQuality、targetFrameRate、mouseTrackingEnabled 等性能/外观设置
@@ -387,7 +391,7 @@
                 S.textGuardMaxLength = settings.textGuardMaxLength ?? 300;
                 window.textGuardMaxLength = S.textGuardMaxLength;
                 // 画质设置
-                S.renderQuality = settings.renderQuality ?? 'medium';
+                S.renderQuality = settings.renderQuality ?? getDefaultRenderQuality();
                 window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
                 // 帧率设置（0 = 不限帧 / VSync）
                 S.targetFrameRate = settings.targetFrameRate ?? 60;

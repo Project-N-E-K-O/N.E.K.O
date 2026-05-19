@@ -136,7 +136,7 @@ def test_in_cooldown_true_when_pending():
 
 
 def test_in_cooldown_true_when_responded_within_24h_and_under_10_chats():
-    """已回应但 24h 没到 + 10 次没到 → cooldown。"""
+    """已回应但时间没到 + 10 次没到 → cooldown。"""
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 60
     state['responded_at'] = time.time() - 60
@@ -145,16 +145,20 @@ def test_in_cooldown_true_when_responded_within_24h_and_under_10_chats():
 
 
 def test_in_cooldown_true_when_only_time_elapsed_chats_short():
-    """24h 已过但 chats 没到 10 次 → 仍 cooldown（AND 语义）。"""
+    """时间阈值已过但 chats 没到 10 次 → 仍 cooldown（AND 语义）。
+
+    用 DECLINE 阈值的 offset 保证不论走 accept(2h) 还是 decline(5h) fallback 都已超时。
+    """
     state = sr._mini_game_invite_get_state(LANLAN)
-    state['delivered_at'] = time.time() - sr.MINI_GAME_INVITE_COOLDOWN_SECONDS - 100
-    state['responded_at'] = time.time() - sr.MINI_GAME_INVITE_COOLDOWN_SECONDS - 100
+    long_ago = time.time() - sr.MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS - 100
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
     state['chats_since_response'] = 3
     assert sr._mini_game_invite_in_cooldown(LANLAN) is True
 
 
 def test_in_cooldown_true_when_only_chats_done_time_short():
-    """chats 跨过 10 但 24h 没到 → 仍 cooldown（AND 语义）。"""
+    """chats 跨过 10 但时间没到 → 仍 cooldown（AND 语义）。"""
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = time.time() - 600
     state['responded_at'] = time.time() - 600
@@ -163,11 +167,64 @@ def test_in_cooldown_true_when_only_chats_done_time_short():
 
 
 def test_in_cooldown_false_when_both_thresholds_passed():
-    """24h 和 10 chats 都过了 → 解禁，下次掷骰。"""
+    """时间阈值和 10 chats 都过了 → 解禁，下次掷骰。
+
+    用 DECLINE 阈值确保 accept/decline 任一阈值都超过。"""
     state = sr._mini_game_invite_get_state(LANLAN)
-    state['delivered_at'] = time.time() - sr.MINI_GAME_INVITE_COOLDOWN_SECONDS - 100
-    state['responded_at'] = time.time() - sr.MINI_GAME_INVITE_COOLDOWN_SECONDS - 100
+    long_ago = time.time() - sr.MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS - 100
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
     state['chats_since_response'] = sr.MINI_GAME_INVITE_COOLDOWN_CHATS
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is False
+
+
+def test_in_cooldown_accept_uses_2h_threshold():
+    """accept 后 elapsed=3h 且 chats 够 → 解禁（accept 阈值 2h）。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    long_ago = time.time() - 3 * 3600
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
+    state['chats_since_response'] = sr.MINI_GAME_INVITE_COOLDOWN_CHATS
+    state['last_response_choice'] = 'accept'
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is False
+
+
+def test_in_cooldown_decline_holds_past_accept_threshold():
+    """decline 后 elapsed=3h（>accept 但 <decline）+ chats 够 → 仍 cooldown。
+
+    防回归：拒绝必须比 accept 锁更久，避免短期复扰。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    long_ago = time.time() - 3 * 3600
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
+    state['chats_since_response'] = sr.MINI_GAME_INVITE_COOLDOWN_CHATS
+    state['last_response_choice'] = 'decline'
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is True
+
+
+def test_in_cooldown_decline_releases_past_decline_threshold():
+    """decline 后 elapsed=6h（>decline 5h）+ chats 够 → 解禁。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    long_ago = time.time() - 6 * 3600
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
+    state['chats_since_response'] = sr.MINI_GAME_INVITE_COOLDOWN_CHATS
+    state['last_response_choice'] = 'decline'
+    assert sr._mini_game_invite_in_cooldown(LANLAN) is False
+
+
+def test_in_cooldown_legacy_state_falls_back_to_accept_threshold():
+    """last_response_choice 缺失 / None → 走 accept (2h) 阈值，不会被无端拉到 5h。
+
+    pin 住「遗留 state（升级前已有 responded_at 但没 last_response_choice 字段）
+    现网生效后不会因为 fallback 选 decline 阈值而把已经过了 2h 的用户继续卡 3h」
+    的契约。如果未来 fallback 改成 decline，这条会红。"""
+    state = sr._mini_game_invite_get_state(LANLAN)
+    long_ago = time.time() - 3 * 3600
+    state['delivered_at'] = long_ago
+    state['responded_at'] = long_ago
+    state['chats_since_response'] = sr.MINI_GAME_INVITE_COOLDOWN_CHATS
+    state['last_response_choice'] = None
     assert sr._mini_game_invite_in_cooldown(LANLAN) is False
 
 
@@ -885,9 +942,14 @@ async def test_invite_skipped_when_no_game_available(monkeypatch):
     assert LANLAN not in sr._mini_game_invite_state
 
 
-def test_cooldown_is_1h_by_default():
-    """spec 改动：24h → 1h。常量值是后续 PR 调整的锚点，pin 住避免回归。"""
-    assert sr.MINI_GAME_INVITE_COOLDOWN_SECONDS == 3600
+def test_cooldown_accept_is_2h_by_default():
+    """spec：accept 后 cooldown = 2h。pin 住避免回归（曾从 24h→1h→2h）。"""
+    assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS == 2 * 3600
+
+
+def test_cooldown_decline_is_5h_by_default():
+    """spec：decline 后 cooldown = 5h（>accept，"拒绝"信号需更久静默）。"""
+    assert sr.MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS == 5 * 3600
 
 
 def test_new_user_force_at_is_4_by_default():

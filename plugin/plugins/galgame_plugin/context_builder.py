@@ -6,6 +6,10 @@ import re
 from typing import Any
 
 from .context_tokens import count_tokens_heuristic
+from .cross_scene_memory import (
+    render_for_push as _render_cross_scene_memory_for_push,
+    sanitize_memory as _cross_scene_sanitize,
+)
 from .models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
@@ -765,6 +769,57 @@ def build_local_scene_summary(
     return summary
 
 
+def build_fallback_summary(
+    scene_id: str,
+    lines: list[dict[str, Any]],
+    selected_choices: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+) -> str:
+    speakers = list(
+        dict.fromkeys(
+            str(line.get("speaker") or "").strip()
+            for line in lines
+            if isinstance(line, dict) and str(line.get("speaker") or "").strip()
+        )
+    )
+    speaker_str = "、".join(speakers[:3]) if speakers else "未知角色"
+    extra = f"等{len(speakers)}人" if len(speakers) > 3 else ""
+
+    candidate_lines = [line for line in lines if isinstance(line, dict)]
+    top_lines = sorted(
+        candidate_lines,
+        key=lambda line: _line_importance_score(line),
+        reverse=True,
+    )[:2]
+    key_dialogue = "\n".join(
+        f"「{str(line.get('speaker') or '旁白')}：{str(line.get('text') or '').strip()}」"
+        for line in top_lines
+        if str(line.get("text") or "").strip()
+    )
+
+    if not key_dialogue and isinstance(snapshot, dict):
+        snapshot_text = str(snapshot.get("text") or "").strip()
+        if snapshot_text:
+            snapshot_speaker = str(snapshot.get("speaker") or "旁白").strip() or "旁白"
+            key_dialogue = f"「{snapshot_speaker}：{snapshot_text}」"
+
+    emotion_hint = (
+        "涉及情感表达"
+        if any(_line_importance_score(line) >= 2.0 for line in candidate_lines)
+        else ""
+    )
+
+    parts = [f"场景 {scene_id or '(unknown)'}：{speaker_str}{extra}正在对话。"]
+    if emotion_hint:
+        parts.append(f"最近的 {len(candidate_lines)} 句台词{emotion_hint}。")
+    if selected_choices:
+        parts.append(f"已做出 {len(selected_choices)} 次选择。")
+    if key_dialogue:
+        parts.append(f"\n关键对白：\n{key_dialogue}")
+
+    return "".join(parts)
+
+
 def _matching_context_snapshot(
     local_state: dict[str, Any],
     *,
@@ -1012,6 +1067,108 @@ def _scene_context_hint(
     ):
         return {"scene_context": "cold_start"}
     return {}
+
+
+def _cross_scene_memory_context(
+    local_state: dict[str, Any],
+    *,
+    max_chars: int = 360,
+) -> dict[str, Any]:
+    memory = _cross_scene_sanitize(local_state.get("cross_scene_memory"))
+    rendered = _render_cross_scene_memory_for_push(memory, max_chars=max_chars)
+    if not rendered:
+        return {}
+    return {
+        "cross_scene_memory": memory,
+        "cross_scene_memory_context": rendered,
+    }
+
+
+def _compact_profile_text(value: Any, *, limit: int = 180) -> str:
+    if isinstance(value, list):
+        text = " / ".join(str(item).strip() for item in value if str(item).strip())
+    elif isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            key_text = str(key).strip()
+            item_text = str(item).strip()
+            if key_text and item_text:
+                parts.append(f"{key_text}: {item_text}")
+        text = " / ".join(parts)
+    else:
+        text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _profile_voice_traits(profile: dict[str, Any]) -> list[dict[str, str]]:
+    voice = profile.get("character_voice")
+    if not isinstance(voice, dict):
+        return []
+    traits = voice.get("core_traits")
+    if not isinstance(traits, list):
+        return []
+    rendered: list[dict[str, str]] = []
+    for item in traits[:3]:
+        if not isinstance(item, dict):
+            continue
+        trait = _compact_profile_text(item.get("trait"), limit=120)
+        speech_effect = _compact_profile_text(item.get("speech_effect"), limit=120)
+        if trait or speech_effect:
+            rendered.append({"trait": trait, "speech_effect": speech_effect})
+    return rendered
+
+
+def _fixed_character_pov_context(local_state: dict[str, Any]) -> dict[str, Any]:
+    mode = str(local_state.get("character_mode") or "off").strip().lower()
+    name = str(local_state.get("character_fixed_name") or "").strip()
+    if mode != "fixed" or not name:
+        return {}
+
+    profiles = local_state.get("character_profiles")
+    profile = profiles.get(name) if isinstance(profiles, dict) else None
+    profile = profile if isinstance(profile, dict) else None
+    runtime_states = local_state.get("character_runtime_state")
+    runtime_state = (
+        runtime_states.get(name)
+        if isinstance(runtime_states, dict) and isinstance(runtime_states.get(name), dict)
+        else {}
+    )
+    pov: dict[str, Any] = {
+        "enabled": True,
+        "mode": "fixed",
+        "character_name": name,
+        "profile_known": bool(profile),
+        "profile_game_id": str(local_state.get("character_profile_game_id") or ""),
+        "match_reason": str(local_state.get("character_profile_match_reason") or ""),
+        "role": "bounded_strategy_reference",
+        "strategy_instruction": (
+            "Use the fixed character as a bounded narrative strategy lens for "
+            "choices, summaries, and consultation. Do not role-play as the "
+            "character, and never override safety gates or valid-choice constraints."
+        ),
+        "applies_to": ["suggest_choice", "scene_summary", "cat_consultation", "push"],
+    }
+    if profile is not None:
+        voice = profile.get("character_voice") if isinstance(profile.get("character_voice"), dict) else {}
+        pov.update(
+            {
+                "identity": _compact_profile_text(profile.get("identity"), limit=240),
+                "relationships": _compact_profile_text(profile.get("relationships"), limit=300),
+                "background": _compact_profile_text(profile.get("background"), limit=300),
+                "voice_traits": _profile_voice_traits(profile),
+                "first_person_pronoun": str(voice.get("first_person_pronoun") or "").strip(),
+            }
+        )
+    if runtime_state:
+        pov["runtime_state"] = {
+            key: _compact_profile_text(value, limit=160)
+            for key, value in runtime_state.items()
+            if key in {"current_emotion", "arc_stage", "relationship_status", "information_gap"}
+            and str(value or "").strip()
+        }
+    return {"fixed_character_pov": pov}
 
 
 def _snapshot_for_stable_summary_seed(
@@ -1286,6 +1443,7 @@ def build_summarize_context(
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
+        **_fixed_character_pov_context(local_state),
         **_scene_context_hint(
             local_state,
             scene_id=effective_scene_id,
@@ -1357,6 +1515,8 @@ def build_suggest_context(
         "input_source": input_source,
         "input_degraded": input_degraded,
         "degraded_reasons": degraded_reasons,
+        **_fixed_character_pov_context(local_state),
+        **_cross_scene_memory_context(local_state),
         **_scene_context_hint(
             local_state,
             scene_id=scene_id,

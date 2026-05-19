@@ -68,5 +68,21 @@
   "install.dxcam.ok": "DXcam 安装完成",
   "install.dxcam.fail": "DXcam 安装失败",
   "errors.not_configured": "galgame_plugin 未配置",
-  "errors.install_in_progress": "{component} 安装正在进行中"
+  "errors.install_in_progress": "{component} 安装正在进行中",
+  "entries.galgame_get_character_profile.name": "查询角色信息",
+  "entries.galgame_get_character_profile.description": "获取指定 galgame 角色的预置档案。",
+  "entries.galgame_set_character_mode.name": "设置角色模式",
+  "entries.galgame_set_character_mode.description": "在关闭角色档案和固定角色模式之间切换。",
+  "entries.galgame_get_character_list.name": "列出 galgame 角色",
+  "entries.galgame_get_character_list.description": "返回当前游戏可用的预置角色列表。",
+  "entries.galgame_import_character_data.name": "导入角色数据",
+  "entries.galgame_import_character_data.description": "导入用户提供的角色档案 JSON 文件。",
+  "entries.galgame_get_scene_context.name": "查询场景上下文",
+  "entries.galgame_get_scene_context.description": "返回当前场景摘要、关键台词、可见角色和已确认选项。",
+  "entries.galgame_get_story_so_far.name": "查询目前剧情",
+  "entries.galgame_get_story_so_far.description": "返回跨场景记忆和最近剧情进展。",
+  "entries.galgame_get_recent_lines.name": "查询最近台词",
+  "entries.galgame_get_recent_lines.description": "返回最近稳定台词和观察到的候选台词。",
+  "entries.galgame_get_push_history.name": "查询推送历史",
+  "entries.galgame_get_push_history.description": "返回最近上下文推送元数据，不包含原始台词文本。"
 }

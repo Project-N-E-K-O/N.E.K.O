@@ -35,6 +35,14 @@ _EXPECTED_ENTRY_IDS = [
     "galgame_suggest_choice",
     "galgame_agent_command",
     "galgame_continue_auto_advance",
+    "galgame_get_character_profile",
+    "galgame_set_character_mode",
+    "galgame_get_character_list",
+    "galgame_import_character_data",
+    "galgame_get_scene_context",
+    "galgame_get_story_so_far",
+    "galgame_get_recent_lines",
+    "galgame_get_push_history",
 ]
 
 _EXPECTED_RUNTIME_KEYS = [
@@ -46,7 +54,7 @@ _EXPECTED_RUNTIME_KEYS = [
     "errors.install_in_progress",
 ]
 
-_EXPECTED_LOCALES = ["zh-CN", "en", "ja", "ru", "ko"]
+_EXPECTED_LOCALES = ["zh-CN", "zh-TW", "en", "ja", "ru", "ko", "es", "pt"]
 
 
 def _assert_bundle_has_key(i18n, locale: str, key: str) -> None:
@@ -63,7 +71,8 @@ def test_i18n_all_locales_have_all_keys(galgame_i18n_dir, locale) -> None:
         _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.description")
     for key in _EXPECTED_RUNTIME_KEYS:
         _assert_bundle_has_key(i18n, locale, key)
-    assert len(i18n.messages[locale]) == 70
+    base_locale = "en"
+    assert len(i18n.messages[locale]) == len(i18n.messages[base_locale])
 
 
 def test_tr_ref_resolves_to_correct_locale(galgame_i18n_dir) -> None:
@@ -75,6 +84,34 @@ def test_tr_ref_resolves_to_correct_locale(galgame_i18n_dir) -> None:
 
     assert zh == "获取 galgame 插件状态"
     assert en == "Get galgame plugin status"
+
+
+def test_zh_tw_locale_is_traditional_chinese_not_zh_cn_copy(galgame_i18n_dir) -> None:
+    i18n = load_plugin_i18n_from_dir(galgame_i18n_dir)
+    zh_cn = i18n.messages["zh-CN"]
+    zh_tw = i18n.messages["zh-TW"]
+
+    assert zh_tw != zh_cn
+    assert zh_tw["plugin.name"] == "Galgame 遊玩助手"
+    assert zh_tw["plugin.description"] == "讓貓娘陪伴你一起玩 Galgame"
+
+    simplified_fragments = [
+        "游玩",
+        "让猫娘",
+        "获取",
+        "设置",
+        "窗口",
+        "进程",
+        "识别",
+        "截图",
+        "当前",
+        "状态",
+        "后台",
+        "点击",
+        "发送",
+    ]
+    for key, value in zh_tw.items():
+        assert not any(fragment in value for fragment in simplified_fragments), (key, value)
 
 
 def test_tr_default_fallback(galgame_i18n_dir) -> None:

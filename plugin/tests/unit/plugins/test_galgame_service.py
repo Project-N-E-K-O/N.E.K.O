@@ -800,6 +800,47 @@ def test_status_payload_snapshot_fast_path_skips_json_copy(monkeypatch: pytest.M
     assert payload["primary_diagnosis"]["title"]
 
 
+def test_status_payload_exposes_lightweight_character_profile_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = galgame_service.build_config({})
+    state = _status_state(
+        character_mode="fixed",
+        character_fixed_name="丛雨",
+        character_profiles={
+            "丛雨": {"identity": "刀灵"},
+            "茉子": {"identity": "忍者"},
+        },
+        character_profile_game_id="senren_banka",
+        character_profile_match_reason="window_title_contains",
+        character_mode_stale=True,
+    )
+    _patch_status_dependencies(monkeypatch)
+
+    payload = galgame_service.build_status_payload(
+        state,
+        config=config,
+        state_is_snapshot=True,
+    )
+
+    assert payload["character_mode"] == "fixed"
+    assert payload["character_fixed_name"] == "丛雨"
+    assert payload["character_profile_count"] == 2
+    assert payload["character_profile_game_id"] == "senren_banka"
+    assert payload["character_profile_match_reason"] == "window_title_contains"
+    assert payload["character_mode_stale"] is True
+    assert payload["character_pov_active"] is True
+    assert payload["character_pov_name"] == "丛雨"
+    assert payload["character_pov_profile_known"] is True
+    assert payload["character_pov_applied_to"] == [
+        "suggest_choice",
+        "scene_summary",
+        "cat_consultation",
+        "push",
+    ]
+    assert "character_profiles" not in payload
+
+
 def test_status_payload_keeps_last_stable_line_after_new_ocr_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

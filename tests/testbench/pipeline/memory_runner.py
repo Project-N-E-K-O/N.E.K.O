@@ -1290,7 +1290,7 @@ async def _preview_persona_resolve_corrections(
             continue
         item = corrections[idx]
         action = result.get("action", "keep_both")
-        if action not in ("replace", "keep_new", "keep_old", "keep_both"):
+        if action not in ("merge", "keep_new", "keep_old", "keep_both"):
             warnings.append(f"非法 action={action!r} 于 index {idx}, 归位为 keep_both.")
             action = "keep_both"
         actions.append({
@@ -1356,7 +1356,7 @@ async def _commit_persona_resolve_corrections(
         new_text = item.get("new_text", "")
         section_facts = pm._get_section_facts(persona, entity)  # noqa: SLF001
 
-        if action == "replace":
+        if action == "merge":
             for j, existing in enumerate(section_facts):
                 et = (existing.get("text", "") if isinstance(existing, dict)
                       else str(existing))

@@ -554,6 +554,7 @@
         "API_POLICY_VIOLATION": "💥 Violación de política o bloqueo de seguridad: {{msg}}",
         "API_1008_FALLBACK": "💥 Conexión desconectada (1008): {{msg}}",
         "API_IDLE_TIMEOUT": "💥 Conexión de voz cerrada por inactividad, reconexión automática...",
+        "FREE_API_AUTO_CLOSE_VOICE": "La API gratuita cerró automáticamente la sesión de voz tras un largo periodo sin entrada de voz",
         "API_UNKNOWN_ERROR": "💥 Error de API: {{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 ¡El servidor de memoria no se inició! Primero ejecute Memory_server.py.",
         "MEMORY_SERVER_CRASHED": "🧠 El servidor de memoria (puerto {{port}}) falló. Reinicie Memory_server.py.",
@@ -613,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ Se detectó marca de agua de audio CogTTS (bip). Para desactivar la marca de agua, vaya a la consola de Zhipu y configúrela manualmente.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "La URL de la API GPT-SoVITS no está configurada. Habilite y configure TTS personalizado en la configuración de API.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "La URL de la API GPT-SoVITS debe ser localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Clave API de audio (AUDIO_API_KEY) no configurada",
+        "TTS_AUDIO_API_KEY_MISSING": "La API Key del proveedor de voz seleccionado no está configurada. Añádela en la configuración de API.",
         "TTS_VOICE_NOT_REGISTERED": "Este personaje no tiene voz registrada.",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Faltan parámetros requeridos",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Se requiere la URL de la API GPT-SoVITS",
@@ -942,6 +943,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
+            "elevenlabs": "ElevenLabs (clonación de voz)",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "OpenRouter (agregador de modelos)"
@@ -977,6 +979,7 @@
             "doubao": "ByteDance (Doubao)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude (antrópico)",
             "grok": "Grok (xAI)",
             "openrouter": "enrutador abierto"
@@ -1028,6 +1031,10 @@
             "reRegisterVoice": "Es posible que deba volver a registrar las voces requeridas después de cambiar la clave API",
             "cancel": "Cancelar",
             "continue": "Continuar guardando"
+        },
+        "aliyunUsApiWarning": {
+            "title": "Aviso de API de Alibaba en EE. UU.",
+            "message": "Actualmente está usando la API de Alibaba en EE. UU., que no admite TTS ni voz en tiempo real. Se recomienda cambiar a la API de Alibaba en Singapur."
         },
         "conversationModelConfig": "Configuración del modelo de diálogo de texto",
         "summaryModelConfig": "Configuración del modelo resumido",
@@ -1423,12 +1430,14 @@
         "gotoApiSettings": "Ir a la configuración de API",
         "noApiKeyPrompt": "No se ha configurado ninguna clave API para la clonación de voz. ¿Le gustaría configurar uno?",
         "dismissNoApiPrompt": "Más tarde",
-        "alibabaApiRequired": "Esta función requiere el modelo CosyVoice. Guarde la clave API de Alibaba Bailian en la configuración de claves API (no es necesario habilitar la API Assist) o configure un servidor de voz local.",
+        "alibabaApiRequired": "Esta función requiere el modelo CosyVoice de Alibaba Bailian. Guarde la clave API de Alibaba Bailian en la configuración de claves API (no es necesario habilitar la API auxiliar) o configure un servidor de voz local.",
+        "alibabaIntlApiRequired": "Esta función requiere el modelo CosyVoice de Alibaba Internacional. Guarde la clave API de Alibaba Internacional en la configuración de claves API (no es necesario habilitar la API auxiliar).",
         "minimaxApiRequired": "Esta característica requiere el modelo MiniMax (China). Guarde la clave API MiniMax en la configuración de claves API (no es necesario habilitar Assist API).",
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs"
@@ -1723,6 +1732,9 @@
         "maintenanceWaitingStatus": "Esta página se quedará aquí y volverá a intentarlo automáticamente hasta que el servicio se recupere.",
         "maintenanceWaitingSubtitle": "Cerrando. Los datos se migrarán después del cierre y el servicio se reiniciará automáticamente.",
         "migrationPending": "Se detectó un plan de migración sin terminar. La página principal seguirá bloqueada hasta que el servicio vuelva a estar disponible.",
+        "openPathFailed": "Este entorno no puede abrir la carpeta. Ve a la ruta manualmente.",
+        "openRetainedRoot": "Abrir directorio de datos antiguo",
+        "openTargetRoot": "Abrir ruta activa",
         "pickFolder": "Elegir carpeta",
         "pickFolderUnavailable": "El selector de carpetas del sistema no está disponible. Introduce la ruta manualmente.",
         "pickFolderFailed": "No se pudo abrir el selector de carpetas. Introduce la ruta manualmente.",
@@ -1744,6 +1756,7 @@
         "progressVerifying": "Verificando los resultados de la migración",
         "progressWaitingShutdown": "Cerrando",
         "rebindPreviewNotice": "El backend confirmó que la ruta original vuelve a estar disponible. La app se reiniciará en esa ruta. Esta vez no se copiarán datos de ejecución.",
+        "recommendedPath": "Ruta recomendada",
         "selectedPath": "Ruta seleccionada",
         "recoveryRequired": "Se detectó un estado de almacenamiento recuperable. Confirma la ubicación de almacenamiento para este inicio antes de continuar.",
         "recoverySourceUnavailable": "La ruta de datos original no está disponible. Vuelve a conectarla o cambia explícitamente a la ruta predeterminada recomendada.",
@@ -1775,7 +1788,8 @@
         "targetFreeSpace": "Espacio libre en el volumen de destino",
         "targetLabel": "Ruta activa",
         "unknownBytes": "Aún sin estimar",
-        "useCurrent": "Mantener la ruta actual"
+        "useCurrent": "Mantener la ruta actual",
+        "useRecommended": "Usar ruta recomendada"
     },
     "character": {
         "manager": "Administrador de personajes",
@@ -1972,6 +1986,7 @@
         "restartFailed": "Error al reiniciar: {{error}}",
         "configUpdated": "Configuración actualizada, la página se actualizará",
         "autoMuteTimeout": "Sin entrada de voz durante mucho tiempo, micrófono cerrado automáticamente",
+        "freeApiAutoCloseNotice": "La API gratuita cerró automáticamente la sesión de voz tras un largo periodo sin entrada de voz",
         "deviceSelected": "Seleccionado {{device}}",
         "micAccessDenied": "No puedo acceder al micrófono",
         "gameVoiceSttMicPermissionDenied": "La transcripción de voz del juego no tiene permiso para usar el micrófono. Revisa los permisos del navegador.",
@@ -2459,6 +2474,7 @@
             "AGENT_PRECHECK_PENDING": "Comprobación de conectividad en curso...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API del agente no configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui no instalado",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sesión de pantalla de escritorio no disponible",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso del navegador no instalado",
             "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use no cargado",
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use no cargado",
