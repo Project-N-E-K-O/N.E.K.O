@@ -61,6 +61,7 @@ from .models import (
     OCR_TRIGGER_MODE_AFTER_ADVANCE,
     OCR_TRIGGER_MODE_INTERVAL,
     GalgameLLMConfig,
+    STORE_CROSS_SCENE_MEMORY,
     SharedStatePayload,
     json_copy,
     sanitize_snapshot_state,
@@ -7164,6 +7165,18 @@ class GameLLMAgent:
         }
         state.cross_scene_memory = updated
         plugin._cached_snapshot = None  # type: ignore[attr-defined]
+        persist = getattr(plugin, "_persist", None)
+        if persist is not None:
+            try:
+                persist.persist_config_override(
+                    STORE_CROSS_SCENE_MEMORY,
+                    json_copy(updated),
+                )
+            except Exception:  # noqa: BLE001
+                self.logger.warning(
+                    "failed to persist galgame cross_scene_memory",
+                    exc_info=True,
+                )
         self._cross_scene_memory_dirty = True
 
     def _latest_scene_summary_text(self, snapshot: dict[str, Any]) -> str:
