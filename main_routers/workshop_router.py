@@ -79,6 +79,10 @@ _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
 
 
+class UnsupportedUGCDetailsError(RuntimeError):
+    """Raised when the loaded Steamworks wrapper cannot query UGC item details."""
+
+
 def _safe_get_workshop_install_folder(steamworks, item_id_int: int) -> str:
     """安全读取订阅物品的安装目录路径。
 
@@ -344,6 +348,24 @@ def _all_items_cache_valid(item_ids: list[int]) -> bool:
     return all(_is_item_cache_valid(iid) for iid in item_ids)
 
 
+def _steamworks_method_unavailable(method) -> bool:
+    return bool(getattr(method, '_neko_steamworks_unavailable', False))
+
+
+def _ugc_details_query_supported(steamworks) -> bool:
+    required_methods = (
+        'Workshop_CreateQueryUGCDetailsRequest',
+        'Workshop_SetQueryCompletedCallback',
+        'Workshop_SendQueryUGCRequest',
+        'Workshop_GetQueryUGCResult',
+    )
+    for method_name in required_methods:
+        method = getattr(steamworks, method_name, None)
+        if method is None or _steamworks_method_unavailable(method):
+            return False
+    return True
+
+
 async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries: int = 2) -> dict[int, object]:
     """
     批量查询 UGC 物品详情，带重试逻辑。
@@ -358,6 +380,15 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     """
     if not item_ids:
         return {}
+
+    if not _ugc_details_query_supported(steamworks):
+        logger.info(
+            "UGC 批量详情查询不可用：当前 Steamworks wrapper 缺少 Linux UGC query 桥接，"
+            "将保留订阅/安装目录扫描并跳过标题、作者等详情预热"
+        )
+        raise UnsupportedUGCDetailsError(
+            "Steamworks wrapper does not expose UGC details query methods"
+        )
     
     for attempt in range(max_retries):
         try:
@@ -569,7 +600,11 @@ async def warmup_ugc_cache() -> None:
             return
         
         logger.info(f"UGC 缓存预热: 开始查询 {len(all_item_ids)} 个物品...")
-        ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        try:
+            ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        except UnsupportedUGCDetailsError:
+            logger.info("UGC 缓存预热: 当前平台不支持详情查询，跳过预热")
+            return
         
         if ugc_results:
             # 将结果写入缓存
@@ -1571,6 +1606,8 @@ async def get_subscribed_workshop_items():
                 else:
                     logger.info(f'批量查询 {len(all_item_ids)} 个物品的详细信息')
                     ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
+        except UnsupportedUGCDetailsError:
+            logger.info("UGC 详情查询不可用，订阅列表将使用安装目录/默认信息降级返回")
         except Exception as batch_error:
             logger.warning(f"批量查询物品详情失败: {batch_error}")
         
@@ -2105,6 +2142,93 @@ def get_workshop_item_download_status(item_id: str):
     }
 
 
+def _build_ugc_details_unsupported_item_response(steamworks, item_id_int: int, item_state: int):
+    """Build an explicit partial detail response when UGC details are unsupported."""
+    install_info = None
+    installed = False
+    folder = ''
+    size = 0
+
+    try:
+        install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug(f"获取物品 {item_id_int} 安装信息失败（可能刚取消订阅）: {exc}")
+    except Exception as exc:
+        logger.warning(f"获取物品 {item_id_int} 安装信息失败: {exc}")
+
+    if install_info and isinstance(install_info, dict):
+        raw_folder = install_info.get('folder', '') or ''
+        folder = str(raw_folder) if raw_folder else ''
+        installed = bool(folder and os.path.isdir(folder))
+        disk_size = install_info.get('disk_size')
+        if installed and isinstance(disk_size, (int, float)):
+            size = int(disk_size)
+    elif isinstance(install_info, tuple) and len(install_info) >= 3:
+        raw_installed, raw_folder, raw_size = install_info[:3]
+        folder = str(raw_folder) if raw_folder and isinstance(raw_folder, (str, bytes)) else ''
+        installed = bool(raw_installed) and bool(folder and os.path.isdir(folder))
+        if installed and isinstance(raw_size, (int, float)):
+            size = int(raw_size)
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) 失败: {exc}")
+        download_info = {}
+
+    downloaded = 0
+    total = 0
+    progress = 0.0
+    if isinstance(download_info, dict):
+        downloaded = int(download_info.get("downloaded", 0) or 0)
+        total = int(download_info.get("total", 0) or 0)
+    elif isinstance(download_info, tuple) and len(download_info) >= 3:
+        downloaded = int(download_info[0] or 0)
+        total = int(download_info[1] or 0)
+        progress = float(download_info[2] or 0.0)
+    downloading = total > 0 and downloaded < total
+
+    return {
+        "success": True,
+        "partial": True,
+        "detailsAvailable": False,
+        "detailsUnavailableReason": "ugc_details_query_unsupported",
+        "item": {
+            "publishedFileId": item_id_int,
+            "title": f"未知物品_{item_id_int}",
+            "description": "",
+            "steamIDOwner": "",
+            "authorName": None,
+            "timeCreated": 0,
+            "timeUpdated": 0,
+            "previewImageUrl": "",
+            "associatedUrl": "",
+            "fileUrl": "",
+            "fileSize": 0,
+            "fileId": 0,
+            "previewFileId": 0,
+            "tags": [],
+            "state": {
+                "subscribed": bool(item_state & _ITEM_STATE_SUBSCRIBED),
+                "legacyItem": bool(item_state & 2),
+                "installed": installed,
+                "needsUpdate": bool(item_state & _ITEM_STATE_NEEDS_UPDATE),
+                "downloading": bool(item_state & _ITEM_STATE_DOWNLOADING) or downloading,
+                "downloadPending": bool(item_state & _ITEM_STATE_DOWNLOAD_PENDING),
+                "isWorkshopItem": bool(item_state & 128),
+            },
+            "installedFolder": folder if installed else None,
+            "fileSizeOnDisk": size if installed else 0,
+            "downloadProgress": {
+                "bytesDownloaded": downloaded if downloading else 0,
+                "bytesTotal": total if downloading else 0,
+                "percentage": (progress * 100) if progress > 0 and downloading
+                else ((downloaded / total * 100) if total > 0 and downloading else 0),
+            },
+        },
+    }
+
+
 @router.get('/item/{item_id}/path')
 def get_workshop_item_path(item_id: str):
     """
@@ -2314,7 +2438,10 @@ async def get_workshop_item_details(item_id: str):
         item_state = steamworks.Workshop.GetItemState(item_id_int)
         
         # 使用统一的批量查询辅助函数（带重试）查询单个物品
-        ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        try:
+            ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        except UnsupportedUGCDetailsError:
+            return _build_ugc_details_unsupported_item_response(steamworks, item_id_int, item_state)
         result = ugc_results.get(item_id_int)
         
         # 如果查询失败，尝试使用缓存（按条目粒度检查 TTL）

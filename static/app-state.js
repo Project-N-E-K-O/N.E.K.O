@@ -5,6 +5,12 @@
 (function () {
     'use strict';
 
+    function isDesktopLinuxX11Runtime() {
+        return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11);
+    }
+
+    const DEFAULT_RENDER_QUALITY = isDesktopLinuxX11Runtime() ? 'low' : 'medium';
+
     // ======================== 常量 ========================
     window.appConst = Object.freeze({
         HEARTBEAT_INTERVAL: 30000,           // WebSocket 心跳间隔 (ms)
@@ -163,7 +169,7 @@
         // --- UI / 杂项 ---
         focusModeEnabled: false,
         avatarReactionBubbleEnabled: true,
-        renderQuality: 'medium',
+        renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
         screenshotCounter: 0,
         statusToastTimeout: null,

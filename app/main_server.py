@@ -155,7 +155,10 @@ def initialize_steamworks():
         if 'logger' in globals():
             logger.info(f"Steamworks初始化成功，应用ID: {actual_app_id}")
             logger.info(f"Steam客户端运行状态: {steamworks.IsSteamRunning()}")
-            logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            try:
+                logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            except Exception as overlay_error:
+                logger.info("Steam覆盖层状态不可用，跳过覆盖层诊断: %s", overlay_error)
         
         return steamworks
     except Exception as e:

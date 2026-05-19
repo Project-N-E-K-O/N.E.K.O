@@ -1719,6 +1719,9 @@
         "maintenanceWaitingStatus": "サービスが復旧するまで、このページはここに留まり自動で再試行します。",
         "maintenanceWaitingSubtitle": "終了しています。終了後にデータを移行し、サービスを自動で再起動します。",
         "migrationPending": "未完了の移行プランが見つかりました。サービスが再び使える状態になるまで、ホーム画面はこのままブロックされます。",
+        "openPathFailed": "この環境ではフォルダーを開けません。手動でそのパスへ移動してください。",
+        "openRetainedRoot": "古いデータ用フォルダーを開く",
+        "openTargetRoot": "有効なパスを開く",
         "pickFolder": "フォルダーを選択",
         "pickFolderUnavailable": "システムのフォルダー選択機能が使えません。パスを手入力してください。",
         "pickFolderFailed": "フォルダー選択画面を開けませんでした。パスを手入力してください。",
@@ -1740,6 +1743,7 @@
         "progressVerifying": "移行結果を確認しています",
         "progressWaitingShutdown": "終了しています",
         "rebindPreviewNotice": "バックエンドにより、元のパスが再び利用可能だと確認されました。この後、そのパスで再起動します。今回は実行データのコピーは行いません。",
+        "recommendedPath": "おすすめのパス",
         "selectedPath": "選択したパス",
         "recoveryRequired": "復旧可能なストレージ状態が見つかりました。続行する前に、今回の起動で使う保存場所を確認してください。",
         "recoverySourceUnavailable": "元のデータ用パスは現在利用できません。再接続するか、推奨される既定のパスへ明示的に切り替えてください。",
@@ -1771,7 +1775,8 @@
         "targetFreeSpace": "保存先ボリュームの空き容量",
         "targetLabel": "有効なパス",
         "unknownBytes": "まだ見積もられていません",
-        "useCurrent": "現在のパスをそのまま使う"
+        "useCurrent": "現在のパスをそのまま使う",
+        "useRecommended": "おすすめのパスを使う"
     },
     "character": {
         "manager": "キャラクターマネージャー",
@@ -2456,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "接続チェック中...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API が設定されていません",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui がインストールされていません",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "デスクトップ表示セッションにアクセスできません",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use がインストールされていません",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use モジュールが読み込まれていません",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use モジュールが読み込まれていません",

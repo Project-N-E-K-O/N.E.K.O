@@ -1719,6 +1719,9 @@
         "maintenanceWaitingStatus": "服務尚未恢復前，頁面會繼續停留在這裡並自動重試連線。",
         "maintenanceWaitingSubtitle": "正在關閉，資料會在關閉後遷移並自動重啟。",
         "migrationPending": "檢測到尚未完成的遷移計畫。目前首頁會繼續保持阻斷，直到服務恢復到可繼續狀態。",
+        "openPathFailed": "目前環境無法開啟該目錄，請手動前往路徑。",
+        "openRetainedRoot": "開啟舊資料目錄",
+        "openTargetRoot": "開啟目前路徑",
         "pickFolder": "選擇資料夾",
         "pickFolderUnavailable": "目前系統資料夾選擇器不可用，請手動輸入路徑。",
         "pickFolderFailed": "開啟資料夾選擇器失敗，請手動輸入路徑。",
@@ -1740,6 +1743,7 @@
         "progressVerifying": "正在校驗遷移結果",
         "progressWaitingShutdown": "正在關閉",
         "rebindPreviewNotice": "後端已確認：原路徑已可以重新連線。後續會重新啟動到該路徑，本次不會複製執行時資料。",
+        "recommendedPath": "推薦路徑",
         "selectedPath": "選擇路徑",
         "recoveryRequired": "檢測到需要恢復的存儲狀態，請先重新確認本次使用的存儲位置。",
         "recoverySourceUnavailable": "原始資料路徑目前不可用。請先重新連接原路徑，或明確切回建議預設路徑繼續目前會話。",
@@ -1771,7 +1775,8 @@
         "targetFreeSpace": "目標卷剩餘空間",
         "targetLabel": "目前生效路徑",
         "unknownBytes": "暫未估算",
-        "useCurrent": "保持當前路徑"
+        "useCurrent": "保持當前路徑",
+        "useRecommended": "使用推薦路徑"
     },
     "character": {
         "manager": "角色管理",
@@ -2456,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "連接檢查中...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安裝",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "桌面顯示工作階段無法存取",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安裝",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模組未載入",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模組未載入",

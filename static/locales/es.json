@@ -1719,6 +1719,9 @@
         "maintenanceWaitingStatus": "Esta página se quedará aquí y volverá a intentarlo automáticamente hasta que el servicio se recupere.",
         "maintenanceWaitingSubtitle": "Cerrando. Los datos se migrarán después del cierre y el servicio se reiniciará automáticamente.",
         "migrationPending": "Se detectó un plan de migración sin terminar. La página principal seguirá bloqueada hasta que el servicio vuelva a estar disponible.",
+        "openPathFailed": "Este entorno no puede abrir la carpeta. Ve a la ruta manualmente.",
+        "openRetainedRoot": "Abrir directorio de datos antiguo",
+        "openTargetRoot": "Abrir ruta activa",
         "pickFolder": "Elegir carpeta",
         "pickFolderUnavailable": "El selector de carpetas del sistema no está disponible. Introduce la ruta manualmente.",
         "pickFolderFailed": "No se pudo abrir el selector de carpetas. Introduce la ruta manualmente.",
@@ -1740,6 +1743,7 @@
         "progressVerifying": "Verificando los resultados de la migración",
         "progressWaitingShutdown": "Cerrando",
         "rebindPreviewNotice": "El backend confirmó que la ruta original vuelve a estar disponible. La app se reiniciará en esa ruta. Esta vez no se copiarán datos de ejecución.",
+        "recommendedPath": "Ruta recomendada",
         "selectedPath": "Ruta seleccionada",
         "recoveryRequired": "Se detectó un estado de almacenamiento recuperable. Confirma la ubicación de almacenamiento para este inicio antes de continuar.",
         "recoverySourceUnavailable": "La ruta de datos original no está disponible. Vuelve a conectarla o cambia explícitamente a la ruta predeterminada recomendada.",
@@ -1771,7 +1775,8 @@
         "targetFreeSpace": "Espacio libre en el volumen de destino",
         "targetLabel": "Ruta activa",
         "unknownBytes": "Aún sin estimar",
-        "useCurrent": "Mantener la ruta actual"
+        "useCurrent": "Mantener la ruta actual",
+        "useRecommended": "Usar ruta recomendada"
     },
     "character": {
         "manager": "Administrador de personajes",
@@ -2456,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "Comprobación de conectividad en curso...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API del agente no configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui no instalado",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sesión de pantalla de escritorio no disponible",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso del navegador no instalado",
             "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use no cargado",
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use no cargado",

@@ -1342,7 +1342,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
     // 根据画质设置调整渲染分辨率，不改动 Live2D 图集贴图。
     if (typeof this.applyRenderQuality === 'function') {
-        this.applyRenderQuality(window.renderQuality || 'medium');
+        this.applyRenderQuality(window.renderQuality);
+    }
+
+    if (typeof this._optimizeLinuxX11RendererProfile === 'function') {
+        this._optimizeLinuxX11RendererProfile(model);
     }
 
     // 应用位置和缩放设置
@@ -1689,6 +1693,14 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         ? performance.now()
         : Date.now();
     this._bubbleGeometryRefreshPass = 0;
+    try {
+        const readyModelPath = (modelPath && typeof modelPath === 'object' && typeof modelPath.url === 'string')
+            ? modelPath.url
+            : modelPath;
+        window.dispatchEvent(new CustomEvent('live2d-model-ready', {
+            detail: { modelPath: readyModelPath }
+        }));
+    } catch (_) {}
 
     const suppressInitialIdle = options.suppressInitialIdle === true;
 
@@ -1822,6 +1834,63 @@ Live2DManager.prototype.installMouthOverride = function() {
         } catch (_) {}
     }
     console.log('[Live2D MouthOverride] 找到的口型参数:', Object.keys(mouthParamIndices).join(', ') || '无');
+    const getCurrentPersistentParamIds = () => {
+        try {
+            if (typeof this.getPersistentExpressionParamIds === 'function') {
+                return this.getPersistentExpressionParamIds();
+            }
+        } catch (_) {}
+        return new Set();
+    };
+    const resolveSavedParamEntry = ([paramId, value]) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+        let idx = -1;
+        let resolvedId = paramId;
+        try {
+            if (/^(?:param_)?\d+$/.test(paramId)) {
+                const parsedIndex = parseInt(paramId.replace(/^param_/, ''), 10);
+                const parameterCount = typeof coreModel.getParameterCount === 'function'
+                    ? coreModel.getParameterCount()
+                    : Number.POSITIVE_INFINITY;
+                if (parsedIndex >= 0 && parsedIndex < parameterCount) {
+                    idx = parsedIndex;
+                    if (typeof coreModel.getParameterId === 'function') {
+                        const id = coreModel.getParameterId(idx);
+                        if (id) resolvedId = id;
+                    }
+                }
+            } else {
+                idx = coreModel.getParameterIndex(paramId);
+            }
+        } catch (_) {
+            return null;
+        }
+        return idx >= 0 ? { id: paramId, resolvedId, idx, value } : null;
+    };
+    const isRuntimeManagedSavedParam = (entry) => {
+        if (!entry) return true;
+        const ids = [entry.id, entry.resolvedId].filter(Boolean);
+        return ids.some(id => this._isEyeBlinkParamId(id)) ||
+            ids.some(id => lipSyncParams.includes(id)) ||
+            ids.some(id => visibilityParams.includes(id));
+    };
+    const isPersistentSavedParam = (entry, persistentIds) => {
+        if (!entry || !persistentIds) return false;
+        return persistentIds.has(entry.id) ||
+            (entry.resolvedId && persistentIds.has(entry.resolvedId));
+    };
+    const savedParamEntries = (this.savedModelParameters && this._shouldApplySavedParams)
+        ? Object.entries(this.savedModelParameters)
+            .map(resolveSavedParamEntry)
+            .filter(entry => entry && !isRuntimeManagedSavedParam(entry))
+        : [];
+    const lookAtParamIndices = {};
+    for (const id of ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY']) {
+        try {
+            const idx = coreModel.getParameterIndex(id);
+            if (idx >= 0) lookAtParamIndices[id] = idx;
+        } catch (_) {}
+    }
 
     // 覆盖 1: motionManager.update
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
@@ -1841,21 +1910,18 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 1. 捕获更新前的参数值（用于检测 Motion 是否修改了参数）
             // 1a. 保存参数 + 口型 + 眨眼参数快照（用于后续 Diff 检测）
             const preUpdateParams = {};
-            if (this.savedModelParameters && this._shouldApplySavedParams) {
-                for (const paramId of Object.keys(this.savedModelParameters)) {
-                    if (this._isEyeBlinkParamId(paramId)) continue;
+            const currentPersistentParamIds = savedParamEntries.length > 0 ? getCurrentPersistentParamIds() : null;
+            if (savedParamEntries.length > 0) {
+                for (const entry of savedParamEntries) {
+                    if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                     try {
-                        const idx = coreModel.getParameterIndex(paramId);
-                        if (idx >= 0) {
-                            preUpdateParams[paramId] = coreModel.getParameterValueByIndex(idx);
-                        }
+                        preUpdateParams[entry.id] = coreModel.getParameterValueByIndex(entry.idx);
                     } catch (_) {}
                 }
             }
-            for (const id of lipSyncParams) {
+            for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                    preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
             }
             if (this._autoEyeBlinkEnabled && this._eyeBlinkParams) {
@@ -1863,11 +1929,9 @@ Live2DManager.prototype.installMouthOverride = function() {
                     try { preUpdateParams[p.id] = coreModel.getParameterValueByIndex(p.idx); } catch (_) {}
                 }
             }
-            const lookAtParams = ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY'];
-            for (const id of lookAtParams) {
+            for (const [id, idx] of Object.entries(lookAtParamIndices)) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                    preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
             }
             
@@ -1896,16 +1960,13 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isLookAtDrivenByMotion = false;
             const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
             const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
-            for (const id of lipSyncParams) {
+            for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) {
-                        const postVal = coreModel.getParameterValueByIndex(idx);
-                        const preVal = preUpdateParams[id];
-                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._isMouthDrivenByMotion = true;
-                            break;
-                        }
+                    const postVal = coreModel.getParameterValueByIndex(idx);
+                    const preVal = preUpdateParams[id];
+                    if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                        this._isMouthDrivenByMotion = true;
+                        break;
                     }
                 } catch (_) {}
             }
@@ -1921,16 +1982,13 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
             }
-            for (const id of lookAtParams) {
+            for (const [id, idx] of Object.entries(lookAtParamIndices)) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) {
-                        const postVal = coreModel.getParameterValueByIndex(idx);
-                        const preVal = preUpdateParams[id];
-                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._isLookAtDrivenByMotion = true;
-                            break;
-                        }
+                    const postVal = coreModel.getParameterValueByIndex(idx);
+                    const preVal = preUpdateParams[id];
+                    if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                        this._isLookAtDrivenByMotion = true;
+                        break;
                     }
                 } catch (_) {}
             }
@@ -1989,32 +2047,19 @@ Live2DManager.prototype.installMouthOverride = function() {
                 // 注意：口型、眨眼在 coreModel.update 拦截器（注入点2）中写入
                 // 注意：呼吸、视线微动在 motionManager.update 拦截器（注入点1）中已写入
                 // 1. 应用保存的模型参数（智能叠加模式）
-                if (this.savedModelParameters && this._shouldApplySavedParams) {
-                    const persistentParamIds = this.getPersistentExpressionParamIds();
-
-                    for (const [paramId, value] of Object.entries(this.savedModelParameters)) {
-                        // 跳过眨眼参数，眨眼是运行时动态通道
-                        if (this._isEyeBlinkParamId(paramId)) continue;
-                        // 跳过口型参数
-                        if (lipSyncParams.includes(paramId)) continue;
-                        // 跳过可见性参数
-                        if (visibilityParams.includes(paramId)) continue;
-                        // 跳过常驻表情已设置的参数
-                        if (persistentParamIds.has(paramId)) continue;
-
+                if (savedParamEntries.length > 0) {
+                    for (const entry of savedParamEntries) {
+                        if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                         try {
-                            const idx = coreModel.getParameterIndex(paramId);
-                            if (idx >= 0 && typeof value === 'number' && Number.isFinite(value)) {
-                                const currentVal = coreModel.getParameterValueByIndex(idx);
-                                const preVal = preUpdateParams[paramId] !== undefined ? preUpdateParams[paramId] : currentVal;
-                                const defaultVal = coreModel.getParameterDefaultValueByIndex(idx);
-                                const offset = value - defaultVal;
+                            const currentVal = coreModel.getParameterValueByIndex(entry.idx);
+                            const preVal = preUpdateParams[entry.id] !== undefined ? preUpdateParams[entry.id] : currentVal;
+                            const defaultVal = coreModel.getParameterDefaultValueByIndex(entry.idx);
+                            const offset = entry.value - defaultVal;
 
-                                if (Math.abs(currentVal - preVal) > 0.001) {
-                                    coreModel.setParameterValueByIndex(idx, currentVal + offset);
-                                } else {
-                                    coreModel.setParameterValueByIndex(idx, value);
-                                }
+                            if (Math.abs(currentVal - preVal) > 0.001) {
+                                coreModel.setParameterValueByIndex(entry.idx, currentVal + offset);
+                            } else {
+                                coreModel.setParameterValueByIndex(entry.idx, entry.value);
                             }
                         } catch (_) {}
                     }
@@ -2342,6 +2387,32 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
     const coreModel = model.internalModel.coreModel;
     const persistentParamIds = this.getPersistentExpressionParamIds();
     const visibilityParams = ['ParamOpacity', 'ParamVisibility']; // 跳过可见性参数，防止模型被设置为不可见
+    const resolveParameterKey = (paramId) => {
+        let idx = -1;
+        let resolvedId = paramId;
+        if (/^(?:param_)?\d+$/.test(paramId)) {
+            const parsedIndex = parseInt(paramId.replace(/^param_/, ''), 10);
+            const parameterCount = typeof coreModel.getParameterCount === 'function'
+                ? coreModel.getParameterCount()
+                : Number.POSITIVE_INFINITY;
+            if (parsedIndex >= 0 && parsedIndex < parameterCount) {
+                idx = parsedIndex;
+                try {
+                    if (typeof coreModel.getParameterId === 'function') {
+                        const id = coreModel.getParameterId(idx);
+                        if (id) resolvedId = id;
+                    }
+                } catch (_) {}
+            }
+        } else {
+            try {
+                idx = coreModel.getParameterIndex(paramId);
+            } catch (e) {
+                // Ignore
+            }
+        }
+        return idx >= 0 ? { idx, resolvedId } : null;
+    };
 
     for (const paramId in parameters) {
         if (parameters.hasOwnProperty(paramId)) {
@@ -2351,39 +2422,28 @@ Live2DManager.prototype.applyModelParameters = function(model, parameters) {
                     continue;
                 }
 
+                const resolved = resolveParameterKey(paramId);
+                if (!resolved) {
+                    continue;
+                }
+                const resolvedParamId = resolved.resolvedId;
+
                 // EyeBlink 参数由运行时眨眼通道接管，避免冷加载闭眼值被持久化/重放
-                if (this._isEyeBlinkParamId(paramId)) {
+                if (this._isEyeBlinkParamId(paramId) || this._isEyeBlinkParamId(resolvedParamId)) {
                     continue;
                 }
                 
                 // 跳过常驻表情已设置的参数（保护去水印等功能）
-                if (persistentParamIds.has(paramId)) {
+                if (persistentParamIds.has(paramId) || persistentParamIds.has(resolvedParamId)) {
                     continue;
                 }
                 
                 // 跳过可见性参数，防止模型被设置为不可见
-                if (visibilityParams.includes(paramId)) {
+                if (visibilityParams.includes(paramId) || visibilityParams.includes(resolvedParamId)) {
                     continue;
                 }
-                
-                let idx = -1;
-                if (paramId.startsWith('param_')) {
-                    const indexStr = paramId.replace('param_', '');
-                    const parsedIndex = parseInt(indexStr, 10);
-                    if (!isNaN(parsedIndex) && parsedIndex >= 0 && parsedIndex < coreModel.getParameterCount()) {
-                        idx = parsedIndex;
-                    }
-                } else {
-                    try {
-                        idx = coreModel.getParameterIndex(paramId);
-                    } catch (e) {
-                        // Ignore
-                    }
-                }
-                
-                if (idx >= 0) {
-                    coreModel.setParameterValueByIndex(idx, value);
-                }
+
+                coreModel.setParameterValueByIndex(resolved.idx, value);
             } catch (e) {
                 // Ignore
             }

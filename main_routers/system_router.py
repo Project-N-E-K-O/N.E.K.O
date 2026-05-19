@@ -252,6 +252,21 @@ def _is_interactive_screenshot_canceled(platform_name: str, returncode: int, std
     return returncode == 1 and not normalized_stderr
 
 
+def _format_backend_screenshot_error(exc: Exception) -> str:
+    text = str(exc or "").strip()
+    lower = text.lower()
+    if sys.platform.startswith("linux") and "gnome-screenshot" in lower and not shutil.which("gnome-screenshot"):
+        return "gnome-screenshot not installed; install it with: sudo apt install gnome-screenshot"
+    if "pillow" in lower:
+        try:
+            Image.new("RGB", (1, 1))
+            if "gnome-screenshot" in lower:
+                return "gnome-screenshot not installed; install it with: sudo apt install gnome-screenshot"
+        except Exception:
+            pass
+    return text or type(exc).__name__
+
+
 def _json_no_store_response(content: dict, status_code: int = 200) -> JSONResponse:
     response = JSONResponse(content, status_code=status_code)
     _set_no_store_headers(response)
@@ -4000,8 +4015,9 @@ async def backend_screenshot(request: Request):
         data_url = f"data:image/jpeg;base64,{b64}"
         return _json_no_store_response({"success": True, "data": data_url, "size": len(jpg_bytes)})
     except Exception as e:
-        logger.error(f"后端截图失败: {e}")
-        return _json_no_store_response({"success": False, "error": str(e)}, status_code=500)
+        error_message = _format_backend_screenshot_error(e)
+        logger.error(f"后端截图失败: {error_message}")
+        return _json_no_store_response({"success": False, "error": error_message}, status_code=500)
 
 
 @router.post('/screenshot/interactive')

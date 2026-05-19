@@ -353,6 +353,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         }
 
         this._isDraggingModel = true;
+        if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+            this.boostLinuxX11InteractiveFPS(1400);
+        }
         this.isFocusing = false; // 拖拽时禁用聚焦
         const globalPos = event.data.global;
         dragStartPos.x = globalPos.x - model.x;
@@ -448,6 +451,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const onDragMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
         if (this._isDraggingModel) {
+            if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+                this.boostLinuxX11InteractiveFPS(1400);
+            }
             if (isYuiGuideDragLocked()) {
                 this._isDraggingModel = false;
                 document.getElementById('live2d-canvas').style.cursor = '';
@@ -774,6 +780,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     // 方法1：监听 PIXI 模型的 pointerover/pointerout 事件（适用于 Electron 透明窗口）
     model.on('pointerover', () => {
         showButtons();
+        if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+            this.boostLinuxX11InteractiveFPS();
+        }
     });
 
     model.on('pointerout', () => {
@@ -973,6 +982,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             const canvasEl = document.getElementById('live2d-canvas');
 
             if (distance < threshold) {
+                if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+                    this.boostLinuxX11InteractiveFPS();
+                }
                 showButtons();
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
                     // hitTest + 椭圆内部判定（0.3w × 0.45h），不外扩
@@ -997,6 +1009,9 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                     }
                 }
             } else if (isFullscreenTracking) {
+                if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
+                    this.boostLinuxX11InteractiveFPS();
+                }
                 if (canvasEl && !this.isLocked && !(model.interactive && model.dragging)) {
                     canvasEl.style.cursor = 'grab';
                 }
