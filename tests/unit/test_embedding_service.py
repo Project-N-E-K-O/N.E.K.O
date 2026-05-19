@@ -327,17 +327,70 @@ def test_vnni_via_family_model_recognises_known_microarchitectures(monkeypatch):
     )
     assert emb_mod._vnni_via_family_model() == (False, False)
 
-    # Zen 4 (Family 0x19) → confirmed VNNI.
+    # Zen 4 desktop — Raphael (Ryzen 7000), Family 0x19 Model 0x61.
+    # Has AVX-VNNI, must be confirmed True.
     monkeypatch.setattr(
         emb_mod, "_read_cpu_family_model",
         lambda: ("AuthenticAMD", 0x19, 0x61),
     )
     assert emb_mod._vnni_via_family_model() == (True, True)
 
-    # Zen 3 (Family 0x19? — note Zen 3 is also Family 0x19 in some
-    # parts; the table's MIN_FAMILY=0x19 means we conservatively say
-    # "yes" for the whole family. Use Zen 2 / Family 0x17 to verify the
-    # confirmed-no branch instead.)
+    # Zen 4 mobile — Phoenix (Ryzen 7040), Family 0x19 Model 0x74.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x74),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Zen 4 server — Genoa (EPYC 9004), Family 0x19 Model 0x11.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x11),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Zen 3 desktop — Vermeer (Ryzen 5000), Family 0x19 Model 0x01.
+    # Codex P1: pre-fix code returned (True, True) because the gate was
+    # family-only; correct behaviour is confirmed-no so ``auto``
+    # quantization disables vectors instead of running a slow INT8 path
+    # on a CPU that lacks AVX-VNNI.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x01),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Zen 3 APU — Cezanne (Ryzen 5000G/U), Family 0x19 Model 0x21.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x21),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Zen 3+ — Rembrandt (Ryzen 6000 mobile), Family 0x19 Model 0x44.
+    # Still no AVX-VNNI despite the architectural ``+``.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x44),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Zen 5 (Family 0x1A) — every shipped part has VNNI.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x1A, 0x44),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Unmapped Family-19h model (future stepping not yet in AMD's
+    # documented ranges) — inconclusive so py-cpuinfo can have a try.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x80),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, False)
+
+    # Zen 2 (Family 0x17) — no AVX-VNNI, confirmed.
     monkeypatch.setattr(
         emb_mod, "_read_cpu_family_model",
         lambda: ("AuthenticAMD", 0x17, 0x71),

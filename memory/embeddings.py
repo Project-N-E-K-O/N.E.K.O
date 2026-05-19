@@ -281,7 +281,36 @@ def detect_total_ram_gb() -> float | None:
 _INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
                                        # Meteor, Arrow, Lunar, Panther
                                        # Lake; Sapphire/Emerald Rapids.
-_AMD_VNNI_MIN_FAMILY = 0x19            # Zen 4 (and Zen 5 at Family 0x1A).
+
+# AMD Family 0x19 is shared between Zen 3 (no AVX-VNNI) and Zen 4 (yes), so
+# family alone is not enough — gate on the documented Zen 4 model ranges
+# instead. Zen 5 lives on Family 0x1A and every shipped part has VNNI, so
+# Family >= 0x1A is a straight yes; Family < 0x19 is a straight no
+# (Zen 1 / Zen 2 at 0x17, older microarchitectures at 0x15 / 0x16).
+_AMD_ZEN4_MODEL_RANGES_FAMILY_19 = (
+    (0x10, 0x1F),  # Genoa / Bergamo / Storm Peak (Zen 4 server, EPYC 9004,
+                   # Threadripper 7000)
+    (0x60, 0x6F),  # Raphael / Dragon Range (Zen 4 desktop / mobile HX,
+                   # Ryzen 7000 / 7045)
+    (0x70, 0x7F),  # Phoenix / Phoenix 2 / Hawk Point (Zen 4 mobile,
+                   # Ryzen 7040 / 8040)
+    (0xA0, 0xAF),  # Zen 4c derivatives reserved by AMD's CPUID
+                   # documentation; included for forward compat so a
+                   # future Family-19h Zen-4c part isn't false-negatived.
+)
+
+# Zen 3 model ranges on Family 0x19 — definitively no AVX-VNNI. Listed
+# explicitly so we can answer ``(False, True)`` (confirmed-no) for them
+# rather than ``(False, False)`` (inconclusive), which would let
+# ``auto`` quantization optimistically pick int8 on a CPU that genuinely
+# can not run it well.
+_AMD_ZEN3_MODEL_RANGES_FAMILY_19 = (
+    (0x00, 0x0F),  # Milan EPYC / Vermeer (Ryzen 5000 desktop)
+    (0x20, 0x2F),  # Cezanne / Lucienne / Barceló (Ryzen 5000G/U APU)
+    (0x30, 0x3F),  # Milan-X / Trento (EPYC 7003X)
+    (0x40, 0x4F),  # Rembrandt (Ryzen 6000 mobile, Zen 3+)
+    (0x50, 0x5F),  # Barceló-R refresh
+)
 
 
 def _read_cpu_family_model() -> tuple[str, int, int] | None:
@@ -317,6 +346,10 @@ def _read_cpu_family_model() -> tuple[str, int, int] | None:
                         try:
                             family = int(line.split(":", 1)[1].strip())
                         except ValueError:
+                            # Malformed numeric field — keep scanning;
+                            # the surrounding ``vendor/family/model``
+                            # presence check below treats a missing
+                            # field as "no answer" and returns None.
                             pass
                     # ``model name`` shares the prefix; check ``model`` first
                     # but skip when the line is actually ``model name``.
@@ -324,6 +357,9 @@ def _read_cpu_family_model() -> tuple[str, int, int] | None:
                         try:
                             model = int(line.split(":", 1)[1].strip())
                         except ValueError:
+                            # Same fallthrough as above — better to
+                            # answer "I don't know" than to crash CPU
+                            # detection on an exotic /proc/cpuinfo.
                             pass
                     if vendor and family is not None and model is not None:
                         break
@@ -363,12 +399,27 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
         if family == 6 and model >= _INTEL_VNNI_MIN_MODEL_FAMILY_6:
             return True, True
     elif vendor == "AuthenticAMD":
-        # Zen 4 (Family 0x19) introduced AVX-VNNI on AMD; Zen 5
-        # (Family 0x1A) keeps it. Earlier Zen lines don't have it, so
-        # Family < 0x19 is a definitive "no" — we avoid the optimistic
-        # int8 fallback silently selecting a slow path on Zen 1/2/3.
-        if family >= _AMD_VNNI_MIN_FAMILY:
+        # Zen 5 (Family 0x1A, and any later family AMD ships) — every
+        # part has AVX-VNNI.
+        if family >= 0x1A:
             return True, True
+        # Family 0x19 is shared between Zen 3 (no VNNI) and Zen 4 (yes),
+        # so we have to look at the model. The Zen-4 ranges below are
+        # AMD's documented CPUID model groupings.
+        if family == 0x19:
+            for lo, hi in _AMD_ZEN4_MODEL_RANGES_FAMILY_19:
+                if lo <= model <= hi:
+                    return True, True
+            for lo, hi in _AMD_ZEN3_MODEL_RANGES_FAMILY_19:
+                if lo <= model <= hi:
+                    return False, True
+            # An unmapped Family-19h model (e.g. a future stepping not
+            # yet covered by AMD's published groupings) stays
+            # inconclusive so py-cpuinfo's flag list can have a try
+            # instead of silently picking the wrong path.
+            return False, False
+        # Family < 0x19 covers Zen 1 / Zen 2 (0x17), Excavator (0x15) and
+        # earlier — none have AVX-VNNI, so the answer is definitive.
         return False, True
     return False, False
 
