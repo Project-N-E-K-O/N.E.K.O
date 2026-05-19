@@ -4505,7 +4505,10 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
   const fixedName = String(status?.character_fixed_name || '').trim();
   const boundGameId = String(status?.bound_game_id || '').trim();
   const profileGameId = String(status?.character_profile_game_id || snapshot?.profile_game_id || '').trim();
+  const targetKey = characterProfileRefreshKeyForStatus(status);
+  const hasRuntimeTarget = targetKey.split('|').some((item) => item.trim());
   const profileKey = profileGameId || boundGameId;
+  const displayKey = profileKey || (hasRuntimeTarget ? targetKey : '');
   const matchReason = String(status?.character_profile_match_reason || snapshot?.match_reason || '').trim();
   const snapshotGameId = String(snapshot?.game_id || '').trim();
   const characters = profileKey && (!snapshotGameId || snapshotGameId === profileKey) && Array.isArray(snapshot?.characters)
@@ -4520,7 +4523,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
 
   if (mode === 'fixed' && fixedName) {
     statusNode.textContent = uiTf('ui.character_profile.status_fixed', '固定角色：{name}', { name: fixedName });
-  } else if (!profileKey || (!characters.length && snapshot && !characterCount)) {
+  } else if (!displayKey || (!characters.length && snapshot && !characterCount)) {
     statusNode.textContent = uiT('ui.character_profile.status_unavailable', '无可用档案');
   } else {
     statusNode.textContent = uiT('ui.character_profile.status_off', '关闭');
@@ -4528,7 +4531,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
 
   if (!characters.length) {
     select.replaceChildren(new Option(
-      profileKey
+      displayKey
         ? uiT('ui.character_profile.select_placeholder', '等待加载角色列表')
         : uiT('ui.character_profile.no_game_option', '请先绑定游戏'),
       '',
@@ -4547,7 +4550,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
     select.value = nextSelection;
   }
 
-  if (!profileKey) {
+  if (!displayKey) {
     hintNode.textContent = uiT('ui.character_profile.hint_no_game', '请先在“插件识别”里绑定或检测到游戏目标。');
   } else if (snapshot?.diagnostic) {
     hintNode.textContent = uiTf('ui.character_profile.hint_load_failed', '角色列表加载失败：{error}', {
@@ -4567,7 +4570,7 @@ function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCha
   }
 
   const selectedName = String(select.value || '').trim();
-  fixedButton.disabled = !profileKey || !characters.length || !selectedName;
+  fixedButton.disabled = !displayKey || !characters.length || !selectedName;
   offButton.disabled = mode === 'off' && !fixedName;
   refreshButton.disabled = Boolean(characterProfileRefreshInFlight);
 }
