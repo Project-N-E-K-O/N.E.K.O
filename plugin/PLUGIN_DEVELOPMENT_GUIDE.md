@@ -600,6 +600,8 @@ self.push_message(parts=[{"type": "text", "text": "主人发了一条弹幕..."}
 | `finish(data={"summary": ..., "detail": ...})` | ✅ |
 | `push_message(parts=[{"type": "text", ...}])` 进 LLM 上下文 | ✅ |
 | `task_result` + `direct_reply=True`（绕过 LLM 直接 TTS） | ✅ |
+| `push_message(visibility=["chat"], ai_behavior="blind")` 直进聊天气泡 | ✅ |
+| `push_message(visibility=["hud"])` HUD toast 文本 | ✅ |
 | 静态描述字段（`plugin.toml` 的 `description`、入口的 `name` 等） | ❌ 不展开（这些是给开发者 / UI 看的，不进对话渠道） |
 
 #### LLM 结果字段过滤

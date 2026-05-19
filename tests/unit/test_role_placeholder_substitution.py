@@ -1,24 +1,32 @@
 """Plugin-supplied ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholder substitution
 contract (issue #1337).
 
-Three host-side injection sites must funnel plugin-supplied text through the
+Five host-side injection sites must funnel plugin-supplied text through the
 same substitution helper:
 
 1. ``_render_callback_inner_item`` — proactive/passive callback drain into
    the LLM prompt.
 2. ``_format_voice_swap_item`` — voice-mode ``pending_extra_replies``
    hot-swap rendering into ``prime_context``.
-3. ``app/main_server.py`` direct_reply path — plugin text bypassing the LLM
-   and going verbatim to TTS / chat bubble.
+3. ``app/main_server.py`` direct_reply — plugin text bypassing the LLM and
+   going verbatim to TTS via ``send_lanlan_response``.
+4. ``app/main_server.py`` ``passthrough_to_chat_bubble`` — ``visibility=["chat"]``
+   + ``ai_behavior="blind"`` blind chat-bubble passthrough.
+5. ``app/main_server.py`` HUD ``agent_notification`` — ``visibility=["hud"]``
+   toast text.
 
 If any of these grow a new code path that bypasses ``apply_role_placeholders``,
-plugins emitting ``"向 {MASTER_NAME} 汇报…"`` style text will end up speaking
-the literal token to the user. This file is the canary.
+plugins emitting ``"向 {MASTER_NAME} 汇报…"`` style text will end up speaking /
+displaying the literal token to the user. This file is the canary.
 
 The substitution uses ``str.replace``, not ``str.format`` — JSON fragments
 or arbitrary ``{`` in user content must NOT raise ``KeyError``.
 """
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -172,3 +180,132 @@ def test_voice_swap_render_pipeline_plumbs_names_through():
     )
     assert "向 小明 发送了一条问候" in out
     assert "{MASTER_NAME}" not in out
+
+
+# ---------------------------------------------------------------------------
+# main_server _handle_agent_event — verbatim plugin-text exits
+# ---------------------------------------------------------------------------
+#
+# Three exits skip the LLM and render plugin text to the user directly. Each
+# must funnel through ``core.apply_role_placeholders`` before reaching TTS /
+# chat bubble / HUD; otherwise a plugin writing ``"通知 {MASTER_NAME}"`` would
+# display the literal token. These tests fake the session manager and
+# trigger _handle_agent_event end-to-end so the wiring stays covered.
+
+
+def _mgr_for_main_server(send_lanlan_return=True):
+    """Stub session manager with attributes / methods main_server reads on
+    the verbatim-exit paths."""
+    fake_mgr = MagicMock()
+    fake_mgr.lanlan_name = "兰兰"
+    fake_mgr.master_name = "小明"
+    fake_mgr.send_lanlan_response = AsyncMock(return_value=send_lanlan_return)
+    fake_mgr.handle_proactive_complete = AsyncMock()
+    fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=True)
+    fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.trigger_agent_callbacks = AsyncMock()
+    fake_mgr.websocket = MagicMock()
+    fake_mgr.websocket.send_json = AsyncMock()
+    fake_mgr._pending_agent_callback_task = None
+    return fake_mgr
+
+
+def _patch_main_server(monkeypatch, fake_mgr):
+    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: True)
+
+
+@pytest.mark.unit
+async def test_main_server_direct_reply_substitutes_master_name(monkeypatch):
+    """task_result + direct_reply → text goes verbatim to send_lanlan_response
+    (skipping the LLM). The placeholder must be expanded at this boundary or
+    the literal token reaches TTS."""
+    from app import main_server
+
+    fake_mgr = _mgr_for_main_server()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "task_result",
+            "lanlan_name": "兰兰",
+            "text": "ignored",
+            "detail": "搞定了，要不要跟 {MASTER_NAME} 报告一下？",
+            "direct_reply": True,
+            "channel": "plugin:demo",
+            "task_id": "t-1",
+            "media_parts": [],
+        }
+    )
+
+    fake_mgr.send_lanlan_response.assert_awaited_once()
+    sent_text = fake_mgr.send_lanlan_response.await_args.args[0]
+    assert "{MASTER_NAME}" not in sent_text
+    assert "跟 小明 报告" in sent_text
+
+
+@pytest.mark.unit
+async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch):
+    """visibility=["chat"] + ai_behavior="blind" → text goes verbatim to
+    ``passthrough_to_chat_bubble`` (skipping the LLM). Without substitution
+    the literal placeholder renders in the chat bubble. This is the codex
+    P2 finding on PR #1422."""
+    from app import main_server
+
+    fake_mgr = _mgr_for_main_server()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "兰兰",
+            "text": "{MASTER_NAME} 你看一下这个",
+            "channel": "plugin:demo",
+            "task_id": "t-2",
+            "ai_behavior": "blind",
+            "visibility": ["chat"],
+            "source_kind": "plugin",
+            "source_name": "demo",
+            "media_parts": [],
+        }
+    )
+
+    fake_mgr.passthrough_to_chat_bubble.assert_awaited_once()
+    sent_text = fake_mgr.passthrough_to_chat_bubble.await_args.args[0]
+    assert "{MASTER_NAME}" not in sent_text
+    assert "小明 你看一下这个" in sent_text
+
+
+@pytest.mark.unit
+async def test_main_server_hud_notification_substitutes_master_name(monkeypatch):
+    """visibility=["hud"] toast text reaches the frontend verbatim. Without
+    substitution the placeholder shows up in the toast literal."""
+    from app import main_server
+
+    fake_mgr = _mgr_for_main_server()
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "proactive_message",
+            "lanlan_name": "兰兰",
+            "text": "提醒 {MASTER_NAME}：番茄钟到点了",
+            "channel": "plugin:demo",
+            "task_id": "t-3",
+            "ai_behavior": "blind",
+            "visibility": ["hud"],
+            "source_kind": "plugin",
+            "source_name": "demo",
+            "media_parts": [],
+        }
+    )
+
+    hud_calls = [
+        c.args[0]
+        for c in fake_mgr.websocket.send_json.await_args_list
+        if c.args and isinstance(c.args[0], dict) and c.args[0].get("type") == "agent_notification"
+    ]
+    assert len(hud_calls) == 1
+    notif_text = hud_calls[0].get("text", "")
+    assert "{MASTER_NAME}" not in notif_text
+    assert "提醒 小明：番茄钟到点了" in notif_text

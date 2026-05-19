@@ -883,9 +883,19 @@ async def _handle_agent_event(event: dict):
                         # return — otherwise we emit turn-end without a matching
                         # turn-start (frontend never opened the assistant
                         # lifecycle), corrupting proactive rescheduling.
+                        # Same role-placeholder contract as the direct_reply
+                        # path: blind-passthrough text reaches the chat bubble
+                        # verbatim without going through the LLM, so the
+                        # placeholder has to be expanded here or the literal
+                        # ``{MASTER_NAME}`` token would render in the bubble.
+                        passthrough_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         passthrough_dispatched = bool(
                             await mgr.passthrough_to_chat_bubble(
-                                raw_text,
+                                passthrough_text,
                                 request_id=event.get("task_id") or None,
                                 source=passthrough_source,
                             )
@@ -930,9 +940,18 @@ async def _handle_agent_event(event: dict):
                     )
                 elif _is_websocket_connected(ws):
                     try:
+                        # HUD agent_notification renders verbatim to the user;
+                        # expand role placeholders so plugin authors can write
+                        # ``"通知 {MASTER_NAME}..."`` without the literal token
+                        # showing up in the toast.
+                        notif_text = core.apply_role_placeholders(
+                            text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         notif = {
                             "type": "agent_notification",
-                            "text": text,
+                            "text": notif_text,
                             "source": "brain",
                             "status": cb_status,
                         }

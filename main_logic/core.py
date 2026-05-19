@@ -175,9 +175,9 @@ def apply_role_placeholders(
     """
     if not text:
         return text
-    if master_name:
+    if isinstance(master_name, str) and master_name:
         text = text.replace("{MASTER_NAME}", master_name)
-    if lanlan_name:
+    if isinstance(lanlan_name, str) and lanlan_name:
         text = text.replace("{LANLAN_NAME}", lanlan_name)
     return text
 
