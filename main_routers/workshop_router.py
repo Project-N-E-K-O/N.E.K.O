@@ -2229,6 +2229,53 @@ def _build_ugc_details_unsupported_item_response(steamworks, item_id_int: int, i
     }
 
 
+def _is_known_item_when_ugc_details_unsupported(steamworks, item_id_int: int, item_state: int) -> bool:
+    """Return whether an item is known without rich UGC details.
+
+    Linux wrappers can lack UGC details query methods, but that degradation must
+    not turn arbitrary numeric IDs into fake successful items. Only return a
+    partial response when Steam still exposes local/subscription state for the
+    item through the non-UGC-detail APIs.
+    """
+    known_state_bits = (
+        _ITEM_STATE_SUBSCRIBED
+        | _ITEM_STATE_INSTALLED
+        | _ITEM_STATE_NEEDS_UPDATE
+        | _ITEM_STATE_DOWNLOADING
+        | _ITEM_STATE_DOWNLOAD_PENDING
+    )
+    if item_state & known_state_bits:
+        return True
+
+    try:
+        subscribed_items = steamworks.Workshop.GetSubscribedItems()
+        parsed_subscribed_items = set()
+        for raw_item_id in subscribed_items or []:
+            try:
+                parsed_subscribed_items.add(int(raw_item_id))
+            except (TypeError, ValueError):
+                continue
+        if item_id_int in parsed_subscribed_items:
+            return True
+    except Exception as exc:
+        logger.debug(f"GetSubscribedItems fallback for {item_id_int} failed: {exc}")
+
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
+    if folder and os.path.isdir(folder):
+        return True
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) fallback failed: {exc}")
+        download_info = {}
+    if isinstance(download_info, dict):
+        return int(download_info.get("total", 0) or 0) > 0
+    if isinstance(download_info, tuple) and len(download_info) >= 2:
+        return int(download_info[1] or 0) > 0
+    return False
+
+
 @router.get('/item/{item_id}/path')
 def get_workshop_item_path(item_id: str):
     """
@@ -2441,6 +2488,13 @@ async def get_workshop_item_details(item_id: str):
         try:
             ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
         except UnsupportedUGCDetailsError:
+            if not _is_known_item_when_ugc_details_unsupported(steamworks, item_id_int, item_state):
+                return JSONResponse({
+                    "success": False,
+                    "error": "获取物品详情失败，未找到物品",
+                    "detailsAvailable": False,
+                    "detailsUnavailableReason": "ugc_details_query_unsupported",
+                }, status_code=404)
             return _build_ugc_details_unsupported_item_response(steamworks, item_id_int, item_state)
         result = ugc_results.get(item_id_int)
         
@@ -4429,7 +4483,11 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 # 增强的Steam连接状态验证
                 # 基础连接状态检查
                 is_steam_running = steamworks.IsSteamRunning()
-                is_overlay_enabled = steamworks.IsOverlayEnabled()
+                try:
+                    is_overlay_enabled = steamworks.IsOverlayEnabled()
+                except Exception as overlay_error:
+                    is_overlay_enabled = None
+                    logger.warning(f"Steam覆盖层启用状态检查不可用: {overlay_error}")
                 is_logged_on = steamworks.Users.LoggedOn()
                 steam_id = steamworks.Users.GetSteamID()
             
@@ -4440,7 +4498,10 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
                 # 记录详细的连接状态
                 logger.info(f"Steam客户端运行状态: {is_steam_running}")
-                logger.info(f"Steam覆盖层启用状态: {is_overlay_enabled}")
+                logger.info(
+                    "Steam覆盖层启用状态: "
+                    + ("不可用" if is_overlay_enabled is None else str(is_overlay_enabled))
+                )
                 logger.info(f"用户登录状态: {is_logged_on}")
                 logger.info(f"用户SteamID: {steam_id}")
                 logger.info(f"应用ID {app_id} 安装状态: {app_owned}")
