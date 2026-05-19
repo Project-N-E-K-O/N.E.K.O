@@ -334,6 +334,49 @@ async def test_get_story_so_far_keeps_newer_recorded_summary_when_layer1_is_stal
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_get_story_so_far_refreshes_zero_seq_scene_summaries(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    scene_memory: list[dict[str, object]] = [
+        {
+            "scene_id": "scene-a",
+            "route_id": "",
+            "summary": "first in-memory summary without push seq",
+        },
+    ]
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(scene_memory=scene_memory)
+    )
+
+    first = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(first, Ok)
+    assert "first in-memory summary" in first.value["story_so_far"]
+    assert first.value["last_updated_seq"] == 0
+    plugin._query_rate_limits["galgame_get_story_so_far"].clear()
+
+    scene_memory.append(
+        {
+            "scene_id": "scene-b",
+            "route_id": "",
+            "summary": "second in-memory summary without push seq",
+        }
+    )
+
+    second = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(second, Ok)
+    assert "first in-memory summary" in second.value["story_so_far"]
+    assert "second in-memory summary" in second.value["story_so_far"]
+    assert second.value["last_updated_seq"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_galgame_continue_auto_advance_sets_choice_advisor_and_resumes_agent(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

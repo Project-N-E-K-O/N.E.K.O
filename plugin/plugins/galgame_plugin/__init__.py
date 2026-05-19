@@ -7033,12 +7033,17 @@ class GalgamePlugin(NekoPluginBase):
         with self._state_lock:
             current_story = str(self._story_so_far or "").strip()
             current_seq = int(self._story_last_updated_seq or 0)
-            if current_story and int(last_seq or 0) <= current_seq:
-                return False
+            next_seq = int(last_seq or 0)
+            if current_story:
+                if next_seq <= 0:
+                    if current_seq > 0 or story == current_story:
+                        return False
+                elif next_seq <= current_seq:
+                    return False
             self._story_so_far = story
             self._story_last_updated_seq = max(
                 int(self._story_last_updated_seq or 0),
-                int(last_seq or 0),
+                next_seq,
             )
         return True
 
