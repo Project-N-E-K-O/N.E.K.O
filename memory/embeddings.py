@@ -268,144 +268,132 @@ def detect_total_ram_gb() -> float | None:
         return None
 
 
-def _probe_avx_vnni_via_cpuid() -> bool | None:
-    """Direct CPUID probe for AVX-VNNI / AVX-512_VNNI — Windows x86_64 only.
+# Known-good thresholds for CPU microarchitectures that ship AVX-VNNI.
+# Family/model is a stable hardware identifier readable from
+# ``HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\Identifier`` on
+# Windows and ``/proc/cpuinfo`` on Linux — no executable-page allocation,
+# no inline machine code, no AV heuristic match.
+#
+# Conservative: a "yes" from the table is authoritative (confirmed=True);
+# an "I don't know" falls through to py-cpuinfo / /proc/cpuinfo flags so
+# brand-new microarchitectures aren't false-negatived just because the
+# table predates them.
+_INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
+                                       # Meteor, Arrow, Lunar, Panther
+                                       # Lake; Sapphire/Emerald Rapids.
+_AMD_VNNI_MIN_FAMILY = 0x19            # Zen 4 (and Zen 5 at Family 0x1A).
 
-    Returns:
-      * True  — AVX-VNNI or AVX-512_VNNI is present
-      * False — neither bit set (CPU truly lacks the int8 fast path)
-      * None  — probe was not attempted (non-Windows, non-x86_64,
-        32-bit Python, OS refused executable allocation)
 
-    Why Windows-only: the bug this fixes is py-cpuinfo's Windows backend
-    silently omitting ``avx_vnni`` from its flag list — every Alder Lake
-    onwards Intel (and Zen 4+ AMD) box on Windows gets misread as
-    "no VNNI" and the embedding stack sticky-disables. Windows also
-    exposes no ``PF_AVX_VNNI_INSTRUCTIONS_AVAILABLE`` constant via
-    ``IsProcessorFeaturePresent``, so a raw CPUID is the only authoritative
-    answer on that platform.
+def _read_cpu_family_model() -> tuple[str, int, int] | None:
+    """Return ``(vendor, family, model)`` from a non-shellcode source,
+    or None when neither the Windows registry nor ``/proc/cpuinfo``
+    answered.
 
-    Why not Linux / macOS:
-
-      * Linux 5.17+ exposes ``avx_vnni`` in ``/proc/cpuinfo`` flags, which
-        both py-cpuinfo and our text-parse fallback already handle.
-        Running CPUID on Linux is also unsafe in the general case —
-        ``arch_prctl(ARCH_SET_CPUID, 0)`` (rr debugger, some
-        sandboxes) makes ``cpuid`` deliver SIGSEGV, which Python's
-        try/except cannot catch and would hard-kill the process (Codex
-        P1 review on PR #1402).
-      * macOS Intel topped out at Ice Lake (pre-AVX-VNNI), so no Intel
-        Mac in the wild has the fast path to detect — and hardened
-        runtime makes PROT_EXEC pages unreliable on recent macOS.
-
-    CPUID feature bits used:
-      * leaf 7 subleaf 0, ECX bit 11 → AVX-512_VNNI (Cascade Lake+ /
-        Zen 4 server parts)
-      * leaf 7 subleaf 1, EAX bit 4  → AVX-VNNI (Alder Lake+, Zen 4+)
-
-    All allocation / execution is wrapped in try/except — any failure
-    returns ``None`` so the caller falls back to py-cpuinfo without
-    changing behaviour for DEP-locked sandboxes.
+    Vendor strings are normalised to the CPUID brand strings
+    (``GenuineIntel`` / ``AuthenticAMD``) so the lookup table is indexed
+    identically across OSes.
     """
-    if platform.system() != "Windows":
-        return None
-    if platform.machine().lower() not in ("amd64", "x86_64"):
-        return None
-    # platform.machine reflects the host arch even under 32-bit Python
-    # (WoW64 reports AMD64). Our shellcode is 64-bit only — gate on the
-    # pointer size of the *running* interpreter to avoid mis-decoding it
-    # under a 32-bit Python on a 64-bit OS.
-    import struct
-    if struct.calcsize("P") != 8:
-        return None
-
+    system = platform.system()
     try:
-        import ctypes
-        # Microsoft x64 ABI: leaf=RCX, subleaf=RDX, out ptr=R8.
-        shellcode = bytes([
-            0x89, 0xC8,                         # mov  eax, ecx     ; leaf
-            0x89, 0xD1,                         # mov  ecx, edx     ; subleaf
-            0x53,                               # push rbx          ; nonvolatile
-            0x0F, 0xA2,                         # cpuid
-            0x41, 0x89, 0x00,                   # mov  [r8],    eax
-            0x41, 0x89, 0x58, 0x04,             # mov  [r8+4],  ebx
-            0x41, 0x89, 0x48, 0x08,             # mov  [r8+8],  ecx
-            0x41, 0x89, 0x50, 0x0C,             # mov  [r8+12], edx
-            0x5B,                               # pop  rbx
-            0xC3,                               # ret
-        ])
-        k32 = ctypes.windll.kernel32
-        k32.VirtualAlloc.restype = ctypes.c_void_p
-        k32.VirtualAlloc.argtypes = [
-            ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.c_uint32, ctypes.c_uint32,
-        ]
-        k32.VirtualFree.argtypes = [
-            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32,
-        ]
-        PAGE_EXECUTE_READWRITE = 0x40
-        MEM_COMMIT_RESERVE = 0x3000
-        MEM_RELEASE = 0x8000
-        addr = k32.VirtualAlloc(
-            None, len(shellcode), MEM_COMMIT_RESERVE, PAGE_EXECUTE_READWRITE,
-        )
-        if not addr:
-            return None
-        try:
-            ctypes.memmove(addr, shellcode, len(shellcode))
-            cpuid_fn = ctypes.CFUNCTYPE(
-                None, ctypes.c_uint32, ctypes.c_uint32,
-                ctypes.POINTER(ctypes.c_uint32 * 4),
-            )(addr)
-            return _check_vnni_via_cpuid(cpuid_fn)
-        finally:
-            k32.VirtualFree(addr, 0, MEM_RELEASE)
+        if system == "Windows":
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            ) as k:
+                vendor = winreg.QueryValueEx(k, "VendorIdentifier")[0]
+                ident = winreg.QueryValueEx(k, "Identifier")[0]
+            m = re.search(r"Family (\d+) Model (\d+)", ident)
+            if not m:
+                return None
+            return vendor, int(m.group(1)), int(m.group(2))
+        if system == "Linux":
+            vendor, family, model = None, None, None
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("vendor_id"):
+                        vendor = line.split(":", 1)[1].strip()
+                    elif line.startswith("cpu family"):
+                        try:
+                            family = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            pass
+                    # ``model name`` shares the prefix; check ``model`` first
+                    # but skip when the line is actually ``model name``.
+                    elif line.startswith("model") and not line.startswith("model name"):
+                        try:
+                            model = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            pass
+                    if vendor and family is not None and model is not None:
+                        break
+            if vendor is None or family is None or model is None:
+                return None
+            return vendor, family, model
     except Exception:
         return None
+    return None
 
 
-def _check_vnni_via_cpuid(cpuid_fn) -> bool:
-    """Issue the two CPUID leaves that carry the int8 fast-path bits.
+def _vnni_via_family_model() -> tuple[bool, bool]:
+    """Authoritative VNNI answer via CPU family/model lookup.
 
-    Split out from :func:`_probe_avx_vnni_via_cpuid` so the platform-
-    specific allocation wrapper can stay focused on memory management;
-    keeping the bit math here also makes the leaf/bit references
-    greppable from a single location.
+    Returns ``(has_vnni, confirmed)``. ``confirmed=True`` means the
+    family/model fell inside (or strictly below) a known range and the
+    answer is final. ``(False, False)`` means the table doesn't know —
+    let the caller fall through to py-cpuinfo / ``/proc/cpuinfo``.
+
+    Replaces the deleted CPUID shellcode probe. Strictly less precise
+    in one direction (brand-new microarchitectures that ship before the
+    table is updated stay inconclusive instead of authoritative), but
+    the consumer's ``auto`` quantization path treats inconclusive as
+    "pick int8 optimistically" — the same behaviour the CPUID probe
+    produced for sandboxes that refused executable allocation.
     """
-    import ctypes
-    out = (ctypes.c_uint32 * 4)()
-    cpuid_fn(0, 0, ctypes.byref(out))
-    max_basic = out[0]
-    if max_basic < 7:
-        return False
-    cpuid_fn(7, 0, ctypes.byref(out))
-    max_sub = out[0]
-    if out[2] & (1 << 11):       # ECX bit 11 → AVX-512_VNNI
-        return True
-    if max_sub < 1:
-        return False
-    cpuid_fn(7, 1, ctypes.byref(out))
-    return bool(out[0] & (1 << 4))  # EAX bit 4 → AVX-VNNI
+    info = _read_cpu_family_model()
+    if info is None:
+        return False, False
+    vendor, family, model = info
+    if vendor == "GenuineIntel":
+        # All Intel client microarchitectures shipping AVX-VNNI live in
+        # Family 6 with model >= Alder Lake's 0x97. Earlier Family-6
+        # parts that carry AVX512-VNNI (Ice Lake server, Tiger/Rocket
+        # Lake, Sapphire Rapids) are detected by py-cpuinfo's
+        # ``avx512_vnni`` flag and don't need enumeration here.
+        if family == 6 and model >= _INTEL_VNNI_MIN_MODEL_FAMILY_6:
+            return True, True
+    elif vendor == "AuthenticAMD":
+        # Zen 4 (Family 0x19) introduced AVX-VNNI on AMD; Zen 5
+        # (Family 0x1A) keeps it. Earlier Zen lines don't have it, so
+        # Family < 0x19 is a definitive "no" — we avoid the optimistic
+        # int8 fallback silently selecting a slow path on Zen 1/2/3.
+        if family >= _AMD_VNNI_MIN_FAMILY:
+            return True, True
+        return False, True
+    return False, False
 
 
 def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
     """x86 INT8 fast path = AVX-VNNI (or AVX512-VNNI).
 
-    Detection order:
-      1. Direct CPUID probe (:func:`_probe_avx_vnni_via_cpuid`) —
-         Windows x86_64 only; the bug being fixed is py-cpuinfo's
-         Windows backend omitting ``avx_vnni`` from its flag list.
-      2. ``py-cpuinfo`` flags — primary path on Linux / macOS, and the
-         fallback on Windows when the CPUID probe could not run.
+    Detection order (no-shellcode):
+      1. CPU family/model lookup (:func:`_vnni_via_family_model`) — the
+         only path that authoritatively answers for Alder-Lake+ Intel
+         client CPUs on Windows, where py-cpuinfo's backend silently
+         omits ``avx_vnni`` from its flag list.
+      2. ``py-cpuinfo`` flags — primary path on Linux / macOS and the
+         fallback on Windows for AVX512-VNNI parts (Cascade / Ice
+         Lake-server / Sapphire Rapids) which py-cpuinfo handles
+         correctly.
       3. ``/proc/cpuinfo`` on Linux — text parse if py-cpuinfo failed.
 
     Returns ``(has_vnni, absence_confirmed)``. ``absence_confirmed=False``
     means no path could read CPU flags — the caller stays optimistic and
     picks INT8 in that case (consistent with the ARM branch).
     """
-    probed = _probe_avx_vnni_via_cpuid()
-    if probed is not None:
-        return probed, True
+    has_vnni, confirmed = _vnni_via_family_model()
+    if confirmed:
+        return has_vnni, True
 
     try:
         import cpuinfo  # type: ignore
@@ -503,6 +491,48 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
     return True, False
 
 
+# Per-process one-shot flag so we log the "no INT8 fast path" outcome
+# exactly once at startup, with the vendor/family/model that drove the
+# decision. Reset by :func:`reset_embedding_service_for_tests` so unit
+# tests can re-trigger the log under monkeypatched detection.
+_VNNI_DECISION_LOGGED = False
+
+
+def _log_int8_fast_path_decision(has_vnni: bool, confirmed: bool) -> None:
+    """Emit one warning per process when no INT8 fast path is detected.
+
+    Triaging "why are my vectors disabled?" needs to know whether
+    detection was authoritative (the family/model table or a CPU that
+    truly lacks VNNI) or just inconclusive (sandboxed host, missing
+    py-cpuinfo, exotic arch). Including the vendor/family/model in the
+    log lets us extend the lookup table for future microarchitectures
+    based on real reports instead of guesses.
+
+    We stay silent on the positive path — every successful boot would
+    just add noise to the log."""
+    global _VNNI_DECISION_LOGGED
+    if _VNNI_DECISION_LOGGED:
+        return
+    _VNNI_DECISION_LOGGED = True
+    if has_vnni:
+        return
+    info = _read_cpu_family_model()
+    if info is None:
+        vendor, family_str, model_str = "?", "?", "?"
+    else:
+        vendor, family, model = info
+        family_str = f"0x{family:X}"
+        model_str = f"0x{model:X}"
+    logger.warning(
+        "EmbeddingService: no INT8 fast path detected on this CPU "
+        "(vendor=%s family=%s model=%s arch=%s confirmed=%s). "
+        "`auto` quantization will %s; set VECTORS_QUANTIZATION=int8 or =fp32 "
+        "to override after consulting docs/embedding-quantization.md.",
+        vendor, family_str, model_str, platform.machine() or "?", confirmed,
+        "disable local vectors" if confirmed else "optimistically pick int8",
+    )
+
+
 def detect_avx_vnni_details() -> tuple[bool, bool]:
     """Return ``(has_int8_fast_path, absence_confirmed)``.
 
@@ -520,8 +550,11 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
     (INT8 would be slow and FP32 weights are not shipped).
     """
     if platform.machine().lower() in ("arm64", "aarch64"):
-        return _detect_int8_fast_path_arm()
-    return _detect_int8_fast_path_x86()
+        result = _detect_int8_fast_path_arm()
+    else:
+        result = _detect_int8_fast_path_x86()
+    _log_int8_fast_path_decision(*result)
+    return result
 
 
 def detect_avx_vnni() -> bool:
@@ -1097,9 +1130,14 @@ def get_embedding_service() -> EmbeddingService:
 
 def reset_embedding_service_for_tests() -> None:
     """Test-only: drop the singleton so the next ``get_embedding_service``
-    call rebuilds with whatever monkeypatched config / RAM the test set up."""
-    global _SERVICE
+    call rebuilds with whatever monkeypatched config / RAM the test set up.
+
+    Also clears :data:`_VNNI_DECISION_LOGGED` so a test that monkeypatches
+    detection can verify the warning is emitted on its synthetic boot.
+    """
+    global _SERVICE, _VNNI_DECISION_LOGGED
     _SERVICE = None
+    _VNNI_DECISION_LOGGED = False
 
 
 def _build_default_service() -> EmbeddingService:
