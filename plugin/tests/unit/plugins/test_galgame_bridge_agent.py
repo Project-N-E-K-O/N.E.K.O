@@ -427,7 +427,7 @@ async def test_game_llm_agent_passes_cat_opinions_to_choice_planning(
 
     await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
 
-    assert "cat_opinions" not in shared
+    assert "cat_opinions" in shared
     assert (
         "Prefer the right path"
         in fake_gateway.suggest_calls[-1]["cat_opinion_context"]

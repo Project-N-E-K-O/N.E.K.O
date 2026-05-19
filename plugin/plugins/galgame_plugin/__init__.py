@@ -6199,6 +6199,7 @@ class GalgamePlugin(NekoPluginBase):
         except Exception as exc:
             return Err(SdkError(f"persist binding failed: {exc}"))
 
+        self._load_character_profiles_for_current_context(force=True)
         await self._poll_bridge(force=True)
         with self._state_lock:
             payload = {
@@ -7020,6 +7021,9 @@ class GalgamePlugin(NekoPluginBase):
             self._layer1_scene_summaries()
         )
         if not story:
+            with self._state_lock:
+                self._story_so_far = ""
+                self._story_last_updated_seq = 0
             return False
         with self._state_lock:
             current_story = str(self._story_so_far or "").strip()

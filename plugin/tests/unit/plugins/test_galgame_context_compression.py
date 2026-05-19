@@ -295,6 +295,20 @@ def test_sanitize_memory_yields_canonical_shape() -> None:
     assert sanitized["last_updated_seq"] == 42
 
 
+def test_sanitize_memory_defaults_non_numeric_sequences() -> None:
+    sanitized = sanitize_memory(
+        {
+            "last_updated_seq": "NaN",
+            "low_confidence_streak": "oops",
+            "plot_threads": [{"thread": "t", "updated_at_seq": "bad"}],
+        }
+    )
+
+    assert sanitized["last_updated_seq"] == 0
+    assert sanitized["low_confidence_streak"] == 0
+    assert sanitized["plot_threads"][0]["updated_at_seq"] == 0
+
+
 def test_parse_memory_update_response_handles_fenced_block() -> None:
     raw = "```json\n{\"characters\": {}}\n```"
     parsed = parse_memory_update_response(raw)

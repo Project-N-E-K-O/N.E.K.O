@@ -71,7 +71,8 @@ def test_i18n_all_locales_have_all_keys(galgame_i18n_dir, locale) -> None:
         _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.description")
     for key in _EXPECTED_RUNTIME_KEYS:
         _assert_bundle_has_key(i18n, locale, key)
-    assert len(i18n.messages[locale]) == 86
+    base_locale = "en"
+    assert len(i18n.messages[locale]) == len(i18n.messages[base_locale])
 
 
 def test_tr_ref_resolves_to_correct_locale(galgame_i18n_dir) -> None:

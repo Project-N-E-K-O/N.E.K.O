@@ -104,10 +104,19 @@ class PushComposer:
         plot_block, character_block, truncated_plot = self._enforce_budget(
             plot_block, character_block, plot_payload
         )
+        plot_block, character_block, wrapped_truncated = self._enforce_wrapped_budget(
+            plot_block,
+            character_block,
+        )
+        truncated_plot = truncated_plot or wrapped_truncated
 
         plot_tokens = self._count_tokens(plot_block)
         character_tokens = self._count_tokens(character_block)
-        total = plot_tokens + character_tokens
+        total = (
+            self._count_tokens(self.wrap_push_message(plot_block, character_block))
+            if plot_block or character_block
+            else 0
+        )
 
         return {
             "push_seq": int(push_seq),
@@ -117,8 +126,9 @@ class PushComposer:
             "characters": self._extract_character_metadata(
                 character_payload, character_block
             ),
-            "available_queries": list(
-                (plot_payload or {}).get("available_queries", [])
+            "available_queries": self._merge_available_queries(
+                plot_payload,
+                character_payload,
             ),
             "_metrics": {
                 "max_tokens": self._max_tokens,
@@ -294,6 +304,43 @@ class PushComposer:
 
         return plot_block, character_block, truncated_plot
 
+    def _enforce_wrapped_budget(
+        self,
+        plot_block: str,
+        character_block: str,
+    ) -> tuple[str, str, bool]:
+        if self._max_tokens <= 0:
+            return plot_block, character_block, False
+        truncated_plot = False
+        while (
+            self._count_tokens(self.wrap_push_message(plot_block, character_block))
+            > self._max_tokens
+        ):
+            if plot_block:
+                current = self._count_tokens(plot_block)
+                over = (
+                    self._count_tokens(self.wrap_push_message(plot_block, character_block))
+                    - self._max_tokens
+                )
+                plot_block = self._truncate_to_tokens(
+                    plot_block,
+                    max(0, current - over - 1),
+                )
+                truncated_plot = True
+            elif character_block:
+                current = self._count_tokens(character_block)
+                over = (
+                    self._count_tokens(self.wrap_push_message(plot_block, character_block))
+                    - self._max_tokens
+                )
+                character_block = self._truncate_to_tokens(
+                    character_block,
+                    max(0, current - over - 1),
+                )
+            else:
+                break
+        return plot_block, character_block, truncated_plot
+
     def _truncate_to_tokens(self, text: str, budget: int) -> str:
         if budget <= 0:
             return ""
@@ -384,6 +431,33 @@ class PushComposer:
             "names": list((payload.get("characters") or {}).keys()),
             "rendered": rendered,
         }
+
+    @staticmethod
+    def _merge_available_queries(
+        plot_payload: dict[str, Any] | None,
+        character_payload: dict[str, Any] | None,
+    ) -> list[Any]:
+        merged: list[Any] = []
+        seen: set[str] = set()
+        for payload in (plot_payload, character_payload):
+            queries = payload.get("available_queries", []) if payload else []
+            if not isinstance(queries, list):
+                continue
+            for query in queries:
+                if isinstance(query, dict):
+                    key = str(
+                        query.get("id")
+                        or query.get("query")
+                        or query.get("name")
+                        or sorted(str(item) for item in query.items())
+                    )
+                else:
+                    key = str(query)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(query)
+        return merged
 
 
 __all__ = [

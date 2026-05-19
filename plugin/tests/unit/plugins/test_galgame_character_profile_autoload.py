@@ -118,7 +118,7 @@ async def test_character_list_reports_empty_when_no_profile_matches(
 @pytest.mark.asyncio
 async def test_available_game_ids_do_not_fallback_match_profiles() -> None:
     plugin = _plugin_with_character_profiles()
-    plugin._state.available_game_ids = ["senren_banka"]
+    plugin._state.available_game_ids = ["missing_game"]
     plugin._state.ocr_reader_runtime = {
         "status": "active",
         "game_id": "ocr-unknown",
@@ -185,7 +185,7 @@ def test_activate_character_profiles_rebuilds_runtime_for_new_game() -> None:
 @pytest.mark.asyncio
 async def test_bind_game_clears_persisted_character_profile_state() -> None:
     plugin, writes = _plugin_with_persist_writes()
-    plugin._state.available_game_ids = ["senren_banka"]
+    plugin._state.available_game_ids = ["missing_game"]
     plugin._state.character_profiles = {"鍙㈤洦": {"identity": "old"}}
     plugin._state.character_profile_version = "old-version"
     plugin._state.character_profile_game_id = "senren_banka"
@@ -202,7 +202,7 @@ async def test_bind_game_clears_persisted_character_profile_state() -> None:
 
     plugin._poll_bridge = _poll_bridge
 
-    result = await plugin.galgame_bind_game(game_id="senren_banka")
+    result = await plugin.galgame_bind_game(game_id="missing_game")
 
     assert result.is_ok()
     assert plugin._state.character_profiles == {}

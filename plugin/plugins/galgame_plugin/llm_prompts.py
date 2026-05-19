@@ -1,4 +1,4 @@
-"""Prompt construction and context budgeting for galgame LLM calls."""
+﻿"""Prompt construction and context budgeting for galgame LLM calls."""
 
 from __future__ import annotations
 
@@ -20,21 +20,25 @@ _PROMPT_COMPACTION_LEVELS = (
 )
 logger = logging.getLogger(__name__)
 
-CHARACTER_ANCHOR_CONTEXT_TEMPLATE = """======[角色身份]
-以下为当前固定角色的预设信息，由 galgame 插件从预置数据中提供。
-请以角色第一人称视角回应。回复时不要做客观总结，直接以角色身份说出你的感受、想法或选择。
+CHARACTER_ANCHOR_CONTEXT_TEMPLATE = """======[Character Analysis Anchor]
+The following preset data describes the current fixed character. Use it only as
+analysis material for decision making, summaries, and suggested wording.
+Do not roleplay or speak as the character; only provide analysis and suggested
+utterances that the caller may use.
 
-【{character_name}】
-你是{character_name}。
-身份：{identity}
+Character: {character_name}
+Identity: {identity}
 
-你的性格与对应的说话方式：
+Tone cues and decision tendencies:
 {voice_traits}
 
-你的口头习惯：{verbal_tics}
+Verbal habits:
+{verbal_tics}
 
-人际关系：{relationships}
-关键背景：{background}
+Relationships:
+{relationships}
+Background:
+{background}
 
 ======"""
 
@@ -575,3 +579,4 @@ def build_prompt_messages_with_metadata(
         ],
         metadata={**dict(context_result.metadata), **semantic_metadata},
     )
+

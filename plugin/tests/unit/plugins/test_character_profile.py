@@ -480,3 +480,23 @@ def test_import_user_profiles_rejects_invalid_payload(
     assert result.ok is False
     assert not (tmp_path / "demo.user.json").exists()
     assert result.errors
+
+
+@pytest.mark.parametrize("game_id", ["../evil", "a/b"])
+def test_profile_paths_reject_nested_game_ids(
+    manager: CharacterProfileManager,
+    tmp_path: Path,
+    game_id: str,
+) -> None:
+    source = tmp_path / "incoming.json"
+    _write(source, VALID_PRESET)
+
+    load_result = manager.load_game_profiles(game_id)
+    import_result = manager.import_user_profiles(game_id, source)
+
+    assert load_result["profiles"] == {}
+    assert load_result["errors"]
+    assert import_result.ok is False
+    assert import_result.errors
+    assert not (tmp_path / "evil.user.json").exists()
+    assert not (tmp_path / "a/b.user.json").exists()

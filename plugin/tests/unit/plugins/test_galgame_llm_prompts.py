@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from types import SimpleNamespace
@@ -189,8 +189,9 @@ def test_host_play_mode_prompt_constants_are_available() -> None:
         character_voice_summary="自称「わらわ」",
     )
 
-    assert "======[角色身份]" in anchor
-    assert "你是叢雨。" in anchor
+    assert "======[Character Analysis Anchor]" in anchor
+    assert "Do not roleplay or speak as the character" in anchor
+    assert "Character: 叢雨" in anchor
     assert "视角下的策略意见" in consult
     assert "不是强制指令" in consult
 
@@ -432,3 +433,4 @@ def test_semantic_compression_preserves_local_scene_summary_seed() -> None:
 
     assert disabled["scene_summary_seed"] == scene_summary_seed
     assert enabled["scene_summary_seed"] == scene_summary_seed
+

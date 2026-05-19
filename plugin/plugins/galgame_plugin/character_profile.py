@@ -42,11 +42,19 @@ _TOP_LEVEL_REQUIRED: frozenset[str] = frozenset({"game_id", "characters"})
 
 _TRAIT_TEXT_RE = re.compile(r"\s+")
 _MATCH_SPACE_RE = re.compile(r"\s+")
+_GAME_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _match_key(value: object) -> str:
     normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return _MATCH_SPACE_RE.sub("", normalized.strip())
+
+
+def _normalize_game_id_for_path(value: object) -> str:
+    normalized = str(value or "").strip()
+    if not normalized or not _GAME_ID_RE.fullmatch(normalized):
+        return ""
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,9 +145,9 @@ class CharacterProfileManager:
         failures fall back to preset (per plan: 用户 JSON 坏了不影响使用).
         """
 
-        normalized = (game_id or "").strip()
+        normalized = _normalize_game_id_for_path(game_id)
         if not normalized:
-            return self._empty_load_result(["game_id is required"])
+            return self._empty_load_result(["invalid game_id"])
 
         if not force_reload and normalized in self._cache:
             cached = self._cache[normalized]
@@ -568,13 +576,13 @@ class CharacterProfileManager:
         Returns an :class:`ImportResult`. Validation failure means the file is
         not written. The data directory is created on demand.
         """
-        normalized = (game_id or "").strip()
+        normalized = _normalize_game_id_for_path(game_id)
         if not normalized:
             return ImportResult(
                 ok=False,
                 target_path="",
                 profile_count=0,
-                errors=("game_id is required",),
+                errors=("invalid game_id",),
                 warnings=(),
             )
 

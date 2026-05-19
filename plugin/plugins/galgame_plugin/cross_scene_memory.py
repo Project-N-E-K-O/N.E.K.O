@@ -112,6 +112,13 @@ def empty_memory() -> dict[str, Any]:
     }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def sanitize_memory(memory: dict[str, Any] | None) -> dict[str, Any]:
     """Coerce ``memory`` into the canonical shape; missing fields default."""
     base = empty_memory()
@@ -131,9 +138,9 @@ def sanitize_memory(memory: dict[str, Any] | None) -> dict[str, Any]:
             for entry in plot_threads
             if isinstance(entry, dict)
         ]
-    base["last_updated_seq"] = int(memory.get("last_updated_seq") or 0)
+    base["last_updated_seq"] = _safe_int(memory.get("last_updated_seq") or 0)
     base["low_confidence_streak"] = max(
-        0, int(memory.get("low_confidence_streak") or 0)
+        0, _safe_int(memory.get("low_confidence_streak") or 0)
     )
     return base
 
@@ -161,7 +168,7 @@ def _sanitize_thread_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "thread": str(entry.get("thread") or "").strip(),
         "status": str(entry.get("status") or "").strip(),
         "key_scenes": key_scenes,
-        "updated_at_seq": int(entry.get("updated_at_seq") or 0),
+        "updated_at_seq": _safe_int(entry.get("updated_at_seq") or 0),
         "confidence": _clamp_confidence(entry.get("confidence")),
     }
 

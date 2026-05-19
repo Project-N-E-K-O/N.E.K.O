@@ -790,7 +790,7 @@
   "ui.flash.select_region_first": "先にスクリーンショット上で領域を選択してください。",
   "ui.flash.region_template_draft_created": "選択領域からテンプレート下書きを生成しました。",
   "ui.flash.region_applied_to_profile": "選択領域を OCR スクリーンショット校正フォームに適用しました。確認後に保存できます。",
-  "ui.current_line.new_text_title": "New text observed",
+  "ui.current_line.new_text_title": "新しいテキストが検出されました",
   "ui.current_line.confirming_status": "確認中",
   "ui.current_line.confirming_repeat_hint": "同じセリフか確認中です。連続で {count} 回検出しました。",
   "ui.current_line.confirming_hint": "同じセリフか確認中です。",

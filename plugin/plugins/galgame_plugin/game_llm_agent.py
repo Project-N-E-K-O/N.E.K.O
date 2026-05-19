@@ -733,6 +733,7 @@ class GameLLMAgent:
         self._summary_tasks: set[asyncio.Task[bool]] = set()
         self._summary_task_meta: dict[asyncio.Task[bool], dict[str, Any]] = {}
         self._consultation_tasks: set[asyncio.Task[bool]] = set()
+        self._pending_consults: set[str] = set()
         self._summary_generation = 0
         self._summary_debug: dict[str, Any] = {}
         self._failure_memory: list[dict[str, Any]] = []
@@ -784,6 +785,7 @@ class GameLLMAgent:
         self._last_cat_consult_ts = 0.0
         self._lines_seen_for_consult = 0
         self._last_consult_seen_line_count = 0
+        self._pending_consults.clear()
 
     @property
     def _scene_memory(self) -> list[dict[str, Any]]:
@@ -940,6 +942,7 @@ class GameLLMAgent:
             await asyncio.gather(*tasks, return_exceptions=True)
         for task in tasks:
             self._consultation_tasks.discard(task)
+        self._pending_consults.clear()
 
     @staticmethod
     def _summary_delivery_key(
@@ -3466,6 +3469,17 @@ class GameLLMAgent:
         snapshot: dict[str, Any],
         now: float,
     ) -> None:
+        if not self._should_push_choice(shared):
+            self._planning_choice_signature = build_choice_signature(current_choices)
+            await self._run_choice_planning_inline(
+                shared,
+                context=build_suggest_context(
+                    shared,
+                    config=self._context_config,
+                ),
+                now=now,
+            )
+            return
         candidates = await self._build_choice_candidates(
             current_choices,
             {"degraded": True, "choices": [], "diagnostic": "waiting_for_cat_advice"},
@@ -3751,10 +3765,10 @@ class GameLLMAgent:
     def _cat_opinion_snapshot(self, shared: dict[str, Any]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
-        shared_queue = shared.pop("cat_opinions", None)
+        shared_queue = shared.get("cat_opinions")
         sources = []
         if isinstance(shared_queue, list):
-            sources.append(shared_queue)
+            sources.append([dict(item) for item in shared_queue if isinstance(item, dict)])
         sources.append(self._cat_opinions)
         for source in sources:
             for entry in source:
@@ -6958,6 +6972,8 @@ class GameLLMAgent:
         snapshot: dict[str, Any],
         scene_changed: bool,
     ) -> None:
+        if not self._should_push_scene(shared):
+            return
         inputs = self._build_consult_inputs(
             shared, snapshot=snapshot, scene_changed=scene_changed
         )
@@ -6978,6 +6994,17 @@ class GameLLMAgent:
             visible_choices=inputs.visible_choices,
             recent_lines=recent_lines,
         )
+        pending_key = ":".join(
+            [
+                str(snapshot.get("scene_id") or ""),
+                str(snapshot.get("route_id") or ""),
+                str(decision.character_name or ""),
+                str(decision.reason or ""),
+            ]
+        )
+        if pending_key in self._pending_consults:
+            return
+        self._pending_consults.add(pending_key)
         # Fire-and-forget — the cat reply arrives via the existing inbound
         # channel; the strategy builder consumes shared['cat_opinions'] later.
         seen_after_consult = (
@@ -7004,6 +7031,7 @@ class GameLLMAgent:
 
         def _advance_consult_state(task: asyncio.Task[bool]) -> None:
             self._consultation_tasks.discard(task)
+            self._pending_consults.discard(pending_key)
             try:
                 delivered = bool(task.result())
             except asyncio.CancelledError:

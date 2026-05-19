@@ -4583,6 +4583,12 @@ function shouldRefreshCharacterProfilesForStatus(status) {
   if (profileKey !== lastCharacterProfileGameId) {
     return true;
   }
+  if (latestCharacterProfileSnapshot.degraded) {
+    return true;
+  }
+  if (Date.now() - lastCharacterProfileRefreshAt > CHARACTER_PROFILE_REFRESH_TTL_MS) {
+    return true;
+  }
   const statusCount = Number(status?.character_profile_count || 0);
   const snapshotCount = Array.isArray(latestCharacterProfileSnapshot.characters)
     ? latestCharacterProfileSnapshot.characters.length
@@ -6539,13 +6545,17 @@ async function withButtonPending(buttonOrId, pendingText, fn) {
     return fn();
   }
   const originalText = button.textContent;
+  const originalDisabled = button.disabled;
   button.disabled = true;
   button.textContent = pendingText;
   try {
     return await fn();
   } finally {
-    button.disabled = false;
+    button.disabled = originalDisabled;
     button.textContent = originalText;
+    if (String(button.id || '').startsWith('characterProfile')) {
+      renderCharacterProfilePanel(latestStatus);
+    }
   }
 }
 
