@@ -6079,30 +6079,27 @@ class LLMSessionManager:
                             return
                         logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
 
-                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
-                    # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
+                    # 文本模式：把挂起的 agent 任务回调以 system prefix 形式
+                    # 嵌入到用户当前这一轮 LLM 调用里——AI 在回答用户问题的
+                    # 同一 turn 自然带上 callback，而非起独立 turn（issue
+                    # #1033）。drain 出来的字符串已含
+                    # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE 分组头；
+                    # ``stream_text`` 内部当作临时 SystemMessage 插在
+                    # user_message 之前进入本轮 messages，跑完按引用从
+                    # _conversation_history 移除，不进 transcript 持久化。
+                    _agent_cb_ctx = ""
                     if self.pending_agent_callbacks:
                         try:
-                            ctx = self.drain_agent_callbacks_for_llm()
-                            if ctx:
-                                # ``ctx`` already includes its own grouped
-                                # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE outer
-                                # headers per (status, source). No extra wrap.
-                                await self.session.prompt_ephemeral(ctx)
-                                # prompt_ephemeral 通过 on_proactive_done → handle_proactive_complete
-                                # 发送 (None, None) 并置 _tts_done_queued_for_turn = True。
-                                # 对于 qwen-tts 的 server_commit 模式，需要为主回复生成新的
-                                # speech_id（触发 qwen worker 重建连接、重置 buffer_committed），
-                                # 并重置 done flag 允许 handle_response_complete 正常发送。
-                                async with self.lock:
-                                    self.current_speech_id = str(uuid4())
-                                    self._tts_done_queued_for_turn = False
-                                    self._tts_done_pending_until_ready = False
+                            _agent_cb_ctx = self.drain_agent_callbacks_for_llm() or ""
                         except Exception as _cb_err:
-                            logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
+                            logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
+                            _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
-                    await self.session.stream_text(data)
+                    await self.session.stream_text(
+                        data,
+                        system_prefix=_agent_cb_ctx or None,
+                    )
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

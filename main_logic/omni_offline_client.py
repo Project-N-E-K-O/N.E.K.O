@@ -1173,11 +1173,18 @@ class OmniOfflineClient:
             except Exception as e:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
-    async def stream_text(self, text: str) -> None:
+    async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
+
+        ``system_prefix`` 用途：caller（典型场景 SessionManager 把 passive agent
+        callback 拼成 system context）想把一段 system role 文本嵌到**本轮**的
+        LLM 调用里，让模型在回答用户问题时自然带上这段上下文。它作为一条
+        临时 SystemMessage 插在 user_message 之前进入 messages，但在 finally
+        里被移出 ``_conversation_history``——passive callback 是临时通知，不
+        进 transcript 持久化。
         """
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1227,10 +1234,14 @@ class OmniOfflineClient:
         self._conversation_history.append(user_message)
         if has_images:
             self._evict_old_images()
-        
+
         # Callback for user input
         if self.on_input_transcript:
             await self.on_input_transcript(text.strip())
+
+        # 临时 SystemMessage 引用——实际 insert 进 try 块（见下方），保证
+        # finally 一定能配对 remove，不会因为 try 之前的 await 抛错而残留。
+        _sys_prefix_msg: SystemMessage | None = None
         
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
@@ -1245,6 +1256,18 @@ class OmniOfflineClient:
         self._last_prompt_tokens = None
 
         try:
+            # 临时 SystemMessage 注入（passive agent callback / proactive 同轮嵌入）
+            # 插在 user_message 之前一格——LLM 顺序读到 system context → user
+            # message，能在同一轮自然把 callback 一并提及，不再起独立 turn。
+            # finally 里按引用移除：tool result / final AIMessage 走 append 落到
+            # history 末尾，不会动到这条 SystemMessage 的位置；只要它还在，按
+            # remove() 找得到。重复检测路径会把整段 history 清空，那条 finally
+            # remove 抓 ValueError 即可。放在 try 头部确保异常路径 finally 必
+            # 配对清理。
+            if system_prefix and system_prefix.strip():
+                _sys_prefix_msg = SystemMessage(content=system_prefix.strip())
+                self._conversation_history.insert(-1, _sys_prefix_msg)
+
             self._is_responding = True
             reroll_count = 0
             set_call_type("conversation")
@@ -1753,7 +1776,17 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
-            
+
+            # 临时 system_prefix SystemMessage 按引用从 history 移除——passive
+            # callback 是"本轮一次性"语义，不进 transcript 持久化。重复检测路径
+            # 会把 history 整体清空（只留 instructions），那时 remove 找不到这条
+            # SystemMessage，ValueError 吞掉即可。
+            if _sys_prefix_msg is not None:
+                try:
+                    self._conversation_history.remove(_sys_prefix_msg)
+                except ValueError:
+                    pass
+
             # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
             # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
             if not assistant_message_total and not guard_exhausted and not status_reported:
