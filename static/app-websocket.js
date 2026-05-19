@@ -1274,6 +1274,9 @@
 
                     window._geminiTurnFullText = '';
                     window._pendingMusicCommand = '';
+                    // discard 后清掉 turn_end seal flag，避免残留导致下一个 chunk
+                    // 被误判为 sealedContinuation 触发不该触发的 lifecycle reset。
+                    window._geminiTurnEndSealed = false;
 
                     // 推进 epoch 并清空入站音频队列，防止在途 TTS blob 被消费播放
                     S.incomingAudioEpoch += 1;
