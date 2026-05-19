@@ -723,6 +723,19 @@ async def _handle_agent_event(event: dict):
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
+                    # Plugin-supplied direct_reply text bypasses the LLM and
+                    # speaks/types verbatim. Plugin authors may write
+                    # ``{MASTER_NAME}``/``{LANLAN_NAME}`` placeholders since
+                    # they don't know which session their text will route to;
+                    # expand here so the placeholder doesn't reach TTS/UI
+                    # literally. (See main_logic.core.apply_role_placeholders
+                    # for the contract — same helper as the LLM-injection path
+                    # so all plugin-text exits share one spelling.)
+                    detail_text = core.apply_role_placeholders(
+                        detail_text,
+                        lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                        master_name=getattr(mgr, "master_name", "") or "",
+                    )
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:

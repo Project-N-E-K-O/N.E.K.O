@@ -148,6 +148,40 @@ def _format_callback_source(cb: dict, lang: str) -> str:
     return _loc(descriptor, lang).format(name=name)
 
 
+def apply_role_placeholders(
+    text: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
+    """Substitute ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders in
+    plugin-supplied text at the LLM-injection boundary.
+
+    Plugin authors don't know which ``LLMSessionManager`` (and therefore which
+    ``master_name`` / ``lanlan_name`` pair) the text will route to — that's a
+    host-side visibility decision. So the canonical contract is:
+
+        plugin writes ``"向 {MASTER_NAME} 汇报…"`` →
+        host expands at the injection site, per session.
+
+    Uses ``str.replace`` rather than ``str.format`` so that other braces in
+    the text (JSON fragments, code snippets, user content containing stray
+    ``{``) don't raise ``KeyError``. Empty names short-circuit — the
+    placeholder is left in place rather than replaced with ``""``, on the
+    theory that the literal token is less misleading than an empty hole.
+
+    This is the SINGLE source of truth for the placeholder contract. New
+    plugin-text injection sites should funnel through this helper.
+    """
+    if not text:
+        return text
+    if master_name:
+        text = text.replace("{MASTER_NAME}", master_name)
+    if lanlan_name:
+        text = text.replace("{LANLAN_NAME}", lanlan_name)
+    return text
+
+
 def _render_callback_inner_item(
     cb: dict,
     lang: str,
@@ -161,21 +195,17 @@ def _render_callback_inner_item(
     and detail empty); the caller can then drop the line and rely on the
     outer header alone to express that something happened.
 
-    ``{MASTER_NAME}`` and ``{LANLAN_NAME}`` placeholders in plugin-supplied
-    ``summary``/``detail`` are substituted here so plugin authors can write
-    role-aware text without having to learn the live character names. The
-    substitution uses ``str.replace`` rather than ``str.format`` so that
-    other braces in the text (e.g. JSON fragments in detail) don't trigger
-    a KeyError.
+    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
+    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`.
     """
-    summary = (cb.get("summary") or "").strip()
-    detail = (cb.get("detail") or "").strip()
-    if master_name:
-        summary = summary.replace("{MASTER_NAME}", master_name)
-        detail = detail.replace("{MASTER_NAME}", master_name)
-    if lanlan_name:
-        summary = summary.replace("{LANLAN_NAME}", lanlan_name)
-        detail = detail.replace("{LANLAN_NAME}", lanlan_name)
+    summary = apply_role_placeholders(
+        (cb.get("summary") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
+    detail = apply_role_placeholders(
+        (cb.get("detail") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
     text = summary or detail
     if not text:
         return ""
@@ -304,7 +334,13 @@ def _build_callback_instruction(
     return "\n\n".join(parts)
 
 
-def _format_voice_swap_item(entry: dict, lang: str) -> str:
+def _format_voice_swap_item(
+    entry: dict,
+    lang: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
     """Render a single voice-mode pending_extra_replies entry to a bulleted
     line for the hot-swap injection.
 
@@ -315,11 +351,22 @@ def _format_voice_swap_item(entry: dict, lang: str) -> str:
     (the voice-mode equivalent of the header-only branch in
     ``_build_callback_instruction``).
 
+    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
+    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`. The
+    synthesized placeholder fallback uses host-side localized phrases so it
+    needs no role substitution.
+
     Returns ``""`` when the entry is genuinely empty (no body, no error, and
     a benign ``completed`` status) — caller filters those out.
     """
-    summary = (entry.get("summary") or "").strip()
-    detail = (entry.get("detail") or "").strip()
+    summary = apply_role_placeholders(
+        (entry.get("summary") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
+    detail = apply_role_placeholders(
+        (entry.get("detail") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
     text = summary or detail
     status = entry.get("status") or "completed"
     emoji = _STATUS_EMOJI.get(status, "•")
@@ -400,7 +447,10 @@ def _render_pending_extra_replies_by_origin(
 
     blocks: list[str] = []
     if task_entries:
-        items = [_format_voice_swap_item(e, lang) for e in task_entries]
+        items = [
+            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
+            for e in task_entries
+        ]
         items = [s for s in items if s]
         if items:
             blocks.append(
@@ -409,7 +459,10 @@ def _render_pending_extra_replies_by_origin(
                 + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
             )
     if event_entries:
-        items = [_format_voice_swap_item(e, lang) for e in event_entries]
+        items = [
+            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
+            for e in event_entries
+        ]
         items = [s for s in items if s]
         if items:
             blocks.append(
