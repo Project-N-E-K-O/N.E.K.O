@@ -3032,12 +3032,17 @@ class GalgamePlugin(NekoPluginBase):
             self._state.character_profile_game_id = ""
             self._state.character_profile_match_reason = ""
             self._state.character_runtime_state = {}
+            self._state.character_mode = "off"
+            self._state.character_fixed_name = ""
+            self._state.character_mode_stale = False
             self._state_dirty = True
             self._cached_snapshot = None
         try:
             self._persist.persist_config_override(STORE_CHARACTER_PROFILES, {})
             self._persist.persist_config_override(STORE_CHARACTER_PROFILE_VERSION, "")
             self._persist.persist_config_override(STORE_CHARACTER_RUNTIME_STATE, {})
+            self._persist.persist_config_override(STORE_CHARACTER_MODE, "off")
+            self._persist.persist_config_override(STORE_CHARACTER_FIXED_NAME, "")
         except Exception:  # noqa: BLE001
             self.logger.warning("failed to persist character profile clear", exc_info=True)
 

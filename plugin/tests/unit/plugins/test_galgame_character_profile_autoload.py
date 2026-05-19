@@ -13,6 +13,8 @@ from plugin.plugins.galgame_plugin.state import build_initial_state
 from plugin.plugins.galgame_plugin.models import (
     ADVANCE_SPEED_MEDIUM,
     MODE_COMPANION,
+    STORE_CHARACTER_FIXED_NAME,
+    STORE_CHARACTER_MODE,
     STORE_CHARACTER_PROFILE_VERSION,
     STORE_CHARACTER_PROFILES,
     STORE_CHARACTER_RUNTIME_STATE,
@@ -229,6 +231,9 @@ async def test_bind_game_clears_persisted_character_profile_state() -> None:
     plugin._state.character_runtime_state = {
         "鍙㈤洦": {"game_id": "senren_banka", "current_emotion": "old"}
     }
+    plugin._state.character_mode = "fixed"
+    plugin._state.character_fixed_name = next(iter(plugin._state.character_profiles))
+    plugin._state.character_mode_stale = True
     plugin._config_service = SimpleNamespace(
         persist_preferences=lambda **_kwargs: None
     )
@@ -246,6 +251,11 @@ async def test_bind_game_clears_persisted_character_profile_state() -> None:
     assert plugin._state.character_profile_game_id == ""
     assert plugin._state.character_profile_match_reason == ""
     assert plugin._state.character_runtime_state == {}
+    assert plugin._state.character_mode == "off"
+    assert plugin._state.character_fixed_name == ""
+    assert plugin._state.character_mode_stale is False
     assert (STORE_CHARACTER_PROFILES, {}) in writes
     assert (STORE_CHARACTER_PROFILE_VERSION, "") in writes
     assert (STORE_CHARACTER_RUNTIME_STATE, {}) in writes
+    assert (STORE_CHARACTER_MODE, "off") in writes
+    assert (STORE_CHARACTER_FIXED_NAME, "") in writes
