@@ -1804,24 +1804,41 @@ svg {
   overflow: visible;
 }
 
-.app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor {
-  position: absolute;
-  left: 50%;
-  width: min(100%, 420px);
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+  position: fixed;
+  left: calc(var(--compact-surface-left, 50vw) + (var(--compact-surface-width, 430px) / 2));
+  width: min(var(--compact-surface-width, 430px), 420px);
+  max-height: min(240px, calc(100vh - 96px));
+  height: max-content;
   transform: translateX(-50%);
-  overflow: visible;
-  z-index: 4;
+  overflow-y: auto;
+  overflow-x: visible;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  z-index: 100002;
   pointer-events: auto;
 }
 
-.app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor[data-compact-choice-placement="above"] {
-  top: auto;
-  bottom: calc(100% + 16px);
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
+  display: none;
 }
 
-.app-shell.chat-surface-mode-compact > .compact-chat-choice-anchor[data-compact-choice-placement="below"] {
-  top: calc(100% + 16px);
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
+  display: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
+  top: auto;
+  bottom: calc(100vh - var(--compact-surface-top, 0px) + 16px);
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
+  top: calc(var(--compact-surface-top, 0px) + var(--compact-surface-height, 58px) + 16px);
   bottom: auto;
+}
+
+body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+  max-height: 240px;
 }
 
 .chat-window.chat-surface-mode-compact .window-topbar {
@@ -1865,16 +1882,6 @@ svg {
   overflow: visible;
   z-index: 4;
   -webkit-app-region: no-drag;
-}
-
-.compact-chat-capsule-shell .compact-chat-choice-anchor {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 12px);
-  width: min(100%, 420px);
-  transform: translateX(-50%);
-  overflow: visible;
-  z-index: 3;
 }
 
 .compact-chat-capsule {
@@ -1956,7 +1963,7 @@ svg {
 .compact-chat-input-shell {
   position: relative;
   min-height: 0;
-  padding: 4px 0 0;
+  padding: 0;
   background: transparent;
   box-shadow: none;
   width: 100%;
@@ -1965,18 +1972,69 @@ svg {
   -webkit-app-region: no-drag;
 }
 
-.compact-chat-input-shell .composer-choice-layer[data-choice-layer-open="false"] {
-  display: none;
+.compact-chat-drag-handle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 88px;
+  height: 16px;
+  background: none;
+  border: 0;
+  cursor: grab;
+  opacity: 0;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  z-index: 8;
 }
 
-.compact-chat-input-shell .compact-chat-choice-anchor {
+.compact-chat-drag-handle::before {
+  content: "";
   position: absolute;
+  pointer-events: none;
+  top: 50%;
   left: 50%;
-  bottom: calc(100% + 12px);
-  width: min(100%, 420px);
+  width: 38px;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
+  border-radius: 999px;
+  clip-path: polygon(0 50%, 11% 0, 89% 0, 100% 50%, 89% 100%, 11% 100%);
+  transform: translate(-50%, -50%);
+  transition: width 0.16s ease, background 0.16s ease, opacity 0.16s ease;
+}
+
+.compact-chat-capsule-shell:hover > .compact-chat-drag-handle,
+.compact-chat-input-shell:hover > .compact-chat-drag-handle,
+.compact-chat-drag-handle:hover,
+.compact-chat-drag-handle:active {
+  opacity: 1;
+}
+
+.compact-chat-drag-handle:hover {
   transform: translateX(-50%);
-  overflow: visible;
-  z-index: 3;
+}
+
+.compact-chat-drag-handle:hover::before {
+  width: 44px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 196, 255, 0) 0%,
+    rgba(0, 196, 255, 0.82) 18%,
+    rgba(0, 210, 255, 0.96) 50%,
+    rgba(0, 196, 255, 0.82) 82%,
+    rgba(0, 196, 255, 0) 100%
+  );
+}
+
+.compact-chat-drag-handle:active {
+  cursor: grabbing;
 }
 
 .compact-chat-inline-input {
@@ -1984,11 +2042,12 @@ svg {
   overflow: hidden;
   isolation: isolate;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 10px;
   width: min(100%, 520px);
   min-width: 0;
   min-height: 54px;
+  max-height: 68px;
   margin: 0 auto;
   padding: 5px 10px 5px 20px;
   border-radius: 999px;
@@ -2004,11 +2063,12 @@ svg {
 .compact-chat-input-shell .composer-input {
   flex: 1 1 auto;
   min-height: 26px;
-  max-height: 110px;
+  max-height: 44px;
   padding: 7px 0 6px;
   border: 0;
   background: transparent;
   color: #5f7794;
+  overflow-y: auto;
 }
 
 .compact-chat-input-shell .composer-bottom-bar {
@@ -2078,6 +2138,10 @@ svg {
 .compact-chat-capsule-shell *,
 .compact-chat-input-shell *,
 .compact-input-tool-fan * {
+  -webkit-app-region: no-drag;
+}
+
+.compact-chat-drag-handle {
   -webkit-app-region: no-drag;
 }
 

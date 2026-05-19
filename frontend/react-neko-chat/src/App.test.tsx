@@ -23,6 +23,23 @@ describe('App', () => {
     expect(compactStage).toHaveAttribute('data-compact-chat-state', 'input');
   });
 
+  it('renders a compact drag handle in compact display and input states only', () => {
+    const { container, rerender } = render(<App chatSurfaceMode="compact" compactChatState="default" />);
+
+    expect(container.querySelector('.compact-chat-capsule-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-item="capsule"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-geometry-item="dragHandle"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
+    expect(container.querySelector('.compact-chat-input-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-item="input"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
+
+    rerender(<App chatSurfaceMode="full" />);
+    expect(container.querySelector('.compact-chat-drag-handle')).toBeNull();
+    expect(container.querySelector('[data-compact-geometry-owner="surface"]')).toBeNull();
+  });
+
   it('elevates compact state to options when choices are visible', () => {
     const { container } = render(
       <App
@@ -62,9 +79,13 @@ describe('App', () => {
       );
 
       const appShell = container.querySelector('.app-shell');
-      const choiceLayer = container.querySelector('.compact-chat-choice-anchor');
+      const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
       expect(appShell).not.toBeNull();
       expect(choiceLayer).not.toBeNull();
+      expect(container.querySelector('.composer-choice-layer')).toBeNull();
+      expect(document.body.querySelectorAll('body > .compact-chat-choice-anchor')).toHaveLength(1);
+      expect(choiceLayer).toHaveAttribute('data-compact-geometry-item', 'choice');
+      expect(choiceLayer).toHaveAttribute('data-compact-geometry-owner', 'surface');
 
       Object.defineProperty(appShell!, 'getBoundingClientRect', {
         configurable: true,
@@ -132,7 +153,7 @@ describe('App', () => {
       );
 
       const appShell = container.querySelector('.app-shell');
-      const choiceLayer = container.querySelector('.compact-chat-choice-anchor');
+      const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
       expect(appShell).not.toBeNull();
       expect(choiceLayer).not.toBeNull();
 
@@ -182,6 +203,160 @@ describe('App', () => {
     }
   });
 
+  it('places desktop compact options below when the screen work area has room even if the compact window viewport is short', async () => {
+    const originalInnerHeight = window.innerHeight;
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 74,
+    });
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 1043, y: 900, width: 446, height: 74 },
+      workArea: { x: 0, y: 0, width: 1440, height: 1400 },
+    };
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const appShell = container.querySelector('.app-shell');
+      const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
+      expect(appShell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(appShell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 8,
+          left: 8,
+          right: 438,
+          bottom: 66,
+          width: 430,
+          height: 58,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'below');
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
+  it('places desktop compact options above only when the screen work area below the surface is insufficient', async () => {
+    const originalInnerHeight = window.innerHeight;
+    const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
+    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 74,
+    });
+    desktopWindow.__nekoDesktopCompactLayout = {
+      windowBounds: { x: 1043, y: 1320, width: 446, height: 74 },
+      workArea: { x: 0, y: 0, width: 1440, height: 1400 },
+    };
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const appShell = container.querySelector('.app-shell');
+      const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
+      expect(appShell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(appShell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 8,
+          left: 8,
+          right: 438,
+          bottom: 66,
+          width: 430,
+          height: 58,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
+    }
+  });
+
   it('repositions compact galgame options when the compact surface moves after opening', async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', {
@@ -204,7 +379,7 @@ describe('App', () => {
       );
 
       const appShell = container.querySelector('.app-shell');
-      const choiceLayer = container.querySelector('.compact-chat-choice-anchor');
+      const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
       expect(appShell).not.toBeNull();
       expect(choiceLayer).not.toBeNull();
 
@@ -1198,6 +1373,67 @@ describe('App', () => {
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
   });
 
+  it('closes compact input tools when the desktop fan layer covers the toggle origin', () => {
+    const onCompactChatStateChange = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, {
+      pointerId: 12,
+      clientX: 16,
+      clientY: 16,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(document.body.querySelector('.compact-chat-inline-input')).not.toBeNull();
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+  });
+
+  it('collapses empty compact input when desktop compact pointer leaves native hit regions', () => {
+    const onCompactChatStateChange = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    fireEvent(window, new CustomEvent('neko:desktop-compact-pointer-outside'));
+
+    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+  });
+
+  it('keeps compact input open with draft text when desktop compact pointer leaves native hit regions', () => {
+    const onCompactChatStateChange = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'draft' } });
+    fireEvent(window, new CustomEvent('neko:desktop-compact-pointer-outside'));
+
+    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+  });
+
   it('switches the compact action button back to send when text is entered', () => {
     const onComposerSubmit = vi.fn();
     render(
@@ -1244,6 +1480,55 @@ describe('App', () => {
     });
 
     expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+    } finally {
+      outsideButton.remove();
+    }
+  });
+
+  it('collapses compact input on window blur even when focus remains in the compact shell', async () => {
+    const onCompactChatStateChange = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    input.focus();
+    fireEvent(window, new Event('blur'));
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+  });
+
+  it('collapses compact input when a document-level outside pointer starts with no content', async () => {
+    const onCompactChatStateChange = vi.fn();
+    const outsideButton = document.createElement('button');
+    document.body.appendChild(outsideButton);
+
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          onCompactChatStateChange={onCompactChatStateChange}
+        />,
+      );
+
+      const input = screen.getByPlaceholderText('Type a message...');
+      input.focus();
+      fireEvent.pointerDown(outsideButton);
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       outsideButton.remove();
     }

@@ -66,6 +66,7 @@ const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
+const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 
 type CompactToolWheelPointerState = {
   id: number;
@@ -81,6 +82,22 @@ type CompactMessagePreview = {
   fullText: string;
   isStreaming: boolean;
   isAssistant: boolean;
+};
+
+type DesktopCompactChoicePlacementLayout = {
+  compactChoicePlacement?: 'above' | 'below' | null;
+  windowBounds?: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+  } | null;
+  workArea?: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+  } | null;
 };
 
 type SpeechPlaybackState = {
@@ -1354,6 +1371,33 @@ export default function App({
     let trackingFrameId: number | null = null;
     let disposed = false;
 
+    const getDesktopPlacementSpace = (shellRect: DOMRect) => {
+      const layout = (window as typeof window & {
+        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+      }).__nekoDesktopCompactLayout;
+      const windowBounds = layout?.windowBounds;
+      const workArea = layout?.workArea;
+      const windowY = Number(windowBounds?.y);
+      const workAreaY = Number(workArea?.y);
+      const workAreaHeight = Number(workArea?.height);
+      if (
+        !Number.isFinite(windowY)
+        || !Number.isFinite(workAreaY)
+        || !Number.isFinite(workAreaHeight)
+        || workAreaHeight <= 0
+      ) {
+        return null;
+      }
+
+      const surfaceScreenTop = windowY + shellRect.top;
+      const surfaceScreenBottom = windowY + shellRect.bottom;
+      const workAreaBottom = workAreaY + workAreaHeight;
+      return {
+        availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
+        availableBelow: Math.max(0, workAreaBottom - surfaceScreenBottom),
+      };
+    };
+
     const updatePlacement = () => {
       const nextShellNode = appShellRef.current;
       const nextLayerNode = compactChoiceLayerRef.current;
@@ -1363,8 +1407,24 @@ export default function App({
       const layerRect = nextLayerNode.getBoundingClientRect();
       const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const availableBelow = Math.max(0, viewportHeight - shellRect.bottom);
-      const nextPlacement = availableBelow >= layerHeight + gap ? 'below' : 'above';
+      const desktopSpace = getDesktopPlacementSpace(shellRect);
+      const desktopForcedPlacement = ((window as typeof window & {
+        __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+      }).__nekoDesktopCompactLayout?.compactChoicePlacement);
+      if (desktopForcedPlacement === 'above' || desktopForcedPlacement === 'below') {
+        setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
+        return;
+      }
+      const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - shellRect.bottom);
+      const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, shellRect.top);
+      const requiredSpace = layerHeight + gap;
+      const nextPlacement = availableBelow >= requiredSpace
+        ? 'below'
+        : availableAbove >= requiredSpace
+          ? 'above'
+          : availableBelow >= availableAbove
+            ? 'below'
+            : 'above';
       setCompactChoiceLayerPlacement(current => (current === nextPlacement ? current : nextPlacement));
     };
 
@@ -1485,20 +1545,68 @@ export default function App({
     setComposerBottomBarNode(prev => (prev === node ? prev : node));
   }, []);
 
-  const scheduleCompactInputCollapse = useCallback(() => {
+  const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean }) => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
-    window.setTimeout(() => {
-      if (compactInputToolFanOpen) return;
-      if (draftRef.current.trim().length > 0) return;
-      if (composerAttachments.length > 0) return;
-      const activeElement = document.activeElement;
-      if (compactInputShellRef.current && activeElement instanceof Node && compactInputShellRef.current.contains(activeElement)) {
-        return;
-      }
-      requestCompactChatState('default');
-    }, 0);
+    if (compactInputToolFanOpen) return;
+    if (draftRef.current.trim().length > 0) return;
+    if (composerAttachments.length > 0) return;
+    const activeElement = document.activeElement;
+    if (
+      !options?.ignoreFocusedShell
+      && compactInputShellRef.current
+      && activeElement instanceof Node
+      && compactInputShellRef.current.contains(activeElement)
+    ) {
+      return;
+    }
+    requestCompactChatState('default');
   }, [compactInputToolFanOpen, composerAttachments.length, effectiveCompactChatState, isCompactSurface, requestCompactChatState]);
+
+  const scheduleCompactInputCollapse = useCallback(() => {
+    window.setTimeout(() => {
+      collapseCompactInputIfEmpty();
+    }, 0);
+  }, [collapseCompactInputIfEmpty]);
+
+  const scheduleForcedCompactInputCollapse = useCallback(() => {
+    window.setTimeout(() => {
+      collapseCompactInputIfEmpty({ ignoreFocusedShell: true });
+    }, 0);
+  }, [collapseCompactInputIfEmpty]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    if (effectiveCompactChatState !== 'input') return;
+
+    const isInsideCompactInputIsland = (target: EventTarget | null) => (
+      target instanceof Node
+      && (
+        !!compactInputShellRef.current?.contains(target)
+        || !!compactInputToolFanRef.current?.contains(target)
+        || !!compactChoiceLayerRef.current?.contains(target)
+      )
+    );
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (isInsideCompactInputIsland(event.target)) return;
+      scheduleForcedCompactInputCollapse();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      scheduleForcedCompactInputCollapse();
+    };
+
+    window.addEventListener('blur', scheduleForcedCompactInputCollapse);
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      window.removeEventListener('blur', scheduleForcedCompactInputCollapse);
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      document.removeEventListener('keydown', handleKeyDown, true);
+    };
+  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
@@ -1508,6 +1616,7 @@ export default function App({
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', handleLayoutChange);
     window.addEventListener('scroll', handleLayoutChange, true);
+    window.addEventListener('neko:desktop-compact-layout-change', handleLayoutChange);
     visualViewport?.addEventListener('resize', handleLayoutChange);
     visualViewport?.addEventListener('scroll', handleLayoutChange);
 
@@ -1520,6 +1629,7 @@ export default function App({
     return () => {
       window.removeEventListener('resize', handleLayoutChange);
       window.removeEventListener('scroll', handleLayoutChange, true);
+      window.removeEventListener('neko:desktop-compact-layout-change', handleLayoutChange);
       visualViewport?.removeEventListener('resize', handleLayoutChange);
       visualViewport?.removeEventListener('scroll', handleLayoutChange);
       observer?.disconnect();
@@ -1546,6 +1656,29 @@ export default function App({
     compactInputToolWheelPointerRef.current = null;
     compactInputToolWheelSuppressClickRef.current = false;
   }, [compactInputToolFanOpen]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return;
+
+    const handleDesktopCompactPointerOutside = () => {
+      closeCompactInputToolFan();
+      if (effectiveCompactChatState !== 'input') return;
+      if (draftRef.current.trim().length > 0) return;
+      if (composerAttachments.length > 0) return;
+      requestCompactChatState('default');
+    };
+
+    window.addEventListener('neko:desktop-compact-pointer-outside', handleDesktopCompactPointerOutside);
+    return () => {
+      window.removeEventListener('neko:desktop-compact-pointer-outside', handleDesktopCompactPointerOutside);
+    };
+  }, [
+    closeCompactInputToolFan,
+    composerAttachments.length,
+    effectiveCompactChatState,
+    isCompactSurface,
+    requestCompactChatState,
+  ]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
@@ -2503,11 +2636,29 @@ export default function App({
       className="compact-input-tool-fan"
       role="group"
       aria-label={overflowMenuAriaLabel}
+      data-compact-geometry-item="toolFan"
+      data-compact-geometry-owner="surface"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
       style={compactInputToolFanStyle ?? undefined}
       onPointerDown={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
+        if (event.target === event.currentTarget) {
+          const fanRect = event.currentTarget.getBoundingClientRect();
+          const localX = event.clientX - fanRect.left;
+          const localY = event.clientY - fanRect.top;
+          if (
+            localX >= 0
+            && localY >= 0
+            && localX <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
+            && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+            closeCompactInputToolFan();
+            return;
+          }
+        }
         const captureTarget = event.target instanceof Element ? event.target : event.currentTarget;
         compactInputToolWheelSuppressClickRef.current = false;
         compactInputToolWheelPointerRef.current = {
@@ -2774,6 +2925,8 @@ export default function App({
     <div
       className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
       ref={isCompactSurface ? compactChoiceLayerRef : undefined}
+      data-compact-geometry-item={isCompactSurface ? 'choice' : undefined}
+      data-compact-geometry-owner={isCompactSurface ? 'surface' : undefined}
       data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
@@ -2870,7 +3023,9 @@ export default function App({
       ) : null}
     </div>
   );
-  const compactChoiceLayerNode = isCompactSurface ? choiceLayerNode : null;
+  const compactChoiceLayerNode = isCompactSurface
+    ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
+    : null;
 
   const messageListNode = (
     <MessageList
@@ -3074,8 +3229,17 @@ export default function App({
             {isCompactSurface && effectiveCompactChatState !== 'input' ? (
               <div
                 className="compact-chat-capsule-shell"
+                data-compact-geometry-item="capsule"
+                data-compact-geometry-owner="surface"
                 data-compact-chat-state={effectiveCompactChatState}
               >
+                <div
+                  className="compact-chat-drag-handle"
+                  data-compact-drag-handle="true"
+                  data-compact-geometry-item="dragHandle"
+                  data-compact-geometry-owner="surface"
+                  aria-hidden="true"
+                />
                 <button
                   className="compact-chat-capsule compact-chat-capsule-button"
                   type="button"
@@ -3095,10 +3259,22 @@ export default function App({
               <div
                 className="composer-input-shell compact-chat-input-shell"
                 ref={compactInputShellRef}
+                data-compact-geometry-item="input"
+                data-compact-geometry-owner="surface"
                 data-compact-chat-state={effectiveCompactChatState}
                 onBlurCapture={scheduleCompactInputCollapse}
               >
-                <div className="compact-chat-inline-input">
+                <div
+                  className="compact-chat-drag-handle"
+                  data-compact-drag-handle="true"
+                  data-compact-geometry-item="dragHandle"
+                  data-compact-geometry-owner="surface"
+                  aria-hidden="true"
+                />
+                <div
+                  className="compact-chat-inline-input"
+                  data-compact-geometry-part="inputBody"
+                >
                   <textarea
                     className="composer-input"
                     ref={compactInputRef}
@@ -3171,108 +3347,7 @@ export default function App({
                   }
                 }}
               />
-              <div
-                className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
-                data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
-                data-chat-surface-mode={chatSurfaceMode}
-              >
-              {galgameModeEnabled && !choicePromptHasOptions ? (
-                <div
-                  className={`composer-galgame-slot${compactChoiceLayerOpen && galgameOptionsVisible ? ' is-open' : ''}`}
-                  aria-hidden={!(compactChoiceLayerOpen && galgameOptionsVisible)}
-                >
-                  <div
-                    className={`composer-galgame-options${galgameOptionsLoading ? ' is-loading' : ''}`}
-                    role="group"
-                    aria-label={galgameToggleButtonLabel}
-                  >
-                    {galgameOptions.length > 0
-                      ? galgameOptions.slice(0, 3).map((option, index) => (
-                          <button
-                            key={`${index}-${option.label}`}
-                            type="button"
-                            className="composer-galgame-option"
-                            title={option.text}
-                            disabled={composerDisabled || galgameOptionsLoading}
-                            tabIndex={compactChoiceLayerOpen && galgameOptionsVisible ? 0 : -1}
-                            onClick={() => {
-                              if (submittingRef.current) return;
-                              submittingRef.current = true;
-                              try {
-                                onGalgameOptionSelect?.(option);
-                                requestCompactChatState('default');
-                              } finally {
-                                requestAnimationFrame(() => { submittingRef.current = false; });
-                              }
-                            }}
-                          >
-                            <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
-                            <span className="composer-galgame-option-text">{option.text}</span>
-                          </button>
-                        ))
-                      : galgameOptionsLoading
-                        ? ['A', 'B', 'C'].map((label) => (
-                            <button
-                              key={label}
-                              type="button"
-                              className="composer-galgame-option is-placeholder"
-                              disabled
-                              tabIndex={-1}
-                            >
-                              <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
-                              <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
-                            </button>
-                          ))
-                        : null}
-                  </div>
-                </div>
-              ) : null}
-              {/*
-                Generic ChoicePrompt slot for mini-game invites and future
-                composer-anchored choices. Reuse the galgame option visuals so
-                spacing and animation stay aligned without reviving the large
-                galgame panel treatment.
-              */}
-              {choicePrompt && choicePrompt.options.length > 0 ? (
-                <div
-                  className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
-                  aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
-                  data-choice-source={choicePrompt.source}
-                >
-                  <div
-                    className="composer-galgame-options composer-choice-options"
-                    role="group"
-                    aria-label={choicePrompt.source === 'mini_game_invite'
-                      ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-                      : galgameToggleButtonLabel}
-                  >
-                    {choicePrompt.options.slice(0, 3).map((option, index) => (
-                      <button
-                        key={`${index}-${option.choice}`}
-                        type="button"
-                        className="composer-galgame-option composer-choice-option"
-                        title={option.label}
-                        disabled={composerDisabled}
-                        onClick={() => {
-                          if (submittingRef.current) return;
-                          submittingRef.current = true;
-                          try {
-                            onChoiceSelect?.(option, choicePrompt.source);
-                            requestCompactChatState('default');
-                          } finally {
-                            requestAnimationFrame(() => { submittingRef.current = false; });
-                          }
-                        }}
-                      >
-                        <span className="composer-galgame-option-text composer-choice-option-text">
-                          {option.label}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              </div>
+              {!isCompactSurface ? choiceLayerNode : null}
               <div
                 className="composer-bottom-bar"
                 ref={handleComposerBottomBarRef}

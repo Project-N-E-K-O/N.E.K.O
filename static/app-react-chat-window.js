@@ -180,19 +180,16 @@
     var MOBILE_EXPAND_CLICK_GUARD_MS = 700;
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
-    var COMPACT_MINIMIZE_BALL_GAP = 18;
     var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
-    var COMPACT_MINIMIZE_BALL_VERTICAL_RATIO = 0.62;
+    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
     var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
-    var COMPACT_SURFACE_CENTER_FOLLOW = 0.48;
-    var COMPACT_SURFACE_EDGE_FOLLOW = 0.24;
-    var COMPACT_SURFACE_CLOSEUP_FOLLOW = 0.16;
-    var COMPACT_SURFACE_BOTTOM_RATIO = 0.84;
-    var COMPACT_SURFACE_CLOSEUP_BOTTOM_RATIO = 0.76;
+    var COMPACT_SURFACE_AVATAR_VERTICAL_RATIO = 0.72;
+    var COMPACT_SURFACE_POSITION_STORAGE_KEY = 'neko.reactChatWindow.compactSurfacePosition';
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
     var mobileExpandClickGuard = null;
@@ -200,6 +197,8 @@
     var compactMinimizeBallFrame = 0;
     var compactMinimizeBallSnapshot = '';
     var compactSurfaceAnchorSnapshot = '';
+    var compactInteractionGeometrySnapshot = '';
+    var compactSurfaceAnchorLocked = false;
     var compactSurfacePendingModelOpen = false;
 
     function normalizeCompactDesktopRect(raw) {
@@ -215,18 +214,11 @@
         return {
             left: left,
             top: top,
-            right: Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width,
-            bottom: Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height,
             width: width,
             height: height,
-            centerX: Number.isFinite(Number(raw.centerX)) ? Number(raw.centerX) : left + width / 2,
-            centerY: Number.isFinite(Number(raw.centerY)) ? Number(raw.centerY) : top + height / 2
+            right: Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width,
+            bottom: Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height
         };
-    }
-
-    function getElectronCompactDesktopAvatarBounds() {
-        if (!isElectronChatWindow()) return null;
-        return normalizeCompactDesktopRect(window.__nekoDesktopAvatarBounds);
     }
 
     function getElectronCompactLayoutOverride() {
@@ -234,8 +226,8 @@
         var layout = window.__nekoDesktopCompactLayout;
         if (!layout) return null;
         var surface = normalizeCompactDesktopRect(layout.surface);
+        if (!surface) return null;
         var ball = normalizeCompactDesktopRect(layout.ball);
-        if (!surface || !ball) return null;
         return {
             surface: surface,
             ball: ball
@@ -275,6 +267,10 @@
         );
     }
 
+    function isElectronCompactExternalBallEnabled() {
+        return !!(isElectronChatWindow() && window.__nekoDesktopCompactExternalBall);
+    }
+
     function isHomeCompactMinimizeBallRoute() {
         var overlay = getOverlay();
         var body = document.body;
@@ -286,61 +282,39 @@
         );
     }
 
-    function isVisibleElementById(id) {
-        var element = $(id);
-        return !!(
-            element
-            && typeof element.getClientRects === 'function'
-            && element.getClientRects().length > 0
-        );
-    }
-
     function getCompactMinimizeBallAvatarBounds() {
-        var electronBounds = getElectronCompactDesktopAvatarBounds();
-        if (electronBounds) return electronBounds;
-
-        var hostWindow = window;
-        var candidates = [
-            { containerId: 'mmd-container', manager: hostWindow.mmdManager },
-            { containerId: 'vrm-container', manager: hostWindow.vrmManager },
-            { containerId: 'live2d-container', manager: hostWindow.live2dManager }
-        ];
-
-        for (var i = 0; i < candidates.length; i += 1) {
-            var candidate = candidates[i];
-            var manager = candidate.manager;
-            var model = manager && typeof manager.getCurrentModel === 'function'
-                ? manager.getCurrentModel()
-                : manager && manager.currentModel;
-            if (!manager || !model || typeof manager.getModelScreenBounds !== 'function') {
-                continue;
-            }
-            if (!isVisibleElementById(candidate.containerId)) {
-                continue;
-            }
-            try {
-                var bounds = manager.getModelScreenBounds();
-                if (bounds && bounds.width > 0 && bounds.height > 0) {
-                    return bounds;
-                }
-            } catch (_) {}
+        if (isElectronChatWindow()) {
+            return normalizeCompactDesktopRect(window.__nekoDesktopAvatarBounds);
         }
 
+        var managers = [
+            window.live2dManager,
+            window.vrmManager,
+            window.mmdManager
+        ];
+        for (var i = 0; i < managers.length; i += 1) {
+            var manager = managers[i];
+            if (!manager || !manager.currentModel || typeof manager.getModelScreenBounds !== 'function') continue;
+            try {
+                var bounds = normalizeCompactDesktopRect(manager.getModelScreenBounds());
+                if (bounds) return bounds;
+            } catch (_) {}
+        }
         return null;
     }
 
     function getCompactMinimizeBallPlacement(bounds) {
-        if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
-            return null;
-        }
-
-        var left = bounds.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_GAP;
-        var top = bounds.top + bounds.height * COMPACT_MINIMIZE_BALL_VERTICAL_RATIO - (MINIMIZED_SIZE / 2);
+        var normalized = normalizeCompactDesktopRect(bounds);
+        if (!normalized) return null;
+        var left = normalized.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_AVATAR_GAP;
+        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2;
         var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         return {
-            left: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(left, maxLeft)),
-            top: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(top, maxTop))
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(Math.round(left), maxLeft)),
+            top: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(Math.round(top), maxTop))
         };
     }
 
@@ -348,48 +322,36 @@
         if (!isHomeCompactMinimizeBallRoute()) {
             return null;
         }
-
-        var layoutOverride = getElectronCompactLayoutOverride();
-        if (layoutOverride && layoutOverride.ball) {
-            return {
-                width: MINIMIZED_SIZE,
-                height: MINIMIZED_SIZE,
-                left: layoutOverride.ball.left,
-                top: layoutOverride.ball.top
-            };
-        }
-
-        var bounds = getCompactMinimizeBallAvatarBounds();
-        if (!bounds) {
+        if (isElectronCompactExternalBallEnabled()) {
             return null;
         }
 
-        var placement = getCompactMinimizeBallPlacement(bounds);
-        if (!placement) {
-            return null;
+        var avatarBounds = getCompactMinimizeBallAvatarBounds();
+        var avatarPlacement = getCompactMinimizeBallPlacement(avatarBounds);
+        if (avatarPlacement) {
+            window.__nekoCompactMinimizeBallFallbackActive = false;
+            return avatarPlacement;
         }
 
+        window.__nekoCompactMinimizeBallFallbackActive = true;
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
-            left: placement.left,
-            top: placement.top
+            left: COMPACT_MINIMIZE_BALL_VIEWPORT_PAD,
+            top: Math.max(
+                COMPACT_MINIMIZE_BALL_VIEWPORT_PAD,
+                window.innerHeight - MINIMIZED_SIZE - 34
+            )
         };
     }
 
     function shouldDelayCompactSurfaceOpenForModel() {
-        return !!(
-            !isElectronChatWindow()
-            && isHomeCompactSurfaceRoute()
-            && !isMobileWidth()
-            && getCurrentChatSurfaceMode() === 'compact'
-            && !getCompactMinimizeBallAvatarBounds()
-        );
+        return false;
     }
 
     function getCompactSurfaceMetrics() {
         var shell = getShell();
-        var rect = shell ? shell.getBoundingClientRect() : null;
+        var rect = getCompactSurfaceBaseRect() || (shell ? normalizeCompactDomRect(shell.getBoundingClientRect()) : null);
         var width = isMobileWidth()
             ? Math.max(280, window.innerWidth - 16)
             : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
@@ -400,11 +362,51 @@
         };
     }
 
+    function clampCompactSurfacePosition(left, top, metrics) {
+        var width = metrics.width || COMPACT_SURFACE_MAX_WIDTH;
+        var height = metrics.height || COMPACT_SURFACE_DEFAULT_HEIGHT;
+        var minLeft = isMobileWidth() ? 8 : COMPACT_SURFACE_VIEWPORT_PAD_X;
+        var maxLeft = Math.max(minLeft, window.innerWidth - width - minLeft);
+        var maxTop = Math.max(
+            COMPACT_SURFACE_VIEWPORT_PAD_TOP,
+            window.innerHeight - height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+        );
+        return {
+            left: Math.max(minLeft, Math.min(left, maxLeft)),
+            top: Math.max(COMPACT_SURFACE_VIEWPORT_PAD_TOP, Math.min(top, maxTop))
+        };
+    }
+
+    function loadCompactSurfacePosition(metrics) {
+        try {
+            var raw = window.localStorage.getItem(COMPACT_SURFACE_POSITION_STORAGE_KEY);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            var left = Number(parsed && parsed.left);
+            var top = Number(parsed && parsed.top);
+            if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+            return clampCompactSurfacePosition(left, top, metrics);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveCompactSurfacePosition(left, top) {
+        try {
+            window.localStorage.setItem(COMPACT_SURFACE_POSITION_STORAGE_KEY, JSON.stringify({
+                left: Math.round(left),
+                top: Math.round(top)
+            }));
+        } catch (_) {}
+    }
+
     function getCompactSurfaceTarget() {
         var layoutOverride = getElectronCompactLayoutOverride();
         if (layoutOverride && layoutOverride.surface) {
+            var overrideMetrics = getCompactSurfaceMetrics();
             return {
                 width: layoutOverride.surface.width,
+                height: overrideMetrics.height,
                 left: layoutOverride.surface.left,
                 top: layoutOverride.surface.top
             };
@@ -418,18 +420,10 @@
             viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
         );
 
-        if (isMobileWidth()) {
+        if (isElectronChatWindow()) {
             return {
                 width: metrics.width,
-                left: 8,
-                top: fallbackTop
-            };
-        }
-
-        var bounds = getCompactMinimizeBallAvatarBounds();
-        if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
-            return {
-                width: metrics.width,
+                height: metrics.height,
                 left: Math.max(
                     COMPACT_SURFACE_VIEWPORT_PAD_X,
                     Math.min(
@@ -441,40 +435,241 @@
             };
         }
 
-        var avatarCenterX = bounds.left + (bounds.width / 2);
-        var viewportCenterX = viewportWidth / 2;
-        var edgeDistance = Math.min(bounds.left, viewportWidth - bounds.right);
-        var closeupRatio = bounds.height / Math.max(viewportHeight, 1);
-        var followStrength = COMPACT_SURFACE_CENTER_FOLLOW;
-
-        if (edgeDistance < 96) {
-            followStrength = COMPACT_SURFACE_EDGE_FOLLOW;
-        }
-        if (closeupRatio > 0.78) {
-            followStrength = Math.min(followStrength, COMPACT_SURFACE_CLOSEUP_FOLLOW);
+        var storedPosition = loadCompactSurfacePosition(metrics);
+        if (storedPosition) {
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: storedPosition.left,
+                top: storedPosition.top
+            };
         }
 
-        var surfaceCenterX = viewportCenterX + ((avatarCenterX - viewportCenterX) * followStrength);
-        var left = Math.round(surfaceCenterX - (metrics.width / 2));
-        left = Math.max(
-            COMPACT_SURFACE_VIEWPORT_PAD_X,
-            Math.min(left, viewportWidth - metrics.width - COMPACT_SURFACE_VIEWPORT_PAD_X)
-        );
+        var avatarBounds = getCompactMinimizeBallAvatarBounds();
+        if (!isMobileWidth() && avatarBounds) {
+            var avatarLeft = avatarBounds.left + avatarBounds.width / 2 - metrics.width / 2;
+            var avatarTop = avatarBounds.top + avatarBounds.height * COMPACT_SURFACE_AVATAR_VERTICAL_RATIO - metrics.height / 2;
+            var avatarClamped = clampCompactSurfacePosition(
+                Math.round(avatarLeft),
+                Math.round(avatarTop),
+                metrics
+            );
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: avatarClamped.left,
+                top: avatarClamped.top
+            };
+        }
 
-        var bottomRatio = closeupRatio > 0.78
-            ? COMPACT_SURFACE_CLOSEUP_BOTTOM_RATIO
-            : COMPACT_SURFACE_BOTTOM_RATIO;
-        var desiredBottom = bounds.top + (bounds.height * bottomRatio);
-        var bottom = Math.max(
-            COMPACT_SURFACE_VIEWPORT_PAD_TOP + metrics.height,
-            Math.min(desiredBottom, viewportHeight - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM)
-        );
+        if (isMobileWidth()) {
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: 8,
+                top: fallbackTop
+            };
+        }
 
         return {
             width: metrics.width,
-            left: Math.round(left),
-            top: Math.round(bottom - metrics.height)
+            height: metrics.height,
+            left: Math.max(
+                COMPACT_SURFACE_VIEWPORT_PAD_X,
+                Math.min(
+                    Math.round((viewportWidth - metrics.width) / 2),
+                    viewportWidth - metrics.width - COMPACT_SURFACE_VIEWPORT_PAD_X
+                )
+            ),
+            top: fallbackTop
         };
+    }
+
+    function normalizeCompactDomRect(rect) {
+        if (!rect) return null;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
+            return null;
+        }
+        if (width <= 0 || height <= 0) return null;
+        return {
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            right: Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + width,
+            bottom: Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : top + height
+        };
+    }
+
+    function getCompactSurfaceBaseRect() {
+        var root = getRoot();
+        var candidates = [
+            '[data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+            '[data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]'
+        ];
+        for (var i = 0; i < candidates.length; i += 1) {
+            var element = document.querySelector(candidates[i]);
+            if (!element || (root && !root.contains(element))) continue;
+            if (!shouldIncludeCompactGeometryElement(element)) continue;
+            var rect = normalizeCompactDomRect(element.getBoundingClientRect());
+            if (rect) return rect;
+        }
+        return null;
+    }
+
+    function unionCompactRects(rects) {
+        var valid = (rects || []).filter(Boolean);
+        if (!valid.length) return null;
+        var left = valid.reduce(function (min, rect) { return Math.min(min, rect.left); }, valid[0].left);
+        var top = valid.reduce(function (min, rect) { return Math.min(min, rect.top); }, valid[0].top);
+        var right = valid.reduce(function (max, rect) { return Math.max(max, rect.right); }, valid[0].right);
+        var bottom = valid.reduce(function (max, rect) { return Math.max(max, rect.bottom); }, valid[0].bottom);
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    function shouldIncludeCompactGeometryElement(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+        var item = element.getAttribute('data-compact-geometry-item') || '';
+        if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
+        if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'dragHandle') return false;
+        var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        return true;
+    }
+
+    function getCompactGeometryElementRect(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+        var item = element.getAttribute('data-compact-geometry-item') || '';
+        var ownRect = normalizeCompactDomRect(element.getBoundingClientRect());
+        if (ownRect) return ownRect;
+
+        if (item !== 'choice') return null;
+
+        var childRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-slot, button'))
+            .map(function (child) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                return normalizeCompactDomRect(child.getBoundingClientRect());
+            })
+            .filter(Boolean);
+        return unionCompactRects(childRects);
+    }
+
+    function collectCompactToolFanGeometryItems(element) {
+        if (!element || element.getAttribute('data-compact-geometry-item') !== 'toolFan') return [];
+        var parentRect = getCompactGeometryElementRect(element);
+        var items = [];
+        if (parentRect) {
+            items.push({
+                id: 'toolFan:native',
+                owner: 'surface',
+                kind: 'toolFan',
+                visualRect: parentRect,
+                hitRect: null,
+                nativeRect: parentRect,
+                interactive: false
+            });
+        }
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item'))
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                if (style && Number(style.opacity) <= 0.01) return null;
+                var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
+                if (!slot || slot === 'hidden') return null;
+                var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                var interactive = style ? style.pointerEvents !== 'none' : true;
+                return {
+                    id: 'toolFan:' + slot + ':' + index,
+                    owner: 'surface',
+                    kind: 'toolFan',
+                    visualRect: rect,
+                    hitRect: interactive ? rect : null,
+                    nativeRect: rect,
+                    interactive: interactive
+                };
+            })
+            .filter(Boolean));
+    }
+
+    function collectCompactSurfaceGeometryItems() {
+        var root = getRoot();
+        if (!root) return [];
+        var elements = Array.prototype.slice.call(document.querySelectorAll('[data-compact-geometry-owner="surface"]'));
+        return elements.reduce(function (items, element) {
+            if (
+                !root.contains(element)
+                && !element.classList.contains('compact-input-tool-fan')
+                && !element.classList.contains('compact-chat-choice-anchor')
+            ) return items;
+            if (!shouldIncludeCompactGeometryElement(element)) return items;
+            if (element.getAttribute('data-compact-geometry-item') === 'toolFan') {
+                return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            var rect = getCompactGeometryElementRect(element);
+            if (!rect) return items;
+            items.push({
+                id: element.id || element.getAttribute('data-compact-geometry-item') || element.className || 'compact-item',
+                owner: 'surface',
+                kind: element.getAttribute('data-compact-geometry-item') || 'unknown',
+                visualRect: rect,
+                hitRect: rect,
+                nativeRect: rect,
+                interactive: true
+            });
+            return items;
+        }, []);
+    }
+
+    function getCompactInteractionGeometrySnapshot() {
+        if (!isHomeCompactMinimizeBallRoute()) return null;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var surfaceItems = isCompactHomeMinimizeBallEnabled() ? collectCompactSurfaceGeometryItems() : [];
+        var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
+        var ballRect = isCompactHomeMinimizeBallEnabled() && !isElectronCompactExternalBallEnabled()
+            ? normalizeCompactDomRect(getCompactMinimizeBallTarget())
+            : null;
+        return {
+            mode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
+            viewport: {
+                width: window.innerWidth,
+                height: window.innerHeight
+            },
+            surfaceItems: surfaceItems,
+            surfaceUnion: unionCompactRects(surfaceRects),
+            surfaceHitRects: surfaceItems.map(function (item) { return item.hitRect; }).filter(Boolean),
+            surfaceNativeRects: surfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            ballRect: ballRect,
+            externalBall: isElectronCompactExternalBallEnabled()
+                ? (layoutOverride && layoutOverride.ball) || normalizeCompactDomRect(window.__nekoDesktopCompactBallScreenRect)
+                : null
+        };
+    }
+
+    function syncCompactInteractionGeometry() {
+        var snapshot = getCompactInteractionGeometrySnapshot();
+        var serialized = snapshot ? JSON.stringify(snapshot) : '';
+        if (serialized === compactInteractionGeometrySnapshot) return;
+        compactInteractionGeometrySnapshot = serialized;
+        window.__nekoCompactInteractionGeometry = snapshot;
+        window.__nekoGetCompactInteractionGeometry = getCompactInteractionGeometrySnapshot;
+        window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-change', {
+            detail: snapshot
+        }));
     }
 
     function clearCompactSurfaceAnchor() {
@@ -483,7 +678,14 @@
         shell.style.removeProperty('--compact-surface-left');
         shell.style.removeProperty('--compact-surface-top');
         shell.style.removeProperty('--compact-surface-width');
+        shell.style.removeProperty('--compact-surface-height');
+        document.documentElement.style.removeProperty('--compact-surface-left');
+        document.documentElement.style.removeProperty('--compact-surface-top');
+        document.documentElement.style.removeProperty('--compact-surface-width');
+        document.documentElement.style.removeProperty('--compact-surface-height');
         compactSurfaceAnchorSnapshot = '';
+        compactSurfaceAnchorLocked = false;
+        syncCompactInteractionGeometry();
     }
 
     function syncCompactSurfaceAnchor() {
@@ -491,6 +693,9 @@
         if (!shell) return;
         if (!isCompactHomeMinimizeBallEnabled()) {
             clearCompactSurfaceAnchor();
+            return;
+        }
+        if (compactSurfaceAnchorLocked) {
             return;
         }
 
@@ -503,7 +708,8 @@
         var snapshot = [
             Math.round(target.left),
             Math.round(target.top),
-            Math.round(target.width)
+            Math.round(target.width),
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
@@ -513,6 +719,12 @@
         shell.style.setProperty('--compact-surface-left', Math.round(target.left) + 'px');
         shell.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
         shell.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
+        shell.style.setProperty('--compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', Math.round(target.left) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+        syncCompactInteractionGeometry();
     }
 
     function clearCompactMinimizeBallAnchor() {
@@ -521,6 +733,7 @@
         shell.style.removeProperty('--compact-minimize-ball-left');
         shell.style.removeProperty('--compact-minimize-ball-top');
         compactMinimizeBallSnapshot = '';
+        syncCompactInteractionGeometry();
     }
 
     function syncCompactMinimizeBallAnchor() {
@@ -531,16 +744,7 @@
             return;
         }
 
-        var bounds = getCompactMinimizeBallAvatarBounds();
-        if (!bounds) {
-            clearCompactMinimizeBallAnchor();
-            return;
-        }
-
-        var layoutOverride = getElectronCompactLayoutOverride();
-        var placement = layoutOverride && layoutOverride.ball
-            ? { left: layoutOverride.ball.left, top: layoutOverride.ball.top }
-            : getCompactMinimizeBallPlacement(bounds);
+        var placement = getCompactMinimizeBallTarget();
         if (!placement) {
             clearCompactMinimizeBallAnchor();
             return;
@@ -554,6 +758,7 @@
         compactMinimizeBallSnapshot = snapshot;
         shell.style.setProperty('--compact-minimize-ball-left', Math.round(placement.left) + 'px');
         shell.style.setProperty('--compact-minimize-ball-top', Math.round(placement.top) + 'px');
+        syncCompactInteractionGeometry();
     }
 
     function stopCompactMinimizeBallTracking() {
@@ -583,11 +788,13 @@
             }
             syncCompactSurfaceAnchor();
             syncCompactMinimizeBallAnchor();
+            syncCompactInteractionGeometry();
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
         syncCompactSurfaceAnchor();
         syncCompactMinimizeBallAnchor();
+        syncCompactInteractionGeometry();
         compactMinimizeBallFrame = window.requestAnimationFrame(loop);
     }
 
@@ -1214,6 +1421,41 @@
         shell.style.left = clamped.left + 'px';
         shell.style.top = clamped.top + 'px';
         shell.style.transform = 'none';
+    }
+
+    function applyCompactSurfacePosition(left, top) {
+        var shell = getShell();
+        if (!shell) return;
+
+        var rect = shell.getBoundingClientRect();
+        var metrics = getCompactSurfaceMetrics();
+        var width = metrics.width || rect.width || COMPACT_SURFACE_MAX_WIDTH;
+        var height = metrics.height || COMPACT_SURFACE_DEFAULT_HEIGHT;
+        var clamped = clampCompactSurfacePosition(left, top, {
+            width: width,
+            height: height
+        });
+
+        compactSurfaceAnchorSnapshot = [
+            Math.round(clamped.left),
+            Math.round(clamped.top),
+            Math.round(width),
+            Math.round(height)
+        ].join(':');
+        compactSurfaceAnchorLocked = true;
+        shell.style.setProperty('--compact-surface-left', Math.round(clamped.left) + 'px');
+        shell.style.setProperty('--compact-surface-top', Math.round(clamped.top) + 'px');
+        shell.style.setProperty('--compact-surface-width', Math.round(width) + 'px');
+        shell.style.setProperty('--compact-surface-height', Math.round(height) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', Math.round(clamped.left) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', Math.round(clamped.top) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', Math.round(width) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', Math.round(height) + 'px');
+        shell.style.transform = 'none';
+        if (!isElectronChatWindow()) {
+            saveCompactSurfacePosition(clamped.left, clamped.top);
+        }
+        syncCompactInteractionGeometry();
     }
 
     function positionWindowAtLeftMiddle() {
@@ -2983,17 +3225,28 @@
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
-    function startDrag(clientX, clientY) {
+    function isCompactDragHandleTarget(target) {
+        return !!(
+            target
+            && typeof target.closest === 'function'
+            && target.closest('[data-compact-drag-handle="true"]')
+        );
+    }
+
+    function startDrag(clientX, clientY, options) {
         var shell = getShell();
         if (!shell) return;
         if (isYuiGuideDragLocked()) return;
 
+        var opts = options || {};
+        var compactSurface = !!(opts.compactSurface && getCurrentChatSurfaceMode() === 'compact' && !minimized);
         var rect = shell.getBoundingClientRect();
         dragState = {
             pointerOffsetX: clientX - rect.left,
             pointerOffsetY: clientY - rect.top,
             startClientX: clientX,
             startClientY: clientY,
+            compactSurface: compactSurface,
             moved: false
         };
 
@@ -3017,6 +3270,10 @@
 
         var left = clientX - dragState.pointerOffsetX;
         var top = clientY - dragState.pointerOffsetY;
+        if (dragState.compactSurface) {
+            applyCompactSurfacePosition(left, top);
+            return;
+        }
         var clamped = clampPosition(left, top);
         applyPosition(clamped.left, clamped.top);
     }
@@ -3082,6 +3339,28 @@
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: true });
+
+        document.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
+            if (isElectronChatWindow()) return;
+            if (!isCompactDragHandleTarget(event.target)) return;
+            startDrag(event.clientX, event.clientY, {
+                compactSurface: true
+            });
+            event.preventDefault();
+            event.stopPropagation();
+        }, true);
+
+        document.addEventListener('touchstart', function (event) {
+            if (isElectronChatWindow()) return;
+            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!event.touches || event.touches.length === 0) return;
+            startDrag(event.touches[0].clientX, event.touches[0].clientY, {
+                compactSurface: true
+            });
+            event.preventDefault();
+            event.stopPropagation();
+        }, { capture: true, passive: false });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;
@@ -3537,6 +3816,8 @@
         });
 
         window.addEventListener('neko:desktop-compact-layout-change', function () {
+            compactSurfaceAnchorLocked = false;
+            compactSurfaceAnchorSnapshot = '';
             scheduleCompactMinimizeBallTracking();
         });
         window.addEventListener('neko:desktop-avatar-bounds-change', function () {
