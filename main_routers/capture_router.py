@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from utils.logger_config import get_module_logger
 
-from . import capture_bridge
+from utils import capture_bridge
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 logger = get_module_logger(__name__, "Main")

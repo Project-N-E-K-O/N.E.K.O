@@ -231,11 +231,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 _fire_task(session_manager[lanlan_name].end_session())
 
             elif action == "capture_bridge_status":
-                from main_routers.capture_bridge import mark_capture_client
+                from utils.capture_bridge import mark_capture_client
                 mark_capture_client(lanlan_name, websocket, message)
 
             elif action == "capture_bridge_response":
-                from main_routers.capture_bridge import resolve_capture_response
+                from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 
             elif action == "screenshot_response":
@@ -319,7 +319,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
         # 让 /api/capture/health 立即返回 503。
         try:
-            from main_routers.capture_bridge import unmark_capture_client
+            from utils.capture_bridge import unmark_capture_client
             unmark_capture_client(lanlan_name, expected_websocket=websocket)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[capture_bridge] unmark on disconnect failed: %s", exc)

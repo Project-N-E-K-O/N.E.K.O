@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for ``main_routers/capture_bridge.py``.
+"""Unit tests for ``utils/capture_bridge.py``.
 
 Covers the contracts from
 ``md/当前方案/cross-platform-capture-phase5-bridge-plan.md`` §7:
@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from main_routers import capture_bridge
+from utils import capture_bridge
 
 
 @pytest.fixture(autouse=True)

@@ -25,7 +25,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main_routers import capture_bridge, capture_router as capture_router_module
+from main_routers import capture_router as capture_router_module
+from utils import capture_bridge
 
 
 CAPTURE_HEALTH = "/api/capture/health"
