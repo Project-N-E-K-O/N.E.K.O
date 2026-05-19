@@ -27,6 +27,8 @@ from websockets import exceptions as ws_exceptions
 OnLog = Callable[[str], Awaitable[None]]
 OnScreenshot = Callable[[str, str], Awaitable[None]]  # (base64_payload, encoding_hint)
 OnTaskFinished = Callable[[dict[str, Any]], Awaitable[None]]
+OnAlert = Callable[[dict[str, Any]], Awaitable[None]]
+OnInventory = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class GameAgentClient:
@@ -45,6 +47,8 @@ class GameAgentClient:
         on_log: Optional[OnLog] = None,
         on_screenshot: Optional[OnScreenshot] = None,
         on_task_finished: Optional[OnTaskFinished] = None,
+        on_alert: Optional[OnAlert] = None,
+        on_inventory: Optional[OnInventory] = None,
         reconnect_interval: float = 5.0,
         logger: Any = None,
     ):
@@ -52,6 +56,8 @@ class GameAgentClient:
         self.on_log = on_log
         self.on_screenshot = on_screenshot
         self.on_task_finished = on_task_finished
+        self.on_alert = on_alert
+        self.on_inventory = on_inventory
         self.reconnect_interval = reconnect_interval
         # Plugin SDK injects a per-plugin loguru logger; fall back to a
         # noop when running outside that environment (unit tests).
@@ -161,6 +167,28 @@ class GameAgentClient:
             self._log_error("failed to send task: {}: {}", type(exc).__name__, exc)
             return False
 
+    async def request_inventory(self) -> bool:
+        """Ask mc-agent to emit a fresh ``inventory`` frame. mc-agent
+        replies asynchronously — the service layer awaits the response
+        via an ``_inventory_waiters`` future, so this method only needs
+        to confirm the request hit the wire.
+
+        Returns ``True`` on successful send, ``False`` if disconnected.
+        """
+        ws = self._ws
+        if ws is None or not self.is_connected:
+            self._log_warning("not connected; cannot request inventory")
+            return False
+        try:
+            await ws.send(json.dumps({"type": "query_inventory"}))
+            self._log_debug("requested inventory snapshot")
+            return True
+        except Exception as exc:
+            self._log_error(
+                "failed to request inventory: {}: {}", type(exc).__name__, exc,
+            )
+            return False
+
     # ------------------------------------------------------------------
     # Inbound
     # ------------------------------------------------------------------
@@ -206,6 +234,19 @@ class GameAgentClient:
 
                     elif msg_type == "task_finished" and self.on_task_finished is not None:
                         await self.on_task_finished(data)
+
+                    elif msg_type == "alert" and self.on_alert is not None:
+                        # Asynchronous event — bot took damage / died /
+                        # other high-priority signal. Service layer
+                        # decides how to surface it to the dialog LLM.
+                        await self.on_alert(data)
+
+                    elif msg_type == "inventory" and self.on_inventory is not None:
+                        # On-demand snapshot in response to
+                        # ``request_inventory``, or proactive periodic
+                        # push from mc-agent. Service updates its cache
+                        # and wakes any pending ``query_inventory`` calls.
+                        await self.on_inventory(data)
 
                     elif msg_type == "agent_status":
                         # Informational status — the original integration
@@ -269,4 +310,6 @@ __all__ = [
     "OnLog",
     "OnScreenshot",
     "OnTaskFinished",
+    "OnAlert",
+    "OnInventory",
 ]

@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import SmartTextBlock from './SmartTextBlock';
 import { i18n } from './i18n';
+import { openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
   type MessageAction,
@@ -87,6 +88,10 @@ function MessageBlockView({
         href={block.url}
         target="_blank"
         rel="noreferrer"
+        onClick={(event) => {
+          event.preventDefault();
+          openExternalUrl(block.url);
+        }}
       >
         {block.thumbnailUrl ? (
           <div className="message-link-thumb">

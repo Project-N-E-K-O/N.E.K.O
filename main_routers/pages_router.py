@@ -30,6 +30,11 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/yui-guide-steps.js",
     _PROJECT_ROOT / "static/yui-guide-overlay.js",
     _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
+    _PROJECT_ROOT / "static/tutorial-interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial-skip-controller.js",
+    _PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js",
+    _PROJECT_ROOT / "static/avatar-performance-stage.js",
+    _PROJECT_ROOT / "static/yui-guide-avatar-stage.js",
     _PROJECT_ROOT / "static/yui-guide-wakeup.js",
     _PROJECT_ROOT / "static/yui-guide-director.js",
     _PROJECT_ROOT / "static/app-auto-goodbye.js",
@@ -158,7 +163,8 @@ async def live2d_emotion_manager(request: Request):
     """Live2D情感映射管理器页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -167,7 +173,8 @@ async def vrm_emotion_manager(request: Request):
     """VRM情感映射管理器页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/vrm_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -176,7 +183,8 @@ async def mmd_emotion_manager(request: Request):
     """MMD情感映射管理器页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/mmd_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 

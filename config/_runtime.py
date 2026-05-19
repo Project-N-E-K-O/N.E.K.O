@@ -59,11 +59,14 @@ def register_language_normalizer(fn: Callable[..., str]) -> None:
     _language_normalizer = fn
 
 
-def resolve_global_language(default: str = "zh-CN") -> str:
+def resolve_global_language(default: str = "en") -> str:
     """Return the global language code, or ``default`` if no resolver bound.
 
     Never raises — failures fall back to ``default`` so prompt builders keep
-    working in test / scripted contexts.
+    working in test / scripted contexts. The default mirrors
+    ``utils.language_utils.get_global_language``'s own ultimate fallback
+    (``'en'``); an English prompt is the safer default for unknown
+    environments — the model can still chat in any language at runtime.
     """
     fn = _global_language_resolver
     if fn is None:

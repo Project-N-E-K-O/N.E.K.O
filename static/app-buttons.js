@@ -12,6 +12,9 @@
     const S = window.appState;
     const C = window.appConst;
     const U = window.appUtils;
+    const PENDING_IMAGE_MAX_ENCODED_BYTES = 10 * 1024 * 1024;
+    const PENDING_IMAGE_MIN_LONG_SIDE = 320;
+    const PENDING_IMAGE_JPEG_QUALITIES = [0.92, 0.86, 0.78, 0.7, 0.62, 0.52, 0.42, 0.32];
 
     function isHomeTutorialInteractionLocked() {
         try {
@@ -30,6 +33,224 @@
             );
         }
     }
+
+    function getImageNaturalSize(image) {
+        return {
+            width: image.naturalWidth || image.width || 0,
+            height: image.naturalHeight || image.height || 0
+        };
+    }
+
+    function loadImageFromSource(src) {
+        return new Promise(function (resolve, reject) {
+            var image = new Image();
+            var settled = false;
+            var finish = function (callback, value) {
+                if (settled) return;
+                settled = true;
+                callback(value);
+            };
+
+            image.onload = function () {
+                var size = getImageNaturalSize(image);
+                if (!size.width || !size.height) {
+                    finish(reject, new Error('INVALID_IMAGE_SIZE'));
+                    return;
+                }
+                finish(resolve, image);
+            };
+            image.onerror = function () {
+                finish(reject, new Error('INVALID_IMAGE_TYPE'));
+            };
+            image.src = src;
+        });
+    }
+
+    function loadImageFromBlob(blob) {
+        return new Promise(function (resolve, reject) {
+            var objectUrl = URL.createObjectURL(blob);
+            loadImageFromSource(objectUrl)
+                .then(resolve, reject)
+                .finally(function () {
+                    URL.revokeObjectURL(objectUrl);
+                });
+        });
+    }
+
+    function readBlobAsDataUrl(blob, mimeType) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () {
+                resolve(String(reader.result || ''));
+            };
+            reader.onerror = function () {
+                reject(reader.error || new Error('READ_IMAGE_FAILED'));
+            };
+
+            var sourceBlob = mimeType ? new Blob([blob], { type: mimeType }) : blob;
+            reader.readAsDataURL(sourceBlob);
+        });
+    }
+
+    function drawImageToJpegDataUrl(image, width, height, quality) {
+        var canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        var context = canvas.getContext('2d');
+        if (!context) {
+            throw new Error('CANVAS_UNAVAILABLE');
+        }
+
+        // JPEG 没有透明通道，先铺白底，避免透明 PNG/WebP 转换后变成黑底。
+        context.fillStyle = '#fff';
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        var dataUrl = '';
+        try {
+            dataUrl = canvas.toDataURL('image/jpeg', quality);
+        } catch (_) {
+            throw new Error('IMAGE_ENCODE_FAILED');
+        }
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) {
+            throw new Error('IMAGE_ENCODE_FAILED');
+        }
+        return dataUrl;
+    }
+
+    function getDataUrlEncodedBytes(dataUrl) {
+        var text = String(dataUrl || '');
+        var commaIndex = text.indexOf(',');
+        if (commaIndex < 0) {
+            return text.length;
+        }
+
+        var base64Text = text.slice(commaIndex + 1).replace(/\s/g, '');
+        var padding = base64Text.endsWith('==') ? 2 : (base64Text.endsWith('=') ? 1 : 0);
+        return Math.max(0, Math.floor(base64Text.length * 3 / 4) - padding);
+    }
+
+    function compressLoadedImageToPendingDataUrl(image) {
+        var natural = getImageNaturalSize(image);
+        if (!natural.width || !natural.height) {
+            throw new Error('INVALID_IMAGE_SIZE');
+        }
+
+        var width = natural.width;
+        var height = natural.height;
+        var bestDataUrl = '';
+
+        for (var pass = 0; pass < 6; pass += 1) {
+            for (var i = 0; i < PENDING_IMAGE_JPEG_QUALITIES.length; i += 1) {
+                var dataUrl = drawImageToJpegDataUrl(image, width, height, PENDING_IMAGE_JPEG_QUALITIES[i]);
+                bestDataUrl = dataUrl;
+                if (getDataUrlEncodedBytes(dataUrl) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+                    return dataUrl;
+                }
+            }
+
+            var ratio = Math.sqrt(PENDING_IMAGE_MAX_ENCODED_BYTES / Math.max(getDataUrlEncodedBytes(bestDataUrl), 1)) * 0.92;
+            var longSide = Math.max(width, height);
+            var nextLongSide = Math.max(PENDING_IMAGE_MIN_LONG_SIDE, Math.floor(longSide * ratio));
+            var nextScale = nextLongSide / Math.max(longSide, 1);
+            var nextWidth = Math.max(1, Math.floor(width * nextScale));
+            var nextHeight = Math.max(1, Math.floor(height * nextScale));
+            if (nextWidth >= width && nextHeight >= height) {
+                break;
+            }
+            width = nextWidth;
+            height = nextHeight;
+        }
+
+        if (getDataUrlEncodedBytes(bestDataUrl) > PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            throw new Error('IMAGE_TOO_LARGE');
+        }
+        return bestDataUrl;
+    }
+
+    function isLikelyImageFile(file) {
+        if (!file || typeof file !== 'object') return false;
+        if (/^image\//i.test(file.type || '')) return true;
+        var name = String(file.name || '').toLowerCase();
+        return /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|tiff?|webp)$/i.test(name);
+    }
+
+    function isLikelyJpegBlob(blob) {
+        if (!blob || typeof blob !== 'object') return false;
+        if (/^image\/jpe?g$/i.test(blob.type || '')) return true;
+        var name = String(blob.name || '').toLowerCase();
+        return /\.(jpe?g)$/i.test(name);
+    }
+
+    mod.normalizeImageBlobForPendingList = async function normalizeImageBlobForPendingList(blob) {
+        if (!(blob instanceof Blob)) {
+            throw new Error('INVALID_FILE');
+        }
+
+        if (isLikelyJpegBlob(blob) && blob.size <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            var originalDataUrl = await readBlobAsDataUrl(blob, 'image/jpeg');
+            await loadImageFromSource(originalDataUrl);
+            return originalDataUrl;
+        }
+
+        var image = await loadImageFromBlob(blob);
+        return compressLoadedImageToPendingDataUrl(image);
+    };
+
+    mod.normalizeImageDataUrlForPendingList = async function normalizeImageDataUrlForPendingList(dataUrl) {
+        var src = String(dataUrl || '');
+        if (!/^data:image\//i.test(src)) {
+            throw new Error('INVALID_IMAGE_DATA_URL');
+        }
+
+        var image = await loadImageFromSource(src);
+        if (/^data:image\/jpe?g;base64,/i.test(src)
+                && getDataUrlEncodedBytes(src) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            return src;
+        }
+        return compressLoadedImageToPendingDataUrl(image);
+    };
+
+    mod.normalizePendingAttachmentItem = async function normalizePendingAttachmentItem(item) {
+        if (!item || !item.querySelector) {
+            throw new Error('INVALID_ATTACHMENT_ITEM');
+        }
+
+        var img = item.querySelector('.screenshot-thumbnail');
+        if (!img || !img.src) {
+            throw new Error('INVALID_ATTACHMENT_IMAGE');
+        }
+
+        var normalized = await mod.normalizeImageDataUrlForPendingList(img.src);
+        if (normalized && normalized !== img.src) {
+            img.src = normalized;
+            delete item.dataset.avatarPosition;
+        }
+        return normalized;
+    };
+
+    mod.normalizeAllPendingComposerAttachments = async function normalizeAllPendingComposerAttachments() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+
+        var items = Array.from(screenshotsList.children);
+        var urls = [];
+        var changed = false;
+        for (var i = 0; i < items.length; i += 1) {
+            var img = items[i].querySelector('.screenshot-thumbnail');
+            var before = img && img.src ? img.src : '';
+            var normalized = await mod.normalizePendingAttachmentItem(items[i]);
+            urls.push(normalized);
+            if (before && normalized && before !== normalized) {
+                delete items[i].dataset.avatarPosition;
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            mod.syncPendingComposerAttachments();
+        }
+        return urls;
+    };
 
     // ======================== Screenshot helpers ========================
 
@@ -165,7 +386,7 @@
             input = document.createElement('input');
             input.id = 'reactChatWindowImportImageInput';
             input.type = 'file';
-            input.accept = 'image/*';
+            input.accept = 'image/*,.avif,.bmp,.gif,.heic,.heif,.ico,.jpg,.jpeg,.png,.tif,.tiff,.webp';
             input.multiple = true;
             input.hidden = true;
             document.body.appendChild(input);
@@ -183,10 +404,12 @@
             Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
                     var succeeded = 0;
+                    var failed = 0;
                     for (var i = 0; i < results.length; i++) {
                         if (results[i].status === 'fulfilled') {
                             succeeded++;
                         } else {
+                            failed++;
                             console.error('[导入图片] 单张处理失败:', results[i].reason);
                         }
                     }
@@ -195,7 +418,8 @@
                             window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
                             3000
                         );
-                    } else {
+                    }
+                    if (failed > 0) {
                         window.showStatusToast(
                             window.t ? window.t('app.importImageFailed') : '导入图片失败',
                             4000
@@ -212,31 +436,19 @@
     };
 
     mod.importImageFileToPendingList = function importImageFileToPendingList(file) {
-        return new Promise(function (resolve, reject) {
-            if (!(file instanceof File)) {
-                reject(new Error('INVALID_FILE'));
-                return;
-            }
+        if (!(file instanceof File)) {
+            return Promise.reject(new Error('INVALID_FILE'));
+        }
 
-            if (!/^image\//i.test(file.type || '')) {
-                reject(new Error('INVALID_IMAGE_TYPE'));
-                return;
-            }
+        if (file.type && !/^image\//i.test(file.type) && !isLikelyImageFile(file)) {
+            return Promise.reject(new Error('INVALID_IMAGE_TYPE'));
+        }
 
-            var reader = new FileReader();
-            reader.onload = function () {
-                try {
-                    mod.addScreenshotToList(String(reader.result || ''));
-                    resolve(reader.result);
-                } catch (error) {
-                    reject(error);
-                }
-            };
-            reader.onerror = function () {
-                reject(reader.error || new Error('READ_IMAGE_FAILED'));
-            };
-            reader.readAsDataURL(file);
-        });
+        return mod.normalizeImageBlobForPendingList(file)
+            .then(function (dataUrl) {
+                mod.addScreenshotToList(dataUrl);
+                return dataUrl;
+            });
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {
@@ -1572,6 +1784,22 @@
                 showHomeTutorialLockedToast();
                 return false;
             }
+
+            if (hasScreenshots) {
+                try {
+                    await mod.normalizeAllPendingComposerAttachments();
+                    hasScreenshots = screenshotsList.children.length > 0;
+                } catch (error) {
+                    console.error('[Chat] 待发送图片处理失败:', error);
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                    return false;
+                }
+                if (!text && !hasScreenshots) return false;
+            }
+
             var requestId = (typeof options.requestId === 'string' && options.requestId)
                 ? options.requestId
                 : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -2479,20 +2707,21 @@
                     e.preventDefault();
                     var blob = items[i].getAsFile();
                     if (!blob) continue;
-                    var reader = new FileReader();
-                    reader.onload = function (ev) {
-                        if (ev.target && ev.target.result) {
-                            mod.addScreenshotToList(ev.target.result);
+                    mod.normalizeImageBlobForPendingList(blob)
+                        .then(function (dataUrl) {
+                            mod.addScreenshotToList(dataUrl);
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
                                 3000
                             );
-                        }
-                    };
-                    reader.onerror = function () {
-                        console.warn('[粘贴] 读取剪贴板图片失败');
-                    };
-                    reader.readAsDataURL(blob);
+                        })
+                        .catch(function (error) {
+                            console.warn('[粘贴] 图片处理失败:', error);
+                            window.showStatusToast(
+                                window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                                4000
+                            );
+                        });
                     break;
                 }
             }

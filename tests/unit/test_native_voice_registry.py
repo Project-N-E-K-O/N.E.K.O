@@ -15,10 +15,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from utils.native_voice_registry import (
     NativeVoiceProvider,
     get_active_realtime_native_provider,
+    get_active_realtime_native_provider_for_ui,
     get_native_tts_worker,
     get_native_voice_catalog_for_ui,
     get_provider,
     is_native_voice,
+    make_native_tts_resolver,
     normalize_native_voice,
     register_provider,
     register_tts_worker_resolver,
@@ -77,6 +79,7 @@ def test_get_native_voice_catalog_for_ui_shape():
         assert meta["builtin"] is True
         assert "Synth" in meta["prefix"]
         assert name in meta["prefix"]
+        assert meta["display_name"] == name
 
 
 def test_resolve_for_routing_unknown_core_returns_no_native():
@@ -160,6 +163,81 @@ def test_active_realtime_returns_none_for_unregistered_provider():
     assert get_active_realtime_native_provider(_CM()) is None
 
 
+def test_active_realtime_base_is_route_agnostic_on_lanlan_app():
+    """base 函数不做路由屏蔽 —— 给校验链路用，保留 lanlan.app 下的 free 原生音色合法性。"""
+
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://lanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider(_CM()) == "free"
+
+
+def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_route():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://lanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+
+
+def test_active_realtime_for_ui_hides_free_provider_on_lanlan_app_subdomain():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://edge.lanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://edge.lanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+
+
+def test_active_realtime_for_ui_does_not_match_lanlan_app_substring():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://notlanlan.app/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://notlanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free"
+
+
+def test_active_realtime_for_ui_keeps_free_provider_on_lanlan_tech_route():
+    class _CM:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"api_type": "free", "base_url": "wss://lanlan.tech/realtime"}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.tech/realtime"}
+
+    assert get_active_realtime_native_provider_for_ui(_CM()) == "free"
+
+
+def test_active_realtime_for_ui_falls_back_to_core_url_when_base_url_empty():
+    """realtime.base_url 缺失时回退读 CORE_URL，仍能识别 lanlan.app 路由。"""
+
+    class _CM:
+        def get_model_api_config(self, model_type):
+            return {"api_type": "free", "base_url": ""}
+
+        def get_core_config(self):
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+
+    assert get_active_realtime_native_provider_for_ui(_CM()) is None
+
+
 def test_get_native_tts_worker_requires_voice_match_and_resolver():
     """worker resolver 注册前 → None；voice 不在 catalog → None；都满足才返回 tuple。"""
 
@@ -185,6 +263,74 @@ def test_get_native_tts_worker_requires_voice_match_and_resolver():
 
     # core_api_type 不匹配 provider → None（即使 voice 同名）
     assert get_native_tts_worker("nonexistent", cm, "Alpha") is None
+
+
+def test_make_native_tts_resolver_pulls_core_api_key():
+    sentinel_worker = object()
+    resolver = make_native_tts_resolver(sentinel_worker, 'core_api_key')
+
+    class _CM:
+        def get_core_config(self):
+            return {"CORE_API_KEY": "core-key"}
+
+        def get_model_api_config(self, model_type):  # 不应该被调用
+            raise AssertionError("tts_default 不应该被 core_api_key 分支读取")
+
+    worker, api_key = resolver(_CM())
+    assert worker is sentinel_worker
+    assert api_key == "core-key"
+
+
+def test_make_native_tts_resolver_pulls_tts_default_api_key():
+    sentinel_worker = object()
+    resolver = make_native_tts_resolver(sentinel_worker, 'tts_default_api_key')
+
+    class _CM:
+        def get_core_config(self):  # 不应该被调用
+            raise AssertionError("CORE_API_KEY 不应该被 tts_default_api_key 分支读取")
+
+        def get_model_api_config(self, model_type):
+            assert model_type == "tts_default"
+            return {"api_key": "tts-default-key"}
+
+    worker, api_key = resolver(_CM())
+    assert worker is sentinel_worker
+    assert api_key == "tts-default-key"
+
+
+def test_make_native_tts_resolver_binds_worker_kwargs():
+    received_kwargs = {}
+
+    def worker(req_q, resp_q, api_key, voice_id, *, mode_flag=False):
+        received_kwargs['mode_flag'] = mode_flag
+
+    resolver = make_native_tts_resolver(
+        worker,
+        'tts_default_api_key',
+        worker_kwargs={'mode_flag': True},
+    )
+
+    class _CM:
+        def get_model_api_config(self, model_type):
+            return {"api_key": "k"}
+
+    bound_worker, _ = resolver(_CM())
+    bound_worker(None, None, None, None)
+    assert received_kwargs == {'mode_flag': True}
+
+
+def test_make_native_tts_resolver_rejects_unknown_source():
+    resolver = make_native_tts_resolver(object(), 'never_heard_of_it')  # type: ignore[arg-type]
+
+    class _CM:
+        def get_core_config(self):
+            return {}
+
+        def get_model_api_config(self, model_type):
+            return {}
+
+    with pytest.raises(ValueError, match="never_heard_of_it"):
+        resolver(_CM())
 
 
 def test_get_provider_returns_none_for_falsy_key():
@@ -214,7 +360,10 @@ def test_builtin_providers_auto_loaded_on_registry_import():
                 "list_providers, is_native_voice; "
                 "providers = list_providers(); "
                 "assert 'gemini' in providers, providers; "
+                "assert 'step' in providers, providers; "
+                "assert 'free' in providers, providers; "
                 "assert is_native_voice('Puck') is True; "
+                "assert is_native_voice('qingchunshaonv') is True; "
                 "print('OK')"
             ),
         ],

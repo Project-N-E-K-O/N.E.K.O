@@ -47,6 +47,22 @@ from utils.steam_state import get_steamworks
 logger = get_module_logger(__name__)
 
 
+def _as_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ('true', '1', 'yes', 'on'):
+            return True
+        if lowered in ('false', '0', 'no', 'off', ''):
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
 def get_reserved(data: dict, *path, default=None, legacy_keys: tuple[str, ...] | None = None):
     """统一读取 `_reserved` 下的嵌套字段，支持旧平铺字段回退。
 
@@ -105,6 +121,113 @@ def set_reserved(data: dict, *path_and_value) -> bool:
     if last_key in current and current[last_key] == value:
         return False
     current[last_key] = value
+    return True
+
+
+DEFAULT_YUI_LIVE2D_MODEL_PATH = "yui-origin/yui-origin.model3.json"
+
+
+def _normalize_live2d_model_path(value) -> str:
+    model_path = str(value or "").strip().replace("\\", "/").lower()
+    if model_path == "yui-origin":
+        return DEFAULT_YUI_LIVE2D_MODEL_PATH
+    return model_path
+
+
+def _is_default_yui_character(character_name: str, character_data: dict) -> bool:
+    if not isinstance(character_data, dict):
+        return False
+
+    name = str(character_name or "").strip().upper()
+    nickname = str(character_data.get("昵称") or "").strip().upper()
+    if name != "YUI" and nickname != "YUI":
+        return False
+
+    model_path = get_reserved(
+        character_data,
+        "avatar",
+        "live2d",
+        "model_path",
+        default="",
+        legacy_keys=("live2d",),
+    )
+    return _normalize_live2d_model_path(model_path) == DEFAULT_YUI_LIVE2D_MODEL_PATH
+
+
+def _get_default_yui_free_voice_id() -> str:
+    from utils.api_config_loader import get_free_voices
+    from utils.language_utils import get_global_language_full
+
+    free_voices = get_free_voices() or {}
+    try:
+        language = str(get_global_language_full() or "").strip().lower().replace("-", "_")
+    except Exception:
+        language = ""
+
+    language_aliases = {
+        "zh": "cn",
+        "zh_cn": "cn",
+        "zh_hans": "cn",
+        "zh_tw": "tw",
+        "zh_hant": "tw",
+    }
+    suffix = language_aliases.get(language, language.split("_", 1)[0] if language else "")
+    keys = []
+    if suffix:
+        keys.append(f"yui_{suffix}")
+    keys.extend(("yui_cn", "cuteGirl"))
+
+    for key in keys:
+        voice_id = str(free_voices.get(key) or "").strip()
+        if voice_id:
+            return voice_id
+    return next((str(voice_id).strip() for voice_id in free_voices.values() if str(voice_id or "").strip()), "")
+
+
+async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict | None = None) -> bool:
+    """Ensure the default YUI card has the free YUI voice when free API is active."""
+    if not isinstance(core_cfg, dict):
+        try:
+            core_cfg = await config_manager.aget_core_config()
+        except Exception:
+            core_cfg = {}
+    if not isinstance(core_cfg, dict):
+        return False
+    if core_cfg.get("coreApi") != "free" and core_cfg.get("assistApi") != "free" and not core_cfg.get("IS_FREE_VERSION"):
+        return False
+
+    characters = await config_manager.aload_characters()
+    if not isinstance(characters, dict):
+        return False
+
+    current_name = str(characters.get("当前猫娘") or "").strip()
+    catgirls = characters.get("猫娘")
+    if not current_name or not isinstance(catgirls, dict):
+        return False
+
+    current_character = catgirls.get(current_name)
+    if not _is_default_yui_character(current_name, current_character):
+        return False
+
+    current_voice_id = str(get_reserved(
+        current_character,
+        "voice_id",
+        default="",
+        legacy_keys=("voice_id",),
+    ) or "").strip()
+    if current_voice_id:
+        return False
+
+    yui_voice_id = _get_default_yui_free_voice_id()
+    if not yui_voice_id:
+        return False
+
+    changed = set_reserved(current_character, "voice_id", yui_voice_id)
+    if not changed:
+        return False
+
+    await config_manager.asave_characters(characters)
+    logger.info("已为 free API 下的默认 YUI 绑定音色: %s", yui_voice_id)
     return True
 
 
@@ -1616,11 +1739,15 @@ class ConfigManager:
             suffix = 'ko'
         elif lang_lower.startswith('ru'):
             suffix = 'ru'
+        elif lang_lower.startswith('es'):
+            suffix = 'es'
+        elif lang_lower.startswith('pt'):
+            suffix = 'pt'
         else:
             # 未知语言，回退
             return None
-        
-        localized_path = self.project_config_dir / f"characters.{suffix}.json"
+
+        localized_path = self.project_config_dir / 'characters' / f"{suffix}.json"
         return localized_path if localized_path.exists() else None
     
     def migrate_config_files(self):
@@ -2121,6 +2248,14 @@ class ConfigManager:
                 except ImportError:
                     logger.debug("utils.minimax_api_keys not found, no fallback MiniMax keys available")
             return key or None
+        if provider == 'elevenlabs':
+            core_config = self.get_core_config()
+            key = (core_config.get('ASSIST_API_KEY_ELEVENLABS') or '').strip()
+            if not key:
+                key = (core_config.get('ELEVENLABS_API_KEY') or '').strip()
+            if '***' in key:
+                return None
+            return key or None
         return None
 
     def _get_minimax_storage_keys(self) -> list[str]:
@@ -2150,40 +2285,71 @@ class ConfigManager:
 
         return result
 
+    def _get_elevenlabs_storage_keys(self) -> list[str]:
+        """返回当前 ElevenLabs API Key 对应的 voice_storage key 列表。"""
+        voice_storage = self.load_voice_storage()
+        result = []
+        key = self.get_tts_api_key('elevenlabs')
+        if key:
+            suffix = key[-8:] if len(key) >= 8 else key
+            bucket = f'__ELEVENLABS__{suffix}'
+            if bucket in voice_storage:
+                result.append(bucket)
+        return result
+
     @staticmethod
     def _infer_provider_from_storage_key(storage_key: str) -> str:
         """根据 voice_storage 的分区 key 推断 provider（仅用于兼容旧数据）。"""
         if storage_key == '__LOCAL_TTS__':
             return 'local'
+        if storage_key.startswith('__ELEVENLABS__'):
+            return 'elevenlabs'
         if storage_key.startswith('__MINIMAX_INTL__'):
             return 'minimax_intl'
         if storage_key.startswith('__MINIMAX__'):
             return 'minimax'
         return 'cosyvoice'
 
-    def get_voices_for_current_api(self):
+    def get_voices_for_current_api(self, for_listing: bool = False):
         """获取当前 TTS 配置对应的所有音色
 
         根据实际使用的 TTS 配置返回音色：
         1. 本地 TTS（ws/wss 协议）→ 返回 __LOCAL_TTS__ 下的音色
         2. 阿里云 TTS（通过 ASSIST_API_KEY_QWEN）→ 返回该 API Key 下的音色
         3. 其他情况 → 返回 AUDIO_API_KEY 下的音色
-        结果中同时合并 MiniMax 音色（__MINIMAX__ 下的音色）。
+        结果中同时合并 MiniMax 和 ElevenLabs 音色。
 
         返回的每个 voice_data 都保证包含 ``provider`` 字段
-        （``local`` / ``minimax`` / ``minimax_intl`` / ``cosyvoice``）。
+        （``local`` / ``minimax`` / ``minimax_intl`` / ``elevenlabs`` / ``cosyvoice``）。
+
+        ``for_listing=True`` 时启用面向 UI 列表的过滤：免费版下跳过 *云端* 主分区
+        （CosyVoice / Qwen），因为这些音色需付费 API Key 鉴权（运行时走
+        step_realtime_tts_worker free_mode 也无法实际使用），列出来只会让 UI
+        误导用户。``__LOCAL_TTS__`` 走 WebSocket 本地推理，免费版仍可用，所以
+        即便 for_listing+free 也必须展示。MiniMax 与 GSV 走独立配置/路由，
+        免费版同样可用，所以保留下方 MiniMax 合并 + 不影响 /custom_tts_voices
+        的 GSV。
+
+        默认 ``for_listing=False`` 保留全量视图——``validate_voice_id`` /
+        ``cleanup_invalid_voice_ids`` 等校验链路必须见到 storage 中真实存在的
+        所有音色，否则免费版会把用户在付费期保存的 voice_id 误判为不存在并
+        在清理流程中直接清空。
         """
         voice_storage = self.load_voice_storage()
+        storage_key = ''
+        result: dict = {}
 
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        hide_cloud_main = for_listing and self.is_free_version()
 
         if is_local_tts:
+            # 本地 WebSocket TTS：免费版仍可用，列表必须可见
             storage_key = '__LOCAL_TTS__'
             all_voices = voice_storage.get(storage_key, {})
             result = dict(all_voices)
-        else:
+        elif not hide_cloud_main:
             tts_api_key = tts_config.get('api_key', '')
             if tts_api_key:
                 storage_key = tts_api_key
@@ -2192,10 +2358,7 @@ class ConfigManager:
             else:
                 core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
-                if not audio_api_key:
-                    storage_key = ''
-                    result = {}
-                else:
+                if audio_api_key:
                     storage_key = audio_api_key
                     all_voices = voice_storage.get(storage_key, {})
                     result = dict(all_voices)
@@ -2214,6 +2377,15 @@ class ConfigManager:
                 if vid not in result:
                     if isinstance(vdata, dict) and 'provider' not in vdata:
                         vdata['provider'] = mm_provider
+                    result[vid] = vdata
+
+        # 合并 ElevenLabs 音色，并确保 provider 字段
+        for ek in self._get_elevenlabs_storage_keys():
+            eleven_voices = voice_storage.get(ek, {})
+            for vid, vdata in eleven_voices.items():
+                if vid not in result:
+                    if isinstance(vdata, dict) and 'provider' not in vdata:
+                        vdata['provider'] = 'elevenlabs'
                     result[vid] = vdata
 
         return result
@@ -2292,9 +2464,13 @@ class ConfigManager:
         """删除当前 TTS 配置下的指定音色（含 MiniMax 音色）"""
         voice_storage = self.load_voice_storage()
 
-        # 先检查 MiniMax 存储（__MINIMAX__ / __MINIMAX_INTL__ 开头的 key）
+        # 先检查 MiniMax / ElevenLabs 存储
         for storage_key in list(voice_storage.keys()):
-            if (storage_key.startswith('__MINIMAX__') or storage_key.startswith('__MINIMAX_INTL__')) and voice_id in voice_storage.get(storage_key, {}):
+            if (
+                storage_key.startswith('__MINIMAX__')
+                or storage_key.startswith('__MINIMAX_INTL__')
+                or storage_key.startswith('__ELEVENLABS__')
+            ) and voice_id in voice_storage.get(storage_key, {}):
                 del voice_storage[storage_key][voice_id]
                 self.save_voice_storage(voice_storage)
                 return True
@@ -2335,8 +2511,12 @@ class ConfigManager:
              _should_block_free_preset_voice 根据线路 (lanlan.tech / lanlan.app)
              动态决定是否实际启用（lanlan.app 海外节点不支持预设音色）
         """
+        voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
+
+        if voice_id.startswith('eleven:'):
+            return len(voice_id) > len('eleven:')
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -2360,8 +2540,12 @@ class ConfigManager:
 
     def validate_voice_id_for_api_key(self, api_key: str, voice_id: str) -> bool:
         """校验 voice_id 是否在指定 API Key 下有效"""
+        voice_id = str(voice_id or '').strip()
         if not voice_id:
             return True
+
+        if voice_id.startswith('eleven:'):
+            return len(voice_id) > len('eleven:')
 
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
@@ -2802,6 +2986,7 @@ class ConfigManager:
         # 塞进 TTS 凭证槽位导致 401，掩盖"未配置 minimax key"的真实提示。
         config['ASSIST_API_KEY_MINIMAX'] = core_cfg.get('assistApiKeyMinimax', '')
         config['ASSIST_API_KEY_MINIMAX_INTL'] = core_cfg.get('assistApiKeyMinimaxIntl', '')
+        config['ASSIST_API_KEY_ELEVENLABS'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['ASSIST_API_KEY_GROK'] = core_cfg.get('assistApiKeyGrok', '') or _fb('grok')
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
@@ -2912,6 +3097,9 @@ class ConfigManager:
         # GPT-SoVITS 配置映射
         config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
 
+        config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
+        config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
+
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)
         if isinstance(_raw_disable_tts, bool):
@@ -2963,7 +3151,20 @@ class ConfigManager:
                 # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
                 # 那是另一个层面的问题，下个 PR 跟进。
                 is_follow = provider in ('follow_core', 'follow_assist')
-                skip_url_for_follow = is_follow and prefix in ('omni', 'tts')
+                # GSV 启用时 ttsModelUrl 是 api_key_settings.js (save_button_down 那段)
+                # 强制覆盖进去的 GPT-SoVITS server URL，不是 follow_* 联动出来的 readonly
+                # 提示值。如果还按 skip_url_for_follow 跳过，TTS_MODEL_URL 永远是空，
+                # tts_custom 走 fallthrough → is_custom=False → 整条 GSV 链路全断
+                # （/custom_tts_voices 报 CUSTOM_API_NOT_ENABLED，TTS dispatcher 落到
+                # cosyvoice_vc_tts_worker 撞 dashscope 鉴权）。默认 ttsModelProvider 是
+                # 'follow_assist'，用户开 GSV 但不会专门去把 provider 改成 'custom'，
+                # 这条豁免必须在后端兜住。
+                gsv_enabled_for_url = bool(core_cfg.get('gptsovitsEnabled', False))
+                skip_url_for_follow = (
+                    is_follow
+                    and prefix in ('omni', 'tts')
+                    and not (prefix == 'tts' and gsv_enabled_for_url)
+                )
 
                 # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
                 if not skip_url_for_follow:
@@ -2980,10 +3181,25 @@ class ConfigManager:
                 #   follow_core   → 从核心 API Key 派生
                 #   follow_assist → 从辅助 API Key 派生（OPENROUTER_API_KEY 已含 assist→core 回退）
                 #   具体服务商/custom/''(老配置) → 使用存储值（空串合法，本地服务商不需要 key）
+                #
+                # GSV 启用 + prefix='tts' + ttsModelProvider 默认 'follow_*' 时跳过派生：
+                # 派生会把 TTS_MODEL_API_KEY 写成 OPENROUTER_API_KEY / CORE_API_KEY（这俩是
+                # LLM key，可能是 Gemini / DeepSeek 等），随后 get_model_api_config('tts_custom')
+                # 的 is_gsv_url 分支会原样返回这个无关 key；get_tts_api_key('cosyvoice') 因此
+                # 拿到错的 key，CosyVoice clone 鉴权失败。跳过后 TTS_MODEL_API_KEY 保留其持久化
+                # 值（用户开 GSV 一般不会同时填这个字段，留空即可），让下游 is_gsv_url 分支的
+                # ASSIST_API_KEY_QWEN fallback 接手。
+                skip_key_for_follow_gsv = (
+                    is_follow
+                    and prefix == 'tts'
+                    and gsv_enabled_for_url
+                )
                 if provider == 'follow_core':
-                    config[apikey_key] = config.get('CORE_API_KEY', '')
+                    if not skip_key_for_follow_gsv:
+                        config[apikey_key] = config.get('CORE_API_KEY', '')
                 elif provider == 'follow_assist':
-                    config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
+                    if not skip_key_for_follow_gsv:
+                        config[apikey_key] = config.get('OPENROUTER_API_KEY', '')
                 else:
                     cfg_key = core_cfg.get(f'{prefix}ModelApiKey')
                     if cfg_key is not None:
@@ -3026,7 +3242,19 @@ class ConfigManager:
         """
         core_config = self.get_core_config()
         enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
-        
+
+        # GPT-SoVITS 启用时，tts_custom slot 视为自定义 API：UI 上勾 GSV 在产品语义上
+        # 就是 "启用一个自定义 TTS"，但前端 (api_key_settings.js) 并不会顺手把
+        # ENABLE_CUSTOM_API 也勾上。后端这里自愈，避免 "勾了 GSV 但没勾 ENABLE_CUSTOM_API"
+        # 这条用户极易踩中的路径让 is_custom=False、整条 GSV 链路（dispatcher /
+        # check_custom_tts_voice_allowed / /custom_tts_voices）全部失效。
+        # 仅扩到 tts_custom，不影响其他 slot 的开关行为。
+        gsv_enabled_for_tts = (
+            model_type == 'tts_custom'
+            and core_config.get('GPTSOVITS_ENABLED', False)
+        )
+        treat_as_custom = enable_custom_api or gsv_enabled_for_tts
+
         # 模型类型到配置字段的映射
         # fallback_type: 'assist' = 辅助API, 'core' = 核心API
         model_type_mapping = {
@@ -3102,18 +3330,33 @@ class ConfigManager:
         
         # agent 始终走专用字段（AGENT_MODEL_URL 有 lanlan.app 归一化），
         # 但 is_custom 仅在 enableCustomApi 开启时为 True。
-        if enable_custom_api or model_type == 'agent':
+        if treat_as_custom or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
 
+            # GSV 模式下 voice_id 即定位（无 model 概念），URL 即可视为已配置；
+            # 不放宽到全部 tts_custom 场景，避免改变 cosyvoice 用户原有的 fallthrough 行为。
+            is_gsv_url = (
+                gsv_enabled_for_tts
+                and custom_url.startswith(('http://', 'https://'))
+            )
+
             # 自定义配置完整时使用自定义配置
-            if custom_model and custom_url:
+            if (custom_model and custom_url) or is_gsv_url:
+                resolved_api_key = custom_key
+                # 仅勾选 GSV、未填 TTS_MODEL_API_KEY 时，tts_custom slot 仍会被
+                # CosyVoice clone 路径复用 (register_voice → get_tts_api_key('cosyvoice')
+                # → 这里取 api_key)。直接返回空 key 会让 CosyVoice 报
+                # TTS_AUDIO_API_KEY_MISSING，回退到 ASSIST_API_KEY_QWEN 才能保住用户
+                # 在 GSV 开启前就在用的 CosyVoice 克隆能力。
+                if is_gsv_url and not resolved_api_key and model_type == 'tts_custom':
+                    resolved_api_key = (core_config.get('ASSIST_API_KEY_QWEN') or '').strip()
                 return {
                     'model': custom_model,
-                    'api_key': custom_key,
+                    'api_key': resolved_api_key,
                     'base_url': custom_url,
-                    'is_custom': enable_custom_api,
+                    'is_custom': treat_as_custom,
                     # 对于 realtime 模型，自定义配置时 api_type 设为 'local'
                     # TODO: 后续完善 'local' 类型的具体实现（如本地推理服务等）
                     'api_type': 'local' if model_type == 'realtime' else None,

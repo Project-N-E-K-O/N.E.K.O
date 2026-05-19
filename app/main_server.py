@@ -86,7 +86,8 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.logger_config import setup_logging # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic # noqa: E402
 
-logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
+_main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
+logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
 
 if _IS_MAIN_PROCESS:
     _ssl_precheck = probe_ssl_environment()
@@ -563,6 +564,7 @@ async def _handle_agent_event(event: dict):
             payload = {
                 "type": "agent_status_update",
                 "snapshot": event.get("snapshot", {}),
+                "lanlan_name": lanlan or "",
             }
             mgr_for_status = _get_session_manager(lanlan)
             if lanlan and mgr_for_status is not None:
@@ -775,8 +777,25 @@ async def _handle_agent_event(event: dict):
                     else:
                         source_kind = "system"
                 event_metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+                # origin is a STRUCTURAL fact derived from event_type:
+                #   "task_result"      → real task completion (agent_server._emit_task_result):
+                #                        Computer Use / Browser Use / plugin entry / MCP tool result
+                #   "proactive_message" → plugin push_message stream (proactive_bridge):
+                #                        danmaku / gift / external notification
+                # Plugin authors cannot influence this — it's determined by which
+                # SDK method they call (finish() vs push_message()) and which host
+                # path it flows through. _build_callback_instruction uses this to
+                # pick the right wrapper template (task "汇报" vs event "回应").
+                if event_type == "task_result":
+                    origin = "task_result"
+                else:
+                    # event_type == "proactive_message" (or any future event-stream
+                    # producer that lands on this branch); see the (event_type in
+                    # {"task_result", "proactive_message"}) gate above.
+                    origin = "event"
                 callback = {
                     "event": "agent_task_callback",
+                    "origin": origin,
                     "task_id": event.get("task_id") or "",
                     "channel": _channel,
                     "status": cb_status,
@@ -1045,6 +1064,14 @@ async def _init_character_resources(k: str, is_new_character: bool):
             )
         else:
             # 没有活跃session，可以安全地重新创建session_manager
+            # 旧 manager 持有的后台任务（如 idle session reset loop）必须显式
+            # cancel，否则强引用 self 让旧 manager 永远不被 GC——多次 reload 后
+            # 积累 N 份的 idle loop 各自 60s 醒一次。
+            if rs.session_manager is not None:
+                try:
+                    rs.session_manager.shutdown()
+                except Exception as e:
+                    logger.warning(f"shutdown 旧 session_manager 失败 ({k}): {e}")
             new_mgr = core.LLMSessionManager(
                 rs.sync_message_queue,
                 k,
@@ -1448,6 +1475,7 @@ from main_routers.agent_router import router as agent_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
+from main_routers.proactive_router import router as proactive_router # noqa
 from main_routers.galgame_router import router as galgame_router # noqa
 from main_routers.jukebox_router import router as jukebox_router # noqa
 from main_routers.live2d_router import router as live2d_router # noqa
@@ -1494,6 +1522,7 @@ async def beacon_shutdown():
 
 # 挂载全部路由
 app.include_router(config_router)
+app.include_router(proactive_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)

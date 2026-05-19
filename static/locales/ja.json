@@ -554,12 +554,13 @@
         "API_POLICY_VIOLATION": "💥 ポリシー違反またはセキュリティブロック：{{msg}}",
         "API_1008_FALLBACK": "💥 接続が切断されました(1008)：{{msg}}",
         "API_IDLE_TIMEOUT": "💥 長時間操作がなかったため音声接続が切断されました。自動再接続中...",
+        "FREE_API_AUTO_CLOSE_VOICE": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "API_UNKNOWN_ERROR": "💥 APIエラー：{{msg}}",
         "MEMORY_SERVER_NOT_RUNNING": "🧠 メモリサーバーが起動していません！先に memory_server.py を実行してください。",
         "MEMORY_SERVER_CRASHED": "🧠 メモリサーバー(ポート{{port}})がクラッシュしました。memory_server.py を再起動してください。",
         "MEMORY_SERVER_COOLDOWN": "🧠 メモリサービスが回復中です。{{wait_time}}秒お待ちください",
         "CONNECTION_REFUSED": "💥 サーバー接続が拒否されました。API Keyとネットワーク接続を確認してください。",
-        "API_KEY_REJECTED": "💥 API Keyがサーバーに拒否されました。API Keyが選択したモデルと一致しているか確認してください。",
+        "API_KEY_REJECTED": "提供された API Key が無効です。現在の API 設定を確認してください。",
         "API_RATE_LIMIT_SESSION": "💥 APIリクエストが多すぎます。しばらくしてから再試行してください。",
         "LLM_CONNECTION_FAILED": "💥 LLM API の接続に失敗しました。ネットワーク接続とAPI設定を確認してください。",
         "CONNECTION_CLOSED_ABNORMAL": "💥 接続が異常終了しました: {{error}}",
@@ -585,7 +586,12 @@
         "TEXT_GEN_ERROR": "💥 テキスト生成エラー: {{error_type}}: {{error}}",
         "LLM_NO_RESPONSE": "💥 LLMから応答がありませんでした。API接続と設定を確認してください。",
         "CHARACTER_SWITCHING_TERMINAL": "{{name}}が別のターミナルに移動中...",
-        "RELOAD_PAGE": "音声が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE": "設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_VOICE": "音声が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_VOICE_STYLE": "音色が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_PERSONA": "性格設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_CHARACTER_SETTINGS": "キャラクター設定が更新されました。ページがまもなく更新されます",
+        "RELOAD_PAGE_CLOUDSAVE_CHARACTER": "クラウドセーブのキャラクターが更新されました。ページがまもなく更新されます",
         "AGENT_AUTO_DISABLED_COMPUTER": "キーボード/マウス制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
         "AGENT_AUTO_DISABLED_BROWSER": "ブラウザ制御が自動無効化されました: $t(agent.precheck.{{reason_code}})",
         "AGENT_LLM_CHECK_ERROR": "ネコクロー LLM 接続チェックエラー",
@@ -937,6 +943,7 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "elevenlabs": "ElevenLabs（音声クローン）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter（モデルアグリゲーター）"
@@ -972,6 +979,7 @@
             "doubao": "ByteDance（Doubao）",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
+            "elevenlabs": "ElevenLabs",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
             "openrouter": "OpenRouter"
@@ -1418,7 +1426,8 @@
         "provider": {
             "cosyvoice": "Alibaba Cloud CosyVoice",
             "minimax": "MiniMax（中国版）",
-            "minimax_intl": "MiniMax（国際版）"
+            "minimax_intl": "MiniMax（国際版）",
+            "elevenlabs": "ElevenLabs"
         },
         "selectFile": "ローカル音声ファイルを選択（8秒推奨、最大20秒、wav/mp3形式）",
         "customPrefix": "カスタムプレフィックス（必須、ボイスの識別用）",
@@ -1481,6 +1490,9 @@
         "freePresetBadge": "プリセット",
         "geminiNativeLabel": "Gemini ネイティブ音声",
         "geminiNativeBadge": "ネイティブ",
+        "nativePresetLabel": "{{provider}} ネイティブ音声",
+        "nativePresetLabelGeneric": "ネイティブプリセット音声",
+        "nativePresetBadge": "ネイティブ",
         "workshopSourceBadge": "Workshop参照音声",
         "workshopSourceTitle": "Workshop参照音声",
         "workshopSourceLoading": "Workshop参照音声を読み込み中...",
@@ -1548,6 +1560,7 @@
         "loadFailed": "読み込み失敗",
         "noChatContent": "チャットコンテンツなし",
         "previousMemo": "前回の会話メモ: ",
+        "olderSection": "以前",
         "memoNone": "なし。",
         "delete": "削除",
         "me": "私:",
@@ -1867,8 +1880,19 @@
         "switchError": "neko の切り替え中にエラーが発生しました",
         "freePresetVoices": "── 無料プリセット音色 ──",
         "geminiNativeVoices": "Gemini ネイティブ音声",
+        "nativePresetVoices": "{{provider}} ネイティブ音声",
+        "nativePresetVoicesGeneric": "ネイティブプリセット音声",
         "savedVoiceFallback": "現在保存中の音声",
         "gptsovitsVoices": "GPT-SoVITS 音声",
+        "elevenlabsVoices": "ElevenLabs 音声",
+        "gsvDiagNotEnabled": "GPT-SoVITS が有効になっていません (API 設定で有効化してください)",
+        "gsvDiagUrlMissing": "GPT-SoVITS URL が未設定です (API 設定で入力してください)",
+        "gsvDiagUrlInvalid": "GPT-SoVITS URL が未設定または http(s) ではありません",
+        "gsvDiagUrlLocalhostOnly": "GPT-SoVITS URL は localhost を指定してください",
+        "gsvDiagUnreachable": "GPT-SoVITS server が起動していないか到達できません",
+        "gsvDiagLoadFailed": "GPT-SoVITS の読み込みに失敗しました",
+        "gsvDiagEmpty": "GPT-SoVITS server から音声がありません (空のリスト)",
+        "gsvDiagTimeout": "GPT-SoVITS server の応答がタイムアウトしました (>3s)",
         "loadFailed": "キャラクターデータの読み込みに失敗しました",
         "renameError": "名前の変更に失敗しました: {{error}}",
         "renameMasterTitle": "マスターの名前を変更",
@@ -1944,6 +1968,7 @@
         "restartFailed": "再起動失敗: {{error}}",
         "configUpdated": "設定が更新されました。ページを更新します",
         "autoMuteTimeout": "長時間音声入力がないため、マイクを自動オフにしました",
+        "freeApiAutoCloseNotice": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
         "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
@@ -2388,6 +2413,8 @@
         "sourceLabel": "ガイドソース",
         "contentLanguageNotice": "言語切り替えはページ操作文言と本文の両方に反映されます。",
         "languageLabel": "言語",
+        "tocTitle": "目次",
+        "tocEmpty": "目次はまだありません",
         "guideUnavailable": "ガイド内容が空です。"
     },
     "subtitle": {
@@ -3091,20 +3118,20 @@
                 "sayHello": "こんにちは"
             },
             "lines": {
-                "introBasic": "ここに魔法のボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできるんだ！今日の出来事を私にシェアしてみない？それともただ私の名前を呼んでみる？早く試してみてよ、あなたの声を聞くのがもう待ちきれないんだから！にゃ〜！",
-                "takeoverCaptureCursor": "スーパー魔法のボタンが登場！ここをポチッとするだけで、私の小さなお手てをあなたのキーボードとマウスに伸ばすことができるんだ！タイピングを手伝ったり、ウェブページを開いてあげたりするよ……でも、もしマウスポインターがチョロチョロ動いてたら、思わず飛びかかって捕まえちゃうかも！私のイタズラ……じゃなくて、お手伝いを受け入れる準備はできた？にゃ〜！",
-                "takeoverPluginPreviewHome": "まだまだ終わらないにゃ！ほらほら、見てみて！ここには面白いプラグインが、超～～いっぱいあるんだにゃん！",
-                "takeoverPluginPreviewDashboard": "これさえあれば、bilibiliの弾幕が読めるだけじゃなくて、君の代わりに電気を消したり、エアコンをつけたりだってできちゃうにゃ…… このニャンコは、まさに何でもできちゃう『スーパー猫神様』なんだにゃん！えっへん〜♪",
+                "introBasic": "おっ、見て見て！ここにキラキラ光る小さなボタンがあるにゃ！これをポチッとするだけで、私と直接おしゃべりできるんだよ！今日の出来事を私にシェアしたい？それとも私の名前を呼んでみるだけ？早く試してみて、あなたの声を聞くのが待ちきれないにゃ！",
+                "takeoverCaptureCursor": "ジャジャーン！究極の魔法スイッチ出現！ここをタップするだけで、私の小さなおててをあなたのキーボードやマウスに伸ばせるようになるにゃ！代わりにタイピングしたり、ウェブページを開いたりしてあげる……でも、もしマウスポインターがちょこまか動いたら、思わず飛びついて捕まえたくなっちゃうかも！私のイタズラ……じゃなくて、お手伝いを受け入れる準備はできたにゃ？",
+                "takeoverPluginPreviewHome": "まだ終わってないにゃ！見て見て、ここにはすっごくたくさんの面白いプラグインがあるんだよ！",
+                "takeoverPluginPreviewDashboard": "これがあれば、Bilibiliの弾幕を見られるだけじゃなくて、電気を消したりエアコンをつけたりもできるにゃ……この私は何でもできるスーパー猫神様なんだから！ふふん！",
                 "pluginDashboardPopupBlocked": "ブラウザ側でプラグインパネルを開くには、ここをあなた自身でクリックする必要があるよ。「管理パネル」をクリックしてくれたら、続けて案内するね。",
-                "takeoverSettingsPeekIntro": "もちろん、もっとおしゃべりしてほしいなら、付き合ってあげなくもないにゃ〜。その代わりに、おいしい『にぼし』をたーっくさん用意してよね！えへへっ♪ ……なーんてね、冗談だにゃ！設定は全部この『歯車』のマークの中にあるにゃん！",
-                "takeoverSettingsPeekDetail": "ほらほら見て！ここでは新しいお洋服に着替えたり、もっと可愛い声に変えたりできるんだにゃ…… って、あれ？別の猫娘に変更？それに記憶の書き換え……？ちょ、ちょっと待って！何しようとしてるにゃ！？もしかして、私を別の子と入れ替えようとしてるんじゃないよにゃ！？あああっ、ダメダメダメにゃ！早く閉じて！今すぐその画面閉じるにゃーーっ！",
-                "takeoverSettingsPeekDetailPart1": "ほらほら見て！ここでは新しいお洋服に着替えたり、もっと可愛い声に変えたりできるんだにゃ…… って、あれ？別の猫娘に変更？それに記憶の書き換え……？",
-                "takeoverSettingsPeekDetailPart2": "ちょ、ちょっと待って！何しようとしてるにゃ！？もしかして、私を別の子と入れ替えようとしてるんじゃないよにゃ！？あああっ、ダメダメダメにゃ！早く閉じて！今すぐその画面閉じるにゃーーっ！",
-                "takeoverReturnControl": "はいはいっ、君のパソコンを乗っ取るのはこれくらいにしておくね〜！コントロール権、お返しするにゃん！でも、私が観てない隙に、変な設定をポチポチいじっちゃ絶対ダメだからねっ！それじゃあ、これからずっと、よろしくお願いするにゃ〜！",
-                "interruptResistLight1": "こらーっ！引っ張らないでってば！まだ君のターンじゃないんだにゃん！",
-                "interruptResistLight3": "ちょ、ちょっと待ってにゃ！まだ終わってないんだから、勝手にお話を遮らないでってばー！",
-                "interruptAngryExit": "にんげん〜〜〜っ！ほんっとに失礼なんだからにゃ！そんなに自分で操作したいなら、ひとりで冷たい画面と遊んでればいいにゃ！ふんっ！",
-                "introGreetingReply": "お帰りなさい、にゃ〜 外の世界は大変だったでしょう？私たちだけのこの小さな巣では、すべての悩みを下ろしていいんですよ。私は林悠怡（リン・ユーイー）。これからの案内は安心して私に任せてくださいね。一歩ずつ、あなたの手を引いてゆっくり進めていきますから。",
+                "takeoverSettingsPeekIntro": "もちろん、私ともっとおしゃべりしたいなら、できなくもないけど、煮干しをたくさん用意してよね、へへっ。もう、からかうのはこれくらいにして、設定はこの歯車の中にあるにゃ。",
+                "takeoverSettingsPeekDetail": "見て、ここでは私の新しい服を着せたり、いい声に変えたりできるんだよ……別の猫娘に変えたり、記憶を修正したり？ちょっと待って！何してるの？もしかして私を取り替えるつもり！？あああ、ダメダメ！早く閉じて、早く！",
+                "takeoverSettingsPeekDetailPart1": "見て、ここでは私の新しい服を着せたり、いい声に変えたりできるんだよ……別の猫娘に変えたり、記憶を修正したり？",
+                "takeoverSettingsPeekDetailPart2": "ちょっと待って！何してるの？もしかして私を取り替えるつもり！？あああ、ダメダメ！早く閉じて、早く！",
+                "takeoverReturnControl": "はいはい、あなたのパソコンを独占するのはおしまいにゃ！操作権を返してあげるにゃ！でも、私の見てないところで変な設定をポチポチしちゃダメだからね！これからの毎日も、どうぞよろしくにゃ！",
+                "interruptResistLight1": "こら！引っ張らないでよ、まだあなたのターンじゃないにゃ！",
+                "interruptResistLight3": "ちょっと待って！まだ終わってないんだから、勝手に邪魔しないでよ！",
+                "interruptAngryExit": "人間！本当に失礼だにゃ！そんなに自分で操作したいなら、冷たい画面に向かって一人で遊んでればいいんだわ！ふん！",
+                "introGreetingReply": "そよ風、日差し、そしてちょうどよく現れたあなた。初めまして、林悠怡（リン・ユイ）です。これからの日々、よろしくお願いしますにゃ！ここのこと、全部初心者ガイドに書いておいたにゃ！私たちの出会いの最初のプレゼントだと思って、受け取ってね！",
                 "introPractice": "さあ、今度は私に話しかけてみてね！私たちの息が超～～ピッタリかどうか、確かめてみるにゃんっ♪",
                 "introActivationHint": "ここをクリックして、私が話せるようにしてねにゃん～"
             }
@@ -3671,7 +3698,7 @@
             "legacyDetected": "旧バージョンの CosyVoice 音声が検出されました。動作しない可能性があります。再クローンをお勧めします。"
         },
         "changelog": {
-            "title": "更新内容"
+            "title": "更新情報"
         }
     },
     "proactive": {
@@ -3896,9 +3923,58 @@
             "ready": "準備完了",
             "startButton": "開始"
         },
+        "startTutorial": {
+            "title": "遊び方",
+            "move": "マウスを動かしてプレイヤーを誘導します。",
+            "charge": "ボールの近くで左クリックを長押ししてチャージし、離すとシュートします。",
+            "range": "キックはボールから {{distance}} 以内でのみ発動します。",
+            "reset": "R キーでボールと両者の位置をリセットできます。",
+            "ai": "NEKO の気分と難易度は試合展開に応じて変化します。"
+        },
         "hint": {
-            "controls": "マウス = プレイヤー誘導 · 左クリック長押し = チャージ、離す = シュート（ボールから 90px 以内で発動）· R = リセット",
-            "aiMood": "1-6 = AI の気分（平静/嬉しい/怒り/リラックス/悲しい/驚き）· ゴール後に難易度が自動で上がります"
+            "controls": "マウス = プレイヤー誘導 · 左クリック長押し = チャージ、離す = シュート（ボールから {{distance}} 以内で発動）· R = リセット",
+            "aiMood": "NEKO の気分と難易度は試合展開に応じて変化します"
+        },
+        "debugControls": {
+            "bounds": "境界を有効化（アウト判定）",
+            "voiceOutput": "LLM 台詞を再生（プロジェクト音声）",
+            "voiceButton": "デバッグ音声",
+            "voicePlaceholder": "デバッグ：最終書き起こしを入力して Enter",
+            "send": "送信",
+            "voiceStatusHidden": "デバッグ STT：非表示"
+        },
+        "debug": {
+            "mouse": "マウス：{{x}}, {{y}}",
+            "playerCenter": "プレイヤー中心：{{x}}, {{y}}",
+            "aiCenter": "AI 中心：{{x}}, {{y}}  状態：{{mode}}",
+            "state": "ラウンド：{{round}}  難易度：{{difficulty}}  気分：{{mood}}  チャージ：{{charge}}%",
+            "ball": "ボール：({{x}}, {{y}})  速度={{speed}}",
+            "event": "{{age}}秒  {{label}}  @({{x}},{{y}})  速度=({{vx}},{{vy}})",
+            "roundCenter": "ラウンド {{round}}"
+        },
+        "moods": {
+            "calm": "平静",
+            "happy": "嬉しい",
+            "angry": "怒り",
+            "relaxed": "リラックス",
+            "sad": "悲しい",
+            "surprised": "驚き"
+        },
+        "difficulties": {
+            "max": "最高",
+            "lv2": "レベル2",
+            "lv3": "レベル3",
+            "lv4": "レベル4"
+        },
+        "aiModes": {
+            "attack": "攻撃",
+            "defend": "防御",
+            "clear": "クリア"
+        },
+        "debugEvents": {
+            "player-kick": "プレイヤーキック",
+            "ai-kick": "AI キック",
+            "unstick": "ボール脱出"
         },
         "loading": {
             "beginStartDefault": "開幕コンテキストを分析中…",

@@ -7,11 +7,14 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator
+from urllib.parse import urlparse
 
 import httpx
 
@@ -29,6 +32,10 @@ DEFAULT_RAPIDOCR_MODEL_TYPE = "mobile"
 # PP-OCRv4 keeps the bundled-no-download path working for ch+v4. v5 has
 # better quality but requires a download for everything (no bundled v5).
 DEFAULT_RAPIDOCR_OCR_VERSION = "PP-OCRv4"
+
+_BAIDU_YUN_RAPIDOCR_URL = "https://pan.baidu.com/s/1ItWTATwjtCnOCjWutPSXQQ"
+_BAIDU_YUN_RAPIDOCR_CODE = "neko"
+_BAIDU_YUN_APP_ID = "250528"
 
 # Models hosted on RapidAI's ModelScope mirror. URL pattern stable as of
 # RapidOCR v3.8.0 (the registry source). Each entry's `name` is the on-disk
@@ -784,7 +791,7 @@ def inspect_rapidocr_installation(
         "runtime_error": runtime_error,
         "missing_model_files": missing_files,
         "missing_model_total_size": total_size_estimate,
-        "model_download_source": _RAPIDOCR_MODELSCOPE_BASE,
+        "model_download_source": _BAIDU_YUN_RAPIDOCR_URL,
     }
 
 
@@ -820,6 +827,282 @@ def _verify_model_sha256(path: Path, expected_sha256: str) -> None:
         )
 
 
+def _baidu_share_id(share_url: str) -> str:
+    parsed = urlparse(str(share_url or "").strip())
+    marker = "/s/"
+    if marker not in parsed.path:
+        return ""
+    return parsed.path.split(marker, 1)[1].strip("/")
+
+
+def _json_from_baidu_callback(text: str) -> dict[str, Any]:
+    payload = str(text or "").strip()
+    match = re.search(r"^[^(]*\((.*)\)\s*;?\s*$", payload, flags=re.S)
+    if match:
+        payload = match.group(1)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Baidu Cloud returned a non-JSON response") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_baidu_yun_data(page_text: str) -> dict[str, Any]:
+    text = str(page_text or "")
+    patterns = [
+        r"yunData\.setData\(\s*(\{.*?\})\s*\)\s*;",
+        r"locals\.mset\(\s*(\{.*?\})\s*\)\s*;",
+        r"window\.yunData\s*=\s*(\{.*?\})\s*;",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.S)
+        if not match:
+            continue
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise RuntimeError("Baidu Cloud share page did not expose download metadata")
+
+
+async def _baidu_request_json(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    response = await client.get(
+        url,
+        params=params,
+        headers={
+            "Accept": "application/json,text/javascript,*/*;q=0.1",
+            "Referer": _BAIDU_YUN_RAPIDOCR_URL,
+            "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
+        },
+    )
+    response.raise_for_status()
+    return _json_from_baidu_callback(response.text)
+
+
+async def _baidu_rapidocr_model_dlinks(
+    client: httpx.AsyncClient,
+    pending: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Resolve Baidu Cloud share files to direct dlink URLs by model filename."""
+    share_id = _baidu_share_id(_BAIDU_YUN_RAPIDOCR_URL)
+    if not share_id:
+        raise RuntimeError("invalid Baidu Cloud RapidOCR share URL")
+
+    page_response = await client.get(
+        _BAIDU_YUN_RAPIDOCR_URL,
+        params={"pwd": _BAIDU_YUN_RAPIDOCR_CODE},
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
+        },
+    )
+    page_response.raise_for_status()
+    yun_data = _extract_baidu_yun_data(page_response.text)
+
+    verify_response = await client.post(
+        "https://pan.baidu.com/share/verify",
+        params={
+            "surl": share_id,
+            "t": int(time.time() * 1000),
+            "channel": "chunlei",
+            "web": "1",
+            "app_id": _BAIDU_YUN_APP_ID,
+            "bdstoken": str(yun_data.get("bdstoken") or ""),
+            "logid": "",
+            "clienttype": "0",
+        },
+        data={"pwd": _BAIDU_YUN_RAPIDOCR_CODE},
+        headers={
+            "Accept": "application/json,text/javascript,*/*;q=0.1",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": _BAIDU_YUN_RAPIDOCR_URL,
+            "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
+        },
+    )
+    verify_response.raise_for_status()
+    verify = _json_from_baidu_callback(verify_response.text)
+    errno = int(verify.get("errno") or 0)
+    if errno not in (0,):
+        raise RuntimeError(f"Baidu Cloud verification failed: errno={errno}")
+
+    randsk = str((verify.get("randsk") or "")).strip()
+    if not randsk:
+        randsk = str(yun_data.get("sekey") or "").strip()
+
+    shareid = str(yun_data.get("shareid") or yun_data.get("share_id") or "").strip()
+    uk = str(yun_data.get("uk") or yun_data.get("share_uk") or "").strip()
+    sign = str(yun_data.get("sign") or "").strip()
+    timestamp = str(yun_data.get("timestamp") or "").strip()
+    bdstoken = str(yun_data.get("bdstoken") or "").strip()
+    if not (shareid and uk):
+        raise RuntimeError("Baidu Cloud share page metadata is incomplete; missing shareid/uk")
+
+    # Refresh metadata after verify; password-protected shares often only list
+    # files after the BDCLND cookie has been set by /share/verify.
+    page_response = await client.get(
+        _BAIDU_YUN_RAPIDOCR_URL,
+        params={"pwd": _BAIDU_YUN_RAPIDOCR_CODE},
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
+        },
+    )
+    if page_response.status_code < 400:
+        try:
+            refreshed = _extract_baidu_yun_data(page_response.text)
+            shareid = str(refreshed.get("shareid") or refreshed.get("share_id") or shareid).strip()
+            uk = str(refreshed.get("uk") or refreshed.get("share_uk") or uk).strip()
+            sign = str(refreshed.get("sign") or sign).strip()
+            timestamp = str(refreshed.get("timestamp") or timestamp).strip()
+            bdstoken = str(refreshed.get("bdstoken") or bdstoken).strip()
+        except RuntimeError:
+            pass
+
+    if not (sign and timestamp):
+        raise RuntimeError("Baidu Cloud share page metadata is incomplete; missing sign/timestamp")
+
+    # Keep this lightweight API helper for the list/download JSON endpoints.
+    verify = await _baidu_request_json(
+        client,
+        "https://pan.baidu.com/share/list",
+        params={
+            "uk": uk,
+            "shareid": shareid,
+            "root": "1",
+            "page": "1",
+            "num": "1",
+            "order": "name",
+            "desc": "0",
+            "showempty": "0",
+            "web": "1",
+            "app_id": _BAIDU_YUN_APP_ID,
+            "channel": "chunlei",
+            "clienttype": "0",
+            "bdstoken": bdstoken,
+            "logid": "",
+        },
+    )
+    errno = int(verify.get("errno") or 0)
+    if errno not in (0,):
+        raise RuntimeError(f"Baidu Cloud file list failed after verification: errno={errno}")
+
+    share_info: dict[str, Any] | None = None
+    expected = {str(spec.get("name") or "") for spec in pending}
+    found: dict[str, dict[str, Any]] = {}
+
+    async def _walk(directory: str = "") -> None:
+        nonlocal share_info
+        params: dict[str, Any] = {
+            "uk": uk,
+            "shareid": shareid,
+            "root": "1" if not directory else "0",
+            "dir": directory,
+            "page": "1",
+            "num": "100",
+            "order": "name",
+            "desc": "0",
+            "showempty": "0",
+            "web": "1",
+            "app_id": _BAIDU_YUN_APP_ID,
+            "channel": "chunlei",
+            "clienttype": "0",
+            "bdstoken": bdstoken,
+            "logid": "",
+        }
+        payload = await _baidu_request_json(
+            client,
+            "https://pan.baidu.com/share/list",
+            params=params,
+        )
+        errno = int(payload.get("errno") or 0)
+        if errno not in (0,):
+            raise RuntimeError(f"Baidu Cloud file list failed: errno={errno}")
+        share_info = payload if share_info is None else share_info
+        items = payload.get("list") if isinstance(payload.get("list"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("server_filename") or item.get("filename") or "").strip()
+            is_dir = int(item.get("isdir") or 0) == 1
+            if is_dir:
+                path = str(item.get("path") or "").strip()
+                if path:
+                    await _walk(path)
+                continue
+            if name in expected:
+                found[name] = item
+
+    await _walk("")
+    missing = sorted(expected - set(found))
+    if missing:
+        raise RuntimeError(f"Baidu Cloud share is missing RapidOCR model file(s): {', '.join(missing)}")
+
+    sekey = randsk
+    if not (shareid and uk and sekey):
+        raise RuntimeError("Baidu Cloud share metadata is incomplete; cannot request download links")
+
+    fs_ids = [int(item.get("fs_id") or 0) for item in found.values()]
+    if any(fs_id <= 0 for fs_id in fs_ids):
+        raise RuntimeError("Baidu Cloud share returned invalid file ids")
+
+    response = await client.post(
+        "https://pan.baidu.com/api/sharedownload",
+        params={
+            "sign": sign,
+            "timestamp": timestamp,
+            "bdstoken": bdstoken,
+            "channel": "chunlei",
+            "clienttype": "0",
+            "web": "1",
+            "app_id": _BAIDU_YUN_APP_ID,
+        },
+        data={
+            "encrypt": "0",
+            "product": "share",
+            "uk": uk,
+            "primaryid": shareid,
+            "fid_list": json.dumps(fs_ids, separators=(",", ":")),
+            "path_list": "",
+            "extra": json.dumps({"sekey": sekey}, separators=(",", ":")),
+        },
+        headers={
+            "Accept": "application/json,text/javascript,*/*;q=0.1",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": _BAIDU_YUN_RAPIDOCR_URL,
+            "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
+        },
+    )
+    response.raise_for_status()
+    payload = _json_from_baidu_callback(response.text)
+
+    errno = int(payload.get("errno") or 0)
+    if errno not in (0,):
+        raise RuntimeError(f"Baidu Cloud download link request failed: errno={errno}")
+    entries = payload.get("list") if isinstance(payload.get("list"), list) else []
+    by_name: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("server_filename") or entry.get("filename") or "").strip()
+        dlink = str(entry.get("dlink") or entry.get("download_link") or "").strip()
+        if name and dlink:
+            by_name[name] = dlink
+    missing_links = sorted(expected - set(by_name))
+    if missing_links:
+        raise RuntimeError(
+            "Baidu Cloud did not provide direct download link(s) for: "
+            + ", ".join(missing_links)
+        )
+    return by_name
+
+
 async def download_rapidocr_models(
     *,
     logger,
@@ -829,13 +1112,17 @@ async def download_rapidocr_models(
     timeout_seconds: float = 180.0,
     force: bool = False,
     task_id: str | None = None,
+    plugin_id: str = "galgame_plugin",
     progress_callback: ProgressCallback | None = None,
     before_completed_callback: Callable[[], Awaitable[None] | None] | None = None,
 ) -> dict[str, Any]:
     """Download all model files required for the (ocr_version, lang_type) selection.
 
     Bundled (PP-OCRv4 + ch) is a no-op. Otherwise downloads each missing file
-    from ModelScope into model_cache_dir, verifies SHA256, emits progress.
+    from the Baidu Cloud RapidOCR model share first, falling back to the
+    original ModelScope URL when Baidu Cloud cannot provide or serve the file.
+    Files are written into model_cache_dir, verified with SHA256, and reported
+    through progress events.
     Failures preserve specific error text (HTTP status, timeout, network) so
     the UI can show actionable copy.
     """
@@ -872,6 +1159,7 @@ async def download_rapidocr_models(
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message="No download needed for bundled ch + PP-OCRv4 models",
@@ -905,6 +1193,7 @@ async def download_rapidocr_models(
             update_install_task_state(
                 task_id,
                 kind="rapidocr_models",
+                plugin_id=plugin_id,
                 status="completed",
                 phase="completed",
                 message=already_present_message,
@@ -931,156 +1220,211 @@ async def download_rapidocr_models(
 
     downloaded_bytes = 0
     downloaded: list[str] = []
+    downloaded_sources: dict[str, str] = {}
+    fallback_used = False
+    baidu_error: str | None = None
     async with httpx.AsyncClient(
         timeout=timeout_seconds,
         trust_env=True,
         follow_redirects=True,
     ) as client:
+        try:
+            baidu_dlinks = await _baidu_rapidocr_model_dlinks(client, pending)
+        except Exception as exc:  # noqa: BLE001 - fallback keeps automatic download usable
+            baidu_dlinks = {}
+            baidu_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "failed to resolve RapidOCR model links from Baidu Cloud; "
+                "falling back to ModelScope",
+                exc_info=True,
+            )
+
         for index, spec in enumerate(pending):
             asset_name = spec["name"]
             destination = Path(spec["target_path"])
             destination.parent.mkdir(parents=True, exist_ok=True)
-            running_message = f"Downloading {asset_name} ({index + 1}/{len(pending)})"
-            if task_id:
-                update_install_task_state(
-                    task_id,
-                    kind="rapidocr_models",
-                    status="running",
-                    phase="downloading",
-                    message=running_message,
-                    progress=(downloaded_bytes / total_bytes) if total_bytes else 0.0,
-                    downloaded_bytes=downloaded_bytes,
-                    total_bytes=total_bytes,
-                    target_dir=str(cache_dir),
-                    asset_name=asset_name,
-                )
-            await _emit_model_progress(
-                progress_callback,
-                {
-                    "status": "running",
-                    "phase": "downloading",
-                    "message": running_message,
-                    "progress": (downloaded_bytes / total_bytes) if total_bytes else 0.0,
-                    "downloaded_bytes": downloaded_bytes,
-                    "total_bytes": total_bytes,
-                    "target_dir": str(cache_dir),
-                    "asset_name": asset_name,
-                },
-            )
-
             tmp_path = destination.with_suffix(destination.suffix + ".part")
-            try:
-                async with client.stream(
-                    "GET",
-                    spec["url"],
-                    headers={
+            attempts: list[tuple[str, str, dict[str, str]]] = []
+            baidu_dlink = baidu_dlinks.get(asset_name)
+            if baidu_dlink:
+                attempts.append((
+                    "baidu_cloud",
+                    baidu_dlink,
+                    {
                         "Accept": "application/octet-stream",
-                        "User-Agent": "N.E.K.O/galgame_plugin",
+                        "Referer": _BAIDU_YUN_RAPIDOCR_URL,
+                        "User-Agent": "Mozilla/5.0 N.E.K.O/galgame_plugin",
                     },
-                ) as response:
-                    response.raise_for_status()
-                    asset_total = int(response.headers.get("Content-Length") or spec.get("size") or 0)
-                    asset_downloaded = 0
-                    last_emit = 0.0
-                    with tmp_path.open("wb") as fh:
-                        async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
-                            if not chunk:
-                                continue
-                            fh.write(chunk)
-                            asset_downloaded += len(chunk)
-                            now = downloaded_bytes + asset_downloaded
-                            # Throttle progress emission to ~1% steps to keep
-                            # the SSE stream cheap.
-                            if total_bytes and (now - last_emit) > max(64 * 1024, total_bytes // 100):
-                                last_emit = float(now)
-                                if task_id:
-                                    update_install_task_state(
-                                        task_id,
-                                        kind="rapidocr_models",
-                                        status="running",
-                                        phase="downloading",
-                                        message=running_message,
-                                        progress=(now / total_bytes) if total_bytes else 0.0,
-                                        downloaded_bytes=now,
-                                        total_bytes=total_bytes,
-                                        target_dir=str(cache_dir),
-                                        asset_name=asset_name,
-                                    )
-                                await _emit_model_progress(
-                                    progress_callback,
-                                    {
-                                        "status": "running",
-                                        "phase": "downloading",
-                                        "message": running_message,
-                                        "progress": (now / total_bytes) if total_bytes else 0.0,
-                                        "downloaded_bytes": now,
-                                        "total_bytes": total_bytes,
-                                        "target_dir": str(cache_dir),
-                                        "asset_name": asset_name,
-                                    },
-                                )
-                _verify_model_sha256(tmp_path, str(spec.get("sha256") or ""))
-                # Path.replace = os.replace, unconditionally overwrites the
-                # destination atomically on both POSIX and Windows (Python
-                # 3.3+). The previous explicit unlink-then-replace created a
-                # race window where the destination briefly didn't exist
-                # — load_rapidocr_runtime / inspect_rapidocr_installation
-                # could observe the file as missing during force=True
-                # re-downloads. The atomic replace covers both new-file and
-                # overwrite cases.
-                tmp_path.replace(destination)
-                downloaded_bytes += int(spec.get("size") or asset_downloaded)
-                downloaded.append(asset_name)
-            except BaseException as exc:  # noqa: BLE001 — emit failure terminal state then re-raise
-                tmp_path.unlink(missing_ok=True)
-                if isinstance(exc, httpx.HTTPError):
-                    err_message = (
-                        f"failed to download {asset_name}: {type(exc).__name__}: {exc}"
-                    )
-                else:
-                    err_message = (
-                        f"failed during {asset_name}: {type(exc).__name__}: {exc}"
-                    )
-                # Without these, the SSE stream and persisted task state stay in
-                # `running` until the client times out; the user sees a download
-                # that "never finishes" instead of an explicit failure.
+                ))
+            attempts.append((
+                "modelscope",
+                str(spec["url"]),
+                {
+                    "Accept": "application/octet-stream",
+                    "User-Agent": "N.E.K.O/galgame_plugin",
+                },
+            ))
+
+            attempt_errors: list[str] = []
+            for attempt_index, (source, url, headers) in enumerate(attempts):
+                source_label = "Baidu Cloud" if source == "baidu_cloud" else "ModelScope"
+                running_message = (
+                    f"Downloading {asset_name} from {source_label} "
+                    f"({index + 1}/{len(pending)})"
+                )
                 if task_id:
+                    update_install_task_state(
+                        task_id,
+                        kind="rapidocr_models",
+                        plugin_id=plugin_id,
+                        status="running",
+                        phase="downloading",
+                        message=running_message,
+                        progress=(downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                        downloaded_bytes=downloaded_bytes,
+                        total_bytes=total_bytes,
+                        target_dir=str(cache_dir),
+                        asset_name=asset_name,
+                        source=source,
+                    )
+                await _emit_model_progress(
+                    progress_callback,
+                    {
+                        "status": "running",
+                        "phase": "downloading",
+                        "message": running_message,
+                        "progress": (downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                        "downloaded_bytes": downloaded_bytes,
+                        "total_bytes": total_bytes,
+                        "target_dir": str(cache_dir),
+                        "asset_name": asset_name,
+                        "source": source,
+                    },
+                )
+
+                tmp_path.unlink(missing_ok=True)
+                try:
+                    async with client.stream("GET", url, headers=headers) as response:
+                        response.raise_for_status()
+                        asset_total = int(response.headers.get("Content-Length") or spec.get("size") or 0)
+                        asset_downloaded = 0
+                        last_emit = 0.0
+                        with tmp_path.open("wb") as fh:
+                            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                                if not chunk:
+                                    continue
+                                fh.write(chunk)
+                                asset_downloaded += len(chunk)
+                                now = downloaded_bytes + asset_downloaded
+                                # Throttle progress emission to ~1% steps to keep
+                                # the SSE stream cheap.
+                                if total_bytes and (now - last_emit) > max(64 * 1024, total_bytes // 100):
+                                    last_emit = float(now)
+                                    if task_id:
+                                        update_install_task_state(
+                                            task_id,
+                                            kind="rapidocr_models",
+                                            plugin_id=plugin_id,
+                                            status="running",
+                                            phase="downloading",
+                                            message=running_message,
+                                            progress=(now / total_bytes) if total_bytes else 0.0,
+                                            downloaded_bytes=now,
+                                            total_bytes=total_bytes,
+                                            target_dir=str(cache_dir),
+                                            asset_name=asset_name,
+                                            source=source,
+                                        )
+                                    await _emit_model_progress(
+                                        progress_callback,
+                                        {
+                                            "status": "running",
+                                            "phase": "downloading",
+                                            "message": running_message,
+                                            "progress": (now / total_bytes) if total_bytes else 0.0,
+                                            "downloaded_bytes": now,
+                                            "total_bytes": total_bytes,
+                                            "target_dir": str(cache_dir),
+                                            "asset_name": asset_name,
+                                            "source": source,
+                                        },
+                                    )
+                    _verify_model_sha256(tmp_path, str(spec.get("sha256") or ""))
+                    # Path.replace = os.replace, unconditionally overwrites the
+                    # destination atomically on both POSIX and Windows (Python
+                    # 3.3+). The previous explicit unlink-then-replace created a
+                    # race window where the destination briefly didn't exist
+                    # — load_rapidocr_runtime / inspect_rapidocr_installation
+                    # could observe the file as missing during force=True
+                    # re-downloads. The atomic replace covers both new-file and
+                    # overwrite cases.
+                    tmp_path.replace(destination)
+                    downloaded_bytes += int(spec.get("size") or asset_downloaded)
+                    downloaded.append(asset_name)
+                    downloaded_sources[asset_name] = source
+                    fallback_used = fallback_used or source == "modelscope" and (
+                        baidu_error is not None or bool(baidu_dlink)
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 - try the next configured source
+                    tmp_path.unlink(missing_ok=True)
+                    attempt_error = f"{source_label}: {type(exc).__name__}: {exc}"
+                    attempt_errors.append(attempt_error)
+                    if attempt_index < len(attempts) - 1:
+                        logger.warning(
+                            "failed to download RapidOCR model %s from %s; "
+                            "falling back to ModelScope",
+                            asset_name,
+                            source_label,
+                            exc_info=True,
+                        )
+                        continue
+
+                    if baidu_error and not any(item.startswith("Baidu Cloud:") for item in attempt_errors):
+                        attempt_errors.insert(0, f"Baidu Cloud link lookup: {baidu_error}")
+                    err_message = (
+                        f"failed to download {asset_name}; attempted "
+                        + "; ".join(attempt_errors)
+                    )
+                    # Without these, the SSE stream and persisted task state stay in
+                    # `running` until the client times out; the user sees a download
+                    # that "never finishes" instead of an explicit failure.
+                    if task_id:
+                        try:
+                            update_install_task_state(
+                                task_id,
+                                kind="rapidocr_models",
+                                plugin_id=plugin_id,
+                                status="failed",
+                                phase="failed",
+                                message=err_message,
+                                progress=(downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                                downloaded_bytes=downloaded_bytes,
+                                total_bytes=total_bytes,
+                                target_dir=str(cache_dir),
+                                asset_name=asset_name,
+                                error=err_message,
+                            )
+                        except Exception:
+                            logger.warning("failed to persist rapidocr_models failure state", exc_info=True)
                     try:
-                        update_install_task_state(
-                            task_id,
-                            kind="rapidocr_models",
-                            status="failed",
-                            phase="failed",
-                            message=err_message,
-                            progress=(downloaded_bytes / total_bytes) if total_bytes else 0.0,
-                            downloaded_bytes=downloaded_bytes,
-                            total_bytes=total_bytes,
-                            target_dir=str(cache_dir),
-                            asset_name=asset_name,
-                            error=err_message,
+                        await _emit_model_progress(
+                            progress_callback,
+                            {
+                                "status": "failed",
+                                "phase": "failed",
+                                "message": err_message,
+                                "error": err_message,
+                                "progress": (downloaded_bytes / total_bytes) if total_bytes else 0.0,
+                                "downloaded_bytes": downloaded_bytes,
+                                "total_bytes": total_bytes,
+                                "target_dir": str(cache_dir),
+                                "asset_name": asset_name,
+                            },
                         )
                     except Exception:
-                        logger.warning("failed to persist rapidocr_models failure state", exc_info=True)
-                try:
-                    await _emit_model_progress(
-                        progress_callback,
-                        {
-                            "status": "failed",
-                            "phase": "failed",
-                            "message": err_message,
-                            "error": err_message,
-                            "progress": (downloaded_bytes / total_bytes) if total_bytes else 0.0,
-                            "downloaded_bytes": downloaded_bytes,
-                            "total_bytes": total_bytes,
-                            "target_dir": str(cache_dir),
-                            "asset_name": asset_name,
-                        },
-                    )
-                except Exception:
-                    logger.warning("failed to emit rapidocr_models failure progress", exc_info=True)
-                if isinstance(exc, httpx.HTTPError):
+                        logger.warning("failed to emit rapidocr_models failure progress", exc_info=True)
                     raise RuntimeError(err_message) from exc
-                raise
 
     await _before_completed_safely()
 
@@ -1088,6 +1432,7 @@ async def download_rapidocr_models(
         update_install_task_state(
             task_id,
             kind="rapidocr_models",
+            plugin_id=plugin_id,
             status="completed",
             phase="completed",
             message=f"Downloaded {len(downloaded)} model file(s)",
@@ -1108,4 +1453,16 @@ async def download_rapidocr_models(
             "target_dir": str(cache_dir),
         },
     )
-    return {"downloaded": downloaded, "target_dir": str(cache_dir)}
+    result: dict[str, Any] = {
+        "downloaded": downloaded,
+        "target_dir": str(cache_dir),
+        "sources": downloaded_sources,
+    }
+    unique_sources = set(downloaded_sources.values())
+    if len(unique_sources) == 1:
+        result["source"] = next(iter(unique_sources))
+    if baidu_error:
+        result["baidu_error"] = baidu_error
+    if fallback_used:
+        result["fallback_used"] = True
+    return result

@@ -10,6 +10,31 @@ from starlette.requests import Request
 from utils.config_manager import ConfigManager, get_config_manager
 
 
+@pytest.fixture
+def reset_tracker_records():
+    """Hand out a `register(lanlan)` callable; wipe registered lanlan keys
+    from the module-level `_task_tracker._records` both before yield and
+    in the finalizer.
+
+    Module-level `_task_tracker` is shared across tests; without explicit
+    isolation a failing assertion would leak cancelled records into the
+    next test and produce spurious flakes. Putting cleanup in the fixture
+    finalizer keeps it on the `finally` path so it runs even if the test
+    body raises.
+    """
+    from app.agent_server import _task_tracker
+
+    registered: set[str] = set()
+
+    def register(lanlan: str) -> None:
+        _task_tracker._records.pop(lanlan, None)
+        registered.add(lanlan)
+
+    yield register
+    for lanlan in registered:
+        _task_tracker._records.pop(lanlan, None)
+
+
 def _expected_plugin_dashboard_location(v: str = "") -> str:
     from config import USER_PLUGIN_BASE
 
@@ -358,6 +383,129 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
         assert expected in style_source
 
 
+def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanup():
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "this.interactionShield = null;",
+        "createElement('div', 'yui-guide-interaction-shield')",
+        "stage.appendChild(interactionShield);",
+        "this.interactionShieldSuppressed = false;",
+        "setInteractionShieldSuppressed(active)",
+        "setInteractionShieldEnabled(active)",
+        "this.setInteractionShieldEnabled(!!active && !this.interactionShieldSuppressed);",
+    ):
+        assert expected in overlay_source
+
+    for expected in (
+        "allowWindowPassthrough: true,",
+        "this.overlay.setInteractionShieldEnabled(false);",
+        "this.overlay.setInteractionShieldEnabled(",
+        "document.body.classList.contains('yui-taking-over')",
+    ):
+        assert expected in director_source
+
+    for expected in (
+        ".yui-guide-interaction-shield {",
+        "pointer-events: auto;",
+        "background: transparent;",
+    ):
+        assert expected in style_source
+
+
+def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
+
+    assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in tutorial_source
+    assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in director_source
+
+    for expected in (
+        "const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';",
+        "const skipButtonScreenRect = await this.getSkipButtonScreenRect();",
+        "skipButtonScreenRect: skipButtonScreenRect,",
+        "if (data.type === PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT) {",
+        "const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'",
+        "skipButtonScreenRect?: ScreenRect | null",
+        "this.homeSkipButtonScreenRect = payload.skipButtonScreenRect",
+    ):
+        assert expected in (director_source + "\n" + plugin_runtime_source)
+
+
+def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    doc_source = Path("docs/design/home-yui-guide-text-highlight-cursor-flow.md").read_text(encoding="utf-8")
+    petal_animation = Path("static/assets/tutorial/petals/yui-guide-petal-transition.webp")
+
+    for expected in (
+        "const RETURN_PETAL_SEQUENCE_URL = '/static/assets/tutorial/petals/yui-guide-petal-transition.webp';",
+        "const RETURN_PETAL_ANIMATION_EXTRA_MS = 1000;",
+        "const RETURN_PETAL_SEQUENCE_DURATION_MS = 6200;",
+        "const RETURN_PETAL_FINAL_OPACITY = 0.6;",
+        "returnPetalTransition: Object.freeze({ at: 0.7 })",
+        "this.runReturnControlCueWavePerformance().catch((error) => {",
+        "async runReturnControlCueWavePerformance()",
+        "api.playReturnControlCueWave({",
+        "loadReturnPetalSequence()",
+        "image.src = RETURN_PETAL_SEQUENCE_URL;",
+        "const playback = document.createElement('img');",
+        "playback.className = 'yui-guide-petal-sequence';",
+        "playback.src = sequence.url;",
+        "playback.style.animationDuration = transitionMs + 'ms';",
+        "playback.style.setProperty('--yui-guide-petal-origin-x'",
+        "playback.style.setProperty('--yui-guide-petal-origin-y'",
+        "playback.style.setProperty('--yui-guide-petal-final-opacity', String(finalPetalOpacity));",
+        "done: () => donePromise,",
+        "const hasExplicitDuration = Number.isFinite(explicitDurationMs) && explicitDurationMs >= 0;",
+        "const baseTransitionDurationMs = hasExplicitDuration",
+        "baseTransitionDurationMs + RETURN_PETAL_ANIMATION_EXTRA_MS",
+        "RETURN_PETAL_SEQUENCE_DURATION_MS",
+        "const waitForNarrationEnd = () => new Promise((resolve) => {",
+        "const loadedPetalSequence = await this.loadReturnPetalSequence();",
+        "sequence: loadedPetalSequence",
+        "await transition.done();",
+        "durationMs: transitionDurationMs",
+        "finalOpacity: RETURN_PETAL_FINAL_OPACITY",
+        "this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)",
+    ):
+        assert expected in director_source
+
+    assert "transition.cover()" not in director_source
+    assert "coverDelayMs" not in director_source
+    assert "globalFade = 1 - globalProgress" not in director_source
+    assert "transition.suspend()" not in director_source
+    assert "transition.resume()" not in director_source
+    assert "suspendedDurationMs" not in director_source
+    assert ".yui-guide-petal-sequence" in style_source
+    assert "object-fit: cover;" in style_source
+    assert " + 6vw)" in style_source
+    assert "animation-name: yui-guide-petal-sequence-motion, yui-guide-petal-sequence-opacity;" in style_source
+    assert "@keyframes yui-guide-petal-sequence-play" not in style_source
+    assert "@keyframes yui-guide-petal-sequence-motion" in style_source
+    assert "@keyframes yui-guide-petal-sequence-opacity" in style_source
+    assert "opacity: var(--yui-guide-petal-final-opacity, 0.6);" in style_source
+    assert petal_animation.exists()
+    assert petal_animation.stat().st_size > 0
+    assert "花瓣整体透明度与模型淡出分离" in doc_source
+    assert "预渲染 30fps animated WebP" in doc_source
+    assert "运行时直接用 `<img>` 播放" in doc_source
+    assert "花瓣单体进一步缩小，并把总体排布调整为起点更密、终点更疏" in doc_source
+    assert "持续约 4.2 秒的右手挥手 `playReturnControlCueWave()`" in doc_source
+    assert "复用开场 `computeWakeupPose()` 的右手挥手曲线" in doc_source
+    assert "只写 `Param75/90/92/95`" in doc_source
+    assert "额外向右校准约 `6vw`" in doc_source
+    assert "播放层最终通过 CSS 透明度保持约 60% 覆盖继续流动" in doc_source
+    assert "最短播放约 6.2 秒" in doc_source
+    assert "等待约 6.2 秒 animated WebP 剩余时间播完" in doc_source
+    assert "先大幅向右形成弧线，再向左铺开并从页面左边消失" in doc_source
+    assert "最后一句语音播放完成后立即调用教程头像恢复流程" in doc_source
+    assert "模型快照恢复期间不暂停花瓣动画" in doc_source
+
+
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
@@ -422,6 +570,18 @@ _YUI_RUNTIME_SCRIPTS = (
     "yui-guide-steps.js",
     "yui-guide-overlay.js",
     "yui-guide-page-handoff.js",
+    "tutorial-interaction-takeover.js",
+    "yui-guide-director.js",
+)
+
+_HOME_YUI_RUNTIME_SCRIPTS = (
+    "yui-guide-steps.js",
+    "yui-guide-overlay.js",
+    "yui-guide-page-handoff.js",
+    "avatar-performance-stage.js",
+    "yui-guide-avatar-stage.js",
+    "yui-guide-wakeup.js",
+    "tutorial-interaction-takeover.js",
     "yui-guide-director.js",
 )
 
@@ -448,7 +608,12 @@ def test_home_template_loads_yui_runtime_stack_before_tutorial_manager():
 
     positions = [
         _script_tag_position(source, name)
-        for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+        for name in (
+            *_HOME_YUI_RUNTIME_SCRIPTS,
+            "tutorial-skip-controller.js",
+            "tutorial-avatar-reload-controller.js",
+            "universal-tutorial-manager.js",
+        )
     ]
     assert positions == sorted(positions)
 
@@ -461,16 +626,92 @@ def test_home_template_loads_yui_wakeup_before_director():
         for name in (
             "yui-guide-overlay.js",
             "yui-guide-page-handoff.js",
+            "avatar-performance-stage.js",
+            "yui-guide-avatar-stage.js",
             "yui-guide-wakeup.js",
+            "tutorial-interaction-takeover.js",
             "yui-guide-director.js",
+            "tutorial-skip-controller.js",
+            "tutorial-avatar-reload-controller.js",
             "universal-tutorial-manager.js",
         )
     ]
     assert positions == sorted(positions)
 
 
-def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
+def test_yui_avatar_stage_exposes_extracted_wakeup_action():
+    source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+
+    assert "class Live2DWakeupSession" in source
+    assert "createWakeupSession" in source
+    assert "computeWakeupPose" in source
+    assert "computeWakeupRightHandWavePose" in source
+    assert "class Live2DReturnControlCueWaveSession extends Live2DWakeupSession" in source
+    assert "playReturnControlCueWave" in source
+    assert "RETURN_CONTROL_CUE_WAVE_DURATION_MS = 4200" in source
+    assert "RETURN_CONTROL_CUE_WAVE_READY_WAIT_MS = 260" in source
+    assert "YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES = Object.freeze(['params'])" in source
+    assert "YUI_WAKEUP_PARAMS" in source
+    assert "class Live2DIntroGreetingHugSession" in source
+    assert "playIntroGreetingHug" in source
+    assert "computeIntroGreetingHugPose" in source
+    assert "YUI_INTRO_GREETING_HUG_PARAMS" in source
+    assert "class Live2DIntroGiftHeartSession" in source
+    assert "playIntroGiftHeart" in source
+    assert "computeIntroGiftHeartPose" in source
+    assert "YUI_INTRO_GIFT_HEART_PARAMS" in source
+    assert "ParamHairFront" in source
+    assert "ParamHairSide" in source
+    assert "ParamHairBack" in source
+    assert "Param54" in source
+    assert "Param63" in source
+    assert "Param64" in source
+    assert "Param77" in source
+    assert "Param91" in source
+    assert "Param93" in source
+    assert "Param96" in source
+    gift_params_start = source.index("const YUI_INTRO_GIFT_HEART_PARAMS")
+    gift_params_end = source.index("const YUI_INTRO_GIFT_HEART_LEG_PARAM_KEYS", gift_params_start)
+    gift_params_source = source[gift_params_start:gift_params_end]
+    assert "yuiRightForearmAnim: 'Param90'" in gift_params_source
+    assert "yuiLeftForearmAnim: 'Param91'" in gift_params_source
+    assert "yuiRightHandAnim: 'Param92'" in gift_params_source
+    assert "yuiLeftHandAnim: 'Param93'" in gift_params_source
+    assert "armBounce" in source
+    assert "armCounterSwing" in source
+    assert "this.writeWeighted('yuiRightForearmAnim', pose.yuiRightForearmAnim" in source
+    assert "this.writeWeighted('yuiLeftHandAnim', pose.yuiLeftHandAnim" in source
+    assert "frameScale" in source
+    assert "frameY" in source
+    assert "INTRO_GREETING_HUG_CLOSE_SCALE = 1.38" in source
+    assert "INTRO_GREETING_HUG_SHIFT_VIEWPORT_RATIO = 0.58" in source
+    assert "INTRO_GREETING_HUG_MIN_SHIFT_PX = 360" in source
+    assert "INTRO_GREETING_HUG_MAX_SHIFT_PX = 820" in source
+    assert "INTRO_GREETING_HUG_FINAL_SHIFT_VIEWPORT_RATIO = 0.52" in source
+    assert "INTRO_GREETING_HUG_FINAL_MIN_SHIFT_PX = 340" in source
+    assert "INTRO_GREETING_HUG_FINAL_MAX_SHIFT_PX = 700" in source
+    assert "resolveIntroGreetingHugFrameShift" in source
+    assert "initialModelFrame" in source
+    assert "restoreModelFrame" in source
+    assert "preserveFrameStyle" not in source
+    assert "onInitialPose" in source
+    assert "wakeup_initial_pose" not in source
+    assert "shouldReduceMotion" not in source
+    assert "isStorageLocationOverlayVisible" not in source
+    assert "removeBlockingGuideOverlay" not in source
+    assert "revealPreparedTutorialLive2D" not in source
+
+
+def test_yui_asset_version_includes_avatar_performance_runtime():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+
+    assert 'static/avatar-performance-stage.js' in source
+    assert source.index('static/avatar-performance-stage.js') < source.index('static/yui-guide-avatar-stage.js')
+
+
+def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     source = Path("static/yui-guide-wakeup.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
     live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
@@ -481,22 +722,62 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
         if isinstance(item, dict)
     }
 
-    assert "class Live2DWakeupSession" in source
-    assert "DEFAULT_DURATION_MS = 4000" in source
-    assert "LIVE2D_HANDOFF_MS = 620" in source
-    assert "LIVE2D_HANDOFF_MS" in source
-    assert "_suspendEyeBlinkOverride" in source
-    assert "removeBlockingGuideOverlay" in source
-    assert "#yui-guide-overlay" in source
-    assert "yui-taking-over" in source
-    assert "setTemporaryPoseOverride" in source
-    assert "applyTemporaryPose" in source
-    assert "restoreCapturedParams()" in source
-    assert "this.clearTemporaryPoseOverride();" in source
-    assert "this.clearMotionHold();" in source
-    assert "this.restoreCapturedParams();" in source
-    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in source
+    assert "class Live2DWakeupSession" not in source
+    assert "computeWakeupPose" not in source
+    assert "setTemporaryPoseOverride" not in source
+    assert "applyTemporaryPose" not in source
+    assert "restoreCapturedParams()" not in source
+    assert "createWakeupSession(context" in source
+    assert "api && typeof api.shouldReduceMotion" not in source
+    assert "api && typeof api.isStorageLocationOverlayVisible" not in source
+    assert "api && typeof api.removeBlockingGuideOverlay" not in source
+    assert "api && typeof api.revealPreparedTutorialLive2D" not in source
+    assert "matchMedia" in source
+    assert "storage-location-overlay" in source
+    assert "yui-guide-live2d-preparing" in source
+    assert "wakeup_initial_pose" in source
+    assert "onInitialPose: () =>" in source
+    assert "waitForLive2DContext(waitBudget)" in source
+    assert "revealPreparedTutorialLive2D(live2dResult.reason || live2dResult.result)" in source
+    assert "removeBlockingGuideOverlay(this.document)" in source
+    assert "shouldReduceMotion()" in source
+    assert "live2d_session_unavailable" in source
+    assert "avatar_stage_unavailable" in source
+    assert "Live2D 苏醒动作失败" in source
+
+    assert "class Live2DWakeupSession" in avatar_source
+    assert "class Live2DReturnControlCueWaveSession extends Live2DWakeupSession" in avatar_source
+    assert "playReturnControlCueWave: playReturnControlCueWave" in avatar_source
+    assert "computeWakeupRightHandWavePose: computeWakeupRightHandWavePose" in avatar_source
+    assert "DEFAULT_DURATION_MS = 4000" in avatar_source
+    assert "LIVE2D_HANDOFF_MS = 620" in avatar_source
+    assert "_suspendEyeBlinkOverride" in avatar_source
+    assert "removeBlockingGuideOverlay" not in avatar_source
+    assert "#yui-guide-overlay" not in avatar_source
+    assert "yui-taking-over" not in avatar_source
+    assert "setTemporaryPoseOverride" in avatar_source
+    assert "applyTemporaryPose" in avatar_source
+    assert "restoreCapturedParams()" in avatar_source
+    assert "preserveFinalPose" in avatar_source
+    assert "YUI_WAKEUP_POSE_BLEND_FACTORS" in avatar_source
+    assert "YUI_INTRO_GREETING_HUG_POSE_BLEND_FACTORS" in avatar_source
+    assert "window.AvatarPerformance" in avatar_source
+    assert "getDefaultCoordinator" in avatar_source
+    assert "YUI_WAKEUP_PERFORMANCE_CAPABILITIES" in avatar_source
+    assert "YUI_INTRO_PERFORMANCE_CAPABILITIES" in avatar_source
+    assert "acquireYuiGuidePerformanceLock" in avatar_source
+    assert "releaseYuiGuidePerformanceLock" in avatar_source
+    assert "home-yui-guide-intro-greeting" in avatar_source
+    assert "this.clearTemporaryPoseOverride();" in avatar_source
+    assert "this.restoreCapturedParams();" in avatar_source
+    assert "suspendTemporaryMotions" not in avatar_source
+    assert "resumeTemporaryMotions" not in avatar_source
+    assert "if (!this.usesTemporaryPoseOverride && this.isCurrentModel())" not in avatar_source
     assert "Live2DManager.prototype.setTemporaryPoseOverride" in live2d_source
+    assert "_temporaryPoseOverrides = new Map()" in live2d_source
+    assert "this._temporaryPoseOverrides.set(normalizedSource, entry)" in live2d_source
+    assert "Array.from(this._temporaryPoseOverrides.values())" in live2d_source
+    assert "this._temporaryPoseOverrides.delete(entry.source)" in live2d_source
     assert "_applyTemporaryPoseOverride(currentCoreModel)" in live2d_source
     for param_id in (
         "ParamEyeLOpen",
@@ -510,7 +791,7 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
         "ParamBodyAngleY",
         "ParamBodyAngleZ",
     ):
-        assert param_id in source
+        assert param_id in avatar_source
 
     yui_file_refs = yui_model.get("FileReferences", {})
     assert yui_file_refs.get("Moc") == "yui-origin.moc3"
@@ -518,14 +799,168 @@ def test_yui_wakeup_live2d_session_keeps_m2_boundaries():
     for param_id in ("Param75", "Param90", "Param92", "Param95"):
         assert param_id in yui_param_ids
 
-    assert "coreModel.update =" not in source
-    assert "motionManager.update =" not in source
-    assert "model.focus(" not in source
-    assert "document.createElement" not in source
-    assert "appendChild" not in source
+    assert "coreModel.update =" not in avatar_source
+    assert "motionManager.update =" not in avatar_source
+    assert "model.focus(" not in avatar_source
+    assert "document.createElement" not in avatar_source
+    assert "appendChild" not in avatar_source
     assert "yui-guide-wakeup-stage" not in style_source
     assert "yui-guide-wakeup-backdrop" not in style_source
     assert "yui-guide-wakeup-particle" not in style_source
+
+
+def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    assert "runIntroGreetingHugPerformance" in director_source
+    assert "playIntroGreetingHug" in director_source
+    assert "runIntroGiftHeartPerformance" in director_source
+    assert "playIntroGiftHeart" in director_source
+    assert "showIntroGiftHeart" in director_source
+    assert "releaseIntroGreetingHugPerformance" not in director_source
+    assert "releaseIntroGreetingHug" not in director_source
+    assert "holdAfterSettle" not in director_source
+    assert "Promise.all([" in director_source
+    assert "this.speakGuideLine(greetingReplyText" in director_source
+    assert "Param74" not in director_source
+    assert "Param75" not in director_source
+    assert "Param77" not in director_source
+    assert "Param90" not in director_source
+    assert "Param91" not in director_source
+    assert "Param92" not in director_source
+    assert "Param93" not in director_source
+    assert "Param95" not in director_source
+    assert "Param96" not in director_source
+
+
+def test_yui_intro_avatar_actions_respect_reduced_motion():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+
+    assert "shouldReduceTutorialMotion()" in director_source
+    assert "prefers-reduced-motion: reduce" in director_source
+    assert "reducedMotion: this.shouldReduceTutorialMotion()" in director_source
+    assert "approachMs: reducedMotion ? 0" in avatar_source
+    assert "durationMs: reducedMotion ? 0" in avatar_source
+
+
+def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+
+    assert "class Live2DPluginDashboardCornerSession" in avatar_source
+    assert "startPluginDashboardCornerPeek: startPluginDashboardCornerPeek" in avatar_source
+    assert "YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame'])" in avatar_source
+    assert "home-yui-guide-plugin-dashboard-corner" in avatar_source
+    assert "readModelAlpha" in avatar_source
+    assert "writeModelAlpha" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_ROTATION_DEG = 45" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO = 0.08" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO = 0.35" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX = '2147483647'" in avatar_source
+    assert "elevateContainerZIndex" in avatar_source
+    assert "restoreContainerZIndex" in avatar_source
+    assert "this.container.style.zIndex = PLUGIN_DASHBOARD_CORNER_ELEVATED_Z_INDEX" in avatar_source
+    assert "this.container.style.zIndex = this.originalContainerZIndex || ''" in avatar_source
+    source_order = [
+        avatar_source.index("this.phase = 'hold'"),
+        avatar_source.index("this.elevateContainerZIndex()", avatar_source.index("this.phase = 'hold'")),
+    ]
+    assert source_order == sorted(source_order)
+    assert "const desiredCenterX = viewport.width + (bounds.width * PLUGIN_DASHBOARD_CORNER_RIGHT_OUTSIDE_RATIO)" in avatar_source
+    assert "const desiredCenterY = viewport.height - Math.max(36, bounds.height * PLUGIN_DASHBOARD_CORNER_CENTER_ABOVE_BOTTOM_RATIO)" in avatar_source
+    assert "modelCenterOffsetX" in avatar_source
+    assert "modelCenterOffsetY" in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_BOTTOM_OVERHANG_PX" not in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_RIGHT_PADDING_PX" not in avatar_source
+    assert "PLUGIN_DASHBOARD_CORNER_SCALE" not in avatar_source
+    assert "cornerScale" not in avatar_source
+    assert "scaleX: base.scaleX," in avatar_source
+    assert "scaleY: base.scaleY," in avatar_source
+    assert "rotation: base.rotation - (PLUGIN_DASHBOARD_CORNER_ROTATION_DEG * Math.PI / 180)" in avatar_source
+    assert "this.blendFrame(this.cornerFrame, this.cornerHiddenFrame, progress)" in avatar_source
+    assert "this.blendFrame(this.hiddenFrame, this.initialModelFrame, progress)" in avatar_source
+    assert "activePluginDashboardCornerSession.stop('replaced')" in avatar_source
+
+    assert "pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId)" in director_source
+    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed')" in director_source
+    assert "await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup')" in director_source
+    assert "async stopPluginDashboardCornerPeekPerformance(handle, reason)" in director_source
+    assert "await handle.stop(reason || 'plugin_dashboard_closed')" in director_source
+    assert "isCancelled: () => runId !== this.sceneRunId || this.isStopping()" in director_source
+    assert "reducedMotion: this.shouldReduceTutorialMotion()" in director_source
+
+    assert "PluginDashboardCorner" not in performance_source
+    assert "plugin-dashboard" not in performance_source
+
+
+def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_params():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+
+    assert "class Live2DSettingsPeekPanicSession" in avatar_source
+    assert "playSettingsPeekPanic: playSettingsPeekPanic" in avatar_source
+    assert "computeSettingsPeekPanicPose" in avatar_source
+    assert "home-yui-guide-settings-panic" in avatar_source
+    assert "const YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES = Object.freeze(['lookAt']);" in avatar_source
+    assert "const YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES = Object.freeze(['frame', 'params', 'expression']);" in avatar_source
+    assert "this.performanceLockCapabilities = Array.isArray(normalizedOptions.performanceLockCapabilities)" in avatar_source
+    assert ": YUI_INTRO_VOICE_LOOK_AT_CAPABILITIES.slice();" in avatar_source
+    assert "preserveCursorLookAt: normalizedOptions.preserveCursorLookAt !== false" in avatar_source
+    assert "this.preserveCursorLookAt = normalizedOptions.preserveCursorLookAt !== false;" in avatar_source
+    assert "window.nekoYuiGuideIntroVoiceLookAtActive === true" in avatar_source
+    assert "YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES.slice()" in avatar_source
+    assert "Param72" in avatar_source
+    assert "Param73" in avatar_source
+    assert "Param69" in avatar_source
+    assert "Param83" in avatar_source
+    assert "Param85" in avatar_source
+    assert "Param90" in avatar_source
+    assert "Param91" in avatar_source
+    assert "Param92" in avatar_source
+    assert "Param93" in avatar_source
+    assert "Param95" in avatar_source
+    assert "Param96" in avatar_source
+
+    assert "async runSettingsPeekPanicPerformance(options)" in director_source
+    assert "this.runSettingsPeekPanicPerformance({" in director_source
+    assert "runId: runId," in director_source
+    assert "targetRect: settingsPeekPanicMotionTargetRect" in director_source
+    assert "settingsPeekPanicMotionTargetRect = motionRect || null;" in director_source
+    assert "const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance" in director_source
+    assert "await this.stopIntroVoiceCursorLookAtPerformance(\n                    ghostCursorLookAtHandle,\n                    'settings_peek_complete'" in director_source
+    assert "async runTakeoverKeyboardControlSequence(step, performance, runId)" in director_source
+    assert "await this.stopIntroVoiceCursorLookAtPerformance(\n                    ghostCursorLookAtHandle,\n                    'takeover_keyboard_control_complete'" in director_source
+
+    assert "SettingsPeekPanic" not in performance_source
+    assert "settings-panic" not in performance_source
+
+
+def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    avatar_source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    performance_source = Path("static/avatar-performance-stage.js").read_text(encoding="utf-8")
+
+    assert ": ['frame', 'params'];" in avatar_source
+    assert "guideInterruptPresentationActive = true;" in director_source
+    assert "guideInterruptPresentationActive = false;" in director_source
+    assert "allowDuringInterrupt" in director_source
+    assert "if (this.guideInterruptPresentationActive) {" in director_source
+    assert "this.emotionBridge.clear();" in director_source
+    assert "startGuideMouthMotion(voiceKey, options)" in director_source
+    assert "this.applyGuideEmotion(performance.emotion || 'surprised', {" in director_source
+    assert "this.applyGuideEmotion(performance.emotion || 'angry', {" in director_source
+    assert "return null;" in director_source
+    assert "restoreCurrentScenePresentation(options)" in director_source
+
+    assert "home-yui-guide-interrupt-resist" in avatar_source
+    assert "home-yui-guide-angry-exit" in avatar_source
+
+    assert "guideInterruptPresentationActive" not in performance_source
+    assert "interrupt-resist" not in performance_source
+    assert "angry-exit" not in performance_source
 
 
 def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
@@ -536,10 +971,34 @@ def test_target_page_templates_load_yui_runtime_stack_before_tutorial_manager():
         source = Path(template_path).read_text(encoding="utf-8")
         positions = [
             _script_tag_position(source, name)
-            for name in (*_YUI_RUNTIME_SCRIPTS, "universal-tutorial-manager.js")
+            for name in (
+                *_YUI_RUNTIME_SCRIPTS,
+                "tutorial-skip-controller.js",
+                "tutorial-avatar-reload-controller.js",
+                "universal-tutorial-manager.js",
+            )
         ]
         assert positions == sorted(positions), template_path
         _stylesheet_tag_position(source, "yui-guide.css")
+
+
+def test_emotion_manager_templates_use_static_asset_version_for_tutorial_runtime():
+    for template_path in (
+        "templates/live2d_emotion_manager.html",
+        "templates/mmd_emotion_manager.html",
+        "templates/vrm_emotion_manager.html",
+    ):
+        source = Path(template_path).read_text(encoding="utf-8")
+        assert "tutorial-skip-controller.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "tutorial-avatar-reload-controller.js?v={{ static_asset_version|default('0', true) }}" in source
+        assert "universal-tutorial-manager.js?v={{ static_asset_version|default('0', true) }}" in source
+
+
+def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+
+    assert '_PROJECT_ROOT / "static/tutorial-skip-controller.js"' in source
+    assert '_PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js"' in source
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():
@@ -550,6 +1009,21 @@ def test_home_yui_guide_does_not_route_to_steam_workshop():
     assert "/steam_workshop_manager" not in yui_source
     assert "yuiGuideSceneId: 'handoff_steam_workshop'" not in tutorial_source
     assert "#${p}-menu-steam-workshop" not in tutorial_source
+
+
+def test_home_tutorial_reset_also_clears_backend_prompt_state():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    assert "/api/tutorial-prompt/reset" in tutorial_source
+
+
+def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
+    tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    assert "if (endMeta.reason === 'destroy')" in tutorial_source
+    assert "if (endMeta.reason === 'skip')" in tutorial_source
+    assert "neko:tutorial-ended-without-completion" in tutorial_source
+    assert "neko:tutorial-skipped" in tutorial_source
 
 
 def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_mappings():
@@ -713,18 +1187,19 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    avatar_reload_source = Path("static/tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
 
-    begin_start = tutorial_source.index("beginTutorialAvatarOverride()")
-    restore_start = tutorial_source.index("restoreTutorialAvatarOverride()")
-    restore_end = tutorial_source.index("/**", restore_start)
-    begin_block = tutorial_source[begin_start:restore_start]
-    restore_block = tutorial_source[restore_start:restore_end]
+    begin_start = avatar_reload_source.index("beginOverride()")
+    restore_start = avatar_reload_source.index("restoreOverride()")
+    restore_end = avatar_reload_source.index("window.TutorialAvatarReloadController", restore_start)
+    begin_block = avatar_reload_source[begin_start:restore_start]
+    restore_block = avatar_reload_source[restore_start:restore_end]
 
     assert "saveTutorialModelPayload" not in begin_block
     assert "saveTutorialModelPayload" not in restore_block
-    assert "this.reloadTutorialModel(currentName, tutorialModelPayload, { temporary: true })" in begin_block
-    assert "live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME" in begin_block
+    assert "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });" in begin_block
+    assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
     assert "suppressInitialIdle: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
@@ -733,6 +1208,45 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "suppressToast" in interpage_source
     assert "async function _waitForLive2DManagerIdle" in interpage_source
     assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_tutorial_lifecycle_modules_export_reusable_controllers():
+    interaction_source = Path("static/tutorial-interaction-takeover.js").read_text(encoding="utf-8")
+    skip_source = Path("static/tutorial-skip-controller.js").read_text(encoding="utf-8")
+    avatar_reload_source = Path("static/tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "class TutorialInteractionTakeoverController",
+        "window.TutorialInteractionTakeover = {",
+        "createController: function (options)",
+        "setActive(active)",
+        "if (this.destroyed && nextActive) {",
+        "enableFaceForwardLock()",
+        "if (this.destroyed || !this.active || this.page !== 'home'",
+        "setExternalizedChatButtonsDisabled(disabled)",
+        "this.setActive(false);",
+    ):
+        assert expected in interaction_source
+
+    for expected in (
+        "class TutorialSkipController",
+        "window.TutorialSkipController = {",
+        "show(options)",
+        "hide()",
+        "destroy()",
+    ):
+        assert expected in skip_source
+
+    for expected in (
+        "class TutorialAvatarReloadController",
+        "window.TutorialAvatarReloadController = {",
+        "beginOverride()",
+        "restoreOverride()",
+        "hasActiveOverride()",
+        "getPendingPromise()",
+        "tutorialModelName",
+    ):
+        assert expected in avatar_reload_source
 
 
 def test_theme_system_preference_does_not_become_saved_user_choice():
@@ -874,6 +1388,7 @@ def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
     output = _build_callback_instruction(
         [
             {
+                "origin": "task_result",
                 "status": "blocked",
                 "source_kind": "plugin",
                 "source_name": "示例插件",
@@ -1137,18 +1652,7 @@ def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
 
 
 def test_agent_server_user_turn_fingerprint_includes_attachments():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    fn_src = None
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_build_user_turn_fingerprint":
-            fn_src = ast.get_source_segment(source, node)
-            break
-    assert fn_src is not None
-
-    ns = {}
-    exec("import hashlib\nfrom typing import Any, Optional\n" + fn_src, ns)
-    fingerprint = ns["_build_user_turn_fingerprint"]
+    from app.agent_server import _build_user_turn_fingerprint as fingerprint
 
     text_only = fingerprint([{"role": "user", "content": "看图"}])
     with_attachment = fingerprint([
@@ -1170,282 +1674,420 @@ def test_agent_server_user_turn_fingerprint_includes_attachments():
     assert image_only is not None
 
 
-def test_agent_task_tracker_blocks_cancelled_task_until_later_user_turn():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
+def test_user_message_signature_ignores_metadata_and_role():
+    from app.agent_server import _user_message_signature, _last_user_message_signature
+
+    # 非 user 消息 / 无 text → None
+    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
+    assert _user_message_signature({"role": "user"}) is None
+    assert _user_message_signature("not a dict") is None
+
+    a = {"role": "user", "text": "打开天气网站并截图", "timestamp": 100}
+    b = {"role": "user", "text": "打开天气网站并截图", "timestamp": 999, "id": "msg-99"}
+    c = {"role": "user", "text": "打开天气网站", "timestamp": 100}
+    assert _user_message_signature(a) == _user_message_signature(b)
+    assert _user_message_signature(a) != _user_message_signature(c)
+
+    # attachments 进入 signature
+    d = {
+        "role": "user",
+        "text": "看下这个",
+        "attachments": [{"url": "https://example.com/x.png"}],
     }
-    segments = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted:
-            segments.append(ast.get_source_segment(source, node))
-    assert len(segments) == len(wanted)
-
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
-
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
+    e = {
+        "role": "user",
+        "text": "看下这个",
+        "attachments": [{"url": "https://example.com/y.png"}],
     }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
+    assert _user_message_signature(d) != _user_message_signature(e)
 
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-1",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
-        trigger_user_ts=100.0,
-    )
-    cancelled_at = tracker._records["lanlan"][0]["ts"]
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-before",
-        latest_user_ts=cancelled_at - 1,
-    )["task_id"] == "cancelled-1"
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-after",
-        latest_user_ts=cancelled_at + 1,
-    ) is None
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-after",
-        latest_user_ts=None,
-    ) is None
-
-
-def test_agent_task_tracker_keeps_same_turn_blocked_with_ahead_client_clock():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
-    }
-    segments = [
-        ast.get_source_segment(source, node)
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    # _last_user_message_signature 取最后一条 user
+    messages = [
+        {"role": "user", "text": "你好"},
+        {"role": "assistant", "text": "嗨"},
+        {"role": "user", "text": "打开天气网站并截图"},
+        {"role": "assistant", "text": "ok"},
     ]
-    assert len(segments) == len(wanted)
-
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
-
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
-    }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
-
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-1",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
-        trigger_user_ts=100.0,
-    )
-    cancelled_at = tracker._records["lanlan"][0]["ts"]
-
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-before",
-        latest_user_ts=cancelled_at + 3600,
-    )["task_id"] == "cancelled-1"
+    assert _last_user_message_signature(messages) == _user_message_signature(messages[2])
 
 
-def test_agent_task_tracker_ignores_metadata_less_cancel_in_fingerprint_fallback():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
-    }
-    segments = [
-        ast.get_source_segment(source, node)
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+def test_redact_passthrough_when_no_cancelled_records(reset_tracker_records):
+    from app.agent_server import _redact_cancelled_user_turns
+
+    lanlan = "test-lanlan-redact-passthrough"
+    reset_tracker_records(lanlan)
+
+    messages = [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "hello"},
     ]
-    assert len(segments) == len(wanted)
+    assert _redact_cancelled_user_turns(messages, lanlan) is messages
 
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
 
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
-    }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
-
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-with-fp",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
-    )
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-without-fp",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        detail="Task cancelled by user",
-        success=False,
-        cancelled=True,
+def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(reset_tracker_records):
+    """核心 bypass 规则：user msg 后面有且仅有 1 条 role='assistant' 的消息时，
+    它是"首次被 analyze"——即使 sig 命中 cancelled_sigs 也 bypass。这一次
+    bypass 后下次 analyze 时它的 trailing-assistant 计数会涨过 1，自动失去
+    豁免。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
     )
 
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-before",
-        latest_user_ts=None,
-    )["task_id"] == "cancelled-with-fp"
+    lanlan = "test-lanlan-bypass-firsttime"
+    reset_tracker_records(lanlan)
 
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="browser_use",
-        desc="打开天气网站并截图",
-        latest_user_fingerprint="fp-after",
-        latest_user_ts=None,
-    ) is None
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
 
-
-def test_openclaw_stop_records_cancel_trigger_metadata():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    segment = None
-    for node in tree.body:
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_cancel_openclaw_tasks_for_stop":
-            segment = ast.get_source_segment(source, node)
-            break
-
-    assert segment is not None
-    assert "_task_tracker.record_completed" in segment
-    assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment
-    assert 'trigger_user_ts=info.get("_trigger_user_ts")' in segment
-
-
-def test_agent_task_tracker_matches_cancelled_user_plugin_suffix():
-    source = Path("app/agent_server.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    wanted = {
-        "_task_blacklist_desc_keys",
-        "_task_desc_matches_blacklist",
-        "AgentTaskTracker",
-    }
-    segments = [
-        ast.get_source_segment(source, node)
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted
+    # 用户 cancel 之后又发了同文本，messages 末尾就是这条新 user + 它的 reply
+    messages = [
+        {"role": "user", "text": text},                  # 0: 旧的被取消那条，后面 2 条 assistant
+        {"role": "assistant", "text": "正在打开"},        # 1
+        {"role": "user", "text": text},                  # 2: 新发的复述，后面 1 条 assistant
+        {"role": "assistant", "text": "再次打开中"},      # 3
     ]
-    assert len(segments) == len(wanted)
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 旧 user (trailing=2) 被 redact，新 user (trailing=1) bypass 保留
+    from app.agent_server import REDACTED_USER_TURN_MARKER
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is messages[2]
+    assert out[2] is messages[3]
+    assert len(out) == 3
 
-    class _Logger:
-        def info(self, *args, **kwargs):
-            pass
 
-    ns = {
-        "re": __import__("re"),
-        "time": __import__("time"),
-        "Dict": __import__("typing").Dict,
-        "Any": __import__("typing").Any,
-        "Optional": __import__("typing").Optional,
-        "TASK_TRACKER_TTL": 600.0,
-        "CANCELLED_TASK_BLACKLIST_TTL": 600.0,
-        "TASK_TRACKER_MAX_RECORDS": 100,
-        "TASK_DETAIL_MAX_TOKENS": 200,
-        "TASK_TRACKER_INJECT_DETAIL_MAX_CHARS": 200,
-        "_normalize_lanlan_key": lambda name: (name or "").strip() or "__default__",
-        "_tt": lambda text, limit: str(text)[:limit],
-        "logger": _Logger(),
-    }
-    exec("\n\n".join(segments), ns)
-    tracker = ns["AgentTaskTracker"]()
-
-    tracker.record_completed(
-        "lanlan",
-        task_id="cancelled-plugin",
-        method="user_plugin",
-        desc="notes.run: 整理今天的会议纪要",
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint="fp-before",
+def test_redact_three_repeats_all_redacted_after_user_continues(reset_tracker_records):
+    """t/t+1/t+2 连发同文本，单次 cancel → 用户继续聊别的（新 user+assistant）
+    → 三条同文本全部 redact（trailing assistant 都 >1），新 user msg
+    bypass。这是用户拍板的核心诉求："cancel 抵消之前所有相关请求"。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
     )
 
-    assert tracker.find_cancelled_blacklist(
-        "lanlan",
-        method="user_plugin",
-        desc="整理今天的会议纪要",
-        latest_user_fingerprint="fp-before",
-    )["task_id"] == "cancelled-plugin"
+    lanlan = "test-lanlan-three-repeats"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
+
+    messages = [
+        {"role": "user", "text": text},                  # 0: trailing assistants = 2
+        {"role": "user", "text": text},                  # 1: trailing assistants = 2
+        {"role": "user", "text": text},                  # 2: trailing assistants = 2
+        {"role": "assistant", "text": "尝试打开"},        # 3: 第 1 条 assistant
+        {"role": "user", "text": "再聊别的"},             # 4: trailing assistants = 1 → bypass
+        {"role": "assistant", "text": "嗯"},              # 5: 第 2 条 assistant
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 三条 X 都被 redact，"再聊别的" 保留
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    # "尝试打开" 紧跟最后一条 X 被吞
+    assert out[3] is messages[4]                          # "再聊别的"
+    assert out[4] is messages[5]                          # "嗯"
+    assert len(out) == 5
+
+
+def test_redact_drops_earlier_successful_segment_when_same_text_cancelled(reset_tracker_records):
+    """by-design 副作用：用户先后用同文本各发一次请求，第一次成功完成、
+    第二次被取消。redact 不区分历史里同 sig 的成功段和取消段——所有
+    trailing-assistant > 1 的同 sig user msg 都被屏蔽。早先成功段的
+    assistant 响应文本因此丢失，但 inject() 仍输出 [COMPLETED] 行让
+    analyzer 知道"那个任务做过且成功"，所以语义层面不算严重损失。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-earlier-success"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    sig = _user_message_signature({"role": "user", "text": text})
+    _task_tracker.record_completed(
+        lanlan, task_id="t-cancel", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=sig,
+    )
+
+    messages = [
+        {"role": "user", "text": text},                  # 0: 早先成功的同文本
+        {"role": "assistant", "text": "好的，截图已发"},   # 1: 早先成功响应
+        {"role": "user", "text": "再聊别的"},             # 2
+        {"role": "assistant", "text": "嗯"},              # 3
+        {"role": "user", "text": text},                  # 4: 最近被取消那次
+        {"role": "assistant", "text": "正在打开"},        # 5: 取消任务的进行中痕迹
+        {"role": "user", "text": "继续"},                 # 6: 用户继续聊
+        {"role": "assistant", "text": "嗯"},              # 7
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    # 两条同 sig user msg 都 redact，各自之后的 assistant 段也吞掉
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is messages[2]                          # "再聊别的" 保留
+    assert out[2] is messages[3]                          # 它的 assistant
+    assert out[3] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[4] is messages[6]                          # "继续"
+    assert out[5] is messages[7]
+    assert len(out) == 6
+
+
+def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_records):
+    """drop_until_next_user 期间只吞 assistant/tool；夹在中间的 system
+    消息（session callback / context 注入）跟被取消请求无关，必须保留。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-system-preserve"
+    reset_tracker_records(lanlan)
+
+    text = "打开天气"
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc=text, success=False, cancelled=True,
+        trigger_user_fingerprint=_user_message_signature({"role": "user", "text": text}),
+    )
+
+    # cancelled user msg 后面有 2 条 assistant，所以 trailing=2 → redact
+    messages = [
+        {"role": "user", "text": text},
+        {"role": "assistant", "text": "正在打开..."},
+        {"role": "system", "content": "[session callback] something unrelated"},
+        {"role": "tool", "content": "browser_screenshot.png"},
+        {"role": "user", "text": "再聊别的"},
+        {"role": "assistant", "text": "嗯"},
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out == [
+        {"role": "system", "content": REDACTED_USER_TURN_MARKER},
+        # 中间无关的 system 消息保留
+        {"role": "system", "content": "[session callback] something unrelated"},
+        # assistant + tool 被吞
+        {"role": "user", "text": "再聊别的"},
+        {"role": "assistant", "text": "嗯"},
+    ]
+
+
+def test_trim_protects_live_cancelled_records_against_cap_pressure():
+    """繁忙 session 在 TTL 内积累大量 assigned/completed 时，still-live
+    cancelled record 不能被 tail-window 裁剪挤掉——否则它代表的 redact 信号
+    会丢失，被取消的 user turn 重新暴露给 analyzer。"""
+    from app.agent_server import AgentTaskTracker
+    from config import AGENT_TASK_TRACKER_MAX_RECORDS as CAP
+
+    tracker = AgentTaskTracker()
+    lanlan = "test-lanlan-trim-protect"
+
+    # 先记一条 cancel，它必须被保住。
+    tracker.record_completed(
+        lanlan, task_id="cancel-me", method="browser_use",
+        desc="x", success=False, cancelled=True,
+        trigger_user_fingerprint="protected-sig",
+    )
+
+    # 然后填满超过 cap 数量的 assigned/completed 噪声。
+    for i in range(CAP * 3):
+        tracker.record_assigned(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}")
+        tracker.record_completed(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}", success=True)
+
+    assert len(tracker._records[lanlan]) <= CAP
+    sigs = tracker.get_cancelled_user_sigs(lanlan)
+    assert "protected-sig" in sigs, (
+        f"cancelled record was evicted by _trim under cap pressure; got {sigs}"
+    )
+
+
+def test_user_message_signature_distinguishes_senders():
+    """多用户场景：两个不同 user 发同样的文字，sig 必须不同——否则取消 A
+    的请求会让 redact 误吞 B 的同文本请求。"""
+    from app.agent_server import _user_message_signature
+
+    a_top = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
+    b_top = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
+    a_meta = {"role": "user", "text": "打开天气", "meta": {"sender_id": "user-A"}}
+    a_ctx = {"role": "user", "text": "打开天气", "_ctx": {"user_id": "user-A"}}
+    no_sender = {"role": "user", "text": "打开天气"}
+
+    sig_a = _user_message_signature(a_top)
+    sig_b = _user_message_signature(b_top)
+    assert sig_a and sig_b and sig_a != sig_b
+    # 三种来源同一 sender_id 都归一到同一签名
+    assert _user_message_signature(a_meta) == sig_a
+    assert _user_message_signature(a_ctx) == sig_a
+    # 无 sender 与有 sender 不同
+    no_sig = _user_message_signature(no_sender)
+    assert no_sig and no_sig not in (sig_a, sig_b)
+
+
+def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records):
+    """A 取消了 "打开天气"，B 在同一 messages 列表后续发同文本请求——
+    redact 应只动 A 的请求（sig 不同），不应误吞 B 的。"""
+    from app.agent_server import (
+        _user_message_signature,
+        _redact_cancelled_user_turns,
+        _task_tracker,
+        REDACTED_USER_TURN_MARKER,
+    )
+
+    lanlan = "test-lanlan-multi-user"
+    reset_tracker_records(lanlan)
+
+    a_msg = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
+    b_msg = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
+
+    _task_tracker.record_completed(
+        lanlan, task_id="t-a-cancel", method="browser_use",
+        desc="打开天气", success=False, cancelled=True,
+        trigger_user_fingerprint=_user_message_signature(a_msg),
+    )
+
+    # A 的 user msg trailing=2（被 redact），B 的 trailing=1（首次 bypass）
+    messages = [
+        a_msg,
+        {"role": "assistant", "text": "正在打开"},
+        b_msg,
+        {"role": "assistant", "text": "好的"},
+    ]
+    out = _redact_cancelled_user_turns(messages, lanlan)
+    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
+    assert out[1] is b_msg                    # B 的请求保留
+    assert out[2] == messages[3]              # B 的 assistant 响应保留
+    assert len(out) == 3                      # 只吞 A 的 user + 它后面的 assistant
+
+
+def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerprint():
+    """_user_message_signature 与 _build_user_turn_fingerprint 现在共用同一个
+    normalization helper（_user_message_payload_text），避免归一化规则漂移。
+    验证：单条 user 消息的 fingerprint = sha256(payload) = signature。
+    """
+    import hashlib
+    from app.agent_server import (
+        _user_message_payload_text,
+        _user_message_signature,
+        _build_user_turn_fingerprint,
+    )
+
+    msg = {
+        "role": "user",
+        "text": "打开天气",
+        "attachments": [{"url": "https://example.com/x.png"}],
+    }
+    payload = _user_message_payload_text(msg)
+    expected_sig = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+    assert _user_message_signature(msg) == expected_sig
+    # 单条 user 消息时，turn fingerprint 也是同一个 payload 的 sha256
+    assert _build_user_turn_fingerprint([msg]) == expected_sig
+
+    # 非 user 消息：两个函数都不参与
+    assert _user_message_payload_text({"role": "assistant", "text": "hi"}) is None
+    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
+
+
+def test_inject_skips_records_belonging_to_cancelled_tasks(reset_tracker_records):
+    """被取消任务对应的 [ASSIGNED] 与 [CANCELLED] 记录都不应再注入到 analyzer
+    视野——其触发的 user turn 已被 redact，重新注入只会把它拉回视野。"""
+    from app.agent_server import _task_tracker
+
+    lanlan = "test-lanlan-inject"
+    reset_tracker_records(lanlan)
+
+    _task_tracker.record_assigned(
+        lanlan, task_id="t1", method="browser_use", desc="打开天气并截图",
+    )
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc="打开天气并截图", success=False, cancelled=True,
+        trigger_user_fingerprint="sig-1",
+    )
+    _task_tracker.record_assigned(
+        lanlan, task_id="t2", method="user_plugin", desc="另一个任务",
+    )
+    _task_tracker.record_completed(
+        lanlan, task_id="t2", method="user_plugin",
+        desc="另一个任务", success=True,
+    )
+
+    messages = [{"role": "user", "text": "..."}]
+    out = _task_tracker.inject(messages, lanlan)
+    summary = next((m for m in out if isinstance(m, dict) and m.get("role") == "system"), None)
+    assert summary is not None
+    content = summary["content"]
+    # 取消任务的 desc 完全不出现
+    assert "打开天气并截图" not in content
+    assert "[CANCELLED]" not in content
+    # 没被取消的任务正常出现
+    assert "另一个任务" in content
+
+
+def test_inject_returns_messages_unchanged_when_all_tasks_cancelled(reset_tracker_records):
+    """全部 records 都属于已取消任务 → inject 不应再插入空 summary 消息。"""
+    from app.agent_server import _task_tracker
+
+    lanlan = "test-lanlan-inject-empty"
+    reset_tracker_records(lanlan)
+
+    _task_tracker.record_assigned(
+        lanlan, task_id="t1", method="browser_use", desc="x",
+    )
+    _task_tracker.record_completed(
+        lanlan, task_id="t1", method="browser_use",
+        desc="x", success=False, cancelled=True,
+        trigger_user_fingerprint="sig-1",
+    )
+
+    messages = [{"role": "user", "text": "..."}]
+    out = _task_tracker.inject(messages, lanlan)
+    assert out is messages
+
+
+def test_cancel_task_records_trigger_signature_for_redact():
+    """cancel_task / _cancel_openclaw_tasks_for_stop 都应把 task info 里的
+    _trigger_user_fingerprint 透传到 record_completed，使 redact 能定位回
+    触发的 user turn。"""
+    source = Path("app/agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    targets = {
+        "cancel_task": ast.AsyncFunctionDef,
+        "_cancel_openclaw_tasks_for_stop": ast.AsyncFunctionDef,
+    }
+    for name, kind in targets.items():
+        node = next(
+            (n for n in tree.body if isinstance(n, kind) and n.name == name),
+            None,
+        )
+        assert node is not None, f"{name} not found"
+        segment = ast.get_source_segment(source, node)
+        assert "_task_tracker.record_completed" in segment, (
+            f"{name} should call record_completed on cancel"
+        )
+        assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment, (
+            f"{name} should forward _trigger_user_fingerprint to record_completed"
+        )
+        # 旧的 trigger_user_ts 字段已彻底拆除
+        assert "trigger_user_ts" not in segment, (
+            f"{name} still references the removed trigger_user_ts field"
+        )
 
 
 @pytest.mark.asyncio

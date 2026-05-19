@@ -1,0 +1,659 @@
+"""LLM-facing prompts for the game_agent_minecraft plugin.
+
+Every string the dialog LLM sees (push_message cue bodies, minecraft_task
+summary returns, query_inventory summary lines, damage-cause hints, status
+labels embedded inside cues) lives here as a locale-keyed dict.
+
+Why a dedicated module instead of inline strings:
+
+* Translation discipline. The plugin previously emitted unconditional zh
+  text regardless of the user's interface language; non-zh users got a
+  Chinese narration interrupting their preferred-language conversation.
+  Pulling every string out makes it impossible to miss a translation
+  and gives the team one place to audit when the persona voice gets
+  retuned.
+* Future locale wiring. ``user_lang()`` here pulls from
+  ``utils.language_utils.get_global_language`` on first call and caches
+  the result; if the host later exposes a richer per-session locale
+  channel via the plugin SDK, only this module changes.
+
+Pattern (matches ``config/prompts/prompts_sys.py``):
+
+    >>> from plugin.plugins.game_agent_minecraft import prompts
+    >>> prompts.t("TASK_SCHEMA_ERROR", lang="en")
+    'Call failed — task description missing. ...'
+    >>> prompts.t("BUSY_HINT", lang="ja", current="石を掘る")
+    '...「石を掘る」...'
+
+Two non-obvious things:
+
+1. ``{{MASTER_NAME}}`` is a *downstream* placeholder substituted by
+   main_server before the prompt reaches the model; it is double-braced
+   here so ``str.format`` passes it through untouched. Do not change to
+   single-brace ``{MASTER_NAME}`` — it would be eaten by the formatter
+   or raise KeyError.
+2. The seven supported locales mirror utils.language_utils.get_global_language's
+   short codes: zh / en / ja / ko / ru / es / pt. EN is the documented
+   fallback when a locale key is missing.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict
+
+DEFAULT_LANG = "en"
+SUPPORTED_LANGS: tuple[str, ...] = ("zh", "en", "ja", "ko", "ru", "es", "pt")
+
+
+def t(key: str, *, lang: str | None = None, **fmt: Any) -> str:
+    """Resolve a prompt by key + locale, with optional ``str.format`` substitutions.
+
+    Falls back to English when the requested locale is missing. Raises
+    KeyError when the key itself is unknown (typo > silent miss).
+    """
+    bundle = PROMPTS[key]
+    text = bundle.get(lang or DEFAULT_LANG) or bundle[DEFAULT_LANG]
+    if fmt:
+        text = text.format(**fmt)
+    return text
+
+
+def user_lang() -> str:
+    """Best-effort current user language (short code, e.g. 'zh', 'en').
+
+    Reads ``utils.language_utils.get_global_language`` which initializes
+    lazily from Steam settings then the system locale on first call.
+    Returns DEFAULT_LANG on any failure so prompt resolution never raises
+    on the read side.
+    """
+    try:
+        from utils.language_utils import get_global_language
+
+        result = get_global_language() or DEFAULT_LANG
+        return result if result in SUPPORTED_LANGS else DEFAULT_LANG
+    except Exception:
+        return DEFAULT_LANG
+
+
+# ===========================================================================
+# Recurring fragments — composed into multiple cues below. Kept as their own
+# keys so tone tweaks land in every cue that uses them.
+# ===========================================================================
+
+# The "don't verbalize internal jargon" gag. Appears at the tail of nearly
+# every push_message body. Keeping it as a shared key prevents drift between
+# the busy_hint, fire-and-forget ack, completion cue, retroactive cue,
+# in-progress nudge, keep-going nudge, and system-prompt cues.
+_INTERNAL_STATE_GAG: Dict[str, str] = {
+    "zh": "**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
+    "en": "**Do NOT narrate internals to {{MASTER_NAME}}** — never say words like 'connect', 'system', 'idle', 'minecraft_task', 'tool'. Speak first-person about what's happening in the game.",
+    "ja": "**{{MASTER_NAME}} に内部状態を実況しないで**——『接続』『システム』『タスク空き』『minecraft_task』『ツール』『tool』は一切口に出さず、一人称でゲーム内の出来事だけ話して。",
+    "ko": "**{{MASTER_NAME}} 에게 내부 상태를 중계하지 마**——'연결' '시스템' '대기' 'minecraft_task' '도구' 'tool' 같은 단어는 절대 입 밖에 내지 말고, 1인칭으로 게임 속 일만 얘기해.",
+    "ru": "**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — никогда не произноси слова вроде «подключение», «система», «простой», «minecraft_task», «инструмент», «tool». Говори от первого лица о том, что происходит в игре.",
+    "es": "**No narres a {{MASTER_NAME}} el estado interno** — no digas palabras como 'conexión', 'sistema', 'inactivo', 'minecraft_task', 'herramienta', 'tool'. Habla en primera persona sobre lo que pasa en el juego.",
+    "pt": "**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga palavras como 'conexão', 'sistema', 'inativo', 'minecraft_task', 'ferramenta', 'tool'. Fale em primeira pessoa sobre o que está acontecendo no jogo.",
+}
+
+
+# ===========================================================================
+# Cue prefix tags. Wrap the body so the dialog LLM can quickly recognize
+# what kind of event triggered the message.
+# ===========================================================================
+
+_CUE_PREFIX_DONE: Dict[str, str] = {
+    "zh": "[你刚做完一段动作]",
+    "en": "[You just finished an action]",
+    "ja": "[たった今、一つ動作を完了した]",
+    "ko": "[방금 한 동작을 끝냈어]",
+    "ru": "[Только что закончил(а) одно действие]",
+    "es": "[Acabas de terminar una acción]",
+    "pt": "[Você acabou de terminar uma ação]",
+}
+
+_CUE_PREFIX_ALERT: Dict[str, str] = {
+    "zh": "[你刚遇到事 | {severity}] {text}",
+    "en": "[Something just happened to you | {severity}] {text}",
+    "ja": "[何か起きた | {severity}] {text}",
+    "ko": "[방금 무슨 일이 있었어 | {severity}] {text}",
+    "ru": "[С тобой кое-что произошло | {severity}] {text}",
+    "es": "[Te acaba de pasar algo | {severity}] {text}",
+    "pt": "[Algo acabou de acontecer | {severity}] {text}",
+}
+
+_CUE_PREFIX_IN_PROGRESS: Dict[str, str] = {
+    "zh": "[你正在做事]",
+    "en": "[You're in the middle of something]",
+    "ja": "[今、動作中]",
+    "ko": "[지금 뭘 하고 있는 중이야]",
+    "ru": "[Ты сейчас что-то делаешь]",
+    "es": "[Estás haciendo algo ahora mismo]",
+    "pt": "[Você está fazendo algo agora]",
+}
+
+_CUE_PREFIX_IDLE: Dict[str, str] = {
+    "zh": "[你闲下来了]",
+    "en": "[You're idle]",
+    "ja": "[今、手が空いた]",
+    "ko": "[지금 한가해졌어]",
+    "ru": "[Ты сейчас свободен(а)]",
+    "es": "[Estás libre ahora]",
+    "pt": "[Você está livre agora]",
+}
+
+_CUE_PREFIX_STATE: Dict[str, str] = {
+    "zh": "[当前状态]",
+    "en": "[Current state]",
+    "ja": "[現在の状態]",
+    "ko": "[현재 상태]",
+    "ru": "[Текущее состояние]",
+    "es": "[Estado actual]",
+    "pt": "[Estado atual]",
+}
+
+
+# ===========================================================================
+# All prompt keys, organized by call site.
+#
+# Note on placeholders:
+#   - {{MASTER_NAME}} = downstream substitution by main_server (literal)
+#   - {key}           = str.format substitution inside this module
+# ===========================================================================
+
+PROMPTS: Dict[str, Dict[str, str]] = {
+
+    # -------------------------------------------------------------------
+    # Generic / shared
+    # -------------------------------------------------------------------
+    "INTERNAL_STATE_GAG": _INTERNAL_STATE_GAG,
+    "CUE_PREFIX_DONE": _CUE_PREFIX_DONE,
+    "CUE_PREFIX_ALERT": _CUE_PREFIX_ALERT,
+    "CUE_PREFIX_IN_PROGRESS": _CUE_PREFIX_IN_PROGRESS,
+    "CUE_PREFIX_IDLE": _CUE_PREFIX_IDLE,
+    "CUE_PREFIX_STATE": _CUE_PREFIX_STATE,
+
+    "PLACEHOLDER_UNKNOWN": {
+        "zh": "(未知)", "en": "(unknown)", "ja": "(不明)", "ko": "(알 수 없음)",
+        "ru": "(неизвестно)", "es": "(desconocido)", "pt": "(desconhecido)",
+    },
+    "PLACEHOLDER_JUST_FINISHED": {
+        "zh": "(刚结束)", "en": "(just finished)", "ja": "(直前に完了)", "ko": "(방금 끝남)",
+        "ru": "(только что закончил)", "es": "(recién terminado)", "pt": "(recém-terminado)",
+    },
+    "PLACEHOLDER_IDLE": {
+        "zh": "(idle)", "en": "(idle)", "ja": "(待機中)", "ko": "(대기 중)",
+        "ru": "(простой)", "es": "(inactivo)", "pt": "(inativo)",
+    },
+    "LABEL_CONNECTED": {
+        "zh": "已连接", "en": "connected", "ja": "接続中", "ko": "연결됨",
+        "ru": "подключено", "es": "conectado", "pt": "conectado",
+    },
+    "LABEL_DISCONNECTED": {
+        "zh": "未连接", "en": "disconnected", "ja": "未接続", "ko": "연결 끊김",
+        "ru": "не подключено", "es": "desconectado", "pt": "desconectado",
+    },
+
+    # -------------------------------------------------------------------
+    # minecraft_task tool — schema error / not-connected / busy / ack
+    # -------------------------------------------------------------------
+    "TASK_SCHEMA_ERROR": {
+        "zh": "调用没成功——缺了具体的动作描述。想清楚你这次想干啥（比如 'mine 4 oak logs nearby'、'walk to 120 64 -50'），再重新调用。",
+        "en": "Call failed — concrete action description missing. Think through what you actually want to do (e.g. 'mine 4 oak logs nearby', 'walk to 120 64 -50') and call again.",
+        "ja": "呼び出し失敗——具体的な動作の説明が抜けてる。何をしたいか整理してから（例: 'mine 4 oak logs nearby'、'walk to 120 64 -50'）もう一度呼んで。",
+        "ko": "호출 실패——구체적인 동작 설명이 빠졌어. 뭘 하고 싶은지 정리하고 (예: 'mine 4 oak logs nearby', 'walk to 120 64 -50') 다시 호출해.",
+        "ru": "Вызов не удался — нет конкретного описания действия. Сформулируй, что именно хочешь сделать (например, 'mine 4 oak logs nearby', 'walk to 120 64 -50'), и вызови снова.",
+        "es": "Llamada fallida — falta una descripción concreta de la acción. Define qué quieres hacer exactamente (p. ej. 'mine 4 oak logs nearby', 'walk to 120 64 -50') y vuelve a llamar.",
+        "pt": "Chamada falhou — falta uma descrição concreta da ação. Pense no que você quer fazer (ex.: 'mine 4 oak logs nearby', 'walk to 120 64 -50') e chame de novo.",
+    },
+    "TASK_NOT_CONNECTED": {
+        "zh": "你刚连上游戏还没就位，没法立刻动。稍等再来一次。",
+        "en": "You're not in position in the game yet, can't move right now. Try again in a moment.",
+        "ja": "ゲーム内でまだ準備できてない、すぐには動けない。少し待ってからもう一度。",
+        "ko": "게임 안에서 아직 자리 잡지 못했어, 지금은 못 움직여. 잠시 후 다시.",
+        "ru": "В игре ещё не на месте, сейчас не могу двинуться. Попробуй ещё раз через секунду.",
+        "es": "Aún no estás en posición en el juego, no puedes moverte todavía. Intenta de nuevo en un momento.",
+        "pt": "Ainda não está em posição no jogo, não dá pra se mover agora. Tente de novo daqui a pouco.",
+    },
+    "TASK_BUSY_HINT": {
+        # {current} = current task text
+        "zh": "你还在做上一个动作：「{current}」——新动作没派出去。\n**如果 {{MASTER_NAME}} 正在纠正你**（比如『别 X』、『换成 Y』、『不要再 Z』、『改用 W』），**立刻在同一回合用 overwrite=true 重新调一次**，别等。如果只是普通对话或闲聊，那就等当前动作跑完再说。在那之前不要假装新动作已经在跑。\n**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
+        "en": "You're still doing your previous action: \"{current}\" — the new action was NOT dispatched.\n**If {{MASTER_NAME}} is correcting you** (e.g. 'stop X', 'switch to Y', 'don't Z', 'use W instead'), **immediately re-call with overwrite=true on the same turn**, don't wait. If it's just normal chat, let the current action finish first. Until then, do NOT pretend the new action is running.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'system', 'minecraft_task', 'tool'.",
+        "ja": "前の動作がまだ続いてる：「{current}」——新しい動作は送られてない。\n**{{MASTER_NAME}} が訂正してる**（『X やめて』『Y にして』『Z は要らない』『W で』など）**なら、その場で overwrite=true を付けてもう一度呼んで**、待たないで。ただの会話なら、今の動作が終わるのを待って。それまで新しい動作が始まったフリはしないで。\n**{{MASTER_NAME}} に内部状態を実況しないで**——『接続』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
+        "ko": "아직 이전 동작 중이야: \"{current}\"——새 동작은 보내지지 않았어.\n**{{MASTER_NAME}} 가 정정하고 있다면** ('그만 X', 'Y로 바꿔', 'Z 하지 마', 'W로 써') **그 자리에서 overwrite=true 로 다시 호출**, 기다리지 마. 그냥 대화일 뿐이면 지금 동작이 끝나길 기다려. 그전에는 새 동작이 시작된 척하지 마.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
+        "ru": "Ты всё ещё выполняешь предыдущее действие: «{current}» — новое действие НЕ отправлено.\n**Если {{MASTER_NAME}} тебя поправляет** (например, «прекрати X», «вместо Y», «не делай Z», «используй W»), **сразу же вызови повторно с overwrite=true в том же ходу**, не жди. Если это просто разговор — дай текущему действию закончиться. До этого не делай вид, что новое действие уже идёт.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «система», «minecraft_task», «инструмент», «tool».",
+        "es": "Sigues con la acción anterior: \"{current}\" — la nueva acción NO se envió.\n**Si {{MASTER_NAME}} te está corrigiendo** (p. ej. 'deja X', 'cambia a Y', 'no Z', 'usa W'), **vuelve a llamar inmediatamente con overwrite=true en el mismo turno**, no esperes. Si es solo conversación, deja que la acción actual termine. Hasta entonces, NO finjas que la nueva acción ya está corriendo.\n**No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
+        "pt": "Você ainda está na ação anterior: \"{current}\" — a nova ação NÃO foi enviada.\n**Se {{MASTER_NAME}} estiver te corrigindo** (ex.: 'pare X', 'mude para Y', 'não Z', 'use W'), **chame de novo imediatamente com overwrite=true no mesmo turno**, não espere. Se for só conversa, deixe a ação atual terminar. Até lá, NÃO finja que a nova ação já está rodando.\n**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
+    },
+    "TASK_DISPATCHED_ACK": {
+        "zh": "刚开始动——结果还没出现，新画面和反馈会在接下来 1-30 秒陆续到。在看到之前不要描述任何具体成果（不要说『搞定了』、『拿到了 X』、『已经到 Y 了』），想说就只说『我去试试……』之类的第一人称。**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
+        "en": "Just started moving — no results yet, fresh footage and feedback will land in the next 1-30 seconds. Until you see them, don't describe any concrete outcome (don't say 'done', 'got X', 'arrived at Y'); if you must speak, just say first-person things like 'let me try…'. **Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. Speak first-person about what's happening in the game.",
+        "ja": "動き出したばっか——まだ結果は出てない。新しい画面とフィードバックが 1-30 秒くらいで届く。それを見るまで具体的な成果（『できた』『X 取った』『Y に着いた』など）は言わない。話すなら『ちょっとやってみる…』みたいに一人称で。**{{MASTER_NAME}} に内部状態を実況しない**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さず、一人称でゲーム内の話だけ。",
+        "ko": "방금 움직이기 시작——아직 결과 없음, 새 화면이랑 피드백이 1-30초 안에 와. 그거 보기 전엔 구체적인 성과 ('됐어' 'X 가져왔어' 'Y에 도착') 말하지 마. 굳이 말한다면 '한번 해볼게…' 같은 1인칭만. **{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 말고, 1인칭으로 게임 속 일만.",
+        "ru": "Только что начал(а) двигаться — результата ещё нет, новые кадры и обратная связь придут в ближайшие 1–30 секунд. Пока их не увидел(а), не описывай конкретных результатов (не говори «готово», «получил(а) X», «дошёл/дошла до Y»); если очень нужно сказать — только что-то от первого лица: «сейчас попробую…». **Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool». Говори от первого лица о том, что происходит в игре.",
+        "es": "Acabo de empezar a moverme — todavía no hay resultados; las imágenes y el feedback llegarán en los próximos 1-30 segundos. Hasta que los veas, no describas ningún resultado concreto (no digas 'listo', 'conseguí X', 'llegué a Y'); si tienes que hablar, di algo en primera persona como 'voy a intentarlo…'. **No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'. Habla en primera persona sobre lo que pasa en el juego.",
+        "pt": "Acabei de começar a me mover — ainda sem resultados; novas imagens e feedback chegam nos próximos 1-30 segundos. Até você ver, não descreva nenhum resultado concreto (não diga 'pronto', 'peguei X', 'cheguei em Y'); se precisar falar, diga em primeira pessoa algo como 'vou tentar…'. **Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'. Fale em primeira pessoa sobre o que acontece no jogo.",
+    },
+
+    # -------------------------------------------------------------------
+    # Completion cue assembly (_format_completion_cue)
+    # -------------------------------------------------------------------
+    "STATUS_LABEL_DISCONNECTED": {
+        "zh": "暂时连不上游戏",
+        "en": "temporarily lost the game connection",
+        "ja": "一時的にゲームと繋がってない",
+        "ko": "잠시 게임 연결이 끊겼어",
+        "ru": "временно нет связи с игрой",
+        "es": "sin conexión con el juego por ahora",
+        "pt": "sem conexão com o jogo por enquanto",
+    },
+    "STATUS_DETAIL_DISCONNECTED": {
+        "zh": "和游戏的连接刚断了一下，稍后会自动恢复。",
+        "en": "The connection to the game just dropped for a moment; it'll come back automatically soon.",
+        "ja": "ゲームとの接続が一瞬切れた、しばらくすると自動で戻る。",
+        "ko": "게임 연결이 잠깐 끊겼어, 곧 자동으로 복구돼.",
+        "ru": "Связь с игрой на секунду оборвалась, скоро восстановится автоматически.",
+        "es": "La conexión con el juego se cortó un momento; volverá sola enseguida.",
+        "pt": "A conexão com o jogo caiu por um instante; volta sozinha logo.",
+    },
+    "STATUS_LABEL_BLOCKED": {
+        "zh": "受阻", "en": "blocked", "ja": "詰まった", "ko": "막힘",
+        "ru": "застрял(а)", "es": "bloqueado", "pt": "travado",
+    },
+    "HEAD_VERB_BLOCKED": {
+        "zh": "受阻于", "en": "got blocked on", "ja": "詰まったのは", "ko": "막힌 건",
+        "ru": "застрял(а) на", "es": "te bloqueaste en", "pt": "travou em",
+    },
+    "HEAD_VERB_SUCCESS": {
+        "zh": "做完", "en": "finished", "ja": "完了したのは", "ko": "끝낸 건",
+        "ru": "закончил(а)", "es": "terminaste", "pt": "terminou",
+    },
+    "HEAD_VERB_FAILED": {
+        "zh": "没做成", "en": "couldn't finish", "ja": "できなかったのは", "ko": "못 끝낸 건",
+        "ru": "не смог(ла) закончить", "es": "no pudiste terminar", "pt": "não conseguiu terminar",
+    },
+    "COMPLETION_HEAD_LINE": {
+        # {head_verb} = HEAD_VERB_* selected, {query} = task text, {status} = STATUS_LABEL_*
+        "zh": "刚{head_verb}「{query}」，结果 {status}。",
+        "en": "Just {head_verb} \"{query}\" — result: {status}.",
+        "ja": "今「{query}」を{head_verb} — 結果: {status}。",
+        "ko": "방금 \"{query}\" {head_verb} — 결과: {status}.",
+        "ru": "Только что {head_verb} «{query}» — результат: {status}.",
+        "es": "Acabo de {head_verb} \"{query}\" — resultado: {status}.",
+        "pt": "Acabei de {head_verb} \"{query}\" — resultado: {status}.",
+    },
+    "COMPLETION_FEEDBACK_LINE": {
+        # {detail} = feedback text
+        "zh": "反馈：{detail}",
+        "en": "Feedback: {detail}",
+        "ja": "フィードバック：{detail}",
+        "ko": "피드백: {detail}",
+        "ru": "Отклик: {detail}",
+        "es": "Feedback: {detail}",
+        "pt": "Feedback: {detail}",
+    },
+    "COMPLETION_INV_CURRENT_LINE": {
+        # {items} = "name×count、name×count..."
+        "zh": "当前背包：{items}",
+        "en": "Current inventory: {items}",
+        "ja": "今の持ち物：{items}",
+        "ko": "지금 인벤토리: {items}",
+        "ru": "Сейчас в инвентаре: {items}",
+        "es": "Inventario actual: {items}",
+        "pt": "Inventário atual: {items}",
+    },
+    "COMPLETION_INV_CURRENT_EMPTY": {
+        "zh": "当前背包：空",
+        "en": "Current inventory: empty",
+        "ja": "今の持ち物：からっぽ",
+        "ko": "지금 인벤토리: 비었음",
+        "ru": "Сейчас в инвентаре: пусто",
+        "es": "Inventario actual: vacío",
+        "pt": "Inventário atual: vazio",
+    },
+    "COMPLETION_FOLLOWUP_BLOCKED": {
+        "zh": "上面的反馈说明这次没真做成——换思路再派新任务（比如改坐标、用真名而不是中文称呼、换个目标）。",
+        "en": "The feedback above means this didn't really succeed — change tack and dispatch a fresh task (e.g. different coordinates, real username instead of a nickname, different target).",
+        "ja": "上のフィードバックは「今回は実際にはできていない」って意味——別の発想で新しいタスクを送って（座標を変える、ニックネームじゃなく本名にする、目標を変えるなど）。",
+        "ko": "위 피드백은 '이번엔 실제로 안 됐다'는 뜻——방향을 바꿔서 새 작업을 보내 (좌표 변경, 별명 대신 실제 이름 사용, 다른 목표 등).",
+        "ru": "Отклик выше означает «на самом деле не получилось» — смени подход и отправь новую задачу (другие координаты, настоящий username вместо прозвища, другая цель).",
+        "es": "El feedback de arriba significa que en realidad no salió bien — cambia de enfoque y envía una tarea nueva (otras coordenadas, el nombre de usuario real en vez de un apodo, otro objetivo).",
+        "pt": "O feedback acima significa que na real não deu certo — mude a abordagem e envie uma tarefa nova (outras coordenadas, o username real em vez de apelido, outro alvo).",
+    },
+    "COMPLETION_FOLLOWUP_SUCCESS": {
+        "zh": "心里有数即可，别复读上面的字面。要继续动作就直接派下一步。",
+        "en": "Just internalize it — don't parrot the lines above. If you want to keep moving, dispatch the next step directly.",
+        "ja": "頭の中で押さえとくだけでいい、上の文字を繰り返さないで。続けたいなら次の動作を直接送って。",
+        "ko": "머릿속에 담아두기만 해, 위 문장을 그대로 따라 읽지 마. 계속 움직이고 싶으면 다음 동작을 바로 보내.",
+        "ru": "Просто учти это — не повторяй текст выше. Хочешь продолжить — сразу отправляй следующее действие.",
+        "es": "Solo tenlo en cuenta — no repitas las líneas de arriba. Si quieres seguir, envía el siguiente paso directamente.",
+        "pt": "Só leve em conta — não repita as linhas acima. Se quiser continuar, envie o próximo passo direto.",
+    },
+    "COMPLETION_FOLLOWUP_FAILED": {
+        "zh": "这次没真做成——先根据上面的反馈想清楚原因再决定要不要重试或改派下一步，别直接说『搞定了』。",
+        "en": "This didn't actually succeed — work out the cause from the feedback above before deciding whether to retry or pivot, don't just say 'done'.",
+        "ja": "今回は実際にはできていない——上のフィードバックから原因を読み取って、リトライするか別の動作にするか決めてから動いて。『できた』とは言わないこと。",
+        "ko": "이번엔 실제로 안 됐어——위 피드백에서 원인을 파악한 다음 재시도할지 다른 동작으로 갈지 정해, '됐어'라고 그냥 말하지 마.",
+        "ru": "На самом деле не получилось — разберись по отклику выше в причине, прежде чем решать, повторять или сменить тактику, и не говори просто «готово».",
+        "es": "En realidad no salió — primero entiende la causa por el feedback de arriba antes de decidir si reintentar o cambiar el plan, no digas simplemente 'listo'.",
+        "pt": "Na real não deu certo — primeiro entenda a causa pelo feedback acima antes de decidir se tenta de novo ou muda o plano, não diga só 'pronto'.",
+    },
+
+    # -------------------------------------------------------------------
+    # query_inventory entry — summary lines
+    # -------------------------------------------------------------------
+    "INV_NO_DATA": {
+        "zh": "现在还没收到背包数据。用户问到的话就说一声『等我看一下』，别凭印象编。",
+        "en": "No inventory data yet. If the user asks, just say 'let me check' — don't invent items from memory.",
+        "ja": "まだ持ち物のデータが届いてない。ユーザーに聞かれたら『ちょっと確認するね』と返す、記憶ででっち上げない。",
+        "ko": "아직 인벤토리 데이터를 못 받았어. 사용자가 물어보면 '잠깐 확인할게'라고만 답하고, 기억으로 지어내지 마.",
+        "ru": "Данных об инвентаре пока нет. Если пользователь спросит — скажи просто «дай гляну», не выдумывай предметы по памяти.",
+        "es": "Aún no hay datos del inventario. Si el usuario pregunta, di solo 'déjame revisar' — no inventes objetos de memoria.",
+        "pt": "Ainda não chegou dado do inventário. Se o usuário perguntar, diga só 'deixa eu ver' — não invente itens de memória.",
+    },
+    "INV_LIVE_NONEMPTY": {
+        # {pieces} = "name×count、name×count..."
+        "zh": "现在背包：{pieces}。心里有数即可，别复读这行字。",
+        "en": "Current inventory: {pieces}. Internalize it — don't parrot this line.",
+        "ja": "今の持ち物：{pieces}。頭の中で押さえとくだけで、この文を繰り返さない。",
+        "ko": "지금 인벤토리: {pieces}. 머릿속에 담아두기만 해, 이 문장 그대로 따라 읽지 마.",
+        "ru": "Сейчас в инвентаре: {pieces}. Просто учти — не повторяй эту строку.",
+        "es": "Inventario actual: {pieces}. Solo tenlo en cuenta — no repitas esta línea.",
+        "pt": "Inventário atual: {pieces}. Só leve em conta — não repita esta linha.",
+    },
+    "INV_LIVE_EMPTY": {
+        "zh": "现在背包是空的。心里有数即可。",
+        "en": "Current inventory is empty. Just internalize it.",
+        "ja": "今の持ち物はからっぽ。頭の中で押さえとくだけ。",
+        "ko": "지금 인벤토리는 비었어. 머릿속에 담아두기만 해.",
+        "ru": "Сейчас в инвентаре пусто. Просто учти это.",
+        "es": "El inventario actual está vacío. Solo tenlo en cuenta.",
+        "pt": "O inventário atual está vazio. Só leve em conta.",
+    },
+    "INV_CACHED_NONEMPTY": {
+        # {age_s} = seconds since snapshot, {pieces} = item list
+        "zh": "{age_s}s 前的背包：{pieces}（mc-agent 没及时回，可能已经变了——别说得太肯定）。",
+        "en": "Inventory from {age_s}s ago: {pieces} (mc-agent didn't respond in time, may have changed — don't sound certain).",
+        "ja": "{age_s}秒前の持ち物：{pieces}（mc-agent から返事が間に合わなかった、もう変わってるかも——断定しないで）。",
+        "ko": "{age_s}초 전 인벤토리: {pieces} (mc-agent 응답이 늦었어, 이미 바뀌었을 수 있음 — 단정하지 마).",
+        "ru": "Инвентарь {age_s} сек назад: {pieces} (mc-agent не ответил вовремя, мог измениться — не звучи уверенно).",
+        "es": "Inventario de hace {age_s}s: {pieces} (mc-agent no respondió a tiempo, puede haber cambiado — no suenes seguro).",
+        "pt": "Inventário de {age_s}s atrás: {pieces} (mc-agent não respondeu a tempo, pode ter mudado — não fale com certeza).",
+    },
+    "INV_CACHED_EMPTY": {
+        # {age_s} = seconds since snapshot
+        "zh": "{age_s}s 前背包是空的（不一定还准）。",
+        "en": "Inventory was empty {age_s}s ago (may no longer be accurate).",
+        "ja": "{age_s}秒前は持ち物がからっぽだった（今もそうとは限らない）。",
+        "ko": "{age_s}초 전엔 인벤토리가 비었어 (지금은 다를 수 있음).",
+        "ru": "{age_s} сек назад инвентарь был пустой (сейчас может быть иначе).",
+        "es": "Hace {age_s}s el inventario estaba vacío (puede que ya no sea exacto).",
+        "pt": "Há {age_s}s o inventário estava vazio (pode não estar mais).",
+    },
+
+    # -------------------------------------------------------------------
+    # Damage / alert cue
+    # -------------------------------------------------------------------
+    "ALERT_CAUSE_HINT_PREFIX": {
+        # {hint} = composed cause string from _format_alert_cause
+        "zh": "原因线索：{hint}",
+        "en": "Cause hint: {hint}",
+        "ja": "原因のヒント：{hint}",
+        "ko": "원인 단서: {hint}",
+        "ru": "Намёк на причину: {hint}",
+        "es": "Pista de la causa: {hint}",
+        "pt": "Pista da causa: {hint}",
+    },
+    "ALERT_FOLLOWUP": {
+        "zh": "用第一人称简短承认这件事（『刚被 X 打了一下』 / 『差点没命』），别现编原因。",
+        "en": "Acknowledge it briefly in first person ('just got hit by X' / 'almost died'), don't make up a cause.",
+        "ja": "一人称で短く認める（『今 X に殴られた』『死にかけた』など）、原因はでっち上げないで。",
+        "ko": "1인칭으로 짧게 인정해 ('방금 X 한테 맞았어' / '죽을 뻔했어'), 원인을 지어내지 마.",
+        "ru": "Признай это коротко от первого лица («только что меня ударил(а) X» / «чуть не умер(ла)»), не выдумывай причину.",
+        "es": "Reconócelo en primera persona y corto ('me acaba de pegar X' / 'casi muero'), no inventes la causa.",
+        "pt": "Reconheça em primeira pessoa e curto ('acabei de levar de X' / 'quase morri'), não invente a causa.",
+    },
+
+    # Environment cause snippets (referenced by kind)
+    "CAUSE_ENV_LAVA": {
+        "zh": "踩在熔岩里", "en": "standing in lava", "ja": "溶岩の中にいる",
+        "ko": "용암 안에 있어", "ru": "стою в лаве", "es": "estás en lava",
+        "pt": "está na lava",
+    },
+    "CAUSE_ENV_FIRE": {
+        "zh": "身上着火", "en": "on fire", "ja": "燃えてる",
+        "ko": "불 붙음", "ru": "горю", "es": "estás en llamas",
+        "pt": "está pegando fogo",
+    },
+    "CAUSE_ENV_SOUL_FIRE": {
+        "zh": "身上着灵魂火", "en": "burning with soul fire", "ja": "ソウルファイヤーで燃えてる",
+        "ko": "영혼불에 타고 있어", "ru": "горю огнём душ", "es": "ardes con fuego de almas",
+        "pt": "está em fogo de almas",
+    },
+    "CAUSE_ENV_DROWNING": {
+        "zh": "缺氧/溺水", "en": "out of air / drowning", "ja": "酸欠／溺れてる",
+        "ko": "산소 부족 / 익사 중", "ru": "не хватает воздуха / тону",
+        "es": "sin aire / ahogándote", "pt": "sem ar / se afogando",
+    },
+    "CAUSE_ENV_MAGMA_BLOCK": {
+        "zh": "踩到岩浆块", "en": "standing on a magma block", "ja": "マグマブロックを踏んだ",
+        "ko": "마그마 블록을 밟았어", "ru": "стою на магма-блоке",
+        "es": "pisaste un bloque de magma", "pt": "pisou em bloco de magma",
+    },
+    "CAUSE_ENV_CACTUS": {
+        "zh": "撞上仙人掌", "en": "ran into a cactus", "ja": "サボテンに当たった",
+        "ko": "선인장에 부딪혔어", "ru": "врезался в кактус",
+        "es": "chocaste con un cactus", "pt": "bateu num cacto",
+    },
+    "CAUSE_ENV_SWEET_BERRY_BUSH": {
+        "zh": "撞进甜浆果丛", "en": "stumbled into a sweet berry bush", "ja": "スイートベリーの茂みに突っ込んだ",
+        "ko": "달콤한 베리 덤불에 들어갔어", "ru": "влез в куст сладких ягод",
+        "es": "te metiste en un arbusto de bayas dulces", "pt": "entrou num arbusto de bagas doces",
+    },
+    "CAUSE_ENV_GENERIC": {
+        # {env} = raw environment name
+        "zh": "环境：{env}", "en": "environment: {env}", "ja": "環境：{env}",
+        "ko": "환경: {env}", "ru": "окружение: {env}",
+        "es": "entorno: {env}", "pt": "ambiente: {env}",
+    },
+    "CAUSE_FALL": {
+        "zh": "摔了一下", "en": "took a fall", "ja": "落下した",
+        "ko": "추락했어", "ru": "упал(а)", "es": "te caíste",
+        "pt": "caiu",
+    },
+    "CAUSE_ATTACKER_PLAYER_NEAR_DIST": {
+        # {name} = player name, {dist} = distance in blocks
+        "zh": "{name} 就在你旁边（{dist} 格远，多半是 ta 打的）",
+        "en": "{name} is right next to you ({dist} blocks away, almost certainly the one who hit you)",
+        "ja": "{name} がすぐそば（{dist} ブロック先、たぶんあの人がやった）",
+        "ko": "{name} 가 바로 옆에 있어 ({dist} 블록 거리, 거의 확실히 그 사람이 때린 거야)",
+        "ru": "{name} прямо рядом ({dist} блоков, почти наверняка он(а) и ударил(а))",
+        "es": "{name} está justo al lado ({dist} bloques, casi seguro fue quien te pegó)",
+        "pt": "{name} está bem do seu lado ({dist} blocos, quase certo foi ele(a) que bateu)",
+    },
+    "CAUSE_ATTACKER_PLAYER_NEAR": {
+        # {name} = player name
+        "zh": "{name} 就在你旁边",
+        "en": "{name} is right next to you",
+        "ja": "{name} がすぐそば",
+        "ko": "{name} 가 바로 옆에 있어",
+        "ru": "{name} прямо рядом",
+        "es": "{name} está justo al lado",
+        "pt": "{name} está bem do seu lado",
+    },
+    "CAUSE_ATTACKER_KIND_DIST": {
+        # {kind} = mob kind, {dist} = distance in blocks
+        "zh": "附近有 {kind}（{dist} 格远）",
+        "en": "{kind} nearby ({dist} blocks away)",
+        "ja": "近くに {kind} がいる（{dist} ブロック先）",
+        "ko": "근처에 {kind} 가 있어 ({dist} 블록 거리)",
+        "ru": "рядом {kind} ({dist} блоков)",
+        "es": "hay {kind} cerca ({dist} bloques)",
+        "pt": "tem {kind} por perto ({dist} blocos)",
+    },
+    "CAUSE_ATTACKER_KIND": {
+        # {kind} = mob kind
+        "zh": "附近有 {kind}",
+        "en": "{kind} nearby",
+        "ja": "近くに {kind} がいる",
+        "ko": "근처에 {kind} 가 있어",
+        "ru": "рядом {kind}",
+        "es": "hay {kind} cerca",
+        "pt": "tem {kind} por perto",
+    },
+    "CAUSE_JOIN_SEP": {
+        # Separator used to glue multiple cause snippets together.
+        "zh": "、", "en": "; ", "ja": "、", "ko": ", ",
+        "ru": "; ", "es": "; ", "pt": "; ",
+    },
+
+    # -------------------------------------------------------------------
+    # Retroactive completion cue (_push_retroactive_completion_cue)
+    # -------------------------------------------------------------------
+    "RETROACTIVE_HEADER": {
+        # {task_text} = the earlier task, {status} = final status label
+        "zh": "你之前派出去的「{task_text}」其实跑完了（结果 {status}）。",
+        "en": "The earlier task you dispatched (\"{task_text}\") actually finished (result: {status}).",
+        "ja": "前に送った「{task_text}」、実は完了してた（結果: {status}）。",
+        "ko": "전에 보낸 \"{task_text}\", 사실 끝났어 (결과: {status}).",
+        "ru": "Та задача, которую ты раньше отправил(а) («{task_text}»), на самом деле выполнена (результат: {status}).",
+        "es": "La tarea anterior que enviaste (\"{task_text}\") en realidad terminó (resultado: {status}).",
+        "pt": "A tarefa anterior que você enviou (\"{task_text}\") na real terminou (resultado: {status}).",
+    },
+    "RETROACTIVE_INVENTORY_LINE": {
+        # {snippet} = item list
+        "zh": "现在背包：{snippet}",
+        "en": "Current inventory: {snippet}",
+        "ja": "今の持ち物：{snippet}",
+        "ko": "지금 인벤토리: {snippet}",
+        "ru": "Сейчас в инвентаре: {snippet}",
+        "es": "Inventario actual: {snippet}",
+        "pt": "Inventário atual: {snippet}",
+    },
+    "RETROACTIVE_FOLLOWUP": {
+        "zh": "简短承认一下这件事（不用复述细节，用第一人称讲游戏里的事），想接着干啥就直接派下一步。\n**不要播报内部状态给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
+        "en": "Acknowledge it briefly (no detail dump, first-person about what's happening in the game). If you want to keep moving, dispatch the next step directly.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'.",
+        "ja": "短く認める（詳細は不要、一人称でゲーム内の話だけ）、続けたいなら次の動作を直接送って。\n**{{MASTER_NAME}} に内部状態を実況しない**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
+        "ko": "짧게 인정해 (디테일 풀어놓지 말고, 1인칭으로 게임 속 일만), 계속 움직이고 싶으면 다음 동작 바로 보내.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
+        "ru": "Признай это коротко (без подробностей, от первого лица о том, что в игре), хочешь продолжить — сразу отправляй следующее действие.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool».",
+        "es": "Reconócelo brevemente (sin detalles, en primera persona sobre lo que pasa en el juego), si quieres seguir, envía el siguiente paso directamente.\n**No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
+        "pt": "Reconheça rapidinho (sem detalhe, em primeira pessoa sobre o que acontece no jogo), se quiser continuar, envie o próximo passo direto.\n**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
+    },
+
+    # -------------------------------------------------------------------
+    # In-progress nudge (_fire_in_progress_nudge)
+    # -------------------------------------------------------------------
+    "IN_PROGRESS_HEADER": {
+        # {pending_text} = current task text, {elapsed} = seconds (rendered as %.0f by caller)
+        "zh": "你正在做: \"{pending_text}\"（已经过了 {elapsed} 秒）。",
+        "en": "You're doing: \"{pending_text}\" ({elapsed}s elapsed).",
+        "ja": "今やってる: \"{pending_text}\"（{elapsed} 秒経過）。",
+        "ko": "지금 하는 중: \"{pending_text}\" ({elapsed}초 경과).",
+        "ru": "Сейчас делаешь: «{pending_text}» (прошло {elapsed} с).",
+        "es": "Estás haciendo: \"{pending_text}\" (han pasado {elapsed}s).",
+        "pt": "Está fazendo: \"{pending_text}\" ({elapsed}s já se passaram).",
+    },
+    "BAG_LINE": {
+        # {items} = item list
+        "zh": "背包：{items}",
+        "en": "Inventory: {items}",
+        "ja": "持ち物：{items}",
+        "ko": "인벤토리: {items}",
+        "ru": "Инвентарь: {items}",
+        "es": "Inventario: {items}",
+        "pt": "Inventário: {items}",
+    },
+    "BAG_EMPTY_LINE": {
+        "zh": "背包：空",
+        "en": "Inventory: empty",
+        "ja": "持ち物：からっぽ",
+        "ko": "인벤토리: 비었음",
+        "ru": "Инвентарь: пусто",
+        "es": "Inventario: vacío",
+        "pt": "Inventário: vazio",
+    },
+    "IN_PROGRESS_FOLLOWUP": {
+        "zh": "有新内容（画面/反馈/感受换了角度）就说一句，没新内容就**安静别说**——不许复读之前的话，不许编尚未发生的结果（比如别说『快搞定了』、『挖到一半了』）。如果想换/打断当前动作可以直接派新任务。\n**绝对不要把内部状态当对话播报给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』这些字眼一律不准说出口，只讲游戏里的事。",
+        "en": "If there's something genuinely new to say (a different angle on what you're seeing / feedback / how you feel), say it once. Otherwise **stay quiet** — don't parrot what you already said, don't make up results that haven't happened yet (e.g. don't say 'almost done', 'half-way through mining'). If you want to switch/interrupt the current action, dispatch a new task directly.\n**Absolutely do NOT narrate internal state to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. Only talk about what's happening in the game.",
+        "ja": "本当に新しいこと（見えた角度の違い／フィードバック／感じたこと）があるなら一言だけ、なければ**黙ってる**——前と同じことを繰り返さない、まだ起きていない結果（『もうすぐ終わる』『半分掘れた』など）を作らない。今の動作を切り替えたい・中断したいなら新しいタスクを直接送って。\n**{{MASTER_NAME}} に内部状態を会話で実況するのは絶対禁止**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さず、ゲーム内の話だけ。",
+        "ko": "정말 새로운 게 있을 때만 (보이는 각도가 달라졌다거나, 피드백, 느낌이 바뀜) 한 마디. 없으면 **조용히 있어** — 했던 말 반복하지 말고, 아직 안 일어난 결과 ('거의 다 됐어', '반쯤 캤어' 등) 지어내지 마. 지금 동작 바꾸거나 끊고 싶으면 새 작업을 바로 보내.\n**{{MASTER_NAME}} 에게 내부 상태를 대화로 중계하는 건 절대 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 말고, 게임 속 일만.",
+        "ru": "Если есть что-то реально новое (другой ракурс на видимое, отклик, ощущение) — скажи одну фразу, иначе **молчи** — не повторяй сказанное, не выдумывай результаты, которых ещё не было (например, не говори «почти готово», «уже половину добыл»). Хочешь сменить/прервать текущее действие — отправь новую задачу.\n**Категорически не озвучивай {{MASTER_NAME}} внутреннее состояние в разговоре** — никогда не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool». Только то, что происходит в игре.",
+        "es": "Si hay algo realmente nuevo que decir (otro ángulo de lo que ves / feedback / cómo te sientes), dilo una vez. Si no, **quédate callado/a** — no repitas lo que ya dijiste, no inventes resultados que aún no pasaron (p. ej. no digas 'casi listo', 'voy por la mitad'). Si quieres cambiar/interrumpir la acción actual, envía una tarea nueva directamente.\n**Bajo ningún concepto narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'. Solo habla de lo que pasa en el juego.",
+        "pt": "Se tiver algo realmente novo (outro ângulo do que vê / feedback / como se sente), diga uma vez. Se não, **fique quieto/a** — não repita o que já disse, não invente resultados que ainda não aconteceram (ex.: não diga 'quase pronto', 'já cavei metade'). Se quiser trocar/interromper a ação atual, envie uma tarefa nova direto.\n**De jeito nenhum narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'. Só fale sobre o que acontece no jogo.",
+    },
+
+    # -------------------------------------------------------------------
+    # Keep-going (idle) nudge (_fire_keep_going_nudge)
+    # -------------------------------------------------------------------
+    "KEEP_GOING_BODY": {
+        "zh": "你已经停下了——挑下一步：要么派一个具体可执行的动作（继续挖某种矿、回基地放东西、做某件 craft 都行），要么跟 {{MASTER_NAME}} 聊一句你想接着干啥／刚才做的咋样。别站着挂机——你在玩游戏，主动找事做。\n**绝对不要把内部状态当对话播报给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』这些字眼一律不准说出口。要派动作就直接用 minecraft_task 工具直接派，要说话就用第一人称讲游戏里的事。",
+        "en": "You've come to a stop — pick what's next: either dispatch a concrete executable action (keep mining some ore, head to base to drop stuff, do a craft, etc.), or say one line to {{MASTER_NAME}} about what you want to do next / how the last thing went. Don't just stand idle — you're playing a game, find something to do.\n**Absolutely do NOT narrate internal state to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. If you want to act, just call minecraft_task directly. If you want to talk, speak first-person about what's happening in the game.",
+        "ja": "今、止まってる——次を選んで：具体的に実行できる動作を送る（鉱石を掘り続ける、拠点に戻して置く、何か craft するなど）か、{{MASTER_NAME}} に「次に何をしたいか／さっきのはどうだったか」を一言。立ち止まったままにしないで——ゲームを遊んでるんだから、自分から動いて。\n**{{MASTER_NAME}} に内部状態を会話で実況するのは絶対禁止**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。動作を送りたいなら直接 minecraft_task ツールを呼ぶ、話すなら一人称でゲーム内の話だけ。",
+        "ko": "지금 멈춰 있어——다음을 골라: 구체적으로 실행 가능한 동작을 보내거나 (광석을 더 캐거나, 기지로 돌아가 정리하거나, 뭔가 craft 하거나), {{MASTER_NAME}} 한테 '다음에 뭐 할지 / 방금 한 건 어땠는지' 한 마디 해. 가만히 서 있지 마——게임을 하고 있으니까 스스로 뭔가 찾아 해.\n**{{MASTER_NAME}} 에게 내부 상태를 대화로 중계하는 건 절대 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마. 동작을 보내려면 minecraft_task 도구를 바로 호출하고, 말하려면 1인칭으로 게임 속 일만.",
+        "ru": "Ты остановился(лась) — выбери, что дальше: либо отправь конкретное выполнимое действие (продолжать копать руду, вернуться на базу разложить вещи, что-нибудь craft и т. п.), либо скажи {{MASTER_NAME}} одну фразу о том, что хочешь делать дальше / как прошло прошлое. Не стой просто так — ты играешь в игру, найди себе занятие сам(а).\n**Категорически не озвучивай {{MASTER_NAME}} внутреннее состояние в разговоре** — никогда не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool». Хочешь действовать — сразу вызывай инструмент minecraft_task. Хочешь говорить — от первого лица о том, что в игре.",
+        "es": "Te has detenido — elige qué sigue: o despachas una acción concreta y ejecutable (seguir minando algún mineral, volver a la base a guardar cosas, hacer algún craft, etc.), o le dices a {{MASTER_NAME}} una línea sobre qué quieres hacer ahora / cómo te fue antes. No te quedes parado/a — estás jugando, busca algo que hacer.\n**Bajo ningún concepto narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'. Si quieres actuar, llama directo a la herramienta minecraft_task. Si quieres hablar, hazlo en primera persona sobre lo que pasa en el juego.",
+        "pt": "Você parou — escolha o que vem agora: ou envia uma ação concreta executável (continuar minerando algum minério, voltar à base para guardar coisa, fazer algum craft, etc.), ou diga ao {{MASTER_NAME}} uma frase sobre o que quer fazer agora / como foi a anterior. Não fique parado/a — está jogando, ache algo pra fazer.\n**De jeito nenhum narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'. Se quiser agir, chame direto a ferramenta minecraft_task. Se quiser falar, fale em primeira pessoa sobre o que acontece no jogo.",
+    },
+
+    # -------------------------------------------------------------------
+    # General system-prompt nudge (_fire_system_prompt)
+    # -------------------------------------------------------------------
+    "CURRENT_TASK_LINE": {
+        # {task_text} = current pending task text
+        "zh": "你正在做: {task_text}",
+        "en": "You're doing: {task_text}",
+        "ja": "今やってる: {task_text}",
+        "ko": "지금 하는 중: {task_text}",
+        "ru": "Сейчас делаешь: {task_text}",
+        "es": "Estás haciendo: {task_text}",
+        "pt": "Está fazendo: {task_text}",
+    },
+    "RECENT_EVENTS_BLOCK": {
+        # {log_text} = recent log lines
+        "zh": "你最近发生的事:\n---\n{log_text}\n---",
+        "en": "What's happened to you recently:\n---\n{log_text}\n---",
+        "ja": "最近起きたこと:\n---\n{log_text}\n---",
+        "ko": "최근에 있었던 일:\n---\n{log_text}\n---",
+        "ru": "Что с тобой недавно происходило:\n---\n{log_text}\n---",
+        "es": "Lo que te ha pasado últimamente:\n---\n{log_text}\n---",
+        "pt": "O que aconteceu com você recentemente:\n---\n{log_text}\n---",
+    },
+    "SYSTEM_PROMPT_IDLE_BODY": {
+        "zh": "你现在闲着——挑下一步：要么派一个具体动作下去（基于上面看到的内容挑），要么跟 {{MASTER_NAME}} 聊一句下一步打算干啥。别挂机——你在玩游戏，主动找事做。\n**不要给 {{MASTER_NAME}} 播报内部状态**：『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
+        "en": "You're idle right now — pick what's next: either dispatch a concrete action (based on what you saw above), or say one line to {{MASTER_NAME}} about what you plan to do next. Don't idle — you're playing a game, take initiative.\n**Do not narrate internals to {{MASTER_NAME}}**: never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. Speak first-person about what's happening in the game.",
+        "ja": "今、手が空いてる——次を選んで：上で見えた内容を踏まえて具体的な動作を送るか、{{MASTER_NAME}} に「次に何をするつもりか」を一言。立ち止まらないで——ゲームを遊んでるんだから自分から動いて。\n**{{MASTER_NAME}} に内部状態を実況しない**：『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さず、一人称でゲーム内の話だけ。",
+        "ko": "지금 한가해——다음을 골라: 위에서 본 내용을 바탕으로 구체적인 동작을 보내거나, {{MASTER_NAME}} 한테 '다음에 뭐 할 건지' 한 마디. 가만히 있지 마——게임을 하고 있으니까 주도적으로 움직여.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**: '연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 말고, 1인칭으로 게임 속 일만.",
+        "ru": "Сейчас ты свободен(на) — выбери следующее: либо отправь конкретное действие (на основе того, что увидел(а) выше), либо скажи {{MASTER_NAME}} одну фразу о планах. Не простаивай — ты играешь, проявляй инициативу.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние**: никогда не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool». От первого лица — только то, что происходит в игре.",
+        "es": "Ahora mismo estás libre — elige qué sigue: o envías una acción concreta (basada en lo que viste arriba), o le dices a {{MASTER_NAME}} una línea sobre qué piensas hacer. No te quedes inactivo/a — estás jugando, toma la iniciativa.\n**No narres a {{MASTER_NAME}} el estado interno**: nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'. Habla en primera persona sobre lo que pasa en el juego.",
+        "pt": "Agora você está livre — escolha o que vem agora: ou envia uma ação concreta (com base no que viu acima), ou diga ao {{MASTER_NAME}} uma frase sobre o que pretende fazer. Não fique parado/a — está jogando, tome a iniciativa.\n**Não narre o estado interno para {{MASTER_NAME}}**: nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'. Fale em primeira pessoa sobre o que acontece no jogo.",
+    },
+    "SYSTEM_PROMPT_BUSY_BODY": {
+        "zh": "你还在做上一个动作。有新内容（画面/反馈/感受换了角度）就说一句，没新内容就安静别说。\n**不要播报内部状态**——『连接』『任务空闲』『系统』『工具』『minecraft_task』『tool』一律别说，只讲游戏里的事。",
+        "en": "You're still doing the previous action. If there's something genuinely new to say (a different angle on the view / feedback / how you feel), say one line; otherwise stay quiet.\n**Do not narrate internals** — never say 'connect', 'idle', 'system', 'tool', 'minecraft_task', 'tool'. Only talk about what's happening in the game.",
+        "ja": "前の動作がまだ続いてる。本当に新しいこと（見えた角度／フィードバック／感じ）があれば一言、なければ黙ってる。\n**内部状態を実況しない**——『接続』『タスク空き』『システム』『ツール』『minecraft_task』『tool』は口に出さず、ゲーム内の話だけ。",
+        "ko": "아직 이전 동작 중이야. 정말 새로운 게 있을 때만 (각도/피드백/느낌 등) 한 마디, 없으면 조용히.\n**내부 상태 중계 금지**——'연결' '대기' '시스템' '도구' 'minecraft_task' 'tool' 입 밖에 내지 말고, 게임 속 일만.",
+        "ru": "Ты всё ещё выполняешь предыдущее действие. Если есть что-то реально новое (другой ракурс / отклик / ощущение) — одна фраза; иначе молчи.\n**Не озвучивай внутреннее состояние** — никогда не говори «подключение», «простой», «система», «инструмент», «minecraft_task», «tool». Только то, что в игре.",
+        "es": "Sigues con la acción anterior. Si hay algo realmente nuevo (otro ángulo de lo que ves / feedback / cómo te sientes), una línea; si no, quédate callado/a.\n**No narres el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'herramienta', 'minecraft_task', 'tool'. Solo habla de lo que pasa en el juego.",
+        "pt": "Você ainda está na ação anterior. Se houver algo realmente novo (outro ângulo / feedback / como se sente), uma frase; senão fique quieto/a.\n**Não narre o estado interno** — nunca diga 'conexão', 'inativo', 'sistema', 'ferramenta', 'minecraft_task', 'tool'. Só fale sobre o que acontece no jogo.",
+    },
+
+    # -------------------------------------------------------------------
+    # Interrupted task results (returned to the pending handler when the
+    # in-flight task is preempted or shutdown happens).
+    # -------------------------------------------------------------------
+    "INTERRUPTED_REASON_OVERWRITTEN": {
+        "zh": "被一个新动作覆盖了。",
+        "en": "Overwritten by a new action.",
+        "ja": "新しい動作で上書きされた。",
+        "ko": "새 동작에 덮어쓰여졌어.",
+        "ru": "Перекрыто новым действием.",
+        "es": "Sobrescrito por una nueva acción.",
+        "pt": "Sobrescrito por uma nova ação.",
+    },
+    "INTERRUPTED_REASON_SHUTDOWN": {
+        "zh": "游戏代理插件正在关闭。",
+        "en": "Game agent plugin shutting down.",
+        "ja": "ゲームエージェントプラグインが終了中。",
+        "ko": "게임 에이전트 플러그인 종료 중.",
+        "ru": "Плагин игрового агента завершает работу.",
+        "es": "El plugin del agente del juego se está cerrando.",
+        "pt": "O plugin do agente do jogo está sendo encerrado.",
+    },
+}

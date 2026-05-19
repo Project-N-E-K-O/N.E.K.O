@@ -35,7 +35,6 @@ utils/cache/
 config/api.py
 config/*.json
 !config/api_providers.json
-!config/characters.*.json
 env/*
 lanlan_frd.exe
 
@@ -171,6 +170,10 @@ plugin/plugins/web_radio/
 
 # QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
+
+# QQ 自动回复 测试数据
+plugin/plugins/qq_auto_reply/static/cache/
+plugin/plugins/qq_auto_reply/data/
 
 # bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
 plugin/plugins/bilibili_danmaku/data/bili_credential.*

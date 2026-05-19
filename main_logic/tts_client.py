@@ -18,6 +18,11 @@ from urllib.parse import urlparse, urlunparse
 from config import GSV_VOICE_PREFIX
 from utils.aiohttp_proxy_utils import aiohttp_session_kwargs_for_url
 from utils.config_manager import get_config_manager
+from utils.elevenlabs_tts_voices import (
+    ELEVENLABS_TTS_DEFAULT_MODEL,
+    ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
+    normalize_elevenlabs_voice_id,
+)
 from utils.gemini_tts_voices import (
     GEMINI_TTS_MODEL,
     normalize_gemini_tts_voice,
@@ -25,7 +30,13 @@ from utils.gemini_tts_voices import (
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     get_native_tts_worker,
+    make_native_tts_resolver,
     register_tts_worker_resolver,
+)
+from utils.stepfun_tts_voices import (
+    STEPFUN_TTS_DEFAULT_VOICE,
+    get_stepfun_tts_default_voice,
+    normalize_stepfun_tts_voice,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -37,15 +48,19 @@ logger = get_module_logger(__name__, "Main")
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
 
-def _record_tts_telemetry(model_name: str, text: str):
+def _record_tts_telemetry(model_name: str, char_count: int):
     """Record TTS usage telemetry via TokenTracker.
 
     TTS providers (CosyVoice, CogTTS, GPT-SoVITS, etc.) bill per character,
     not per token, so we report the input length on the dedicated
     `prompt_chars` field instead of squatting in `prompt_tokens`. Token
     aggregates stay clean for actual LLM usage tracking.
+
+    Telemetry hard rule: this helper takes a count only. Never pass synthesized
+    text or any substring of it — only ``len(text)``. Sending raw content into
+    the tracker risks leaking user utterances through the remote uploader.
     """
-    if not text or not text.strip():
+    if char_count <= 0:
         return
     try:
         from utils.token_tracker import TokenTracker
@@ -55,7 +70,7 @@ def _record_tts_telemetry(model_name: str, text: str):
             completion_tokens=0,
             total_tokens=0,
             call_type='tts',
-            prompt_chars=len(text),
+            prompt_chars=int(char_count),
         )
     except Exception:
         pass
@@ -115,6 +130,10 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
         })
 
     return voices
+
+
+def _resolve_elevenlabs_api_key(cm) -> str:
+    return (cm.get_tts_api_key('elevenlabs') or '').strip()
 
 
 def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
@@ -292,6 +311,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="input_text_buffer.append 追加文本，commit 触发合成；server_commit 模式",
     ),
+    "grok": TTSProviderMeta(
+        name="grok",
+        category="ws_bistream",
+        protocol="WebSocket (wss://api.x.ai/v1/tts)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="text.delta 逐片发送；无 session 握手；language=auto；每个 speech_id 重连",
+    ),
     "cosyvoice": TTSProviderMeta(
         name="cosyvoice",
         category="ws_bistream",
@@ -333,6 +362,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="gpt-4o-mini-tts；按句切分后流式接收音频",
     ),
+    "elevenlabs": TTSProviderMeta(
+        name="elevenlabs",
+        category="ws_bistream",
+        protocol="WebSocket (wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz -> resample 48kHz",
+        notes="ElevenLabs text-to-speech stream with Flash v2.5 by default",
+    ),
     "minimax": TTSProviderMeta(
         name="minimax",
         category="http_sentence",
@@ -364,6 +403,36 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         notes="连接本地 CosyVoice 服务",
     ),
 }
+
+
+# GSV worker 的"句标点"白名单。判据：
+# - 含字母 / 数字（Unicode 字母含 CJK / 假名 / 韩文 / 希腊 / 西里尔 /
+#   阿拉伯 letter）→ 真内容，放行
+# - 无字母数字但全是白名单标点（不限个数）→ LLM 真实标点 chunk（`，` `。`
+#   `？` 等，可能也含罕见的 `。。。` `？！`），放行让 server TextBuffer 切句
+# - 无字母数字且含任何非白名单符号 → kaomoji（`=。=` `(╯°□°）╯` `^_^`），丢
+#
+# 标点集刻意覆盖多语言（CJK / ASCII / Arabic / Spanish），但**不放** `(` `)`
+# `[` `]` `{` `}` `「」` `《》` `"` `'` `~` `^` `*` `_` `-` 等 kaomoji 高发字符。
+_GSV_ALLOWED_PUNCT = frozenset('。！？；：，、…—．.!?;:,¿¡،؟؛')
+
+
+def _gsv_should_drop_chunk(text: str) -> bool:
+    """True = chunk 是 kaomoji / 怪符号堆，丢；False = 放行。
+
+    扫完所有字符再判：任何 alnum 都让 chunk 立刻放行（含 letter 的 kaomoji
+    如 `T_T` / `\\(^o^)/` 走这条路过——server clean 完还有字母，不会触发
+    empty error）；无 alnum 时只看有没有非白名单符号。
+    """
+    has_unsanctioned = False
+    for c in text:
+        if c.isspace():
+            continue
+        if c.isalnum():
+            return False
+        if c not in _GSV_ALLOWED_PUNCT:
+            has_unsanctioned = True
+    return has_unsanctioned
 
 
 # ─── 非流式输入 TTS 公共基础设施 ───────────────────────────────────────────
@@ -456,6 +525,7 @@ async def _non_bistream_tts_main_loop(
     *,
     label: str = "TTS",
     max_concurrent: int = 3,
+    sentence_trace_fn=None,
 ):
     """非流式输入 TTS 的通用主循环（按句切分 + 并行合成 + 顺序投递）。
 
@@ -509,10 +579,19 @@ async def _non_bistream_tts_main_loop(
     _slot_done: dict[int, asyncio.Event] = {}           # seq_id → 合成完成事件
     _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → 有新数据通知
     _tasks: dict[int, asyncio.Task] = {}                # seq_id → synth task
+    _sentence_enqueued_at: dict[int, float] = {}        # seq_id → enqueue monotonic time
     _sem = asyncio.Semaphore(max_concurrent)
     _drain_seq: int = 0                                 # drain 当前正在投递的序号
     _drain_task: asyncio.Task | None = None
     _generation_id: int = 0                             # 每次 cancel 递增
+
+    def _trace_sentence(event: str, seq: int, sid: str, text: str, **extra) -> None:
+        if sentence_trace_fn is None:
+            return
+        try:
+            sentence_trace_fn(event, seq, sid, text, **extra)
+        except Exception:
+            pass
 
     def _alloc_slot() -> int:
         nonlocal _next_seq
@@ -528,6 +607,7 @@ async def _non_bistream_tts_main_loop(
         _slot_done.pop(seq, None)
         _slot_new_data.pop(seq, None)
         _tasks.pop(seq, None)
+        _sentence_enqueued_at.pop(seq, None)
 
     def _slot_put(seq: int, gen_id: int, item) -> None:
         """将一个 chunk 写入指定 slot 的 buffer（供 proxy 回调）。"""
@@ -550,6 +630,10 @@ async def _non_bistream_tts_main_loop(
             if gen_id != _generation_id:
                 return
             task = asyncio.current_task()
+            started_at = time.perf_counter()
+            enqueued_at = _sentence_enqueued_at.get(seq, started_at)
+            queue_wait_ms = int((started_at - enqueued_at) * 1000)
+            _trace_sentence("start", seq, sid, text, queue_wait_ms=queue_wait_ms)
             if proxy is not None:
                 proxy._register(task, seq, gen_id, _slot_put)
             try:
@@ -558,9 +642,12 @@ async def _non_bistream_tts_main_loop(
                 raise
             except Exception as exc:
                 if gen_id == _generation_id:
+                    _trace_sentence("error", seq, sid, text, error=str(exc))
                     _slot_put(seq, gen_id,
                               ("__synth_error__", f"{label} 合成失败: {exc}"))
             finally:
+                total_ms = int((time.perf_counter() - started_at) * 1000)
+                _trace_sentence("done", seq, sid, text, total_ms=total_ms)
                 if proxy is not None:
                     proxy._unregister(task)
                 if done_evt is _slot_done.get(seq):
@@ -625,6 +712,8 @@ async def _non_bistream_tts_main_loop(
 
     def _enqueue_sentence(text: str, sid: str) -> None:
         seq = _alloc_slot()
+        _sentence_enqueued_at[seq] = time.perf_counter()
+        _trace_sentence("enqueue", seq, sid, text)
         task = asyncio.create_task(_synth_one(seq, text, sid, _generation_id))
         _tasks[seq] = task
         _ensure_drain()
@@ -665,6 +754,7 @@ async def _non_bistream_tts_main_loop(
         _slot_done.clear()
         _slot_new_data.clear()
         _tasks.clear()
+        _sentence_enqueued_at.clear()
         _next_seq = 0
         _drain_seq = 0
         if proxy is not None:
@@ -713,6 +803,7 @@ def _run_sentence_tts_worker(
     async_setup_fn,
     *,
     label: str,
+    sentence_trace_fn=None,
 ):
     """HTTP 按句合成类 TTS worker 的通用骨架。
 
@@ -759,6 +850,7 @@ def _run_sentence_tts_worker(
             await _non_bistream_tts_main_loop(
                 request_queue, proxy, synthesize_fn,
                 label=label,
+                sentence_trace_fn=sentence_trace_fn,
             )
         except Exception as exc:
             _enqueue_error(response_queue, f"{label} Worker 错误: {exc}")
@@ -789,11 +881,14 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         request_queue: 多进程请求队列，接收(speech_id, text)元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥
-        voice_id: 音色ID，默认使用"qingchunshaonv"
+        voice_id: 音色ID，默认读取 api_providers.json 的 StepFun 配置
     """
     # free + livestream 子模式：voice_id 优先取 api_providers.json 的
     # livestream_config.voice_id（绕过 caller 的 free_voices preset 路径）。
     # 多进程 worker 这里独立 import，与主进程对偶。
+    native_provider_key = 'free' if free_mode else 'step'
+    default_voice_id = get_stepfun_tts_default_voice(native_provider_key)
+
     if free_mode:
         try:
             from utils.api_config_loader import is_livestream_active, get_livestream_config
@@ -806,14 +901,23 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 直播音色已生效却实际还在用 caller 传入或默认 preset
                     logger.warning(
                         "livestream_config.enabled=true 但 voice_id 为空，"
-                        f"继续使用 caller 传入或默认音色: {voice_id or 'qingchunshaonv'}"
+                        f"继续使用 caller 传入或默认音色: {voice_id or default_voice_id}"
                     )
         except Exception as e:
             logger.warning(f"读取 livestream voice_id 失败，回退到 caller 传入值: {e}")
 
-    # 使用默认音色 "qingchunshaonv"
+    voice_id = (voice_id or '').strip()
+
+    # 使用配置中的默认 StepFun 音色
     if not voice_id:
-        voice_id = "qingchunshaonv"
+        voice_id = default_voice_id or STEPFUN_TTS_DEFAULT_VOICE
+    else:
+        normalized_voice_id, voice_recognized = normalize_stepfun_tts_voice(
+            voice_id,
+            native_provider_key,
+        )
+        if voice_recognized:
+            voice_id = normalized_voice_id
     
     async def async_worker():
         """异步TTS worker主循环"""
@@ -876,7 +980,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "type": "tts.text.delta",
                         "data": {"session_id": session_id, "text": pending_text_buffer},
                     }))
-                    _record_tts_telemetry("stepfun", pending_text_buffer)
+                    _record_tts_telemetry("stepfun", len(pending_text_buffer))
                 except Exception as e:
                     # delta 发失败时连接多半已断，调用方不能继续发 tts.text.done；
                     # 返回 False 让 sid=None/文本发送路径都走 continue 触发重连。
@@ -1198,7 +1302,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         }
                     }
                     await ws.send(json.dumps(text_event))
-                    _record_tts_telemetry("stepfun", tts_text)
+                    _record_tts_telemetry("stepfun", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -1235,6 +1339,356 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         asyncio.run(async_worker())
     except Exception as e:
         logger.error(f"StepFun实时TTS Worker启动失败: {type(e).__name__}: {e!r}", exc_info=True)
+        response_queue.put(("__ready__", False))
+
+
+register_tts_worker_resolver(
+    'step',
+    make_native_tts_resolver(step_realtime_tts_worker, 'tts_default_api_key'),
+)
+register_tts_worker_resolver(
+    'free',
+    make_native_tts_resolver(
+        step_realtime_tts_worker,
+        'tts_default_api_key',
+        worker_kwargs={'free_mode': True},
+    ),
+)
+
+
+# xAI 文档：'Individual deltas are capped at 15,000 characters'。
+# pending_text 累积 + 长 utterance 合并下可能超过这个上限，需要切片发送。
+_XAI_TTS_DELTA_CAP = 15000
+
+
+def _grok_chunk_text_delta(text: str, cap: int = _XAI_TTS_DELTA_CAP) -> list[str]:
+    """把可能超过 xAI text.delta 上限的文本切成顺序发送的多段。
+    返回的每段长度 ≤ cap；空输入返回空列表。"""
+    if not text:
+        return []
+    if len(text) <= cap:
+        return [text]
+    return [text[i:i + cap] for i in range(0, len(text), cap)]
+
+
+def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    xAI Grok 流式 TTS worker（wss://api.x.ai/v1/tts）
+
+    协议特点（对比 step）:
+      - 无 session 握手 / 无 tts.create，连上即可推 text.delta
+      - 配置全部走 query params（voice/language/codec/sample_rate）
+      - codec=pcm 时音频是 raw 16-bit little-endian，无 WAV header
+      - language 必传；用 auto 让服务端自动检测，省掉客户端语言检测
+
+    Args:
+        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
+        response_queue: 多进程响应队列，发送音频数据和就绪信号
+        audio_api_key: xAI API key
+        voice_id: 内置音色（eve/ara/leo/rex/sal）/ alias（male / 女声 等）/ 自定义
+            8 位音色 id / 空。routing 层（native_voice_registry）会把 alias
+            识别为 native；worker 这里再归一化成 xAI canonical id，
+            因为 xAI 端点的 voice query param 只接受 canonical id 或
+            自定义 8 位 id，不认 alias。
+    """
+    from utils.grok_tts_voices import normalize_grok_tts_voice
+    # 先 strip：whitespace-only 输入（如 '   '）等价于空，否则 'not voice_id'
+    # 判定通不过，残留的空白会被透传到 xAI 的 voice query param 引发合成失败。
+    voice_id = (voice_id or "").strip()
+    canonical_voice, recognized = normalize_grok_tts_voice(voice_id)
+    if recognized or not voice_id:
+        # 识别出 native id / alias → 用归一化后的 canonical；
+        # 空输入 → normalize 已经返回 default (eve)。
+        voice_id = canonical_voice
+    # else: 非空且不识别 → 视为用户自定义 8 位 voice_id，原样透传给 xAI
+
+    async def async_worker():
+        from urllib.parse import urlencode
+        params = urlencode({
+            "voice": voice_id,
+            "language": "auto",
+            "codec": "pcm",
+            "sample_rate": 24000,
+        })
+        tts_url = f"wss://api.x.ai/v1/tts?{params}"
+        headers = {"Authorization": f"Bearer {audio_api_key}"}
+
+        ws = None
+        current_speech_id = None
+        receive_task = None
+        text_done_sent = False
+        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+        # 当 reconnect 失败时缓冲尚未发出的文本 chunks（同一 utterance）。下一次
+        # 同 sid chunk 到达并 reconnect 成功后，缓冲内容会拼到第一条 text.delta
+        # 前一起发送 —— 避免触发 reconnect 的那一条 chunk 在 continue 后丢失，
+        # 短回复（utterance 只有 1 个 chunk）尤其需要这条保险。
+        # `pending_text_sid` 把缓冲绑定到产生它的 sid：跨 utterance 时（sid 切换、
+        # interrupt、当前 utterance 结束 flush 不出）必须丢弃旧 pending，否则
+        # 上一轮的残文会被拼进下一轮的首条 text.delta —— 用户层会听到"上一轮内容
+        # 串进新回复"的内容污染。
+        pending_text: list[str] = []
+        pending_text_sid: str | None = None
+
+        async def receive_messages():
+            # xAI 实际可能发 binary frame（raw PCM）或 JSON-wrapped base64 audio.delta，
+            # 文档未明确给出，两路径都保留。字段名走 'delta'（OpenAI Realtime 标准）
+            # 但保留 'audio' 作为兜底，未来如果 xAI 改名也不会立刻挂。
+            try:
+                async for message in ws:
+                    if isinstance(message, bytes):
+                        try:
+                            audio_array = np.frombuffer(message, dtype=np.int16)
+                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                        except Exception as e:
+                            logger.error(f"xAI TTS 二进制音频解码失败: {e}")
+                        continue
+                    try:
+                        event = json.loads(message)
+                    except Exception as e:
+                        preview = message if len(message) < 200 else message[:200] + "...<truncated>"
+                        logger.warning(f"xAI TTS recv (non-JSON): {preview} err={e}")
+                        continue
+                    event_type = event.get("type")
+                    if event_type == "audio.delta":
+                        audio_b64 = event.get("delta") or event.get("audio") or ""
+                        if not audio_b64:
+                            logger.warning(f"xAI TTS audio.delta 无音频字段，event keys={list(event.keys())}")
+                            continue
+                        try:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
+                        except Exception as e:
+                            logger.error(f"xAI TTS 音频解码失败: {e}")
+                    elif event_type == "audio.done":
+                        pass
+                    elif event_type == "error":
+                        logger.error(f"xAI TTS server error: {event}")
+                        _enqueue_error(response_queue, event)
+                    else:
+                        # 未知 event 留 INFO — 出现新事件类型时能立即看见
+                        preview = message if len(message) < 200 else message[:200] + "...<truncated>"
+                        logger.info(f"xAI TTS recv unknown type={event_type!r} raw={preview}")
+            except websockets.exceptions.ConnectionClosed as e:
+                # 仅对异常关闭出 log（1006=abnormal、4xxx=应用层）。正常 1000 静默，
+                # 避免 worker 每次 sid 切换主动 close 时也刷一行。
+                if e.code != 1000:
+                    logger.info(f"xAI TTS WebSocket closed: code={e.code} reason={e.reason!r}")
+            except Exception as e:
+                logger.error(f"xAI TTS 接收出错: {type(e).__name__}: {e}")
+
+        try:
+            # close_timeout=0.5：上限 close handshake 等待，避免半开连接在 sid 切换
+            # 路径 / interrupt / finally 清理时阻塞主循环数秒，伤后续 TTS 响应。
+            ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+            receive_task = asyncio.create_task(receive_messages())
+
+            logger.info("xAI Grok TTS 已就绪，发送就绪信号")
+            response_queue.put(("__ready__", True))
+
+            loop = asyncio.get_running_loop()
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+
+                if sid == "__interrupt__":
+                    if ws:
+                        try:
+                            await asyncio.wait_for(ws.close(), timeout=0.5)
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    current_speech_id = None
+                    text_done_sent = False
+                    pending_text.clear()
+                    pending_text_sid = None
+                    continue
+
+                if sid is None:
+                    # 当前 speech 文本流结束。如果 ws 还死着（reconnect 持续失败）
+                    # 但缓冲里有同 sid 的内容（典型场景：单 chunk 短消息首次 reconnect
+                    # 失败，pending 缓冲了那一条，下一个进来就是 sid=None 结束信号），
+                    # 做一次 last-chance reconnect，把 pending 发出去再 text.done。
+                    # 失败就放弃，避免短消息被 transient 网络故障吞掉。
+                    if ws is None and pending_text and pending_text_sid is not None:
+                        try:
+                            ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                            receive_task = asyncio.create_task(receive_messages())
+                            current_speech_id = pending_text_sid
+                            text_done_sent = False
+                            resampler.clear()
+                            logger.info("xAI TTS last-chance reconnect on utterance end succeeded")
+                        except Exception as e:
+                            logger.warning(f"xAI TTS last-chance reconnect 失败，pending 丢弃: {e}")
+
+                    if ws and current_speech_id is not None and not text_done_sent:
+                        if pending_text and pending_text_sid == current_speech_id:
+                            try:
+                                for delta in _grok_chunk_text_delta("".join(pending_text)):
+                                    await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
+                            except Exception as e:
+                                # send 失败可能是 last-chance reconnect 拿到的 ws 半死状态
+                                # （服务端在 utterance 间隙 close）。再做一次 fresh reconnect
+                                # 重试，把 pending 救出去，避免 utterance 截尾静音。
+                                logger.warning(f"flush pending_text 首次失败，尝试重连重试: {e}")
+                                if ws:
+                                    try:
+                                        await asyncio.wait_for(ws.close(), timeout=0.5)
+                                    except Exception:
+                                        pass
+                                if receive_task and not receive_task.done():
+                                    receive_task.cancel()
+                                    try:
+                                        await receive_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                try:
+                                    ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                                    receive_task = asyncio.create_task(receive_messages())
+                                    for delta in _grok_chunk_text_delta("".join(pending_text)):
+                                        await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
+                                    logger.info("flush pending_text 重连重试成功")
+                                except Exception as e2:
+                                    logger.warning(f"flush pending_text 重连重试仍失败，pending 丢失: {e2}")
+                        try:
+                            await ws.send(json.dumps({"type": "text.done"}))
+                            text_done_sent = True
+                        except Exception as e:
+                            logger.warning(f"发送 text.done 失败: {e}")
+                    pending_text.clear()
+                    pending_text_sid = None
+                    continue
+
+                # 新 speech_id — 关旧开新（对偶 step worker 的重连策略）
+                if current_speech_id != sid:
+                    # 关旧连接 / cancel 旧 receive_task 无条件做（避免泄漏），但
+                    # current_speech_id / text_done_sent / resampler 状态切换必须
+                    # 推迟到 connect 成功之后再 commit。否则一次瞬态 connect 失败会
+                    # 把 sid 提前推进，后续同 sid 的 chunks 走到 `if not ws: continue`
+                    # 被静默丢弃，直到出现新 sid 才重试 —— 当轮 utterance 静音。
+                    if ws:
+                        # bound close handshake — 默认 10s 在半开连接下会阻塞主循环、
+                        # 拖延下一条 chunk 响应，明显伤交互延迟。
+                        try:
+                            await asyncio.wait_for(ws.close(), timeout=0.5)
+                        except Exception:
+                            pass
+                        ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        receive_task = None
+                    try:
+                        ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                        receive_task = asyncio.create_task(receive_messages())
+                    except Exception as e:
+                        logger.error(f"xAI TTS 重连失败: {e}")
+                        if 'HTTP 503' in str(e):
+                            _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                        # 缓冲当前 chunk —— 否则 continue 后这条文本永远丢失，
+                        # 短消息（utterance 只有 1 个 chunk）会整段静音。绑 sid，
+                        # 后续如果切换到别的 sid 而旧 pending 还在，能在发送前丢掉
+                        # 避免跨 utterance 内容污染。
+                        if tts_text and tts_text.strip():
+                            if pending_text_sid != sid:
+                                # 上一个失败的 utterance 残留，丢弃后重新绑定到当前 sid
+                                pending_text.clear()
+                            pending_text.append(tts_text)
+                            pending_text_sid = sid
+                        await asyncio.sleep(1.0)
+                        # 不更新 current_speech_id —— 下次同 sid 进来会重新尝试重连
+                        continue
+                    # connect 成功后再 commit sid 切换 + 状态 reset
+                    current_speech_id = sid
+                    text_done_sent = False
+                    resampler.clear()
+
+                if not tts_text or not tts_text.strip():
+                    continue
+                if text_done_sent:
+                    continue
+                if not ws:
+                    continue
+
+                # 如果之前 reconnect 失败缓冲了同 sid 的文本，先拼上一起发出去，
+                # 维持 utterance 内 chunk 的原顺序；如果 pending 属于别的 sid（跨
+                # utterance 残留），直接丢掉防止内容污染。
+                if pending_text and pending_text_sid == current_speech_id:
+                    payload_text = "".join(pending_text) + tts_text
+                    pending_text.clear()
+                    pending_text_sid = None
+                else:
+                    if pending_text:
+                        logger.debug(
+                            "xAI TTS 丢弃跨 utterance 的残留 pending_text (sid=%s, current=%s, len=%d)",
+                            pending_text_sid, current_speech_id, sum(len(x) for x in pending_text),
+                        )
+                        pending_text.clear()
+                        pending_text_sid = None
+                    payload_text = tts_text
+
+                try:
+                    # 字段名用 'delta'（OpenAI Realtime 标准；xAI 文档把消息体叫
+                    # "deltas"——"Individual deltas are capped at 15,000 characters"）。
+                    # 用 'text' 时服务端 silently 当空字符串处理，合成 0 字节后直接 audio.done。
+                    # 长 buffer 合并可能超 15k 上限，按 cap 切片顺序发；xAI 流式合成
+                    # 按到达顺序处理，多 delta 等价单 delta。
+                    for delta in _grok_chunk_text_delta(payload_text):
+                        await ws.send(json.dumps({"type": "text.delta", "delta": delta}))
+                    _record_tts_telemetry("grok", len(payload_text))
+                except Exception as e:
+                    logger.error(f"发送 text.delta 失败: {type(e).__name__}: {e}")
+                    # send 失败时把内容放回 pending（绑定当前 sid），等下次重连后重发。
+                    pending_text.append(payload_text)
+                    pending_text_sid = current_speech_id
+                    ws = None
+                    current_speech_id = None
+                    # 与 step / qwen worker 对偶：send 失败时同步 cancel 旧
+                    # receive_task，避免短暂窗口内僵尸 receive 协程把残音频写
+                    # 进 response_queue。connection 已死，receive 会自然拿到
+                    # ConnectionClosed，cancel 只是加速清理。
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                    receive_task = None
+
+        except Exception as e:
+            logger.error(f"xAI Grok TTS Worker 错误: {type(e).__name__}: {e!r}", exc_info=True)
+            if 'HTTP 503' in str(e):
+                _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
+            response_queue.put(("__ready__", False))
+        finally:
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+            if ws:
+                try:
+                    await asyncio.wait_for(ws.close(), timeout=0.5)
+                except Exception:
+                    pass
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"xAI Grok TTS Worker 启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
 
 
@@ -1317,7 +1771,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": pending_text_buffer,
                     }))
-                    _record_tts_telemetry("qwen", pending_text_buffer)
+                    _record_tts_telemetry("qwen", len(pending_text_buffer))
                 except Exception as e:
                     # append 发失败时连接多半已断，调用方不能继续发 commit；
                     # 返回 False 让 sid=None/文本路径走 continue 触发重连。
@@ -1591,7 +2045,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "event_id": f"event_{int(time.time() * 1000)}",
                         "text": tts_text
                     }))
-                    _record_tts_telemetry("qwen", tts_text)
+                    _record_tts_telemetry("qwen", len(tts_text))
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # 连接已关闭，标记为无效以便下次重连
@@ -1790,7 +2244,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
         synthesizer.streaming_call(char_buffer)
-        _record_tts_telemetry("cosyvoice", char_buffer)
+        _record_tts_telemetry("cosyvoice", len(char_buffer))
         last_streaming_call_time = time.time()
         char_buffer = ""
 
@@ -1913,7 +2367,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
                 synthesizer.streaming_call(char_buffer)
-                _record_tts_telemetry("cosyvoice", char_buffer)
+                _record_tts_telemetry("cosyvoice", len(char_buffer))
                 last_streaming_call_time = time.time()
                 char_buffer = ""
             except Exception as e:
@@ -2014,7 +2468,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                     )
                     return
 
-                _record_tts_telemetry("cogtts", text[:1024])
+                # CogTTS payload 实际只发了 text[:1024]（行 2407 的硬截断，上游
+                # API 限制 1024 字符）。telemetry 记 min 而不是 len(text)，否则超
+                # 长输入会高估实际计费/上行的字符数。
+                _record_tts_telemetry("cogtts", min(len(text), 1024))
                 buffer = ""
                 first_audio_received = False
 
@@ -2230,7 +2687,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                         raise
 
             if audio_data:
-                _record_tts_telemetry("gemini", text)
+                _record_tts_telemetry("gemini", len(text))
                 audio_array = np.frombuffer(audio_data, dtype=np.int16)
                 resampled_bytes = _resample_audio(audio_array, 24000, 48000)
                 response_queue.put(resampled_bytes)
@@ -2240,16 +2697,21 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
 
 
-def _resolve_gemini_native_tts_worker(cm):
-    """Native voice registry resolver for Gemini's TTS worker.
-
-    Gemini's native voices are billed against CORE_API_KEY (the same key the
-    realtime/LLM endpoint uses), not the optional custom TTS api_key.
-    """
-    return gemini_tts_worker, (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+# Gemini 内置音色和 realtime/LLM endpoint 共用 CORE_API_KEY，不走自定义 TTS slot。
+register_tts_worker_resolver(
+    'gemini',
+    make_native_tts_resolver(gemini_tts_worker, 'core_api_key'),
+)
 
 
-register_tts_worker_resolver('gemini', _resolve_gemini_native_tts_worker)
+# xAI Grok 内置音色（eve/ara/leo/rex/sal）同样走 CORE_API_KEY。
+# 没有这个注册时，非空 voice_id 会让 core._has_custom_tts() 返 True，
+# get_tts_worker() 在 `core_api_type == 'grok'` 默认分支前就路由到
+# cosyvoice_vc_tts_worker —— 静默合成或鉴权失败。详见 PR #1306 Codex review。
+register_tts_worker_resolver(
+    'grok',
+    make_native_tts_resolver(grok_streaming_tts_worker, 'core_api_key'),
+)
 
 
 def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
@@ -2281,7 +2743,7 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                 input=text,
                 response_format="pcm",
             ) as response:
-                _record_tts_telemetry("gpt-4o-mini-tts", text)
+                _record_tts_telemetry("gpt-4o-mini-tts", len(text))
                 async for chunk in response.iter_bytes(chunk_size=4096):
                     if chunk:
                         audio_array = np.frombuffer(chunk, dtype=np.int16)
@@ -2540,14 +3002,17 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if not tts_text or not tts_text.strip():
                     continue
 
-                if not re.sub(r'\W+', '', tts_text.strip()):
+                # kaomoji / 颜文字兜底：见 _GSV_ALLOWED_PUNCT 注释。
+                # `=。=` `(╯°□°）╯` `^_^` 这类丢；单标点 `，` `。` `？` 放过让
+                # server TextBuffer 触发切句。
+                if _gsv_should_drop_chunk(tts_text):
                     continue
 
                 # 用 append 累积碎片文本，v3 TextBuffer 自动按标点切句推理
                 if _ws_is_open(ws):
                     try:
                         await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
-                        _record_tts_telemetry("gptsovits", tts_text)
+                        _record_tts_telemetry("gptsovits", len(tts_text))
                         # TTS 文本原文不写 logger
                         logger.debug(f"[GPT-SoVITS v3] append (len={len(tts_text)} chars)")
                         print(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
@@ -2676,7 +3141,7 @@ async def _minimax_sse_synthesize(
                 _enqueue_error(response_queue, f"MiniMax TTS API错误 ({resp.status_code}): {error_text[:300]}")
                 return
 
-            _record_tts_telemetry("minimax", text)
+            _record_tts_telemetry("minimax", len(text))
 
             content_type = resp.headers.get("content-type", "").lower()
 
@@ -2821,6 +3286,396 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="MiniMax TTS")
 
 
+def _normalize_elevenlabs_voice_id(voice_id: str | None) -> str:
+    return normalize_elevenlabs_voice_id(voice_id)
+
+
+def _parse_elevenlabs_pcm_sample_rate(output_format: str | None) -> int:
+    match = re.match(r"^pcm_(\d+)$", (output_format or "").strip())
+    if not match:
+        return 24000
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return 24000
+
+
+def _is_elevenlabs_pcm_output_format(output_format: str | None) -> bool:
+    return bool(re.match(r"^pcm_(\d+)$", (output_format or "").strip()))
+
+
+def _get_elevenlabs_options(base_url=None):
+    raw_base_url = (
+        base_url
+        or "https://api.elevenlabs.io"
+    )
+    base_url = (raw_base_url or "https://api.elevenlabs.io").strip().rstrip('/')
+
+    return {
+        'base_url': base_url,
+        'model': ELEVENLABS_TTS_DEFAULT_MODEL,
+        'output_format': ELEVENLABS_TTS_DEFAULT_OUTPUT_FORMAT,
+        'stability': 0.5,
+        'similarity_boost': 0.75,
+        'style': 0.0,
+        'use_speaker_boost': True,
+    }
+
+
+_ELEVENLABS_WS_CHUNK_SCHEDULE = [120, 160, 250, 290]
+
+
+def _elevenlabs_ws_base_url(base_url: str | None) -> str:
+    raw = (base_url or "https://api.elevenlabs.io").strip().rstrip("/")
+    if raw.startswith("https://"):
+        return "wss://" + raw[len("https://"):]
+    if raw.startswith("http://"):
+        return "ws://" + raw[len("http://"):]
+    if raw.startswith("wss://") or raw.startswith("ws://"):
+        return raw
+    return "wss://" + raw
+
+
+def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base_url=None):
+    """ElevenLabs TTS worker - WebSocket stream-input PCM output."""
+    from urllib.parse import urlencode
+
+    normalized_voice_id = _normalize_elevenlabs_voice_id(voice_id)
+    options = _get_elevenlabs_options(base_url)
+    output_format = options['output_format']
+    if not _is_elevenlabs_pcm_output_format(output_format):
+        _enqueue_error(response_queue, {
+            "code": "ELEVENLABS_OUTPUT_FORMAT_UNSUPPORTED",
+            "provider": "elevenlabs",
+            "message": f"ElevenLabs TTS worker requires PCM output, got {output_format!r}",
+        })
+        response_queue.put(("__ready__", False))
+        return
+
+    ws_base_url = _elevenlabs_ws_base_url(options['base_url'])
+    ws_url = f"{ws_base_url}/v1/text-to-speech/{normalized_voice_id}/stream-input"
+    ws_params = urlencode({
+        "model_id": options['model'],
+        "output_format": output_format,
+    })
+    ws_url = f"{ws_url}?{ws_params}"
+    chunk_schedule = list(_ELEVENLABS_WS_CHUNK_SCHEDULE)
+    pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
+
+    def _build_voice_settings() -> dict:
+        return {
+            "stability": options['stability'],
+            "similarity_boost": options['similarity_boost'],
+            "style": options['style'],
+            "use_speaker_boost": options['use_speaker_boost'],
+            "speed": 1.0,
+        }
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        current_speech_id = None
+        response_finished = asyncio.Event()
+        text_done_sent = False
+        resampler = None
+        pending_text: list[str] = []
+        pending_text_sid: str | None = None
+
+        def _reset_session_metrics() -> None:
+            nonlocal response_finished, text_done_sent, resampler
+            response_finished = asyncio.Event()
+            text_done_sent = False
+            resampler = (
+                soxr.ResampleStream(pcm_sample_rate, 48000, 1, dtype='float32')
+                if pcm_sample_rate != 48000
+                else None
+            )
+
+        async def _close_ws(send_final_empty: bool = False, wait_for_final: bool = False) -> None:
+            nonlocal ws, receive_task, text_done_sent
+            if ws is not None:
+                if send_final_empty and not text_done_sent:
+                    try:
+                        await ws.send(json.dumps({"text": ""}))
+                        text_done_sent = True
+                    except Exception as exc:
+                        logger.debug("ElevenLabs WS final empty send failed: %s", exc)
+                if wait_for_final:
+                    try:
+                        await asyncio.wait_for(response_finished.wait(), timeout=30.0)
+                    except Exception:
+                        pass
+                try:
+                    await asyncio.wait_for(ws.close(), timeout=0.5)
+                except Exception:
+                    pass
+            ws = None
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            receive_task = None
+
+        async def _open_ws(speech_id: str) -> None:
+            nonlocal ws, receive_task, current_speech_id
+            if not normalized_voice_id:
+                raise RuntimeError("ElevenLabs voice_id is not configured")
+            if not audio_api_key:
+                raise RuntimeError("ElevenLabs API key is not configured")
+            ws = await websockets.connect(
+                ws_url,
+                additional_headers={"xi-api-key": audio_api_key},
+                ping_interval=None,
+                close_timeout=0.5,
+                max_size=10 * 1024 * 1024,
+            )
+            _reset_session_metrics()
+            current_speech_id = speech_id
+            receive_task = asyncio.create_task(_receive_ws_messages(speech_id))
+            init_payload = {
+                "text": " ",
+                "voice_settings": _build_voice_settings(),
+                "generation_config": {
+                    "chunk_length_schedule": chunk_schedule,
+                },
+                "xi_api_key": audio_api_key,
+            }
+            await ws.send(json.dumps(init_payload))
+
+        async def _receive_ws_messages(speech_id: str) -> None:
+            try:
+                async for message in ws:
+                    audio_bytes = None
+                    is_final = False
+                    payload = None
+
+                    if isinstance(message, bytes):
+                        if message[:1] == b"{":
+                            try:
+                                payload = json.loads(message.decode("utf-8", errors="replace"))
+                            except Exception:
+                                payload = None
+                        if payload is None:
+                            audio_bytes = message
+                    else:
+                        try:
+                            payload = json.loads(message)
+                        except Exception:
+                            preview = message if len(message) < 200 else message[:200] + "...<truncated>"
+                            logger.warning("ElevenLabs WS recv non-JSON: %s", preview)
+                            continue
+
+                    if payload is not None:
+                        event_type = payload.get("type")
+                        audio_b64 = payload.get("audio") or payload.get("data") or payload.get("delta") or ""
+                        if audio_b64:
+                            try:
+                                audio_bytes = base64.b64decode(audio_b64)
+                            except Exception as exc:
+                                logger.warning("ElevenLabs WS audio decode failed: %s", exc)
+                                audio_bytes = None
+                        is_final = bool(
+                            payload.get("isFinal")
+                            or payload.get("is_final")
+                            or payload.get("final")
+                            or event_type in {"final", "audio.done"}
+                        )
+                        if event_type == "error":
+                            _enqueue_error(response_queue, {
+                                "code": "API_REQUEST_FAILED",
+                                "provider": "elevenlabs",
+                                "message": f"ElevenLabs TTS API error: {payload}",
+                            })
+                            continue
+                        if not audio_bytes and not is_final:
+                            preview = message if isinstance(message, str) else repr(message[:200])
+                            logger.debug(
+                                "ElevenLabs WS recv unknown event type=%r raw=%s",
+                                event_type,
+                                preview,
+                            )
+                            continue
+
+                    if audio_bytes:
+                        usable_len = len(audio_bytes) - (len(audio_bytes) % 2)
+                        if usable_len <= 0:
+                            continue
+                        if usable_len < len(audio_bytes):
+                            audio_bytes = audio_bytes[:usable_len]
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                        response_queue.put(_resample_audio(audio_array, pcm_sample_rate, 48000, resampler))
+                    if is_final:
+                        response_finished.set()
+                        break
+            except websockets.exceptions.ConnectionClosed as exc:
+                if exc.code != 1000:
+                    logger.info(
+                        "ElevenLabs WS closed: speech_id=%s code=%s reason=%r",
+                        speech_id,
+                        exc.code,
+                        exc.reason,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("ElevenLabs WS receive failed: %s", exc)
+            finally:
+                response_finished.set()
+
+        async def _send_text(text: str, speech_id: str, *, final: bool = False) -> None:
+            if ws is None:
+                raise RuntimeError("ElevenLabs WS is not connected")
+            payload = {"text": text}
+            if text and text.strip():
+                payload["try_trigger_generation"] = True
+            if final and text:
+                payload["flush"] = True
+            await ws.send(json.dumps(payload))
+
+        async def _ensure_session(speech_id: str) -> None:
+            nonlocal current_speech_id, pending_text_sid
+            if current_speech_id != speech_id or ws is None:
+                wait_for_previous_final = (
+                    ws is not None
+                    and text_done_sent
+                    and not response_finished.is_set()
+                )
+                await _close_ws(send_final_empty=False, wait_for_final=wait_for_previous_final)
+                if pending_text and pending_text_sid not in (None, speech_id):
+                    logger.debug(
+                        "ElevenLabs WS dropping stale pending text: pending_sid=%s current_sid=%s len=%d",
+                        pending_text_sid,
+                        speech_id,
+                        sum(len(part) for part in pending_text),
+                    )
+                    pending_text.clear()
+                    pending_text_sid = None
+                await _open_ws(speech_id)
+
+        try:
+            if not normalized_voice_id:
+                _enqueue_error(response_queue, {
+                    "code": "TTS_VOICE_ID_MISSING",
+                    "provider": "elevenlabs",
+                    "message": "ElevenLabs voice_id is not configured",
+                })
+                response_queue.put(("__ready__", False))
+                return
+            if not audio_api_key:
+                _enqueue_error(response_queue, {
+                    "code": "API_KEY_MISSING",
+                    "provider": "elevenlabs",
+                    "message": "ElevenLabs API key is not configured",
+                })
+                response_queue.put(("__ready__", False))
+                return
+            response_queue.put(("__ready__", True))
+            loop = asyncio.get_running_loop()
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                if sid == TTS_SHUTDOWN_SENTINEL:
+                    break
+
+                if sid == "__interrupt__":
+                    await _close_ws(send_final_empty=False, wait_for_final=False)
+                    current_speech_id = None
+                    pending_text.clear()
+                    pending_text_sid = None
+                    continue
+
+                if sid is None:
+                    if pending_text and pending_text_sid is not None:
+                        target_sid = pending_text_sid
+                        try:
+                            if ws is None or current_speech_id != target_sid:
+                                await _ensure_session(target_sid)
+                            if ws is not None and current_speech_id == target_sid:
+                                sent_text = "".join(pending_text)
+                                await _send_text(sent_text, current_speech_id)
+                                _record_tts_telemetry(options['model'], len(sent_text))
+                        except Exception as exc:
+                            logger.warning("ElevenLabs WS flush pending text failed: %s", exc)
+                            _enqueue_error(response_queue, {
+                                "code": "API_REQUEST_FAILED",
+                                "provider": "elevenlabs",
+                                "message": f"ElevenLabs pending text flush failed: {exc}",
+                            })
+                            response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+                            await _close_ws(send_final_empty=False, wait_for_final=False)
+                            current_speech_id = None
+                            continue
+                        pending_text.clear()
+                        pending_text_sid = None
+                    # 只发 final empty，让 receive_task 在后台继续把剩余音频抽完；
+                    # 真正的 close 由下一个 sid 切换 / __interrupt__ / shutdown 触发，
+                    # 避免主循环在这里阻塞最长 30s 拖慢下一句 utterance 首音延迟喵。
+                    if ws is not None and not text_done_sent:
+                        try:
+                            await ws.send(json.dumps({"text": ""}))
+                            text_done_sent = True
+                        except Exception as exc:
+                            logger.debug("ElevenLabs WS final empty send failed: %s", exc)
+                    current_speech_id = None
+                    pending_text.clear()
+                    pending_text_sid = None
+                    continue
+
+                if tts_text and tts_text.strip():
+                    payload_text = tts_text
+                    if pending_text and pending_text_sid == sid:
+                        payload_text = "".join(pending_text) + tts_text
+                        pending_text.clear()
+                        pending_text_sid = None
+                    elif pending_text and pending_text_sid not in (None, sid):
+                        logger.debug(
+                            "ElevenLabs WS dropping cross-utterance pending text: pending_sid=%s current_sid=%s len=%d",
+                            pending_text_sid,
+                            sid,
+                            sum(len(part) for part in pending_text),
+                        )
+                        pending_text.clear()
+                        pending_text_sid = None
+                    try:
+                        await _ensure_session(sid)
+                    except Exception as exc:
+                        logger.warning("ElevenLabs WS ensure session failed: %s", exc)
+                        pending_text.append(payload_text)
+                        pending_text_sid = sid
+                        await _close_ws(send_final_empty=False, wait_for_final=False)
+                        current_speech_id = None
+                        continue
+                    try:
+                        await _send_text(payload_text, current_speech_id)
+                        _record_tts_telemetry(options['model'], len(payload_text))
+                    except Exception as exc:
+                        logger.warning("ElevenLabs WS send text failed: %s", exc)
+                        pending_text.append(payload_text)
+                        pending_text_sid = sid
+                        await _close_ws(send_final_empty=False, wait_for_final=False)
+                        current_speech_id = None
+
+        except Exception as exc:
+            logger.error("ElevenLabs WS Worker error: %s", exc, exc_info=True)
+            response_queue.put(("__ready__", False))
+        finally:
+            try:
+                await _close_ws(send_final_empty=False, wait_for_final=False)
+            except Exception:
+                pass
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as exc:
+        logger.error("ElevenLabs WS Worker startup failed: %s", exc, exc_info=True)
+        response_queue.put(("__ready__", False))
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -2846,6 +3701,10 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             # sid is None 是 end-of-utterance 信号，dummy 不做任何处理
             if sid == "__interrupt__" or sid is None:
                 continue
+            # 即便不合成音频也上报字符数 + 调用次数，方便分析"配置成无 TTS"
+            # 的用户产生了多少假装合成的请求；只传 len()，不传原文。
+            if tts_text:
+                _record_tts_telemetry("dummy", len(tts_text))
         except Exception as e:
             logger.error(f"Dummy TTS Worker 错误: {e}")
             break
@@ -2869,6 +3728,57 @@ def _get_voice_meta(voice_id: str) -> dict | None:
     return None
 
 
+_XAI_CUSTOM_VOICE_PATTERN = re.compile(r'^[a-z0-9]{8}$')
+
+
+def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
+    """判断 voice_id 是否真的是 xAI 自定义 voice 而非 alias-clone collision /
+    残留的非-xAI id。
+
+    要 short-circuit 到 grok worker，voice_id 必须满足下列其一：
+      (a) 是 grok 词表（canonical id 或 alias）且 canonical 没被任何 voice
+          storage 槽克隆 —— 走 grok 内置音色路径；
+      (b) 不是词表内容，但形如 xAI 自定义 voice 的 8-char lowercase
+          alphanumeric id（POST /v1/custom-voices 返回的格式）。
+
+    场景 (a) 防 alias collision：用户把克隆音色命名为 grok canonical id（例如
+    'leo'）后在 UI 上选 alias（例如 'male'，会 normalize 到 'leo'）。
+    ``core._has_custom_tts()`` 走 ``resolve_native_voice_for_routing`` 用
+    canonical name 当 voice_id_exists 探针，命中 collision 后会让
+    has_custom_voice=True 进入这里，但 ``_get_voice_meta(raw_voice_id)`` 是
+    None（用户存的是 canonical 'leo'，不是 alias 'male'）。直接路由到 grok
+    worker 的话 worker 会 normalize 回 'leo' 内置音色，悄悄绕过用户克隆。
+    跨槽检查与 ``core._has_custom_tts()`` 对齐：那边用
+    ``voice_id_exists_in_any_storage`` 跨所有 API-key 槽位查找（用户可能在
+    qwen 槽克隆了 'leo' 而当前 session 是 grok）。
+
+    场景 (b) 防"无 meta 但不是 xAI"误路由：``voice_meta is None`` 也可能是
+    远端 cosyvoice clone 成功但本地 meta 丢失，或历史遗留的非-xAI voice id。
+    旧设计无脑短路到 grok worker，xAI 会拒绝这些非 8-char id。改为只匹配
+    xAI custom 实际格式，让其他 unknown id 回 cosyvoice fallback。
+    """
+    if not voice_id:
+        return False
+    try:
+        from utils.grok_tts_voices import normalize_grok_tts_voice
+    except Exception:
+        # 没装 grok adapter — 保守要求 xAI custom 格式才路由
+        return bool(_XAI_CUSTOM_VOICE_PATTERN.match(voice_id))
+    canonical, recognized = normalize_grok_tts_voice(voice_id)
+    if recognized:
+        # alias / canonical → collision check (current + 跨槽)
+        if _get_voice_meta(canonical) is not None:
+            return False
+        try:
+            if get_config_manager().voice_id_exists_in_any_storage(canonical):
+                return False
+        except Exception:
+            pass
+        return True
+    # 不识别 → 必须形如 xAI custom voice id 才路由到 grok
+    return bool(_XAI_CUSTOM_VOICE_PATTERN.match(voice_id))
+
+
 def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     """
     根据 core_api 类型和是否有自定义音色，返回一个 callable。
@@ -2888,14 +3798,28 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
           不支持原生 TTS 时为 None
     """
     cm = get_config_manager()
+    try:
+        core_cfg = cm.get_core_config() or {}
+    except Exception:
+        core_cfg = {}
 
-    # 优先检查克隆音色 provider（MiniMax / 阿里 CosyVoice）
+    if core_cfg.get('DISABLE_TTS', False):
+        logger.info("TTS disabled; using dummy TTS worker")
+        return dummy_tts_worker, None, None
+
+    # voice_meta 提到 outer scope：cosyvoice 分支也需要它来跟"已存 clone"区分
+    # "xAI 自定义 voice / 未知 voice"。MiniMax / ElevenLabs 分支保持嵌套以保留现有日志。
+    voice_meta = None
+
+    # 优先检查克隆音色 provider（MiniMax / ElevenLabs / 阿里 CosyVoice）
     if has_custom_voice and voice_id:
         voice_meta = _get_voice_meta(voice_id)
         if voice_meta is None:
             # 本地元数据缺失 — 可能是本地 TTS 音色（GPT-SoVITS / CosyVoice local），
-            # 也可能是远端 clone 成功但本地保存失败。fallthrough 让后续分支处理。
-            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax 检测", voice_id)
+            # 远端 clone 成功但本地保存失败，或 xAI 自定义 voice。
+            # 不要在这里 short-circuit，让下面的 tts_custom（GPT-SoVITS / local
+            # CosyVoice）分支先有机会匹配 — grok 短路放到 cosyvoice 块里。
+            logger.debug("克隆音色 %s 无本地元数据，跳过 MiniMax/ElevenLabs 检测", voice_id)
         elif voice_meta.get('provider', '').startswith('minimax'):
             provider = voice_meta['provider']
             logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
@@ -2907,6 +3831,12 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             )
             worker = partial(minimax_tts_worker, base_url=base_url)
             return worker, api_key, 'minimax'
+        elif voice_meta.get('provider') == 'elevenlabs':
+            logger.info("检测到 ElevenLabs 克隆音色: %s，使用 ElevenLabs TTS Worker", voice_id)
+            elevenlabs_options = _get_elevenlabs_options()
+            base_url = voice_meta.get('elevenlabs_base_url') or elevenlabs_options['base_url']
+            worker = partial(elevenlabs_tts_worker, base_url=base_url)
+            return worker, _resolve_elevenlabs_api_key(cm), 'elevenlabs'
 
     # core_api_type 命中 native voice provider + 用户选了该 provider 的原生声线
     # (e.g. Gemini Puck/Leda/中文男) 时优先走原生 worker，不能被 has_custom_voice=False
@@ -2922,11 +3852,10 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
 
     try:
         tts_config = cm.get_model_api_config('tts_custom')
+        base_url = tts_config.get('base_url') or ''
         if tts_config.get('is_custom'):
-            base_url = tts_config.get('base_url') or ''
             # GPT-SoVITS / local CosyVoice 需要用户显式启用 gptsovitsEnabled 开关，
             # 仅 enableCustomApi + http URL 不应自动路由到 GPT-SoVITS。
-            core_cfg = cm.get_core_config()
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
@@ -2942,9 +3871,25 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     # 仍会保留 has_custom_voice=True 进入此分支。
     if has_custom_voice and voice_id:
         from utils.api_config_loader import get_free_voices
-        if voice_id not in set(get_free_voices().values()):
+        if voice_id in set(get_free_voices().values()):
+            logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
+        elif core_api_type == 'grok' and voice_meta is None and _grok_voice_id_is_xai_custom(voice_id):
+            # grok session + voice 不是已存 clone（voice_meta=None）+ 不是 free preset
+            # + 不是 alias 撞用户克隆 → 必然是 xAI 自定义 voice（8-char lowercase
+            # alphanumeric，POST /v1/custom-voices 返回的 id）。走 grok worker
+            # 用 xAI 端点合成，api_key 显式给 CORE_API_KEY（has_custom=True 默认
+            # 从 tts_custom 槽取凭证，对 xAI 是错凭证）。voice_meta 非 None 的
+            # cosyvoice clone 不进这分支，即使 core_api='grok' 也保留 cosyvoice 路径。
+            # tts_custom (GPT-SoVITS / local CosyVoice) 已经在前面的 try 块里短路
+            # 返回，到不了这里。`_grok_voice_id_is_xai_custom` 还会拦下 alias
+            # collision：用户克隆了 canonical voice 'leo' 但输入 alias 'male' 时，
+            # core._has_custom_tts 会因 collision 把 has_custom_voice 置 True，
+            # 这里要识别出来转走 cosyvoice，否则 grok worker 会把 alias normalize
+            # 回内置 voice，悄悄绕过用户的克隆。
+            grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+            return grok_streaming_tts_worker, grok_api_key, 'grok'
+        else:
             return cosyvoice_vc_tts_worker, None, 'cosyvoice'
-        logger.info("voice_id '%s' 是免费预设音色，跳过 CosyVoice，使用默认 TTS", voice_id)
 
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
@@ -2962,6 +3907,14 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         return gemini_tts_worker, None, 'gemini'
     elif core_api_type == 'openai':
         return openai_tts_worker, None, 'openai'
+    elif core_api_type == 'grok':
+        # default 段 fallthrough（has_custom=True + free preset voice 时也会到这里）
+        # 也必须显式给 CORE_API_KEY override —— has_custom=True 时 _start_tts_thread
+        # 默认从 tts_custom 槽取凭证，对 xAI 是错的鉴权 key（往往是 cosyvoice 或
+        # qwen 的 ASSIST key）。与 _resolve_grok_native_tts_worker / cosyvoice 上面
+        # 的 grok short-circuit 同源。
+        grok_api_key = (cm.get_core_config() or {}).get('CORE_API_KEY', '')
+        return grok_streaming_tts_worker, grok_api_key, 'grok'
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker, None, None
@@ -3158,7 +4111,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if ws:
                 try:
                     await ws.send(json.dumps({"text": tts_text}))
-                    _record_tts_telemetry("local_cosyvoice", tts_text)
+                    _record_tts_telemetry("local_cosyvoice", len(tts_text))
                     # TTS 文本原文不写 logger
                     logger.debug(f"发送合成片段 (len={len(tts_text)} chars)")
                     print(f"发送合成片段: {tts_text}")

@@ -49,22 +49,34 @@ def _install_factstore(tmpdir: str):
 
 
 def test_negative_keywords_hit():
-    from config.prompts.prompts_memory import scan_negative_keywords
+    from config.prompts.prompts_directives import scan_negative_keywords
     assert scan_negative_keywords("这个话题别再说了", "zh") is True
     assert scan_negative_keywords("换个话题吧", "zh") is True
     assert scan_negative_keywords("今天天气不错", "zh") is False
 
 
 def test_negative_keywords_fallback_unknown_lang():
-    from config.prompts.prompts_memory import scan_negative_keywords
+    from config.prompts.prompts_directives import scan_negative_keywords
     # Unknown lang → fall back to zh
     assert scan_negative_keywords("别提了", "xyz") is True
 
 
 def test_negative_keywords_english():
-    from config.prompts.prompts_memory import scan_negative_keywords
+    from config.prompts.prompts_directives import scan_negative_keywords
     assert scan_negative_keywords("please stop talking about this", "en") is True
     assert scan_negative_keywords("the weather is nice", "en") is False
+
+
+def test_negative_keywords_region_locale():
+    """带 region 后缀的 locale（``en-US`` / ``pt-BR``）必须能命中——之前
+    没归一化，会回退到 zh 词表，扫错语言（CodeRabbit Major / 5b42273）。
+
+    繁体 zh-Hant 输入虽然归一化到 zh，但 keyword 词表是简体（"换个话题"
+    vs "換個話題"是不同 Unicode 字符），需要的话另起 OpenCC 转换路径，
+    本测试不涵盖。"""
+    from config.prompts.prompts_directives import scan_negative_keywords
+    assert scan_negative_keywords("please stop talking about this", "en-US") is True
+    assert scan_negative_keywords("não fale disso", "pt-BR") is True
 
 
 # ── S6: Stage-1 prompt carries no existing-observation context ──────

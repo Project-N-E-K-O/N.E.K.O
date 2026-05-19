@@ -133,7 +133,6 @@ from .service import (
 )
 from .state import GalgameSharedState, build_initial_state
 from .store import GalgameStore
-from .tesseract_support import install_tesseract
 from .textractor_support import install_textractor
 from .ui_api import build_open_ui_payload
 from .screen_classifier import classify_screen_from_ocr, normalize_screen_type
@@ -153,8 +152,24 @@ def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -
         return
 
 
-_OCR_BACKEND_SELECTIONS = {"auto", "rapidocr", "tesseract"}
+_OCR_BACKEND_SELECTIONS = {"auto", "rapidocr"}
 _OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}
+
+
+def _public_context_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    summary_seed = str(snapshot.get("summary_seed") or "")
+    return {
+        "scene_id": str(snapshot.get("scene_id") or ""),
+        "game_id": str(snapshot.get("game_id") or ""),
+        "route_id": str(snapshot.get("route_id") or ""),
+        "stable_line_count": len(snapshot.get("stable_line_ids") or [])
+        if isinstance(snapshot.get("stable_line_ids"), list)
+        else 0,
+        "summary_seed_chars": len(summary_seed),
+        "saved_at": float(snapshot.get("saved_at") or 0.0),
+    }
 
 
 def _migrate_legacy_capture_backend(value: object) -> object:
@@ -794,7 +809,6 @@ class GalgamePlugin(NekoPluginBase):
         self._poll_bridge_thread_lock = threading.Lock()
         self._bridge_poll_task_lock = threading.RLock()
         self._textractor_install_lock = threading.Lock()
-        self._tesseract_install_lock = threading.Lock()
         # rapidocr/dxcam *install* locks removed: both bundled into main program.
         # rapidocr_models download lock is separate — it's not installing the
         # package, it's pulling the user-selected language pack into the
@@ -1059,9 +1073,19 @@ class GalgamePlugin(NekoPluginBase):
         with self._state_lock:
             self._clear_pending_ocr_advance_captures_locked()
 
-    def _snapshot_state(self, *, fresh: bool = False) -> dict[str, Any]:
+    def _snapshot_state(
+        self,
+        *,
+        fresh: bool = False,
+        include_private_context: bool = False,
+    ) -> dict[str, Any]:
         with self._state_lock:
-            if not fresh and not self._state_dirty and self._cached_snapshot is not None:
+            if (
+                not include_private_context
+                and not fresh
+                and not self._state_dirty
+                and self._cached_snapshot is not None
+            ):
                 return self._cached_snapshot
             state = self._state
             raw = {
@@ -1099,10 +1123,11 @@ class GalgamePlugin(NekoPluginBase):
                 "ocr_reader_runtime": dict(state.ocr_reader_runtime),
                 "ocr_capture_profiles": dict(state.ocr_capture_profiles),
                 "ocr_window_target": dict(state.ocr_window_target),
+                "context_snapshot": dict(state.context_snapshot),
                 "plugin_error": state.plugin_error,
                 "dependency_status": dict(state.dependency_status),
             }
-            should_cache = not fresh
+            should_cache = not fresh and not include_private_context
             if should_cache:
                 self._state_dirty = False
                 self._cached_snapshot = None
@@ -1141,6 +1166,9 @@ class GalgamePlugin(NekoPluginBase):
             "ocr_reader_runtime": json_copy(raw["ocr_reader_runtime"]),
             "ocr_capture_profiles": json_copy(raw["ocr_capture_profiles"]),
             "ocr_window_target": json_copy(raw["ocr_window_target"]),
+            "context_snapshot": json_copy(raw["context_snapshot"])
+            if include_private_context
+            else _public_context_snapshot(raw["context_snapshot"]),
             "plugin_error": raw["plugin_error"],
             "dependency_status": json_copy(raw["dependency_status"]),
         }
@@ -1883,6 +1911,20 @@ class GalgamePlugin(NekoPluginBase):
             assign_json("ocr_reader_runtime", payload["ocr_reader_runtime"])
             assign_json_if_live_unchanged("ocr_capture_profiles", payload["ocr_capture_profiles"])
             assign_json_if_live_unchanged("ocr_window_target", payload["ocr_window_target"])
+            context_snapshot = payload.get("context_snapshot", state.context_snapshot)
+            if isinstance(context_snapshot, dict):
+                preserve_private_context = (
+                    context_snapshot
+                    and "summary_seed" not in context_snapshot
+                    and "stable_line_ids" not in context_snapshot
+                )
+                existing_context_snapshot = state.context_snapshot
+                has_private_context = isinstance(existing_context_snapshot, dict) and (
+                    str(existing_context_snapshot.get("summary_seed") or "").strip()
+                    or list(existing_context_snapshot.get("stable_line_ids") or [])
+                )
+                if not (preserve_private_context and has_private_context):
+                    assign_json("context_snapshot", context_snapshot)
             assign("plugin_error", str(payload["plugin_error"]))
             assign_json_if_live_unchanged(
                 "dependency_status",
@@ -2749,6 +2791,7 @@ class GalgamePlugin(NekoPluginBase):
                 restored.get(STORE_OCR_CAPTURE_PROFILES, {})
             )
             self._state.ocr_window_target = json_copy(restored.get(STORE_OCR_WINDOW_TARGET, {}))
+            self._state.context_snapshot = self._load_context_snapshot_for_state()
             if warnings and not self._state.last_error:
                 self._state.last_error = make_error(
                     "; ".join(warnings),
@@ -2759,6 +2802,132 @@ class GalgamePlugin(NekoPluginBase):
             self._cached_snapshot = None
 
         self._apply_config_overrides_from_store()
+
+    def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
+        if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
+            return {}
+        snapshot = self._persist.load_context_snapshot(
+            current_game_id=str(current_game_id or ""),
+            max_age_seconds=float(getattr(self._cfg, "context_persist_max_age_seconds", 3600.0)),
+            require_game_id=bool(getattr(self._cfg, "context_persist_require_game_id", True)),
+        )
+        return json_copy(snapshot) if isinstance(snapshot, dict) else {}
+
+    def _load_context_snapshot_for_state(self) -> dict[str, Any]:
+        bound_game_id = str(self._state.bound_game_id or "")
+        active_game_id = str(self._state.active_game_id or "")
+        require_game_id = bool(getattr(self._cfg, "context_persist_require_game_id", True))
+        game_ids: list[str] = []
+        for game_id in (bound_game_id, active_game_id):
+            if game_id and game_id not in game_ids:
+                game_ids.append(game_id)
+        if not require_game_id and not game_ids:
+            game_ids.append("")
+        for game_id in game_ids:
+            if require_game_id and not game_id:
+                continue
+            snapshot = self._load_context_snapshot_for_game(game_id)
+            if snapshot:
+                return snapshot
+        return {}
+
+    def _context_snapshot_needs_reload(
+        self,
+        snapshot: object,
+        *,
+        current_game_id: str,
+    ) -> bool:
+        if not isinstance(snapshot, dict) or not snapshot:
+            return True
+        if not bool(getattr(self._cfg, "context_persist_require_game_id", True)):
+            return False
+        return str(snapshot.get("game_id") or "").strip() != str(current_game_id or "").strip()
+
+    def _active_game_id_for_context_persist(self) -> str:
+        with self._state_lock:
+            return str(self._state.active_game_id or "")
+
+    def _context_snapshot_liveness_matches(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        game_id: str,
+        session_id: str,
+    ) -> bool:
+        latest_snapshot = getattr(self._state, "latest_snapshot", {})
+        live_snapshot = (
+            latest_snapshot
+            if isinstance(latest_snapshot, dict)
+            else {}
+        )
+        if session_id:
+            return session_id == str(getattr(self._state, "active_session_id", "") or "")
+        return (
+            (not game_id or game_id == str(getattr(self._state, "active_game_id", "") or ""))
+            and (
+                not snapshot["scene_id"]
+                or snapshot["scene_id"] == str(live_snapshot.get("scene_id") or "")
+            )
+            and (
+                not snapshot["route_id"]
+                or snapshot["route_id"] == str(live_snapshot.get("route_id") or "")
+            )
+        )
+
+    def _persist_context_snapshot_from_summary(
+        self,
+        context: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
+            return
+        if bool(payload.get("degraded")):
+            return
+        game_id = str(context.get("game_id") or "").strip()
+        session_id = str(context.get("session_id") or "").strip()
+        if not game_id:
+            game_id = self._active_game_id_for_context_persist().strip()
+        if not game_id and bool(
+            getattr(self._cfg, "context_persist_require_game_id", True)
+        ):
+            return
+        stable_line_ids = [
+            str(item.get("line_id") or "").strip()
+            for item in context.get("stable_lines", [])
+            if isinstance(item, dict) and str(item.get("line_id") or "").strip()
+        ]
+        summary_seed = str(payload.get("summary") or context.get("scene_summary_seed") or "").strip()
+        snapshot = {
+            "scene_id": str(context.get("scene_id") or "").strip(),
+            "game_id": game_id,
+            "route_id": str(context.get("route_id") or "").strip(),
+            "summary_seed": summary_seed,
+            "stable_line_ids": stable_line_ids[-64:],
+            "saved_at": time.time(),
+        }
+        with self._state_lock:
+            live_matches = self._context_snapshot_liveness_matches(
+                snapshot=snapshot,
+                game_id=game_id,
+                session_id=session_id,
+            )
+        if not live_matches:
+            self.logger.warning("galgame saved snapshot persist skipped: stale summary payload")
+            return
+        with self._state_lock:
+            if not self._context_snapshot_liveness_matches(
+                snapshot=snapshot,
+                game_id=game_id,
+                session_id=session_id,
+            ):
+                self.logger.warning(
+                    "galgame context_snapshot persist skipped: stale summary context"
+                )
+                return
+            self._persist.persist_context_snapshot(snapshot)
+            self._state.context_snapshot = json_copy(snapshot)
+            self._state_dirty = True
+            self._cached_snapshot = None
 
     def _apply_config_overrides_from_store(self) -> None:
         if self._cfg is None:
@@ -2897,18 +3066,6 @@ class GalgamePlugin(NekoPluginBase):
                     "ocr_version": "",
                     "detail": "config_not_loaded",
                     "runtime_error": "",
-                },
-                "tesseract": {
-                    "install_supported": False,
-                    "installed": False,
-                    "can_install": False,
-                    "detected_path": "",
-                    "target_dir": "",
-                    "expected_executable_path": "",
-                    "tessdata_dir": "",
-                    "required_languages": [],
-                    "missing_languages": [],
-                    "detail": "config_not_loaded",
                 },
                 "textractor": {
                     "install_supported": False,
@@ -3297,7 +3454,9 @@ class GalgamePlugin(NekoPluginBase):
                 with self._state_lock:
                     self._last_agent_tick_at = time.monotonic()
                 try:
-                    await self._game_agent.tick(self._snapshot_state())
+                    await self._game_agent.tick(
+                        self._snapshot_state(include_private_context=True)
+                    )
                     await self._game_agent.drain_summary_tasks(
                         timeout=self._bridge_tick_summary_drain_timeout_seconds()
                     )
@@ -3963,6 +4122,14 @@ class GalgamePlugin(NekoPluginBase):
         local["active_session_meta"] = build_active_session_meta(candidate)
         local["active_data_source"] = candidate.data_source
         local["latest_snapshot"] = json_copy(session.get("state", {}))
+        if self._context_snapshot_needs_reload(
+            local.get("context_snapshot"),
+            current_game_id=candidate.game_id,
+        ):
+            local["context_snapshot"] = await asyncio.to_thread(
+                self._load_context_snapshot_for_game,
+                candidate.game_id,
+            )
 
         if warmup_needed:
             end_offset = int(local["events_byte_offset"]) if restore_cursor else None
@@ -4238,7 +4405,6 @@ class GalgamePlugin(NekoPluginBase):
                 bool(getattr(self._cfg, "ocr_reader_enabled", False))
                 and bool(getattr(self._cfg, "ocr_reader_enabled_explicit", False))
             )
-            or str(getattr(self._cfg, "ocr_reader_tesseract_path", "") or "").strip()
             or str(getattr(self._cfg, "ocr_reader_install_target_dir", "") or "").strip()
             or str(getattr(self._cfg, "rapidocr_install_target_dir", "") or "").strip()
             or (
@@ -4250,7 +4416,7 @@ class GalgamePlugin(NekoPluginBase):
                 and str(getattr(self._cfg, "ocr_reader_backend_selection", "") or "")
                 .strip()
                 .lower()
-                in {"rapidocr", "tesseract"}
+                in {"rapidocr"}
             )
             or (
                 bool(getattr(self._cfg, "ocr_reader_capture_backend_explicit", False))
@@ -4605,53 +4771,7 @@ class GalgamePlugin(NekoPluginBase):
         finally:
             self._textractor_install_lock.release()
 
-    @plugin_entry(
-        id="galgame_install_tesseract",
-        name=tr("entries.galgame_install_tesseract.name", default='安装 Tesseract'),
-        description=tr("entries.galgame_install_tesseract.description", default='检测并下载安装本地 Tesseract OCR，随后刷新 galgame_plugin 的 OCR 状态。'),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "force": {"type": "boolean", "default": False},
-            },
-        },
-        timeout=300.0,
-        llm_result_fields=["summary"],
-    )
-    async def galgame_install_tesseract(self, force: bool = False, **_):
-        if self._cfg is None:
-            return Err(SdkError(self._not_configured_message()))
-        if not self._tesseract_install_lock.acquire(blocking=False):
-            return Err(SdkError(self._install_in_progress_message("Tesseract")))
-        current_run_id = self._resolve_current_run_id(_)
-        progress_callback = self._resolve_install_progress_callback(current_run_id)
-        try:
-            install_result = await install_tesseract(
-                logger=self.logger,
-                configured_path=self._cfg.ocr_reader_tesseract_path,
-                install_target_dir_raw=self._cfg.ocr_reader_install_target_dir,
-                manifest_url=self._cfg.ocr_reader_install_manifest_url,
-                timeout_seconds=self._cfg.ocr_reader_install_timeout_seconds,
-                languages=self._cfg.ocr_reader_languages,
-                force=bool(force),
-                task_id=current_run_id or None,
-                progress_callback=progress_callback,
-            )
-            clear_install_inspection_cache()
-            await self._poll_bridge(force=True)
-            return Ok(
-                {
-                    "summary": str(install_result.get("summary") or self._install_ok_message("tesseract", "Tesseract")),
-                    "install_result": install_result,
-                    "status": await self._build_status_payload_async(),
-                }
-            )
-        except Exception as exc:
-            return Err(SdkError(self._format_install_entry_error("tesseract", "Tesseract", exc)))
-        finally:
-            self._tesseract_install_lock.release()
-
-    # NOTE: galgame_install_rapidocr / galgame_install_dxcam SDK actions removed —
+    # NOTE: RapidOCR / DXcam runtime SDK install actions removed —
     # both packages are now bundled into the main program (see pyproject.toml
     # [dependency-groups] galgame). Run `uv sync --group galgame` for source
     # installs; packaged builds always include them.
@@ -4659,7 +4779,7 @@ class GalgamePlugin(NekoPluginBase):
     @plugin_entry(
         id="galgame_download_rapidocr_models",
         name=tr("entries.galgame_download_rapidocr_models.name", default='下载 RapidOCR 模型'),
-        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从 ModelScope 下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
+        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择优先从百度云下载缺失的 RapidOCR 模型文件到插件模型缓存目录，下载失败时自动回退至 ModelScope。bundled 默认（ch+PP-OCRv4）不需要下载。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -4944,7 +5064,9 @@ class GalgamePlugin(NekoPluginBase):
 
         if self._game_agent is not None and not mode_allows_agent_actuation(mode):
             try:
-                agent_payload = await self._game_agent.apply_mode_change(self._snapshot_state())
+                agent_payload = await self._game_agent.apply_mode_change(
+                    self._snapshot_state(include_private_context=True)
+                )
                 payload["agent"] = json_copy(agent_payload)
             except Exception as exc:
                 payload["agent_warning"] = f"apply_mode_change failed: {exc}"
@@ -6183,9 +6305,9 @@ class GalgamePlugin(NekoPluginBase):
     async def galgame_explain_line(self, line_id: str = "", **_):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
-        local = self._snapshot_state()
+        local = self._snapshot_state(include_private_context=True)
         try:
-            context = build_explain_context(local, line_id=line_id.strip())
+            context = build_explain_context(local, line_id=line_id.strip(), config=self._cfg)
         except ValueError as exc:
             context = {
                 "line_id": "",
@@ -6224,8 +6346,8 @@ class GalgamePlugin(NekoPluginBase):
     async def galgame_summarize_scene(self, scene_id: str = "", **_):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
-        local = self._snapshot_state()
-        context = build_summarize_context(local, scene_id=scene_id.strip())
+        local = self._snapshot_state(include_private_context=True)
+        context = build_summarize_context(local, scene_id=scene_id.strip(), config=self._cfg)
         snapshot = context.get("current_snapshot") if isinstance(context.get("current_snapshot"), dict) else {}
         if not list(context.get("recent_lines") or []) and not str(snapshot.get("text") or ""):
             return Ok(
@@ -6239,6 +6361,13 @@ class GalgamePlugin(NekoPluginBase):
             context=context,
         )
         payload["scene_id"] = str(context.get("scene_id") or "")
+        try:
+            await asyncio.to_thread(self._persist_context_snapshot_from_summary, context, payload)
+        except Exception as exc:
+            self.logger.warning(
+                "persist context snapshot from scene summary failed: {}",
+                exc,
+            )
         return Ok(payload)
 
     @plugin_entry(
@@ -6252,8 +6381,8 @@ class GalgamePlugin(NekoPluginBase):
     async def galgame_suggest_choice(self, **_):
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
-        local = self._snapshot_state()
-        context = build_suggest_context(local)
+        local = self._snapshot_state(include_private_context=True)
+        context = build_suggest_context(local, config=self._cfg)
         if not context["visible_choices"]:
             return Ok(
                 apply_input_degraded_result(
@@ -6314,7 +6443,7 @@ class GalgamePlugin(NekoPluginBase):
     ):
         if self._game_agent is None:
             return Err(SdkError("galgame_plugin game agent is not initialized"))
-        local = self._snapshot_state()
+        local = self._snapshot_state(include_private_context=True)
         if action == "query_status":
             return Ok(await self._game_agent.query_status(local))
         if action == "query_context":

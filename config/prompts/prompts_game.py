@@ -7,6 +7,12 @@ from config.prompts.prompts_sys import _loc
 def _normalize_prompt_lang(lang: str | None) -> str:
     value = str(lang or "").strip().lower().replace("_", "-")
     if not value:
+        # Stays "zh" intentionally: the soccer/game module hardcodes
+        # Chinese-flavored helpers (e.g. fullwidth "；" in
+        # ``_apply_soccer_anger_pressure_cap``) and helpers such as
+        # ``_apply_soccer_anger_pressure_cap`` don't accept a language
+        # parameter at all. Module-internal default is Chinese; cross-module
+        # fallback (resolve_global_language) is English.
         return "zh"
     if value.startswith("zh") or value in {"schinese", "tchinese"}:
         return "zh"
@@ -88,7 +94,7 @@ SOCCER_QUICK_LINES_PROMPT = """\
 必须包含这些 key：
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 
 示例格式：
 {{
@@ -370,7 +376,7 @@ Requirements:
 Required keys:
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 
 Example:
 {{
@@ -397,7 +403,7 @@ LLM のリアルタイム返答が間に合わない時に使う、ゲーム内�
 必須 key：
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 """
 
 _SOCCER_QUICK_LINES_PROMPT_KO = """\
@@ -418,7 +424,7 @@ LLM 실시간 응답이 늦을 때 즉시 말풍선으로 쓸 게임 내 짧은 
 필수 key:
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 """
 
 _SOCCER_QUICK_LINES_PROMPT_RU = """\
@@ -439,7 +445,7 @@ _SOCCER_QUICK_LINES_PROMPT_RU = """\
 Обязательные ключи:
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 """
 
 _SOCCER_QUICK_LINES_PROMPT_ES = """\
@@ -460,7 +466,7 @@ Requisitos:
 Claves requeridas:
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 """
 
 _SOCCER_QUICK_LINES_PROMPT_PT = """\
@@ -481,7 +487,7 @@ Requisitos:
 Chaves obrigatórias:
 goal-scored, goal-conceded, own-goal-by-ai, own-goal-by-player,
 steal, stolen, player-idle, player-charging-long,
-free-ball, startle, zoneout
+free-ball, startle-direct, startle-graze, zoneout
 """
 
 SOCCER_QUICK_LINES_PROMPTS = {
@@ -905,7 +911,7 @@ def get_soccer_pregame_context_prompt(lang: str | None = None) -> str:
 
 def get_soccer_pregame_context_formatter_labels(lang: str | None = None) -> dict[str, str]:
     prompt_lang = _normalize_prompt_lang(lang)
-    return SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS["zh"]
+    return SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS["en"]
 
 
 def get_soccer_anger_pressure_cap_message(lang: str | None = None) -> str:

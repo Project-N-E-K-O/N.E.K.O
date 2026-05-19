@@ -71,6 +71,8 @@ def test_runtime_typed_structures_and_dataclasses() -> None:
         "llm_result_fields",
         "llm_result_schema",
         "llm_result_model",
+        "quick_action",
+        "quick_action_config",
         "extra",
         "metadata",
     ]

@@ -103,13 +103,8 @@
                   {{ plugin.host_plugin_id }}
                 </el-link>
               </el-descriptions-item>
-              <el-descriptions-item v-if="!isExtension" :label="$t('plugins.enabled')">
-                <el-tag size="small" :type="plugin.enabled ? 'success' : 'info'">
-                  {{ plugin.enabled ? $t('plugins.enabled') : $t('plugins.disabled') }}
-                </el-tag>
-              </el-descriptions-item>
               <el-descriptions-item v-if="!isExtension" :label="$t('plugins.autoStart')">
-                <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'" :class="{ 'is-disabled': !plugin.enabled }">
+                <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'">
                   {{ plugin.autoStart ? $t('plugins.autoStart') : $t('plugins.manualStart') }}
                 </el-tag>
               </el-descriptions-item>
@@ -328,7 +323,7 @@ async function fetchSurfaces() {
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
   try {
-    const info = await getPluginUiSurfaceInfo(currentPluginId)
+    const info = await getPluginUiSurfaceInfo(currentPluginId, String(locale.value))
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings
@@ -390,6 +385,10 @@ watch(pluginId, async () => {
   } finally {
     loading.value = false
   }
+})
+
+watch(locale, async () => {
+  await fetchSurfaces()
 })
 </script>
 

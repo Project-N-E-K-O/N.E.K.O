@@ -72,6 +72,18 @@ class TelemetryEvent(BaseModel):
     """客户端上报的遥测负载。"""
     device_id: str = Field(..., min_length=16, max_length=128)
     app_version: str = Field(default="unknown", max_length=64)
+    # 三个用户维度字段。`branch` 在客户端首次启动时随机抽签后落盘，后续保持稳
+    # 定，用于 A/B test 分流；`locale` / `timezone` 每次上报取实时值，同设备
+    # 不同 locale/tz 仍视为同一 device，server 端覆写最新值即可。
+    branch: str = Field(default="unknown", max_length=64)
+    locale: str = Field(default="unknown", max_length=32)
+    timezone: str = Field(default="unknown", max_length=64)
+    # 发行渠道：steam（Steam 启动）/ release（编译版直启）/ source（源码运行）/ unknown
+    distribution: str = Field(default="unknown", max_length=32)
+    # Steam64 user id（string，避免 u64 在 JS 等消费方精度丢失）。仅在
+    # Steamworks SDK 起来 + 拿到 Users.GetSteamID 时填值，否则为空 string。
+    # max_length=24 给 u64 十进制（20 位）留余量，防止异常长串攻击。
+    steam_user_id: str = Field(default="", max_length=24)
     daily_stats: Dict[str, DailyStats] = Field(default_factory=dict)
     recent_records: List[RecentRecord] = Field(default_factory=list)
 

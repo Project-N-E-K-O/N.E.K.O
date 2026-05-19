@@ -10,6 +10,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import sys
 from pathlib import Path
 
 from plugin.sdk.shared.logging import LogLevel, setup_sdk_logging
@@ -18,6 +22,62 @@ from plugin.sdk.shared.logging import LogLevel, setup_sdk_logging
 def resolve_plugin_dir(ctx: object) -> Path:
     config_path = getattr(ctx, "config_path", None)
     return Path(config_path).parent if config_path is not None else Path.cwd()
+
+
+def _safe_plugin_dirname(plugin_id: object) -> str:
+    value = str(plugin_id or "plugin").strip() or "plugin"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "plugin"
+
+
+def _normalize_absolute_path(raw: object) -> Path | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            return None
+        return path.resolve(strict=False)
+    except Exception:
+        return None
+
+
+def _standard_runtime_root() -> Path:
+    app_name = "N.E.K.O"
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base).expanduser().resolve(strict=False) / app_name
+        return Path.home() / "AppData" / "Local" / app_name
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / app_name
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data_home).expanduser() if xdg_data_home else Path.home() / ".local" / "share"
+    return base.resolve(strict=False) / app_name
+
+
+def _read_policy_selected_root(anchor_root: Path) -> Path | None:
+    try:
+        payload = json.loads((anchor_root / "state" / "storage_policy.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _normalize_absolute_path(payload.get("selected_root"))
+
+
+def resolve_runtime_data_root() -> Path:
+    selected_root = _normalize_absolute_path(os.environ.get("NEKO_STORAGE_SELECTED_ROOT"))
+    if selected_root is not None:
+        return selected_root
+
+    anchor_root = _normalize_absolute_path(os.environ.get("NEKO_STORAGE_ANCHOR_ROOT")) or _standard_runtime_root()
+    policy_root = _read_policy_selected_root(anchor_root)
+    return policy_root or anchor_root
+
+
+def resolve_plugin_data_dir(ctx: object) -> Path:
+    return resolve_runtime_data_root() / "plugins" / _safe_plugin_dirname(getattr(ctx, "plugin_id", "plugin")) / "data"
 
 
 def resolve_effective_config(ctx: object) -> dict[str, object]:
@@ -66,7 +126,9 @@ def setup_plugin_file_logging(
 __all__ = [
     "resolve_db_config",
     "resolve_effective_config",
+    "resolve_plugin_data_dir",
     "resolve_plugin_dir",
+    "resolve_runtime_data_root",
     "resolve_state_backend",
     "resolve_store_enabled",
     "setup_plugin_file_logging",
