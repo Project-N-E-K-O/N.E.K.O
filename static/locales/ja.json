@@ -3375,27 +3375,27 @@
     "characterModelNotSet": "現在のキャラクターにモデルが設定されていません",
     "cookiesLogin": {
         "title": "N.E.K.O クレデンシャル制御センター",
-        "header": "🔐 クレデンシャル取得センター",
-        "bilibili": "📺 ビリビリ (Bilibili)",
-        "douyin": "🎵 抖音 (Douyin)",
-        "kuaishou": "🧡 快手 (Kuaishou)",
-        "weibo": "🌏 微博 (Weibo)",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 网易雲音楽",
+        "header": "クレデンシャル取得センター",
+        "bilibili": "ビリビリ (Bilibili)",
+        "douyin": "抖音 (Douyin)",
+        "kuaishou": "快手 (Kuaishou)",
+        "weibo": "微博 (Weibo)",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "网易雲音楽",
         "saveConfig": "設定を保存",
         "encryptStorage": "ローカルファイルに安全に暗号化保存",
         "localMonitoring": "ローカルステータス監視",
         "removeCredentials": "削除",
         "confirmRemove": "{{platformName}}のログインクレデンシャルを本当にクリアしますか？",
-        "credentialsRemoved": "✅ クレデンシャルの削除に成功しました",
-        "credentialsSaved": "✅ {{platformName}} クレデンシャルの保存に成功しました！",
+        "credentialsRemoved": "クレデンシャルの削除に成功しました",
+        "credentialsSaved": "{{platformName}} クレデンシャルの保存に成功しました！",
         "credentialsRemovedFailed": "削除に失敗しました",
-        "removeFailed": "❌ 削除に失敗しました、ネットワークを確認してください",
-        "requiredField": "⚠️ 必須項目を記入してください: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] に無効な文字が含まれています...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] に前後の空白が含まれていたため、自動的にトリミングされました。確認後、再提出してください",
-        "networkError": "❌ ネットワークエラー: バックエンドサービスに接続できません",
+        "removeFailed": "削除に失敗しました、ネットワークを確認してください",
+        "requiredField": "必須項目を記入してください: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] に無効な文字が含まれています...",
+        "whitespaceTrimmed": "[{{fieldName}}] に前後の空白が含まれていたため、自動的にトリミングされました。確認後、再提出してください",
+        "networkError": "ネットワークエラー: バックエンドサービスに接続できません",
         "saveFailed": "保存に失敗しました、フォーマットが正しいか確認してください",
         "pasteHere": "ペーストここ",
         "submitting": "安全に暗号化して送信する...",
@@ -3403,13 +3403,13 @@
         "statusLoadFailed": "状態の読み込みに失敗しました",
         "thisPlatform": "このプラットフォーム",
         "instructions": {
-            "bilibili": "📌 <b>対象：</b> <b>bilibili.com</b> にアクセスして Cookie を取得してください。",
-            "douyin": "📌 <b>対象：</b> <b>douyin.com</b> にアクセスして Cookie を取得してください。",
-            "kuaishou": "📌 <b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
-            "weibo": "📌 <b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
-            "twitter": "📌 <b>対象：</b> <b>x.com</b> にアクセスして Cookie を取得してください。",
-            "reddit": "📌 <b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。",
-            "netease": "📌 <b>対象：</b> <b>music.163.com</b> にアクセスして Cookie を取得してください。"
+            "bilibili": "<b>対象：</b> <b>bilibili.com</b> にアクセスして Cookie を取得してください。",
+            "douyin": "<b>対象：</b> <b>douyin.com</b> にアクセスして Cookie を取得してください。",
+            "kuaishou": "<b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
+            "weibo": "<b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
+            "twitter": "<b>対象：</b> <b>x.com</b> にアクセスして Cookie を取得してください。",
+            "reddit": "<b>対象：</b> <b>reddit.com</b> にアクセスして Cookie を取得してください。",
+            "netease": "<b>対象：</b> <b>music.163.com</b> にアクセスして Cookie を取得してください。"
         },
         "guide": {
             "title": "初心者向け共通ガイド",
@@ -3507,9 +3507,9 @@
         },
         "qrLogin": {
             "tryQR": "または...QRコードログインを試しますか？",
-            "openQR": "📱 QRログインを開く",
+            "openQR": "QRログインを開く",
             "loading": "QRコードを取得中...",
-            "scanTitle": "📱 {{platform}} QRログイン",
+            "scanTitle": "{{platform}} QRログイン",
             "qrCodeAlt": "ログイン用QRコード",
             "waiting": "スキャン待ち...",
             "validFor": "QRコード有効期限: {{seconds}}秒",
@@ -3518,9 +3518,9 @@
             "retry": "再試行",
             "networkError": "ネットワークリクエストに失敗しました、接続を確認してください",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}、更新してください",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}、更新してください",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3530,7 +3530,7 @@
                 "waiting": "スキャン待ち"
             },
             "successAlert": "QRログイン成功！Cookieが自動入力されました。「設定を保存」をクリックしてください",
-            "extractFailed": "⚠️ QRログインは成功しましたが、フィールドの自動抽出に失敗しました。手動で確認してください。"
+            "extractFailed": "QRログインは成功しましたが、フィールドの自動抽出に失敗しました。手動で確認してください。"
         }
     },
     "music": {
