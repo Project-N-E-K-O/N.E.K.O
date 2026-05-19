@@ -471,6 +471,12 @@ _PERSONA_WEB_TTL = 3600
 # Steam Community Web 兜底的并发上限。订阅一多就一次性 fan-out 容易把
 # 自己打超时或被对端限流，限制并发到 8 个比较稳。
 _PERSONA_WEB_CONCURRENCY = 8
+# Web 兜底整轮的总耗时上限（秒）。Steam Community 慢 / 抖动时，几十个
+# 非好友 owner × 5s 单请求 × 8 并发批次会让 /subscribed-items 阻塞几十
+# 秒。这里给整轮 fan-out 设个硬墙：超时直接收割已完成的结果，剩下的
+# task 全部 cancel，让接口尽快返回；没补回来的下次刷新会重试（因为
+# transient failure 不写缓存）。
+_PERSONA_WEB_TOTAL_DEADLINE = 8.0
 
 
 def _get_local_steam_identity(steamworks) -> tuple[int | None, str | None]:
@@ -617,18 +623,38 @@ async def _resolve_missing_author_names(items_info: list[dict]) -> None:
     unique_owners = list({owner_id for _, owner_id in missing})
     semaphore = asyncio.Semaphore(_PERSONA_WEB_CONCURRENCY)
 
-    async def _bounded(oid: int) -> str | None:
+    async def _bounded(oid: int) -> tuple[int, str | None]:
         async with semaphore:
-            return await _fetch_persona_via_steam_web(oid)
+            try:
+                return (oid, await _fetch_persona_via_steam_web(oid))
+            except Exception:
+                return (oid, None)
 
-    results = await asyncio.gather(
-        *[_bounded(oid) for oid in unique_owners],
-        return_exceptions=True,
-    )
+    tasks = [asyncio.create_task(_bounded(oid)) for oid in unique_owners]
     name_by_owner: dict[int, str] = {}
-    for oid, res in zip(unique_owners, results):
-        if isinstance(res, str) and res:
-            name_by_owner[oid] = res
+    try:
+        done, pending = await asyncio.wait(
+            tasks, timeout=_PERSONA_WEB_TOTAL_DEADLINE
+        )
+    except Exception as e:
+        logger.debug(f"Web 兜底 wait 异常: {e}")
+        done, pending = set(), set(tasks)
+    if pending:
+        for t in pending:
+            t.cancel()
+        # 把取消的 task 收割掉，避免 "Task was destroyed but it is pending!"
+        await asyncio.gather(*pending, return_exceptions=True)
+        logger.info(
+            f"Web 兜底超过 {_PERSONA_WEB_TOTAL_DEADLINE}s 总预算，"
+            f"已收割 {len(done)} 个、取消 {len(pending)} 个；剩余 owner 下次刷新重试"
+        )
+    for t in done:
+        try:
+            oid, name = t.result()
+        except Exception:
+            continue
+        if name:
+            name_by_owner[oid] = name
     if not name_by_owner:
         return
     for it, owner_id in missing:
