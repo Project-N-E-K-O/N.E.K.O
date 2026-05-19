@@ -2113,22 +2113,29 @@
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
                         window._pendingMusicCommand = '';
+                        // 与下方非-agent_callback 的 `turn end` 分支保持一致：
+                        // structured 流不要 flush 残余 buffer（自己的 renderer 负责），
+                        // 但 **不能 return** —— 后面 emit neko-assistant-turn-end /
+                        // clearPendingAssistantTurnStart / 字幕翻译都要照常跑。
+                        // 早期这里写的是 `return`，导致 structured 主动消息从来不发
+                        // turn-end 事件：waitForAssistantTurnEnd 干等 15s，gal 选项
+                        // 刷新等其它 turn-end 监听者也吃不到这条路径。
                         if (window._structuredGeminiStreaming) {
                             window._realisticGeminiBuffer = '';
                             window._structuredGeminiStreaming = false;
-                            return;
-                        }
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+                        } else {
+                            var rest = typeof window._realisticGeminiBuffer === 'string'
+                                ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+                                : '';
+                            rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+                            window._realisticGeminiBuffer = '';
+                            var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                            if (trimmed) {
+                                window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                                window._realisticGeminiQueue.push(trimmed);
+                                if (typeof window.processRealisticQueue === 'function') {
+                                    window.processRealisticQueue(window._realisticGeminiVersion || 0);
+                                }
                             }
                         }
                     } catch (e3) {
