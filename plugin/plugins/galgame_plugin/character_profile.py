@@ -150,12 +150,9 @@ class CharacterProfileManager:
                 user=user_result.profiles if user_result.valid else {},
             )
             version = self._pick_version(preset_result.version, user_result.version)
-        elif user_result.valid:
-            merged = dict(user_result.profiles)
-            version = user_result.version
         else:
             merged = {}
-            version = ""
+            version = preset_result.version or None
 
         result = {
             "profiles": merged,

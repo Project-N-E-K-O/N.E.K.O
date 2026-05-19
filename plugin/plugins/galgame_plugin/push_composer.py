@@ -301,13 +301,15 @@ class PushComposer:
             return text
         marker = "…[truncated]"
         marker_tokens = self._count_tokens(marker)
+        if budget <= marker_tokens:
+            return ""
         target = max(0, budget - marker_tokens)
-        # Binary search on character length; CJK-heavy strings need fewer chars
+        # Binary search on suffix character length; CJK-heavy strings need fewer chars.
         low, high = 0, len(text)
         best = ""
         while low <= high:
             mid = (low + high) // 2
-            candidate = text[:mid].rstrip()
+            candidate = text[-mid:].lstrip() if mid else ""
             if not candidate:
                 low = mid + 1
                 continue
@@ -317,8 +319,8 @@ class PushComposer:
             else:
                 high = mid - 1
         if not best:
-            return marker
-        return best + marker
+            return ""
+        return marker + best
 
     # ------------------------------------------------------------------
     # Tokenization

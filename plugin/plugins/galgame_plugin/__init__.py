@@ -4426,6 +4426,12 @@ class GalgamePlugin(NekoPluginBase):
             "push_notifications": bool(local.get("push_notifications")),
             "advance_speed": str(local.get("advance_speed") or ""),
             "active_data_source": str(local.get("active_data_source") or ""),
+            "character_mode": str(local.get("character_mode") or "off"),
+            "character_fixed_name": str(local.get("character_fixed_name") or ""),
+            "character_profiles": json_copy(local.get("character_profiles") or {}),
+            "character_runtime_state": json_copy(local.get("character_runtime_state") or {}),
+            "cross_scene_memory": json_copy(local.get("cross_scene_memory") or {}),
+            "last_push_seq": int(local.get("last_push_seq") or 0),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
             # Track dependency_status in the snapshot base so a parallel
@@ -5974,6 +5980,9 @@ class GalgamePlugin(NekoPluginBase):
 
         with self._state_lock:
             self._state.bound_game_id = normalized
+            self._state.character_profiles = {}
+            self._state.character_profile_version = ""
+            self._state.character_runtime_state = {}
             self._state_dirty = True
             self._cached_snapshot = None
             bound_game_id = self._state.bound_game_id
@@ -7220,6 +7229,8 @@ class GalgamePlugin(NekoPluginBase):
         if not profiles and bound_game_id:
             load = self._activate_character_profiles(bound_game_id)
             profiles = dict(load.get("profiles") or {})
+            with self._state_lock:
+                runtime = dict(self._state.character_runtime_state or {})
         profile = profiles.get(target)
         if not profile:
             return Err(SdkError(f"character {target!r} not found"))
@@ -7285,8 +7296,11 @@ class GalgamePlugin(NekoPluginBase):
                     },
                 )
             )
-        # Reload merged profiles after a successful import.
-        self._activate_character_profiles(target_game)
+        # Reload merged profiles only when the import targets the active binding.
+        with self._state_lock:
+            active_game = str(self._state.bound_game_id or self._state.active_game_id or "")
+        if target_game == active_game:
+            self._activate_character_profiles(target_game)
         return Ok(
             {
                 "ok": True,

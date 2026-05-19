@@ -350,6 +350,8 @@ def render_for_push(
             parts.append(text)
     if not parts:
         return ""
+    if max_chars <= 0:
+        return ""
     rendered = "；".join(parts)
     if len(rendered) <= max_chars:
         return rendered

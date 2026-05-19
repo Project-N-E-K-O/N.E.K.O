@@ -69,6 +69,18 @@ class SceneSummaryEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SceneSummaryEntry":
+        def _safe_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
         key_lines_raw = data.get("key_lines")
         key_lines: tuple[dict[str, Any], ...]
         if isinstance(key_lines_raw, list):
@@ -81,8 +93,8 @@ class SceneSummaryEntry:
             scene_id=str(data.get("scene_id") or ""),
             summary=str(data.get("summary") or ""),
             key_lines=key_lines,
-            ts=float(data.get("ts") or 0.0),
-            push_seq=int(data.get("push_seq") or 0),
+            ts=_safe_float(data.get("ts") or 0.0),
+            push_seq=_safe_int(data.get("push_seq") or 0),
             route_id=str(data.get("route_id") or ""),
         )
 

@@ -773,6 +773,11 @@ class GameLLMAgent:
         self._last_delivered_summary_scene_id = ""
         self._agent_reply_lock: asyncio.Lock | None = None
 
+    def _reset_consult_state(self) -> None:
+        self._last_cat_consult_ts = 0.0
+        self._lines_seen_for_consult = 0
+        self._last_consult_seen_line_count = 0
+
     @property
     def _scene_memory(self) -> list[dict[str, Any]]:
         return self._scene_tracker.scene_memory
@@ -1087,6 +1092,7 @@ class GameLLMAgent:
         self._suggestion_reasons.clear()
         self._observed_session_id = ""
         self._observed_session_fingerprint = {}
+        self._reset_consult_state()
         self._last_session_transition_type = ""
         self._last_session_transition_reason = ""
         self._last_session_transition_fields = {}
@@ -4519,6 +4525,7 @@ class GameLLMAgent:
             self._last_session_transition_reason = transition_reason
             self._last_session_transition_fields = transition_fields
             await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+            self._reset_consult_state()
             self._pending_choice_advice = None
             if transition_type == "real_session_reset":
                 self._cancel_summary_tasks()
@@ -5603,9 +5610,9 @@ class GameLLMAgent:
         route_id: str,
         metadata: dict[str, Any] | None = None,
         priority: int = 6,
-    ) -> None:
+    ) -> bool:
         if not content:
-            return
+            return False
         # host-play-mode plan, step 12: when fixed character mode is on, prepend
         # the catgirl-facing character anchor so every push is self-contained
         # (catgirl never needs prior pushes to make sense of the current one).
@@ -5626,7 +5633,8 @@ class GameLLMAgent:
             outbound["metadata"] = outbound_metadata
             self._mark_message(outbound, status="completed", delivered=False)
             self._recent_pushes = self._recent_push_records()
-            return
+            return False
+        delivered = False
         try:
             # push_message is synchronous in the plugin SDK; keep this call inline
             # so delivery failures can be caught and retried below.
@@ -5639,6 +5647,7 @@ class GameLLMAgent:
                 metadata=outbound_metadata,
             )
             self._mark_message(outbound, status="delivered", delivered=True)
+            delivered = True
         except Exception as exc:
             self._logger.warning("galgame outbound message delivery failed (will retry): {}", exc)
             try:
@@ -5658,6 +5667,7 @@ class GameLLMAgent:
                     delivered=True,
                     metadata={"retried": True, "initial_error": str(exc)},
                 )
+                delivered = True
             except Exception as retry_exc:
                 self._mark_message(outbound, status="failed", metadata={
                     "error": str(retry_exc), "initial_error": str(exc), "retried": True,
@@ -5673,6 +5683,7 @@ class GameLLMAgent:
             scene_id=scene_id,
             content_len=len(content),
         )
+        return delivered
 
     def _build_agent_reply_context(self, shared: dict[str, Any], *, prompt: str) -> dict[str, Any]:
         snapshot = sanitize_snapshot_state(shared.get("latest_snapshot", {}))
@@ -6664,23 +6675,44 @@ class GameLLMAgent:
         )
         # Fire-and-forget — the cat reply arrives via the existing inbound
         # channel; the strategy builder consumes shared['cat_opinions'] later.
-        await self._push_agent_message(
-            shared,
-            kind="cat_consultation",
-            content=prompt,
-            scene_id=str(snapshot.get("scene_id") or ""),
-            route_id=str(snapshot.get("route_id") or ""),
-            priority=5,
-            metadata={
-                "consultation": True,
-                "consultation_reason": decision.reason,
-                "consultation_character": decision.character_name,
-            },
+        seen_after_consult = (
+            self._last_consult_seen_line_count + inputs.lines_since_last_consult
         )
-        self._last_cat_consult_ts = inputs.now
-        self._last_consult_seen_line_count = inputs.lines_since_last_consult + (
-            self._last_consult_seen_line_count
-        )
+        session_id = str(shared.get("active_session_id") or "")
+
+        async def _deliver_consult() -> bool:
+            return await self._push_agent_message(
+                shared,
+                kind="cat_consultation",
+                content=prompt,
+                scene_id=str(snapshot.get("scene_id") or ""),
+                route_id=str(snapshot.get("route_id") or ""),
+                priority=5,
+                metadata={
+                    "consultation": True,
+                    "consultation_reason": decision.reason,
+                    "consultation_character": decision.character_name,
+                },
+            )
+
+        def _advance_consult_state(task: asyncio.Task[bool]) -> None:
+            try:
+                delivered = bool(task.result())
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("cat consultation delivery task failed: {}", exc)
+                return
+            if not delivered:
+                return
+            if session_id and session_id != self._observed_session_id:
+                return
+            self._last_cat_consult_ts = inputs.now
+            self._last_consult_seen_line_count = max(
+                self._last_consult_seen_line_count,
+                seen_after_consult,
+            )
+
+        task = asyncio.create_task(_deliver_consult())
+        task.add_done_callback(_advance_consult_state)
 
     def receive_cat_opinion(
         self,
@@ -6753,7 +6785,9 @@ class GameLLMAgent:
                 "confidence": float(current_entry.get("confidence") or 0.5),
             }
         existing_threads = list(existing.get("plot_threads") or [])
-        thread_label = f"scene::{scene_id}" if scene_id else "scene::unknown"
+        route_label = route_id or "unknown"
+        scene_label = scene_id or "unknown"
+        thread_label = f"route::{route_label}::scene::{scene_label}"
         thread_entry = next(
             (t for t in existing_threads if str(t.get("thread") or "") == thread_label),
             None,
