@@ -1180,11 +1180,16 @@ class OmniOfflineClient:
         Uses langchain ChatOpenAI for streaming.
 
         ``system_prefix`` 用途：caller（典型场景 SessionManager 把 passive agent
-        callback 拼成 system context）想把一段 system role 文本嵌到**本轮**的
-        LLM 调用里，让模型在回答用户问题时自然带上这段上下文。它作为一条
-        临时 SystemMessage 插在 user_message 之前进入 messages，但在 finally
-        里被移出 ``_conversation_history``——passive callback 是临时通知，不
-        进 transcript 持久化。
+        callback 渲染成自带 watermark 的 ``======[系统通知] xxx======`` 文本）
+        把这段中性 system notice 文本**就地拼到本轮 user message 的 content
+        前缀**——LLM 把它当作"用户当前发声那一刻附带的额外上下文"，在同一轮
+        回答里自然提及，不再起独立 turn 也不再单开 SystemMessage。
+
+        与 voice mode 的对偶：``OmniRealtimeClient.prime_context(skipped=False)``
+        在 GPT/GLM/Step 上同样走 ``create_response`` 把 callback 注入成 user
+        role 消息触发响应。inline 进 user content 即接受 callback 文本随
+        user message 进入 ``_conversation_history`` 持久化（跟 voice 端 user
+        role 注入语义一致）。
         """
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1192,10 +1197,18 @@ class OmniOfflineClient:
                 text = "请分析这些图片。"
             else:
                 return
-        
+
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
-        
+        # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
+        # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
+        # 落 history，跟 voice mode user-role 注入对偶。
+        _user_text = text.strip()
+        _prefix_clean = (system_prefix or "").strip()
+        _user_text_with_prefix = (
+            f"{_prefix_clean}\n\n{_user_text}" if _prefix_clean else _user_text
+        )
+
         # Prepare user message content
         if has_images:
             # Switch to vision model permanently for this session
@@ -1203,10 +1216,10 @@ class OmniOfflineClient:
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 await self.switch_model(self.vision_model, use_vision_config=True)
-            
+
             # Multi-modal message: images + text
             content = []
-            
+
             # Add images first
             for img_b64 in self._pending_images:
                 content.append({
@@ -1215,21 +1228,21 @@ class OmniOfflineClient:
                         "url": f"data:image/jpeg;base64,{img_b64}"
                     }
                 })
-            
-            # Add text
+
+            # Add text（已含 system_prefix watermark 前缀，若有）
             content.append({
                 "type": "text",
-                "text": text.strip()
+                "text": _user_text_with_prefix,
             })
-            
+
             user_message = HumanMessage(content=content)
             logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
 
             # Clear pending images after using them
             self._pending_images.clear()
         else:
-            # Text-only message
-            user_message = HumanMessage(content=text.strip())
+            # Text-only message（已含 system_prefix watermark 前缀，若有）
+            user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
         if has_images:
@@ -1239,10 +1252,6 @@ class OmniOfflineClient:
         if self.on_input_transcript:
             await self.on_input_transcript(text.strip())
 
-        # 临时 SystemMessage 引用——实际 insert 进 try 块（见下方），保证
-        # finally 一定能配对 remove，不会因为 try 之前的 await 抛错而残留。
-        _sys_prefix_msg: SystemMessage | None = None
-        
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
@@ -1256,18 +1265,6 @@ class OmniOfflineClient:
         self._last_prompt_tokens = None
 
         try:
-            # 临时 SystemMessage 注入（passive agent callback / proactive 同轮嵌入）
-            # 插在 user_message 之前一格——LLM 顺序读到 system context → user
-            # message，能在同一轮自然把 callback 一并提及，不再起独立 turn。
-            # finally 里按引用移除：tool result / final AIMessage 走 append 落到
-            # history 末尾，不会动到这条 SystemMessage 的位置；只要它还在，按
-            # remove() 找得到。重复检测路径会把整段 history 清空，那条 finally
-            # remove 抓 ValueError 即可。放在 try 头部确保异常路径 finally 必
-            # 配对清理。
-            if system_prefix and system_prefix.strip():
-                _sys_prefix_msg = SystemMessage(content=system_prefix.strip())
-                self._conversation_history.insert(-1, _sys_prefix_msg)
-
             self._is_responding = True
             reroll_count = 0
             set_call_type("conversation")
@@ -1776,16 +1773,6 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
-
-            # 临时 system_prefix SystemMessage 按引用从 history 移除——passive
-            # callback 是"本轮一次性"语义，不进 transcript 持久化。重复检测路径
-            # 会把 history 整体清空（只留 instructions），那时 remove 找不到这条
-            # SystemMessage，ValueError 吞掉即可。
-            if _sys_prefix_msg is not None:
-                try:
-                    self._conversation_history.remove(_sys_prefix_msg)
-                except ValueError:
-                    pass
 
             # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
             # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。

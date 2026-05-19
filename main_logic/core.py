@@ -6079,14 +6079,25 @@ class LLMSessionManager:
                             return
                         logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
 
-                    # 文本模式：把挂起的 agent 任务回调以 system prefix 形式
-                    # 嵌入到用户当前这一轮 LLM 调用里——AI 在回答用户问题的
-                    # 同一 turn 自然带上 callback，而非起独立 turn（issue
-                    # #1033）。drain 出来的字符串已含
-                    # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE 分组头；
-                    # ``stream_text`` 内部当作临时 SystemMessage 插在
-                    # user_message 之前进入本轮 messages，跑完按引用从
-                    # _conversation_history 移除，不进 transcript 持久化。
+                    # 文本模式：把挂起的 agent 任务回调**就地拼到本轮 user
+                    # message 的 content 前缀**——LLM 把它当作"用户当前发声那
+                    # 一刻附带的额外上下文"，在同一轮回答里自然提及，不再起
+                    # 独立 turn（issue #1033）。drain 出来的字符串已含
+                    # ``======[系统通知] 来自xxx的xxx======`` watermark，LLM
+                    # 看得出来是 system notice 而不是用户原话。
+                    #
+                    # 与 voice mode 的对偶：``prime_context(skipped=False)`` 在
+                    # GPT/GLM/Step 上同样走 ``create_response`` 把 callback
+                    # 注入成 user role 消息，offline 这边 inline 进 user
+                    # content 跟那条路径语义一致——callback 文本随 user message
+                    # 进 transcript 持久化（issue 旧注释里担忧的"持久化污染"作
+                    # 废，passive callback 跟用户输入一起留在 history 让 AI
+                    # 后续仍能 reference）。
+                    #
+                    # best-effort 注入：drain 的 ``finally clear`` 是 PR #1032
+                    # 的设计决定（passive=单次软通知），即便 drain 或 stream_text
+                    # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
+                    # snapshot 回滚。
                     _agent_cb_ctx = ""
                     if self.pending_agent_callbacks:
                         try:
