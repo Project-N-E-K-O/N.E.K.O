@@ -102,24 +102,50 @@ const workshopVoiceProviderRestrictionState = {
     isMainlandChinaUser: false,
     apiKeyRegistry: {},
 };
+const WORKSHOP_VOICE_PROVIDER_FETCH_TIMEOUT_MS = 5000;
+const WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS = 3;
+const WORKSHOP_VOICE_PROVIDER_FETCH_BACKOFF_MS = 250;
+
+function sleepWorkshopVoiceProviderRetry(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWorkshopVoiceProviderJson(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), WORKSHOP_VOICE_PROVIDER_FETCH_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return data;
+        } catch (error) {
+            lastError = error;
+            if (attempt >= WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS) break;
+            await sleepWorkshopVoiceProviderRetry(WORKSHOP_VOICE_PROVIDER_FETCH_BACKOFF_MS * attempt);
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+    throw lastError || new Error('请求失败');
+}
 
 function getWorkshopVoiceProviderRegistryKey(provider) {
     return WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS[provider] || provider;
 }
 
 async function checkWorkshopVoiceMainlandChinaUser() {
-    try {
-        const response = await fetch('/api/config/steam_language', {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        if (!response.ok) return false;
-        const data = await response.json();
-        return data && data.is_mainland_china === true;
-    } catch (error) {
-        console.warn('参考语音区域检测失败，使用默认显示策略:', error);
-        return false;
-    }
+    const data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    return data && data.is_mainland_china === true;
 }
 
 async function loadWorkshopVoiceProviderRestrictionState() {
@@ -133,21 +159,16 @@ async function loadWorkshopVoiceProviderRestrictionState() {
     workshopVoiceProviderRestrictionState.loadingPromise = (async () => {
         const [isMainlandChinaUser, providersResponse] = await Promise.all([
             checkWorkshopVoiceMainlandChinaUser(),
-            fetch('/api/config/api_providers')
+            fetchWorkshopVoiceProviderJson('/api/config/api_providers')
         ]);
         let apiKeyRegistry = {};
-        if (providersResponse.ok) {
-            const providersData = await providersResponse.json();
-            if (providersData && providersData.success) {
-                apiKeyRegistry = providersData.api_key_registry || {};
-            }
+        if (providersResponse && providersResponse.success) {
+            apiKeyRegistry = providersResponse.api_key_registry || {};
+        } else {
+            throw new Error('api_providers config unavailable');
         }
         workshopVoiceProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         workshopVoiceProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
-        workshopVoiceProviderRestrictionState.loaded = true;
-        return workshopVoiceProviderRestrictionState;
-    })().catch(error => {
-        console.warn('参考语音服务商地区配置加载失败，使用默认显示策略:', error);
         workshopVoiceProviderRestrictionState.loaded = true;
         return workshopVoiceProviderRestrictionState;
     }).finally(() => {
@@ -155,6 +176,15 @@ async function loadWorkshopVoiceProviderRestrictionState() {
     });
 
     return workshopVoiceProviderRestrictionState.loadingPromise;
+}
+
+async function ensureWorkshopVoiceProviderRestrictionsLoaded() {
+    try {
+        await loadWorkshopVoiceProviderRestrictionState();
+    } catch (error) {
+        console.warn('参考语音服务商地区配置加载失败，使用默认显示策略:', error);
+    }
+    return workshopVoiceProviderRestrictionState;
 }
 
 function isWorkshopVoiceProviderRestricted(provider) {
@@ -171,7 +201,8 @@ function getFirstAvailableWorkshopVoiceProviderValue(providerSelect) {
     return availableOption ? availableOption.value : '';
 }
 
-function applyWorkshopVoiceProviderRestrictions(providerSelect) {
+async function applyWorkshopVoiceProviderRestrictions(providerSelect) {
+    await ensureWorkshopVoiceProviderRestrictionsLoaded();
     if (!providerSelect) return false;
     const previousValue = providerSelect.value;
     Array.from(providerSelect.options || []).forEach(option => {
@@ -194,9 +225,8 @@ function applyWorkshopVoiceProviderRestrictions(providerSelect) {
 }
 
 async function initWorkshopVoiceProviderRestrictions() {
-    await loadWorkshopVoiceProviderRestrictionState();
     const providerSelect = document.getElementById('voice-reference-provider-hint');
-    applyWorkshopVoiceProviderRestrictions(providerSelect);
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
     return workshopVoiceProviderRestrictionState;
 }
 
@@ -1475,7 +1505,7 @@ function selectReferenceAudio() {
     fileInput.click();
 }
 
-function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
+async function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
     const displayNameInput = document.getElementById('voice-reference-display-name');
     const prefixInput = document.getElementById('voice-reference-prefix');
     const languageSelect = document.getElementById('voice-reference-language');
@@ -1487,7 +1517,7 @@ function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
     if (languageSelect) languageSelect.value = 'ch';
     if (providerSelect) {
         providerSelect.value = 'cosyvoice';
-        applyWorkshopVoiceProviderRestrictions(providerSelect);
+        await applyWorkshopVoiceProviderRestrictions(providerSelect);
     }
 }
 
@@ -1511,7 +1541,7 @@ async function uploadWorkshopReferenceAudio(contentFolder, defaultTitle) {
     formData.append('prefix', prefix);
     formData.append('display_name', displayNameInput?.value.trim() || defaultTitle || prefix);
     formData.append('ref_language', languageSelect?.value || 'ch');
-    applyWorkshopVoiceProviderRestrictions(providerSelect);
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
     formData.append('provider_hint', providerSelect?.value || getFirstAvailableWorkshopVoiceProviderValue(providerSelect) || 'cosyvoice');
 
     showMessage('正在写入参考语音...', 'info');
@@ -1663,7 +1693,7 @@ function uploadItem() {
             }
             return data;
         })
-        .then(data => {
+        .then(async data => {
             // 恢复按钮状态
             if (uploadButton) {
                 uploadButton.textContent = originalText;
@@ -1749,7 +1779,7 @@ function uploadItem() {
                     }
                 });
                 clearReferenceAudioSelection();
-                applyWorkshopVoiceProviderRestrictions(document.getElementById('voice-reference-provider-hint'));
+                await applyWorkshopVoiceProviderRestrictions(document.getElementById('voice-reference-provider-hint'));
 
                 // 清空标签
                 const tagsContainer = document.getElementById('tags-container');
@@ -7679,7 +7709,7 @@ async function performUpload(data) {
                 }
                 return response.json();
             })
-            .then(result => {
+            .then(async result => {
                 if (result.success) {
                     // 不再显示"上传准备完成"消息，模态框弹出本身就表明准备工作已完成
 
@@ -7712,7 +7742,7 @@ async function performUpload(data) {
                         previewImageInput.value = result.preview_image;
                         previewImageInput.classList.remove('error');
                     }
-                    resetWorkshopVoiceReferenceFields(cardName);
+                    await resetWorkshopVoiceReferenceFields(cardName);
 
                     // 添加角色卡标签到上传标签（允许用户编辑）
                     if (tagsContainer) {
@@ -8052,7 +8082,7 @@ function setFormDisabled(disabled) {
     if (registerBtn) registerBtn.disabled = disabled;
 }
 
-function registerVoice() {
+async function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('voice-register-result');
@@ -8091,7 +8121,7 @@ function registerVoice() {
     formData.append('file', fileInput.files[0]);
     formData.append('prefix', prefix);
     const providerSelect = document.getElementById('voice-reference-provider-hint');
-    applyWorkshopVoiceProviderRestrictions(providerSelect);
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
     const providerValue = providerSelect && providerSelect.value ? providerSelect.value.trim() : '';
     formData.append('provider', providerValue || getFirstAvailableWorkshopVoiceProviderValue(providerSelect) || 'cosyvoice');
 

@@ -33,6 +33,54 @@ const voiceCloneApiConfigState = {
     cfg: null,
     isLocalTts: false,
 };
+const VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS = 5000;
+const VOICE_CLONE_LOADER_FETCH_ATTEMPTS = 3;
+const VOICE_CLONE_LOADER_FETCH_BACKOFF_MS = 250;
+
+function sleepVoiceCloneLoaderRetry(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchVoiceCloneLoaderResponse(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= VOICE_CLONE_LOADER_FETCH_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+            if (response.ok || response.status < 500 || attempt >= VOICE_CLONE_LOADER_FETCH_ATTEMPTS) {
+                return response;
+            }
+            lastError = new Error(`API returned ${response.status}`);
+        } catch (error) {
+            lastError = error;
+            if (attempt >= VOICE_CLONE_LOADER_FETCH_ATTEMPTS) break;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+        await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
+    }
+    throw lastError || new Error('请求失败');
+}
+
+async function fetchVoiceCloneLoaderJson(url, options = {}) {
+    const response = await fetchVoiceCloneLoaderResponse(url, options);
+    let data = null;
+    try {
+        data = await response.json();
+    } catch (error) {
+        if (response.ok) {
+            throw error;
+        }
+    }
+    if (!response.ok) {
+        throw new Error(`API returned ${response.status}`);
+    }
+    return data;
+}
 
 function notifyApiSettingsKeyBookFocus(win) {
     if (!win) return;
@@ -268,7 +316,7 @@ async function getCurrentCharacterVoiceId() {
     const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
     if (!lanlanName) return '';
 
-    const resp = await fetch('/api/characters?language=zh-CN', { cache: 'no-store' });
+    const resp = await fetchVoiceCloneLoaderResponse('/api/characters?language=zh-CN', { cache: 'no-store' });
     const { data, nonJson, text } = await safeReadResponse(resp);
     if (!resp.ok) {
         if (data && (data.error || data.detail)) {
@@ -402,11 +450,7 @@ async function loadVoiceCloneApiConfigState(options = {}) {
     }
 
     voiceCloneApiConfigState.loadingPromise = (async () => {
-        const resp = await fetch('/api/config/core_api');
-        if (!resp.ok) {
-            throw new Error(`API returned ${resp.status}`);
-        }
-        const cfg = await resp.json();
+        const cfg = await fetchVoiceCloneLoaderJson('/api/config/core_api');
         if (!cfg || cfg.success === false) {
             throw new Error((cfg && cfg.error) || 'core_api config unavailable');
         }
@@ -414,17 +458,23 @@ async function loadVoiceCloneApiConfigState(options = {}) {
         voiceCloneApiConfigState.isLocalTts = isLocalVoiceCloneServerConfigured(cfg);
         voiceCloneApiConfigState.loaded = true;
         return voiceCloneApiConfigState;
-    })().catch(error => {
-        console.warn('检查克隆API Key失败:', error);
-        voiceCloneApiConfigState.cfg = null;
-        voiceCloneApiConfigState.isLocalTts = false;
-        voiceCloneApiConfigState.loaded = true;
-        return voiceCloneApiConfigState;
     }).finally(() => {
         voiceCloneApiConfigState.loadingPromise = null;
     });
 
     return voiceCloneApiConfigState.loadingPromise;
+}
+
+async function ensureVoiceCloneApiConfigState(options = {}) {
+    try {
+        await loadVoiceCloneApiConfigState(options);
+    } catch (error) {
+        console.warn('检查克隆API Key失败:', error);
+        voiceCloneApiConfigState.cfg = null;
+        voiceCloneApiConfigState.isLocalTts = false;
+        voiceCloneApiConfigState.loaded = false;
+    }
+    return voiceCloneApiConfigState;
 }
 
 function hasVoiceCloneProviderApi(provider) {
@@ -435,18 +485,11 @@ function hasVoiceCloneProviderApi(provider) {
 }
 
 async function checkVoiceCloneMainlandChinaUser() {
-    try {
-        const response = await fetch('/api/config/steam_language', {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' }
-        });
-        if (!response.ok) return false;
-        const data = await response.json();
-        return data && data.is_mainland_china === true;
-    } catch (error) {
-        console.warn('声音克隆区域检测失败，使用默认显示策略:', error);
-        return false;
-    }
+    const data = await fetchVoiceCloneLoaderJson('/api/config/steam_language', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    return data && data.is_mainland_china === true;
 }
 
 async function loadVoiceCloneProviderRestrictionState() {
@@ -458,23 +501,18 @@ async function loadVoiceCloneProviderRestrictionState() {
     }
 
     voiceCloneProviderRestrictionState.loadingPromise = (async () => {
-        const [isMainlandChinaUser, providersResponse] = await Promise.all([
+        const [isMainlandChinaUser, providersData] = await Promise.all([
             checkVoiceCloneMainlandChinaUser(),
-            fetch('/api/config/api_providers')
+            fetchVoiceCloneLoaderJson('/api/config/api_providers')
         ]);
         let apiKeyRegistry = {};
-        if (providersResponse.ok) {
-            const providersData = await providersResponse.json();
-            if (providersData && providersData.success) {
-                apiKeyRegistry = providersData.api_key_registry || {};
-            }
+        if (providersData && providersData.success) {
+            apiKeyRegistry = providersData.api_key_registry || {};
+        } else {
+            throw new Error('api_providers config unavailable');
         }
         voiceCloneProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         voiceCloneProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
-        voiceCloneProviderRestrictionState.loaded = true;
-        return voiceCloneProviderRestrictionState;
-    })().catch(error => {
-        console.warn('声音克隆服务商地区配置加载失败，使用默认显示策略:', error);
         voiceCloneProviderRestrictionState.loaded = true;
         return voiceCloneProviderRestrictionState;
     }).finally(() => {
@@ -482,6 +520,15 @@ async function loadVoiceCloneProviderRestrictionState() {
     });
 
     return voiceCloneProviderRestrictionState.loadingPromise;
+}
+
+async function ensureVoiceCloneProviderRestrictionsLoaded() {
+    try {
+        await loadVoiceCloneProviderRestrictionState();
+    } catch (error) {
+        console.warn('声音克隆服务商地区配置加载失败，使用默认显示策略:', error);
+    }
+    return voiceCloneProviderRestrictionState;
 }
 
 function isVoiceCloneProviderRestricted(provider) {
@@ -521,7 +568,7 @@ function applyVoiceCloneProviderRestrictions(providerSelect) {
 }
 
 async function initVoiceCloneProviderRestrictions() {
-    await loadVoiceCloneProviderRestrictionState();
+    await ensureVoiceCloneProviderRestrictionsLoaded();
     const providerSelect = document.getElementById('voiceProvider');
     const changed = applyVoiceCloneProviderRestrictions(providerSelect);
     if (changed && providerSelect) {
@@ -579,7 +626,7 @@ async function refreshVoiceCloneProviderNotice(providerSelect, noticeDiv) {
     if (!providerSelect || !noticeDiv) return;
     updateVoiceCloneProviderNoticeText(noticeDiv, providerSelect.value);
     noticeDiv.style.display = 'none';
-    await loadVoiceCloneApiConfigState();
+    await ensureVoiceCloneApiConfigState();
     const provider = providerSelect.value || 'cosyvoice';
     updateVoiceCloneProviderNoticeText(noticeDiv, provider);
     noticeDiv.style.display = hasVoiceCloneProviderApi(provider) ? 'none' : '';
@@ -845,11 +892,7 @@ if (window.i18n && window.i18n.isInitialized) {
 
         // 如果 URL 中没有，从 API 获取
         if (!lanlanName) {
-            const response = await fetch('/api/config/page_config');
-            if (!response.ok) {
-                throw new Error(`API returned ${response.status}`);
-            }
-            const data = await response.json();
+            const data = await fetchVoiceCloneLoaderJson('/api/config/page_config');
             if (data.success) {
                 lanlanName = data.lanlan_name || "";
             }
@@ -872,7 +915,7 @@ if (window.i18n && window.i18n.isInitialized) {
 
     await initVoiceCloneProviderRestrictions();
 
-    const apiConfigState = await loadVoiceCloneApiConfigState({ force: true });
+    const apiConfigState = await ensureVoiceCloneApiConfigState({ force: true });
     const cfg = apiConfigState.cfg;
     if (cfg) {
         const hasCloneApi = hasUsableCloneApiFromConfig(cfg, apiConfigState.isLocalTts);
@@ -992,7 +1035,7 @@ async function initWorkshopVoiceReference() {
     setWorkshopVoiceSourceStatus(t('voice.workshopSourceLoading', 'Loading workshop reference voice...'));
 
     try {
-        const manifestResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
+        const manifestResponse = await fetchVoiceCloneLoaderResponse(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
         const manifestData = await manifestResponse.json();
         if (!manifestResponse.ok) {
             throw new Error(manifestData.error || `HTTP ${manifestResponse.status}`);
@@ -1001,7 +1044,7 @@ async function initWorkshopVoiceReference() {
             throw new Error(t('voice.workshopSourceUnavailable', 'This workshop item has no available reference voice.'));
         }
 
-        const audioResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
+        const audioResponse = await fetchVoiceCloneLoaderResponse(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
         if (!audioResponse.ok) {
             const errorData = await audioResponse.json().catch(() => ({}));
             throw new Error(errorData.error || `HTTP ${audioResponse.status}`);
@@ -1066,18 +1109,22 @@ function setFormDisabled(disabled) {
     }
 }
 
-function registerVoice() {
+async function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
     const resultDiv = document.getElementById('result');
-    const effectiveAudioFile = getEffectiveAudioFile();
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-    const prefix = normalizePrefixInputForProvider();
 
     // 清空现有内容并重置类名
     resultDiv.textContent = '';
     resultDiv.className = 'result';
+
+    const effectiveAudioFile = getEffectiveAudioFile();
+    const providerSelect = document.getElementById('voiceProvider');
+    await ensureVoiceCloneProviderRestrictionsLoaded();
+    applyVoiceCloneProviderRestrictions(providerSelect);
+    const provider = (providerSelect || {}).value || 'cosyvoice';
+    const prefix = normalizePrefixInputForProvider();
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
@@ -1271,7 +1318,7 @@ window.addEventListener('message', function (event) {
     if (event.data.type === 'api_key_changed') {
         // API Key已更改，可以在这里添加其他需要的处理逻辑
         console.log('API Key已更改，音色注册页面已收到通知');
-        loadVoiceCloneApiConfigState({ force: true }).then(() => {
+        ensureVoiceCloneApiConfigState({ force: true }).then(() => {
             refreshVoiceCloneProviderNotice(
                 document.getElementById('voiceProvider'),
                 document.getElementById('provider-notice')
@@ -1314,7 +1361,7 @@ async function playPreview(voiceId, btn) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            const response = await fetch(
+            const response = await fetchVoiceCloneLoaderResponse(
                 `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`
             );
             const { data, nonJson, text } = await safeReadResponse(response);
@@ -1392,7 +1439,7 @@ async function loadVoices() {
             console.warn('获取当前角色音色失败:', error);
             return '';
         });
-        const response = await fetch('/api/characters/voices');
+        const response = await fetchVoiceCloneLoaderResponse('/api/characters/voices');
         const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
             if (data && (data.error || data.detail)) {
