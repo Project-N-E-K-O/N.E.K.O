@@ -5022,24 +5022,18 @@ async def proactive_chat(request: Request):
         )
         if not _allow_reminiscence:
             print(f"[{lanlan_name}] propensity=restricted_screen_only, 跳过反思/回忆话题获取")
-        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
+        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径。
+        # 仅 read：取 followup_topics 候选用于本轮 prompt 注入。
+        # 历史上这一段还前置调过 POST /reflect/{name}（"自动状态迁移 + 反思合成"），
+        # 已删除——合成迁到 ``_periodic_reflection_synthesis_loop`` 后端循环、
+        # auto_promote 早就由 ``_periodic_auto_promote_loop`` 每 180s 跑。把
+        # mutation 留在 proactive 关键路径上既拖延 ~15s response、又让整个
+        # reflection 生命周期跟前端 setTimeout 强耦合（前端不开 → 永不合成）。
         if _allow_reminiscence:
             try:
                 from utils.internal_http_client import get_internal_http_client
                 _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
                 _mem_client = get_internal_http_client()
-                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
-                _reflect_resp = await _mem_client.post(
-                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
-                )
-                if _reflect_resp.status_code == 200:
-                    _reflect_data = _reflect_resp.json()
-                    if _reflect_data.get('auto_transitions'):
-                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
-                    if _reflect_data.get('reflection'):
-                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
-
-                # 2. 获取回调话题候选
                 _topics_resp = await _mem_client.get(
                     f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
                 )
@@ -5053,11 +5047,11 @@ async def proactive_chat(request: Request):
                                 _surfaced_reflection_ids.append(topic['id'])
                         print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
             except Exception as e:
-                logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+                logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
 
-        # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
-        # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
-        # 后续步骤，再到 pre-LLM check 才识破。这里补一刀。
+        # Phase 1 preempt check：followup GET(5s) 是一段可能拖久的 await，
+        # 整段裸跑会让用户打断后继续跑完 LLM 配置和后续步骤，再到 pre-LLM
+        # check 才识破。这里补一刀。
         if mgr.state.is_proactive_preempted():
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
 

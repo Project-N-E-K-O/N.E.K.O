@@ -133,6 +133,24 @@ class Outbox:
         with self._get_lock(name):
             self._write_line(self._outbox_path(name), line)
 
+    def append_attempt(self, name: str, op_id: str) -> None:
+        """记录一次 handler 失败 attempt（Site 7 liveness 兜底）。
+
+        scan 时按 op_id 累计 attempt 数；caller (memory_server._run_outbox_op)
+        见累计 ≥ ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 时 append_done 当
+        dead-letter 放弃该 op。否则毒 op（payload 触发 handler 永久 raise）
+        每次重启都重跑、永远不出 pending → ``compact`` 永久阻塞 →
+        outbox.ndjson 线性增长。
+        """
+        record = {
+            'op_id': op_id,
+            'status': 'attempt',
+            'ts': datetime.now().isoformat(),
+        }
+        line = json.dumps(record, ensure_ascii=False)
+        with self._get_lock(name):
+            self._write_line(self._outbox_path(name), line)
+
     # ── scan ────────────────────────────────────────────────────
 
     def _read_all_records(self, path: str) -> list[dict]:
@@ -154,12 +172,19 @@ class Outbox:
         return records
 
     def pending_ops(self, name: str) -> list[dict]:
-        """返回 pending 且无对应 done 的 op 记录（按登记顺序）。"""
+        """返回 pending 且无对应 done 的 op 记录（按登记顺序）。
+
+        每条返回的 record 会附带非持久化字段 ``_attempt_count``（int），
+        scan 时统计的 ``status='attempt'`` 行数。caller 用它判 dead-letter
+        阈值。返回 dict 是 ``_read_all_records`` 当轮 JSON-load 出的新实例，
+        附 ``_attempt_count`` 不会污染磁盘上的 pending 行。
+        """
         path = self._outbox_path(name)
         with self._get_lock(name):
             records = self._read_all_records(path)
 
         pending: dict[str, dict] = {}
+        attempts: dict[str, int] = {}
         for rec in records:
             op_id = rec.get('op_id')
             status = rec.get('status')
@@ -172,20 +197,32 @@ class Outbox:
                 pending[op_id] = rec
             elif status == 'done':
                 pending.pop(op_id, None)
+                attempts.pop(op_id, None)
+            elif status == 'attempt':
+                attempts[op_id] = attempts.get(op_id, 0) + 1
+        for op_id, rec in pending.items():
+            rec['_attempt_count'] = attempts.get(op_id, 0)
         return list(pending.values())
 
     # ── compact ─────────────────────────────────────────────────
 
     def compact(self, name: str) -> int:
-        """重写 outbox.ndjson，只保留未完成的 pending 行。返回丢弃行数。
+        """重写 outbox.ndjson，只保留未完成的 pending 行 + 它们的 attempt 行。
+        返回丢弃行数。
 
         通过 atomic_write_text 原子替换。compact 期间被 lock 阻塞的 append
         会在 rename 完成后继续到新文件。
+
+        Attempt 行处理（Site 7 liveness）：still-pending 的 op 的 attempt
+        行保留（attempt 计数 → 决定 dead-letter 时机的依据，丢了会让重启后
+        计数器归零）；done 的 op 把它对应的 attempt 行也一并丢（done 后就
+        没有人再读 attempt 计数）。
         """
         path = self._outbox_path(name)
         with self._get_lock(name):
             records = self._read_all_records(path)
             pending: dict[str, dict] = {}
+            attempts_by_op: dict[str, list[dict]] = {}
             for rec in records:
                 op_id = rec.get('op_id')
                 status = rec.get('status')
@@ -195,9 +232,19 @@ class Outbox:
                     pending[op_id] = rec
                 elif status == 'done':
                     pending.pop(op_id, None)
+                    attempts_by_op.pop(op_id, None)
+                elif status == 'attempt':
+                    attempts_by_op.setdefault(op_id, []).append(rec)
+
+            kept_records: list[dict] = []
+            for rec in pending.values():
+                kept_records.append(rec)
+            for op_id, attempt_recs in attempts_by_op.items():
+                if op_id in pending:
+                    kept_records.extend(attempt_recs)
 
             total_lines = len(records)
-            kept = len(pending)
+            kept = len(kept_records)
             if total_lines == kept:
                 return 0  # 没有可丢弃的行，避免无用 IO
 
@@ -206,7 +253,7 @@ class Outbox:
                 atomic_write_text(path, '', encoding='utf-8')
             else:
                 body = '\n'.join(
-                    json.dumps(r, ensure_ascii=False) for r in pending.values()
+                    json.dumps(r, ensure_ascii=False) for r in kept_records
                 ) + '\n'
                 atomic_write_text(path, body, encoding='utf-8')
             return total_lines - kept
@@ -236,6 +283,9 @@ class Outbox:
 
     async def aappend_done(self, name: str, op_id: str) -> None:
         await asyncio.to_thread(self.append_done, name, op_id)
+
+    async def aappend_attempt(self, name: str, op_id: str) -> None:
+        await asyncio.to_thread(self.append_attempt, name, op_id)
 
     async def apending_ops(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.pending_ops, name)

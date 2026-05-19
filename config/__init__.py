@@ -881,6 +881,29 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
+# ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
+# 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
+# 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
+# 节奏：A 跑完后 b_tick_counter++，达到 N 就跑 B；窗口下游边界用 A 实际处理过
+# 的最晚 msg ts（不是 wall-clock now）保证 B 看的消息严格被 A 看过。
+EVIDENCE_AI_AWARE_EVERY_N_A_TICKS = 3
+"""Path B 每 N 次 A tick 触发一次（piggyback 在 A 循环里，不维护独立 wall-clock cadence）。
+- 选 3：A 平均 5 min 一次 tick → B 平均 15 min 一次。tempo 跟着对话强度自适应——
+  用户聊得越多 B 越频繁，符合"对话量大才需要补抓 AI fact"的直觉
+- B cold start lookback 自动 = N × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 15 min"""
+
+MAX_AI_AWARE_WINDOW_MSGS = 200
+"""Path B 单次窗口 SQL LIMIT 上限。挂机后重启 / 长 idle 突发 burst 可能让
+[last_b_check_ts, last_a_msg_ts] 窗口跨越数小时百余条消息——cap 住防 prompt
+爆炸。LIMIT 在 SQL 层执行（aretrieve_original_by_timeframe 的 limit_rows 参数），
+ORDER BY ts ASC 取最早 N 条而不是最新（保 cursor 单调推进）。"""
+
+MAX_KNOWN_POOL_FACTS = 30
+"""Path B prompt 里塞的"已知 fact 池"上限（按 importance DESC 取前 N）。
+- 30 × ~30 tok = ~900 tok overhead，控制在 prompt 总 budget 的 ~20%
+- 作用：让 path B 的 LLM 知道哪些 fact 已被 path A 抽出，主动避免重抽 user 段
+  内容；命中的 fact 通常带 source='user_observation'"""
+
 # §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
 # 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
 # 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
@@ -998,16 +1021,49 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
 
-REFLECTION_RELATED_RECALL_K = 6
-"""Reflection synthesis 时通过 embedding 召回的 absorbed fact 数量。
-- 用途：synthesize_reflections 在调 LLM 前用 unabsorbed 文本作 multi-query，
-  从已 absorbed fact 池里 cosine 召回 top K 作为 {RELATED_CONTEXT_BLOCK}
-  喂给 prompt，让 LLM 知道"远期相关 fact 长啥样"。
-- 上游：absorbed=True 的 fact 池（已被前轮 reflection 吸收过的素材）。
-- 设计依据：K 约等于 SYNTHESIS_FACTS_MAX 的 1/3，再多会稀释 prompt 焦点；
-  embedding 不可用 / 池为空 / 召回为空 → block 整段省略，prompt 与改造前一致。
-- 远期 fact 仅作参考，不进 source_fact_ids、不 mark_absorbed，幂等性靠
-  unabsorbed 集合的 rid hash 保证。"""
+MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
+"""``_periodic_reflection_synthesis_loop`` 每轮轮询间隔（秒）。
+- 用途：后端定期对每个角色调 ``reflection_engine.synthesize_reflections``。
+- 设计依据：synthesize_reflections 内部对"同批 source_fact_ids → 同 rid"做
+  幂等 short-circuit，无新 unabsorbed fact 时 LLM 不会被调，所以这层只是
+  调度频率上限。**真 LLM 调用频率约等于"用户在 N 秒内新积了 ≥5 条 unabsorbed
+  fact 的次数"**，与 SignalLoop 实际产出速率绑死、与本常量解耦——把间隔从
+  600s 缩到 180s 不会按比例加 LLM 成本。
+- 选 180s：对齐 ``AUTO_PROMOTE_CHECK_INTERVAL = 180s``。两条 loop 一个产
+  pending、一个把 pending 推 confirmed，节奏对齐让 user-visible 状态机延迟
+  最短（合成 → 下一 tick 内就能被 promote 看到）。也跟
+  ``EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 60 = 300s`` 错峰，让 SignalLoop 抽
+  完一批 fact 后 1-2 个 reflection tick 内能消化掉。
+- 历史：以前 reflection 合成挂在 ``/api/proactive_chat`` handler 里（PR #1015
+  顺手塞的，见 main_routers/system_router.py 历史 blame），整套合成链路与
+  前端 setTimeout 强耦合——前端不开 / proactive 不触发 → reflection 永远不
+  增长。本常量配套的后端 loop 把合成从 HTTP/前端解耦，与其他 9 条 periodic
+  loop（rebuttal / auto_promote / idle_maint / signal_extraction / archive /
+  refine 等）对偶。"""
+
+REFLECTION_RELATED_PER_QUERY_K = 3
+"""Reflection synthesis 时，每条 unabsorbed fact 单独 query 召回的 absorbed
+fact 数量上限。
+- 上游：synthesize_reflections 调 ``MemoryRecallReranker.aretrieve_per_query_topk``
+  时按本常量给每条 query 配独立预算。
+- 设计依据（PR #1401 thread 拍板）：原先用 max-pool top-K (=6 全局预算)，
+  20 条 unabsorbed 主题分散时冷门主题会被高频主题挤掉冷板凳。改成 per-query
+  K=3 + 全局 cap，保证每条 unabsorbed 至少能拿到自己的 top-3 锚（除非这条
+  query embed 失败 / 候选池没语义匹配）。
+- 单条 query 拿 3 条而不是 1 条：考虑到主题边界模糊（用户聊 MC 同时聊到
+  红石和挖矿，cosine top-1 可能只命中其中一条），多给两条让 LLM 能看出
+  "主题群"的轮廓。"""
+
+REFLECTION_RELATED_TOTAL_CAP = 20
+"""``aretrieve_per_query_topk`` 跨 query union+dedup 后的最终上限。
+- 设计依据：与 ``REFLECTION_SYNTHESIS_FACTS_MAX`` (=20) 同档，让 anchor 集
+  最坏也能跟 source 集等量——但实际命中通常远小于此（query 间 nearest
+  neighbor 大量重叠 + dedup）。典型 batch 10 条 unabsorbed × per_query=3
+  = 30 候选 → dedup 后落在 ~10-15 anchor。
+- 上界用于防御性截断：极端"20 条全主题不重叠"假设下，per_query=3 × 20 = 60
+  候选，dedup 不能去重时砍到 20，避免 prompt token 爆。
+- prompt 实际成本：20 × ~50 tok ≈ 1000 tok anchor + 20 × ~50 tok ≈ 1000 tok
+  source = 2k 上限，summary tier 模型完全吃得下。"""
 
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
@@ -1053,6 +1109,18 @@ MEMORY_RECHECK_MAX_ATTEMPTS = 5
 - 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
 - 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
   排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+
+MEMORY_LIVENESS_MAX_ATTEMPTS = 5
+"""LLM 终态失败 N 次后强推 progress marker / dead-letter 的统一上限。
+- 适用场景：所有"同点 input + 无 counter + LLM 永久失败 → 永久卡死"的后台
+  路径。包括 signal extraction path A/B、rebuttal feedback、persona
+  corrections resolve、fact dedup resolve、refine cluster、outbox handler。
+- 治理思路：参考 `MEMORY_RECHECK_MAX_ATTEMPTS` (schema 重判 dead-letter) 的
+  套路，把"同一 cursor / 队头 / cluster_hash / op 反复打 LLM"收敛掉，避免
+  毒窗口 / 毒 payload 让整条 pipeline 哑火。
+- 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
+- 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
+  跨过偶发 transient failure 够用；再多就属于真正 poison。"""
 
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
@@ -1837,6 +1905,9 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_ENABLED',
     'EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS',
     'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
+    'EVIDENCE_AI_AWARE_EVERY_N_A_TICKS',
+    'MAX_AI_AWARE_WINDOW_MSGS',
+    'MAX_KNOWN_POOL_FACTS',
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
@@ -1851,7 +1922,9 @@ __all__ = [
     'REFLECTION_TEXT_MAX_TOKENS',
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',
-    'REFLECTION_RELATED_RECALL_K',
+    'MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS',
+    'REFLECTION_RELATED_PER_QUERY_K',
+    'REFLECTION_RELATED_TOTAL_CAP',
     'PERSONA_MERGE_POOL_MAX_TOKENS',
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',

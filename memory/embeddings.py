@@ -268,12 +268,145 @@ def detect_total_ram_gb() -> float | None:
         return None
 
 
+def _probe_avx_vnni_via_cpuid() -> bool | None:
+    """Direct CPUID probe for AVX-VNNI / AVX-512_VNNI — Windows x86_64 only.
+
+    Returns:
+      * True  — AVX-VNNI or AVX-512_VNNI is present
+      * False — neither bit set (CPU truly lacks the int8 fast path)
+      * None  — probe was not attempted (non-Windows, non-x86_64,
+        32-bit Python, OS refused executable allocation)
+
+    Why Windows-only: the bug this fixes is py-cpuinfo's Windows backend
+    silently omitting ``avx_vnni`` from its flag list — every Alder Lake
+    onwards Intel (and Zen 4+ AMD) box on Windows gets misread as
+    "no VNNI" and the embedding stack sticky-disables. Windows also
+    exposes no ``PF_AVX_VNNI_INSTRUCTIONS_AVAILABLE`` constant via
+    ``IsProcessorFeaturePresent``, so a raw CPUID is the only authoritative
+    answer on that platform.
+
+    Why not Linux / macOS:
+
+      * Linux 5.17+ exposes ``avx_vnni`` in ``/proc/cpuinfo`` flags, which
+        both py-cpuinfo and our text-parse fallback already handle.
+        Running CPUID on Linux is also unsafe in the general case —
+        ``arch_prctl(ARCH_SET_CPUID, 0)`` (rr debugger, some
+        sandboxes) makes ``cpuid`` deliver SIGSEGV, which Python's
+        try/except cannot catch and would hard-kill the process (Codex
+        P1 review on PR #1402).
+      * macOS Intel topped out at Ice Lake (pre-AVX-VNNI), so no Intel
+        Mac in the wild has the fast path to detect — and hardened
+        runtime makes PROT_EXEC pages unreliable on recent macOS.
+
+    CPUID feature bits used:
+      * leaf 7 subleaf 0, ECX bit 11 → AVX-512_VNNI (Cascade Lake+ /
+        Zen 4 server parts)
+      * leaf 7 subleaf 1, EAX bit 4  → AVX-VNNI (Alder Lake+, Zen 4+)
+
+    All allocation / execution is wrapped in try/except — any failure
+    returns ``None`` so the caller falls back to py-cpuinfo without
+    changing behaviour for DEP-locked sandboxes.
+    """
+    if platform.system() != "Windows":
+        return None
+    if platform.machine().lower() not in ("amd64", "x86_64"):
+        return None
+    # platform.machine reflects the host arch even under 32-bit Python
+    # (WoW64 reports AMD64). Our shellcode is 64-bit only — gate on the
+    # pointer size of the *running* interpreter to avoid mis-decoding it
+    # under a 32-bit Python on a 64-bit OS.
+    import struct
+    if struct.calcsize("P") != 8:
+        return None
+
+    try:
+        import ctypes
+        # Microsoft x64 ABI: leaf=RCX, subleaf=RDX, out ptr=R8.
+        shellcode = bytes([
+            0x89, 0xC8,                         # mov  eax, ecx     ; leaf
+            0x89, 0xD1,                         # mov  ecx, edx     ; subleaf
+            0x53,                               # push rbx          ; nonvolatile
+            0x0F, 0xA2,                         # cpuid
+            0x41, 0x89, 0x00,                   # mov  [r8],    eax
+            0x41, 0x89, 0x58, 0x04,             # mov  [r8+4],  ebx
+            0x41, 0x89, 0x48, 0x08,             # mov  [r8+8],  ecx
+            0x41, 0x89, 0x50, 0x0C,             # mov  [r8+12], edx
+            0x5B,                               # pop  rbx
+            0xC3,                               # ret
+        ])
+        k32 = ctypes.windll.kernel32
+        k32.VirtualAlloc.restype = ctypes.c_void_p
+        k32.VirtualAlloc.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t,
+            ctypes.c_uint32, ctypes.c_uint32,
+        ]
+        k32.VirtualFree.argtypes = [
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32,
+        ]
+        PAGE_EXECUTE_READWRITE = 0x40
+        MEM_COMMIT_RESERVE = 0x3000
+        MEM_RELEASE = 0x8000
+        addr = k32.VirtualAlloc(
+            None, len(shellcode), MEM_COMMIT_RESERVE, PAGE_EXECUTE_READWRITE,
+        )
+        if not addr:
+            return None
+        try:
+            ctypes.memmove(addr, shellcode, len(shellcode))
+            cpuid_fn = ctypes.CFUNCTYPE(
+                None, ctypes.c_uint32, ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_uint32 * 4),
+            )(addr)
+            return _check_vnni_via_cpuid(cpuid_fn)
+        finally:
+            k32.VirtualFree(addr, 0, MEM_RELEASE)
+    except Exception:
+        return None
+
+
+def _check_vnni_via_cpuid(cpuid_fn) -> bool:
+    """Issue the two CPUID leaves that carry the int8 fast-path bits.
+
+    Split out from :func:`_probe_avx_vnni_via_cpuid` so the platform-
+    specific allocation wrapper can stay focused on memory management;
+    keeping the bit math here also makes the leaf/bit references
+    greppable from a single location.
+    """
+    import ctypes
+    out = (ctypes.c_uint32 * 4)()
+    cpuid_fn(0, 0, ctypes.byref(out))
+    max_basic = out[0]
+    if max_basic < 7:
+        return False
+    cpuid_fn(7, 0, ctypes.byref(out))
+    max_sub = out[0]
+    if out[2] & (1 << 11):       # ECX bit 11 → AVX-512_VNNI
+        return True
+    if max_sub < 1:
+        return False
+    cpuid_fn(7, 1, ctypes.byref(out))
+    return bool(out[0] & (1 << 4))  # EAX bit 4 → AVX-VNNI
+
+
 def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
     """x86 INT8 fast path = AVX-VNNI (or AVX512-VNNI).
 
+    Detection order:
+      1. Direct CPUID probe (:func:`_probe_avx_vnni_via_cpuid`) —
+         Windows x86_64 only; the bug being fixed is py-cpuinfo's
+         Windows backend omitting ``avx_vnni`` from its flag list.
+      2. ``py-cpuinfo`` flags — primary path on Linux / macOS, and the
+         fallback on Windows when the CPUID probe could not run.
+      3. ``/proc/cpuinfo`` on Linux — text parse if py-cpuinfo failed.
+
     Returns ``(has_vnni, absence_confirmed)``. ``absence_confirmed=False``
-    means we could not read CPU flags (rare with py-cpuinfo as a hard dep).
+    means no path could read CPU flags — the caller stays optimistic and
+    picks INT8 in that case (consistent with the ARM branch).
     """
+    probed = _probe_avx_vnni_via_cpuid()
+    if probed is not None:
+        return probed, True
+
     try:
         import cpuinfo  # type: ignore
         flags = cpuinfo.get_cpu_info().get("flags", []) or []
