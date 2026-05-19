@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -61,6 +62,42 @@ class _Backend:
 
     async def shutdown(self) -> None:
         return None
+
+
+class _BlockingBackend:
+    def __init__(self) -> None:
+        self.started = 0
+        self.max_active = 0
+        self._active = 0
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.started += 1
+        self._active += 1
+        self.max_active = max(self.max_active, self._active)
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            self._active -= 1
+        if operation == "agent_reply":
+            return {"reply": str(context.get("prompt") or "ok")}
+        return {"summary": "ok", "key_points": []}
+
+    async def shutdown(self) -> None:
+        return None
+
+
+class _HeldBackend:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def invoke(self, *, operation: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.started.set()
+        await self.release.wait()
+        return {"reply": str(context.get("prompt") or "ok")}
+
+    async def shutdown(self) -> None:
+        self.release.set()
 
 
 def _config(**overrides: Any) -> SimpleNamespace:
@@ -266,3 +303,82 @@ def test_near_match_helpers_hash_and_observed_similarity() -> None:
     )
     assert _observed_similarity(["same current line"], ["same current line."]) >= 0.85
     assert _observed_similarity(["same current line"], ["different plot"]) < 0.85
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_max_in_flight_queues_instead_of_degrading() -> None:
+    backend = _BlockingBackend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_max_in_flight=1, llm_request_cache_ttl_seconds=0),
+        backend=backend,
+    )
+
+    try:
+        first, second = await asyncio.gather(
+            gateway.agent_reply({"prompt": "first"}),
+            gateway.agent_reply({"prompt": "second"}),
+        )
+    finally:
+        await gateway.shutdown()
+
+    assert first["degraded"] is False
+    assert first["reply"] == "first"
+    assert second["degraded"] is False
+    assert second["reply"] == "second"
+    assert backend.started == 2
+    assert backend.max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_semaphore_wait_is_bounded_by_call_timeout() -> None:
+    backend = _HeldBackend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_max_in_flight=1, llm_call_timeout_seconds=0.2),
+        backend=backend,
+    )
+    first = asyncio.create_task(gateway.agent_reply({"prompt": "first"}))
+    await backend.started.wait()
+    gateway.update_config(_config(llm_max_in_flight=1, llm_call_timeout_seconds=0.01))
+
+    try:
+        second = await gateway.agent_reply({"prompt": "second"})
+    finally:
+        backend.release.set()
+        await first
+        await gateway.shutdown()
+
+    assert second["degraded"] is True
+    assert second["diagnostic"] == "timeout: llm semaphore acquire timed out"
+
+
+@pytest.mark.asyncio
+async def test_llm_gateway_semaphore_wait_timeout_does_not_poison_provider() -> None:
+    backend = _HeldBackend()
+    gateway = LLMGateway(
+        None,
+        None,
+        _config(llm_max_in_flight=1, llm_call_timeout_seconds=0.2),
+        backend=backend,
+    )
+    first = asyncio.create_task(gateway.agent_reply({"prompt": "first"}))
+    await backend.started.wait()
+    gateway.update_config(_config(llm_max_in_flight=1, llm_call_timeout_seconds=0.01))
+
+    try:
+        second = await gateway.agent_reply({"prompt": "second"})
+        backend.release.set()
+        first_result = await asyncio.wait_for(first, timeout=1.0)
+        third = await gateway.agent_reply({"prompt": "third"})
+    finally:
+        backend.release.set()
+        await gateway.shutdown()
+
+    assert second["degraded"] is True
+    assert second["diagnostic"] == "timeout: llm semaphore acquire timed out"
+    assert first_result["degraded"] is False
+    assert third["degraded"] is False
+    assert third["reply"] == "third"

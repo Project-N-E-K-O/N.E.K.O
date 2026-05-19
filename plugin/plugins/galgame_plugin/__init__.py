@@ -2912,7 +2912,7 @@ class GalgamePlugin(NekoPluginBase):
                 session_id=session_id,
             )
         if not live_matches:
-            self.logger.warning("galgame context_snapshot persist skipped: stale summary context")
+            self.logger.warning("galgame saved snapshot persist skipped: stale summary payload")
             return
         with self._state_lock:
             if not self._context_snapshot_liveness_matches(

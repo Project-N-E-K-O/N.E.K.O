@@ -466,7 +466,6 @@ export default {
     reloadFailed: '리로드에 실패했습니다',
     packFailed: '플러그인 패키징에 실패했습니다',
     deleteFailed: '플러그인 삭제에 실패했습니다',
-    pluginDisabled: '플러그인이 비활성화되어 있습니다. 먼저 활성화하세요.',
     pluginLoadFailed: '플러그인 로드에 실패하여 시작할 수 없습니다.',
     confirmDisableExt: '이 확장 기능을 비활성화하시겠습니까? 호스트 플러그인의 확장 기능이 언로드됩니다.',
     extensionDisabled: '확장 기능이 비활성화되었습니다',

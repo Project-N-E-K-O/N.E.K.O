@@ -271,6 +271,8 @@ async def test_galgame_agent_send_message_entry_interrupts_awaiting_bridge(
     tmp_path: Path,
 ) -> None:
     plugin, _ctx = await _make_active_plugin(tmp_path)
+    mode_result = await plugin.galgame_set_mode(mode="choice_advisor")
+    assert isinstance(mode_result, Ok)
     fake_host = _FakeHostAdapter()
     fake_gateway = _FakeLLMGateway(reply_text="桥接还没确认状态变化。")
     plugin._game_agent._host_adapter = fake_host
@@ -300,6 +302,8 @@ async def test_galgame_agent_set_standby_entry_interrupts_awaiting_bridge(
     tmp_path: Path,
 ) -> None:
     plugin, _ctx = await _make_active_plugin(tmp_path)
+    mode_result = await plugin.galgame_set_mode(mode="choice_advisor")
+    assert isinstance(mode_result, Ok)
     fake_host = _FakeHostAdapter()
     fake_gateway = _FakeLLMGateway(reply_text="unused")
     plugin._game_agent._host_adapter = fake_host
@@ -329,6 +333,8 @@ async def test_galgame_plugin_tick_recovers_after_temporary_host_unavailable(
     tmp_path: Path,
 ) -> None:
     plugin, _ctx = await _make_active_plugin(tmp_path)
+    mode_result = await plugin.galgame_set_mode(mode="choice_advisor")
+    assert isinstance(mode_result, Ok)
     fake_host = _FakeHostAdapter(ready=False)
     fake_gateway = _FakeLLMGateway(reply_text="unused")
     plugin._game_agent._host_adapter = fake_host

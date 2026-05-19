@@ -50,6 +50,132 @@
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
 
+    async function releaseVoiceCaptureResources() {
+        if (S.stream && typeof S.stream.getTracks === 'function') {
+            S.stream.getTracks().forEach(function (track) {
+                if (track && typeof track.stop === 'function') {
+                    try {
+                        track.stop();
+                    } catch (error) {
+                        console.warn('[App] mic track cleanup failed:', error);
+                    }
+                }
+            });
+        }
+        S.stream = null;
+
+        [S.workletNode, S.micGainNode, S.inputAnalyser].forEach(function (node) {
+            if (node && typeof node.disconnect === 'function') {
+                try {
+                    node.disconnect();
+                } catch (_) { }
+            }
+        });
+        S.workletNode = null;
+        S.micGainNode = null;
+        S.inputAnalyser = null;
+
+        if (S.audioContext) {
+            var audioContext = S.audioContext;
+            S.audioContext = null;
+            if (audioContext.state !== 'closed' && typeof audioContext.close === 'function') {
+                try {
+                    await audioContext.close();
+                } catch (error) {
+                    console.warn('[App] audioContext cleanup failed:', error);
+                }
+            }
+        }
+
+        S.isRecording = false;
+        window.isRecording = false;
+    }
+
+    async function resetVoiceUiAfterAutoClose(options) {
+        var keepSwitchingMode = !!(options && options.keepSwitchingMode);
+
+        if (S._voiceSessionInitialTimer) {
+            clearTimeout(S._voiceSessionInitialTimer);
+            S._voiceSessionInitialTimer = null;
+        }
+
+        if (typeof window.stopMicCapture === 'function') {
+            try {
+                await window.stopMicCapture();
+            } catch (error) {
+                console.warn('[App] auto_close_mic cleanup failed:', error);
+            }
+        }
+        await releaseVoiceCaptureResources();
+
+        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+        if (typeof window.stopSilenceDetection === 'function') window.stopSilenceDetection();
+        if (typeof window.stopGameVoiceSttGate === 'function') window.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (typeof window.updateMicVolumeStatusNow === 'function') window.updateMicVolumeStatusNow(false);
+
+        S.isTextSessionActive = false;
+        S.voiceChatActive = false;
+        S.voiceStartPending = false;
+        S.isRecording = false;
+        if (!keepSwitchingMode) {
+            S.isSwitchingMode = false;
+        }
+        window.isRecording = false;
+        window.isMicStarting = false;
+        window.currentGeminiMessage = null;
+        S.lastVoiceUserMessage = null;
+        S.lastVoiceUserMessageTime = 0;
+
+        var mb = micButton();
+        if (mb) {
+            mb.classList.remove('active');
+            mb.classList.remove('recording');
+            mb.disabled = false;
+        }
+        var sb = screenButton();
+        if (sb) {
+            sb.classList.remove('active');
+            sb.disabled = true;
+        }
+        var mu = muteButton(); if (mu) mu.disabled = true;
+        var st = stopButton(); if (st) st.disabled = true;
+        var rs = resetSessionButton(); if (rs) rs.disabled = false;
+        var rt = returnSessionButton(); if (rt) rt.disabled = true;
+        var ts = textSendButton(); if (ts) ts.disabled = false;
+        var ti = textInputBox(); if (ti) ti.disabled = false;
+        var ss = screenshotButton(); if (ss) ss.disabled = false;
+
+        var textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
+        if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
+        if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
+    }
+
+    function resolveAutoCloseMicToastMessage(response) {
+        var reasonCode = response && response.reason_code;
+        if (reasonCode === 'free_api_silence_timeout' && typeof window.t === 'function') {
+            return window.t('app.freeApiAutoCloseNotice', {
+                defaultValue: '免费 API 长时间未检测到语音，已自动关闭语音会话'
+            });
+        }
+        return (typeof window.t === 'function' && window.t('app.autoMuteTimeout'))
+            || (response && response.message)
+            || '长时间无语音输入，已自动关闭麦克风';
+    }
+
+    function showAutoCloseMicToast(response) {
+        if (typeof window.showStatusToast !== 'function') return;
+        var now = Date.now();
+        if (S._lastAutoCloseMicToastAt && now - S._lastAutoCloseMicToastAt < 1500) return;
+        S._lastAutoCloseMicToastAt = now;
+        window.showStatusToast(
+            resolveAutoCloseMicToastMessage(response),
+            7000,
+            { priority: 80 }
+        );
+    }
+
     function handleMusicPlayUrlCoordMessage(data) {
         if (!data || typeof data !== 'object') return;
         if (data.sender === MUSIC_PLAY_URL_SENDER_ID) return;
@@ -1616,8 +1742,17 @@
                     // TTS 水印提示需要更长显示时间和更高优先级，避免被后续消息覆盖
                     var stickyInfoCodes = ['TTS_WATERMARK_DETECTED'];
                     var isStickyInfo = statusCode && stickyInfoCodes.indexOf(statusCode) !== -1;
+                    var highPriorityInfoCodes = ['FREE_API_AUTO_CLOSE_VOICE'];
+                    var isHighPriorityInfo = statusCode && highPriorityInfoCodes.indexOf(statusCode) !== -1;
+                    if (isHighPriorityInfo) {
+                        S._lastAutoCloseMicToastAt = Date.now();
+                    }
 
-                    if (typeof window.showStatusToast === 'function') window.showStatusToast(translatedMessage, isStickyInfo ? 8000 : 4000, { important: isCriticalError, priority: isStickyInfo ? 50 : undefined });
+                    if (typeof window.showStatusToast === 'function') window.showStatusToast(
+                        translatedMessage,
+                        isStickyInfo ? 8000 : (isHighPriorityInfo ? 7000 : 4000),
+                        { important: isCriticalError, priority: isStickyInfo ? 50 : (isHighPriorityInfo ? 80 : undefined) }
+                    );
 
                     if (statusCode === 'CHARACTER_DISCONNECTED') {
                         if (S.isRecording === false && !S.isTextSessionActive) {
@@ -2374,19 +2509,16 @@
                 // -------- auto_close_mic --------
                 } else if (response.type === 'auto_close_mic') {
                     console.log(window.t('console.autoCloseMicReceived'));
-                    if (S.isRecording) {
-                        var _mu4 = muteButton(); if (_mu4) _mu4.click();
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
-                        }
-                    } else {
-                        var _mb4 = micButton();
-                        if (_mb4) { _mb4.classList.remove('active'); _mb4.classList.remove('recording'); }
-                        if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
-                        if (typeof window.showStatusToast === 'function') {
-                            window.showStatusToast(response.message || (window.t ? window.t('app.autoMuteTimeout') : '长时间无语音输入，已自动关闭麦克风'), 4000);
-                        }
-                    }
+                    S.voiceStartPending = false;
+                    window.isMicStarting = false;
+                    showAutoCloseMicToast(response);
+
+                    Promise.resolve(resetVoiceUiAfterAutoClose({ keepSwitchingMode: true })).then(function () {
+                        showAutoCloseMicToast(response);
+                    }, function (error) {
+                        console.warn('[App] auto_close_mic cleanup failed:', error);
+                        showAutoCloseMicToast(response);
+                    });
 
                 // -------- music action --------
                 } else if (response.action === 'music') {

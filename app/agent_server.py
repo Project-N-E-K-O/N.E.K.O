@@ -3291,7 +3291,61 @@ async def startup():
                         except Exception as parse_err:
                             logger.debug(f"[Agent] plugin_list_provider parse error: {parse_err}")
                             data = {}
-                        return data.get("plugins", []) or []
+                        raw = data.get("plugins", []) or []
+                        # ISOLATION BOUNDARY: only expose RUNNING plugins to the
+                        # analyzer / plugin LLM. Without this filter, every plugin
+                        # the host knows about (including disabled, stopped,
+                        # load-failed, source-missing, and extension plugins in
+                        # 'pending' state) flows into the LLM's candidate set.
+                        # The LLM then wastes tokens evaluating capabilities the
+                        # user explicitly didn't enable, and worse — picks a
+                        # plugin that has no live process to receive the dispatch,
+                        # surfacing fake "available capability" to the user. See
+                        # _resolve_plugin_status() in
+                        # plugin/server/application/plugins/query_service.py for
+                        # the full status taxonomy; "running" is the only state
+                        # where the plugin's process is alive and responsive.
+                        running = [
+                            p for p in raw
+                            if isinstance(p, dict) and p.get("status") == "running"
+                        ]
+                        if len(running) != len(raw):
+                            dropped = [
+                                (p.get("id"), p.get("status"))
+                                for p in raw
+                                if isinstance(p, dict) and p.get("status") != "running"
+                            ]
+                            logger.debug(
+                                "[Agent] plugin_list_provider filtered out %d non-running plugins: %s",
+                                len(dropped), dropped,
+                            )
+                        # AUDIENCE BOUNDARY: ``@llm_tool``-registered methods
+                        # also surface as plugin entries with id prefix
+                        # ``__llm_tool__<name>`` (see plugin SDK collect_entries).
+                        # Those tools are *also* exposed to the dialog LLM via
+                        # ``LLMSessionManager.tool_registry`` — letting the
+                        # analyzer/plugin LLM dispatch them too means the same
+                        # tool can be triggered by both LLMs, with the
+                        # analyzer path's ~10s decision latency racing against
+                        # the dialog LLM's direct call. The dialog LLM is the
+                        # canonical caller for ``@llm_tool`` (it gets the
+                        # tool's full schema, can pass typed args, and runs
+                        # synchronously); the analyzer should only see
+                        # ``@plugin_entry`` registered entries (queries /
+                        # status / config). Strip ``__llm_tool__`` entries
+                        # from the analyzer's view here.
+                        for p in running:
+                            entries = p.get("entries")
+                            if isinstance(entries, list):
+                                p["entries"] = [
+                                    e for e in entries
+                                    if not (
+                                        isinstance(e, dict)
+                                        and isinstance(e.get("id"), str)
+                                        and e["id"].startswith("__llm_tool__")
+                                    )
+                                ]
+                        return running
             except Exception as e:
                 logger.debug(f"[Agent] plugin_list_provider http fetch failed: {e}")
             return []

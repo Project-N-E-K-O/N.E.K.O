@@ -1922,7 +1922,7 @@
   // 兜底难度统一钉到 lv2：原本的 lv2/lv3 random 让玩家受到的初始压力抖动 1 档，
   // pre-game 端 LLM 又被 prompt 强制建议 neutral_play 选 lv2 → 兜底也对齐 lv2，
   // 让 fallback 路径与 prompt 引导走同一档，避免"LLM 出 lv2 / 兜底出 lv3"的体感
-  // 差异。lv3 / lv4 仍可由局内自动平衡、balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
+  // 差异。lv3 / lv4 仍可由 balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
@@ -1963,7 +1963,14 @@
     return 'lv2';
   }
 
+  const SCORE_DIFF_AUTO_BALANCE_ENABLED = false;
+
   function rebalanceDifficultyForScore(reason = 'score') {
+    // 已废弃的按比分差直接改难度逻辑。
+    // 这段只作为历史逻辑和未来 fallback 入口保留；默认关闭。
+    // 正常难度调整应走开局上下文、LLM control 或后续统一难度管理，而不是在前端按固定比分差强制覆盖。
+    if (!SCORE_DIFF_AUTO_BALANCE_ENABLED) return false;
+
     const scoreDiff = Number(state.score.ai || 0) - Number(state.score.player || 0);
     const target = targetDifficultyForScoreDiff(scoreDiff);
     return setDifficultyInternal(target, {

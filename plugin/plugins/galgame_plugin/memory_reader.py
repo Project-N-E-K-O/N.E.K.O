@@ -1679,8 +1679,7 @@ class MemoryReaderManager:
             self._last_hook_code_count = len(hook_codes)
             self._last_hook_code_detail = hook_code_detail
             self._logger.info(
-                "memory_reader hook_codes selected: {} (count={}, engine={}, detail={})",
-                hook_codes,
+                "memory_reader injection codes selected (count={}, engine={}, detail={})",
                 len(hook_codes),
                 target.engine,
                 hook_code_detail,
@@ -1717,8 +1716,7 @@ class MemoryReaderManager:
                 self._last_hook_code_count = len(hook_codes)
                 self._last_hook_code_detail = hook_code_detail
                 self._logger.info(
-                    "memory_reader hook_codes selected: {} (count={}, engine={}, detail={})",
-                    hook_codes,
+                    "memory_reader injection codes selected (count={}, engine={}, detail={})",
                     len(hook_codes),
                     target.engine,
                     hook_code_detail,
@@ -1890,7 +1888,10 @@ class MemoryReaderManager:
     async def _ensure_textractor_started(self, textractor_path: str) -> None:
         if self._process is not None and self._process.poll() is None:
             return
-        self._logger.info("memory_reader starting Textractor: {}", textractor_path)
+        self._logger.info(
+            "memory_reader starting Textractor: {}",
+            textractor_path,
+        )
         self._process = await self._process_factory(textractor_path)
 
     async def _handle_textractor_crash(self, now: float) -> str:
@@ -1970,14 +1971,14 @@ class MemoryReaderManager:
                     self._last_hook_text.popitem(last=False)
             parsed.append(parsed_line)
         for line in logs[:8]:
-            self._logger.debug("memory_reader Textractor log: {}", line)
+            print(f"memory_reader Textractor log: {line}")
         for warning in warnings[:8]:
-            self._logger.warning("{}", warning)
+            print(f"memory_reader Textractor warning: {warning}")
         if parsed:
             preview = " | ".join(
                 f"{item.pid}:{item.hook_addr}:{normalize_text(item.text)[:80]}" for item in parsed[:4]
             )
-            self._logger.debug("memory_reader parsed Textractor lines: {}", preview)
+            print(f"memory_reader parsed Textractor lines: {preview}")
         return parsed, logs, warnings
 
     @staticmethod

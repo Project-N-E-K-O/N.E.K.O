@@ -466,7 +466,6 @@ export default {
     reloadFailed: 'Falha ao recarregar',
     packFailed: 'Falha ao empacotar plugin',
     deleteFailed: 'Falha ao excluir plugin',
-    pluginDisabled: 'O plugin está desabilitado. Habilite-o primeiro.',
     pluginLoadFailed: 'O plugin falhou ao carregar e não pode ser iniciado.',
     confirmDisableExt: 'Desabilitar esta extensão? Sua funcionalidade será descarregada do plugin hospedeiro.',
     extensionDisabled: 'Extensão desabilitada',

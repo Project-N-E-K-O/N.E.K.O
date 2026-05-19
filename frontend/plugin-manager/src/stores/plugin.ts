@@ -53,16 +53,18 @@ export const usePluginStore = defineStore('plugin', () => {
       // Extension 状态由后端 build_plugin_list 推导（injected/pending/disabled），
       // 直接使用 GET /plugins 返回的 status 字段，因为 Extension 不是独立进程，
       // pluginStatuses（GET /plugin/status）中不会有它的数据。
+      // 非 extension 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
+      // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
+      // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
+      // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
+      // 现在直接信任 runtime status（stopped / running / load_failed），
+      // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
+      // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
       let displayStatus: string
       if (isExtension) {
         displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.PENDING
       } else {
-        const runtimeStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
-        if (runtimeStatus === StatusEnum.LOAD_FAILED) {
-          displayStatus = StatusEnum.LOAD_FAILED
-        } else {
-          displayStatus = enabled ? runtimeStatus : StatusEnum.DISABLED
-        }
+        displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
       }
       
       return {
