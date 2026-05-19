@@ -1684,11 +1684,15 @@ def _install_crash_excepthook():
                 from utils.event_logger import EventLogger
                 EventLogger.get_instance().flush()
         except Exception:
+            # crash hook 自己绝不能 raise —— 否则原始 traceback 被它的异常
+            # 替换，用户看不到真正 crash 在哪。telemetry 失败相比之下不值一提。
             pass
         # 让默认 hook 继续打 stack —— 不打断现有行为
         try:
             _orig_excepthook(exc_type, exc_value, exc_tb)
         except Exception:
+            # 原 hook 自己崩了（罕见，比如 sys.stderr 已经被关）—— 这种情况
+            # 我们没什么能做的，最多让进程退出，原 traceback 已经丢了。
             pass
 
     sys.excepthook = _crash_excepthook
