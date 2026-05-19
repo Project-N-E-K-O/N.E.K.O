@@ -297,6 +297,43 @@ async def test_get_story_so_far_uses_existing_scene_summaries(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_get_story_so_far_keeps_newer_recorded_summary_when_layer1_is_stale(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(
+            scene_memory=[
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "summary": "old layer1 scene summary",
+                    "push_seq": 7,
+                },
+            ]
+        )
+    )
+
+    plugin._record_story_progress_from_scene_summary(
+        scene_id="scene-a",
+        summary="new line-count progress summary",
+        push_seq=12,
+    )
+
+    result = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(result, Ok)
+    assert result.value["available"] is True
+    assert "new line-count progress summary" in result.value["story_so_far"]
+    assert "old layer1 scene summary" not in result.value["story_so_far"]
+    assert result.value["last_updated_seq"] == 12
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_galgame_continue_auto_advance_sets_choice_advisor_and_resumes_agent(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
