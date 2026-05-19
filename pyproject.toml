@@ -67,6 +67,11 @@ dependencies = [
   # plugins (mss is also a candidate for brain/computer_use). Tiny (<1MB).
   "mss",
   "dxcam ; sys_platform == 'win32'",
+  # Linux X11 window enumeration / geometry for galgame_plugin
+  # (cross-platform-capture-plan). Falls back to `wmctrl` subprocess
+  # when this dependency is unavailable. Skipped on Windows/macOS
+  # to keep dev installs lean.
+  "python-xlib ; sys_platform == 'linux'",
   # NOTE: rapidocr-onnxruntime + cv2 cohort lives in [dependency-groups] galgame
   # below — it brings opencv (~109 MB on disk) which the main program does not
   # use. Build scripts (Nuitka/PyInstaller) install --group galgame explicitly

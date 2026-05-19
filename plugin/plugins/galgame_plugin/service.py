@@ -633,11 +633,27 @@ def _default_bridge_root_raw() -> str:
 
 
 def _default_memory_reader_enabled() -> bool:
-    return sys.platform.startswith("win")
+    from .capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
 
 
 def _default_ocr_reader_enabled() -> bool:
-    return sys.platform.startswith("win")
+    # Keep OCR reader Windows-only for now; do not couple this to
+    # rapidocr_enabled because RapidOCR has its own platform checks.
+    from .capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
+
+
+def _default_rapidocr_enabled() -> bool:
+    # RapidOCR remains Windows-only at the default level. RapidOCR
+    # itself does its own runtime platform check; this default just
+    # mirrors the historical behavior so non-Windows users opt-in
+    # explicitly rather than getting a surprise enable.
+    from .capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
 
 
 def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
@@ -958,7 +974,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         ),
         rapidocr_enabled=_coerce_bool(
             rapidocr_obj.get("enabled"),
-            _default_ocr_reader_enabled(),
+            _default_rapidocr_enabled(),
         ),
         rapidocr_enabled_explicit="enabled" in rapidocr_obj,
         # NOTE: `rapidocr_install_manifest_url` and `rapidocr_install_timeout_seconds`
