@@ -192,7 +192,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message.startswith("plugin.entry should usually start with"):
         return "check plugin.toml [plugin].entry and make sure it points at the plugin entry class"
     if message.startswith("plugin.id ") and "does not match directory name" in message:
-        return "rename the directory or update plugin.toml [plugin].id so they match"
+        return "rename the directory to the plugin id, or to n.e.k.o_plugin_<plugin_id> for a market repository"
     if message.startswith(".gitignore should include "):
         pattern = message.removeprefix(".gitignore should include ")
         return f"add {pattern} to .gitignore"

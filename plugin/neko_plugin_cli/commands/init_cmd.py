@@ -22,6 +22,8 @@ from ..core.plugin_source import load_plugin_source
 from ._prompt import ask_checkbox, ask_confirm, ask_select, ask_text
 
 _PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
@@ -109,6 +111,7 @@ def handle_init_repo(args: argparse.Namespace) -> int:
         no_tests=False,
         no_gitignore=False,
         no_vscode=False,
+        market_repo=True,
     )
     return _handle_non_interactive(init_args, defaults=defaults)
 
@@ -340,9 +343,16 @@ def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) 
     if not _PLUGIN_ID_RE.fullmatch(plugin_id):
         print(f"[FAIL] invalid plugin ID: '{plugin_id}'", file=sys.stderr)
         return 1
+    if getattr(args, "market_repo", False) and not _MARKET_PLUGIN_ID_RE.fullmatch(plugin_id):
+        print(
+            f"[FAIL] invalid market plugin ID: '{plugin_id}' "
+            "(use lowercase letters, numbers, and underscores)",
+            file=sys.stderr,
+        )
+        return 1
 
     plugins_root = _resolve_plugins_root(args, defaults=defaults)
-    target_dir = plugins_root / plugin_id
+    target_dir = plugins_root / (_market_repo_name(plugin_id) if getattr(args, "market_repo", False) else plugin_id)
     if target_dir.exists():
         print(f"[FAIL] directory already exists: {target_dir}", file=sys.stderr)
         return 1
@@ -395,6 +405,9 @@ def _generate_and_report(
     for path in created:
         print(f"  └── {path.relative_to(target_dir)}")
     print(f"\n  入口类: {spec.class_name}")
+    if target_dir.name.startswith(_MARKET_REPO_PREFIX):
+        print(f"  repo:   {target_dir.name}")
+        print(f"  plugin: {spec.plugin_id}")
     print(f"  entry:  {spec.entry_point}")
     if git_initialized:
         print("  git:    initialized")
@@ -410,6 +423,10 @@ def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) ->
     if plugins_root:
         return Path(plugins_root).expanduser().resolve()
     return defaults.plugins_root
+
+
+def _market_repo_name(plugin_id: str) -> str:
+    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
 def _resolve_existing_plugin_dir(raw: str, *, args: argparse.Namespace, defaults: CliDefaults) -> Path:

@@ -245,6 +245,54 @@ def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path)
     assert any(".gitignore is not valid UTF-8" in message for message in messages)
 
 
+def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = neko_plugin_cli.main(
+        [
+            "init-repo",
+            "market_demo",
+            "--plugins-root",
+            str(tmp_path),
+            "--no-git",
+            "--neko-repo",
+            "Project-N-E-K-O/N.E.K.O",
+        ]
+    )
+
+    repo_dir = tmp_path / "n.e.k.o_plugin_market_demo"
+    assert exit_code == 0
+    assert repo_dir.is_dir()
+    assert not (tmp_path / "market_demo").exists()
+    assert 'id = "market_demo"' in (repo_dir / "plugin.toml").read_text(encoding="utf-8")
+    assert "store.db" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
+
+    messages = [message for _level, message in validate_plugin_dir(repo_dir, strict=True)]
+    assert not any("does not match directory name" in message for message in messages)
+
+    check_exit = neko_plugin_cli.main(["check", "market_demo", "--plugins-root", str(tmp_path)])
+    assert check_exit == 0
+    captured = capsys.readouterr()
+    assert "repo:   n.e.k.o_plugin_market_demo" in captured.out
+    assert "[OK] market_demo: check found" in captured.out
+
+
+def test_init_repo_rejects_uppercase_market_plugin_id(tmp_path: Path) -> None:
+    exit_code = neko_plugin_cli.main(
+        [
+            "init-repo",
+            "MarketDemo",
+            "--plugins-root",
+            str(tmp_path),
+            "--no-git",
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (tmp_path / "n.e.k.o_plugin_MarketDemo").exists()
+
+
 def test_setup_repo_git_skips_when_inside_existing_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

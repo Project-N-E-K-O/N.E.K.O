@@ -6,6 +6,8 @@ from pathlib import Path
 
 from ..paths import CliDefaults
 
+_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+
 
 def resolve_plugin_dirs(*, plugin_names: list[str], pack_all: bool, defaults: CliDefaults) -> list[Path]:
     plugin_root = defaults.plugins_root
@@ -39,6 +41,10 @@ def resolve_plugin_dir_candidate(raw: str, *, defaults: CliDefaults) -> Path:
         plugin_dir = candidate.resolve()
     else:
         plugin_dir = (defaults.plugins_root / raw).resolve()
+        if not (plugin_dir / "plugin.toml").is_file():
+            market_repo_dir = (defaults.plugins_root / f"{_MARKET_REPO_PREFIX}{raw}").resolve()
+            if (market_repo_dir / "plugin.toml").is_file():
+                plugin_dir = market_repo_dir
 
     plugin_toml = plugin_dir / "plugin.toml"
     if not plugin_toml.is_file():

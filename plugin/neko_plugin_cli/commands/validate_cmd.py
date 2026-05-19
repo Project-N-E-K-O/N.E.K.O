@@ -16,6 +16,8 @@ from plugin.core.python_dependencies import (
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
+_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+
 
 def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
@@ -36,7 +38,7 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
 
-    if source.plugin_id != plugin_dir.name:
+    if source.plugin_id != plugin_dir.name and plugin_dir.name != _market_repo_name(source.plugin_id):
         issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
 
     entry = source.entry_point
@@ -65,6 +67,10 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     _check_python_decorators(plugin_dir, issues)
 
     return issues
+
+
+def _market_repo_name(plugin_id: str) -> str:
+    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
 def _check_plugin_toml_schema(

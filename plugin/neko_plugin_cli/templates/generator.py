@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 
 
 @dataclass
@@ -502,6 +503,12 @@ This repository is meant to live at:
 N.E.K.O/plugin/plugins/{spec.plugin_id}
 ```
 
+When publishing to the plugin market, use this GitHub repository name:
+
+```text
+{_market_repo_name(spec.plugin_id)}
+```
+
 From the N.E.K.O repository root:
 
 ```bash
@@ -542,6 +549,7 @@ venv/
 dist/
 build/
 *.egg-info/
+store.db
 .env
 .DS_Store
 '''
@@ -685,6 +693,10 @@ def _escape(value: str) -> str:
         .replace("\n", "\\n")
         .replace("\t", "\\t")
     )
+
+
+def _market_repo_name(plugin_id: str) -> str:
+    return f"{_MARKET_REPO_PREFIX}{plugin_id}"
 
 
 def _write_support_file(path: Path, content: str, *, created: list[Path], overwrite: bool) -> None:
