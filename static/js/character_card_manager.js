@@ -6175,10 +6175,12 @@ async function rebuildSavedCatgirlPanel(form, catgirlName) {
 }
 
 async function saveCatgirlFromPanel(form, originalName, isNew) {
-    // 防止重复提交
+    // 返回 true 表示真正落库成功；false 表示任一失败/早退分支（重复提交、
+    // 校验失败、HTTP 错、success:false）。调用方（如 card-assist 的"应用并保存"）
+    // 依赖这个返回值决定是否关闭面板/弹成功提示，否则会出现保存失败但 UI 报成功的假象。
     if (form.dataset.submitting === 'true') {
         console.log('表单正在提交中，忽略重复提交');
-        return;
+        return false;
     }
     form.dataset.submitting = 'true';
 
@@ -6194,7 +6196,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
-            return;
+            return false;
         }
         data['档案名'] = nameInput.value.trim();
 
@@ -6228,13 +6230,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 if (errorJson.error) errorMessage = errorJson.error;
             } catch (e) { /* keep original */ }
             showMessage(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage, 'error');
-            return;
+            return false;
         }
 
         const result = await response.json();
         if (result.success === false) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
-            return;
+            return false;
         }
         const localRawData = buildLocalCatgirlRawData(data['档案名'], data);
         let savedRawDataForCache = localRawData;
@@ -6386,10 +6388,12 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         }
         await loadCharacterCards();
         syncCharacterCardCache(data['档案名'], savedRawDataForCache);
+        return true;
     } catch (error) {
         console.error('保存猫娘失败:', error);
         const errorMessage = error.message || String(error);
         showMessage(window.t ? window.t('character.saveError', { error: errorMessage }) : '保存时发生错误: ' + errorMessage, 'error');
+        return false;
     } finally {
         form.dataset.submitting = 'false';
     }
@@ -10214,6 +10218,24 @@ function _cardAssistCurrentLocale() {
     } catch (_) { return 'en'; }
 }
 
+// 收集表单上所有用户可见的字段 name（textarea + input），保留出现顺序、去重、
+// 跳过保留 key。Apply 时是按 `textarea[name=...]` 精确匹配的，所以必须把
+// 模板真实使用的 key（en 模板用 "Gender"/"Age" 之类、zh 用 "性别"/"年龄" 之类）
+// 喂给 LLM，否则生成出来的中文 key 会以"新增字段"形式平行插入，旧字段不会被覆盖。
+function _cardAssistCollectFieldKeys(form) {
+    const keys = [];
+    if (!form) return keys;
+    const seen = new Set();
+    form.querySelectorAll('textarea[name], input[name]').forEach(function (el) {
+        const k = el.getAttribute('name');
+        if (!k || CARD_ASSIST_RESERVED_KEYS.includes(k)) return;
+        if (seen.has(k)) return;
+        seen.add(k);
+        keys.push(k);
+    });
+    return keys;
+}
+
 function _cardAssistCollectCurrentFormData(form) {
     const data = {};
     if (!form) return data;
@@ -10237,7 +10259,9 @@ async function _cardAssistFetch(path, payload) {
     if (!resp.ok || !body || body.success === false) {
         const err = (body && (body.message || body.error)) || ('HTTP ' + resp.status);
         const e = new Error(err);
-        e.code = body && body.error;
+        // 后端目前用 {success, error: "<machine_code>", message: "..."} 形状，
+        // body.error 就是机器码；兼容性预留 body.code（其他接口可能这么写）。
+        e.code = body && (body.code || body.error);
         throw e;
     }
     return body;
@@ -10318,9 +10342,11 @@ async function openCardAssistWizard(form, originalName, isNew) {
         answers: {},
         generated: {},          // {fieldKey: value}
         originalSnapshot: {},   // current form values keyed by field name
+        targetFieldKeys: [],    // form 上所有可见字段 name，按出现顺序去重
         selected: {},           // {fieldKey: bool}
     };
     state.originalSnapshot = _cardAssistCollectCurrentFormData(form);
+    state.targetFieldKeys = _cardAssistCollectFieldKeys(form);
 
     _cardAssistRenderStep1(shell, state, form, originalName, isNew);
 }
@@ -10374,6 +10400,7 @@ function _cardAssistRenderStep1(shell, state, form, originalName, isNew) {
                 const resp = await _cardAssistFetch('/api/card-assist/clarify', {
                     description: desc,
                     current_card: state.originalSnapshot,
+                    target_field_keys: state.targetFieldKeys,
                     locale: _cardAssistCurrentLocale(),
                 });
                 state.questions = resp.questions || [];
@@ -10438,11 +10465,21 @@ function _cardAssistRenderStep2(shell, state, form, originalName, isNew) {
         customInput.className = 'card-assist-custom-input';
         customInput.placeholder = _cardAssistT('character.aiAssistCustomPlaceholder', '或填写自定义答案…');
 
+        // 从 preview 用 Back 回到 Step2 时 state.answers 还留着上轮回答；
+        // 这里要把已选 chip / 自定义输入回填，否则 UI 看着是空的但请求里
+        // 仍带着上次的旧答案，"我只改了一题，生成结果却包含没改的旧选择"。
+        const priorAnswer = state.answers[q.id];
+        const priorIsChipOption = priorAnswer != null
+            && (q.options || []).indexOf(priorAnswer) >= 0;
+
         (q.options || []).forEach(function (opt) {
             const chip = document.createElement('button');
             chip.type = 'button';
             chip.className = 'card-assist-chip';
             chip.textContent = opt;
+            if (priorIsChipOption && priorAnswer === opt) {
+                chip.classList.add('selected');
+            }
             chip.addEventListener('click', function (e) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -10456,6 +10493,9 @@ function _cardAssistRenderStep2(shell, state, form, originalName, isNew) {
         qWrap.appendChild(chipRow);
 
         if (q.allowCustom !== false) {
+            if (priorAnswer != null && !priorIsChipOption) {
+                customInput.value = String(priorAnswer);
+            }
             customInput.addEventListener('input', function () {
                 if (customInput.value.trim()) {
                     chipRow.querySelectorAll('.card-assist-chip').forEach(function (c) { c.classList.remove('selected'); });
@@ -10492,6 +10532,7 @@ function _cardAssistRenderStep2(shell, state, form, originalName, isNew) {
                     description: state.description,
                     answers: state.answers,
                     current_card: state.originalSnapshot,
+                    target_field_keys: state.targetFieldKeys,
                     locale: _cardAssistCurrentLocale(),
                 });
                 state.generated = resp.fields || {};
@@ -10569,10 +10610,11 @@ function _cardAssistRenderStep3(shell, state, form, originalName, isNew) {
                         );
                     }
                 } else {
-                    try {
-                        await saveCatgirlFromPanel(form, originalName, isNew);
-                    } catch (saveErr) {
-                        console.error('[card-assist] save after apply failed:', saveErr);
+                    // saveCatgirlFromPanel 失败分支自己已经 showMessage，所以这里
+                    // 不再二次报错，只是不要关向导/弹成功提示。
+                    const saved = await saveCatgirlFromPanel(form, originalName, isNew);
+                    if (!saved) {
+                        return;
                     }
                 }
                 _cardAssistClose(shell.overlay);

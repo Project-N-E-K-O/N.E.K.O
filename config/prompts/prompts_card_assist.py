@@ -103,27 +103,23 @@ CARD_ASSIST_GENERATE_PROMPT = {
 现有卡片字段（如有冲突优先采用本次生成结果）：
 %s
 
+目标字段名（必须**原样**使用这些 key，**不要翻译、不要改写大小写、不要替换近义词**）：
+%s
+
 要求：
-- 必须输出以下 9 个标准字段（用中文键）：性别 / 年龄 / 性格原型 / 种族 / 自称 / 核心特质 / 行为特征 / 不喜欢 / 招牌台词
-- 可以追加任意你认为有价值的自定义字段（中文键，例如"兴趣爱好"、"过往经历"等），但不要超过 5 个额外字段
+- 必须输出"目标字段名"里列出的**全部**字段，键名 1:1 复制
+- 可以追加最多 5 个自定义字段，key 风格保持与目标字段一致（同一种语言/同一种写法）
 - 每个字段的值必须是字符串（不要数组、不要对象、不要 null）
 - 字段值具体、生动、可游戏化呈现；避免空泛的形容词堆砌
-- 招牌台词要带猫娘标志（如"喵~"、"呐"等），不超过 30 字
-- 行为特征 / 核心特质可以用逗号分隔列出 3-5 个特点
+- 招牌台词类字段（"招牌台词"/"一句话台词"/"Signature Line" 等）要带猫娘标志（如"喵~"、"呐"、"nya"），不超过 30 字
+- "行为特征"/"行为特点"/"核心特质"/"Core Traits"/"Behavioral Traits" 这类字段可以用逗号分隔列出 3-5 个特点
 - 严格按 JSON 返回，禁止 markdown 代码块、禁止任何前后缀文字：
 
 {
   "fields": {
-    "性别": "...",
-    "年龄": "...",
-    "性格原型": "...",
-    "种族": "...",
-    "自称": "...",
-    "核心特质": "...",
-    "行为特征": "...",
-    "不喜欢": "...",
-    "招牌台词": "...",
-    "兴趣爱好": "(可选)"
+    "<target_key_1>": "...",
+    "<target_key_2>": "...",
+    "...": "..."
   }
 }""",
     "en": """You are a catgirl character card design assistant. Generate a full character card based on the user's one-line description plus their answers to clarifying questions.
@@ -137,27 +133,23 @@ Clarification answers (id -> answer):
 Existing card fields (this generation takes priority on conflicts):
 %s
 
+Target field keys (use these keys **verbatim** — do NOT translate, re-case, or substitute synonyms):
+%s
+
 Requirements:
-- You MUST output these 9 standard fields (use the Chinese keys exactly): 性别 / 年龄 / 性格原型 / 种族 / 自称 / 核心特质 / 行为特征 / 不喜欢 / 招牌台词
-- You MAY append any additional custom fields you find valuable (Chinese keys like "兴趣爱好", "过往经历"), but no more than 5 extras.
+- You MUST output **every** key listed in "Target field keys" exactly as written, 1:1.
+- You MAY append up to 5 additional custom keys in the same language/style as the target keys.
 - Every field value must be a STRING (no arrays, no objects, no null).
 - Field values should be concrete, vivid, gameable; avoid stacks of generic adjectives.
-- 招牌台词 (signature line) should include a catgirl tic (e.g. "meow~", "nya"), <=30 chars.
-- 行为特征 / 核心特质 may be a comma-separated list of 3-5 traits.
+- A "signature line"-style field (e.g. "Signature Line" / "一句话台词" / "招牌台词") should include a catgirl tic (e.g. "meow~", "nya", "喵~"), <=30 chars.
+- Traits-style fields (e.g. "Core Traits" / "Behavioral Traits" / "核心特质" / "行为特点") may be a comma-separated list of 3-5 traits.
 - Return STRICT JSON only — no markdown fences, no preface or suffix text:
 
 {
   "fields": {
-    "性别": "...",
-    "年龄": "...",
-    "性格原型": "...",
-    "种族": "...",
-    "自称": "...",
-    "核心特质": "...",
-    "行为特征": "...",
-    "不喜欢": "...",
-    "招牌台词": "...",
-    "兴趣爱好": "(optional)"
+    "<target_key_1>": "...",
+    "<target_key_2>": "...",
+    "...": "..."
   }
 }""",
 }

@@ -146,6 +146,46 @@ def _format_card_for_prompt(card: Any, max_chars: int = 1200) -> str:
     return text
 
 
+# 不同 locale 的角色卡模板字段名不同（en 用 "Gender"/"Age"，zh 用 "性别"/"年龄"）。
+# 前端走 textarea[name=...] 精确匹配应用生成结果，prompt 必须告诉 LLM 使用这些
+# 真实 key，否则会以"新增字段"形式平行插入，旧字段值不会被覆盖。前端会把表单
+# 上看到的字段名一并发过来；这里只在前端没发时按 prompt 语言兜底。
+_DEFAULT_TARGET_KEYS_BY_LANG = {
+    "zh": ["昵称", "性别", "年龄", "种族", "自称",
+           "核心特质", "行为特点", "厌恶", "一句话台词"],
+    "en": ["Nickname", "Gender", "Age", "Race", "Self-Reference",
+           "Core Traits", "Behavioral Traits", "Dislikes", "Signature Line"],
+}
+
+
+def _resolve_target_keys(payload: Dict[str, Any], lang: str,
+                         current_card: Any) -> list[str]:
+    """Return the field-key list the LLM must use, in priority order:
+    1) explicit payload["target_field_keys"] from the frontend (truthy strings only)
+    2) keys present in the existing card (less reliable for empty new-card forms)
+    3) locale default (zh / en).
+    """
+    raw = payload.get("target_field_keys")
+    if isinstance(raw, list) and raw:
+        keys = [str(x).strip() for x in raw if str(x).strip()]
+        if keys:
+            return keys
+    if isinstance(current_card, dict) and current_card:
+        keys = [
+            str(k).strip()
+            for k in current_card.keys()
+            if str(k).strip()
+            and not str(k).startswith("_")
+            and str(k) not in {"live2d", "live3d", "vrm", "mmd",
+                               "voice_id", "system_prompt", "model_type",
+                               "档案名"}
+        ]
+        if keys:
+            return keys
+    return list(_DEFAULT_TARGET_KEYS_BY_LANG.get(lang)
+                or _DEFAULT_TARGET_KEYS_BY_LANG["en"])
+
+
 @router.post("/clarify")
 async def clarify(request: Request):
     """Step 1: given a one-line description, return 2-4 chip-style questions."""
@@ -232,14 +272,18 @@ async def generate(request: Request):
         answers = {}
 
     lang = _resolve_language(body.get("locale"))
-    current_card_text = _format_card_for_prompt(body.get("current_card"))
+    current_card = body.get("current_card")
+    current_card_text = _format_card_for_prompt(current_card)
     try:
         answers_text = json.dumps(answers, ensure_ascii=False, indent=2)
     except Exception:
         answers_text = str(answers)
+    target_keys = _resolve_target_keys(body, lang, current_card)
+    target_keys_text = " / ".join(target_keys)
 
     template = get_card_assist_generate_prompt(lang)
-    prompt = template % (description, answers_text, current_card_text)
+    prompt = template % (description, answers_text, current_card_text,
+                         target_keys_text)
 
     content, err = await _invoke_assist(prompt)
     if err is not None:
@@ -317,9 +361,13 @@ async def refine(request: Request):
         return JSONResponse(err, status_code=502 if err.get("error") == "llm_call_failed" else 400)
 
     # The refine prompt asks for a plain string. Strip code fences and surrounding
-    # quotes if the LLM wrapped it anyway.
+    # quotes if the LLM wrapped it anyway. Unicode left/right quotes are *different*
+    # codepoints, so equality won't catch the common `“…”` / `‘…’` pairings — use
+    # an explicit open→close map.
     text = _strip_json_fence(content).strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'", "“", "”"):
+    _QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’",
+                    "「": "」", "『": "』"}
+    if len(text) >= 2 and _QUOTE_PAIRS.get(text[0]) == text[-1]:
         text = text[1:-1].strip()
     if not text:
         return JSONResponse({"success": False, "error": "llm_empty_response"},
