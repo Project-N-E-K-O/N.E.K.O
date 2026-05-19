@@ -463,9 +463,14 @@ _local_steam_identity_cache_ts: float = 0.0
 _LOCAL_IDENTITY_TTL = 300
 
 # Steam Community 公开 XML 接口的 persona name 缓存
-# { steam_id(int): (name_or_None, _cache_ts) }
-_persona_web_cache: dict[int, tuple[str | None, float]] = {}
+# { steam_id(int): (name_or_empty, _cache_ts) }
+# 缓存值用空串表示「200 OK 但没解析出名字」的 negative-hit；
+# 瞬时失败（超时 / 非 200 / 异常）不写入此缓存。
+_persona_web_cache: dict[int, tuple[str, float]] = {}
 _PERSONA_WEB_TTL = 3600
+# Steam Community Web 兜底的并发上限。订阅一多就一次性 fan-out 容易把
+# 自己打超时或被对端限流，限制并发到 8 个比较稳。
+_PERSONA_WEB_CONCURRENCY = 8
 
 
 def _get_local_steam_identity(steamworks) -> tuple[int | None, str | None]:
@@ -548,15 +553,21 @@ async def _fetch_persona_via_steam_web(owner_id: int) -> str | None:
     解析时兜底。该端点对所有公开个人资料都可访问，无需 API key；带 1
     小时模块级缓存避免反复请求同一 owner。
 
+    只在拿到确定性结果（HTTP 200 + 完整解析）时写缓存——拿到名字就缓存
+    名字，拿到 200 但 XML 里没有名字（私人资料 / 已注销）就缓存空串当
+    negative-hit；超时 / 非 200 / 连接错误等瞬时失败不写缓存，避免一次
+    抖动把同一 owner 的兜底路径黑洞化 1 小时。
+
     Returns:
-        str | None: 解析出的 persona name；网络失败 / 私人资料 / 解析失败 → None
+        str | None: persona name；瞬时失败 / 私人资料 / 解析失败 → None
     """
     if not owner_id:
         return None
     cached = _persona_web_cache.get(owner_id)
     if cached is not None and time.time() - cached[1] < _PERSONA_WEB_TTL:
-        return cached[0]
+        return cached[0] or None
     name: str | None = None
+    cacheable = False
     try:
         import re as _re
         import httpx as _httpx
@@ -567,6 +578,7 @@ async def _fetch_persona_via_steam_web(owner_id: int) -> str | None:
                 headers={"User-Agent": "Mozilla/5.0 N.E.K.O Workshop"},
             )
             if resp.status_code == 200:
+                cacheable = True
                 match = _re.search(
                     r"<steamID>\s*<!\[CDATA\[(.*?)\]\]>\s*</steamID>",
                     resp.text,
@@ -578,7 +590,8 @@ async def _fetch_persona_via_steam_web(owner_id: int) -> str | None:
                         name = candidate
     except Exception as e:
         logger.debug(f"Steam Web 获取 persona name 失败 (owner_id={owner_id}): {e}")
-    _persona_web_cache[owner_id] = (name, time.time())
+    if cacheable:
+        _persona_web_cache[owner_id] = (name or '', time.time())
     return name
 
 
@@ -602,8 +615,14 @@ async def _resolve_missing_author_names(items_info: list[dict]) -> None:
     if not missing:
         return
     unique_owners = list({owner_id for _, owner_id in missing})
+    semaphore = asyncio.Semaphore(_PERSONA_WEB_CONCURRENCY)
+
+    async def _bounded(oid: int) -> str | None:
+        async with semaphore:
+            return await _fetch_persona_via_steam_web(oid)
+
     results = await asyncio.gather(
-        *[_fetch_persona_via_steam_web(oid) for oid in unique_owners],
+        *[_bounded(oid) for oid in unique_owners],
         return_exceptions=True,
     )
     name_by_owner: dict[int, str] = {}
