@@ -20,12 +20,18 @@ from .models import (
     OCR_CAPTURE_PROFILE_WINDOW_BUCKETS_KEY,
     STORE_BOUND_GAME_ID,
     STORE_ADVANCE_SPEED,
+    STORE_CHARACTER_FIXED_NAME,
+    STORE_CHARACTER_MODE,
+    STORE_CHARACTER_PROFILE_VERSION,
+    STORE_CHARACTER_PROFILES,
     STORE_CONTEXT_SNAPSHOT,
+    STORE_CROSS_SCENE_MEMORY,
     STORE_DEDUPE_WINDOW,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
     STORE_LAST_SEQ,
+    STORE_CHARACTER_RUNTIME_STATE,
     STORE_MEMORY_READER_TARGET,
     STORE_MODE,
     STORE_LLM_VISION_ENABLED,
@@ -47,6 +53,7 @@ from .models import (
     STORE_TUTORIAL_PROGRESS,
     build_ocr_capture_profile_bucket_key,
     compute_ocr_window_aspect_ratio,
+    json_copy,
     parse_ocr_capture_profile_bucket_key,
 )
 
@@ -648,6 +655,35 @@ class GalgameStore:
         )
         warnings.extend(memory_target_warnings)
 
+        def read_dict_store_value(key: str, label: str) -> dict[str, Any]:
+            raw_value = self._read(key, {})
+            if isinstance(raw_value, dict):
+                return json_copy(raw_value)
+            if raw_value not in ({}, None):
+                warnings.append(f"invalid {label} dropped: non-object")
+            return {}
+
+        raw_character_profile_version = self._read(STORE_CHARACTER_PROFILE_VERSION, "")
+        character_profile_version = (
+            raw_character_profile_version if isinstance(raw_character_profile_version, str) else ""
+        )
+        if raw_character_profile_version not in ("", character_profile_version):
+            warnings.append("invalid character_profile_version dropped: non-string")
+
+        raw_character_mode = self._read(STORE_CHARACTER_MODE, "off")
+        character_mode = (
+            raw_character_mode
+            if isinstance(raw_character_mode, str) and raw_character_mode in {"off", "fixed"}
+            else "off"
+        )
+        if raw_character_mode not in ("", character_mode):
+            warnings.append(f"invalid character_mode dropped: {raw_character_mode!r}")
+
+        raw_character_fixed_name = self._read(STORE_CHARACTER_FIXED_NAME, "")
+        character_fixed_name = raw_character_fixed_name if isinstance(raw_character_fixed_name, str) else ""
+        if raw_character_fixed_name not in ("", character_fixed_name):
+            warnings.append("invalid character_fixed_name dropped: non-string")
+
         restored = {
             STORE_BOUND_GAME_ID: self._read(STORE_BOUND_GAME_ID, ""),
             STORE_MODE: mode,
@@ -662,6 +698,21 @@ class GalgameStore:
             STORE_OCR_CAPTURE_PROFILES: ocr_capture_profiles,
             STORE_OCR_WINDOW_TARGET: ocr_window_target,
             STORE_MEMORY_READER_TARGET: memory_reader_target,
+            STORE_CHARACTER_PROFILES: read_dict_store_value(
+                STORE_CHARACTER_PROFILES,
+                "character_profiles",
+            ),
+            STORE_CHARACTER_PROFILE_VERSION: character_profile_version,
+            STORE_CHARACTER_MODE: character_mode,
+            STORE_CHARACTER_FIXED_NAME: character_fixed_name,
+            STORE_CROSS_SCENE_MEMORY: read_dict_store_value(
+                STORE_CROSS_SCENE_MEMORY,
+                "cross_scene_memory",
+            ),
+            STORE_CHARACTER_RUNTIME_STATE: read_dict_store_value(
+                STORE_CHARACTER_RUNTIME_STATE,
+                "character_runtime_state",
+            ),
         }
         if not isinstance(restored[STORE_BOUND_GAME_ID], str):
             warnings.append("invalid bound_game_id dropped: non-string")

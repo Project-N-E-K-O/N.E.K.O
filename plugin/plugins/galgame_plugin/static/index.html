@@ -303,6 +303,31 @@
                   </div>
                 </section>
 
+                <section class="plugin-control-card plugin-control-card-wide character-profile-control-card" aria-labelledby="pluginControlCharacterTitle">
+                  <div class="plugin-control-card-head">
+                    <p class="list-kicker">Character</p>
+                    <h3 id="pluginControlCharacterTitle" data-i18n="ui.character_profile.title">角色档案</h3>
+                  </div>
+                  <div class="plugin-control-card-body character-profile-control-body">
+                    <div class="field character-profile-status-field">
+                      <span data-i18n="ui.character_profile.mode_label">角色档案模式</span>
+                      <strong id="characterProfileStatusText" class="character-profile-status-text" data-i18n="ui.character_profile.status_waiting">等待状态刷新</strong>
+                      <small id="characterProfileHint" class="field-note" data-i18n="ui.character_profile.desc">固定某个角色作为 Agent 决策参考视角，或关闭角色档案。</small>
+                    </div>
+                    <label class="field">
+                      <span data-i18n="ui.character_profile.select_label">角色</span>
+                      <select id="characterProfileSelect">
+                        <option value="" data-i18n="ui.character_profile.select_placeholder">等待加载角色列表</option>
+                      </select>
+                    </label>
+                    <div class="plugin-control-actions inline-actions character-profile-actions">
+                      <button id="characterProfileFixedBtn" class="secondary" type="button" data-i18n="ui.character_profile.fixed_action">固定为该角色</button>
+                      <button id="characterProfileOffBtn" class="ghost" type="button" data-i18n="ui.character_profile.off_action">关闭角色档案</button>
+                      <button id="characterProfileRefreshBtn" class="ghost" type="button" data-i18n="ui.character_profile.refresh">刷新角色</button>
+                    </div>
+                  </div>
+                </section>
+
               </div>
               <div class="plugin-control-footer settings-save-row">
                 <button id="saveModeBtn" class="secondary" data-i18n="ui.button.save">保存设置</button>
@@ -625,6 +650,6 @@
   </div>
 
   <script src="./i18n.js?v=20260509-ui-i18n-storage-locale"></script>
-  <script src="./main.js?v=20260508-play-assist-hub"></script>
+  <script src="./main.js?v=20260519-character-profile-runtime-target"></script>
 </body>
 </html>

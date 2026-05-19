@@ -2542,6 +2542,15 @@ def _build_status_payload_unchecked(
             "summary": summary,
         }
     )
+    character_mode = str(getattr(state, "character_mode", "off") or "off")
+    character_fixed_name = str(getattr(state, "character_fixed_name", "") or "")
+    character_profiles = getattr(state, "character_profiles", {}) or {}
+    character_profile_known = (
+        isinstance(character_profiles, dict)
+        and bool(character_fixed_name)
+        and isinstance(character_profiles.get(character_fixed_name), dict)
+    )
+    character_pov_active = character_mode == "fixed" and bool(character_fixed_name)
     return {
         "connection_state": state.current_connection_state,
         "mode": state.mode,
@@ -2549,6 +2558,23 @@ def _build_status_payload_unchecked(
         "advance_speed": getattr(state, "advance_speed", "medium"),
         "bound_game_id": state.bound_game_id,
         "available_game_ids": list(state.available_game_ids),
+        "active_game_id": state.active_game_id,
+        "character_mode": character_mode,
+        "character_fixed_name": character_fixed_name,
+        "character_profile_count": len(character_profiles),
+        "character_profile_game_id": str(getattr(state, "character_profile_game_id", "") or ""),
+        "character_profile_match_reason": str(
+            getattr(state, "character_profile_match_reason", "") or ""
+        ),
+        "character_mode_stale": bool(getattr(state, "character_mode_stale", False)),
+        "character_pov_active": character_pov_active,
+        "character_pov_name": character_fixed_name if character_pov_active else "",
+        "character_pov_profile_known": character_profile_known,
+        "character_pov_applied_to": (
+            ["suggest_choice", "scene_summary", "cat_consultation", "push"]
+            if character_pov_active
+            else []
+        ),
         "active_session_id": state.active_session_id,
         "active_data_source": state.active_data_source,
         "stream_reset_pending": state.stream_reset_pending,

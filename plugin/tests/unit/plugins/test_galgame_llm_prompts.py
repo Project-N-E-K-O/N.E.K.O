@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from types import SimpleNamespace
@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from plugin.plugins.galgame_plugin.context_builder import build_local_scene_summary
 from plugin.plugins.galgame_plugin import llm_prompts
 from plugin.plugins.galgame_plugin.llm_prompts import (
+    CHARACTER_ANCHOR_CONTEXT_TEMPLATE,
+    CONSULT_CAT_CHOICE_QUESTION_TEMPLATE,
+    CONSULT_CAT_PROMPT_TEMPLATE,
     build_prompt_messages,
     build_prompt_messages_with_metadata,
 )
@@ -165,6 +168,76 @@ def test_build_prompt_messages_public_contract_returns_message_list() -> None:
 
     assert isinstance(messages, list)
     assert [message["role"] for message in messages] == ["system", "user"]
+
+
+def test_host_play_mode_prompt_constants_are_available() -> None:
+    anchor = CHARACTER_ANCHOR_CONTEXT_TEMPLATE.format(
+        character_name="叢雨",
+        identity="刀灵",
+        voice_traits="· 嘴硬 -> 句尾带「ぞ」",
+        verbal_tics="自称「わらわ」",
+        relationships="有地将臣（契约者）",
+        background="被封印数百年",
+    )
+    consult = CONSULT_CAT_PROMPT_TEMPLATE.format(
+        scene_summary="场景摘要",
+        consult_question=CONSULT_CAT_CHOICE_QUESTION_TEMPLATE.format(
+            choices="A / B",
+            character_name="叢雨",
+        ),
+        character_name="叢雨",
+        character_voice_summary="自称「わらわ」",
+    )
+
+    assert "======[角色分析锚点]" in anchor
+    assert "不要自由角色扮演，也不要冒充该角色说话" in anchor
+    assert "角色：叢雨" in anchor
+    assert "视角下的策略意见" in consult
+    assert "不是强制指令" in consult
+
+
+def test_suggest_choice_prompt_accepts_bounded_fixed_character_pov() -> None:
+    result = build_prompt_messages_with_metadata(
+        "suggest_choice",
+        {
+            "visible_choices": [{"choice_id": "c1", "text": "Protect the promise"}],
+            "fixed_character_pov": {
+                "enabled": True,
+                "character_name": "Murasame",
+                "profile_known": True,
+                "role": "bounded_strategy_reference",
+            },
+        },
+    )
+
+    system = result.messages[0]["content"]
+    user = result.messages[1]["content"]
+    assert "bounded strategy lens" in system
+    assert "Do not freeform role-play" in system
+    assert "visible_choices" in system
+    assert "fixed_character_pov" in user
+    assert "valid-choice constraints" in user
+
+
+def test_summarize_scene_prompt_uses_pov_without_roleplay() -> None:
+    result = build_prompt_messages_with_metadata(
+        "summarize_scene",
+        {
+            "stable_lines": [{"speaker": "A", "text": "A promise returns."}],
+            "fixed_character_pov": {
+                "enabled": True,
+                "character_name": "Murasame",
+                "profile_known": True,
+            },
+        },
+    )
+
+    system = result.messages[0]["content"]
+    user = result.messages[1]["content"]
+    assert "bounded narrative lens" in system
+    assert "Do not freeform role-play" in system
+    assert "relationship shifts" in user
+    assert "do not narrate as the character" in user
 
 
 def test_semantic_compression_disabled_keeps_rendered_context_unchanged() -> None:
