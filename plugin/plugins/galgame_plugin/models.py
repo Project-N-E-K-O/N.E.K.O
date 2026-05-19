@@ -130,6 +130,8 @@ STORE_OCR_FAST_LOOP_ENABLED = "ocr_fast_loop_enabled"
 STORE_RAPIDOCR_LANG_TYPE = "rapidocr.lang_type"
 STORE_RAPIDOCR_AUTO_DETECT_LANG = "rapidocr.auto_detect_lang"
 STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG = "rapidocr.auto_detect_last_lang"
+STORE_RAPIDOCR_OCR_VERSION = "rapidocr.ocr_version"
+_RAPIDOCR_OCR_VERSIONS: frozenset[str] = frozenset({"PP-OCRv4", "PP-OCRv5"})
 STORE_TUTORIAL_PROGRESS = "tutorial_progress"
 STORE_CONTEXT_SNAPSHOT = "context_snapshot"
 STORE_CHARACTER_PROFILES = "character_profiles"
@@ -164,6 +166,7 @@ STORE_KEYS = (
     STORE_RAPIDOCR_LANG_TYPE,
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
+    STORE_RAPIDOCR_OCR_VERSION,
     STORE_TUTORIAL_PROGRESS,
     STORE_CONTEXT_SNAPSHOT,
     STORE_CHARACTER_PROFILES,
@@ -191,6 +194,19 @@ def json_copy(value: Any) -> Any:
     elif isinstance(value, tuple):
         return tuple(json_copy(item) for item in value)
     return copy.deepcopy(value)
+
+
+def normalize_rapidocr_ocr_version(value: object) -> str:
+    """Normalize user input to ``PP-OCRv4`` / ``PP-OCRv5`` or return ``""``."""
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if lowered in {"pp-ocrv4", "v4", "4"}:
+        return "PP-OCRv4"
+    if lowered in {"pp-ocrv5", "v5", "5"}:
+        return "PP-OCRv5"
+    return ""
 
 
 def build_ocr_capture_profile_bucket_key(width: int, height: int) -> str:

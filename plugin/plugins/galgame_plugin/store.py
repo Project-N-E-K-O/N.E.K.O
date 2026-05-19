@@ -47,6 +47,7 @@ from .models import (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_OCR_VERSION,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
@@ -54,7 +55,9 @@ from .models import (
     build_ocr_capture_profile_bucket_key,
     compute_ocr_window_aspect_ratio,
     json_copy,
+    normalize_rapidocr_ocr_version,
     parse_ocr_capture_profile_bucket_key,
+    _RAPIDOCR_OCR_VERSIONS,
 )
 
 
@@ -210,6 +213,7 @@ class GalgameStore:
         raw_rapidocr_lang = self._read(STORE_RAPIDOCR_LANG_TYPE, None)
         raw_rapidocr_auto = self._read(STORE_RAPIDOCR_AUTO_DETECT_LANG, None)
         raw_rapidocr_last_lang = self._read(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG, None)
+        raw_rapidocr_ocr_version = self._read(STORE_RAPIDOCR_OCR_VERSION, None)
         rapidocr_lang = (
             raw_rapidocr_lang.strip().lower()
             if isinstance(raw_rapidocr_lang, str)
@@ -220,6 +224,7 @@ class GalgameStore:
             if isinstance(raw_rapidocr_last_lang, str)
             else ""
         )
+        rapidocr_ocr_version = normalize_rapidocr_ocr_version(raw_rapidocr_ocr_version)
 
         return {
             STORE_OCR_BACKEND_SELECTION: (
@@ -264,6 +269,11 @@ class GalgameStore:
             STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG: (
                 rapidocr_last_lang
                 if rapidocr_last_lang in {"ch", "japan", "korean", "en"}
+                else None
+            ),
+            STORE_RAPIDOCR_OCR_VERSION: (
+                rapidocr_ocr_version
+                if rapidocr_ocr_version in _RAPIDOCR_OCR_VERSIONS
                 else None
             ),
         }

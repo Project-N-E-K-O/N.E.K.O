@@ -106,6 +106,9 @@ def test_galgame_ui_i18n_has_install_and_static_shell_keys() -> None:
     assert bundle["ui.app.title"] == "Galgame Play Assistant"
     assert bundle["ui.button.collapse"] == "Collapse"
     assert bundle["ui.install.rapidocr.download_models.action"] == "Download Models Now"
+    assert bundle["ui.install.rapidocr.version_label"] == "Model version"
+    assert bundle["ui.install.rapidocr.version_v5"] == "PP-OCRv5"
+    assert "PP-OCRv4" in bundle["ui.install.rapidocr.v5_japan_note"]
     assert bundle["ui.first_run.action.show_rapidocr_models_guide"] == "View Manual Download Guide"
     assert bundle["ui.flash.plugin_not_started"].startswith("Plugin not started")
 
@@ -195,6 +198,18 @@ def test_galgame_ui_first_run_has_manual_rapidocr_model_cta() -> None:
     assert "show_rapidocr_models_guide" in script
     assert "ui.first_run.action.show_rapidocr_models_guide" in script
     assert "ui.flash.rapidocr_manual_guide_revealed" in script
+
+
+def test_galgame_ui_has_rapidocr_version_toggle() -> None:
+    static_root = Path(__file__).resolve().parents[3] / "plugins" / "galgame_plugin" / "static"
+    html = (static_root / "index.html").read_text(encoding="utf-8")
+    script = (static_root / "main.js").read_text(encoding="utf-8")
+
+    assert "rapidocrVersionBar" in html
+    assert "rapidocrVersionV4Btn" in html
+    assert "rapidocrVersionV5Btn" in html
+    assert "renderRapidOcrVersionBar" in script
+    assert "setRapidOcrLang({ ocr_version: version })" in script
 
 
 def test_galgame_ui_first_run_dxcam_prompt_requires_dxcam_backend() -> None:
