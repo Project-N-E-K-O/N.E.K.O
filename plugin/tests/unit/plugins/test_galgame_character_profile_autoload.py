@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from types import SimpleNamespace
 
@@ -116,6 +117,46 @@ async def test_character_list_reports_empty_when_no_profile_matches(
     payload = result.value
     assert payload["profile_game_id"] == ""
     assert payload["characters"] == []
+
+
+@pytest.mark.asyncio
+async def test_character_list_loads_user_only_profile_for_bound_game(
+    tmp_path,
+) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._character_profile_manager = CharacterProfileManager(data_dir=tmp_path)
+    plugin._state.bound_game_id = "custom_game"
+    (tmp_path / "custom_game.user.json").write_text(
+        json.dumps(
+            {
+                "game_id": "custom_game",
+                "last_updated": "2026-05-20",
+                "characters": {
+                    "雪乃": {
+                        "identity": "user-only profile",
+                        "character_voice": {
+                            "core_traits": [
+                                {
+                                    "trait": "自定义性格",
+                                    "speech_effect": "自定义语调",
+                                }
+                            ]
+                        },
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = await plugin.galgame_get_character_list()
+
+    assert result.is_ok()
+    payload = result.value
+    assert payload["profile_game_id"] == "custom_game"
+    assert payload["match_reason"] == "exact_game_id"
+    assert [item["name"] for item in payload["characters"]] == ["雪乃"]
 
 
 @pytest.mark.asyncio

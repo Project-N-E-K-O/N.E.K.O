@@ -50,6 +50,21 @@ def _match_key(value: object) -> str:
     return _MATCH_SPACE_RE.sub("", normalized.strip())
 
 
+def _merge_unique_strings(*groups: object) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for item in group:
+            text = str(item or "").strip()
+            key = _match_key(text)
+            if text and key not in seen:
+                merged.append(text)
+                seen.add(key)
+    return merged
+
+
 def _normalize_game_id_for_path(value: object) -> str:
     normalized = str(value or "").strip()
     if not normalized or not _GAME_ID_RE.fullmatch(normalized):
@@ -141,8 +156,9 @@ class CharacterProfileManager:
                 "user_loaded": bool,
             }
 
-        Preset failures yield ``profiles={}`` and surface the error; user
-        failures fall back to preset (per plan: 用户 JSON 坏了不影响使用).
+        Preset validation failures yield ``profiles={}`` and surface the error.
+        If no preset file exists, a valid user file is accepted as the complete
+        profile set. User failures fall back to preset (per plan: 用户 JSON 坏了不影响使用).
         """
 
         normalized = _normalize_game_id_for_path(game_id)
@@ -175,6 +191,10 @@ class CharacterProfileManager:
                 user=user_result.profiles if user_result.valid else {},
             )
             version = self._pick_version(preset_result.version, user_result.version)
+        elif user_result.valid and not preset_path.exists():
+            merged = dict(user_result.profiles)
+            version = user_result.version
+            errors = []
         else:
             merged = {}
             version = preset_result.version or None
@@ -196,7 +216,7 @@ class CharacterProfileManager:
             self._cache.clear()
             self._metadata_cache = None
             return
-        self._cache.pop((game_id or "").strip(), None)
+        self._cache.pop(_normalize_game_id_for_path(game_id), None)
         self._metadata_cache = None
 
     def resolve_profile_match(
@@ -664,7 +684,12 @@ class CharacterProfileManager:
         except OSError:
             paths = []
         for path in paths:
-            if path.name.endswith(".user.json"):
+            profile_id = (
+                path.name[: -len(".user.json")]
+                if path.name.endswith(".user.json")
+                else path.stem
+            )
+            if not _normalize_game_id_for_path(profile_id):
                 continue
             try:
                 if path.stat().st_size > MAX_PROFILE_SIZE_BYTES:
@@ -689,12 +714,24 @@ class CharacterProfileManager:
                     return [value.strip()]
                 return []
 
-            metadata[path.stem] = {
+            existing = metadata.get(profile_id, {})
+            metadata[profile_id] = {
                 "game_id": game_id,
-                "aliases": _strings(data.get("aliases")),
-                "game_title_contains": _strings(match_obj.get("game_title_contains")),
-                "process_names": _strings(match_obj.get("process_names")),
-                "window_title_contains": _strings(match_obj.get("window_title_contains")),
+                "aliases": _merge_unique_strings(
+                    existing.get("aliases"), _strings(data.get("aliases"))
+                ),
+                "game_title_contains": _merge_unique_strings(
+                    existing.get("game_title_contains"),
+                    _strings(match_obj.get("game_title_contains")),
+                ),
+                "process_names": _merge_unique_strings(
+                    existing.get("process_names"),
+                    _strings(match_obj.get("process_names")),
+                ),
+                "window_title_contains": _merge_unique_strings(
+                    existing.get("window_title_contains"),
+                    _strings(match_obj.get("window_title_contains")),
+                ),
             }
         self._metadata_cache = dict(metadata)
         return metadata

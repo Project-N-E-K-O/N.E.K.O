@@ -165,6 +165,35 @@ def test_load_game_profiles_user_overrides_preset(
     assert result["version"] == "2026-05-20"
 
 
+def test_load_game_profiles_user_only_without_preset(
+    manager: CharacterProfileManager, tmp_path: Path
+) -> None:
+    user_payload = {
+        "game_id": "demo_game",
+        "last_updated": "2026-05-20",
+        "characters": {
+            "雪乃": {
+                "identity": "user-only profile",
+                "character_voice": {
+                    "core_traits": [
+                        {"trait": "自定义性格", "speech_effect": "自定义语调"}
+                    ]
+                },
+            }
+        },
+    }
+    _write(tmp_path / "demo_game.user.json", user_payload)
+
+    result = manager.load_game_profiles("demo_game")
+
+    assert result["preset_loaded"] is False
+    assert result["user_loaded"] is True
+    assert result["errors"] == []
+    assert set(result["profiles"].keys()) == {"雪乃"}
+    assert result["profiles"]["雪乃"]["identity"] == "user-only profile"
+    assert result["version"] == "2026-05-20"
+
+
 def test_load_game_profiles_broken_user_falls_back_to_preset(
     manager: CharacterProfileManager, tmp_path: Path
 ) -> None:
@@ -250,6 +279,29 @@ def test_resolve_profile_match_uses_alias_and_window_title(
     assert process_match is not None
     assert process_match.game_id == "senren_banka"
     assert process_match.reason == "process_name"
+
+
+def test_resolve_profile_match_includes_user_only_profile(
+    manager: CharacterProfileManager, tmp_path: Path
+) -> None:
+    _write(
+        tmp_path / "demo_game.user.json",
+        {
+            **VALID_PRESET,
+            "game_id": "demo_game",
+            "aliases": ["用户导入游戏"],
+        },
+    )
+
+    exact_match = manager.resolve_profile_match([{"game_id": "demo_game"}])
+    alias_match = manager.resolve_profile_match([{"game_title": "用户导入游戏"}])
+
+    assert exact_match is not None
+    assert exact_match.game_id == "demo_game"
+    assert exact_match.reason == "exact_game_id"
+    assert alias_match is not None
+    assert alias_match.game_id == "demo_game"
+    assert alias_match.reason == "alias"
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +520,37 @@ def test_import_user_profiles_writes_user_json(
     assert target.exists()
     written = json.loads(target.read_text(encoding="utf-8"))
     assert written["characters"]["雪乃"]["identity"] == "imported"
+
+
+def test_import_user_profiles_invalidates_metadata_for_user_only_match(
+    manager: CharacterProfileManager, tmp_path: Path
+) -> None:
+    assert manager.resolve_profile_match([{"game_id": "demo_game"}]) is None
+    source = tmp_path / "incoming.json"
+    _write(
+        source,
+        {
+            "game_id": "demo_game",
+            "last_updated": "2026-05-20",
+            "characters": {
+                "雪乃": {
+                    "identity": "imported",
+                    "character_voice": {
+                        "core_traits": [
+                            {"trait": "import 性格", "speech_effect": "import 语调"}
+                        ]
+                    },
+                }
+            },
+        },
+    )
+
+    result = manager.import_user_profiles("demo_game", source)
+    match = manager.resolve_profile_match([{"game_id": "demo_game"}])
+
+    assert result.ok is True
+    assert match is not None
+    assert match.game_id == "demo_game"
 
 
 def test_import_user_profiles_rejects_invalid_payload(
