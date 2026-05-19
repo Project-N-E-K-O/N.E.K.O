@@ -4,7 +4,7 @@
  * 听者锚点：主屏中心（屏幕坐标系）。
  * 声源锚点：当前模型中心（屏幕坐标系）。取不到模型 bounds 时回退到 Pet 窗口中心。
  *
- * Pan：dx / (主屏宽度 / 2)，clamp 到 [-1, 1]
+ * Pan：dx / (主屏宽度 / 2)，clamp 到 [-SPATIAL_AUDIO_MAX_PAN, +SPATIAL_AUDIO_MAX_PAN]（防止完全单声道）
  * Gain：以主屏为参考圆，主屏内全音量；越过主屏后线性衰减，floor = SPATIAL_AUDIO_MIN_GAIN
  *
  * 更新时机：
@@ -138,7 +138,8 @@
 
         var dx = sourceCenterX - primaryCenterX;
         var dy = sourceCenterY - primaryCenterY;
-        var pan = clamp(dx / refDist, -1, 1);
+        var maxPan = Number.isFinite(Number(C.SPATIAL_AUDIO_MAX_PAN)) ? Number(C.SPATIAL_AUDIO_MAX_PAN) : 1;
+        var pan = clamp(dx / refDist, -maxPan, maxPan);
 
         var dist = Math.sqrt(dx * dx + dy * dy);
         var nd = dist / refDist;
