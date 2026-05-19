@@ -24,6 +24,7 @@ from ._prompt import ask_checkbox, ask_confirm, ask_select, ask_text
 _PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+_DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
 
 
 def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -> None:
@@ -35,7 +36,7 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     parser.add_argument("--git", action="store_true", help="Initialize a git repository in the generated plugin directory")
     parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
     parser.add_argument("--github-actions", action="store_true", help="Generate a GitHub Actions verification workflow")
-    parser.add_argument("--neko-repo", default="owner/N.E.K.O", help="N.E.K.O repository used by generated GitHub Actions")
+    parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
     parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
     parser.add_argument("--no-tests", action="store_true", help="Do not generate tests/test_smoke.py")
@@ -55,7 +56,7 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     repo_parser.add_argument("--remote", help="Add a git remote named origin after git initialization")
     repo_parser.add_argument("--no-git", action="store_true", help="Do not initialize a git repository")
     repo_parser.add_argument("--no-github-actions", action="store_true", help="Do not generate the GitHub Actions verification workflow")
-    repo_parser.add_argument("--neko-repo", default="owner/N.E.K.O", help="N.E.K.O repository used by generated GitHub Actions")
+    repo_parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
     repo_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     repo_parser.set_defaults(handler=handle_init_repo, _defaults=defaults)
 
@@ -66,7 +67,7 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     setup_parser.add_argument("plugin", help="Plugin directory name under plugin/plugins or explicit plugin path")
     setup_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
     setup_parser.add_argument("--github-actions", action="store_true", help="Generate a GitHub Actions verification workflow")
-    setup_parser.add_argument("--neko-repo", default="owner/N.E.K.O", help="N.E.K.O repository used by generated GitHub Actions")
+    setup_parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
     setup_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
     setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory is not already inside one")
@@ -240,7 +241,7 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
             create_gitignore=not getattr(args, "no_gitignore", False),
             create_vscode=not getattr(args, "no_vscode", False),
             create_github_actions=getattr(args, "github_actions", False),
-            neko_repository=getattr(args, "neko_repo", "owner/N.E.K.O"),
+            neko_repository=getattr(args, "neko_repo", _DEFAULT_NEKO_REPOSITORY),
             neko_ref=getattr(args, "neko_ref", "main"),
         )
         return _generate_and_report(
@@ -320,7 +321,7 @@ def _handle_interactive(args: argparse.Namespace, *, defaults: CliDefaults) -> i
         create_gitignore=not getattr(args, "no_gitignore", False),
         create_vscode=not getattr(args, "no_vscode", False),
         create_github_actions=getattr(args, "github_actions", False),
-        neko_repository=getattr(args, "neko_repo", "owner/N.E.K.O"),
+        neko_repository=getattr(args, "neko_repo", _DEFAULT_NEKO_REPOSITORY),
         neko_ref=getattr(args, "neko_ref", "main"),
     )
     return _generate_and_report(
@@ -374,7 +375,7 @@ def _handle_non_interactive(args: argparse.Namespace, *, defaults: CliDefaults) 
         create_gitignore=not getattr(args, "no_gitignore", False),
         create_vscode=not getattr(args, "no_vscode", False),
         create_github_actions=getattr(args, "github_actions", False),
-        neko_repository=getattr(args, "neko_repo", "owner/N.E.K.O"),
+        neko_repository=getattr(args, "neko_repo", _DEFAULT_NEKO_REPOSITORY),
         neko_ref=getattr(args, "neko_ref", "main"),
     )
     return _generate_and_report(spec, target_dir, initialize_git=initialize_git, remote=getattr(args, "remote", None))

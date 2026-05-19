@@ -8,6 +8,7 @@ import re
 
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
+_DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
 
 
 @dataclass
@@ -39,7 +40,7 @@ class PluginSpec:
     create_gitignore: bool = True
     create_vscode: bool = True
     create_github_actions: bool = False
-    neko_repository: str = "owner/N.E.K.O"
+    neko_repository: str = _DEFAULT_NEKO_REPOSITORY
     neko_ref: str = "main"
     quick_start: bool = False
 
@@ -663,6 +664,7 @@ jobs:
       - name: Release check
         working-directory: neko
         run: |
+          set -o pipefail
           mkdir -p plugin/neko_plugin_cli/target
           uv run python -m plugin.neko_plugin_cli.cli check -r "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.check-release.txt"
 
@@ -670,6 +672,7 @@ jobs:
         working-directory: neko
         run: |
           PACKAGE="plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
+          test -f "$PACKAGE"
           PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
           NEKO_COMMIT="$(git rev-parse HEAD)"
 
@@ -747,6 +750,7 @@ jobs:
       - name: Market release check
         working-directory: neko
         run: |
+          set -o pipefail
           mkdir -p plugin/neko_plugin_cli/target
           uv run python -m plugin.neko_plugin_cli.cli check -r --market-release "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.market-release-check.txt"
 
@@ -754,6 +758,7 @@ jobs:
         working-directory: neko
         run: |
           PACKAGE="plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
+          test -f "$PACKAGE"
           PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
           {{
             echo "## N.E.K.O Plugin Release"
@@ -769,6 +774,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: true
           files: |
             neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
             neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.market-release-check.txt

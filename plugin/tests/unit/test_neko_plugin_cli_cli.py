@@ -270,7 +270,10 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert (repo_dir / ".github" / "workflows" / "verify.yml").is_file()
     release_workflow = repo_dir / ".github" / "workflows" / "release.yml"
     assert release_workflow.is_file()
-    assert "softprops/action-gh-release" in release_workflow.read_text(encoding="utf-8")
+    release_workflow_text = release_workflow.read_text(encoding="utf-8")
+    assert "softprops/action-gh-release" in release_workflow_text
+    assert "set -o pipefail" in release_workflow_text
+    assert "fail_on_unmatched_files: true" in release_workflow_text
 
     messages = [message for _level, message in validate_plugin_dir(repo_dir, strict=True)]
     assert not any("does not match directory name" in message for message in messages)
