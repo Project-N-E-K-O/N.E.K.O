@@ -127,7 +127,13 @@ def _sanitize_dims(d, value_max: int) -> dict:
 
 
 def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
-    """把前端 WS telemetry message 转交 utils.instrument。"""
+    """把前端 WS telemetry message 转交 utils.instrument。
+
+    ``lanlan_name`` 参数保留只为日志 / 上下文，**不**作为 dim 写入埋点 ——
+    那是用户自定义的 character 名，进 dim 会把 raw 用户字符串泄到 telemetry
+    DB 且让 metric_key 基数爆炸。需要 character 维度时业务侧应自己定义一个
+    bounded enum（如 is_default / character_class）显式传 dim。
+    """
     try:
         kind = message.get("kind")
         name = message.get("name")
@@ -135,12 +141,10 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
             return
         name = name[:_TELEM_NAME_MAX]
 
-        # lanlan_name 是后端权威值，强制写入 dim，覆盖前端可能伪造的字段
         from utils.instrument import counter as _c, histogram as _h, event as _e
 
         if kind == "counter":
             dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
-            dims["lanlan_name"] = lanlan_name
             val = message.get("value", 1)
             val = val if isinstance(val, (int, float)) else 1
             _c(name, val, **dims)
@@ -149,12 +153,9 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
             if not isinstance(val, (int, float)):
                 return
             dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
-            dims["lanlan_name"] = lanlan_name
             _h(name, val, **dims)
         elif kind == "event":
             fields = _sanitize_dims(message.get("fields"), _TELEM_EVENT_VAL_MAX)
-            # event fields 可以多一点
-            fields["lanlan_name"] = lanlan_name
             _e(name, **fields)
         # 其它 kind 静默丢弃
     except Exception as e:
@@ -166,11 +167,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     await websocket.accept()
-    # Telemetry：WS 连接计数。lanlan_name 是用户在用哪个角色（低基数，最多
-    # 几个固定值），保留作为 dim 用于"哪个角色最被打开"分析。
+    # Telemetry：WS 连接计数。**不带** lanlan_name dim —— 那是用户自定义的
+    # character 名（characters_router 接受 user-controlled new_name），直接进
+    # dim 会把 raw 用户字符串泄到远程 telemetry DB，同时让 metric_key 基数
+    # 按 (用户数 × 角色数) 爆炸。诊断"哪个角色被打开"对 D2-D7 流失意义有限，
+    # 不值得这两个风险。需要时由业务侧显式埋一个 bounded enum 维度。
     try:
         from utils.instrument import counter as _instr_counter
-        _instr_counter("ws_connect", lanlan_name=lanlan_name)
+        _instr_counter("ws_connect")
     except Exception:
         # 埋点失败绝不阻塞 WS 业务路径 —— 计数丢一条比让用户连不上服务严重程度
         # 差几个数量级。imports 失败的可能性主要在打包环境下 utils 不齐时。
@@ -410,12 +414,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     finally:
         # Telemetry：连接生命周期。reason 是低基数 enum，duration 进 histogram
         # 看用户实际停留时长（D2-D7 流失诊断的关键指标之一）。
+        # lanlan_name 不进 dim —— 见 accept 处 ws_connect 同样原因（PII + 高基数）。
         try:
             from utils.instrument import counter as _instr_counter, histogram as _instr_histogram
             _ws_dur = time.time() - _ws_connect_ts
-            _instr_counter("ws_disconnect", lanlan_name=lanlan_name, reason=_ws_disconnect_reason)
+            _instr_counter("ws_disconnect", reason=_ws_disconnect_reason)
             if _ws_dur > 0:
-                _instr_histogram("ws_session_sec", _ws_dur, lanlan_name=lanlan_name)
+                _instr_histogram("ws_session_sec", _ws_dur)
         except Exception:
             # finally 阶段 telemetry 失败不能再 raise —— 已经在 cleanup 路径上，
             # 抛异常会污染调用栈让真正的 WS error 看不到。

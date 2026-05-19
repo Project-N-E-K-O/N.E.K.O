@@ -164,7 +164,9 @@ def main():
         histogram("ttft_ms", 234)
         histogram("ttft_ms", 412)
         histogram("ttft_ms", 156)
-        histogram("ws_session_sec", 850.5, lanlan_name="hibiki")
+        # 用 surface dim 而不是 lanlan_name —— 后者是用户自定义 character
+        # 名（PII + 高基数），生产代码已经不传，smoke 也不该示范坏 pattern。
+        histogram("ws_session_sec", 850.5, surface="pet_widget")
 
         event("session_start", process="main_server")
         event("crash", error_class="ValueError", traceback_hash="deadbeef")
