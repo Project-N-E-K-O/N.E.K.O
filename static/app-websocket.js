@@ -1136,23 +1136,29 @@
                         var gameEvent = gameMeta.event || {};
                         console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
                     }
+                    // adapter 用 startNewSegment 抽象统一把每段独立 utterance 处理
+                    // （path A: isNewMessage=true 多 response item；path B: turn_end
+                    // 后的 late continuation, sealed && !isNewMessage）。lifecycle
+                    // 这边也对偶：两条路径都重置 assistantTurn lifecycle 并 emit
+                    // 新的 neko-assistant-turn-start，让 avatar-reaction-bubble /
+                    // subtitle / audio-playback 等 listeners 都拿到独立通知。
+                    //
+                    // path B 尤其关键：avatar-reaction-bubble 的 handleTurnEnd 在
+                    // text-only 段会 schedule fallback hide 定时器，没新 turn-start
+                    // 取消的话 seg2 typing 期间表情气泡会被隐掉。
+                    var sealedContinuation = !isNewMessage && !!window._geminiTurnEndSealed;
                     if (isNewMessage) {
-                        // 同一 dialog turn 内 LLM 也可能再开一段新的 response item
-                        // （realtime LLM 的 response.created 每次都把
-                        // _is_first_text_chunk 复位为 True，所以 seg2 首 chunk
-                        // 也以 isNewMessage=true 抵达，turn_id 跟 seg1 相同）。
-                        // adapter 用 startNewSegment 抽象统一把每段当独立 utterance
-                        // 处理，这里 lifecycle 也对偶 per-segment：每段重发
-                        // neko-assistant-turn-start，让 avatar-reaction-bubble /
-                        // subtitle / audio-playback 等 listeners 都拿到独立通知，
-                        // 客户端 turn id 也跟着换。
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
+                        // 仅 isNewMessage 走这条 voice-msg fix，sealed continuation
+                        // 是同 dialog turn 延续，无新用户语音消息要修。
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
                             S.lastVoiceUserMessage.textContent = '...';
                         }
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
+                    }
+                    if (isNewMessage || sealedContinuation) {
                         S.assistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
