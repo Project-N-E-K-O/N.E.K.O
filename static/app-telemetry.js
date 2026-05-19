@@ -56,6 +56,13 @@
         }
     }
 
+    // surface 系统注入字段必须**最后**写入，避免业务侧传 dims/fields 时
+    // 不小心带了 'surface' key 把真值覆盖掉、污染分面统计。
+    // 参数顺序记忆：dims/fields 在前，系统字段在后 = 后者赢。
+    function _withSurface(userDims) {
+        return Object.assign({}, userDims || {}, {surface: _surface()});
+    }
+
     /**
      * 累加一个计数器。
      *
@@ -67,13 +74,12 @@
      * 用例：appTelemetry.counter('chat_message_sent', 1, {input_type: 'text'})
      */
     function counter(name, value, dims) {
-        var d = Object.assign({surface: _surface()}, dims || {});
         return _send({
             action: 'telemetry',
             kind: 'counter',
             name: String(name || ''),
             value: (typeof value === 'number') ? value : 1,
-            dims: d,
+            dims: _withSurface(dims),
         });
     }
 
@@ -89,13 +95,12 @@
     function histogram(name, value, dims) {
         var v = Number(value);
         if (!isFinite(v)) return false;
-        var d = Object.assign({surface: _surface()}, dims || {});
         return _send({
             action: 'telemetry',
             kind: 'histogram',
             name: String(name || ''),
             value: v,
-            dims: d,
+            dims: _withSurface(dims),
         });
     }
 
@@ -108,12 +113,11 @@
      * 用例：appTelemetry.event('persona_picker_opened')
      */
     function event(name, fields) {
-        var f = Object.assign({surface: _surface()}, fields || {});
         return _send({
             action: 'telemetry',
             kind: 'event',
             name: String(name || ''),
-            fields: f,
+            fields: _withSurface(fields),
         });
     }
 

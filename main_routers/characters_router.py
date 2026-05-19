@@ -2802,6 +2802,8 @@ async def set_persona_onboarding_state(request: Request):
         _instr_event("onboarding_step", status=status_in[:32])
         _instr_counter("onboarding_step", status=status_in[:32])
     except Exception:
+        # 埋点失败绝不影响 onboarding endpoint —— 一条 telemetry 走丢比让
+        # 用户卡在角色选择失败重要多了。日志也省，防 import 故障刷屏。
         pass
     return {
         "success": True,

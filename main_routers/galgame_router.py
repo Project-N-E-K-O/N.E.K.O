@@ -236,6 +236,7 @@ async def generate_galgame_options(request: Request):
                        feature="galgame_options",
                        lanlan_name=str(data.get("lanlan_name") or "default")[:32])
     except Exception:
+        # 埋点失败不能挡 galgame endpoint —— 静默继续，不打日志防刷屏。
         pass
 
     messages = _coerce_messages(data.get('messages'))

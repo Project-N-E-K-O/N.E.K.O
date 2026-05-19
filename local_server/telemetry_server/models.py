@@ -8,7 +8,7 @@ Telemetry Server — 数据模型
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 # Pydantic v1/v2 兼容
 PYDANTIC_V2 = int(getattr(__import__('pydantic'), 'VERSION', '1.0').split('.')[0]) >= 2
@@ -89,6 +89,10 @@ class InstrumentSnapshot(BaseModel):
     """
     window_start: float = 0.0
     window_end: float = 0.0
+    # 客户端本地日历天（``YYYY-MM-DD``）。服务端按这个落 stat_date，跟
+    # ``daily_stats`` 的 key 同口径；老客户端缺失时服务端按 window_end
+    # 时间戳回退（见 storage.py ``_apply_instruments``）。
+    stat_date: str = ""
     bounds: List[float] = Field(default_factory=list)
     counters: Dict[str, float] = Field(default_factory=dict)
     histograms: Dict[str, HistogramStat] = Field(default_factory=dict)

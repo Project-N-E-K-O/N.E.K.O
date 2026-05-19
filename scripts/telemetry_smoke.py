@@ -300,6 +300,89 @@ def main():
         conn.close()
 
         # --------------------------------------------------------------
+        # [4b] Regression: Codex P1 — instrument-only 上报 batch_id 必须不同
+        # --------------------------------------------------------------
+        print("\n[4b] Regression: instrument-only batch_id uniqueness...")
+        # 重置单例确保是干净的 instrument 累积
+        Instrument._instance = None
+        TokenTracker._instance = None
+        # 设备 D：只灌前端 counter，不动 LLM token（daily_stats / recent_records
+        # 都将为空）。如果 batch_id 不含 instruments，两次 snapshot 算出同一
+        # hash → 第二次会被 seen_batches dedupe，server 端只看到第一次的数据。
+        tracker_d = TokenTracker.get_instance()
+        seen_before = set()
+        for batch_n in range(2):
+            counter("window_only_counter", 1, surface="index_wide", batch_n=batch_n)
+            # 强行触发上报：把节流计时重置
+            tracker_d._last_report_time = 0
+            tracker_d.save()
+            time.sleep(0.5)
+
+        # 直查 SQLite：window_only_counter 必须是 2（两次窗口都被入库）
+        conn2 = sqlite3.connect(db_path)
+        rows = conn2.execute(
+            "SELECT metric_key, value FROM instrument_counters "
+            "WHERE metric_key LIKE 'window_only_counter%' "
+            "ORDER BY metric_key"
+        ).fetchall()
+        conn2.close()
+        keys = [r[0] for r in rows]
+        vals = [r[1] for r in rows]
+        print(f"  metric_keys seen: {keys}")
+        print(f"  values:           {vals}")
+        # batch_n=0 和 batch_n=1 各 1 次 → 两个独立 key
+        assert len(rows) == 2, (
+            f"P1 regression: expected 2 distinct metric_keys (one per window), "
+            f"got {len(rows)} — second instrument-only batch likely dedupe-dropped"
+        )
+        assert all(v == 1.0 for v in vals), (
+            f"P1 regression: each counter should be 1.0 (one increment per window), "
+            f"got {vals}"
+        )
+        print("  ✓ both instrument-only windows landed (batch_id includes instruments)")
+
+        # --------------------------------------------------------------
+        # [4c] Regression: Codex P2 — _atexit_save 顺序，session_end 必须上报
+        # --------------------------------------------------------------
+        print("\n[4c] Regression: _atexit_save emits session_end before save()...")
+        # 新设备 E + record_app_start → 模拟 atexit
+        Instrument._instance = None
+        TokenTracker._instance = None
+        # device_id 在 TokenTracker 是 OS-derived，多次实例共享；只能靠 process
+        # 维度区分 session_end 的 emitter。换一个 process 名让 instrument key 唯一。
+        tracker_e = TokenTracker.get_instance()
+        tracker_e.record_app_start(process="smoke_atexit_test")
+        # 让 session_duration > 0 以触发 histogram
+        tracker_e._session_start_ts = time.time() - 5.0
+        # _atexit_save 内部调 save() → _report_to_server → instrument snapshot →
+        # 远程上报。session_end emit 在 save 之前，所以应该被带上。
+        tracker_e._atexit_save()
+        time.sleep(0.5)
+
+        conn3 = sqlite3.connect(db_path)
+        session_end_rows = conn3.execute(
+            "SELECT metric_key, value FROM instrument_counters "
+            "WHERE metric_key LIKE 'session_end%process=smoke_atexit_test%'"
+        ).fetchall()
+        session_dur_rows = conn3.execute(
+            "SELECT metric_key, count, sum FROM instrument_histograms "
+            "WHERE metric_key LIKE 'session_duration_sec%process=smoke_atexit_test%'"
+        ).fetchall()
+        conn3.close()
+        print(f"  session_end counter rows: {session_end_rows}")
+        print(f"  session_duration_sec rows: {session_dur_rows}")
+        assert len(session_end_rows) >= 1, (
+            "P2 regression: session_end counter missing — _atexit_save must "
+            "emit before save() so the snapshot picks it up"
+        )
+        assert len(session_dur_rows) >= 1, (
+            "P2 regression: session_duration_sec histogram missing"
+        )
+        # 把 URL 重新启用，下面的 [5/5] dashboard 测试还要用
+        tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
+        print("  ✓ session_end counter + duration histogram both reached server")
+
+        # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
         # --------------------------------------------------------------
         print("\n[5/5] Fetching dashboard HTML...")

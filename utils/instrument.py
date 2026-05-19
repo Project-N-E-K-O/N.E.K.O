@@ -193,8 +193,12 @@ class Instrument:
         """取出当前累积值 + 清零 + 返回。由 TokenTracker 上报通道调用。
 
         Returns:
-            dict with keys "window_start", "window_end", "counters",
-            "histograms"，或者空 dict（无任何累积）。
+            dict with keys "window_start", "window_end", "stat_date",
+            "bounds", "counters", "histograms"，或者空 dict（无任何累积）。
+
+            ``stat_date`` 是**客户端本地**日历日（``YYYY-MM-DD``），跟
+            ``daily_stats`` 用同一口径。服务端按它落 SQL 行，避免因为服务端
+            时区不同把跨时区客户端的同一天 usage / instrument 拆到两天。
 
         失败处理：返回的 snapshot 一旦丢给 token_tracker，instrument 内部
         立刻清零。如果上报失败，60s 窗口的 counter / histogram 数据丢失 —
@@ -202,6 +206,7 @@ class Instrument:
         counter / histogram 是聚合数据，丢一个窗口对趋势分析影响小，不值得
         为它再维护一份 unsent 队列。daily_stats（LLM tokens）才需要不丢。
         """
+        from datetime import date as _date  # 局部 import 防进程启动时早调用环
         with self._lock:
             if not self._counters and not self._histograms:
                 # 即使空也更新 window_start，避免下次 snapshot 把空窗口
@@ -223,6 +228,9 @@ class Instrument:
         return {
             "window_start": window_start,
             "window_end": self._window_start,
+            # 客户端本地日历天 —— 服务端必须按这个落 stat_date，否则跨时区
+            # 设备午夜前后上报会把同一天的 usage 和 instrument 拆到两天。
+            "stat_date": _date.today().isoformat(),
             "bounds": list(_HIST_BOUNDS),
             "counters": counters,
             "histograms": hist_out,

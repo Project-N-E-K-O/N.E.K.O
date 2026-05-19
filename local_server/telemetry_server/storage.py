@@ -322,16 +322,29 @@ class TelemetryStorage:
         if not instruments or not isinstance(instruments, dict):
             return
 
-        # stat_date 选 window_end 那天（窗口末尾决定归属，避免跨午夜把
-        # 第二天初的事件算到第一天）。失败回退到 fallback_stat_date。
+        # stat_date 选取优先级（CodeRabbit 反馈正解）：
+        #   1) 客户端 snapshot 里的 ``stat_date``（客户端本地日历天） —
+        #      跟客户端的 ``daily_stats`` key 完全同口径，跨时区设备
+        #      在午夜附近上报不会被服务端本地时区误拆到两天。
+        #   2) window_end 时间戳按服务端时区落天 — 老客户端兼容回退。
+        #   3) fallback_stat_date（一般是 today.isoformat()）— 兜底。
         stat_date = fallback_stat_date or date.today().isoformat()
-        try:
-            window_end = instruments.get("window_end")
-            if isinstance(window_end, (int, float)) and window_end > 0:
-                from datetime import datetime as _dt
-                stat_date = _dt.fromtimestamp(window_end).date().isoformat()
-        except (TypeError, ValueError, OSError):
-            pass
+        client_date = instruments.get("stat_date")
+        if (isinstance(client_date, str)
+                and len(client_date) == 10
+                and client_date[4] == "-"
+                and client_date[7] == "-"):
+            stat_date = client_date
+        else:
+            try:
+                window_end = instruments.get("window_end")
+                if isinstance(window_end, (int, float)) and window_end > 0:
+                    from datetime import datetime as _dt
+                    stat_date = _dt.fromtimestamp(window_end).date().isoformat()
+            except (TypeError, ValueError, OSError):
+                # fromtimestamp 失败（数值越界 / OS 时间错乱）：保持上面的
+                # fallback_stat_date / today，不让一条坏 payload 整批回滚。
+                pass
 
         counters = instruments.get("counters") or {}
         histograms = instruments.get("histograms") or {}
@@ -682,6 +695,8 @@ class TelemetryStorage:
                     if isinstance(bnd, list):
                         slot["bounds"] = bnd
                 except (json.JSONDecodeError, TypeError):
+                    # bounds 列损坏（极少见）：保留 slot["bounds"] = None，
+                    # 下个有效行有机会再设；查询端 p50/p95 计算允许 bounds 为空。
                     pass
 
         out = []

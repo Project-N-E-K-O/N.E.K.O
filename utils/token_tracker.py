@@ -747,17 +747,15 @@ class TokenTracker:
 
         覆盖场景：SIGTERM / 未捕获异常 / 正常退出 / sys.exit()
         不覆盖：SIGKILL (kill -9) / 断电 — 此时最多丢 60s 数据
+
+        顺序要点：先 emit session_end 到 instrument buffer，再 save()。
+        save() → _report_to_server 会 snapshot 走 instrument，所以 emit
+        必须先发生；否则 session_end 的 counter/histogram 进了 buffer 但
+        没机会被 snapshot，远程 dashboard 看不到 session_end —— 配对的
+        session_start 看得见、session_end 永远缺失，dashboard 上"异常退出
+        率"会被误算成 100%。event 单独通过 event_logger.flush 走本地 jsonl。
         """
-        try:
-            # save() first: persists delta to disk and attempts remote report
-            # (best-effort final push). Then disable remote URL so no further
-            # network calls happen during interpreter teardown.
-            self.save()
-        except Exception:
-            pass
-        # 在 flush 之前把 session_end 落进 buffer。同步 counter + histogram
-        # 走远程聚合：counter 用于"启动了多少次 / 结束了多少次"配对（差值 =
-        # 异常退出数），histogram 用于 session_duration 分布看用户停留时长。
+        # ── 1) session_end 先落 instrument buffer，让随后的 save() 带上 ──
         try:
             from utils.instrument import (
                 event as _instr_event,
@@ -776,8 +774,17 @@ class TokenTracker:
                 _instr_histogram("session_duration_sec", duration, process=self._session_process)
         except Exception:
             pass
-        # 顺手 flush 稀疏事件 —— 这里如果丢，下次启动就没法恢复（event_logger
-        # 没有自己的 unsent queue），所以哪怕 save() 失败也单独尝试。
+
+        # ── 2) save() 把 daily_stats + 上面刚 emit 的 instrument snapshot 一起发 ──
+        try:
+            # save() first: persists delta to disk and attempts remote report
+            # (best-effort final push). Then disable remote URL so no further
+            # network calls happen during interpreter teardown.
+            self.save()
+        except Exception:
+            pass
+
+        # ── 3) flush event_logger —— event 不走远程 instrument 通道，本地 jsonl 兜底 ──
         try:
             from utils.event_logger import EventLogger
             EventLogger.get_instance().flush()
@@ -1080,16 +1087,33 @@ class TokenTracker:
         1. 线程锁内取出 delta 快照并清空（swap 模式）
         2. 文件锁内做 read-merge-write
         3. 如果写入失败，将 delta 放回内存
+
+        Not-dirty 仍要触发远程上报：纯前端互动（counter/histogram，无 LLM 调用）
+        的用户 self._dirty 永远是 False，老逻辑直接 return 会让 instrument
+        累积窗口永远发不出去。跳过本地写盘但 _report_to_server 仍要调，让它
+        内部按 has_data() 决定是否真的 POST。
         """
         with self._lock:
             if not self._dirty:
-                return
-            # 取出 delta（swap 模式：先取出，成功后不放回）
-            delta_daily = self._delta_daily
-            delta_records = list(self._delta_records)
-            self._delta_daily = {}
-            self._delta_records.clear()
-            self._dirty = False
+                report_only = True
+                delta_daily: dict = {}
+                delta_records: list = []
+            else:
+                report_only = False
+                # 取出 delta（swap 模式：先取出，成功后不放回）
+                delta_daily = self._delta_daily
+                delta_records = list(self._delta_records)
+                self._delta_daily = {}
+                self._delta_records.clear()
+                self._dirty = False
+
+        if report_only:
+            # 没 LLM 数据写盘，只问问 instrument 有没有要发的
+            try:
+                self._report_to_server(delta_daily, delta_records)
+            except Exception:
+                pass  # 远程失败不影响 idle path
+            return
 
         try:
             self._storage_dir.mkdir(parents=True, exist_ok=True)
@@ -1247,11 +1271,20 @@ class TokenTracker:
             # 顺序不保证，重试期间可能漂；如果把它纳入 batch_id 计算，原本应该
             # 被 dedupe 的重发会变成新 batch 被累加，daily_aggregates 双倍计数。
             # 因此 batch_id 只覆盖核心幂等字段，签名仍覆盖完整 payload。
+            #
+            # instruments 也必须入 hash —— 当 daily_stats 和 recent_records 都空
+            # （纯前端 counter 触发的窗口），少了它 batch_core 对同一设备每个
+            # 窗口都算出同一个 hash，server seen_batches 一旦记录就把所有后续
+            # instrument-only 上报全部 dedupe 掉。instruments 是 clear-on-read
+            # 不会在重试中复现，所以加入 hash 不会破坏失败重传的 dedupe（重传
+            # 时 instruments 为空，hash 自然不同；而首次上报的 instruments 内容
+            # 也不会跟其它窗口相同，保证每个窗口的 hash 都唯一）。
             batch_core = {
                 "device_id": payload["device_id"],
                 "app_version": payload["app_version"],
                 "daily_stats": payload["daily_stats"],
                 "recent_records": payload["recent_records"],
+                "instruments": payload.get("instruments"),
             }
             batch_id = hashlib.sha256(
                 json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()

@@ -96,7 +96,9 @@ _TELEM_MAX_DIMS = 8
 _TELEM_KEY_MAX = 32
 _TELEM_VAL_MAX = 64
 _TELEM_NAME_MAX = 64
-_TELEM_EVENT_FIELDS_MAX = 16
+# event fields 的 value 比 counter dims 宽松（128B vs 64B），允许 hash / 短
+# stack signature 之类略长的标识进 event 但不进 counter map。fields **数量**
+# 仍受 _TELEM_MAX_DIMS=8 限制 —— event 也不该塞高基数 payload。
 _TELEM_EVENT_VAL_MAX = 128
 
 

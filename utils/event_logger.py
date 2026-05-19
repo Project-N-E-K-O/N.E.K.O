@@ -27,7 +27,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from collections import deque
@@ -169,10 +168,22 @@ class EventLogger:
                     day = self._day_of(rec["ts"])
                     by_day.setdefault(day, []).append(rec)
 
+                # 写盘失败的 day 数据要回到 buffer 重试；写成功的 day 已经
+                # 持久化、不能 push_back（否则下次 flush 重复落地）。区分
+                # 两种 _append_day 返回路径：raise = IO 失败，return 0 =
+                # sealed/empty 正常丢弃。
+                unwritten: list = []
                 for day, recs in by_day.items():
                     if day in self._sealed_days:
                         continue  # 本天已封板（爆量保护），丢弃新事件
-                    written += self._append_day(day, recs)
+                    try:
+                        written += self._append_day(day, recs)
+                    except OSError:
+                        # _append_day 内已经走过 _log_fail 节流日志，这里
+                        # 不再重复 log；只把数据丢回 buffer 等下次重试。
+                        unwritten.extend(recs)
+                if unwritten:
+                    self._push_back(unwritten)
 
         if should_cleanup:
             self._cleanup()
@@ -225,7 +236,10 @@ class EventLogger:
             return 0
 
         payload = b"".join(lines)
-        # append-only：依赖 OS 的 O_APPEND 原子性，每行 < 4KB 时单次 write 是原子的
+        # append-only：依赖 OS 的 O_APPEND 原子性，每行 < 4KB 时单次 write 是原子的。
+        # IO 失败 raise OSError 让 caller (flush) 把 recs push_back 重试；用
+        # raise 而不是 return 0 是为了跟 sealed/empty 路径区分 —— 后者是"按
+        # 设计丢弃"，不该 push_back 占 buffer。
         try:
             with open(path, "ab") as f:
                 f.write(payload)
@@ -233,7 +247,7 @@ class EventLogger:
             return len(lines)
         except OSError as e:
             self._log_fail(f"event_logger: write failed for {path.name}: {e}")
-            return 0
+            raise
 
     def _push_back(self, recs: list) -> None:
         """写盘失败时把事件丢回 buffer。尊重 maxlen，老数据自动出队。"""

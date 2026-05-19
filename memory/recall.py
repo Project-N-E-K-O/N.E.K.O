@@ -106,6 +106,8 @@ class MemoryRecallReranker:
                 from utils.instrument import counter as _instr_counter
                 _instr_counter("memory_recall_invoke", returned_empty=True)
             except Exception:
+                # 埋点失败不能让 recall 路径报错 —— memory pipeline 是
+                # response 关键路径，宁可少一条统计也不让它 crash。
                 pass
             return []
         # Telemetry：每次 recall 算一次 invoke，无论后续是 coarse-only 还是
@@ -115,6 +117,7 @@ class MemoryRecallReranker:
             from utils.instrument import counter as _instr_counter
             _instr_counter("memory_recall_invoke", returned_empty=False)
         except Exception:
+            # 同上：埋点失败静默，不影响 recall 主路径。
             pass
 
         # Normalise query_texts up-front so phase 2 (coarse) and phase 3
