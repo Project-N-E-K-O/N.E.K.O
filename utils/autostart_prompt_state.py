@@ -247,6 +247,22 @@ def build_public_autostart_prompt_snapshot(state: dict[str, Any]) -> dict[str, A
     )
 
 
+def _get_effective_autostart_max_prompt_shows(
+    state: dict[str, Any],
+    configured_max_prompt_shows: int,
+) -> int:
+    later_count = clamp_int(state.get("funnel_counts", {}).get("later"))
+    effective_max_prompt_shows = configured_max_prompt_shows
+    if later_count >= AUTOSTART_NEVER_AFTER_LATER_COUNT:
+        return max(
+            effective_max_prompt_shows,
+            AUTOSTART_MAX_PROMPT_SHOWS_AFTER_NEVER_ELIGIBLE,
+        )
+    if later_count > 0:
+        return max(effective_max_prompt_shows, later_count + 1)
+    return effective_max_prompt_shows
+
+
 def _compute_autostart_prompt_eligibility(
     state: dict[str, Any],
     *,
@@ -260,15 +276,10 @@ def _compute_autostart_prompt_eligibility(
         return False, "autostart_pending"
     if state["never_remind"] or state["status"] == "never":
         return False, "never_remind"
-    later_count = clamp_int(state.get("funnel_counts", {}).get("later"))
-    effective_max_prompt_shows = max_prompt_shows
-    if later_count >= AUTOSTART_NEVER_AFTER_LATER_COUNT:
-        effective_max_prompt_shows = max(
-            effective_max_prompt_shows,
-            AUTOSTART_MAX_PROMPT_SHOWS_AFTER_NEVER_ELIGIBLE,
-        )
-    elif later_count > 0:
-        effective_max_prompt_shows = max(effective_max_prompt_shows, later_count + 1)
+    effective_max_prompt_shows = _get_effective_autostart_max_prompt_shows(
+        state,
+        max_prompt_shows,
+    )
     if state["shown_count"] >= effective_max_prompt_shows:
         return False, "show_limit_reached"
     if (
@@ -543,12 +554,16 @@ def record_autostart_prompt_shown(
 
     with _AUTOSTART_STATE_LOCK:
         state = load_autostart_prompt_state(config_manager)
+        max_prompt_shows = _get_effective_autostart_max_prompt_shows(
+            state,
+            runtime_config["max_prompt_shows"],
+        )
         state, changed, already_acknowledged = ack_prompt_token_if_needed(
             state,
             prompt_token,
             now_ms_value,
             normalizer=_normalize_autostart_prompt_state,
-            max_prompt_shows=runtime_config["max_prompt_shows"],
+            max_prompt_shows=max_prompt_shows,
         )
         if changed:
             state = save_autostart_prompt_state(state, config_manager)
@@ -590,12 +605,16 @@ def record_autostart_prompt_decision(
                 "ok": True,
                 "state": build_autostart_prompt_snapshot(state),
             }
+        max_prompt_shows = _get_effective_autostart_max_prompt_shows(
+            state,
+            runtime_config["max_prompt_shows"],
+        )
         state, changed, _ = ack_prompt_token_if_needed(
             state,
             prompt_token,
             now_ms_value,
             normalizer=_normalize_autostart_prompt_state,
-            max_prompt_shows=runtime_config["max_prompt_shows"],
+            max_prompt_shows=max_prompt_shows,
         )
 
         if decision == "never":
