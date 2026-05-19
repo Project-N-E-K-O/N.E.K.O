@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import json
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -243,6 +244,24 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
     assert "getQueryOpenerOrigin()" in plugin_runtime_source
     assert "isLoopbackOrigin(origin)" in plugin_runtime_source
     assert "var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';" not in hud_source
+
+
+def test_standalone_agent_hud_hide_keeps_origin_position():
+    hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    hide_match = re.search(
+        r"window\.AgentHUD\.hideAgentTaskHUD = function \(\) \{(?P<body>[\s\S]*?)\n\};",
+        hud_source,
+    )
+
+    assert hide_match is not None
+    hide_body = hide_match.group("body")
+    assert "const standaloneAgentHud = isStandaloneAgentHudPage();" in hide_body
+    assert "const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');" in hide_body
+    assert "hud.style.left = '0';" in hide_body
+    assert "hud.style.top = '0';" in hide_body
+    assert "hud.style.right = 'auto';" in hide_body
+    assert "hud.style.transform = 'none';" in hide_body
+    assert "translateY(-50%) translateX(20px)" in hide_body
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
