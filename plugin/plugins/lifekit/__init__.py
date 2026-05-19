@@ -101,7 +101,7 @@ class LifeKitPlugin(NekoPluginBase):
                 self.logger.info("Store is disabled — location save/load will be unavailable")
 
         # 从主干查询全局语言
-        lang = await self.fetch_user_language(timeout=3.0)
+        lang = self._get_host_locale()
         self._resolve_locale()
         self.logger.info(
             "LifeKitPlugin started, locale={}, host_lang={}, store={}",
@@ -136,7 +136,7 @@ class LifeKitPlugin(NekoPluginBase):
             self._i18n.set_locale(configured)
             return
 
-        host_lang = self.get_user_language()
+        host_lang = self._get_host_locale()
         if host_lang:
             self._i18n.set_locale(host_lang)
             return
@@ -152,6 +152,15 @@ class LifeKitPlugin(NekoPluginBase):
             self._i18n.set_locale("zh-CN")
         else:
             self._i18n.set_locale("en")
+
+    def _get_host_locale(self) -> str:
+        try:
+            from utils.language_utils import get_global_language_full
+
+            return str(get_global_language_full() or "").strip()
+        except Exception:
+            self.logger.debug("LifeKit host locale lookup failed", exc_info=True)
+            return ""
 
     # ── 共享：位置解析（供 routers 调用）──
 

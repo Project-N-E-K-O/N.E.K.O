@@ -1719,6 +1719,9 @@
         "maintenanceWaitingStatus": "服务尚未恢复前，页面会继续停留在这里并自动重试连接。",
         "maintenanceWaitingSubtitle": "正在关闭，数据会在关闭后迁移并自动重启。",
         "migrationPending": "检测到尚未完成的迁移计划。当前主页会继续保持阻断，直到服务恢复到可继续状态。",
+        "openPathFailed": "当前环境无法打开该目录，请手动前往路径。",
+        "openRetainedRoot": "打开旧数据目录",
+        "openTargetRoot": "打开当前路径",
         "pickFolder": "选择文件夹",
         "pickFolderUnavailable": "当前系统目录选择器不可用，请手动输入路径。",
         "pickFolderFailed": "打开文件夹选择器失败，请手动输入路径。",
@@ -1740,6 +1743,7 @@
         "progressVerifying": "正在校验迁移结果",
         "progressWaitingShutdown": "正在关闭",
         "rebindPreviewNotice": "后端已确认：原路径已经可以重新连接。后续会重启到该路径，本次不会复制运行时数据。",
+        "recommendedPath": "推荐路径",
         "selectedPath": "选择路径",
         "recoveryRequired": "检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。",
         "recoverySourceUnavailable": "原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。",
@@ -1771,7 +1775,8 @@
         "targetFreeSpace": "目标卷剩余空间",
         "targetLabel": "当前生效路径",
         "unknownBytes": "暂未估算",
-        "useCurrent": "保持当前路径"
+        "useCurrent": "保持当前路径",
+        "useRecommended": "使用推荐路径"
     },
     "character": {
         "manager": "角色管理",
@@ -2456,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "连接检查中...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安装",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "桌面显示会话不可访问",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安装",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模块未加载",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模块未加载",

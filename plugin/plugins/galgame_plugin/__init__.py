@@ -25,6 +25,7 @@ from plugin.sdk.plugin import (
     tr,
 )
 
+from .character_profile import CharacterProfileManager
 from .game_llm_agent import GameLLMAgent
 from .host_agent_adapter import HostAgentAdapter
 from .llm_gateway import LLMGateway
@@ -70,11 +71,17 @@ from .models import (
     STATE_ERROR,
     STORE_BOUND_GAME_ID,
     STORE_ADVANCE_SPEED,
+    STORE_CHARACTER_FIXED_NAME,
+    STORE_CHARACTER_MODE,
+    STORE_CHARACTER_PROFILE_VERSION,
+    STORE_CHARACTER_PROFILES,
     STORE_DEDUPE_WINDOW,
+    STORE_CROSS_SCENE_MEMORY,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
     STORE_LAST_SEQ,
+    STORE_CHARACTER_RUNTIME_STATE,
     STORE_LLM_VISION_ENABLED,
     STORE_LLM_VISION_MAX_IMAGE_PX,
     STORE_MEMORY_READER_TARGET,
@@ -874,6 +881,19 @@ class GalgamePlugin(NekoPluginBase):
         self._ocr_capture_profile_last_rollback_reason = ""
         self._state_dirty = True
         self._cached_snapshot: dict[str, Any] | None = None
+        self._character_profile_manager: CharacterProfileManager | None = None
+        # host-play-mode plan step 19: query entries + rate limit windows.
+        # Each entry id maps to a deque of recent timestamps; entries trim past
+        # the 60-second window before each call.
+        self._story_so_far: str = ""
+        self._story_last_updated_seq: int = 0
+        self._push_history: deque[dict[str, Any]] = deque(maxlen=64)
+        self._query_rate_limits: dict[str, deque[float]] = {
+            "galgame_get_recent_lines": deque(maxlen=2),
+            "galgame_get_scene_context": deque(maxlen=3),
+            "galgame_get_story_so_far": deque(maxlen=1),
+            "galgame_get_push_history": deque(maxlen=10),
+        }
 
     def _not_configured_message(self) -> str:
         return self.i18n.t(
@@ -1124,6 +1144,17 @@ class GalgamePlugin(NekoPluginBase):
                 "ocr_capture_profiles": dict(state.ocr_capture_profiles),
                 "ocr_window_target": dict(state.ocr_window_target),
                 "context_snapshot": dict(state.context_snapshot),
+                "character_profiles": dict(state.character_profiles),
+                "active_scene_characters": list(state.active_scene_characters),
+                "character_profile_version": state.character_profile_version,
+                "character_profile_game_id": state.character_profile_game_id,
+                "character_profile_match_reason": state.character_profile_match_reason,
+                "character_mode": state.character_mode,
+                "character_fixed_name": state.character_fixed_name,
+                "character_mode_stale": state.character_mode_stale,
+                "cross_scene_memory": dict(state.cross_scene_memory),
+                "character_runtime_state": dict(state.character_runtime_state),
+                "last_push_seq": state.last_push_seq,
                 "plugin_error": state.plugin_error,
                 "dependency_status": dict(state.dependency_status),
             }
@@ -1169,6 +1200,17 @@ class GalgamePlugin(NekoPluginBase):
             "context_snapshot": json_copy(raw["context_snapshot"])
             if include_private_context
             else _public_context_snapshot(raw["context_snapshot"]),
+            "character_profiles": json_copy(raw["character_profiles"]),
+            "active_scene_characters": json_copy(raw["active_scene_characters"]),
+            "character_profile_version": raw["character_profile_version"],
+            "character_profile_game_id": raw["character_profile_game_id"],
+            "character_profile_match_reason": raw["character_profile_match_reason"],
+            "character_mode": raw["character_mode"],
+            "character_fixed_name": raw["character_fixed_name"],
+            "character_mode_stale": raw["character_mode_stale"],
+            "cross_scene_memory": json_copy(raw["cross_scene_memory"]),
+            "character_runtime_state": json_copy(raw["character_runtime_state"]),
+            "last_push_seq": raw["last_push_seq"],
             "plugin_error": raw["plugin_error"],
             "dependency_status": json_copy(raw["dependency_status"]),
         }
@@ -1823,6 +1865,8 @@ class GalgamePlugin(NekoPluginBase):
         return runtime
 
     def _commit_state(self, payload: dict[str, Any]) -> None:
+        cross_scene_memory_to_persist: dict[str, Any] | None = None
+        character_runtime_state_to_persist: dict[str, Any] | None = None
         with self._state_lock:
             state = self._state
             changed = False
@@ -1870,6 +1914,71 @@ class GalgamePlugin(NekoPluginBase):
                     if state.advance_speed in ADVANCE_SPEEDS
                     else str(payload.get("advance_speed") or ADVANCE_SPEED_MEDIUM)
                 ))
+            character_mode = str(payload.get("character_mode", state.character_mode) or "off")
+            if character_mode not in {"off", "fixed"}:
+                character_mode = "off"
+            assign_json_if_live_unchanged(
+                "character_profiles",
+                payload.get("character_profiles", state.character_profiles),
+            )
+            assign_json_if_live_unchanged(
+                "active_scene_characters",
+                payload.get("active_scene_characters", state.active_scene_characters),
+            )
+            assign_if_live_unchanged(
+                "character_profile_version",
+                str(payload.get("character_profile_version", state.character_profile_version) or ""),
+            )
+            assign_if_live_unchanged(
+                "character_profile_game_id",
+                str(payload.get("character_profile_game_id", state.character_profile_game_id) or ""),
+            )
+            assign_if_live_unchanged(
+                "character_profile_match_reason",
+                str(
+                    payload.get(
+                        "character_profile_match_reason",
+                        state.character_profile_match_reason,
+                    )
+                    or ""
+                ),
+            )
+            assign_if_live_unchanged("character_mode", character_mode)
+            assign_if_live_unchanged(
+                "character_fixed_name",
+                str(payload.get("character_fixed_name", state.character_fixed_name) or ""),
+            )
+            assign_if_live_unchanged(
+                "character_mode_stale",
+                bool(payload.get("character_mode_stale", state.character_mode_stale)),
+            )
+            if not live_changed_since_snapshot("cross_scene_memory"):
+                cross_scene_memory_value = payload.get(
+                    "cross_scene_memory",
+                    state.cross_scene_memory,
+                )
+                if state.cross_scene_memory != cross_scene_memory_value:
+                    cross_scene_memory_to_persist = json_copy(cross_scene_memory_value)
+                    state.cross_scene_memory = json_copy(cross_scene_memory_to_persist)
+                    changed = True
+            if not live_changed_since_snapshot("character_runtime_state"):
+                character_runtime_state_value = payload.get(
+                    "character_runtime_state",
+                    state.character_runtime_state,
+                )
+                if state.character_runtime_state != character_runtime_state_value:
+                    character_runtime_state_to_persist = json_copy(
+                        character_runtime_state_value
+                    )
+                    state.character_runtime_state = json_copy(
+                        character_runtime_state_to_persist
+                    )
+                    changed = True
+            try:
+                last_push_seq = max(0, int(payload.get("last_push_seq", state.last_push_seq) or 0))
+            except (TypeError, ValueError):
+                last_push_seq = state.last_push_seq
+            assign_if_live_unchanged("last_push_seq", last_push_seq)
             assign("active_game_id", str(payload["active_game_id"]))
             assign("active_session_id", str(payload["active_session_id"]))
             assign_json("active_session_meta", payload["active_session_meta"])
@@ -1933,6 +2042,22 @@ class GalgamePlugin(NekoPluginBase):
             if changed:
                 self._state_dirty = True
                 self._cached_snapshot = None
+        try:
+            if cross_scene_memory_to_persist is not None:
+                self._persist.persist_config_override(
+                    STORE_CROSS_SCENE_MEMORY,
+                    cross_scene_memory_to_persist,
+                )
+            if character_runtime_state_to_persist is not None:
+                self._persist.persist_config_override(
+                    STORE_CHARACTER_RUNTIME_STATE,
+                    character_runtime_state_to_persist,
+                )
+        except Exception:  # noqa: BLE001
+            self.logger.warning(
+                "failed to persist galgame strategy memory state",
+                exc_info=True,
+            )
 
     def _record_error(self, error: dict[str, Any]) -> None:
         with self._state_lock:
@@ -2792,6 +2917,18 @@ class GalgamePlugin(NekoPluginBase):
             )
             self._state.ocr_window_target = json_copy(restored.get(STORE_OCR_WINDOW_TARGET, {}))
             self._state.context_snapshot = self._load_context_snapshot_for_state()
+            self._state.character_profiles = json_copy(restored.get(STORE_CHARACTER_PROFILES, {}))
+            self._state.character_profile_version = str(
+                restored.get(STORE_CHARACTER_PROFILE_VERSION, "")
+            )
+            self._state.character_mode = str(restored.get(STORE_CHARACTER_MODE, "off") or "off")
+            self._state.character_fixed_name = str(
+                restored.get(STORE_CHARACTER_FIXED_NAME, "")
+            )
+            self._state.cross_scene_memory = json_copy(restored.get(STORE_CROSS_SCENE_MEMORY, {}))
+            self._state.character_runtime_state = json_copy(
+                restored.get(STORE_CHARACTER_RUNTIME_STATE, {})
+            )
             if warnings and not self._state.last_error:
                 self._state.last_error = make_error(
                     "; ".join(warnings),
@@ -2802,6 +2939,237 @@ class GalgamePlugin(NekoPluginBase):
             self._cached_snapshot = None
 
         self._apply_config_overrides_from_store()
+
+    def _get_character_profile_manager(self) -> CharacterProfileManager:
+        if self._character_profile_manager is None:
+            self._character_profile_manager = CharacterProfileManager(
+                data_dir=Path(__file__).parent / "character_data",
+                logger=self.logger,
+            )
+        return self._character_profile_manager
+
+    def _activate_character_profiles(
+        self,
+        game_id: str,
+        *,
+        match_reason: str = "exact_game_id",
+    ) -> dict[str, Any]:
+        """Lazy-load preset+user profiles for ``game_id`` into shared state.
+
+        Initializes runtime overlay entries for any newly seen characters from
+        the preset baseline (so first push has emotion / arc data even before
+        the first scene-switch LLM update). Persists to the plugin store.
+        """
+        normalized = (game_id or "").strip()
+        manager = self._get_character_profile_manager()
+        load = manager.load_game_profiles(normalized)
+        profiles = load.get("profiles") or {}
+        version = str(load.get("version") or "")
+        with self._state_lock:
+            previous_profile_game_id = str(self._state.character_profile_game_id or "")
+            previous_runtime = dict(self._state.character_runtime_state or {})
+            self._state.character_profiles = json_copy(profiles)
+            self._state.character_profile_version = version
+            self._state.character_profile_game_id = normalized if profiles else ""
+            self._state.character_profile_match_reason = match_reason if profiles else ""
+            runtime: dict[str, Any] = {}
+            for name, profile in profiles.items():
+                existing = previous_runtime.get(name)
+                existing_game_id = (
+                    str(existing.get("game_id") or existing.get("profile_game_id") or "")
+                    if isinstance(existing, dict)
+                    else ""
+                )
+                can_reuse = isinstance(existing, dict) and (
+                    existing_game_id == normalized
+                    or (not existing_game_id and previous_profile_game_id == normalized)
+                )
+                if can_reuse:
+                    runtime[name] = json_copy(existing)
+                else:
+                    runtime[name] = manager.init_runtime_state_from_profile(name, profile)
+                if isinstance(runtime[name], dict):
+                    runtime[name]["game_id"] = normalized
+            self._state.character_runtime_state = runtime
+            runtime_state = json_copy(self._state.character_runtime_state)
+            self._state_dirty = True
+            self._cached_snapshot = None
+        try:
+            self._persist.persist_config_override(
+                STORE_CHARACTER_PROFILES, json_copy(profiles)
+            )
+            self._persist.persist_config_override(
+                STORE_CHARACTER_PROFILE_VERSION, version
+            )
+            self._persist.persist_config_override(
+                STORE_CHARACTER_RUNTIME_STATE,
+                runtime_state,
+            )
+        except Exception:  # noqa: BLE001 — persistence failure must not crash the call
+            self.logger.warning(
+                "failed to persist character profile activation for %r",
+                normalized,
+                exc_info=True,
+            )
+        if load.get("errors"):
+            self.logger.warning(
+                "character profile load reported errors for %r: %s",
+                normalized,
+                "; ".join(load["errors"]),
+            )
+        if load.get("warnings"):
+            self.logger.info(
+                "character profile load warnings for %r: %s",
+                normalized,
+                "; ".join(load["warnings"]),
+            )
+        return load
+
+    def _clear_character_profiles(self) -> None:
+        with self._state_lock:
+            self._state.character_profiles = {}
+            self._state.character_profile_version = ""
+            self._state.character_profile_game_id = ""
+            self._state.character_profile_match_reason = ""
+            self._state.character_runtime_state = {}
+            self._state.character_mode = "off"
+            self._state.character_fixed_name = ""
+            self._state.character_mode_stale = False
+            self._state_dirty = True
+            self._cached_snapshot = None
+        try:
+            self._persist.persist_config_override(STORE_CHARACTER_PROFILES, {})
+            self._persist.persist_config_override(STORE_CHARACTER_PROFILE_VERSION, "")
+            self._persist.persist_config_override(STORE_CHARACTER_RUNTIME_STATE, {})
+            self._persist.persist_config_override(STORE_CHARACTER_MODE, "off")
+            self._persist.persist_config_override(STORE_CHARACTER_FIXED_NAME, "")
+        except Exception:  # noqa: BLE001
+            self.logger.warning("failed to persist character profile clear", exc_info=True)
+
+    @staticmethod
+    def _append_character_profile_signal(
+        signals: list[dict[str, Any]],
+        *,
+        game_id: object = "",
+        game_title: object = "",
+        process_name: object = "",
+        window_title: object = "",
+    ) -> None:
+        signal = {
+            "game_id": str(game_id or "").strip(),
+            "game_title": str(game_title or "").strip(),
+            "process_name": str(process_name or "").strip(),
+            "window_title": str(window_title or "").strip(),
+        }
+        if any(signal.values()) and signal not in signals:
+            signals.append(signal)
+
+    def _character_profile_match_signals(self) -> list[dict[str, Any]]:
+        with self._state_lock:
+            bound_game_id = str(self._state.bound_game_id or "")
+            active_game_id = str(self._state.active_game_id or "")
+            active_meta = json_copy(self._state.active_session_meta or {})
+            ocr_runtime = json_copy(self._state.ocr_reader_runtime or {})
+            memory_runtime = json_copy(self._state.memory_reader_runtime or {})
+
+        signals: list[dict[str, Any]] = []
+        self._append_character_profile_signal(signals, game_id=bound_game_id)
+        self._append_character_profile_signal(signals, game_id=active_game_id)
+        if isinstance(active_meta, dict):
+            metadata = active_meta.get("metadata")
+            metadata_obj = metadata if isinstance(metadata, dict) else {}
+            self._append_character_profile_signal(
+                signals,
+                game_id=active_meta.get("game_id"),
+                game_title=active_meta.get("game_title"),
+                process_name=metadata_obj.get("game_process_name"),
+                window_title=metadata_obj.get("window_title"),
+            )
+        if isinstance(ocr_runtime, dict):
+            self._append_character_profile_signal(
+                signals,
+                game_id=ocr_runtime.get("game_id"),
+                game_title=ocr_runtime.get("game_title"),
+                process_name=(
+                    ocr_runtime.get("effective_process_name")
+                    or ocr_runtime.get("process_name")
+                ),
+                window_title=(
+                    ocr_runtime.get("effective_window_title")
+                    or ocr_runtime.get("window_title")
+                ),
+            )
+        if isinstance(memory_runtime, dict):
+            self._append_character_profile_signal(
+                signals,
+                game_id=memory_runtime.get("game_id"),
+                game_title=memory_runtime.get("game_title"),
+                process_name=memory_runtime.get("process_name"),
+            )
+        return signals
+
+    def _load_character_profiles_for_current_context(
+        self,
+        *,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        manager = self._get_character_profile_manager()
+        signals = self._character_profile_match_signals()
+        match = manager.resolve_profile_match(signals)
+        with self._state_lock:
+            current_profiles = dict(self._state.character_profiles or {})
+            current_profile_game_id = str(self._state.character_profile_game_id or "")
+            current_match_reason = str(self._state.character_profile_match_reason or "")
+            bound_game_id = str(self._state.bound_game_id or "")
+        if (
+            current_profiles
+            and not force
+            and current_profile_game_id
+            and match is not None
+            and match.game_id == current_profile_game_id
+        ):
+            return {
+                "profiles": current_profiles,
+                "version": "",
+                "errors": [],
+                "warnings": [],
+                "resolved_game_id": current_profile_game_id,
+                "match_reason": current_match_reason,
+                "matched": True,
+                "cached": True,
+            }
+        if match is None:
+            if current_profiles and not signals:
+                return {
+                    "profiles": current_profiles,
+                    "version": "",
+                    "errors": [],
+                    "warnings": ["character profile match pending"],
+                    "resolved_game_id": current_profile_game_id,
+                    "match_reason": current_match_reason,
+                    "matched": False,
+                    "cached": True,
+                    "pending_match": True,
+                }
+            if current_profiles and not bound_game_id:
+                self._clear_character_profiles()
+            return {
+                "profiles": {},
+                "version": "",
+                "errors": ["no matching character profile"],
+                "warnings": [],
+                "resolved_game_id": "",
+                "match_reason": "",
+                "matched": False,
+            }
+        load = self._activate_character_profiles(
+            match.game_id,
+            match_reason=match.reason,
+        )
+        load["resolved_game_id"] = match.game_id
+        load["match_reason"] = match.reason
+        load["matched"] = True
+        return load
 
     def _load_context_snapshot_for_game(self, current_game_id: str = "") -> dict[str, Any]:
         if self._cfg is None or not bool(getattr(self._cfg, "context_persist_enabled", False)):
@@ -4276,6 +4644,12 @@ class GalgamePlugin(NekoPluginBase):
             "push_notifications": bool(local.get("push_notifications")),
             "advance_speed": str(local.get("advance_speed") or ""),
             "active_data_source": str(local.get("active_data_source") or ""),
+            "character_mode": str(local.get("character_mode") or "off"),
+            "character_fixed_name": str(local.get("character_fixed_name") or ""),
+            "character_profiles": json_copy(local.get("character_profiles") or {}),
+            "character_runtime_state": json_copy(local.get("character_runtime_state") or {}),
+            "cross_scene_memory": json_copy(local.get("cross_scene_memory") or {}),
+            "last_push_seq": int(local.get("last_push_seq") or 0),
             "ocr_capture_profiles": json_copy(local.get("ocr_capture_profiles") or {}),
             "ocr_window_target": json_copy(local.get("ocr_window_target") or {}),
             # Track dependency_status in the snapshot base so a parallel
@@ -5830,6 +6204,7 @@ class GalgamePlugin(NekoPluginBase):
             mode = self._state.mode
             push_notifications = self._state.push_notifications
             advance_speed = self._state.advance_speed
+        self._clear_character_profiles()
 
         try:
             self._config_service.persist_preferences(
@@ -5841,6 +6216,7 @@ class GalgamePlugin(NekoPluginBase):
         except Exception as exc:
             return Err(SdkError(f"persist binding failed: {exc}"))
 
+        self._load_character_profiles_for_current_context(force=True)
         await self._poll_bridge(force=True)
         with self._state_lock:
             payload = {
@@ -6421,6 +6797,9 @@ class GalgamePlugin(NekoPluginBase):
                 "message": {"type": "string", "default": ""},
                 "context_query": {"type": "string", "default": ""},
                 "message_id": {"type": "string", "default": ""},
+                "reply_to_message_id": {"type": "string", "default": ""},
+                "sender_role": {"type": "string", "default": ""},
+                "consultation_reply": {"type": "boolean", "default": False},
                 "direction": {"type": "string", "default": ""},
                 "limit": {"type": "integer", "default": 50},
                 "standby": {"type": "boolean"},
@@ -6436,6 +6815,9 @@ class GalgamePlugin(NekoPluginBase):
         message: str = "",
         context_query: str = "",
         message_id: str = "",
+        reply_to_message_id: str = "",
+        sender_role: str = "",
+        consultation_reply: bool = False,
         direction: str = "",
         limit: int = 50,
         standby: bool | None = None,
@@ -6462,6 +6844,9 @@ class GalgamePlugin(NekoPluginBase):
                 await self._game_agent.send_message(
                     local,
                     message=message.strip(),
+                    reply_to_message_id=reply_to_message_id.strip(),
+                    sender_role=sender_role.strip(),
+                    consultation_reply=bool(consultation_reply),
                 )
             )
         if action == "set_standby":
@@ -6568,6 +6953,607 @@ class GalgamePlugin(NekoPluginBase):
                 "result": result_text,
                 "degraded": False,
                 "diagnostic": diagnostic,
+            }
+        )
+
+
+    # ------------------------------------------------------------------
+    # Query / debug entries (galgame-host-play-mode plan, step 19 + G4)
+    # ------------------------------------------------------------------
+
+    def _check_query_rate_limit(
+        self, entry_id: str, *, window_seconds: float = 60.0
+    ) -> dict[str, Any] | None:
+        """Return a throttle payload when ``entry_id`` exceeds its budget; else
+        record the current call and return ``None``.
+        """
+        bucket = self._query_rate_limits.get(entry_id)
+        if bucket is None:
+            return None
+        now = time.monotonic()
+        cutoff = now - max(1.0, float(window_seconds))
+        # Drop expired timestamps from the head; deque has no slice removal so
+        # we filter and rebuild in place.
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= bucket.maxlen:
+            retry_after = max(0.0, bucket[0] + window_seconds - now)
+            return {
+                "throttled": True,
+                "retry_after_seconds": round(retry_after, 2),
+                "entry": entry_id,
+            }
+        bucket.append(now)
+        return None
+
+    def _layer1_scene_summaries(self) -> list[dict[str, Any]]:
+        """Best-effort access to Layer 1 scene summaries (existing scene_memory)."""
+        agent = self._game_agent
+        if agent is None:
+            return []
+        tracker = getattr(agent, "_scene_tracker", None)
+        if tracker is None:
+            return []
+        scene_memory = getattr(tracker, "scene_memory", None)
+        if not isinstance(scene_memory, list):
+            return []
+        return [dict(entry) for entry in scene_memory if isinstance(entry, dict)]
+
+    def _compose_story_so_far_from_scene_summaries(
+        self,
+        scenes: list[dict[str, Any]],
+        *,
+        limit: int = 6,
+        max_chars: int = 1200,
+    ) -> tuple[str, int]:
+        recent = [
+            dict(item)
+            for item in scenes
+            if isinstance(item, dict) and str(item.get("summary") or "").strip()
+        ][-max(1, int(limit or 6)) :]
+        if not recent:
+            return "", 0
+        parts: list[str] = []
+        last_seq = 0
+        for index, entry in enumerate(recent, 1):
+            summary = str(entry.get("summary") or "").strip()
+            if not summary:
+                continue
+            scene_id = str(entry.get("scene_id") or "").strip()
+            prefix = f"{index}. "
+            if scene_id:
+                prefix += f"{scene_id}: "
+            parts.append(prefix + summary)
+            try:
+                last_seq = max(last_seq, int(entry.get("push_seq") or 0))
+            except (TypeError, ValueError):
+                pass
+        story = "\n".join(parts).strip()
+        if len(story) > max_chars:
+            story = story[-max_chars:].lstrip()
+        return story, last_seq
+
+    def _refresh_story_so_far_from_scene_summaries(self) -> bool:
+        story, last_seq = self._compose_story_so_far_from_scene_summaries(
+            self._layer1_scene_summaries()
+        )
+        if not story:
+            with self._state_lock:
+                self._story_so_far = ""
+                self._story_last_updated_seq = 0
+            return False
+        with self._state_lock:
+            current_story = str(self._story_so_far or "").strip()
+            current_seq = int(self._story_last_updated_seq or 0)
+            next_seq = int(last_seq or 0)
+            if current_story:
+                if next_seq <= 0:
+                    if current_seq > 0 or story == current_story:
+                        return False
+                elif next_seq <= current_seq:
+                    return False
+            self._story_so_far = story
+            self._story_last_updated_seq = max(
+                int(self._story_last_updated_seq or 0),
+                next_seq,
+            )
+        return True
+
+    def _record_story_progress_from_scene_summary(
+        self,
+        *,
+        scene_id: str,
+        route_id: str = "",
+        summary: str,
+        push_seq: int = 0,
+    ) -> None:
+        normalized_summary = str(summary or "").strip()
+        if not normalized_summary:
+            return
+        normalized_scene_id = str(scene_id or "").strip()
+        scenes = self._layer1_scene_summaries()
+        merged: list[dict[str, Any]] = []
+        replaced = False
+        for entry in scenes:
+            item = dict(entry)
+            if normalized_scene_id and str(item.get("scene_id") or "") == normalized_scene_id:
+                item["summary"] = normalized_summary
+                if route_id:
+                    item["route_id"] = str(route_id or "")
+                try:
+                    existing_push_seq = int(item.get("push_seq") or 0)
+                except (TypeError, ValueError):
+                    existing_push_seq = 0
+                item["push_seq"] = max(existing_push_seq, int(push_seq or 0))
+                replaced = True
+            merged.append(item)
+        if not replaced:
+            merged.append(
+                {
+                    "scene_id": normalized_scene_id,
+                    "route_id": str(route_id or ""),
+                    "summary": normalized_summary,
+                    "push_seq": int(push_seq or 0),
+                }
+            )
+        story, last_seq = self._compose_story_so_far_from_scene_summaries(merged)
+        if not story:
+            return
+        with self._state_lock:
+            self._story_so_far = story
+            self._story_last_updated_seq = max(
+                int(self._story_last_updated_seq or 0),
+                int(last_seq or 0),
+                int(push_seq or 0),
+            )
+
+    @plugin_entry(
+        id="galgame_get_scene_context",
+        name=tr(
+            "entries.galgame_get_scene_context.name",
+            default="查询场景上下文",
+        ),
+        description=tr(
+            "entries.galgame_get_scene_context.description",
+            default="获取当前或指定场景的完整上下文摘要 + 关键台词。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scene_id": {"type": "string", "default": ""},
+            },
+        },
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_scene_context(
+        self,
+        scene_id: str = "",
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_scene_context")
+        if throttled is not None:
+            return Ok(throttled)
+        scenes = self._layer1_scene_summaries()
+        target = (scene_id or "").strip()
+        entry: dict[str, Any] | None = None
+        if target:
+            for item in reversed(scenes):
+                if str(item.get("scene_id") or "") == target:
+                    entry = item
+                    break
+        elif scenes:
+            entry = scenes[-1]
+        if entry is None:
+            return Ok(
+                {
+                    "scene_id": target,
+                    "found": False,
+                    "summary": "no scene context available",
+                }
+            )
+        return Ok(
+            {
+                "scene_id": str(entry.get("scene_id") or ""),
+                "route_id": str(entry.get("route_id") or ""),
+                "found": True,
+                "summary_text": str(entry.get("summary") or ""),
+                "key_lines": list(entry.get("key_lines") or []),
+                "ts": entry.get("ts") or "",
+                "summary": (
+                    f"scene={entry.get('scene_id') or '-'} "
+                    f"lines={len(entry.get('key_lines') or [])}"
+                ),
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_story_so_far",
+        name=tr(
+            "entries.galgame_get_story_so_far.name",
+            default="查询全局故事线",
+        ),
+        description=tr(
+            "entries.galgame_get_story_so_far.description",
+            default="获取从游戏开始到现在的完整故事线摘要（约 200 tokens）。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_story_so_far(self, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_story_so_far")
+        if throttled is not None:
+            return Ok(throttled)
+        self._refresh_story_so_far_from_scene_summaries()
+        story = (self._story_so_far or "").strip()
+        if not story:
+            return Ok(
+                {
+                    "story_so_far": "故事刚开始。",
+                    "available": False,
+                    "summary": "no story summary yet",
+                }
+            )
+        return Ok(
+            {
+                "story_so_far": story,
+                "available": True,
+                "last_updated_seq": int(self._story_last_updated_seq or 0),
+                "summary": f"story summary ({len(story)} chars)",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_recent_lines",
+        name=tr(
+            "entries.galgame_get_recent_lines.name",
+            default="查询最近台词",
+        ),
+        description=tr(
+            "entries.galgame_get_recent_lines.description",
+            default="获取最近 N 句原始台词内容（上限 20）。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            },
+        },
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_recent_lines(self, n: int = 10, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_recent_lines")
+        if throttled is not None:
+            return Ok(throttled)
+        try:
+            requested = int(n)
+        except (TypeError, ValueError):
+            requested = 10
+        requested = max(1, min(20, requested))
+        with self._state_lock:
+            history = [dict(line) for line in (self._state.history_lines or [])]
+        recent = history[-requested:]
+        return Ok(
+            {
+                "lines": recent,
+                "count": len(recent),
+                "summary": f"{len(recent)} line(s) returned",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_push_history",
+        name=tr(
+            "entries.galgame_get_push_history.name",
+            default="查询推送历史",
+        ),
+        description=tr(
+            "entries.galgame_get_push_history.description",
+            default="返回最近 N 次推送的元数据（push_seq/mode/token/场景/角色），不含台词文本。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            },
+        },
+        timeout=5.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_push_history(self, limit: int = 10, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        throttled = self._check_query_rate_limit("galgame_get_push_history")
+        if throttled is not None:
+            return Ok(throttled)
+        try:
+            requested = int(limit)
+        except (TypeError, ValueError):
+            requested = 10
+        requested = max(1, min(20, requested))
+        history = list(self._push_history)[-requested:]
+        return Ok(
+            {
+                "entries": history,
+                "count": len(history),
+                "summary": f"{len(history)} push record(s) returned",
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Character profile entries (galgame-host-play-mode plan, step 6)
+    # ------------------------------------------------------------------
+
+    @plugin_entry(
+        id="galgame_set_character_mode",
+        name=tr(
+            "entries.galgame_set_character_mode.name",
+            default="设置角色档案模式",
+        ),
+        description=tr(
+            "entries.galgame_set_character_mode.description",
+            default="切换角色档案模式：off 或 fixed（锁定某角色作为猫娘视角）。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["off", "fixed"]},
+                "character_name": {"type": "string", "default": ""},
+            },
+            "required": ["mode"],
+        },
+        llm_result_fields=["summary"],
+    )
+    async def galgame_set_character_mode(
+        self,
+        mode: str,
+        character_name: str = "",
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        mode_normalized = (mode or "").strip().lower()
+        if mode_normalized not in {"off", "fixed"}:
+            return Err(SdkError(f"invalid character mode: {mode!r}"))
+
+        with self._state_lock:
+            current_profiles = dict(self._state.character_profiles or {})
+
+        if mode_normalized == "fixed":
+            name = (character_name or "").strip()
+            if not name:
+                return Err(SdkError("fixed mode requires character_name"))
+            load = self._load_character_profiles_for_current_context()
+            loaded_profiles = dict(load.get("profiles") or {})
+            if loaded_profiles:
+                current_profiles = loaded_profiles
+            if not current_profiles:
+                current_profiles = dict(load.get("profiles") or {})
+                errors = load.get("errors") or []
+                resolved_game_id = str(load.get("resolved_game_id") or "")
+                return Err(
+                    SdkError(
+                        "no character profiles available"
+                        + (f" for {resolved_game_id}" if resolved_game_id else ""),
+                        details={"errors": list(errors)},
+                    )
+                )
+            if name not in current_profiles:
+                return Err(SdkError(f"character {name!r} not found in profiles"))
+
+        with self._state_lock:
+            self._state.character_mode = mode_normalized
+            self._state.character_fixed_name = (
+                (character_name or "").strip()
+                if mode_normalized == "fixed"
+                else ""
+            )
+            self._state.character_mode_stale = False
+            self._state_dirty = True
+            self._cached_snapshot = None
+            fixed_name = str(self._state.character_fixed_name or "")
+
+        try:
+            self._persist.persist_config_override(
+                STORE_CHARACTER_MODE, mode_normalized
+            )
+            self._persist.persist_config_override(
+                STORE_CHARACTER_FIXED_NAME, fixed_name
+            )
+        except Exception:  # noqa: BLE001
+            self.logger.warning(
+                "failed to persist character mode switch", exc_info=True
+            )
+
+        return Ok(
+            {
+                "mode": mode_normalized,
+                "character_name": fixed_name,
+                "summary": (
+                    f"character_mode={mode_normalized} character={fixed_name or '-'}"
+                ),
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_character_list",
+        name=tr(
+            "entries.galgame_get_character_list.name",
+            default="查询当前游戏角色列表",
+        ),
+        description=tr(
+            "entries.galgame_get_character_list.description",
+            default="返回当前绑定游戏的可用角色名称和一句话身份描述。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        timeout=10.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_character_list(self, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        with self._state_lock:
+            bound_game_id = str(self._state.bound_game_id or "")
+            profile_game_id = str(self._state.character_profile_game_id or "")
+            match_reason = str(self._state.character_profile_match_reason or "")
+            profiles = dict(self._state.character_profiles or {})
+        load = self._load_character_profiles_for_current_context(force=True)
+        loaded_profiles = dict(load.get("profiles") or {})
+        if loaded_profiles or not profiles:
+            profiles = loaded_profiles
+            profile_game_id = str(load.get("resolved_game_id") or "")
+            match_reason = str(load.get("match_reason") or "")
+        items = [
+            {
+                "name": name,
+                "identity": str((profile or {}).get("identity") or ""),
+            }
+            for name, profile in profiles.items()
+        ]
+        return Ok(
+            {
+                "game_id": profile_game_id or bound_game_id,
+                "profile_game_id": profile_game_id,
+                "match_reason": match_reason,
+                "characters": items,
+                "summary": f"{len(items)} character(s) available",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_get_character_profile",
+        name=tr(
+            "entries.galgame_get_character_profile.name",
+            default="查询角色完整档案",
+        ),
+        description=tr(
+            "entries.galgame_get_character_profile.description",
+            default="返回指定角色的预置档案 + 运行时状态。off 模式下拒绝。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+        timeout=10.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_get_character_profile(self, name: str, **_):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        with self._state_lock:
+            mode = str(self._state.character_mode or "off")
+            profiles = dict(self._state.character_profiles or {})
+            runtime = dict(self._state.character_runtime_state or {})
+        if mode == "off":
+            return Ok(
+                {
+                    "disabled": True,
+                    "reason": (
+                        "角色档案功能未开启，请先调用 galgame_set_character_mode"
+                        " 切换为 fixed"
+                    ),
+                    "summary": "character_mode=off",
+                }
+            )
+        target = (name or "").strip()
+        if not target:
+            return Err(SdkError("character name required"))
+        if not profiles:
+            load = self._load_character_profiles_for_current_context()
+            profiles = dict(load.get("profiles") or {})
+            with self._state_lock:
+                runtime = dict(self._state.character_runtime_state or {})
+        profile = profiles.get(target)
+        if not profile:
+            return Err(SdkError(f"character {target!r} not found"))
+        return Ok(
+            {
+                "name": target,
+                "profile": profile,
+                "runtime_state": runtime.get(target, {}),
+                "summary": f"profile for {target}",
+            }
+        )
+
+    @plugin_entry(
+        id="galgame_import_character_data",
+        name=tr(
+            "entries.galgame_import_character_data.name",
+            default="导入角色档案 JSON",
+        ),
+        description=tr(
+            "entries.galgame_import_character_data.description",
+            default="从 JSON 文件导入用户自定义角色档案。",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string"},
+                "game_id": {"type": "string", "default": ""},
+            },
+            "required": ["file_path"],
+        },
+        timeout=15.0,
+        llm_result_fields=["summary"],
+    )
+    async def galgame_import_character_data(
+        self,
+        file_path: str,
+        game_id: str = "",
+        **_,
+    ):
+        if self._cfg is None:
+            return Err(SdkError(self._not_configured_message()))
+        target_game = (game_id or "").strip()
+        if not target_game:
+            with self._state_lock:
+                target_game = str(self._state.bound_game_id or "")
+        if not target_game:
+            return Err(
+                SdkError("game_id required (no game currently bound)")
+            )
+        source = (file_path or "").strip()
+        if not source:
+            return Err(SdkError("file_path required"))
+        manager = self._get_character_profile_manager()
+        result = manager.import_user_profiles(target_game, source)
+        if not result.ok:
+            return Err(
+                SdkError(
+                    f"import failed: {'; '.join(result.errors)}",
+                    details={
+                        "target_path": result.target_path,
+                        "errors": list(result.errors),
+                        "warnings": list(result.warnings),
+                    },
+                )
+            )
+        # Reload merged profiles only when the import targets the active binding.
+        with self._state_lock:
+            active_game = str(self._state.bound_game_id or self._state.active_game_id or "")
+        if target_game == active_game:
+            self._activate_character_profiles(target_game)
+        return Ok(
+            {
+                "ok": True,
+                "game_id": target_game,
+                "target_path": result.target_path,
+                "profile_count": result.profile_count,
+                "warnings": list(result.warnings),
+                "summary": (
+                    f"imported {result.profile_count} profile(s) for {target_game}"
+                ),
             }
         )
 

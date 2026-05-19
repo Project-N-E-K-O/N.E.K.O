@@ -1719,6 +1719,9 @@
         "maintenanceWaitingStatus": "서비스가 복구될 때까지 이 페이지에 머물면서 자동으로 다시 시도합니다.",
         "maintenanceWaitingSubtitle": "종료 중입니다. 종료 후 데이터를 이전하고 서비스가 자동으로 다시 시작됩니다.",
         "migrationPending": "완료되지 않은 이전 계획이 감지되었습니다. 서비스를 다시 사용할 수 있을 때까지 홈 화면은 계속 차단됩니다.",
+        "openPathFailed": "현재 환경에서는 폴더를 열 수 없습니다. 해당 경로로 직접 이동해 주세요.",
+        "openRetainedRoot": "이전 데이터 디렉터리 열기",
+        "openTargetRoot": "활성 경로 열기",
         "pickFolder": "폴더 선택",
         "pickFolderUnavailable": "시스템 폴더 선택기를 사용할 수 없습니다. 경로를 직접 입력해 주세요.",
         "pickFolderFailed": "폴더 선택기를 열지 못했습니다. 경로를 직접 입력해 주세요.",
@@ -1740,6 +1743,7 @@
         "progressVerifying": "이전 결과를 확인하는 중",
         "progressWaitingShutdown": "종료 중",
         "rebindPreviewNotice": "백엔드가 원래 경로에 다시 연결할 수 있음을 확인했습니다. 이제 그 경로로 다시 시작합니다. 이번에는 실행 데이터를 복사하지 않습니다.",
+        "recommendedPath": "추천 경로",
         "selectedPath": "선택한 경로",
         "recoveryRequired": "복구 가능한 저장소 상태가 감지되었습니다. 계속하기 전에 이번 실행에 사용할 저장 위치를 확인해 주세요.",
         "recoverySourceUnavailable": "원래 데이터 경로를 사용할 수 없습니다. 다시 연결하거나 권장 기본 경로로 명시적으로 전환해 주세요.",
@@ -1771,7 +1775,8 @@
         "targetFreeSpace": "대상 볼륨의 남은 공간",
         "targetLabel": "활성 경로",
         "unknownBytes": "아직 추정되지 않음",
-        "useCurrent": "현재 경로 그대로 사용하기"
+        "useCurrent": "현재 경로 그대로 사용하기",
+        "useRecommended": "추천 경로 사용하기"
     },
     "character": {
         "manager": "캐릭터 관리자",
@@ -2456,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "연결 확인 중...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "데스크톱 표시 세션에 접근할 수 없습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 모듈이 로드되지 않았습니다",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",

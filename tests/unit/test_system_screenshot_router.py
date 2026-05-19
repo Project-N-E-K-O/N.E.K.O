@@ -264,6 +264,21 @@ def test_interactive_screenshot_returns_unsupported_on_non_macos(monkeypatch, pl
 
 
 @pytest.mark.unit
+def test_linux_screenshot_error_reports_missing_gnome_screenshot_not_pillow(monkeypatch):
+    monkeypatch.setattr(system_router_module.sys, "platform", "linux")
+    monkeypatch.setattr(system_router_module.shutil, "which", lambda name: None)
+
+    error = system_router_module._format_backend_screenshot_error(
+        RuntimeError(
+            "To take screenshots, you must install Pillow version 9.2.0 or greater "
+            "and gnome-screenshot by running `sudo apt install gnome-screenshot`"
+        )
+    )
+
+    assert error == "gnome-screenshot not installed; install it with: sudo apt install gnome-screenshot"
+
+
+@pytest.mark.unit
 def test_interactive_screenshot_returns_canceled_when_user_aborts(monkeypatch):
     monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
     monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
@@ -371,5 +386,4 @@ def test_interactive_screenshot_returns_cropped_image_data(monkeypatch):
     assert payload["size"] > 0
     assert payload["data"].startswith("data:image/jpeg;base64,")
     assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
-
 

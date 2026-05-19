@@ -68,5 +68,21 @@
   "install.dxcam.ok": "DXcam 安裝完成",
   "install.dxcam.fail": "DXcam 安裝失敗",
   "errors.not_configured": "galgame_plugin 未設定",
-  "errors.install_in_progress": "{component} 安裝正在進行中"
+  "errors.install_in_progress": "{component} 安裝正在進行中",
+  "entries.galgame_get_character_profile.name": "查詢角色資訊",
+  "entries.galgame_get_character_profile.description": "取得指定 galgame 角色的預設檔案。",
+  "entries.galgame_set_character_mode.name": "設定角色模式",
+  "entries.galgame_set_character_mode.description": "在關閉角色檔案與固定角色模式之間切換。",
+  "entries.galgame_get_character_list.name": "列出 galgame 角色",
+  "entries.galgame_get_character_list.description": "回傳目前遊戲可用的預設角色清單。",
+  "entries.galgame_import_character_data.name": "匯入角色資料",
+  "entries.galgame_import_character_data.description": "匯入使用者提供的角色檔案 JSON 檔。",
+  "entries.galgame_get_scene_context.name": "查詢場景脈絡",
+  "entries.galgame_get_scene_context.description": "回傳目前場景摘要、關鍵臺詞、可見角色與已確認選項。",
+  "entries.galgame_get_story_so_far.name": "查詢目前劇情",
+  "entries.galgame_get_story_so_far.description": "回傳跨場景記憶與最近劇情進展。",
+  "entries.galgame_get_recent_lines.name": "查詢最近臺詞",
+  "entries.galgame_get_recent_lines.description": "回傳最近穩定臺詞與觀察到的候選臺詞。",
+  "entries.galgame_get_push_history.name": "查詢推送歷史",
+  "entries.galgame_get_push_history.description": "回傳最近脈絡推送後設資料，不包含原始臺詞文字。"
 }

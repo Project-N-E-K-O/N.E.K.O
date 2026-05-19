@@ -68,5 +68,21 @@
   "install.dxcam.ok": "DXcam 설치 완료",
   "install.dxcam.fail": "DXcam 설치 실패",
   "errors.not_configured": "galgame_plugin이 구성되지 않았습니다",
-  "errors.install_in_progress": "{component} 설치가 이미 진행 중입니다"
+  "errors.install_in_progress": "{component} 설치가 이미 진행 중입니다",
+  "entries.galgame_get_character_profile.name": "캐릭터 프로필 가져오기",
+  "entries.galgame_get_character_profile.description": "지정한 galgame 캐릭터의 사전 정의 프로필을 반환합니다.",
+  "entries.galgame_set_character_mode.name": "캐릭터 모드 설정",
+  "entries.galgame_set_character_mode.description": "캐릭터 프로필 모드를 끄기 또는 고정 캐릭터로 전환합니다.",
+  "entries.galgame_get_character_list.name": "galgame 캐릭터 목록",
+  "entries.galgame_get_character_list.description": "현재 게임에서 사용할 수 있는 사전 정의 캐릭터를 반환합니다.",
+  "entries.galgame_import_character_data.name": "캐릭터 데이터 가져오기",
+  "entries.galgame_import_character_data.description": "사용자가 제공한 캐릭터 프로필 JSON 파일을 가져옵니다.",
+  "entries.galgame_get_scene_context.name": "장면 컨텍스트 가져오기",
+  "entries.galgame_get_scene_context.description": "현재 장면 요약, 핵심 대사, 표시된 캐릭터, 확정된 선택지를 반환합니다.",
+  "entries.galgame_get_story_so_far.name": "현재까지의 이야기 가져오기",
+  "entries.galgame_get_story_so_far.description": "장면 간 기억과 최근 이야기 진행을 반환합니다.",
+  "entries.galgame_get_recent_lines.name": "최근 대사 가져오기",
+  "entries.galgame_get_recent_lines.description": "최근 안정 대사와 관측된 후보 대사를 반환합니다.",
+  "entries.galgame_get_push_history.name": "푸시 기록 가져오기",
+  "entries.galgame_get_push_history.description": "원문 대사 없이 최근 컨텍스트 푸시 메타데이터를 반환합니다."
 }

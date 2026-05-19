@@ -1164,6 +1164,10 @@ details[open]:not(.panel-fullscreen) > :not(summary) {
   --plugin-card-accent: #6b7cff;
 }
 
+.plugin-control-card:nth-of-type(5) {
+  --plugin-card-accent: #2aa876;
+}
+
 .plugin-control-card::after {
   content: "";
   position: absolute;
@@ -2861,6 +2865,26 @@ details.panel-scroll-wide[open] {
   border-left-color: rgba(200, 133, 30, 0.54);
 }
 
+#pluginSettingsPanel .character-profile-control-card {
+  border-left-color: rgba(42, 168, 118, 0.54);
+}
+
+.character-profile-status-field {
+  display: grid;
+  gap: 6px;
+}
+
+.character-profile-status-text {
+  color: var(--brand-strong);
+  font-size: 16px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.character-profile-actions {
+  flex-wrap: wrap;
+}
+
 #pluginSettingsPanel .game-binding-panel::after,
 #pluginSettingsPanel .settings-subpanel::after {
   content: "";
@@ -2879,6 +2903,10 @@ details.panel-scroll-wide[open] {
 
 #pluginSettingsPanel .capture-profile-panel::after {
   background: rgba(200, 133, 30, 0.22);
+}
+
+#pluginSettingsPanel .character-profile-control-card::after {
+  background: rgba(42, 168, 118, 0.22);
 }
 
 #pluginSettingsPanel .binding-chip,
