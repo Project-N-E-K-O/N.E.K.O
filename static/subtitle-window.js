@@ -96,6 +96,10 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+        if (/linux/i.test((navigator.platform || '') + ' ' + (navigator.userAgent || ''))) {
+            document.body.classList.add('subtitle-linux-host');
+        }
+
         subtitleWindowController = SubtitleShared.initSubtitleUI({
             host: 'window',
             api: window.nekoSubtitle,

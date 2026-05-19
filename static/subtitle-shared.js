@@ -748,8 +748,13 @@
             return refs.display.classList.contains('drag-anywhere');
         }
 
+        function isLinuxSubtitleHost() {
+            return document.body && document.body.classList.contains('subtitle-linux-host');
+        }
+
         function bounceBackIfNeeded() {
             try {
+                if (isLinuxSubtitleHost()) return;
                 if (typeof window.screenX !== 'number') return;
                 var margin = 30;
                 var x = window.screenX;

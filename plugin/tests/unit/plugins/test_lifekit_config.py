@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from plugin.plugins.lifekit.routers.hourly import _safe_idx
@@ -92,3 +94,104 @@ def test_registry_entries_preview_includes_routers() -> None:
     # 随手挑 3 个分别来自不同 router 的代表入口
     for required in ("get_weather", "unit_convert", "food_recommend"):
         assert required in ids, f"static preview missing {required} (got {sorted(ids)})"
+
+
+class _DummyLogger:
+    def info(self, *_args, **_kwargs):
+        pass
+
+    def debug(self, *_args, **_kwargs):
+        pass
+
+    def warning(self, *_args, **_kwargs):
+        pass
+
+    def error(self, *_args, **_kwargs):
+        pass
+
+    def exception(self, *_args, **_kwargs):
+        pass
+
+
+class _DummyLifeKitContext:
+    plugin_id = "lifekit"
+    metadata = {}
+    logger = _DummyLogger()
+    config_path = Path(__file__).resolve().parents[3] / "plugins" / "lifekit" / "plugin.toml"
+    bus = None
+    _effective_config = {
+        "lifekit": {},
+        "plugin": {
+            "store": {
+                "enabled": False,
+            },
+        },
+    }
+
+    async def get_own_effective_config(self, profile_name=None, timeout=5.0):
+        return dict(self._effective_config)
+
+    async def get_own_config(self, timeout=5.0):
+        return dict(self._effective_config)
+
+    async def get_own_base_config(self, timeout=5.0):
+        return dict(self._effective_config)
+
+    async def get_own_profiles_state(self, timeout=5.0):
+        return {}
+
+    async def get_own_profile_config(self, profile_name: str, timeout=5.0):
+        return {}
+
+    async def update_own_config(self, updates, timeout=10.0):
+        self._effective_config.update(updates)
+        return dict(self._effective_config)
+
+    async def upsert_own_profile_config(self, profile_name, config, *, make_active=False, timeout=10.0):
+        return dict(config)
+
+    async def delete_own_profile_config(self, profile_name: str, timeout=10.0):
+        return {}
+
+    async def set_own_active_profile(self, profile_name: str, timeout=10.0):
+        return {}
+
+    async def query_plugins(self, filters, timeout=5.0):
+        return []
+
+    async def trigger_plugin_event(self, **kwargs):
+        return {}
+
+    async def get_system_config(self, timeout=5.0):
+        return {}
+
+    async def query_memory(self, bucket_id: str, query: str, timeout=5.0):
+        return []
+
+    async def run_update_async(self, **kwargs):
+        return {}
+
+    async def export_push_async(self, **kwargs):
+        return {}
+
+    def push_message(self, **kwargs):
+        return {}
+
+    def update_status(self, status):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_lifekit_startup_uses_host_global_locale(monkeypatch) -> None:
+    from plugin.plugins import lifekit as lifekit_module
+    from plugin.plugins.lifekit import LifeKitPlugin
+
+    monkeypatch.setattr(lifekit_module, "get_system_timezone", lambda: "UTC")
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "en")
+
+    plugin = LifeKitPlugin(_DummyLifeKitContext())
+    result = await plugin.startup()
+
+    assert result.is_ok()
+    assert result.value == {"status": "ready"}
+    assert plugin._i18n.locale == "en"

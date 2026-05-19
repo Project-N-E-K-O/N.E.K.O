@@ -9,7 +9,7 @@
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/character_card_manager.css">
+    <link rel="stylesheet" href="/static/css/character_card_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <script src="/static/theme-manager.js"></script>
@@ -850,7 +850,7 @@
     
     <script src="/static/js/reserved_fields_utils.js"></script>
     <script src="/static/js/character_personality_onboarding.js"></script>
-    <script src="/static/js/character_card_manager.js"></script>
+    <script src="/static/js/character_card_manager.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- Three.js 核心库和importmap（用于VRM/MMD模型预览）-->
     <script type="importmap">

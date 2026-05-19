@@ -185,6 +185,480 @@ async def test_game_llm_agent_peek_status_does_not_commit_session_transition(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Which way should we go?",
+            scene_id="scene-a",
+            line_id="line-1",
+        ),
+    )
+    await agent.tick(shared)
+    pending = agent._enqueue_outbound_message(
+        kind="cat_consultation",
+        content="Which route fits the current scene?",
+        scene_id="scene-a",
+        route_id="",
+        priority=5,
+        metadata={
+            "consultation": True,
+            "consultation_reason": "choice",
+            "consultation_character": "Yukino",
+        },
+    )
+    agent._mark_message(pending, status="delivered", delivered=True)
+    newer_pending = agent._enqueue_outbound_message(
+        kind="cat_consultation",
+        content="A later consultation should not steal this reply.",
+        scene_id="scene-b",
+        route_id="",
+        priority=5,
+        metadata={
+            "consultation": True,
+            "consultation_reason": "scene_changed",
+            "consultation_character": "Yukino",
+        },
+    )
+    agent._mark_message(newer_pending, status="delivered", delivered=True)
+
+    ordinary = await agent.send_message(shared, message="What is happening right now?")
+
+    assert ordinary["result"] == "fallback"
+    assert "cat_opinions" not in shared
+    assert pending["status"] == "delivered"
+    assert len(fake_gateway.reply_calls) == 1
+
+    choices = [
+        {"choice_id": "choice-1", "text": "left", "index": 0, "enabled": True},
+        {"choice_id": "choice-2", "text": "right", "index": 1, "enabled": True},
+    ]
+    shared["latest_snapshot"] = _session_state(
+        speaker="Yukino",
+        text="Choose now.",
+        scene_id="scene-a",
+        line_id="line-choice",
+        choices=choices,
+        is_menu_open=True,
+    )
+    agent._pending_choice_advice = {
+        "choice_signature": (
+            ("choice-1", "left", 0),
+            ("choice-2", "right", 1),
+        ),
+        "candidates": [dict(choice) for choice in choices],
+        "requested_at": time.monotonic(),
+        "line_id": "line-choice",
+    }
+    response = await agent.send_message(
+        shared,
+        message="choose 2, but as consultation feedback.",
+        reply_to_message_id=str(pending["message_id"]),
+    )
+
+    assert response["cat_opinion"]["opinion"] == "choose 2, but as consultation feedback."
+    assert shared["cat_opinions"][0]["reason"] == "choice"
+    assert agent._cat_opinions[0]["opinion"] == "choose 2, but as consultation feedback."
+    assert pending["status"] == "acked"
+    assert newer_pending["status"] == "delivered"
+    assert pending["metadata"]["cat_opinion_recorded"] is True
+    assert len(fake_gateway.reply_calls) == 1
+    assert agent._pending_choice_advice is not None
+    next_snapshot = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Choose now.",
+            scene_id="scene-a",
+            line_id="line-2",
+            choices=choices,
+            is_menu_open=True,
+        ),
+    )
+    agent._planning_choice_signature = (
+        ("choice-1", "left", 0),
+        ("choice-2", "right", 1),
+    )
+
+    await agent._run_choice_planning_inline(
+        next_snapshot,
+        context={},
+        now=time.monotonic(),
+    )
+
+    assert "cat_opinions" not in next_snapshot
+    assert (
+        "choose 2, but as consultation feedback"
+        in fake_gateway.suggest_calls[-1]["cat_opinion_context"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_reset_cancels_consultation_tasks(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    task = asyncio.create_task(asyncio.sleep(60))
+    agent._consultation_tasks.add(task)
+
+    await agent._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+
+    assert task.cancelled()
+    assert agent._consultation_tasks == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_change_includes_route_id(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(
+                text="route a line",
+                scene_id="scene-a",
+                route_id="route-a",
+                line_id="line-1",
+            ),
+        )
+    )
+
+    assert agent._observed_scene_id == "scene-a"
+    assert agent._observed_route_id == "route-a"
+
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(
+                text="route b line",
+                scene_id="scene-a",
+                route_id="route-b",
+                line_id="line-2",
+            ),
+            history_lines=[
+                {
+                    "line_id": "line-2",
+                    "speaker": "",
+                    "text": "route b line",
+                    "scene_id": "scene-a",
+                    "route_id": "route-b",
+                    "ts": "2026-04-21T08:35:00Z",
+                }
+            ],
+        )
+    )
+
+    assert agent._observed_scene_id == "scene-a"
+    assert agent._observed_route_id == "route-b"
+    assert agent._scene_memory[-1]["route_id"] == "route-b"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_passes_cat_opinions_to_choice_planning(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "choice-1", "text": "left", "index": 0, "enabled": True},
+        {"choice_id": "choice-2", "text": "right", "index": 1, "enabled": True},
+    ]
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Which way should we go?",
+            scene_id="scene-a",
+            line_id="line-1",
+            choices=choices,
+            is_menu_open=True,
+        ),
+    )
+    shared["cat_opinions"] = [
+        {
+            "opinion": "Prefer the right path for the current objective.",
+            "scene_id": "scene-a",
+            "reason": "choice",
+            "ts": 10.0,
+            "metadata": {},
+        }
+    ]
+    agent._planning_choice_signature = (
+        ("choice-1", "left", 0),
+        ("choice-2", "right", 1),
+    )
+
+    await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
+
+    assert "cat_opinions" in shared
+    assert (
+        "Prefer the right path"
+        in fake_gateway.suggest_calls[-1]["cat_opinion_context"]
+    )
+
+
+@pytest.mark.plugin_unit
+def test_build_suggest_context_includes_cross_scene_memory() -> None:
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="The promise still matters.",
+            scene_id="scene-b",
+            line_id="line-2",
+            choices=[
+                {"choice_id": "choice-1", "text": "protect the promise", "index": 0}
+            ],
+            is_menu_open=True,
+        ),
+    )
+    shared["cross_scene_memory"] = {
+        "characters": {
+            "Yukino": {
+                "arc": "keeps the oath from scene-a",
+                "current_emotion": "guarded hope",
+                "confidence": 0.8,
+            }
+        },
+        "plot_threads": [
+            {
+                "thread": "route-secret",
+                "status": "betrayal clue remains unresolved",
+                "key_scenes": ["scene-a"],
+                "confidence": 0.7,
+            }
+        ],
+    }
+
+    context = build_suggest_context(shared)
+
+    assert "Yukino" in context["cross_scene_memory_context"]
+    assert "keeps the oath" in context["cross_scene_memory_context"]
+    assert "betrayal clue" in context["cross_scene_memory_context"]
+    assert context["cross_scene_memory"]["characters"]["Yukino"]["arc"] == (
+        "keeps the oath from scene-a"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_passes_cross_scene_memory_to_choice_planning(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "choice-1", "text": "left", "index": 0, "enabled": True},
+        {"choice_id": "choice-2", "text": "right", "index": 1, "enabled": True},
+    ]
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Yukino",
+            text="Which way should we go?",
+            scene_id="scene-b",
+            line_id="line-2",
+            choices=choices,
+            is_menu_open=True,
+        ),
+    )
+    with plugin._state_lock:
+        plugin._state.cross_scene_memory = {
+            "characters": {
+                "Yukino": {
+                    "arc": "trusts the right path after scene-a",
+                    "current_emotion": "quiet resolve",
+                    "confidence": 0.8,
+                }
+            },
+            "plot_threads": [
+                {
+                    "thread": "route-secret",
+                    "status": "betrayal clue remains unresolved",
+                    "key_scenes": ["scene-a"],
+                    "confidence": 0.7,
+                }
+            ],
+        }
+    agent._planning_choice_signature = (
+        ("choice-1", "left", 0),
+        ("choice-2", "right", 1),
+    )
+
+    await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
+
+    assert "cross_scene_memory" not in shared
+    assert "trusts the right path" in fake_gateway.suggest_calls[-1][
+        "cross_scene_memory_context"
+    ]
+    assert fake_gateway.suggest_calls[-1]["cross_scene_memory"]["characters"][
+        "Yukino"
+    ]["current_emotion"] == "quiet resolve"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_passes_fixed_character_pov_to_choice_planning(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    fake_gateway = _FakeLLMGateway()
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+    )
+    choices = [
+        {"choice_id": "choice-1", "text": "protect the promise", "index": 0, "enabled": True},
+        {"choice_id": "choice-2", "text": "ignore it", "index": 1, "enabled": True},
+    ]
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="Murasame",
+            text="The promise still matters.",
+            scene_id="scene-b",
+            line_id="line-2",
+            choices=choices,
+            is_menu_open=True,
+        ),
+    )
+    with plugin._state_lock:
+        plugin._state.character_mode = "fixed"
+        plugin._state.character_fixed_name = "Murasame"
+        plugin._state.character_profile_game_id = "senren_banka"
+        plugin._state.character_profiles = {
+            "Murasame": {
+                "identity": "A guarded blade spirit",
+                "relationships": {"Mas臣": "contract holder"},
+                "background": ["sealed for centuries"],
+                "character_voice": {
+                    "core_traits": [
+                        {
+                            "trait": "proud but caring",
+                            "speech_effect": "rejects concern before revealing it",
+                        }
+                    ],
+                    "first_person_pronoun": "warawa",
+                },
+            }
+        }
+    agent._planning_choice_signature = (
+        ("choice-1", "protect the promise", 0),
+        ("choice-2", "ignore it", 1),
+    )
+
+    await agent._run_choice_planning_inline(shared, context={}, now=time.monotonic())
+
+    pov = fake_gateway.suggest_calls[-1]["fixed_character_pov"]
+    assert pov["character_name"] == "Murasame"
+    assert pov["profile_known"] is True
+    assert pov["applied_to"] == "suggest_choice"
+    assert "strategy lens" in pov["strategy_instruction"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_skips_stale_consultation_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    pushed: list[dict[str, object]] = []
+
+    async def _fake_push_agent_message(_shared: dict[str, object], **kwargs) -> bool:
+        pushed.append(dict(kwargs))
+        return True
+
+    monkeypatch.setattr(agent, "_push_agent_message", _fake_push_agent_message)
+    monkeypatch.setattr(
+        agent,
+        "_build_consult_inputs",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            character_mode="fixed",
+            character_fixed_name="Yukino",
+            profile_known=True,
+            visible_choices=("left", "right"),
+            scene_changed=True,
+            lines_since_last_consult=0,
+            now=time.monotonic(),
+            last_consult_ts=0.0,
+        ),
+    )
+    monkeypatch.setattr(agent, "_resolve_character_profile", lambda _name: {"identity": {}})
+    agent._observed_session_id = "sess-a"
+    shared = _shared_state(session_id="sess-a")
+
+    await agent._maybe_consult_cat(
+        shared,
+        snapshot=dict(shared["latest_snapshot"]),
+        scene_changed=True,
+    )
+    tasks = list(agent._consultation_tasks)
+    assert tasks
+
+    agent._observed_session_id = "sess-b"
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.sleep(0)
+
+    assert pushed == []
+    assert agent._consultation_tasks == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_exposes_configured_summary_thresholds(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -1016,6 +1490,53 @@ async def test_game_llm_agent_outbound_message_queue_and_ack(tmp_path: Path) -> 
     assert message["status"] == "delivered"
     assert acked["message"]["status"] == "acked"
     assert acked["message"]["acked_at"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_push_includes_cross_scene_memory(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(mode="companion")
+    with plugin._state_lock:
+        plugin._state.cross_scene_memory = {
+            "characters": {
+                "Yukino": {
+                    "arc": "protects the promise from scene-a",
+                    "current_emotion": "watchful",
+                    "confidence": 0.8,
+                }
+            },
+            "plot_threads": [
+                {
+                    "thread": "route-secret",
+                    "status": "betrayal clue remains unresolved",
+                    "key_scenes": ["scene-a"],
+                    "confidence": 0.7,
+                }
+            ],
+        }
+
+    await agent._push_agent_message(
+        shared,
+        kind="scene_summary",
+        content="current scene summary",
+        scene_id="scene-b",
+        route_id="",
+    )
+
+    content = str(ctx.pushed_messages[-1]["content"])
+    assert "Cross-scene memory" in content
+    assert "protects the promise" in content
+    assert "betrayal clue" in content
+    assert "current scene summary" in content
 
 
 @pytest.mark.plugin_unit
@@ -3306,6 +3827,8 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
     assert ctx.pushed_messages[-1]["metadata"]["summary_delivery_key"] == "scene-a:0:8"
     assert "游戏上下文" in ctx.pushed_messages[-1]["content"]
     assert ctx.pushed_messages[-1]["metadata"]["context_type"] == "galgame_scene_context"
+    assert "scene-a" in plugin._story_so_far
+    assert plugin._story_last_updated_seq >= 0
     status = await agent.query_status(shared)
     assert status["scene_summary_line_interval"] == 8
     assert status["debug"]["summary"]["last_delivered_summary_key"] == "scene-a:0:8"
