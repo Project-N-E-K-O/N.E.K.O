@@ -532,11 +532,6 @@
     function appendMessage(text, sender, isNewMessage, options) {
         if (typeof isNewMessage === 'undefined') isNewMessage = true;
         options = options || {};
-        // Note: `options.midTurnRestart` is set by app-websocket.js but the
-        // adapter no longer consumes it directly — it's used only by the
-        // websocket handler to avoid double-emitting assistantTurn lifecycle
-        // events. The adapter treats each response item as a fresh segment
-        // (see `startNewSegment` below).
 
         var host = getHost();
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;

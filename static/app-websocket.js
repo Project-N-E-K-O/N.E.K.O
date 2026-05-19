@@ -1189,12 +1189,7 @@
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
-                        createdVisibleBubble = window.appendMessage(
-                            response.text,
-                            'gemini',
-                            isNewMessage,
-                            { midTurnRestart: !!isMidTurnRestart }
-                        ) === true;
+                        createdVisibleBubble = window.appendMessage(response.text, 'gemini', isNewMessage) === true;
                     }
                     if (createdVisibleBubble && response.request_id) {
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
