@@ -642,6 +642,11 @@ def _tutorial_store() -> GalgameStore:
                 exc_info=True,
             )
             store_path = legacy_store_path
+        except (TypeError, ValueError):
+            logger.warning(
+                "tutorial progress store merge skipped; keeping runtime store",
+                exc_info=True,
+            )
     _tutorial_store_instance = GalgameStore(
         store_path,
         logger,

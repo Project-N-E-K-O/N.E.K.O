@@ -6,6 +6,7 @@ import importlib
 import json
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -32,6 +33,14 @@ STATIC_INDEX_HTML = (
 )
 
 EXPECTED_BUNDLE_LOCALES = ["zh-CN", "zh-TW", "en", "ja", "ru", "ko"]
+
+
+def _disable_galgame_store_file_locks(monkeypatch, store_cls) -> None:
+    @contextmanager
+    def unlocked_store(self):
+        yield
+
+    monkeypatch.setattr(store_cls, "_locked_store", unlocked_store)
 
 
 def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
@@ -144,6 +153,7 @@ def test_tutorial_store_merges_legacy_progress_into_existing_runtime_store(
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
     monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     runtime_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_text(
@@ -163,6 +173,31 @@ def test_tutorial_store_merges_legacy_progress_into_existing_runtime_store(
         "completed": True,
         "last_step_index": 4,
     }
+
+
+def test_tutorial_store_keeps_runtime_store_when_legacy_merge_is_invalid(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("{invalid json", encoding="utf-8")
+    runtime_path.write_text('{"tutorial_progress": {"completed": false}}', encoding="utf-8")
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == runtime_path
+    assert store._store_path != legacy_path
 
 
 def test_tutorial_store_uses_legacy_store_when_migration_fails(
