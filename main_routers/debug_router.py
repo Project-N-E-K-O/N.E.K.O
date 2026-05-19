@@ -312,6 +312,8 @@ def _sanitize_client_payload(raw: Any) -> dict[str, Any]:
                     if math.isfinite(v):
                         out[k] = v
                 except (OverflowError, TypeError):
+                    # 故意丢：超大 int / 异常 numeric subtype 进不来 isfinite。
+                    # 「只记计数」语义里本来不该出现，丢弃即可，不影响其他字段。
                     pass
         elif k in _CLIENT_BOOL_FIELDS:
             if isinstance(v, bool):
