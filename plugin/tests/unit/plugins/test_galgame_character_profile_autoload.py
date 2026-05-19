@@ -227,6 +227,39 @@ async def test_available_game_ids_do_not_fallback_match_profiles() -> None:
     assert payload["characters"] == []
 
 
+@pytest.mark.asyncio
+async def test_character_list_preserves_restored_fixed_mode_before_detection(
+) -> None:
+    plugin, writes = _plugin_with_persist_writes()
+    plugin._state.character_profiles = {
+        "叢雨": {
+            "identity": "刀灵少女",
+            "character_voice": {
+                "core_traits": [
+                    {"trait": "骄傲", "speech_effect": "用古风口吻说话"}
+                ],
+            },
+        }
+    }
+    plugin._state.character_profile_game_id = "senren_banka"
+    plugin._state.character_profile_match_reason = "window_title_contains"
+    plugin._state.character_mode = "fixed"
+    plugin._state.character_fixed_name = "叢雨"
+    plugin._state.character_mode_stale = False
+
+    result = await plugin.galgame_get_character_list()
+
+    assert result.is_ok()
+    payload = result.value
+    assert payload["profile_game_id"] == "senren_banka"
+    assert [item["name"] for item in payload["characters"]] == ["叢雨"]
+    assert plugin._state.character_profiles
+    assert plugin._state.character_mode == "fixed"
+    assert plugin._state.character_fixed_name == "叢雨"
+    assert (STORE_CHARACTER_MODE, "off") not in writes
+    assert (STORE_CHARACTER_FIXED_NAME, "") not in writes
+
+
 def test_commit_state_persists_strategy_memory_fields() -> None:
     plugin, writes = _plugin_with_persist_writes()
     payload = plugin._snapshot_state(include_private_context=True)

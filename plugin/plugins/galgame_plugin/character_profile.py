@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -166,7 +167,7 @@ class CharacterProfileManager:
 
         if not force_reload and normalized in self._cache:
             cached = self._cache[normalized]
-            return dict(cached)
+            return deepcopy(cached)
 
         preset_path = self._data_dir / f"{normalized}.json"
         user_path = self._data_dir / f"{normalized}.user.json"
@@ -210,8 +211,8 @@ class CharacterProfileManager:
             "preset_loaded": preset_result.valid,
             "user_loaded": user_result.valid,
         }
-        self._cache[normalized] = dict(result)
-        return dict(result)
+        self._cache[normalized] = deepcopy(result)
+        return deepcopy(result)
 
     def invalidate(self, game_id: str | None = None) -> None:
         """Drop cached entries; useful when switching games or after import."""
@@ -624,13 +625,20 @@ class CharacterProfileManager:
 
         try:
             self._data_dir.mkdir(parents=True, exist_ok=True)
+            source_data = json.loads(src.read_text(encoding="utf-8"))
+            metadata = {
+                key: deepcopy(value)
+                for key, value in source_data.items()
+                if key not in {"game_id", "last_updated", "characters"}
+            }
             payload = {
+                **metadata,
                 "game_id": normalized,
                 "last_updated": validation.version,
                 "characters": validation.profiles,
             }
             self._atomic_write_json(target, payload)
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             return ImportResult(
                 ok=False,
                 target_path=str(target),
@@ -700,7 +708,12 @@ class CharacterProfileManager:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
-            if not isinstance(data, dict) or not isinstance(data.get("characters"), dict):
+            validation = self._validate_payload(
+                data,
+                is_user=path.name.endswith(".user.json"),
+                source=path.name,
+            )
+            if not validation.valid:
                 continue
             game_id = str(data.get("game_id") or path.stem).strip()
             match = data.get("match")

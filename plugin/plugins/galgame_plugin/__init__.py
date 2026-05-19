@@ -3139,6 +3139,18 @@ class GalgamePlugin(NekoPluginBase):
                 "cached": True,
             }
         if match is None:
+            if current_profiles and not signals:
+                return {
+                    "profiles": current_profiles,
+                    "version": "",
+                    "errors": [],
+                    "warnings": ["character profile match pending"],
+                    "resolved_game_id": current_profile_game_id,
+                    "match_reason": current_match_reason,
+                    "matched": False,
+                    "cached": True,
+                    "pending_match": True,
+                }
             if current_profiles and not bound_game_id:
                 self._clear_character_profiles()
             return {
