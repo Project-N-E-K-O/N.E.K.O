@@ -1248,6 +1248,10 @@ class ReflectionEngine:
                 if rid in cluster_refl_ids and rid not in consumed:
                     r['last_refine_cluster_hash'] = cluster_hash
                     r['last_refine_at'] = now_iso
+                    # 成功 stamp → 清 Site 4 liveness 计数器（对偶
+                    # PersonaManager.apply_refine_actions）
+                    if r.get('refine_attempts'):
+                        r['refine_attempts'] = 0
                     stamped += 1
 
             if applied == 0 and stamped == 0:
@@ -1260,6 +1264,66 @@ class ReflectionEngine:
                 f"+{len(produced)} produced, -{len(consumed)} consumed)"
             )
         return applied
+
+    async def _abump_refine_attempts(
+        self, name: str, cluster: list[dict], cluster_hash: str,
+    ) -> None:
+        """Site 4 liveness 兜底：refine cluster LLM 失败时给非 fact 的
+        reflection 成员 bump ``refine_attempts``。对偶
+        ``PersonaManager._abump_refine_attempts``——同样治法、不同存储位
+        （reflections.json vs persona.json）。
+
+        Recovery：成功 refine（apply_refine_actions 跑到 stamp 分支）会把
+        ``refine_attempts`` 清回 0；或人工编辑 reflections.json。
+        """
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.facts import safe_int_field
+        from memory.refine import REFINE_TYPE_KEY
+
+        # fact 不计 attempts（fact 是 readonly 信息源，refine 永远不改它）；
+        # 只 bump reflection 成员。reflection 不分 entity section 单独存（全
+        # 在一个 list 里按 entity 字段区分），所以收集 set[rid] 即可。
+        member_rids: set[str] = set()
+        for e in cluster:
+            if not isinstance(e, dict):
+                continue
+            if e.get(REFINE_TYPE_KEY) == 'fact':
+                continue
+            rid = e.get('id')
+            if rid:
+                member_rids.add(rid)
+        if not member_rids:
+            return
+
+        async with self._get_alock(name):
+            reflections = await self._aload_reflections_full(name)
+            modified = False
+            for r in reflections:
+                if not isinstance(r, dict) or r.get('id') not in member_rids:
+                    continue
+                new_attempts = safe_int_field(r, 'refine_attempts') + 1
+                r['refine_attempts'] = new_attempts
+                modified = True
+                if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
+                    logger.warning(
+                        f"[ReflectionRefine] {name}: reflection id={r.get('id')} "
+                        f"refine_attempts={new_attempts} ≥ "
+                        f"{MEMORY_LIVENESS_MAX_ATTEMPTS}（dead-letter，"
+                        f"cluster_hash={cluster_hash}）。下次 refine gather "
+                        f"不再选入，避免毒 cluster 占用名额。"
+                    )
+            if modified:
+                # CodeRabbit: 传 active-only 给 ``asave_reflections``。
+                # ``_prepare_save_reflections`` 把 input 当 "想要存活的 active 集",
+                # all_on_disk 里 id 在 input set 中的会跳过归档判断。如果传
+                # full list（含 terminal），``to_archive`` 永远是空，老 promoted/
+                # denied 永远 archive 不掉，跟 arecord_mentions / aupdate_suppressions
+                # 走同一约定保证归档流程正常推进。
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(name, active)
 
     # alias for backward compat (system_router calls .reflect())
     async def reflect(self, lanlan_name: str) -> dict | None:

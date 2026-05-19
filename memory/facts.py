@@ -74,6 +74,29 @@ def safe_importance(f: dict, default: int = 5) -> int:
         return default
 
 
+def safe_int_field(d: dict, key: str, default: int = 0) -> int:
+    """Defensively coerce ``d[key]`` to int (Codex P2 on PR #1412)。
+
+    Liveness attempt counters (``refine_attempts`` / ``resolve_attempts`` /
+    ``_attempt_count``) 都从 JSON / ndjson 反序列化出来的 dict 字段读，
+    一旦 manual edit / legacy / migration noise 写进 ``""`` / ``"unknown"``
+    / list / dict 等脏值，原 ``int(d.get(key, 0) or 0)`` 会抛 ValueError /
+    TypeError 让整个 list comprehension（候选 gather）挂掉 → 那条 pass
+    永久 fail → liveness 兜底自己变了新的 liveness 缺口。
+
+    跟 ``safe_importance`` 的区别：本 helper 把 ``0`` / ``"0"`` 当合法值返回 0
+    （attempt counter 0 是合法计数），不退 default。``safe_importance`` 把
+    falsy 都退 default 是 importance-specific 语义。
+    """
+    try:
+        val = d.get(key)
+        if val is None:
+            return default
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
 class FactExtractionFailed(RuntimeError):
     """Stage-1 LLM call exhausted retries (RFC §3.4.2 末段).
 

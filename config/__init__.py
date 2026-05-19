@@ -1110,6 +1110,18 @@ MEMORY_RECHECK_MAX_ATTEMPTS = 5
 - 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
   排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
 
+MEMORY_LIVENESS_MAX_ATTEMPTS = 5
+"""LLM 终态失败 N 次后强推 progress marker / dead-letter 的统一上限。
+- 适用场景：所有"同点 input + 无 counter + LLM 永久失败 → 永久卡死"的后台
+  路径。包括 signal extraction path A/B、rebuttal feedback、persona
+  corrections resolve、fact dedup resolve、refine cluster、outbox handler。
+- 治理思路：参考 `MEMORY_RECHECK_MAX_ATTEMPTS` (schema 重判 dead-letter) 的
+  套路，把"同一 cursor / 队头 / cluster_hash / op 反复打 LLM"收敛掉，避免
+  毒窗口 / 毒 payload 让整条 pipeline 哑火。
+- 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
+- 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
+  跨过偶发 transient failure 够用；再多就属于真正 poison。"""
+
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
 """主动搭话 followup 候选采样是否按 evidence_score 加权随机。
