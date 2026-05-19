@@ -2461,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "연결 확인 중...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "데스크톱 표시 세션에 접근할 수 없습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 모듈이 로드되지 않았습니다",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",

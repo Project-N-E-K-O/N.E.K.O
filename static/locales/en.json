@@ -2461,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "Connectivity check in progress...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API not configured",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui not installed",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Desktop display session unavailable",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use not installed",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use module not loaded",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use module not loaded",

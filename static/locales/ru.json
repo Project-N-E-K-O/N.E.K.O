@@ -2461,6 +2461,7 @@
             "AGENT_PRECHECK_PENDING": "Проверка подключения...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API не настроен",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui не установлен",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Сеанс рабочего стола недоступен",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use не установлен",
             "AGENT_CU_MODULE_NOT_LOADED": "модуль Computer Use не загружен",
             "AGENT_BU_MODULE_NOT_LOADED": "модуль Browser Use не загружен",
