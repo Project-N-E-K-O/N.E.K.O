@@ -20,24 +20,22 @@ _PROMPT_COMPACTION_LEVELS = (
 )
 logger = logging.getLogger(__name__)
 
-CHARACTER_ANCHOR_CONTEXT_TEMPLATE = """======[Character Analysis Anchor]
-The following preset data describes the current fixed character. Use it only as
-analysis material for decision making, summaries, and suggested wording.
-Do not roleplay or speak as the character; only provide analysis and suggested
-utterances that the caller may use.
+CHARACTER_ANCHOR_CONTEXT_TEMPLATE = """======[角色分析锚点]
+以下预设资料描述当前固定角色。只能将其作为选择判断、剧情总结和建议措辞的分析材料。
+不要自由角色扮演，也不要冒充该角色说话；只提供分析和可供调用方使用的建议表达。
 
-Character: {character_name}
-Identity: {identity}
+角色：{character_name}
+身份：{identity}
 
-Tone cues and decision tendencies:
+语气线索与决策倾向：
 {voice_traits}
 
-Verbal habits:
+口癖与表达习惯：
 {verbal_tics}
 
-Relationships:
+关系：
 {relationships}
-Background:
+背景：
 {background}
 
 ======"""
@@ -579,4 +577,3 @@ def build_prompt_messages_with_metadata(
         ],
         metadata={**dict(context_result.metadata), **semantic_metadata},
     )
-
