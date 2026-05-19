@@ -221,13 +221,81 @@ async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
     )
     agent._mark_message(pending, status="delivered", delivered=True)
 
-    response = await agent.send_message(shared, message="Prefer the right path for now.")
+    ordinary = await agent.send_message(shared, message="What is happening right now?")
+
+    assert ordinary["result"] == "fallback"
+    assert "cat_opinions" not in shared
+    assert pending["status"] == "delivered"
+    assert len(fake_gateway.reply_calls) == 1
+
+    response = await agent.send_message(
+        shared,
+        message="Prefer the right path for now.",
+        reply_to_message_id=str(pending["message_id"]),
+    )
 
     assert response["cat_opinion"]["opinion"] == "Prefer the right path for now."
     assert shared["cat_opinions"][0]["reason"] == "choice"
     assert pending["status"] == "acked"
     assert pending["metadata"]["cat_opinion_recorded"] is True
-    assert fake_gateway.reply_calls == []
+    assert len(fake_gateway.reply_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_change_includes_route_id(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(
+                text="route a line",
+                scene_id="scene-a",
+                route_id="route-a",
+                line_id="line-1",
+            ),
+        )
+    )
+
+    assert agent._observed_scene_id == "scene-a"
+    assert agent._observed_route_id == "route-a"
+
+    await agent.tick(
+        _shared_state(
+            mode="companion",
+            push_notifications=False,
+            snapshot=_session_state(
+                text="route b line",
+                scene_id="scene-a",
+                route_id="route-b",
+                line_id="line-2",
+            ),
+            history_lines=[
+                {
+                    "line_id": "line-2",
+                    "speaker": "",
+                    "text": "route b line",
+                    "scene_id": "scene-a",
+                    "route_id": "route-b",
+                    "ts": "2026-04-21T08:35:00Z",
+                }
+            ],
+        )
+    )
+
+    assert agent._observed_scene_id == "scene-a"
+    assert agent._observed_route_id == "route-b"
+    assert agent._scene_memory[-1]["route_id"] == "route-b"
 
 
 @pytest.mark.asyncio

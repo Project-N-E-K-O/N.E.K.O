@@ -6580,6 +6580,9 @@ class GalgamePlugin(NekoPluginBase):
                 "message": {"type": "string", "default": ""},
                 "context_query": {"type": "string", "default": ""},
                 "message_id": {"type": "string", "default": ""},
+                "reply_to_message_id": {"type": "string", "default": ""},
+                "sender_role": {"type": "string", "default": ""},
+                "consultation_reply": {"type": "boolean", "default": False},
                 "direction": {"type": "string", "default": ""},
                 "limit": {"type": "integer", "default": 50},
                 "standby": {"type": "boolean"},
@@ -6595,6 +6598,9 @@ class GalgamePlugin(NekoPluginBase):
         message: str = "",
         context_query: str = "",
         message_id: str = "",
+        reply_to_message_id: str = "",
+        sender_role: str = "",
+        consultation_reply: bool = False,
         direction: str = "",
         limit: int = 50,
         standby: bool | None = None,
@@ -6621,6 +6627,9 @@ class GalgamePlugin(NekoPluginBase):
                 await self._game_agent.send_message(
                     local,
                     message=message.strip(),
+                    reply_to_message_id=reply_to_message_id.strip(),
+                    sender_role=sender_role.strip(),
+                    consultation_reply=bool(consultation_reply),
                 )
             )
         if action == "set_standby":

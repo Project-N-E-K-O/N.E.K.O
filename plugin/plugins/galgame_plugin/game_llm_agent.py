@@ -749,6 +749,7 @@ class GameLLMAgent:
         self._last_session_transition_fields: dict[str, Any] = {}
         self._session_transition_actuation_blocked = False
         self._observed_scene_id = ""
+        self._observed_route_id = ""
         self._observed_choice_marker = ""
         self._observed_context_boundary: dict[str, str] = {}
         self._observed_context_boundary_key = ""
@@ -1099,6 +1100,7 @@ class GameLLMAgent:
         self._last_session_transition_fields = {}
         self._session_transition_actuation_blocked = False
         self._observed_scene_id = ""
+        self._observed_route_id = ""
         self._observed_choice_marker = ""
         self._observed_context_boundary = {}
         self._observed_context_boundary_key = ""
@@ -3642,11 +3644,30 @@ class GameLLMAgent:
             if str(outbound.get("kind") or "") != "cat_consultation":
                 continue
             if str(outbound.get("acked_at") or ""):
-                return None
+                continue
             if str(outbound.get("status") or "") not in {"delivered", "completed"}:
-                return None
+                continue
             return outbound
         return None
+
+    @staticmethod
+    def _is_explicit_cat_consultation_reply(
+        inbound: dict[str, Any],
+        pending: dict[str, Any] | None,
+    ) -> bool:
+        if pending is None:
+            return False
+        metadata = inbound.get("metadata") if isinstance(inbound.get("metadata"), dict) else {}
+        reply_to = str(metadata.get("reply_to_message_id") or "").strip()
+        pending_id = str(pending.get("message_id") or "").strip()
+        if reply_to and pending_id and reply_to == pending_id:
+            return True
+        sender_role = str(metadata.get("sender_role") or "").strip().lower()
+        return bool(metadata.get("consultation_reply")) and sender_role in {
+            "cat",
+            "catgirl",
+            "character",
+        }
 
     def _with_cat_opinions_for_strategy(
         self,
@@ -3668,10 +3689,10 @@ class GameLLMAgent:
         shared: dict[str, Any],
         *,
         message: str,
+        pending: dict[str, Any],
     ) -> dict[str, Any] | None:
-        pending = self._pending_cat_consultation_message()
         text = str(message or "").strip()
-        if pending is None or not text:
+        if not text:
             return None
         metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
         scene_id = str(metadata.get("scene_id") or "")
@@ -4500,7 +4521,15 @@ class GameLLMAgent:
             }
         return None
 
-    async def send_message(self, shared: dict[str, Any], *, message: str) -> dict[str, Any]:
+    async def send_message(
+        self,
+        shared: dict[str, Any],
+        *,
+        message: str,
+        reply_to_message_id: str = "",
+        sender_role: str = "",
+        consultation_reply: bool = False,
+    ) -> dict[str, Any]:
         self._ensure_loop_affinity()
         inbound: dict[str, Any]
         reply_context: dict[str, Any] | None = None
@@ -4511,6 +4540,11 @@ class GameLLMAgent:
             kind="send_message",
             content=message,
             priority=8,
+            metadata={
+                "reply_to_message_id": str(reply_to_message_id or "").strip(),
+                "sender_role": str(sender_role or "").strip(),
+                "consultation_reply": bool(consultation_reply),
+            },
         )
         self._mark_message(inbound, status="processing")
         try:
@@ -4528,14 +4562,17 @@ class GameLLMAgent:
                 choice_payload["message"] = json_copy(inbound)
                 return choice_payload
 
-            consultation_payload = self._apply_pending_cat_consultation_reply(
-                shared,
-                message=message,
-            )
-            if consultation_payload is not None:
-                self._mark_message(inbound, status="completed", delivered=True)
-                consultation_payload["message"] = json_copy(inbound)
-                return consultation_payload
+            pending_consultation = self._pending_cat_consultation_message()
+            if self._is_explicit_cat_consultation_reply(inbound, pending_consultation):
+                consultation_payload = self._apply_pending_cat_consultation_reply(
+                    shared,
+                    message=message,
+                    pending=pending_consultation,
+                )
+                if consultation_payload is not None:
+                    self._mark_message(inbound, status="completed", delivered=True)
+                    consultation_payload["message"] = json_copy(inbound)
+                    return consultation_payload
 
             reply_context = self._build_agent_reply_context(shared, prompt=message)
             status_snapshot = self._compute_status(shared)
@@ -4636,6 +4673,7 @@ class GameLLMAgent:
             self._last_interruption = {}
             self._observed_choice_marker = ""
             self._observed_scene_id = str(snapshot.get("scene_id") or "")
+            self._observed_route_id = str(snapshot.get("route_id") or "")
             self._observed_session_id = session_id
             self._observed_session_fingerprint = current_fingerprint
             self._remember_context_boundary(context_boundary)
@@ -4669,7 +4707,10 @@ class GameLLMAgent:
 
         current_scene_id = str(snapshot.get("scene_id") or "")
         current_route_id = str(snapshot.get("route_id") or "")
-        scene_changed = current_scene_id and current_scene_id != self._observed_scene_id
+        scene_changed = bool(current_scene_id) and (
+            current_scene_id != self._observed_scene_id
+            or current_route_id != self._observed_route_id
+        )
         if scene_changed:
             if not allow_agent_side_effects:
                 return
@@ -4710,6 +4751,7 @@ class GameLLMAgent:
                     update_scene_memory=True,
                 )
             self._observed_scene_id = current_scene_id
+            self._observed_route_id = current_route_id
             self._scene_tracker.reset_summary(scene_id=current_scene_id)
             self._remember_context_boundary(context_boundary)
             # host-play-mode plan, step 13: refresh cross-scene memory on every
@@ -5055,7 +5097,7 @@ class GameLLMAgent:
                     "summary_delivery_key": delivery_key,
                 },
             )
-            await self._push_agent_message(
+            delivered = await self._push_agent_message(
                 shared,
                 kind="scene_summary",
                 content=(
@@ -5071,26 +5113,18 @@ class GameLLMAgent:
                 route_id=route_id,
                 metadata=push_metadata,
             )
-            last_outbound = self._outbound_messages[-1] if self._outbound_messages else {}
-            delivered = (
-                isinstance(last_outbound, dict)
-                and str(last_outbound.get("kind") or "") == "scene_summary"
-                and str(last_outbound.get("status") or "") == "delivered"
-            )
             if not delivered:
                 self._summary_debug["last_drop"] = {
                     "reason": "push_not_delivered",
                     "scene_id": scene_id,
                     "trigger": trigger,
                     "summary_delivery_key": delivery_key,
-                    "last_outbound_status": str(last_outbound.get("status") or "")
-                    if isinstance(last_outbound, dict)
-                    else "",
+                    "last_outbound_status": "not_delivered",
                 }
                 self._logger.warning(
                     "galgame scene_summary drop: push_not_delivered scene=%s status=%s",
                     scene_id,
-                    str(last_outbound.get("status") or "") if isinstance(last_outbound, dict) else "",
+                    "not_delivered",
                 )
                 return False
             self._logger.info(
