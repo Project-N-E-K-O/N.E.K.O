@@ -713,6 +713,10 @@
     function clearPendingAssistantTurnStart() {
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
+        // 同时清掉 submit-to-first-chunk 空窗 marker。本函数被所有 turn-end /
+        // response_discarded / socket_close / user_activity_cancel 路径调用，
+        // 等于把 marker 接进了完整的 turn 生命周期收尾。
+        S.pendingTextTurnSubmitAt = 0;
     }
 
     function clearPendingUserActivityCancel() {

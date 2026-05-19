@@ -83,6 +83,8 @@
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
         S.assistantSpeechActiveTurnId = null;
+        // 角色切换路径不走 clearPendingAssistantTurnStart()，要自己清 submit-to-first-chunk marker
+        S.pendingTextTurnSubmitAt = 0;
         window.dispatchEvent(new CustomEvent('neko-assistant-speech-cancel', {
             detail: {
                 turnId: turnId ? String(turnId) : null,

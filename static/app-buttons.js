@@ -1195,6 +1195,11 @@
         if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
         if (S.assistantTurnAwaitingBubble) return true;
         if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
+        // 纯截图 / 纯图片这类没有 typed text 的提交，sendTextPayloadInternal
+        // 会把 _lastSubmittedRequestId 故意清成 ''（rollback 对它没意义），
+        // 上面三条都挡不住"已发 WS、还没收到首 chunk"这段空窗。
+        // pendingTextTurnSubmitAt 专门补这段，15s freshness 兜底防漏清。
+        if (S.pendingTextTurnSubmitAt && (Date.now() - S.pendingTextTurnSubmitAt) < 15000) return true;
         return false;
     }
 
@@ -2078,6 +2083,10 @@
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
                         markFirstUserInputForAchievement();
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                        // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
+                        // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
+                        // 同时有 15s freshness ceiling 防止漏清永远卡 true。
+                        S.pendingTextTurnSubmitAt = Date.now();
                     }
 
                     // Reset proactive chat timer
