@@ -1980,6 +1980,7 @@
         "micRequired": "請先開啓麥剋風錄音！",
         "micNotOpen": "沒開麥啊喂！",
         "switchingToVoice": "正在切換到語音模式...",
+        "waitForReplyBeforeVoice": "等回覆結束後切換到語音...",
         "initializingVoice": "正在初始化語音對話...",
         "initializingMic": "正在初始化麥剋風...",
         "startFailed": "啓動失敗: {{error}}",

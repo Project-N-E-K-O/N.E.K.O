@@ -1980,6 +1980,7 @@
         "micRequired": "Please enable microphone first!",
         "micNotOpen": "Microphone is not open!",
         "switchingToVoice": "Switching to voice mode...",
+        "waitForReplyBeforeVoice": "Finishing reply before voice...",
         "initializingVoice": "Initializing voice chat...",
         "initializingMic": "Initializing microphone...",
         "startFailed": "Start failed: {{error}}",

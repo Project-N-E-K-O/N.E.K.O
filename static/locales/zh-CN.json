@@ -1980,6 +1980,7 @@
         "micRequired": "请先开启麦克风录音！",
         "micNotOpen": "没开麦啊喂！",
         "switchingToVoice": "正在切换到语音模式...",
+        "waitForReplyBeforeVoice": "等回复结束后切换到语音...",
         "initializingVoice": "正在初始化语音对话...",
         "initializingMic": "正在初始化麦克风...",
         "startFailed": "启动失败: {{error}}",

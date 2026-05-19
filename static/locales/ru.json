@@ -1980,6 +1980,7 @@
         "micRequired": "Включите микрофон!",
         "micNotOpen": "Микрофон не открыт!",
         "switchingToVoice": "Переключение в голосовой режим...",
+        "waitForReplyBeforeVoice": "Ждём окончания ответа перед переключением на голос...",
         "initializingVoice": "Инициализация голосового чата...",
         "initializingMic": "Инициализация микрофона...",
         "startFailed": "Ошибка запуска: {{error}}",

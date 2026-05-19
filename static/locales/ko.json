@@ -1980,6 +1980,7 @@
         "micRequired": "먼저 마이크를 활성화해 주세요!",
         "micNotOpen": "마이크가 열려 있지 않습니다!",
         "switchingToVoice": "음성 모드로 전환 중...",
+        "waitForReplyBeforeVoice": "답변이 끝난 뒤 음성으로 전환합니다...",
         "initializingVoice": "음성 채팅 초기화 중...",
         "initializingMic": "마이크 초기화 중...",
         "startFailed": "시작 실패: {{error}}",

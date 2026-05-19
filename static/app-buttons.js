@@ -1181,6 +1181,38 @@
         }, 250);
     }
 
+    // 切语音前若 assistant 文本回复还在路上，等它跑完再 end_session。
+    // 否则 end_session 会把 message_handler_task / LLM 流强行掐断，
+    // omni_offline_client 收到 httpx ReadError → 给前端发 TEXT_GEN_ERROR_AFTER_PARTIAL
+    // → 用户在切语音的瞬间看到一条"Text generation interrupted (ReadError)"。
+    // gal 模式点选项后紧跟着点麦克风时最容易踩。15s 兜底，防止卡死的流永远不结束。
+    function isAssistantTextResponseInFlight() {
+        return !!(
+            S.assistantTurnId ||
+            S.assistantTurnAwaitingBubble ||
+            (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId)
+        );
+    }
+
+    function waitForAssistantTurnEnd(timeoutMs) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            function done(reason) {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('neko-assistant-turn-end', onEnd);
+                window.removeEventListener('neko-assistant-speech-cancel', onCancel);
+                if (timer) clearTimeout(timer);
+                resolve(reason);
+            }
+            function onEnd() { done('turn_end'); }
+            function onCancel() { done('speech_cancel'); }
+            window.addEventListener('neko-assistant-turn-end', onEnd, { once: true });
+            window.addEventListener('neko-assistant-speech-cancel', onCancel, { once: true });
+            var timer = setTimeout(function () { done('timeout'); }, timeoutMs);
+        });
+    }
+
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
@@ -1276,6 +1308,13 @@
 
             // If there is an active text session, end it first
             if (S.isTextSessionActive) {
+                // \u89C1\u9876\u90E8 waitForAssistantTurnEnd \u6CE8\u91CA\uFF1Aassistant \u6587\u672C\u8FD8\u5728\u6D41\u5F0F\u8F93\u51FA\u65F6
+                // \u7ACB\u523B end_session \u4F1A\u89E6\u53D1 ReadError \u2192 \u524D\u7AEF\u5F39\u51FA"Text generation interrupted"\u3002
+                // \u7B49\u672C\u8F6E turn-end / speech-cancel \u540E\u518D end_session\uFF0C15s \u515C\u5E95\u9632\u5361\u6B7B\u3002
+                if (isAssistantTextResponseInFlight()) {
+                    window.showVoicePreparingToast(window.t ? window.t('app.waitForReplyBeforeVoice') : '\u7B49\u56DE\u590D\u7ED3\u675F\u540E\u5207\u6362\u5230\u8BED\u97F3\u2026');
+                    await waitForAssistantTurnEnd(15000);
+                }
                 S.isSwitchingMode = true;
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));

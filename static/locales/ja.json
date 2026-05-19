@@ -1980,6 +1980,7 @@
         "micRequired": "まずマイクを有効にしてください！",
         "micNotOpen": "マイクがオンになっていません！",
         "switchingToVoice": "音声モードに切り替え中...",
+        "waitForReplyBeforeVoice": "返答が終わってから音声に切り替えます...",
         "initializingVoice": "音声チャットを初期化中...",
         "initializingMic": "マイクを初期化中...",
         "startFailed": "起動失敗: {{error}}",
