@@ -586,7 +586,7 @@ self.push_message(parts=[{"type": "text", "text": "主人发了一条弹幕..."}
 
 - **替换语义是 `str.replace`，不是 `str.format`**：`detail` 里嵌 JSON 片段 /
   代码 / 含 `{` 的用户原文都不会触发 `KeyError`。
-- **空 name 时占位符保持字面量**：宿主拿不到 name（极少见的初始化期）时，
+- **空 name 时占位符保持字面量**：宿主拿不到 name（极少见的初始化阶段）时，
   `{MASTER_NAME}` 留在原文，不会替换成空串造成"向 ... 汇报"这种破句。
 - **拼写固定**：用 **`{MASTER_NAME}` / `{LANLAN_NAME}`**（大写、下划线、单层
   花括号）。`prompts_chara.py` 里用的也是这套；不要写 `{master_name}` /
