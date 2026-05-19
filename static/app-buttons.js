@@ -1204,21 +1204,32 @@
     }
 
     function waitForAssistantTurnEnd(timeoutMs) {
+        // 不监听 neko-assistant-speech-cancel：response_discarded 即使 will_retry=true
+        // 也会 emit speech-cancel，过早 resolve 会让 end_session 掐掉 retry 那次的
+        // LLM 流，复发 ReadError。改成轮询 isAssistantTextResponseInFlight()——
+        // turn-end 事件做主信号、200ms 轮询兜 "无 event 的真完成"（如 final
+        // discard），15s timeout 防卡死。retry 期间由 response_discarded 里
+        // will_retry 分支刷新 pendingTextTurnSubmitAt 保持 in-flight 为真。
         return new Promise(function (resolve) {
+            if (!isAssistantTextResponseInFlight()) {
+                resolve('not_in_flight');
+                return;
+            }
             var settled = false;
             function done(reason) {
                 if (settled) return;
                 settled = true;
                 window.removeEventListener('neko-assistant-turn-end', onEnd);
-                window.removeEventListener('neko-assistant-speech-cancel', onCancel);
-                if (timer) clearTimeout(timer);
+                clearInterval(pollTimer);
+                clearTimeout(timeoutTimer);
                 resolve(reason);
             }
             function onEnd() { done('turn_end'); }
-            function onCancel() { done('speech_cancel'); }
             window.addEventListener('neko-assistant-turn-end', onEnd, { once: true });
-            window.addEventListener('neko-assistant-speech-cancel', onCancel, { once: true });
-            var timer = setTimeout(function () { done('timeout'); }, timeoutMs);
+            var pollTimer = setInterval(function () {
+                if (!isAssistantTextResponseInFlight()) done('not_in_flight_polled');
+            }, 200);
+            var timeoutTimer = setTimeout(function () { done('timeout'); }, timeoutMs);
         });
     }
 

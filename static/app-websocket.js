@@ -1314,6 +1314,15 @@
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     clearPendingAssistantTurnStart();
+                    // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
+                    // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
+                    // pendingTextTurnSubmitAt 都清零了。重新写一次时间戳，让
+                    // isAssistantTextResponseInFlight() 在 retry 的下一个 first-chunk
+                    // 到来前保持 true，否则切语音那条等待循环会过早 resolve 然后
+                    // end_session 把 retry 的 LLM 流又掐掉。
+                    if (response.will_retry) {
+                        S.pendingTextTurnSubmitAt = Date.now();
+                    }
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
