@@ -3403,13 +3403,13 @@
         "statusLoadFailed": "Error al cargar el estado",
         "thisPlatform": "esta plataforma",
         "instructions": {
-            "bilibili": "<b>Target:</b> Vaya a <b>bilibili.com</b> para buscar estas cookies.",
-            "douyin": "<b>Target:</b> Vaya a <b>douyin.com</b> para buscar estas cookies.",
-            "kuaishou": "<b>Target:</b> Vaya a <b>kuaishou.com</b> para buscar estas cookies.",
+            "bilibili": "<b>Destino:</b> Vaya a <b>bilibili.com</b> para buscar estas cookies.",
+            "douyin": "<b>Destino:</b> Vaya a <b>douyin.com</b> para buscar estas cookies.",
+            "kuaishou": "<b>Destino:</b> Vaya a <b>kuaishou.com</b> para buscar estas cookies.",
             "weibo": "<b>Destino:</b> Vaya a <b>weibo.com</b> para buscar estas cookies.",
-            "twitter": "<b>Target:</b> Vaya a <b>x.com</b> para buscar estas cookies.",
-            "reddit": "<b>Target:</b> Vaya a <b>reddit.com</b> para buscar estas cookies.",
-            "netease": "<b>Target:</b> Vaya a <b>music.163.com</b> para buscar estas cookies."
+            "twitter": "<b>Destino:</b> Vaya a <b>x.com</b> para buscar estas cookies.",
+            "reddit": "<b>Destino:</b> Vaya a <b>reddit.com</b> para buscar estas cookies.",
+            "netease": "<b>Destino:</b> Vaya a <b>music.163.com</b> para buscar estas cookies."
         },
         "guide": {
             "title": "Guía universal para principiantes",
@@ -3507,7 +3507,7 @@
         },
         "qrLogin": {
             "tryQR": "O... ¿intenta iniciar sesión con un código QR?",
-            "openQR": "Abrir QR Iniciar sesión",
+            "openQR": "Abrir inicio de sesión por QR",
             "loading": "Obteniendo código QR...",
             "scanTitle": "Escanear para iniciar sesión {{platform}}",
             "qrCodeAlt": "Iniciar sesión código QR",

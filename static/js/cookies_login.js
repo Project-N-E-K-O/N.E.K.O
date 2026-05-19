@@ -307,12 +307,15 @@ async function showQRLogin(config, platformKey) {
     if (isSupported){
         const QRinfo =  document.createElement("div");
         const butt = document.createElement("button");
-        const pagePrimary = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
-        const buttonTheme = platformKey === 'bilibili' && pagePrimary ? pagePrimary : config["theme"];
+        const rootStyle = getComputedStyle(document.documentElement);
+        const pagePrimary = rootStyle.getPropertyValue('--primary').trim();
+        const pageButtonBg = rootStyle.getPropertyValue('--button-bg').trim() || pagePrimary;
+        const buttonTheme = platformKey === 'bilibili' && pageButtonBg ? pageButtonBg : config["theme"];
+        const buttonBorder = platformKey === 'bilibili' && pagePrimary ? pagePrimary : buttonTheme;
         QRinfo.innerHTML = safeT('cookiesLogin.qrLogin.tryQR', '或者...试试扫码登陆?');
         QRinfo.style = 'margin-bottom: 10px;color: #64748b;font-size: 14px';
         butt.innerHTML = safeT('cookiesLogin.qrLogin.openQR', '打开扫码登陆');
-        butt.style.cssText = `width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; font-weight: 600; border-radius: 10px; border: 2px dashed ${buttonTheme}; background: ${buttonTheme} ; color: #f8fafc; cursor: pointer; transition: all 0.2s;`;
+        butt.style.cssText = `width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; font-weight: 600; border-radius: 10px; border: 2px dashed ${buttonBorder}; background: ${buttonTheme} ; color: #f8fafc; cursor: pointer; transition: all 0.2s;`;
         butt.onmouseover = function() { butt.style.background = decreaseColorLightness(buttonTheme,20); };
         butt.onmouseout = function() { butt.style.background = buttonTheme; };
         butt.onclick = function(){requestQR(config, platformKey)};
