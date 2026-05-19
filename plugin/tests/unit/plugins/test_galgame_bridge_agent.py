@@ -3306,6 +3306,8 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
     assert ctx.pushed_messages[-1]["metadata"]["summary_delivery_key"] == "scene-a:0:8"
     assert "游戏上下文" in ctx.pushed_messages[-1]["content"]
     assert ctx.pushed_messages[-1]["metadata"]["context_type"] == "galgame_scene_context"
+    assert "scene-a" in plugin._story_so_far
+    assert plugin._story_last_updated_seq >= 0
     status = await agent.query_status(shared)
     assert status["scene_summary_line_interval"] == 8
     assert status["debug"]["summary"]["last_delivered_summary_key"] == "scene-a:0:8"

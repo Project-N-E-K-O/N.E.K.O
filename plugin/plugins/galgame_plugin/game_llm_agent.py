@@ -5017,6 +5017,24 @@ class GameLLMAgent:
             self._last_delivered_summary_seq = scheduled_seq
             self._last_delivered_summary_scene_id = scene_id
             self._scene_tracker.mark_scene_summary_delivered(scene_id, seq=scheduled_seq)
+            story_recorder = getattr(
+                self._plugin,
+                "_record_story_progress_from_scene_summary",
+                None,
+            )
+            if callable(story_recorder):
+                try:
+                    story_recorder(
+                        scene_id=scene_id,
+                        route_id=route_id,
+                        summary=str(summary_meta.get("scene_summary") or summary),
+                        push_seq=scheduled_seq,
+                    )
+                except Exception:
+                    self._logger.warning(
+                        "galgame story_so_far update failed",
+                        exc_info=True,
+                    )
             self._last_push_ts = time.monotonic()
             self._record_summary_task_event(
                 "after_push",

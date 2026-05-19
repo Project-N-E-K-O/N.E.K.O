@@ -262,6 +262,41 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_get_story_so_far_uses_existing_scene_summaries(tmp_path: Path) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(
+            scene_memory=[
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "summary": "雪乃和主角确认放学后的约定。",
+                    "push_seq": 7,
+                },
+                {
+                    "scene_id": "scene-b",
+                    "route_id": "",
+                    "summary": "两人来到中庭，谈起接下来要调查的线索。",
+                    "push_seq": 11,
+                },
+            ]
+        )
+    )
+
+    result = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(result, Ok)
+    assert result.value["available"] is True
+    assert "雪乃和主角确认放学后的约定" in result.value["story_so_far"]
+    assert "两人来到中庭" in result.value["story_so_far"]
+    assert result.value["last_updated_seq"] == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_galgame_continue_auto_advance_sets_choice_advisor_and_resumes_agent(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))

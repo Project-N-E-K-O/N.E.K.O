@@ -6764,6 +6764,102 @@ class GalgamePlugin(NekoPluginBase):
             return []
         return [dict(entry) for entry in scene_memory if isinstance(entry, dict)]
 
+    def _compose_story_so_far_from_scene_summaries(
+        self,
+        scenes: list[dict[str, Any]],
+        *,
+        limit: int = 6,
+        max_chars: int = 1200,
+    ) -> tuple[str, int]:
+        recent = [
+            dict(item)
+            for item in scenes
+            if isinstance(item, dict) and str(item.get("summary") or "").strip()
+        ][-max(1, int(limit or 6)) :]
+        if not recent:
+            return "", 0
+        parts: list[str] = []
+        last_seq = 0
+        for index, entry in enumerate(recent, 1):
+            summary = str(entry.get("summary") or "").strip()
+            if not summary:
+                continue
+            scene_id = str(entry.get("scene_id") or "").strip()
+            prefix = f"{index}. "
+            if scene_id:
+                prefix += f"{scene_id}: "
+            parts.append(prefix + summary)
+            try:
+                last_seq = max(last_seq, int(entry.get("push_seq") or 0))
+            except (TypeError, ValueError):
+                pass
+        story = "\n".join(parts).strip()
+        if len(story) > max_chars:
+            story = story[-max_chars:].lstrip()
+        return story, last_seq
+
+    def _refresh_story_so_far_from_scene_summaries(self) -> bool:
+        story, last_seq = self._compose_story_so_far_from_scene_summaries(
+            self._layer1_scene_summaries()
+        )
+        if not story:
+            return False
+        with self._state_lock:
+            self._story_so_far = story
+            self._story_last_updated_seq = max(
+                int(self._story_last_updated_seq or 0),
+                int(last_seq or 0),
+            )
+        return True
+
+    def _record_story_progress_from_scene_summary(
+        self,
+        *,
+        scene_id: str,
+        route_id: str = "",
+        summary: str,
+        push_seq: int = 0,
+    ) -> None:
+        normalized_summary = str(summary or "").strip()
+        if not normalized_summary:
+            return
+        normalized_scene_id = str(scene_id or "").strip()
+        scenes = self._layer1_scene_summaries()
+        merged: list[dict[str, Any]] = []
+        replaced = False
+        for entry in scenes:
+            item = dict(entry)
+            if normalized_scene_id and str(item.get("scene_id") or "") == normalized_scene_id:
+                item["summary"] = normalized_summary
+                if route_id:
+                    item["route_id"] = str(route_id or "")
+                try:
+                    existing_push_seq = int(item.get("push_seq") or 0)
+                except (TypeError, ValueError):
+                    existing_push_seq = 0
+                item["push_seq"] = max(existing_push_seq, int(push_seq or 0))
+                replaced = True
+            merged.append(item)
+        if not replaced:
+            merged.append(
+                {
+                    "scene_id": normalized_scene_id,
+                    "route_id": str(route_id or ""),
+                    "summary": normalized_summary,
+                    "push_seq": int(push_seq or 0),
+                }
+            )
+        story, last_seq = self._compose_story_so_far_from_scene_summaries(merged)
+        if not story:
+            return
+        with self._state_lock:
+            self._story_so_far = story
+            self._story_last_updated_seq = max(
+                int(self._story_last_updated_seq or 0),
+                int(last_seq or 0),
+                int(push_seq or 0),
+            )
+
     @plugin_entry(
         id="galgame_get_scene_context",
         name=tr(
@@ -6846,6 +6942,7 @@ class GalgamePlugin(NekoPluginBase):
         throttled = self._check_query_rate_limit("galgame_get_story_so_far")
         if throttled is not None:
             return Ok(throttled)
+        self._refresh_story_so_far_from_scene_summaries()
         story = (self._story_so_far or "").strip()
         if not story:
             return Ok(
