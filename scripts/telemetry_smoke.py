@@ -499,6 +499,51 @@ def main():
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
 
         # --------------------------------------------------------------
+        # [4f] Regression: Codex P1 round-3 — instrument-only 失败清 stale seq
+        #
+        # 场景：instrument-only payload server commit 了但 client timeout。
+        # instruments 已 clear-on-read 没东西放回。如果失败时不清 batch_seq，
+        # 下一个新窗口（不同数据）会复用 stale seq → server seen_batches
+        # 命中旧 commit → 返回 "duplicate, skipped" → 新数据被静默丢弃。
+        # --------------------------------------------------------------
+        print("\n[4f] Regression: instrument-only failure clears stale batch_seq...")
+        Instrument._instance = None
+        TokenTracker._instance = None
+        tracker_h = TokenTracker.get_instance()
+        # Step A: instrument-only 失败
+        counter("h_only_counter_A", 1, surface="index_wide")
+        good_url = tt_mod._TELEMETRY_SERVER_URL
+        tt_mod._TELEMETRY_SERVER_URL = "http://127.0.0.1:1"
+        tracker_h._last_report_time = 0
+        tracker_h.save()
+        time.sleep(0.3)
+        # 关键断言：instrument-only 失败必须清 batch_seq（had_unsent_payload=False）
+        assert tracker_h._pending_batch_seq is None, (
+            "P1 round-3 regression: instrument-only failure left stale "
+            f"_pending_batch_seq = {tracker_h._pending_batch_seq!r}"
+        )
+        print("  ✓ instrument-only failure cleared batch_seq")
+
+        # Step B: 恢复 URL，发新 counter（B），应该用全新 seq 成功上报
+        tt_mod._TELEMETRY_SERVER_URL = good_url
+        counter("h_only_counter_B", 1, surface="index_wide")
+        tracker_h._last_report_time = 0
+        tracker_h.save()
+        time.sleep(0.5)
+        # 直查 server: h_only_counter_B 必须在库（说明不被 stale seq 误伤）
+        conn_h = sqlite3.connect(db_path)
+        rows_h = conn_h.execute(
+            "SELECT metric_key, value FROM instrument_counters "
+            "WHERE metric_key LIKE 'h_only_counter_B%'"
+        ).fetchall()
+        conn_h.close()
+        assert len(rows_h) >= 1, (
+            "P1 round-3 regression: new counter after instrument-only failure "
+            "was dropped — stale batch_seq still in effect"
+        )
+        print(f"  ✓ new window after failure landed: {rows_h}")
+
+        # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
         # --------------------------------------------------------------
         print("\n[5/5] Fetching dashboard HTML...")

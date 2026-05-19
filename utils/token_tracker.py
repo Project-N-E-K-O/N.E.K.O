@@ -1256,6 +1256,9 @@ class TokenTracker:
             if self._pending_batch_seq is None:
                 self._pending_batch_seq = secrets.token_hex(8)
             batch_seq = self._pending_batch_seq
+        # 标记这次发送是否带 daily/records —— instrument-only 失败后清
+        # stale batch_seq 时要用（见 except 路径注释）。
+        had_unsent_payload = bool(send_daily or send_records)
 
         # 现在确定要发，clear-on-read 拿 instrument snapshot。如果上报失败，
         # 这部分数据丢失（设计取舍：counter / histogram 是窗口聚合，丢一个
@@ -1367,9 +1370,15 @@ class TokenTracker:
 
         except Exception as e:
             logger.debug(f"Token tracker: telemetry report failed (non-critical): {e}")
-            # 发送失败：放回 unsent + 持久化。**不清** _pending_batch_seq ——
-            # 下次重试用同一 seq，让 server seen_batches dedupe "网络 timeout
-            # 但 server 已经 commit" 的不确定成败重传。
+            # 发送失败：放回 unsent + 持久化。daily-bearing 失败时**不清**
+            # _pending_batch_seq —— 下次重试用同一 seq，让 server seen_batches
+            # dedupe "网络 timeout 但 server 已经 commit" 的不确定成败重传。
+            #
+            # 但 instrument-only 失败（send_daily 和 send_records 都空，
+            # had_unsent_payload=False）必须清 batch_seq：instruments 是
+            # clear-on-read 没东西放回，留着 stale seq 会让**下一个新窗口**
+            # 复用它算出与已 commit 的 batch_id 相同的 hash，server 直接
+            # 返回 "duplicate, skipped"，新窗口的数据被静默丢弃。
             with self._lock:
                 for day_key, day_delta in send_daily.items():
                     if day_key not in self._unsent_daily:
@@ -1378,6 +1387,9 @@ class TokenTracker:
                         _merge_day_stats(self._unsent_daily[day_key], day_delta)
                 restored = send_records + self._unsent_records
                 self._unsent_records = restored[-200:]
+                if not had_unsent_payload:
+                    # 没有真要重传的内容 —— 防 stale seq 误伤下一窗口
+                    self._pending_batch_seq = None
             self._save_unsent_queue()
 
     @staticmethod
