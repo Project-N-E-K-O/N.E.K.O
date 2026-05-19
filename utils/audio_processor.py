@@ -414,6 +414,15 @@ class AudioProcessor:
                 self._denoiser.reset()
             except Exception as e:
                 logger.warning(f"⚠️ Failed to reset RNNoise denoiser: {e}")
+        # Flush streaming resampler's latency buffer + FIR history. After
+        # multi-second silence the buffer is already silent so this is a no-op,
+        # but on a forced mid-speech reset (interrupt / cancel turn) it prevents
+        # previous-turn tail samples from bleeding into the next turn.
+        if self._downsample_resampler is not None:
+            try:
+                self._downsample_resampler.clear()
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to clear downsample resampler: {e}")
     
     def reset(self) -> None:
         """
