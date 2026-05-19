@@ -38,6 +38,7 @@ from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import get_runtime_override
 from plugin.core.state import state
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin._types.models import PluginMeta, PluginAuthor, PluginDependency
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.settings import (
@@ -1138,6 +1139,11 @@ def _parse_single_plugin_config(
     if not entry or ":" not in entry:
         logger.warning("Plugin {} has invalid entry point '{}', skipping", pid, entry)
         return None
+    entry = normalize_plugin_entry_point(
+        str(entry),
+        config_path=toml_path,
+        builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
+    )
     
     logger.debug("Plugin {} entry point: {}", pid, entry)
     

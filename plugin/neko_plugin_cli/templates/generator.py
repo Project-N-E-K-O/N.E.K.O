@@ -54,7 +54,7 @@ class PluginSpec:
     def entry_point(self) -> str:
         if self.entry_point_override:
             return self.entry_point_override
-        return f"plugin.plugins.{self.plugin_id}:{self.class_name}"
+        return f"plugins.{self.plugin_id}:{self.class_name}"
 
     @property
     def module_path(self) -> str:

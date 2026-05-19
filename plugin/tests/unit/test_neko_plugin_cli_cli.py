@@ -265,7 +265,9 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     assert exit_code == 0
     assert repo_dir.is_dir()
     assert not (tmp_path / "market_demo").exists()
-    assert 'id = "market_demo"' in (repo_dir / "plugin.toml").read_text(encoding="utf-8")
+    plugin_toml_text = (repo_dir / "plugin.toml").read_text(encoding="utf-8")
+    assert 'id = "market_demo"' in plugin_toml_text
+    assert 'entry = "plugins.market_demo:MarketDemoPlugin"' in plugin_toml_text
     assert "store.db" in (repo_dir / ".gitignore").read_text(encoding="utf-8")
     assert (repo_dir / ".github" / "workflows" / "verify.yml").is_file()
     release_workflow = repo_dir / ".github" / "workflows" / "release.yml"

@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Type
 from plugin.logging_config import logger
 
 from plugin._types.events import EVENT_META_ATTR
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.sdk import PERSIST_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
@@ -316,6 +317,36 @@ def _find_project_root(config_path: Path) -> Path:
         return config_path.parent.resolve()
 
 
+def _prepare_child_plugin_import_roots(logger: Any) -> None:
+    """Mirror registry import roots inside plugin child processes."""
+
+    try:
+        from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
+    except Exception as exc:
+        logger.debug("[Plugin Process] Failed to load plugin config roots: {}", exc)
+        return
+
+    try:
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT.resolve()
+    except Exception:
+        builtin_root = BUILTIN_PLUGIN_CONFIG_ROOT
+
+    for plugin_config_root in PLUGIN_CONFIG_ROOTS:
+        try:
+            root = plugin_config_root.resolve()
+        except Exception:
+            root = plugin_config_root
+
+        import_root = root.parent
+        if str(import_root) not in sys.path:
+            sys.path.insert(0, str(import_root))
+            logger.info("[Plugin Process] Added plugin import root to sys.path: {}", import_root)
+
+    repo_root = builtin_root.parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+
 def _check_extension_type_guard(config_path: Path, plugin_id: str, logger: Any) -> bool:
     """
     检查插件是否是 Extension 类型（不应作为独立进程运行）。
@@ -500,6 +531,17 @@ def _plugin_process_runner(
     comm_sender = child_transport.channel_sender(CH_COMM)
 
     try:
+        _prepare_child_plugin_import_roots(logger)
+        try:
+            from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
+            entry_point = normalize_plugin_entry_point(
+                entry_point,
+                config_path=config_path,
+                builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
+            )
+        except Exception as e:
+            logger.debug("[Plugin Process] Failed to normalize entry point: {}", e)
+
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
             logger.info("[Plugin Process] Added project root to sys.path: {}", project_root)
