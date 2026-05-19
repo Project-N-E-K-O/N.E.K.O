@@ -490,6 +490,7 @@ const FOCUS_PAUSE_REFRESH_INTERVAL_MS = 1000;
 const ERROR_REFRESH_INTERVAL_MS = 10000;
 const OCR_WINDOW_REFRESH_TTL_MS = 3000;
 const MEMORY_PROCESS_REFRESH_TTL_MS = 3000;
+const CHARACTER_PROFILE_REFRESH_TTL_MS = 3000;
 const FIELD_LABELS_ZH = {
   connection_state: '连接状态',
   active_data_source: '当前数据源',
@@ -825,6 +826,7 @@ let latestStatus = null;
 let latestSnapshotData = null;
 let latestMemoryProcessSnapshot = null;
 let latestOcrWindowSnapshot = null;
+let latestCharacterProfileSnapshot = null;
 let onboardingDismissed = false;
 let forceShowOnboarding = false;
 let lastSavedStepIndex = -1;
@@ -834,8 +836,11 @@ const tutorialProgressPendingSaveKeys = new Set();
 let refreshInFlight = null;
 let memoryProcessRefreshInFlight = null;
 let ocrWindowRefreshInFlight = null;
+let characterProfileRefreshInFlight = null;
 let lastMemoryProcessRefreshAt = 0;
 let lastOcrWindowRefreshAt = 0;
+let lastCharacterProfileRefreshAt = 0;
+let lastCharacterProfileGameId = '';
 let emptyOcrWindowFocusForceRefreshDone = false;
 let autoRefreshTimer = null;
 let autoRefreshIntervalMs = AUTO_REFRESH_INTERVAL_MS;
@@ -4187,6 +4192,9 @@ function renderStatus(status) {
     { label: 'advance_speed', value: advanceSpeedLabel(status.advance_speed, status.advance_speed || 'medium') },
     { label: 'bound_game_id', value: status.bound_game_id || uiT('ui.common.auto_value', '(auto)') },
     { label: 'available_game_ids', value: (status.available_game_ids || []).join(', ') || uiT('ui.common.none_value', '(none)') },
+    { label: 'character_mode', value: status.character_mode || 'off' },
+    { label: 'character_fixed_name', value: status.character_fixed_name || '' },
+    { label: 'character_profile_count', value: String(status.character_profile_count || 0) },
     { label: 'performance_cpu_percent', value: `${formatFixedNumber(performance.cpu_percent, 1)}%` },
     { label: 'performance_memory_mb', value: `${formatFixedNumber(performance.memory_mb, 1)} MB` },
     { label: 'ocr_reader_enabled', value: String(Boolean(status.ocr_reader_enabled)) },
@@ -4332,6 +4340,7 @@ function renderStatus(status) {
   renderMemoryReaderTargetStatus(status);
   renderOcrWindowTargetStatus(status);
   renderOcrProfile(status);
+  renderCharacterProfilePanel(status);
   renderGameBinding(status);
 }
 
@@ -4425,6 +4434,196 @@ function describeGameBindingId(gameId) {
     title: uiT('ui.game.binding.game_target', '游戏目标'),
     detail: normalized,
   };
+}
+
+function normalizeCharacterProfileSnapshot(payload = {}, status = latestStatus) {
+  const characters = Array.isArray(payload.characters)
+    ? payload.characters
+      .map((item) => ({
+        name: String(item?.name || '').trim(),
+        identity: String(item?.identity || '').trim(),
+      }))
+      .filter((item) => item.name)
+    : [];
+  return {
+    game_id: String(payload.game_id || status?.bound_game_id || '').trim(),
+    characters,
+    summary: String(payload.summary || ''),
+    degraded: Boolean(payload.degraded),
+    diagnostic: String(payload.diagnostic || ''),
+  };
+}
+
+function selectedCharacterNameFromPanel(characters) {
+  const select = document.getElementById('characterProfileSelect');
+  if (!select) {
+    return '';
+  }
+  const current = String(select.value || '').trim();
+  return current && characters.some((item) => item.name === current) ? current : '';
+}
+
+function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCharacterProfileSnapshot) {
+  const statusNode = document.getElementById('characterProfileStatusText');
+  const hintNode = document.getElementById('characterProfileHint');
+  const select = document.getElementById('characterProfileSelect');
+  const fixedButton = document.getElementById('characterProfileFixedBtn');
+  const offButton = document.getElementById('characterProfileOffBtn');
+  const refreshButton = document.getElementById('characterProfileRefreshBtn');
+  if (!statusNode || !hintNode || !select || !fixedButton || !offButton || !refreshButton) {
+    return;
+  }
+
+  const mode = String(status?.character_mode || 'off').trim() || 'off';
+  const fixedName = String(status?.character_fixed_name || '').trim();
+  const boundGameId = String(status?.bound_game_id || '').trim();
+  const snapshotGameId = String(snapshot?.game_id || '').trim();
+  const characters = boundGameId && (!snapshotGameId || snapshotGameId === boundGameId) && Array.isArray(snapshot?.characters)
+    ? snapshot.characters
+    : [];
+  const characterCount = characters.length || Number(status?.character_profile_count || 0);
+  const existingSelection = selectedCharacterNameFromPanel(characters);
+  const preferredName = fixedName && characters.some((item) => item.name === fixedName)
+    ? fixedName
+    : existingSelection;
+  const nextSelection = preferredName || (characters[0]?.name || '');
+
+  if (mode === 'fixed' && fixedName) {
+    statusNode.textContent = uiTf('ui.character_profile.status_fixed', '固定角色：{name}', { name: fixedName });
+  } else if (!boundGameId || (!characters.length && snapshot && !characterCount)) {
+    statusNode.textContent = uiT('ui.character_profile.status_unavailable', '无可用档案');
+  } else {
+    statusNode.textContent = uiT('ui.character_profile.status_off', '关闭');
+  }
+
+  if (!characters.length) {
+    select.replaceChildren(new Option(
+      boundGameId
+        ? uiT('ui.character_profile.select_placeholder', '等待加载角色列表')
+        : uiT('ui.character_profile.no_game_option', '请先绑定游戏'),
+      '',
+    ));
+  } else if (document.activeElement !== select) {
+    const options = characters.map((item) => {
+      const label = item.identity
+        ? uiTf('ui.character_profile.option_with_identity', '{name} - {identity}', {
+          name: item.name,
+          identity: item.identity,
+        })
+        : item.name;
+      return new Option(label, item.name);
+    });
+    select.replaceChildren(...options);
+    select.value = nextSelection;
+  }
+
+  if (!boundGameId) {
+    hintNode.textContent = uiT('ui.character_profile.hint_no_game', '请先在“插件识别”里绑定或检测到游戏目标。');
+  } else if (snapshot?.diagnostic) {
+    hintNode.textContent = uiTf('ui.character_profile.hint_load_failed', '角色列表加载失败：{error}', {
+      error: snapshot.diagnostic,
+    });
+  } else if (!snapshot) {
+    hintNode.textContent = uiT('ui.character_profile.status_waiting', '等待状态刷新');
+  } else if (!characters.length) {
+    hintNode.textContent = uiT('ui.character_profile.hint_no_profiles', '当前游戏没有可用角色档案。');
+  } else {
+    hintNode.textContent = uiTf('ui.character_profile.hint_loaded', '已加载 {count} 个角色档案。', {
+      count: characters.length,
+    });
+  }
+
+  const selectedName = String(select.value || '').trim();
+  fixedButton.disabled = !boundGameId || !characters.length || !selectedName;
+  offButton.disabled = mode === 'off' && !fixedName;
+  refreshButton.disabled = !boundGameId || Boolean(characterProfileRefreshInFlight);
+}
+
+function shouldRefreshCharacterProfilesForStatus(status) {
+  const boundGameId = String(status?.bound_game_id || '').trim();
+  if (!boundGameId) {
+    return false;
+  }
+  if (!latestCharacterProfileSnapshot) {
+    return true;
+  }
+  if (boundGameId !== lastCharacterProfileGameId) {
+    return true;
+  }
+  const statusCount = Number(status?.character_profile_count || 0);
+  const snapshotCount = Array.isArray(latestCharacterProfileSnapshot.characters)
+    ? latestCharacterProfileSnapshot.characters.length
+    : 0;
+  return statusCount > 0 && statusCount !== snapshotCount;
+}
+
+function refreshCharacterProfiles({ force = false, silent = true } = {}) {
+  if (characterProfileRefreshInFlight) {
+    return characterProfileRefreshInFlight;
+  }
+
+  const boundGameId = String(latestStatus?.bound_game_id || '').trim();
+  if (!boundGameId) {
+    latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({ game_id: '', characters: [] }, latestStatus);
+    lastCharacterProfileGameId = '';
+    renderCharacterProfilePanel(latestStatus);
+    return Promise.resolve(false);
+  }
+
+  const now = Date.now();
+  if (
+    !force
+    && boundGameId === lastCharacterProfileGameId
+    && now - lastCharacterProfileRefreshAt < CHARACTER_PROFILE_REFRESH_TTL_MS
+  ) {
+    renderCharacterProfilePanel(latestStatus);
+    return Promise.resolve(false);
+  }
+
+  characterProfileRefreshInFlight = callPlugin('galgame_get_character_list', {}, {
+    timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS,
+  }).then((payload) => {
+    latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot(payload, latestStatus);
+    lastCharacterProfileGameId = boundGameId;
+    lastCharacterProfileRefreshAt = Date.now();
+    renderCharacterProfilePanel(latestStatus);
+    return true;
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({
+      game_id: boundGameId,
+      characters: [],
+      degraded: true,
+      diagnostic: message,
+    }, latestStatus);
+    renderCharacterProfilePanel(latestStatus);
+    if (!silent) {
+      setFlash(message, 'error');
+    }
+    return false;
+  }).finally(() => {
+    characterProfileRefreshInFlight = null;
+    renderCharacterProfilePanel(latestStatus);
+  });
+  renderCharacterProfilePanel(latestStatus);
+  return characterProfileRefreshInFlight;
+}
+
+async function setCharacterProfileMode(mode) {
+  const normalized = String(mode || '').trim();
+  const select = document.getElementById('characterProfileSelect');
+  const characterName = String(select?.value || '').trim();
+  if (normalized === 'fixed' && !characterName) {
+    throw new Error(uiT('ui.character_profile.error_select_required', '请先选择角色。'));
+  }
+  const args = normalized === 'fixed'
+    ? { mode: 'fixed', character_name: characterName }
+    : { mode: 'off' };
+  setFlash(uiT('ui.flash.saving_character_mode', '正在保存角色档案设置...'), 'info');
+  const payload = await callPlugin('galgame_set_character_mode', args);
+  setFlash(payload.summary || uiT('ui.flash.character_mode_saved', '角色档案设置已保存'), 'success');
+  await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
+  await refreshCharacterProfiles({ force: true, silent: true });
 }
 
 function formatConnectionStateZh(value) {
@@ -6236,6 +6435,14 @@ async function refreshAll(options = {}) {
           })
         ));
       }
+      if (shouldRefreshCharacterProfilesForStatus(status)) {
+        runBackgroundTask('refresh character profiles after status', () => (
+          refreshCharacterProfiles({
+            reason: 'status_needs_character_profile_refresh',
+            silent: true,
+          })
+        ));
+      }
       if (showInsightPending && !latestInsights.suggestPayload) {
         renderInsightsPending();
       }
@@ -6581,7 +6788,10 @@ async function bindGame(gameId = '') {
     setFlash(normalized
       ? uiTf('ui.flash.game_bound', '已绑定 {gameId}', { gameId: normalized })
       : uiT('ui.flash.auto_select_restored', '已恢复自动选择'), 'success');
+    latestCharacterProfileSnapshot = null;
+    lastCharacterProfileGameId = '';
     await refreshAll({ preserveFlash: true, forceInsights: true });
+    await refreshCharacterProfiles({ force: true, silent: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -7296,6 +7506,10 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
         force: true,
         silent: true,
       }).catch((error) => { console.error('[galgame] async action failed', error); });
+      refreshCharacterProfiles({
+        force: true,
+        silent: true,
+      }).catch((error) => { console.error('[galgame] async action failed', error); });
     }
     const windowsLoaded = loaded
       ? await refreshOcrWindowTargetsIfNeeded({
@@ -7405,6 +7619,42 @@ document.getElementById('queryContextBtn')?.addEventListener('click', () => {
 });
 document.getElementById('sendMessageBtn')?.addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
+});
+document.getElementById('characterProfileFixedBtn')?.addEventListener('click', () => {
+  withButtonPending('characterProfileFixedBtn', uiT('ui.pending.saving', '保存中...'), () => (
+    setCharacterProfileMode('fixed')
+  )).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('characterProfileOffBtn')?.addEventListener('click', () => {
+  withButtonPending('characterProfileOffBtn', uiT('ui.pending.saving', '保存中...'), () => (
+    setCharacterProfileMode('off')
+  )).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('characterProfileRefreshBtn')?.addEventListener('click', () => {
+  refreshCharacterProfiles({
+    force: true,
+    silent: false,
+  }).then((refreshed) => {
+    if (refreshed) {
+      setFlash(uiT('ui.flash.character_profiles_refreshed', '角色档案列表已刷新'), 'success');
+    }
+  }).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('characterProfileSelect')?.addEventListener('change', () => {
+  renderCharacterProfilePanel(latestStatus);
+});
+document.getElementById('characterProfileSelect')?.addEventListener('focus', () => {
+  if (shouldRefreshCharacterProfilesForStatus(latestStatus)) {
+    refreshCharacterProfiles({ force: true, silent: true }).catch((error) => {
+      console.warn('[galgame_plugin ui] character profile focus refresh failed', error);
+    });
+  }
 });
 document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () => {
   refreshMemoryProcessTargetsIfNeeded({
