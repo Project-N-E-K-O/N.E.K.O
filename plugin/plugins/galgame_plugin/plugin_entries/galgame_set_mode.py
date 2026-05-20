@@ -34,7 +34,9 @@ class _GalgameSetModeMixin:
         if advance_speed is not None and advance_speed not in ADVANCE_SPEEDS:
             return Err(SdkError(f"invalid advance speed: {advance_speed!r}"))
         try:
-            normalized_reader_mode = _normalize_reader_mode(reader_mode or self._cfg.reader_mode)
+            normalized_reader_mode = _normalize_reader_mode(
+                self._cfg.reader_mode if reader_mode is None else reader_mode
+            )
         except ValueError as exc:
             return Err(SdkError(str(exc)))
 
@@ -175,8 +177,26 @@ class _GalgameSetModeMixin:
                 push_notifications=persist_push,
                 advance_speed=persist_advance_speed,
             )
+        except Exception as exc:
+            _restore_mode_runtime_state()
+            return Err(SdkError(f"persist mode failed: {exc}"))
+        try:
             self._config_service.persist_reader_mode(reader_mode=normalized_reader_mode)
         except Exception as exc:
+            try:
+                self._config_service.persist_preferences(
+                    bound_game_id=bound_game_id,
+                    mode=old_mode,
+                    push_notifications=old_push_notifications,
+                    advance_speed=old_advance_speed,
+                )
+            except Exception as rollback_exc:  # noqa: BLE001
+                _log_plugin_noncritical(
+                    self.logger,
+                    "warning",
+                    "galgame mode preference rollback failed: {}",
+                    rollback_exc,
+                )
             _restore_mode_runtime_state()
             return Err(SdkError(f"persist mode failed: {exc}"))
         await self._ensure_ocr_foreground_advance_monitor()

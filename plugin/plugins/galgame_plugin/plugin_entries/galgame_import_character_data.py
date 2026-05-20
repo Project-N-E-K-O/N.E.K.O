@@ -44,11 +44,27 @@ class _GalgameImportCharacterDataMixin:
         if not source:
             return Err(SdkError("file_path required"))
         manager = self._get_character_profile_manager()
-        result = await asyncio.to_thread(
-            manager.import_user_profiles,
-            target_game,
-            source,
-        )
+        try:
+            result = await asyncio.to_thread(
+                manager.import_user_profiles,
+                target_game,
+                source,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "galgame character data import failed",
+                exc_info=True,
+            )
+            return Err(
+                SdkError(
+                    f"import failed: {exc}",
+                    details={
+                        "target_path": "",
+                        "errors": [str(exc)],
+                        "warnings": [],
+                    },
+                )
+            )
         if not result.ok:
             return Err(
                 SdkError(

@@ -18,8 +18,9 @@ class _GalgameExplainLineMixin:
         if self._llm_gateway is None:
             return Err(SdkError("galgame_plugin llm_gateway is not initialized"))
         local = self._snapshot_state(include_private_context=True)
+        normalized_line_id = str(line_id or "").strip()
         try:
-            context = build_explain_context(local, line_id=line_id.strip(), config=self._cfg)
+            context = build_explain_context(local, line_id=normalized_line_id, config=self._cfg)
         except ValueError as exc:
             context = {
                 "line_id": "",

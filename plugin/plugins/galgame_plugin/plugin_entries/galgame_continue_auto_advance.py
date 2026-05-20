@@ -68,6 +68,7 @@ class _GalgameContinueAutoAdvanceMixin:
             if isinstance(agent_payload, dict)
             else ""
         )
+        degraded = bool(agent_payload.get("degraded", False)) if isinstance(agent_payload, dict) else False
         return Ok(
             {
                 "action": "continue_auto_advance",
@@ -82,7 +83,7 @@ class _GalgameContinueAutoAdvanceMixin:
                 "agent_result": agent_payload,
                 "status": status,
                 "result": result_text,
-                "degraded": False,
+                "degraded": degraded,
                 "diagnostic": diagnostic,
             }
         )

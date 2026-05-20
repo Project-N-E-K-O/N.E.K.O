@@ -34,7 +34,7 @@ def _normalize_ocr_trigger_mode(value: str | None) -> str:
 
 
 def _normalize_reader_mode(value: str | None) -> str:
-    normalized = str(value or READER_MODE_AUTO).strip().lower()
+    normalized = str(READER_MODE_AUTO if value is None else value).strip().lower()
     if normalized not in READER_MODES:
         raise ValueError(f"invalid reader_mode: {value!r}")
     return normalized
@@ -101,18 +101,24 @@ def _after_advance_screen_refresh_needed(
     detail = str(ocr_reader_runtime.get("detail") or "")
     snapshot = local.get("latest_snapshot")
     snapshot_obj = snapshot if isinstance(snapshot, dict) else {}
-    screen_type = str(snapshot_obj.get("screen_type") or local.get("screen_type") or "")
+    screen_type_source = (
+        snapshot_obj.get("screen_type")
+        if "screen_type" in snapshot_obj
+        else local.get("screen_type")
+    )
+    screen_type = str(screen_type_source or "")
     context_is_screen_classified = (
         context_state == "screen_classified" or detail == "screen_classified"
     )
     if not context_is_screen_classified:
         return False
+    screen_confidence_source = (
+        snapshot_obj.get("screen_confidence")
+        if "screen_confidence" in snapshot_obj
+        else local.get("screen_confidence", 0.0)
+    )
     try:
-        screen_confidence = float(
-            snapshot_obj.get("screen_confidence")
-            or local.get("screen_confidence")
-            or 0.0
-        )
+        screen_confidence = float(screen_confidence_source)
     except (TypeError, ValueError):
         screen_confidence = 0.0
     if screen_confidence < 0.45:

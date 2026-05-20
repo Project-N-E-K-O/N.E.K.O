@@ -35,19 +35,17 @@ class _GalgameSetCharacterModeMixin:
         if mode_normalized not in {"off", "fixed"}:
             return Err(SdkError(f"invalid character mode: {mode!r}"))
 
-        with self._state_lock:
-            current_profiles = dict(self._state.character_profiles or {})
-
         if mode_normalized == "fixed":
             name = (character_name or "").strip()
             if not name:
                 return Err(SdkError("fixed mode requires character_name"))
-            load = self._load_character_profiles_for_current_context()
-            loaded_profiles = dict(load.get("profiles") or {})
-            if loaded_profiles:
-                current_profiles = loaded_profiles
-            if not current_profiles:
-                current_profiles = dict(load.get("profiles") or {})
+            load = self._load_character_profiles_for_current_context(force=True)
+            loaded_profiles = (
+                {}
+                if bool(load.get("pending_match"))
+                else dict(load.get("profiles") or {})
+            )
+            if not loaded_profiles:
                 errors = load.get("errors") or []
                 resolved_game_id = str(load.get("resolved_game_id") or "")
                 return Err(
@@ -57,7 +55,7 @@ class _GalgameSetCharacterModeMixin:
                         details={"errors": list(errors)},
                     )
                 )
-            if name not in current_profiles:
+            if name not in loaded_profiles:
                 return Err(SdkError(f"character {name!r} not found in profiles"))
 
         with self._state_lock:

@@ -81,11 +81,17 @@ class _GalgameAgentCommandMixin:
                 return Err(SdkError("standby is required for set_standby"))
             return Ok(await self._game_agent.set_standby(local, standby=bool(standby)))
         if action == "list_messages":
+            sanitized_limit = _coerce_int_range(
+                limit,
+                default=50,
+                minimum=1,
+                maximum=500,
+            )
             return Ok(
                 await self._game_agent.list_messages(
                     local,
                     direction=direction,
-                    limit=int(limit or 50),
+                    limit=sanitized_limit,
                 )
             )
         if action == "ack_message":

@@ -50,6 +50,25 @@ class _GalgameSetOcrWindowTargetMixin:
                 f"OCR window target locked to {target_payload.get('process_name') or '(unknown)'}"
             )
 
+        with self._state_lock:
+            previous_state_target = json_copy(self._state.ocr_window_target)
+            previous_state_dirty = bool(self._state_dirty)
+            previous_cached_snapshot = self._cached_snapshot
+        previous_persisted_target = json_copy(previous_state_target)
+        try:
+            restored, _warnings = self._persist.load()
+            if isinstance(restored, dict):
+                previous_persisted_target = json_copy(
+                    restored.get(STORE_OCR_WINDOW_TARGET, previous_state_target)
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame OCR window target previous store read failed: {}",
+                exc,
+            )
+
         try:
             self._persist.persist_ocr_window_target(target_payload)
         except Exception as exc:
@@ -63,6 +82,19 @@ class _GalgameSetOcrWindowTargetMixin:
             self._ocr_reader_manager.update_window_target(target_payload)
             background_poll_started = self._start_background_bridge_poll()
         except Exception as exc:
+            try:
+                self._persist.persist_ocr_window_target(previous_persisted_target)
+            except Exception as rollback_exc:  # noqa: BLE001
+                _log_plugin_noncritical(
+                    self.logger,
+                    "warning",
+                    "galgame OCR window target persist rollback failed: {}",
+                    rollback_exc,
+                )
+            with self._state_lock:
+                self._state.ocr_window_target = json_copy(previous_state_target)
+                self._state_dirty = previous_state_dirty
+                self._cached_snapshot = previous_cached_snapshot
             return Err(SdkError(f"apply OCR window target runtime update failed: {exc}"))
         return Ok(
             {

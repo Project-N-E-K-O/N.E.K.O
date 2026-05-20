@@ -4309,7 +4309,7 @@ class GalgamePlugin(
                 and str(getattr(self._cfg, "ocr_reader_capture_backend", "") or "")
                 .strip()
                 .lower()
-                in {"smart", "dxcam", "mss", "pyautogui", "printwindow"}
+                in {"smart", "dxcam", "mss", "printwindow"}
             )
         )
         memory_reader_default_is_unavailable = (

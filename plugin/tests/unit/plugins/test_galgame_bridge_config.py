@@ -532,6 +532,22 @@ async def test_set_mode_rolls_back_runtime_state_when_reader_mode_persist_fails(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_set_mode_rejects_empty_reader_mode(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, _make_effective_config(bridge_root)))
+    plugin._cfg = build_config(_make_effective_config(bridge_root))
+
+    result = await plugin.galgame_set_mode(
+        mode="companion",
+        reader_mode="",
+    )
+
+    assert isinstance(result, Err)
+    assert "invalid reader_mode" in str(result.error)
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_set_mode_returns_compatible_payload_when_already_applied(
     tmp_path: Path,
 ) -> None:

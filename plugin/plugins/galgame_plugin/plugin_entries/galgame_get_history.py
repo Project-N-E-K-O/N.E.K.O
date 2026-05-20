@@ -17,10 +17,17 @@ class _GalgameGetHistoryMixin:
         llm_result_fields=["stable_lines", "observed_lines", "choices"],
     )
     async def galgame_get_history(self, limit: int = 50, include_events: bool = True, **_):
+        sanitized_limit = _coerce_int_range(
+            limit,
+            default=50,
+            minimum=1,
+            maximum=500,
+        )
+        sanitized_include_events = _coerce_bool(include_events, default=True)
         with self._state_lock:
             payload = build_history_payload(
                 self._state,
-                limit=max(1, int(limit)),
-                include_events=bool(include_events),
+                limit=sanitized_limit,
+                include_events=sanitized_include_events,
             )
         return Ok(payload)

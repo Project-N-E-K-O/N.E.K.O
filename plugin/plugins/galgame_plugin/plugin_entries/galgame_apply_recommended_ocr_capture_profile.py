@@ -31,6 +31,7 @@ class _GalgameApplyRecommendedOcrCaptureProfileMixin:
             return Err(SdkError("confirm=true is required before applying a recommended OCR profile"))
         with self._state_lock:
             runtime = json_copy(self._state.ocr_reader_runtime)
+        old_auto_apply = bool(self._ocr_capture_profile_auto_apply_enabled)
         self._ocr_capture_profile_auto_apply_enabled = bool(enable_auto_apply)
         try:
             payload = await self._apply_recommended_ocr_capture_profile_payload(
@@ -39,7 +40,9 @@ class _GalgameApplyRecommendedOcrCaptureProfileMixin:
                 reason="manual_apply_recommended_capture_profile",
             )
         except ValueError as exc:
+            self._ocr_capture_profile_auto_apply_enabled = old_auto_apply
             return Err(SdkError(str(exc)))
         except Exception as exc:
+            self._ocr_capture_profile_auto_apply_enabled = old_auto_apply
             return Err(SdkError(f"apply recommended OCR capture profile failed: {exc}"))
         return Ok(payload)

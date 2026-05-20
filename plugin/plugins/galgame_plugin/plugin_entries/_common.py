@@ -196,6 +196,26 @@ from ..plugin_ocr_helpers import (
 )
 
 
+def _coerce_int_range(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
 # Auto-compute __all__ from the module's globals so that `from ._common import *`
 # in mixin files exposes every imported name (including underscore-prefixed
 # private helpers). Computing it here — instead of hand-maintaining a long list —
