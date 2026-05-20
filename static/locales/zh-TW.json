@@ -2042,6 +2042,12 @@
         "screenRecordingPermissionDenied": "⚠️ 螢幕錄製權限未授權，請在系統設定中允許螢幕錄製",
         "repetitionDetected": "檢測到高重復度對話。建議您終止對話，讓{{name}}休息片刻。",
         "modelSwitched": "模型已切換",
+        "multiScreenDragHint": {
+            "title": "可以把 YUI 拖到副螢幕哦",
+            "body": "繼續往螢幕邊緣拖，放開滑鼠後她會去另一個螢幕；靠邊太近時會先自動回彈。",
+            "ack": "知道了",
+            "never": "不再提醒"
+        },
         "screenSource": {
             "notAvailable": "屏幕源選擇僅在桌麵版可用",
             "loading": "加載中...",

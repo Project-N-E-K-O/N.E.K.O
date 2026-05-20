@@ -2042,6 +2042,12 @@
         "screenRecordingPermissionDenied": "⚠️ 화면 녹화 권한이 승인되지 않았습니다. 시스템 설정에서 화면 녹화를 허용해 주세요",
         "repetitionDetected": "높은 반복이 감지되었습니다. {{name}}이(가) 쉴 수 있도록 대화 종료를 제안하세요.",
         "modelSwitched": "모델 전환",
+        "multiScreenDragHint": {
+            "title": "YUI를 다른 화면으로 옮길 수 있어요",
+            "body": "화면 가장자리 쪽으로 계속 드래그한 뒤 놓아 주세요. 가장자리에 너무 가까우면 먼저 자동으로 되돌아와요.",
+            "ack": "알겠어요",
+            "never": "다시 알리지 않기"
+        },
         "screenSource": {
             "notAvailable": "데스크톱 버전에서만 화면 소스 선택 가능",
             "loading": "로드 중...",

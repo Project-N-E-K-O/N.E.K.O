@@ -2042,6 +2042,12 @@
         "screenRecordingPermissionDenied": "⚠️ Permiso de grabación de pantalla denegado. Permita la grabación de pantalla en Configuración del sistema",
         "repetitionDetected": "Alta repetición detectada. Sugiera finalizar la conversación para dejar descansar a {{name}}.",
         "modelSwitched": "Modelo cambiado",
+        "multiScreenDragHint": {
+            "title": "Puedes mover a YUI a otra pantalla",
+            "body": "Sigue arrastrando hacia el borde de la pantalla y suelta. Si queda demasiado cerca del borde, primero rebotará.",
+            "ack": "Entendido",
+            "never": "No recordar de nuevo"
+        },
         "screenSource": {
             "notAvailable": "Selección de fuente de pantalla solo disponible en la versión de escritorio",
             "loading": "Cargando...",

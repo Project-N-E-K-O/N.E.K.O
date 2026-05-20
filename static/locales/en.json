@@ -2042,6 +2042,12 @@
         "screenRecordingPermissionDenied": "⚠️ Screen recording permission denied. Please allow screen recording in System Settings",
         "repetitionDetected": "High repetition detected. Suggest ending conversation to let {{name}} rest.",
         "modelSwitched": "Model switched",
+        "multiScreenDragHint": {
+            "title": "You can move YUI to another screen",
+            "body": "Keep dragging toward the screen edge and release. If she is too close to the edge, she will bounce back first.",
+            "ack": "Got it",
+            "never": "Do not remind me"
+        },
         "screenSource": {
             "notAvailable": "Screen source selection only available in desktop version",
             "loading": "Loading...",
