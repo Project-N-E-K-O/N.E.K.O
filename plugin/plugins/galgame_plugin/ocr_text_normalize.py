@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Iterable
 
 from .aihong_state import (
@@ -446,7 +447,7 @@ def _drop_ocr_chrome_noise_lines(text: str, *, window_title: str = "") -> str:
         if not _looks_like_temperature_status_line(line)
         and not _looks_like_window_title_line(line, window_title)
     ]
-    if filtered and len(filtered) < len(meaningful):
+    if len(filtered) < len(meaningful):
         return "\n".join(filtered)
     return str(text or "")
 
@@ -601,6 +602,7 @@ class _OcrLangDetector:
         self._confirm_streak = max(1, int(confirm_streak or 1))
         self._buffer: list[str] = []
         self._last_detected: str | None = None
+        self._confirmed_lang: str | None = None
         self._streak = 0
         self._switched_at: float | None = None
 
@@ -633,12 +635,16 @@ class _OcrLangDetector:
             self._streak = 1
 
         if self._streak >= self._confirm_streak:
+            if self._confirmed_lang is not None and detected != self._confirmed_lang:
+                self._switched_at = time.monotonic()
+            self._confirmed_lang = detected
             return detected
         return None
 
     def reset(self, *, clear_switch_time: bool = False) -> None:
         self._buffer.clear()
         self._last_detected = None
+        self._confirmed_lang = None
         self._streak = 0
         if clear_switch_time:
             self._switched_at = None
@@ -717,4 +723,3 @@ def _canonical_choice_candidate_text(choices: list[str]) -> str:
 
 def _stripped_ocr_lines(raw_text: str) -> list[str]:
     return [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
-

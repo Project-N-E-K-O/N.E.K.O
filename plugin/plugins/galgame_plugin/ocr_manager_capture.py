@@ -266,7 +266,7 @@ class CaptureMixin:
             stddev = float((stat.stddev or [0.0])[0] or 0.0)
             if stddev < 3.0:
                 return "low_information_frame"
-        except (AttributeError, OSError, ValueError, TypeError):
+        except (AttributeError, ImportError, OSError, ValueError, TypeError):
             return ""
         return ""
 

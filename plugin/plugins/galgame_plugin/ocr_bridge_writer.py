@@ -244,6 +244,7 @@ class OcrReaderBridgeWriter:
                 },
                 ts=utc_now_iso(self._time_fn()),
             )
+            self._clear_session_snapshot_unlocked()
         self._reset_session_unlocked()
 
     def _existing_last_seq_unlocked(self) -> int:
@@ -469,11 +470,6 @@ class OcrReaderBridgeWriter:
         if (
             current_type == normalized_type
             and current_elements == elements
-        ):
-            return False
-        if (
-            normalized_type in {OCR_CAPTURE_PROFILE_STAGE_DEFAULT, OCR_CAPTURE_PROFILE_STAGE_DIALOGUE}
-            and current_type == normalized_type
             and abs(current_confidence - normalized_confidence) < 0.01
         ):
             return False
@@ -611,6 +607,7 @@ class OcrReaderBridgeWriter:
             "route_id": self._state["route_id"],
         }
         self._append_event("session_ended", payload, ts=ts, update_snapshot=False)
+        self._clear_session_snapshot_unlocked()
         self._reset_session_unlocked()
         return True
 
@@ -680,6 +677,16 @@ class OcrReaderBridgeWriter:
 
     def _events_path(self) -> Path:
         return self._bridge_dir() / "events.jsonl"
+
+    def _clear_session_snapshot_unlocked(self) -> None:
+        try:
+            self._session_path().unlink(missing_ok=True)
+        except Exception as exc:
+            if self._logger is not None:
+                try:
+                    self._logger.warning("ocr_reader session snapshot clear failed: {}", exc)
+                except Exception:
+                    pass
 
     def _session_snapshot(self) -> dict[str, Any]:
         return {

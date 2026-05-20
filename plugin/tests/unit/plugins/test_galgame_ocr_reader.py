@@ -350,7 +350,7 @@ def _window() -> list[DetectedGameWindow]:
     ]
 
 
-def test_manual_window_target_signature_requires_pid_when_present() -> None:
+def test_manual_window_target_signature_ignores_pid_when_stable_fields_match() -> None:
     target = OcrWindowTarget(
         mode="manual",
         process_name="DemoGame.exe",
@@ -358,7 +358,7 @@ def test_manual_window_target_signature_requires_pid_when_present() -> None:
         pid=4242,
     )
 
-    assert not target.matches_signature(
+    assert target.matches_signature(
         DetectedGameWindow(
             title="Demo Window",
             process_name="DemoGame.exe",
@@ -372,6 +372,13 @@ def test_manual_window_target_signature_requires_pid_when_present() -> None:
             pid=4242,
         )
     )
+
+
+def test_manual_window_target_signature_uses_pid_only_without_stable_fields() -> None:
+    target = OcrWindowTarget(mode="manual", pid=4242)
+
+    assert target.matches_signature(DetectedGameWindow(pid=4242))
+    assert not target.matches_signature(DetectedGameWindow(pid=9999))
 
 
 def _assert_poll_runtime_completed(runtime: dict[str, object]) -> None:
@@ -848,6 +855,44 @@ def test_ocr_reader_manager_applies_screen_awareness_model_on_low_confidence(
     assert manager._screen_awareness_model_detail == "matched"
 
 
+def test_ocr_reader_screen_awareness_full_frame_runs_when_primary_is_full_window(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    capture_backend = _FakeCaptureBackend()
+    ocr_backend = _FakeOcrBackend(["Start Game\nConfig"])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=capture_backend,
+        ocr_backend=ocr_backend,
+    )
+    manager._config.ocr_reader_screen_awareness_full_frame_ocr = True
+    manager._consecutive_no_text_polls = 1
+    extraction = OcrExtractionResult(text="")
+
+    manager._augment_extraction_with_screen_awareness(
+        extraction,
+        target=_window()[0],
+        primary_profile=manager._full_window_profile(),
+        plan=SelectedOcrBackendPlan(
+            primary=OcrBackendDescriptor(
+                kind="fake",
+                backend=ocr_backend,
+                available=True,
+            )
+        ),
+        now=3000.0,
+    )
+
+    assert capture_backend.capture_calls
+    assert extraction.screen_ocr_regions[0]["source"] == "full_frame"
+    assert extraction.screen_ocr_regions[0]["text"] == "Start Game\nConfig"
+
+
 def test_ocr_reader_manager_collects_desensitized_screen_awareness_sample(
     tmp_path: Path,
 ) -> None:
@@ -943,6 +988,36 @@ def test_ocr_writer_emits_screen_classified_state_and_event(tmp_path: Path) -> N
     assert events[-1]["type"] == "screen_classified"
     assert events[-1]["payload"]["screen_ui_elements"][0]["text"] == "Button 0"
     assert events[-1]["payload"]["screen_debug"]["sources"] == ["full_frame"]
+
+
+def test_ocr_writer_emits_screen_classified_when_confidence_changes(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+
+    assert writer.emit_screen_classified(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.86,
+        ui_elements=[{"text": "Start Game"}],
+        ts="2026-04-29T03:00:00Z",
+    ) is True
+    assert writer.emit_screen_classified(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.91,
+        ui_elements=[{"text": "Start Game"}],
+        ts="2026-04-29T03:00:01Z",
+    ) is True
+
+    session = read_session_json(bridge_root / writer.game_id / "session.json")
+    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
+
+    assert session.session is not None
+    assert session.session["state"]["screen_confidence"] == pytest.approx(0.91)
+    assert [event["type"] for event in events][-2:] == [
+        "screen_classified",
+        "screen_classified",
+    ]
 
 
 def test_ocr_reader_emits_dialogue_transition_after_title_state(tmp_path: Path) -> None:
@@ -1101,6 +1176,7 @@ def test_ocr_writer_discard_session_does_not_delete_existing_history(tmp_path: P
     events = _read_events(bridge_root / game_id / "events.jsonl")
 
     assert (bridge_root / game_id).is_dir()
+    assert not (bridge_root / game_id / "session.json").exists()
     assert [event["type"] for event in events] == [
         "session_started",
         "line_changed",
@@ -1125,6 +1201,7 @@ def test_ocr_writer_end_session_resets_runtime_and_rejects_late_events(
     assert runtime.status == "idle"
     assert runtime.session_id == ""
     assert runtime.game_id == ""
+    assert not (bridge_root / game_id / "session.json").exists()
     assert writer.emit_line("Yukino: late line.", ts="2026-04-29T03:00:03Z") is False
     events = _read_events(bridge_root / game_id / "events.jsonl")
     assert [event["type"] for event in events] == [
@@ -1293,12 +1370,17 @@ def test_ocr_session_snapshot_write_failure_is_nonfatal(
 
     monkeypatch.setattr(galgame_ocr_reader.os, "replace", _fail_replace)
 
+    window = _window()[0]
+    expected_game_id = galgame_ocr_reader._ocr_game_id_from_process(
+        window.process_name or window.title
+    )
+
     with pytest.raises(RuntimeError, match="session snapshot write failed"):
-        writer.start_session(_window()[0])
+        writer.start_session(window)
 
     assert logger.warnings
     assert logger.warnings[0][0] == "ocr_reader session snapshot write failed: {}"
-    assert not (bridge_root / writer.game_id / "events.jsonl").exists()
+    assert not (bridge_root / expected_game_id / "events.jsonl").exists()
 
 
 def test_ocr_choice_candidates_use_single_read_threshold_when_requested(tmp_path: Path) -> None:
@@ -4303,6 +4385,25 @@ def test_ocr_reader_build_runtime_preserves_foreground_advance_diagnostics(
     assert abs(rebuilt.foreground_advance_last_event_age_seconds - 0.3) < 1e-6
 
 
+def test_ocr_reader_build_runtime_uses_config_enabled_state(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=False),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+
+    rebuilt = manager._build_runtime(
+        status="disabled",
+        detail="disabled_by_config",
+        plan=SelectedOcrBackendPlan(),
+    )
+
+    assert rebuilt.enabled is False
+
+
 @pytest.mark.asyncio
 async def test_ocr_reader_restarts_session_after_initial_capture_failure(
     tmp_path: Path,
@@ -4763,6 +4864,15 @@ def test_ocr_lang_detector_reset_clears_state() -> None:
     assert detector._streak == 0
     assert detector._buffer == []
     assert detector._last_detected is None
+
+
+def test_ocr_lang_detector_records_confirmed_language_change() -> None:
+    detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+
+    assert detector.feed("\u3053\u3093\u306b\u3061\u306f") == "japan"
+    assert detector.last_switched_at is None
+    assert detector.feed("\uc548\ub155\ud558\uc138\uc694") == "korean"
+    assert detector.last_switched_at is not None
 
 
 def test_rapidocr_auto_lang_skips_when_rapidocr_not_active(
@@ -5662,8 +5772,8 @@ async def test_aihong_menu_stage_accepts_plain_text_choices_after_dialogue_idle_
     session = read_session_json(bridge_root / writer.game_id / "session.json").session
 
     assert latest.runtime["capture_profile"]["top_ratio"] == pytest.approx(0.0)
-    assert events[-1]["type"] == "choices_shown"
-    payload = events[-1]["payload"]
+    choice_event = next(event for event in reversed(events) if event["type"] == "choices_shown")
+    payload = choice_event["payload"]
     assert [item["text"] for item in payload["choices"]] == ["往南跑", "躲进巷子里"]
     assert session is not None
     assert session["state"]["is_menu_open"] is True
@@ -5994,8 +6104,8 @@ async def test_ocr_reader_manager_emits_choices_after_stable_menu_detection(
     events = _read_events(bridge_root / writer.game_id / "events.jsonl")
     session = read_session_json(bridge_root / writer.game_id / "session.json").session
 
-    assert events[-1]["type"] == "choices_shown"
-    payload = events[-1]["payload"]
+    choice_event = next(event for event in reversed(events) if event["type"] == "choices_shown")
+    payload = choice_event["payload"]
     assert len(payload["choices"]) == 2
     assert payload["choices"][0]["choice_id"].startswith(f"{payload['line_id']}#choice0")
     assert session is not None
@@ -6040,6 +6150,15 @@ def test_drop_ocr_chrome_noise_lines_keeps_dialogue() -> None:
     )
 
     assert filtered == "有人是猪马牛羊，有人是虎豹豺狼。"
+
+
+def test_drop_ocr_chrome_noise_lines_returns_empty_when_all_lines_filtered() -> None:
+    filtered = galgame_ocr_reader._drop_ocr_chrome_noise_lines(
+        "TheLamentingGeese\n16°C",
+        window_title="TheLamentingGeese",
+    )
+
+    assert filtered == ""
 
 
 @pytest.mark.asyncio
