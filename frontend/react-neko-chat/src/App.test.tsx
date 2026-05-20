@@ -1231,9 +1231,9 @@ describe('App', () => {
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
   });
 
-  it('exposes the titlebar export action in the compact tool wheel', async () => {
+  it('opens compact export history with an empty state when there are no messages', async () => {
     const onExportConversationClick = vi.fn();
-    render(
+    const { container } = render(
       <App
         chatSurfaceMode="compact"
         compactChatState="input"
@@ -1256,10 +1256,777 @@ describe('App', () => {
 
     const exportButton = fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement;
     expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    expect(exportButton).toHaveAttribute('title', 'History');
+    expect(exportButton).toHaveAttribute('aria-label', 'History');
+    expect(exportButton).not.toHaveClass('is-active');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(exportButton).toHaveAttribute('data-compact-tool-active', 'false');
     fireEvent.click(exportButton);
 
-    expect(onExportConversationClick).toHaveBeenCalledTimes(1);
+    expect(onExportConversationClick).not.toHaveBeenCalled();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'true');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '0');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-empty')).toHaveTextContent('There is no conversation to export yet.');
+    expect(container.querySelectorAll('[data-compact-export-history-message-id]')).toHaveLength(0);
+    expect(container.querySelector('.compact-export-history-count')).toHaveTextContent('0/0');
+    expect(container.querySelectorAll('.compact-export-history-control')).toHaveLength(4);
+    container.querySelectorAll('.compact-export-history-control').forEach((button) => {
+      expect(button).toBeDisabled();
+    });
+    expect(exportButton).toHaveClass('is-active');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+    expect(exportButton).toHaveAttribute('data-compact-tool-active', 'true');
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+  });
+
+  it('toggles compact export history state instead of opening the full export flow when messages exist', async () => {
+    const onExportConversationClick = vi.fn();
+    const onCompactChatStateChange = vi.fn();
+    const message = parseChatMessage({
+      id: 'compact-export-history-message',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '可以导出的对话' }],
+    });
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[message]}
+        onExportConversationClick={onExportConversationClick}
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 9, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 9, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 9, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const exportButton = fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement;
+    expect(exportButton).not.toHaveClass('is-active');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(exportButton).toHaveAttribute('data-compact-tool-active', 'false');
+    fireEvent.click(exportButton);
+
+    expect(onExportConversationClick).not.toHaveBeenCalled();
+    expect(onCompactChatStateChange).not.toHaveBeenCalled();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'true');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'false');
+    expect(container.querySelector('.compact-chat-inline-input')).not.toBeNull();
+    expect(exportButton).toHaveClass('is-active');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+    expect(exportButton).toHaveAttribute('data-compact-tool-active', 'true');
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    fireEvent.click(exportButton);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(exportButton).not.toHaveClass('is-active');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(exportButton).toHaveAttribute('data-compact-tool-active', 'false');
+  });
+
+  it('mounts compact export history as a desktop body portal to avoid compact window clipping', async () => {
+    const originalBodyClass = document.body.className;
+    document.body.classList.add('electron-chat-window');
+    const message = parseChatMessage({
+      id: 'compact-export-desktop-portal-message',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '桌面端历史层需要脱离 chat-window 裁切' }],
+      status: 'sent',
+    });
+
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      fireEvent.pointerDown(fan, { pointerId: 91, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 91, clientX: 156, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(fan, { pointerId: 91, clientX: 156, buttons: 0, pointerType: 'mouse' });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+      const history = document.body.querySelector('.compact-export-history-anchor') as HTMLElement;
+      expect(history).not.toBeNull();
+      expect(history.parentElement).toBe(document.body);
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(history).toHaveAttribute('data-compact-geometry-owner', 'surface');
+      expect(history.querySelector('[data-compact-export-history-message-id="compact-export-desktop-portal-message"]')).not.toBeNull();
+    } finally {
+      document.body.className = originalBodyClass;
+    }
+  });
+
+  it('keeps compact input state while interacting with desktop compact history and preview portals', async () => {
+    const originalBodyClass = document.body.className;
+    document.body.classList.add('electron-chat-window');
+    const onCompactChatStateChange = vi.fn();
+    const message = parseChatMessage({
+      id: 'compact-export-history-input-island',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '历史层本身属于紧凑交互岛' }],
+      status: 'sent',
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[message]}
+          onCompactChatStateChange={onCompactChatStateChange}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      fireEvent.pointerDown(fan, { pointerId: 92, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 92, clientX: 156, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(fan, { pointerId: 92, clientX: 156, buttons: 0, pointerType: 'mouse' });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+      onCompactChatStateChange.mockClear();
+
+      const input = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+      const history = document.body.querySelector('.compact-export-history-anchor') as HTMLElement;
+      const row = history.querySelector('[data-compact-export-history-message-id="compact-export-history-input-island"]') as HTMLElement;
+      input.focus();
+      fireEvent.pointerDown(row, { pointerId: 93, clientX: 20, clientY: 20, button: 0, buttons: 1, pointerType: 'mouse' });
+      fireEvent.blur(input, { relatedTarget: row });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+
+      fireEvent.click(row);
+      fireEvent.click(history.querySelectorAll('.compact-export-history-control')[3] as HTMLButtonElement);
+      const preview = history.querySelector('.compact-export-preview-region') as HTMLElement;
+      fireEvent.pointerDown(preview, { pointerId: 94, clientX: 24, clientY: 24, button: 0, buttons: 1, pointerType: 'mouse' });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'true');
+
+      fireEvent.pointerDown(document.body, { pointerId: 95, clientX: 1, clientY: 1, button: 0, buttons: 1, pointerType: 'mouse' });
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
+    } finally {
+      document.body.className = originalBodyClass;
+    }
+  });
+
+  it('closes compact export history state after leaving compact mode', async () => {
+    const message = parseChatMessage({
+      id: 'compact-export-history-close-message',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '切换模式时关闭历史层' }],
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 10, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 10, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 10, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'true');
+
+    rerender(<App chatSurfaceMode="full" messages={[message]} />);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '0');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'false');
+  });
+
+  it('keeps compact export history open with an empty state when messages are cleared', async () => {
+    const message = parseChatMessage({
+      id: 'compact-export-history-clear-message',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '清空消息时关闭历史层' }],
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 11, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 11, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 11, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'true');
+
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[]} />);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-history-open', 'true');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '0');
+    expect(container.querySelector('.compact-export-history-empty')).toHaveTextContent('There is no conversation to export yet.');
+    expect(container.querySelector('.compact-export-history-count')).toHaveTextContent('0/0');
+    expect(fan.querySelector('.compact-input-tool-item-export')).toHaveClass('is-active');
+    expect(fan.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'true');
+    expect(fan.querySelector('.compact-input-tool-item-export')).toHaveAttribute('data-compact-tool-active', 'true');
+  });
+
+  it('renders compact export history without the message list cap and keeps assistant left/user right', async () => {
+    const messages = Array.from({ length: 60 }, (_, index) => parseChatMessage({
+      id: `compact-export-history-long-${index}`,
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      author: index % 2 === 0 ? 'Neko' : 'You',
+      time: `10:${String(index).padStart(2, '0')}`,
+      createdAt: index,
+      blocks: [{ type: 'text', text: `history item ${index}` }],
+      status: 'sent',
+    }));
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={messages} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 12, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 12, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 12, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+    expect(history).not.toBeNull();
+    expect(history).toHaveAttribute('data-compact-geometry-item', 'history');
+    expect(history).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(history.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(history.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-kind', 'scroll');
+    const rows = history.querySelectorAll('[data-compact-export-history-message-id]');
+    expect(rows).toHaveLength(60);
+    expect(rows[0]).toHaveClass('is-assistant');
+    expect(rows[1]).toHaveClass('is-user');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('0/60');
+
+    fireEvent.click(history.querySelector('.compact-export-history-control') as HTMLButtonElement);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '60');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('60/60');
+  });
+
+  it('supports compact export history bubble selection and selection controls', async () => {
+    const messages = [
+      parseChatMessage({
+        id: 'compact-export-select-assistant',
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:00',
+        blocks: [{ type: 'text', text: '第一条' }],
+        status: 'sent',
+      }),
+      parseChatMessage({
+        id: 'compact-export-select-user',
+        role: 'user',
+        author: 'You',
+        time: '10:01',
+        blocks: [{ type: 'text', text: '第二条' }],
+        status: 'sent',
+      }),
+    ];
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={messages} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 13, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 13, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 13, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+    const rows = history.querySelectorAll('[data-compact-export-history-message-id]');
+    const selectAll = history.querySelectorAll('.compact-export-history-control')[0] as HTMLButtonElement;
+    const clear = history.querySelectorAll('.compact-export-history-control')[1] as HTMLButtonElement;
+    const invert = history.querySelectorAll('.compact-export-history-control')[2] as HTMLButtonElement;
+    const controlsBar = history.querySelector('.compact-export-history-controls') as HTMLElement;
+    const controlsContent = history.querySelector('.compact-export-history-controls-content') as HTMLElement;
+    const controlsToggle = history.querySelector('.compact-export-history-controls-toggle') as HTMLButtonElement;
+
+    expect(controlsBar).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(controlsBar).toHaveAttribute('data-compact-hit-region-kind', 'controls');
+    expect(controlsBar).toHaveAttribute('data-compact-export-controls-collapsed', 'false');
+    expect(controlsToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(controlsContent).not.toHaveAttribute('hidden');
+
+    fireEvent.click(controlsToggle);
+    expect(controlsBar).toHaveAttribute('data-compact-export-controls-collapsed', 'true');
+    expect(controlsToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(controlsContent).toHaveAttribute('hidden');
+
+    fireEvent.click(controlsToggle);
+    expect(controlsBar).toHaveAttribute('data-compact-export-controls-collapsed', 'false');
+    expect(controlsToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(controlsContent).not.toHaveAttribute('hidden');
+
+    fireEvent.click(rows[0]);
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(rows[1]).toHaveClass('is-unselected');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('1/2');
+
+    fireEvent.click(clear);
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'false');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('0/2');
+
+    fireEvent.click(selectAll);
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(rows[1]).toHaveAttribute('aria-pressed', 'true');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('2/2');
+
+    fireEvent.click(invert);
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'false');
+    expect(rows[1]).toHaveAttribute('aria-pressed', 'false');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('0/2');
+  });
+
+  it('opens an inline compact export preview shell that follows the shared selection', async () => {
+    const messages = [
+      parseChatMessage({
+        id: 'compact-export-preview-assistant',
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:00',
+        blocks: [{ type: 'text', text: '预览第一条' }],
+        status: 'sent',
+      }),
+      parseChatMessage({
+        id: 'compact-export-preview-user',
+        role: 'user',
+        author: 'You',
+        time: '10:01',
+        blocks: [{ type: 'text', text: '预览第二条' }],
+        status: 'sent',
+      }),
+    ];
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={messages} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 19, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 19, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 19, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+    const rows = history.querySelectorAll('[data-compact-export-history-message-id]');
+    const controls = history.querySelectorAll('.compact-export-history-control');
+    const exportPreview = controls[3] as HTMLButtonElement;
+
+    fireEvent.click(rows[0]);
+    fireEvent.click(exportPreview);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'true');
+    expect(history).toHaveClass('has-preview');
+    expect(history.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-export-preview-open', 'true');
+    expect(history.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(history.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-kind', 'preview');
+    expect(history.querySelector('.compact-export-history-scroll')).toBeNull();
+    expect(history.querySelector('.compact-export-history-controls')).toBeNull();
+    expect(history.querySelectorAll('[data-compact-export-preview-message-id]')).toHaveLength(1);
+    expect(history.querySelector('[data-compact-export-preview-message-id="compact-export-preview-assistant"]')).not.toBeNull();
+    expect(history.querySelector('.compact-export-preview-subtitle')).toHaveTextContent('1/2');
+    expect(history.querySelector('.compact-export-preview-empty')).toBeNull();
+    history.querySelectorAll('.compact-export-preview-action').forEach((button) => {
+      expect(button).toBeDisabled();
+    });
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={messages}
+      />,
+    );
+
+    expect(history.querySelectorAll('[data-compact-export-preview-message-id]')).toHaveLength(1);
+
+    fireEvent.click(history.querySelector('.compact-export-preview-back') as HTMLButtonElement);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'false');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '1');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('1/2');
+    const restoredRows = history.querySelectorAll('[data-compact-export-history-message-id]');
+    fireEvent.click(restoredRows[1]);
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('2/2');
+
+    const restoredExportPreview = history.querySelectorAll('.compact-export-history-control')[3] as HTMLButtonElement;
+    fireEvent.click(restoredExportPreview);
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[]}
+      />,
+    );
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'true');
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '0');
+    expect(history.querySelectorAll('[data-compact-export-preview-message-id]')).toHaveLength(0);
+    expect(history.querySelector('.compact-export-preview-empty')).toHaveTextContent('Select at least one message to export.');
+    expect(history.querySelector('.compact-export-preview-subtitle')).toHaveTextContent('0/0');
+  });
+
+  it('does not select sending messages or toggle a bubble from inner message actions', async () => {
+    const onMessageAction = vi.fn();
+    const messages = [
+      parseChatMessage({
+        id: 'compact-export-sent-with-action',
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:00',
+        blocks: [
+          { type: 'text', text: '带按钮的消息' },
+          {
+            type: 'buttons',
+            buttons: [{ id: 'act-1', label: '内部按钮', action: 'test' }],
+          },
+        ],
+        status: 'sent',
+      }),
+      parseChatMessage({
+        id: 'compact-export-sending-disabled',
+        role: 'user',
+        author: 'You',
+        time: '10:01',
+        blocks: [{ type: 'text', text: '发送中的消息' }],
+        status: 'sending',
+      }),
+    ];
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={messages}
+        onMessageAction={onMessageAction}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 14, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 14, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 14, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+    const rows = history.querySelectorAll('[data-compact-export-history-message-id]');
+    fireEvent.click(screen.getByRole('button', { name: '内部按钮' }));
+    expect(onMessageAction).toHaveBeenCalledTimes(1);
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'false');
+    expect(rows[1]).toHaveAttribute('aria-disabled', 'true');
+
+    fireEvent.click(history.querySelector('.compact-export-history-control') as HTMLButtonElement);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '1');
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(rows[1]).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('turns off compact export history auto scroll after the user scrolls upward', async () => {
+    const messages = Array.from({ length: 6 }, (_, index) => parseChatMessage({
+      id: `compact-export-scroll-${index}`,
+      role: 'assistant',
+      author: 'Neko',
+      time: `10:0${index}`,
+      blocks: [{ type: 'text', text: `scroll item ${index}` }],
+      status: 'sent',
+    }));
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={messages} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 15, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 15, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 15, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const scroll = container.querySelector('.compact-export-history-scroll') as HTMLDivElement;
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 500 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 120 });
+    scroll.scrollTop = 40;
+    fireEvent.scroll(scroll);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'false');
+
+    scroll.scrollTop = 380;
+    fireEvent.scroll(scroll);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'true');
+  });
+
+  it('restores compact export history auto scroll for non-text outgoing actions', async () => {
+    const onComposerSubmit = vi.fn();
+    const onGalgameOptionSelect = vi.fn();
+    const message = parseChatMessage({
+      id: 'compact-export-outgoing-action',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '主动动作恢复贴底' }],
+      status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[message]}
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 16, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 16, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 16, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const scroll = container.querySelector('.compact-export-history-scroll') as HTMLDivElement;
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 500 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 120 });
+    scroll.scrollTop = 40;
+    fireEvent.scroll(scroll);
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'false');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[message]}
+        composerAttachments={[{ id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' }]}
+        onComposerSubmit={onComposerSubmit}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '' });
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'true');
+    await act(async () => {
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+    });
+
+    scroll.scrollTop = 40;
+    fireEvent.scroll(scroll);
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'false');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="default"
+        messages={[message]}
+        galgameModeEnabled
+        galgameOptions={[{ label: 'A', text: 'Option A' }]}
+        onGalgameOptionSelect={onGalgameOptionSelect}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Option A' }));
+
+    expect(onGalgameOptionSelect).toHaveBeenCalledWith({ label: 'A', text: 'Option A' });
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-auto-scroll', 'true');
+  });
+
+  it('limits compact export select all to the export selection cap', async () => {
+    const messages = Array.from({ length: 120 }, (_, index) => parseChatMessage({
+      id: `compact-export-limit-${index}`,
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      author: index % 2 === 0 ? 'Neko' : 'You',
+      time: `10:${String(index % 60).padStart(2, '0')}`,
+      blocks: [{ type: 'text', text: `limit item ${index}` }],
+      status: 'sent',
+    }));
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={messages} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 16, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 16, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 16, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+    fireEvent.click(history.querySelector('.compact-export-history-control') as HTMLButtonElement);
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-selected-count', '100');
+    expect(history.querySelector('.compact-export-history-count')).toHaveTextContent('100/120');
+  });
+
+  it('supports keyboard selection and ignores pointer drags in compact export history', async () => {
+    const message = parseChatMessage({
+      id: 'compact-export-keyboard',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '键盘选择' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 17, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 17, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 17, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    const row = container.querySelector('[data-compact-export-history-message-id="compact-export-keyboard"]') as HTMLElement;
+    fireEvent.pointerDown(row, { pointerId: 18, clientX: 10, clientY: 10, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(row, { pointerId: 18, clientX: 34, clientY: 10, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(row, { pointerId: 18, clientX: 34, clientY: 10, buttons: 0, pointerType: 'mouse' });
+    fireEvent.click(row);
+
+    expect(row).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(row).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(row).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('yields compact export history interaction only when compact choices are above history', async () => {
+    const message = parseChatMessage({
+      id: 'compact-export-choice-yield',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: '选项打开时历史层让位' }],
+      status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(fan, { pointerId: 19, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerMove(fan, { pointerId: 19, clientX: 156, buttons: 1, pointerType: 'mouse' });
+    fireEvent.pointerUp(fan, { pointerId: 19, clientX: 156, buttons: 0, pointerType: 'mouse' });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
+
+    let history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+    expect(history).toHaveAttribute('data-compact-export-under-choice', 'false');
+
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: { compactChoicePlacement?: 'above' | 'below' } | null;
+    };
+    try {
+      desktopWindow.__nekoDesktopCompactLayout = { compactChoicePlacement: 'below' };
+      rerender(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="default"
+          messages={[message]}
+          galgameModeEnabled
+          galgameOptions={[{ label: 'A', text: 'Option A' }]}
+        />,
+      );
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(document.body.querySelector('body > .compact-chat-choice-anchor')).toHaveAttribute('data-compact-choice-placement', 'below');
+      });
+      history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+      expect(history).not.toHaveClass('under-choice-prompt');
+      expect(history).toHaveAttribute('data-compact-export-under-choice', 'false');
+
+      desktopWindow.__nekoDesktopCompactLayout = { compactChoicePlacement: 'above' };
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(document.body.querySelector('body > .compact-chat-choice-anchor')).toHaveAttribute('data-compact-choice-placement', 'above');
+      });
+      history = container.querySelector('.compact-export-history-anchor') as HTMLElement;
+      expect(history).toHaveClass('under-choice-prompt');
+      expect(history).toHaveAttribute('data-compact-export-under-choice', 'true');
+    } finally {
+      desktopWindow.__nekoDesktopCompactLayout = null;
+    }
   });
 
   it('only rotates compact input tools during an active pointer drag', () => {
@@ -2130,14 +2897,14 @@ describe('App', () => {
     });
     document.body.appendChild(live2dContainer);
 
-    const compactButton = document.createElement('button');
-    compactButton.className = 'live2d-floating-btn';
-    document.body.appendChild(compactButton);
+    const compactHistoryLayer = document.createElement('section');
+    compactHistoryLayer.className = 'compact-export-history-anchor';
+    document.body.appendChild(compactHistoryLayer);
 
     const originalElementsFromPoint = document.elementsFromPoint;
     Object.defineProperty(document, 'elementsFromPoint', {
       configurable: true,
-      value: () => [compactButton],
+      value: () => [compactHistoryLayer],
     });
 
     Object.assign(window, {
@@ -2168,7 +2935,7 @@ describe('App', () => {
         value: originalElementsFromPoint || (() => []),
       });
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      compactButton.remove();
+      compactHistoryLayer.remove();
       live2dContainer.remove();
     }
   });

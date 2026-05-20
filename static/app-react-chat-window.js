@@ -234,6 +234,31 @@
         };
     }
 
+    function getElectronCompactStableHistorySlotHeight(surface) {
+        if (!isElectronChatWindow() || !surface) return null;
+        var layout = window.__nekoDesktopCompactLayout;
+        var windowBounds = layout && layout.windowBounds;
+        var workArea = layout && layout.workArea;
+        var windowY = Number(windowBounds && windowBounds.y);
+        var workAreaY = Number(workArea && workArea.y);
+        var workAreaHeight = Number(workArea && workArea.height);
+        if (
+            !Number.isFinite(windowY)
+            || !Number.isFinite(workAreaY)
+            || !Number.isFinite(workAreaHeight)
+            || workAreaHeight <= 0
+        ) {
+            return null;
+        }
+
+        var surfaceScreenTop = windowY + surface.top;
+        var availableAbove = Math.max(0, surfaceScreenTop - workAreaY);
+        var widthLimit = Math.max(180, Math.round(surface.width * 1.18));
+        var workAreaLimit = Math.max(180, Math.round(workAreaHeight * 0.63));
+        var availableLimit = Math.max(180, Math.round(availableAbove - 24));
+        return Math.max(180, Math.min(widthLimit, workAreaLimit, availableLimit));
+    }
+
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
     }
@@ -605,6 +630,51 @@
             .filter(Boolean));
     }
 
+    function collectCompactHistoryGeometryItems(element) {
+        if (!element || element.getAttribute('data-compact-geometry-item') !== 'history') return [];
+        var hitScope = element.getAttribute('data-compact-geometry-hit-scope') || '';
+        var hitRegionNodes = Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'));
+        if (!hitRegionNodes.length) {
+            hitRegionNodes = Array.prototype.slice.call(element.querySelectorAll(
+                '.compact-export-history-scroll, .compact-export-history-controls, .compact-export-preview-region:not([hidden])'
+            ));
+        }
+        var children = hitRegionNodes.map(function (child, index) {
+            var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+            if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+            if (style && Number(style.opacity) <= 0.01) return null;
+            var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+            if (!rect) return null;
+            var interactive = style ? style.pointerEvents !== 'none' : true;
+            var kind = child.getAttribute('data-compact-hit-region-kind')
+                || (child.classList.contains('compact-export-preview-region') ? 'preview'
+                    : (child.classList.contains('compact-export-history-controls') ? 'controls' : 'scroll'));
+            kind = String(kind || 'region').replace(/[^a-zA-Z0-9_-]/g, '') || 'region';
+            return {
+                id: 'history:' + kind + ':' + index,
+                owner: 'surface',
+                kind: 'history',
+                visualRect: rect,
+                hitRect: interactive ? rect : null,
+                nativeRect: rect,
+                interactive: interactive,
+                hitRegionKind: kind
+            };
+        }).filter(Boolean);
+        var nativeRect = unionCompactRects(children.map(function (item) { return item.nativeRect; }));
+        if (!nativeRect) return [];
+        return [{
+            id: 'history:native',
+            owner: 'surface',
+            kind: 'history',
+            visualRect: nativeRect,
+            hitRect: null,
+            nativeRect: nativeRect,
+            interactive: false,
+            hitScope: hitScope || 'children'
+        }].concat(children);
+    }
+
     function collectCompactSurfaceGeometryItems() {
         var root = getRoot();
         if (!root) return [];
@@ -614,17 +684,22 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('compact-export-history-anchor')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
-            if (element.getAttribute('data-compact-geometry-item') === 'toolFan') {
+            var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
+            if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (compactGeometryItem === 'history') {
+                return items.concat(collectCompactHistoryGeometryItems(element));
             }
             var rect = getCompactGeometryElementRect(element);
             if (!rect) return items;
             items.push({
-                id: element.id || element.getAttribute('data-compact-geometry-item') || element.className || 'compact-item',
+                id: element.id || compactGeometryItem || element.className || 'compact-item',
                 owner: 'surface',
-                kind: element.getAttribute('data-compact-geometry-item') || 'unknown',
+                kind: compactGeometryItem || 'unknown',
                 visualRect: rect,
                 hitRect: rect,
                 nativeRect: rect,
@@ -679,10 +754,12 @@
         shell.style.removeProperty('--compact-surface-top');
         shell.style.removeProperty('--compact-surface-width');
         shell.style.removeProperty('--compact-surface-height');
+        shell.style.removeProperty('--compact-history-slot-height');
         document.documentElement.style.removeProperty('--compact-surface-left');
         document.documentElement.style.removeProperty('--compact-surface-top');
         document.documentElement.style.removeProperty('--compact-surface-width');
         document.documentElement.style.removeProperty('--compact-surface-height');
+        document.documentElement.style.removeProperty('--compact-history-slot-height');
         compactSurfaceAnchorSnapshot = '';
         compactSurfaceAnchorLocked = false;
         syncCompactInteractionGeometry();
@@ -704,12 +781,14 @@
             clearCompactSurfaceAnchor();
             return;
         }
+        var stableHistorySlotHeight = getElectronCompactStableHistorySlotHeight(target);
 
         var snapshot = [
             Math.round(target.left),
             Math.round(target.top),
             Math.round(target.width),
-            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT),
+            stableHistorySlotHeight ? Math.round(stableHistorySlotHeight) : 0
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
@@ -724,6 +803,13 @@
         document.documentElement.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
         document.documentElement.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
         document.documentElement.style.setProperty('--compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+        if (stableHistorySlotHeight) {
+            shell.style.setProperty('--compact-history-slot-height', Math.round(stableHistorySlotHeight) + 'px');
+            document.documentElement.style.setProperty('--compact-history-slot-height', Math.round(stableHistorySlotHeight) + 'px');
+        } else {
+            shell.style.removeProperty('--compact-history-slot-height');
+            document.documentElement.style.removeProperty('--compact-history-slot-height');
+        }
         syncCompactInteractionGeometry();
     }
 
@@ -3818,6 +3904,7 @@
         window.addEventListener('neko:desktop-compact-layout-change', function () {
             compactSurfaceAnchorLocked = false;
             compactSurfaceAnchorSnapshot = '';
+            syncCompactSurfaceAnchor();
             scheduleCompactMinimizeBallTracking();
         });
         window.addEventListener('neko:desktop-avatar-bounds-change', function () {
