@@ -99,6 +99,34 @@
         return fps;
     }
 
+    // ── 2.5 URL.createObjectURL 计数 ─────────────────────────────────
+    // Blob URL 没 revoke 是 audio playback 最经典的 leak——浏览器在 created -
+    // revoked 之差里持有 Blob 引用，不被 GC。这里 monkey-patch 计数「活的」
+    // ObjectURL 数（created 减 revoked）。同 setInterval 的玩法。
+    var _liveObjectURLs = 0;
+    var _origCreateObjectURL = (typeof URL !== 'undefined' && URL.createObjectURL) ? URL.createObjectURL.bind(URL) : null;
+    var _origRevokeObjectURL = (typeof URL !== 'undefined' && URL.revokeObjectURL) ? URL.revokeObjectURL.bind(URL) : null;
+    if (_origCreateObjectURL && _origRevokeObjectURL) {
+        URL.createObjectURL = function () {
+            var u = _origCreateObjectURL.apply(null, arguments);
+            _liveObjectURLs += 1;
+            return u;
+        };
+        URL.revokeObjectURL = function (u) {
+            _liveObjectURLs = Math.max(0, _liveObjectURLs - 1);
+            return _origRevokeObjectURL(u);
+        };
+    }
+
+    // ── 2.6 全局 error / unhandledrejection 累计 ──────────────────────
+    // JS 异常风暴是 CPU 假性高的常见原因（每秒抛 1000 个 error，每个 logger
+    // catch + stack trace 处理 = 真 CPU 占用）。累计计数比单次 console error
+    // 更能呈现「最近 5 min 又涨了 N 次」的趋势。
+    var _errorCount = 0;
+    var _unhandledRejectionCount = 0;
+    window.addEventListener('error', function () { _errorCount += 1; }, { capture: true });
+    window.addEventListener('unhandledrejection', function () { _unhandledRejectionCount += 1; }, { capture: true });
+
     // ── 3. Snapshot 收集 + 推送 ────────────────────────────────────────
     function collectSnapshot() {
         var snap = {
@@ -109,6 +137,9 @@
             raf_fps_60s: _snapshotRAF(),
             dom_nodes: 0,
             js_heap_mb: null,
+            live_object_urls: _liveObjectURLs,
+            error_count: _errorCount,
+            unhandled_rejection_count: _unhandledRejectionCount,
         };
         try {
             snap.dom_nodes = document.getElementsByTagName('*').length;

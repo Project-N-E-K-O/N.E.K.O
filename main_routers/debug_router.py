@@ -25,13 +25,14 @@ counter 曲线**才能定位。这个 router 干两件事：
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import math
 import os
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +52,38 @@ _HEALTH_RING: deque[dict[str, Any]] = deque(maxlen=200)
 _WATCHDOG_TASK: asyncio.Task | None = None
 _WATCHDOG_INTERVAL_SECONDS = 5 * 60  # 5 分钟
 
+# psutil.Process 复用：cpu_percent(None) 必须**用同一个 Process 实例**多次调用，
+# 第一次返回 0（建立基线），之后每次返回距上次的 CPU 利用率%。每次 new Process
+# 都是新基线 → 永远 0%，等于没采。`None` 表示尚未尝试初始化或环境缺 psutil。
+_PSUTIL_PROCESS: Any = None
+_PSUTIL_INIT_TRIED = False
+
 
 # ---------------------------------------------------------------------------
 # Snapshot 采集
 # ---------------------------------------------------------------------------
+
+def _get_psutil_process() -> Any:
+    """惰性初始化 + 复用同一个 ``psutil.Process``。
+
+    第一次调用时尝试 import psutil 并 prime ``cpu_percent``（首次调用约定回 0，
+    建立基线，后续才有意义）。失败则永久返回 None，不再重试——既避免反复
+    import 噪音，也让缺 psutil 的环境曲线上看 cpu_percent/num_handles 一律 null
+    跟「真有 leak」明确区分。"""
+    global _PSUTIL_PROCESS, _PSUTIL_INIT_TRIED
+    if _PSUTIL_INIT_TRIED:
+        return _PSUTIL_PROCESS
+    _PSUTIL_INIT_TRIED = True
+    try:
+        import psutil  # type: ignore
+        proc = psutil.Process()
+        # Prime：首次调用约定回 0，立刻丢掉，下次才有真值。
+        proc.cpu_percent(interval=None)
+        _PSUTIL_PROCESS = proc
+    except Exception:
+        _PSUTIL_PROCESS = None
+    return _PSUTIL_PROCESS
+
 
 def _safe_rss_mb() -> float | None:
     """读取当前进程**当前** RSS（MB）；只在 psutil 可用时返回，否则 None。
@@ -63,13 +92,134 @@ def _safe_rss_mb() -> float | None:
     **lifetime peak**——一旦上去就不下降。用来画 leak 趋势会把一次性内存
     高峰永久误读成 leak，比没有这个字段还误导。所以**宁可返回 None**也不
     走 ru_maxrss。打包发行版默认就带 psutil，源码模式 ``uv sync`` 也会装。"""
-    try:
-        import psutil  # type: ignore
-        return psutil.Process().memory_info().rss / (1024 * 1024)
-    except Exception:
-        # 故意吞：拿不到 RSS 不应拖垮诊断功能。曲线上看 rss_mb=null 就知道是
-        # 环境缺 psutil，不会和「真有 leak」混淆。
+    proc = _get_psutil_process()
+    if proc is None:
         return None
+    try:
+        return proc.memory_info().rss / (1024 * 1024)
+    except Exception:
+        # 进程突然不存在 / 权限丢失等极端态：返 None 不挂诊断。
+        return None
+
+
+def _safe_psutil_extras() -> dict[str, Any]:
+    """补 psutil 能给的几个长跑泄漏经典指标：cpu%、线程数、Win handle/POSIX fd。
+
+    - cpu_percent: **原始问题的金线指标**——任务管理器看到 31.9% 就是这个。
+      需要复用 ``_get_psutil_process()`` 返回的同一个实例，每次调用返回距上次
+      的 CPU 利用率%。
+    - num_threads: 线程泄漏 cheap 检测。
+    - num_handles / num_fds: Windows 句柄 / POSIX fd 泄漏。重启即恢复的 case
+      多数对得上这个。先试 Windows 的 num_handles，再试 POSIX 的 num_fds，
+      都拿不到就 None。
+    """
+    out: dict[str, Any] = {
+        "cpu_percent": None,
+        "num_threads": None,
+        "num_handles": None,
+    }
+    proc = _get_psutil_process()
+    if proc is None:
+        return out
+    try:
+        out["cpu_percent"] = proc.cpu_percent(interval=None)
+    except Exception:
+        pass
+    try:
+        out["num_threads"] = proc.num_threads()
+    except Exception:
+        pass
+    # Windows: num_handles; POSIX: num_fds. psutil 在错误平台抛 AttributeError。
+    try:
+        out["num_handles"] = proc.num_handles()
+    except (AttributeError, Exception):
+        try:
+            out["num_handles"] = proc.num_fds()
+        except Exception:
+            pass
+    return out
+
+
+def _safe_asyncio_task_top(n: int = 10) -> list[list[Any]] | None:
+    """按 name 计数当前 asyncio task，返回 top-N。
+
+    ``asyncio.all_tasks()`` 只给数字时，长跑泄漏只能看到「task 数涨了」却不
+    知道是哪类——加这个分布就能立刻定位（比如「memory_recall_xxx」一路涨）。
+    返回 list[[name, count], ...] 而不是 dict——保留排序、JSON 友好。"""
+    try:
+        c: Counter[str] = Counter()
+        for t in asyncio.all_tasks():
+            try:
+                c[t.get_name()] += 1
+            except Exception:
+                c["<unnamed>"] += 1
+        return [[name, cnt] for name, cnt in c.most_common(n)]
+    except Exception:
+        return None
+
+
+def _safe_gc_object_top(n: int = 10) -> list[list[Any]] | None:
+    """按 type 计数所有 GC 跟踪对象，返回 top-N。
+
+    一次 ``gc.get_objects()`` 在中等规模 Python 堆上 ~几十 ms，5min 一次完全
+    可接受。这是定位「**是什么对象在涨**」的金线——RSS 数字涨了不知道是谁，
+    type top 直接告诉你 ``HumanMessage`` / ``AIMessage`` / ``Future`` / ``Task``
+    / ``dict`` 哪个在单调增。"""
+    try:
+        c: Counter[str] = Counter()
+        for obj in gc.get_objects():
+            c[type(obj).__name__] += 1
+        return [[name, cnt] for name, cnt in c.most_common(n)]
+    except Exception:
+        return None
+
+
+def _safe_tts_queue_sizes() -> dict[str, int]:
+    """每个 lanlan core 的 ``tts_request_queue`` 当前长度。
+
+    TTS 卡住 / 网络抖动时队列堆积比 CPU 早出现——是「TTS pipeline 出问题」的
+    早期信号。core.tts_request_queue 是 ``queue.Queue``，qsize 在 Windows 上
+    是估计值但够用。"""
+    out: dict[str, int] = {}
+    try:
+        from main_routers.shared_state import get_session_manager
+        session_manager = get_session_manager()
+        for name in list(session_manager.keys()):
+            try:
+                core = session_manager.get(name)
+                q = getattr(core, "tts_request_queue", None)
+                if q is not None and hasattr(q, "qsize"):
+                    out[name] = q.qsize()
+            except Exception:
+                continue
+    except Exception:
+        return out
+    return out
+
+
+def _safe_is_responding_map() -> dict[str, bool]:
+    """每个 lanlan 的 ``session._is_responding`` 状态。
+
+    分布异常（如所有 lanlan 都卡在 True 不退）= 死锁 / response handler
+    丢消息的强信号。"""
+    out: dict[str, bool] = {}
+    try:
+        from main_routers.shared_state import get_session_manager
+        session_manager = get_session_manager()
+        for name in list(session_manager.keys()):
+            try:
+                core = session_manager.get(name)
+                session = getattr(core, "session", None)
+                if session is None:
+                    continue
+                v = getattr(session, "_is_responding", None)
+                if isinstance(v, bool):
+                    out[name] = v
+            except Exception:
+                continue
+    except Exception:
+        return out
+    return out
 
 
 def _safe_conv_history_lengths() -> dict[str, int]:
@@ -133,8 +283,14 @@ def _collect_snapshot() -> dict[str, Any]:
         snap["asyncio_tasks"] = len(asyncio.all_tasks())
     except Exception:
         snap["asyncio_tasks"] = None
+    snap["asyncio_task_top"] = _safe_asyncio_task_top()
     snap["rss_mb"] = _safe_rss_mb()
+    # psutil extras 一次 dict 展平进顶层，方便画曲线时直接索引同级 key。
+    snap.update(_safe_psutil_extras())
+    snap["gc_object_top"] = _safe_gc_object_top()
     snap["conv_history"] = _safe_conv_history_lengths()
+    snap["tts_queue_size"] = _safe_tts_queue_sizes()
+    snap["is_responding"] = _safe_is_responding_map()
     snap["ack_waiters"] = _safe_ack_waiters_size()
     snap["proactive_history"] = _safe_proactive_history_size()
     return snap
@@ -305,6 +461,8 @@ _CLIENT_NUMERIC_FIELDS = frozenset({
     "ts", "live_intervals", "live_timeouts", "raf_fps_60s",
     "dom_nodes", "js_heap_mb", "ws_state",
     "proactive_backoff_level", "agent_task_map_size",
+    # 新增（与 debug-health.js collectSnapshot 同步）
+    "live_object_urls", "error_count", "unhandled_rejection_count",
 })
 _CLIENT_BOOL_FIELDS = frozenset({"proactive_running", "is_recording"})
 _CLIENT_STRING_FIELDS_WITH_CAP = {"location": 128}
