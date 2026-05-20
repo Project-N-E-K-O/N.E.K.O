@@ -10319,11 +10319,16 @@ function _companionDestroy(state) {
 }
 
 function _companionTeardown(state) {
-    if (!state || !state.form || !state.formWatchHandlers) return;
-    state.formWatchHandlers.forEach(function (pair) {
-        try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
-    });
-    state.formWatchHandlers = [];
+    if (!state) return;
+    // closed flag：所有 in-flight 的 await 拿到 response 后会 check 这个，
+    // 避免 companion 已经关掉/切到别只猫娘了，迟到的 LLM 结果还在静默改表单。
+    state.closed = true;
+    if (state.form && state.formWatchHandlers) {
+        state.formWatchHandlers.forEach(function (pair) {
+            try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
+        });
+        state.formWatchHandlers = [];
+    }
 }
 
 function _companionBuildPanel(state) {
@@ -10590,6 +10595,9 @@ async function _companionRunClarify(state) {
             target_field_keys: _cardAssistCollectFieldKeys(state.form),
             locale: _cardAssistCurrentLocale(),
         });
+        // 用户在 in-flight 期间关掉了 companion → 静默丢掉迟到的结果，绝不
+        // 静默地把字段写进 form（form 还活着，但 user intent 已是"取消"）。
+        if (state.closed) return;
         typing.remove();
         state.pendingQuestions = resp.questions || [];
         state.currentQuestionIdx = 0;
@@ -10619,13 +10627,21 @@ function _companionRenderNextQuestion(state) {
     const q = state.pendingQuestions[state.currentQuestionIdx];
     const total = state.pendingQuestions.length;
     const prefix = '【' + (state.currentQuestionIdx + 1) + '/' + total + ' · ' + (q.header || '') + '】';
+    // 捕获 chip 创建时的「这是第几题」snapshot；用户后续通过输入框回答 / 点更新
+    // 的 chip 推进进度后，老 bubble 上的 chip 仍可见可点。stale chip 点击如果
+    // 不防一手，会把旧答案塞进 collectedAnswers 并再次 ++currentQuestionIdx —
+    // 跳过下一题、覆盖原本写好的答案。
+    const ownIdx = state.currentQuestionIdx;
+    const ownQid = q.id;
     _companionAppendAssistant(state, q.label, {
         prefix: prefix,
         chips: (q.options || []).map(function (opt) {
             return {
                 label: opt,
                 onClick: function () {
-                    state.collectedAnswers[q.id] = opt;
+                    // 已经被其他途径推进过 → stale chip，no-op
+                    if (state.currentQuestionIdx !== ownIdx) return;
+                    state.collectedAnswers[ownQid] = opt;
                     _companionAppendUser(state, opt);
                     state.currentQuestionIdx++;
                     _companionRenderNextQuestion(state);
@@ -10655,6 +10671,9 @@ async function _companionRunGenerate(state) {
             target_field_keys: _cardAssistCollectFieldKeys(state.form),
             locale: _cardAssistCurrentLocale(),
         });
+        // closed-companion guard：用户在 in-flight 期间关掉了 companion → 绝
+        // 不静默地往 form 写字段并 autoSave，关闭即取消。
+        if (state.closed) return;
         typing.remove();
         const fields = resp.fields || {};
         const fieldKeys = Object.keys(fields);
@@ -10732,6 +10751,9 @@ async function _companionRunChat(state) {
             dev_cat_name: state.devCatName,
             locale: _cardAssistCurrentLocale(),
         });
+        // closed-companion guard：同 clarify/generate，关掉 companion 之后
+        // 迟到的 reply + actions 都丢弃，不再静默改 form。
+        if (state.closed) return;
         typing.remove();
         const reply = (resp.reply || '').trim();
         if (reply) {
