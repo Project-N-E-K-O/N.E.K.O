@@ -79,6 +79,9 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_set_mode",
     ):
         assert phase1_entry in entry_ids
+    rapidocr_lang_schema = plugin.collect_entries()["galgame_set_rapidocr_lang"].meta.input_schema
+    assert "4" in rapidocr_lang_schema["properties"]["ocr_version"]["enum"]
+    assert "5" in rapidocr_lang_schema["properties"]["ocr_version"]["enum"]
 
     assert plugin.get_list_actions() == [
         {
@@ -172,6 +175,26 @@ async def test_set_rapidocr_lang_ocr_version_noop_when_same_value(tmp_path: Path
         assert isinstance(result, Ok)
         assert result.value["skipped"] is True
         assert result.value["ocr_version"] == "PP-OCRv4"
+        assert updates == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_auto_detect_noop_when_same_value(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    updates: list[bool] = []
+    plugin._ocr_reader_manager = SimpleNamespace(
+        update_config=lambda config: updates.append(config.rapidocr_auto_detect_lang)
+    )
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(auto_detect_lang=True)
+
+        assert isinstance(result, Ok)
+        assert result.value["skipped"] is True
+        assert result.value["already_applied"] is True
+        assert result.value["auto_detect_lang"] is True
         assert updates == []
     finally:
         await plugin.shutdown()

@@ -209,7 +209,7 @@ def test_galgame_ui_has_rapidocr_version_toggle() -> None:
     assert "rapidocrVersionV4Btn" in html
     assert "rapidocrVersionV5Btn" in html
     assert "renderRapidOcrVersionBar" in script
-    assert "setRapidOcrLang({ ocr_version: version })" in script
+    assert re.search(r"setRapidOcrLang\s*\(\s*\{\s*ocr_version\s*:\s*version\s*\}\s*\)", script)
 
 
 def test_galgame_ui_first_run_dxcam_prompt_requires_dxcam_backend() -> None:

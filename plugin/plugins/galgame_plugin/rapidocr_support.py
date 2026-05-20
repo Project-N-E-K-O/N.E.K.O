@@ -37,6 +37,9 @@ _BAIDU_YUN_RAPIDOCR_URL = "https://pan.baidu.com/s/1ItWTATwjtCnOCjWutPSXQQ"
 _BAIDU_YUN_RAPIDOCR_CODE = "neko"
 _BAIDU_YUN_APP_ID = "250528"
 
+# TODO: Remove unused Baidu Cloud code. The active RapidOCR model downloader
+# uses ModelScope only; these helpers are kept only as a potential fallback.
+
 # Models hosted on RapidAI's ModelScope mirror. URL pattern stable as of
 # RapidOCR v3.8.0 (the registry source). Each entry's `name` is the on-disk
 # filename (also forms the URL leaf) and is what we pass to RapidOCR via
@@ -828,6 +831,7 @@ def _verify_model_sha256(path: Path, expected_sha256: str) -> None:
 
 
 def _baidu_share_id(share_url: str) -> str:
+    # TODO: Remove unused Baidu Cloud code.
     parsed = urlparse(str(share_url or "").strip())
     marker = "/s/"
     if marker not in parsed.path:
@@ -836,6 +840,7 @@ def _baidu_share_id(share_url: str) -> str:
 
 
 def _json_from_baidu_callback(text: str) -> dict[str, Any]:
+    # TODO: Remove unused Baidu Cloud code.
     payload = str(text or "").strip()
     match = re.search(r"^[^(]*\((.*)\)\s*;?\s*$", payload, flags=re.S)
     if match:
@@ -848,6 +853,7 @@ def _json_from_baidu_callback(text: str) -> dict[str, Any]:
 
 
 def _extract_baidu_yun_data(page_text: str) -> dict[str, Any]:
+    # TODO: Remove unused Baidu Cloud code.
     text = str(page_text or "")
     patterns = [
         r"yunData\.setData\(\s*(\{.*?\})\s*\)\s*;",
@@ -873,6 +879,7 @@ async def _baidu_request_json(
     *,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # TODO: Remove unused Baidu Cloud code.
     response = await client.get(
         url,
         params=params,
@@ -891,6 +898,7 @@ async def _baidu_rapidocr_model_dlinks(
     pending: list[dict[str, Any]],
 ) -> dict[str, str]:
     """Resolve Baidu Cloud share files to direct dlink URLs by model filename."""
+    # TODO: Remove unused Baidu Cloud code.
     share_id = _baidu_share_id(_BAIDU_YUN_RAPIDOCR_URL)
     if not share_id:
         raise RuntimeError("invalid Baidu Cloud RapidOCR share URL")
@@ -1240,7 +1248,7 @@ async def download_rapidocr_models(
             )]
 
             attempt_errors: list[str] = []
-            for attempt_index, (source, url, headers) in enumerate(attempts):
+            for source, url, headers in attempts:
                 source_label = "ModelScope"
                 running_message = (
                     f"Downloading {asset_name} from {source_label} "
@@ -1341,16 +1349,12 @@ async def download_rapidocr_models(
                     tmp_path.unlink(missing_ok=True)
                     attempt_error = f"{source_label}: {type(exc).__name__}: {exc}"
                     attempt_errors.append(attempt_error)
-                    if attempt_index < len(attempts) - 1:
-                        logger.warning(
-                            "failed to download RapidOCR model %s from %s; "
-                            "falling back to ModelScope",
-                            asset_name,
-                            source_label,
-                            exc_info=True,
-                        )
-                        continue
-
+                    logger.warning(
+                        "failed to download RapidOCR model %s from %s",
+                        asset_name,
+                        source_label,
+                        exc_info=True,
+                    )
                     err_message = (
                         f"failed to download {asset_name}; attempted "
                         + "; ".join(attempt_errors)

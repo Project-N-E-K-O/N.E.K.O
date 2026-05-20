@@ -5598,7 +5598,7 @@ class GalgamePlugin(NekoPluginBase):
                 },
                 "ocr_version": {
                     "type": "string",
-                    "enum": ["PP-OCRv4", "PP-OCRv5", "v4", "v5"],
+                    "enum": ["PP-OCRv4", "PP-OCRv5", "v4", "v5", "4", "5"],
                 },
                 "auto_detect_lang": {
                     "type": "boolean",
@@ -5619,6 +5619,7 @@ class GalgamePlugin(NekoPluginBase):
 
         normalized_lang = str(lang_type or "").strip().lower() or None
         normalized_version = normalize_rapidocr_ocr_version(ocr_version) if ocr_version is not None else None
+        auto_detect_lang_provided = auto_detect_lang is not None
         if normalized_lang is not None and normalized_lang not in {"ch", "japan", "korean", "en"}:
             return Err(SdkError(f"invalid lang_type: {lang_type!r}"))
         if ocr_version is not None and not normalized_version:
@@ -5633,12 +5634,25 @@ class GalgamePlugin(NekoPluginBase):
             normalized_lang = None
         if (
             normalized_lang is None
-            and auto_detect_lang is not None
+            and auto_detect_lang_provided
             and bool(auto_detect_lang) == bool(self._cfg.rapidocr_auto_detect_lang)
+            and normalized_version is None
         ):
-            auto_detect_lang = None
+            return Ok({
+                "lang_type": self._cfg.rapidocr_lang_type,
+                "ocr_version": self._cfg.rapidocr_ocr_version,
+                "auto_detect_lang": self._cfg.rapidocr_auto_detect_lang,
+                "summary": (
+                    f"RapidOCR lang={self._cfg.rapidocr_lang_type} "
+                    f"ocr_version={self._cfg.rapidocr_ocr_version} "
+                    f"auto_detect={'on' if self._cfg.rapidocr_auto_detect_lang else 'off'}"
+                ),
+                "skipped": True,
+                "already_applied": True,
+                "skip_reason": "already_applied",
+            })
         if normalized_lang is None and auto_detect_lang is None and normalized_version is None:
-            if lang_type is None and ocr_version is None:
+            if lang_type is None and ocr_version is None and not auto_detect_lang_provided:
                 return Err(SdkError("lang_type, ocr_version or auto_detect_lang is required"))
             return Ok({
                 "lang_type": self._cfg.rapidocr_lang_type,
@@ -5650,6 +5664,7 @@ class GalgamePlugin(NekoPluginBase):
                     f"auto_detect={'on' if self._cfg.rapidocr_auto_detect_lang else 'off'}"
                 ),
                 "skipped": True,
+                "already_applied": True,
                 "skip_reason": "already_applied",
             })
 

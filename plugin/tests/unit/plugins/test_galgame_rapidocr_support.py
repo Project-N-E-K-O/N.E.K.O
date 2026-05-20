@@ -219,10 +219,6 @@ async def test_download_rapidocr_models_uses_modelscope_urls(
     )
     monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
 
-    async def _unexpected_dlinks(_client, _pending):
-        raise AssertionError("Baidu Cloud should not be used for automatic RapidOCR downloads")
-
-    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _unexpected_dlinks)
     requested_urls: list[str] = []
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -275,11 +271,6 @@ async def test_download_rapidocr_models_reports_modelscope_failure(
         lambda **_kwargs: [dict(spec) for spec in expected_files],
     )
     monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
-
-    async def _unexpected_dlinks(_client, _pending):
-        raise AssertionError("Baidu Cloud should not be used for automatic RapidOCR downloads")
-
-    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _unexpected_dlinks)
 
     requested_urls: list[str] = []
 

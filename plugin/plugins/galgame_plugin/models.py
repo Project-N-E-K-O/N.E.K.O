@@ -202,10 +202,13 @@ def normalize_rapidocr_ocr_version(value: object) -> str:
     if not raw:
         return ""
     lowered = raw.lower()
-    if lowered in {"pp-ocrv4", "v4", "4"}:
-        return "PP-OCRv4"
-    if lowered in {"pp-ocrv5", "v5", "5"}:
-        return "PP-OCRv5"
+    canonical_by_lower = {version.lower(): version for version in _RAPIDOCR_OCR_VERSIONS}
+    if lowered in canonical_by_lower:
+        return canonical_by_lower[lowered]
+    for version in sorted(_RAPIDOCR_OCR_VERSIONS):
+        suffix = version.lower().removeprefix("pp-ocrv")
+        if lowered in {f"v{suffix}", suffix}:
+            return version
     return ""
 
 
