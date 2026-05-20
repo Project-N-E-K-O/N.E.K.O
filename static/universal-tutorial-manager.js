@@ -15,6 +15,8 @@ const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
 const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
 const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
 const HOME_TUTORIAL_RESET_CHANNEL = 'neko_tutorial_events';
+const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
+const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 4;
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + pageKey;
@@ -46,6 +48,96 @@ function logTutorialPromptFlow(step, details = {}) {
         return;
     }
     console.log(TUTORIAL_PROMPT_FLOW_PREFIX + ' ' + step, details);
+}
+
+function getTodayLocalDateForAvatarFloatingGuide() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function normalizeAvatarFloatingGuideRound(day) {
+    const round = Number(day);
+    if (!Number.isInteger(round) || round < 1 || round > AVATAR_FLOATING_GUIDE_ROUND_COUNT) {
+        throw new Error(`Invalid avatar floating guide round: ${day}`);
+    }
+    return round;
+}
+
+function normalizeAvatarFloatingGuideRoundList(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return Array.from(new Set(
+        value
+            .map(item => Number(item))
+            .filter(item => Number.isInteger(item) && item >= 1 && item <= AVATAR_FLOATING_GUIDE_ROUND_COUNT)
+    )).sort((left, right) => left - right);
+}
+
+function normalizeOptionalAvatarFloatingGuideRound(value) {
+    const round = Number(value);
+    return Number.isInteger(round) && round >= 1 && round <= AVATAR_FLOATING_GUIDE_ROUND_COUNT ? round : null;
+}
+
+function omitAvatarFloatingGuideRound(value, round) {
+    return normalizeAvatarFloatingGuideRoundList(value).filter(item => item !== round);
+}
+
+function loadAvatarFloatingGuideState() {
+    let parsed = {};
+    try {
+        const raw = localStorage.getItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY);
+        parsed = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+        console.warn('[Tutorial] 悬浮窗教程状态读取失败，使用空状态:', error);
+        parsed = {};
+    }
+
+    return {
+        version: 1,
+        firstSeenDate: parsed.firstSeenDate || getTodayLocalDateForAvatarFloatingGuide(),
+        completedRounds: normalizeAvatarFloatingGuideRoundList(parsed.completedRounds),
+        skippedRounds: normalizeAvatarFloatingGuideRoundList(parsed.skippedRounds),
+        currentRound: normalizeOptionalAvatarFloatingGuideRound(parsed.currentRound),
+        pendingRound: normalizeOptionalAvatarFloatingGuideRound(parsed.pendingRound),
+        manualResetRound: normalizeOptionalAvatarFloatingGuideRound(parsed.manualResetRound),
+        lastAutoShownRound: normalizeOptionalAvatarFloatingGuideRound(parsed.lastAutoShownRound),
+        lastAutoShownDate: parsed.lastAutoShownDate || '',
+        updatedAt: parsed.updatedAt || null,
+        resetHistory: Array.isArray(parsed.resetHistory) ? parsed.resetHistory.slice(-20) : [],
+    };
+}
+
+function saveAvatarFloatingGuideState(state) {
+    localStorage.setItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY, JSON.stringify(state));
+}
+
+function parseAvatarFloatingGuideDate(value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+        return null;
+    }
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+        return null;
+    }
+    return new Date(year, month - 1, day);
+}
+
+function getAvatarFloatingGuideDateDeltaDays(fromDate, toDate) {
+    const from = parseAvatarFloatingGuideDate(fromDate);
+    const to = parseAvatarFloatingGuideDate(toDate);
+    if (!from || !to) {
+        return 0;
+    }
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    return Math.max(0, Math.floor((to.getTime() - from.getTime()) / oneDayMs));
 }
 
 function dispatchHomeTutorialResetEvent(pageKey, source) {
@@ -179,6 +271,7 @@ class UniversalTutorialManager {
         this._yuiGuideHandoffToken = null;
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
+        this.activeAvatarFloatingGuideRound = null;
         this._tutorialEndReason = null;
         this._tutorialEndRawReason = null;
         this._tutorialEndHandled = false;
@@ -218,6 +311,136 @@ class UniversalTutorialManager {
 
     logPromptFlow(step, details = {}) {
         logTutorialPromptFlow(step, details);
+    }
+
+    loadAvatarFloatingGuideState() {
+        return loadAvatarFloatingGuideState();
+    }
+
+    saveAvatarFloatingGuideState(state) {
+        saveAvatarFloatingGuideState(state);
+    }
+
+    resetAvatarFloatingGuideRoundState(day, options = {}) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const resetAt = new Date().toISOString();
+        const state = loadAvatarFloatingGuideState();
+        state.completedRounds = omitAvatarFloatingGuideRound(state.completedRounds, round);
+        state.skippedRounds = omitAvatarFloatingGuideRound(state.skippedRounds, round);
+        if (state.currentRound === round) {
+            state.currentRound = null;
+        }
+        if (state.lastAutoShownRound === round) {
+            state.lastAutoShownRound = null;
+            state.lastAutoShownDate = '';
+        }
+        state.pendingRound = round;
+        state.manualResetRound = round;
+        state.updatedAt = resetAt;
+        state.resetHistory = state.resetHistory.concat([{
+            day: round,
+            source: options.source || 'home_reset_button',
+            resetAt,
+        }]).slice(-20);
+        saveAvatarFloatingGuideState(state);
+        return state;
+    }
+
+    setAvatarFloatingGuideCurrentRound(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const state = loadAvatarFloatingGuideState();
+        state.currentRound = round;
+        state.pendingRound = round;
+        state.updatedAt = new Date().toISOString();
+        saveAvatarFloatingGuideState(state);
+        return state;
+    }
+
+    markAvatarFloatingGuideRoundOutcome(day, outcome) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const normalizedOutcome = outcome === 'skip' ? 'skip' : (outcome === 'complete' ? 'complete' : 'destroy');
+        const state = loadAvatarFloatingGuideState();
+        state.currentRound = null;
+        if (state.pendingRound === round) state.pendingRound = null;
+        if (state.manualResetRound === round) state.manualResetRound = null;
+        if (normalizedOutcome === 'complete') {
+            state.completedRounds = normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(round));
+            state.skippedRounds = omitAvatarFloatingGuideRound(state.skippedRounds, round);
+        } else if (normalizedOutcome === 'skip') {
+            state.skippedRounds = normalizeAvatarFloatingGuideRoundList(state.skippedRounds.concat(round));
+            state.completedRounds = round === 1
+                ? normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(round))
+                : omitAvatarFloatingGuideRound(state.completedRounds, round);
+        }
+        state.updatedAt = new Date().toISOString();
+        saveAvatarFloatingGuideState(state);
+        window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${normalizedOutcome}`, {
+            detail: { day: round, state },
+        }));
+        return state;
+    }
+
+    markAvatarFloatingGuideRoundAutoShown(day) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        const state = loadAvatarFloatingGuideState();
+        state.lastAutoShownRound = round;
+        state.lastAutoShownDate = getTodayLocalDateForAvatarFloatingGuide();
+        state.updatedAt = new Date().toISOString();
+        saveAvatarFloatingGuideState(state);
+        return state;
+    }
+
+    getNextAvatarFloatingGuideAutoRound() {
+        const state = loadAvatarFloatingGuideState();
+        const today = getTodayLocalDateForAvatarFloatingGuide();
+        if (state.lastAutoShownDate === today) {
+            return null;
+        }
+
+        const completed = new Set(state.completedRounds);
+        const skipped = new Set(state.skippedRounds);
+        if (
+            !completed.has(1)
+            && getTutorialStorageKeysForPageFallback('home').some(key => localStorage.getItem(key) === 'true')
+        ) {
+            completed.add(1);
+            state.completedRounds = normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(1));
+            state.skippedRounds = omitAvatarFloatingGuideRound(state.skippedRounds, 1);
+            state.updatedAt = new Date().toISOString();
+            saveAvatarFloatingGuideState(state);
+        }
+        if (!completed.has(1)) {
+            return null;
+        }
+
+        const elapsedDays = getAvatarFloatingGuideDateDeltaDays(state.firstSeenDate, today);
+        const maxDueRound = Math.min(AVATAR_FLOATING_GUIDE_ROUND_COUNT, elapsedDays + 1);
+        for (let round = 2; round <= maxDueRound; round += 1) {
+            if (!completed.has(round) && !skipped.has(round)) {
+                return round;
+            }
+        }
+        return null;
+    }
+
+    async maybeStartAvatarFloatingGuideAutoRound(delayMs = 1200) {
+        if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
+            return false;
+        }
+        const round = this.getNextAvatarFloatingGuideAutoRound();
+        if (!round) {
+            return false;
+        }
+        this.markAvatarFloatingGuideRoundAutoShown(round);
+        window.setTimeout(() => {
+            if (this.currentPage !== 'home' || this.isTutorialRunning || window.isInTutorial) {
+                return;
+            }
+            this.startAvatarFloatingGuideRound(round, { source: 'auto' }).catch((error) => {
+                console.warn('[Tutorial] 自动启动悬浮窗教程失败:', round, error);
+            });
+        }, Math.max(0, Number.isFinite(delayMs) ? delayMs : 1200));
+        return true;
     }
 
     ensureTutorialSkipController() {
@@ -1214,6 +1437,9 @@ class UniversalTutorialManager {
     async loadTemporaryTutorialLive2dModel(payload) {
         const tempConfig = this.buildTutorialTemporaryModelConfig(payload);
         const modelPath = tempConfig.model_path;
+        this.syncTutorialLanlanModelMode({
+            model_type: 'live2d'
+        });
 
         if (!window.live2dManager && typeof window.Live2DManager === 'function') {
             window.live2dManager = new window.Live2DManager();
@@ -1265,6 +1491,35 @@ class UniversalTutorialManager {
         }
     }
 
+    isTutorialYuiLive2dActive() {
+        const manager = window.live2dManager || null;
+        if (!manager) {
+            return false;
+        }
+        const loadedPath = this.tutorialNonEmptyString(manager._lastLoadedModelPath);
+        const rootPath = this.tutorialNonEmptyString(manager.modelRootPath);
+        const modelName = this.tutorialNonEmptyString(manager.modelName);
+        return loadedPath.indexOf('/static/yui-origin/yui-origin.model3.json') >= 0
+            || rootPath === '/static/yui-origin'
+            || modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME;
+    }
+
+    async ensureTutorialYuiLive2dVisible(reason = '') {
+        this.revealTutorialLive2dPrepared();
+        if (this.isTutorialYuiLive2dActive()) {
+            await this.applyTutorialLive2dViewportPlacement();
+            return true;
+        }
+
+        console.warn('[Tutorial] YUI 临时模型未处于激活状态，尝试直接加载:', reason || 'unknown');
+        await this.loadTemporaryTutorialLive2dModel({
+            live2d: TUTORIAL_YUI_LIVE2D_MODEL_NAME
+        });
+        this.revealTutorialLive2dPrepared();
+        await this.applyTutorialLive2dViewportPlacement();
+        return this.isTutorialYuiLive2dActive();
+    }
+
     async reloadTutorialModel(lanlanName, payload, options = {}) {
         const useTemporaryConfig = options && options.temporary === true;
         if (typeof window.handleModelReload === 'function') {
@@ -1274,8 +1529,17 @@ class UniversalTutorialManager {
             if (useTemporaryConfig) {
                 reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);
                 reloadOptions.skipIdleRestore = true;
+                reloadOptions.throwOnError = true;
             }
-            await window.handleModelReload(lanlanName, reloadOptions);
+            try {
+                await window.handleModelReload(lanlanName, reloadOptions);
+            } catch (error) {
+                if (!useTemporaryConfig) {
+                    throw error;
+                }
+                console.warn('[Tutorial] 临时模型热切换失败，改用直接 Live2D 加载:', error);
+                await this.loadTemporaryTutorialLive2dModel(payload);
+            }
             if (useTemporaryConfig) {
                 await this.applyTutorialLive2dViewportPlacement();
             }
@@ -2064,6 +2328,85 @@ class UniversalTutorialManager {
         }
     }
 
+    async startAvatarFloatingGuideRound(day, options = {}) {
+        const round = normalizeAvatarFloatingGuideRound(day);
+        if (round === 1) {
+            this.pendingTutorialStartSource = options.source || 'manual';
+            await this.requestTutorialStart(options.source || 'manual', options.delayMs || 0);
+            return true;
+        }
+
+        const source = options.source || 'manual';
+        if (this.isTutorialRunning || window.isInTutorial) {
+            console.warn('[Tutorial] 引导已在运行中，跳过悬浮窗教程启动:', round);
+            return false;
+        }
+
+        const ready = await this.waitUntilInitialized();
+        if (!ready) {
+            throw new Error('tutorial_not_initialized');
+        }
+        if (this.currentPage !== 'home') {
+            throw new Error('avatar_floating_guide_requires_home');
+        }
+        const buttonsReady = await this.waitForFloatingButtons();
+        if (!buttonsReady) {
+            throw new Error('floating_buttons_not_ready');
+        }
+
+        this._isDestroyed = false;
+        this._tutorialEndHandled = false;
+        this._tutorialEndReason = null;
+        this._tutorialEndRawReason = null;
+        this.currentTutorialStartSource = source;
+        this.pendingTutorialStartSource = null;
+        this.currentStep = 0;
+        this.cachedValidSteps = [{
+            element: 'body',
+            skipInitialCheck: true,
+            yuiGuideSceneId: 'avatar_floating_day' + round,
+        }];
+        this.activeAvatarFloatingGuideRound = round;
+        this.setAvatarFloatingGuideCurrentRound(round);
+        this.isTutorialRunning = true;
+        window.isInTutorial = true;
+        this.lockBodyScroll();
+        this._tutorialModelPrefix = 'live2d';
+        this.emitTutorialStarted('home', source);
+
+        try {
+            await this.beginTutorialAvatarOverride().catch((error) => {
+                console.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，继续教程:', error);
+            }).finally(() => {
+                this.revealTutorialLive2dPrepared();
+            });
+            await this.ensureTutorialYuiLive2dVisible('avatar_floating_day' + round).catch((error) => {
+                console.warn('[Tutorial] 悬浮窗教程确认 YUI 模型失败，继续教程:', error);
+                this.revealTutorialLive2dPrepared();
+            });
+            const director = this.ensureYuiGuideDirector();
+            if (!director || typeof director.playAvatarFloatingRound !== 'function') {
+                throw new Error('avatar_floating_director_unavailable');
+            }
+            this._yuiGuideLifecycleActive = true;
+            this.showSkipButton();
+            window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-started', {
+                detail: { day: round, source },
+            }));
+            const completed = await director.playAvatarFloatingRound(round, { source });
+            if (completed && !this._tutorialEndHandled) {
+                this.requestTutorialDestroy('complete');
+            }
+            return completed;
+        } catch (error) {
+            console.error('[Tutorial] 悬浮窗教程启动失败:', error);
+            if (!this._tutorialEndHandled) {
+                this.requestTutorialDestroy('destroy');
+            }
+            throw error;
+        }
+    }
+
     clearModelManagerTutorialRecheckTimer() {
         if (this._modelManagerTutorialRecheckTimer) {
             clearTimeout(this._modelManagerTutorialRecheckTimer);
@@ -2162,6 +2505,13 @@ class UniversalTutorialManager {
                 // 其他页面延迟启动，并等待 i18n 准备完成
                 this.startTutorialWhenI18nReady(1500);
             }
+        } else if (this.currentPage === 'home') {
+            this.waitForFloatingButtons().then((found) => {
+                if (!found) {
+                    return;
+                }
+                this.maybeStartAvatarFloatingGuideAutoRound(1200);
+            });
         }
     }
 
@@ -4769,6 +5119,7 @@ class UniversalTutorialManager {
             ? finalSteps[finalStepIndex]
             : null;
         const endMeta = this.resolveTutorialEndMeta(finalSteps);
+        const avatarFloatingRound = this.activeAvatarFloatingGuideRound;
 
         this.notifyYuiGuideStepLeave(finalStepConfig, finalStepIndex, 'tutorial-end');
         this.broadcastYuiGuideTerminationRequest(endMeta);
@@ -4776,6 +5127,13 @@ class UniversalTutorialManager {
         const completedSource = this.currentTutorialStartSource;
 
         this._teardownTutorialUI();
+
+        if (avatarFloatingRound) {
+            this.markAvatarFloatingGuideRoundOutcome(avatarFloatingRound, endMeta.reason);
+            this.activeAvatarFloatingGuideRound = null;
+        } else if (this.currentPage === 'home' && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
+            this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason);
+        }
 
         if (endMeta.reason === 'destroy') {
             window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {

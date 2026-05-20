@@ -292,7 +292,13 @@
 
     async function resetHomeTutorialDay(day, options = {}) {
         const round = normalizeRound(day);
-        const state = resetGuideRoundState(round, options);
+        let state = null;
+        const manager = window.universalTutorialManager || null;
+        if (manager && typeof manager.resetAvatarFloatingGuideRoundState === 'function') {
+            state = manager.resetAvatarFloatingGuideRoundState(round, options);
+        } else {
+            state = resetGuideRoundState(round, options);
+        }
 
         if (round === 1) {
             if (window.universalTutorialManager &&
@@ -561,6 +567,13 @@
         const round = normalizeRound(day);
         const config = DAY_TUTORIALS[round];
         if (!config) return null;
+
+        const manager = await waitForTutorialAvatarManager();
+        if (manager && typeof manager.startAvatarFloatingGuideRound === 'function') {
+            return manager.startAvatarFloatingGuideRound(round, {
+                source: options.source || 'home_reset_button',
+            });
+        }
 
         if (activeRoundPlayer && typeof activeRoundPlayer.destroy === 'function') {
             await activeRoundPlayer.destroy('restart');

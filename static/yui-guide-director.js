@@ -380,6 +380,271 @@
         userPlugin: '#${p}-toggle-agent-user-plugin',
         managementPanel: 'div#neko-sidepanel-action-agent-user-plugin-management-panel'
     });
+
+    const AVATAR_FLOATING_GUIDE_INTERRUPT_STEP = Object.freeze({
+        id: 'avatar_floating_guide_interruptible',
+        performance: Object.freeze({
+            interruptible: true
+        }),
+        interrupts: Object.freeze({
+            mode: 'theatrical_abort',
+            threshold: 3,
+            throttleMs: 500,
+            resetOnStepAdvance: false
+        })
+    });
+
+    const AVATAR_FLOATING_GUIDE_ROUNDS = Object.freeze({
+        2: Object.freeze({
+            title: '第 2 天：屏幕分享、语音与通话上下文',
+            scenes: Object.freeze([
+                Object.freeze({
+                    id: 'day2_intro_context',
+                    textKey: 'tutorial.avatarFloating.day2.intro',
+                    voiceKey: 'avatar_floating_day2_intro',
+                    text: '今天先教你一个很实用的按钮：如果你想让我看屏幕，入口就在我旁边。',
+                    target: 'floating-buttons',
+                    cursorAction: 'wobble'
+                }),
+                Object.freeze({
+                    id: 'day2_screen_entry',
+                    textKey: 'tutorial.avatarFloating.day2.screenEntry',
+                    voiceKey: 'avatar_floating_day2_screen_entry',
+                    text: '这个是屏幕分享。点它之前，要先和我进入语音或音视频通话。',
+                    target: '#${p}-btn-screen',
+                    cursorAction: 'move'
+                }),
+                Object.freeze({
+                    id: 'day2_screen_requires_voice',
+                    textKey: 'tutorial.avatarFloating.day2.screenRequiresVoice',
+                    voiceKey: 'avatar_floating_day2_screen_requires_voice',
+                    text: '如果还没开始通话，它会提醒你：屏幕分享只在通话里使用。',
+                    target: '#${p}-btn-screen',
+                    cursorAction: 'click',
+                    operation: 'click'
+                }),
+                Object.freeze({
+                    id: 'day2_screen_source_popup',
+                    textKey: 'tutorial.avatarFloating.day2.screenSourcePopup',
+                    voiceKey: 'avatar_floating_day2_screen_source_popup',
+                    text: '旁边的小三角可以打开来源列表，你可以选整个屏幕，也可以只选某个窗口。',
+                    target: '.${p}-trigger-icon-screen',
+                    persistent: '#${p}-popup-screen',
+                    cursorAction: 'click',
+                    operation: 'open-screen-popup'
+                }),
+                Object.freeze({
+                    id: 'day2_screen_source_states',
+                    textKey: 'tutorial.avatarFloating.day2.screenSourceStates',
+                    voiceKey: 'avatar_floating_day2_screen_source_states',
+                    text: '如果系统暂时拿不到窗口列表，这里也会告诉你原因，不会偷偷共享任何东西。',
+                    target: '#${p}-popup-screen',
+                    persistent: '#${p}-popup-screen',
+                    cursorAction: 'move'
+                }),
+                Object.freeze({
+                    id: 'day2_mic_recap',
+                    textKey: 'tutorial.avatarFloating.day2.micRecap',
+                    voiceKey: 'avatar_floating_day2_mic_recap',
+                    text: '再回到语音按钮。你和我说话时，屏幕分享才有上下文。',
+                    target: '#${p}-btn-mic',
+                    cursorAction: 'move',
+                    cleanupBefore: true
+                }),
+                Object.freeze({
+                    id: 'day2_mic_popup_audio_quality',
+                    textKey: 'tutorial.avatarFloating.day2.micAudioQuality',
+                    voiceKey: 'avatar_floating_day2_mic_audio_quality',
+                    text: '麦克风设置里可以调播放音量、空间音频、降噪、增益，还能看实时音量。',
+                    target: '.${p}-trigger-icon-mic',
+                    persistent: '#${p}-popup-mic',
+                    cursorAction: 'click',
+                    operation: 'open-mic-popup'
+                }),
+                Object.freeze({
+                    id: 'day2_mic_devices',
+                    textKey: 'tutorial.avatarFloating.day2.micDevices',
+                    voiceKey: 'avatar_floating_day2_mic_devices',
+                    text: '右边是设备列表。一般用系统默认就好，遇到多个麦克风时再手动选择。',
+                    target: '.mic-option',
+                    persistent: '#${p}-popup-mic',
+                    cursorAction: 'move'
+                }),
+                Object.freeze({
+                    id: 'day2_wrap',
+                    textKey: 'tutorial.avatarFloating.day2.wrap',
+                    voiceKey: 'avatar_floating_day2_wrap',
+                    text: '今天就到这里。记住：先通话，再决定要不要让我看屏幕。',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup'
+                })
+            ])
+        }),
+        3: Object.freeze({
+            title: '第 3 天：Agent、插件与管理入口',
+            scenes: Object.freeze([
+                Object.freeze({
+                    id: 'day3_intro_agent',
+                    textKey: 'tutorial.avatarFloating.day3.intro',
+                    voiceKey: 'avatar_floating_day3_intro',
+                    text: '今天看看我的小帮手能力。这里不是普通设置，是我帮你操作电脑时会用到的工具箱。',
+                    target: '#${p}-btn-agent',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'click',
+                    operation: 'open-agent'
+                }),
+                Object.freeze({
+                    id: 'day3_agent_status_master',
+                    textKey: 'tutorial.avatarFloating.day3.statusMaster',
+                    voiceKey: 'avatar_floating_day3_status_master',
+                    text: '最上面会显示 Agent 状态。总开关没准备好时，下面的能力也不会乱动。',
+                    target: 'agent-master',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'move'
+                }),
+                Object.freeze({
+                    id: 'day3_agent_capabilities',
+                    textKey: 'tutorial.avatarFloating.day3.capabilities',
+                    voiceKey: 'avatar_floating_day3_capabilities',
+                    text: '键鼠控制、浏览器控制、专属桌面、插件和 OpenClaw，都是不同层级的帮忙方式。',
+                    target: 'agent-capabilities',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'tour'
+                }),
+                Object.freeze({
+                    id: 'day3_agent_task_hud',
+                    textKey: 'tutorial.avatarFloating.day3.taskHud',
+                    voiceKey: 'avatar_floating_day3_task_hud',
+                    text: '如果我真的开始执行任务，旁边会出现任务面板。你能看到进度，也能随时终止。',
+                    target: '#agent-task-hud',
+                    cursorAction: 'move',
+                    operation: 'show-task-hud'
+                }),
+                Object.freeze({
+                    id: 'day3_plugin_side_panel',
+                    textKey: 'tutorial.avatarFloating.day3.pluginSidePanel',
+                    voiceKey: 'avatar_floating_day3_plugin_side_panel',
+                    text: '用户插件这里还有一个侧边入口，能打开插件管理面板。',
+                    target: '#${p}-toggle-agent-user-plugin',
+                    secondary: '#neko-sidepanel-action-agent-user-plugin-management-panel',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'move',
+                    operation: 'show-agent-sidepanel:user-plugin:management-panel'
+                }),
+                Object.freeze({
+                    id: 'day3_openclaw_side_panel',
+                    textKey: 'tutorial.avatarFloating.day3.openclawSidePanel',
+                    voiceKey: 'avatar_floating_day3_openclaw_side_panel',
+                    text: 'OpenClaw 需要外部服务配合。如果不可用，我会把原因告诉你。',
+                    target: '#${p}-toggle-agent-openclaw',
+                    secondary: '#neko-sidepanel-action-agent-openclaw-openclaw-guide',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'move',
+                    operation: 'show-agent-sidepanel:openclaw:openclaw-guide'
+                }),
+                Object.freeze({
+                    id: 'day3_settings_management_entries',
+                    textKey: 'tutorial.avatarFloating.day3.managementEntries',
+                    voiceKey: 'avatar_floating_day3_management_entries',
+                    text: '角色、模型、声音、API 和记忆这些长期配置，都放在设置里的管理入口。',
+                    target: '#${p}-btn-settings',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'click',
+                    operation: 'show-settings-management'
+                }),
+                Object.freeze({
+                    id: 'day3_wrap',
+                    textKey: 'tutorial.avatarFloating.day3.wrap',
+                    voiceKey: 'avatar_floating_day3_wrap',
+                    text: '今天你只需要记住：让我做事之前，先看看 Agent 状态和权限。',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup'
+                })
+            ])
+        }),
+        4: Object.freeze({
+            title: '第 4 天：猫娘互动体验',
+            scenes: Object.freeze([
+                Object.freeze({
+                    id: 'day4_intro_companion',
+                    textKey: 'tutorial.avatarFloating.day4.intro',
+                    voiceKey: 'avatar_floating_day4_intro',
+                    text: '最后一天，我们不只看按钮。今天讲讲怎么让我更适合陪在你旁边。',
+                    target: 'chat-window',
+                    cursorAction: 'wobble'
+                }),
+                Object.freeze({
+                    id: 'day4_chat_settings',
+                    textKey: 'tutorial.avatarFloating.day4.chatSettings',
+                    voiceKey: 'avatar_floating_day4_chat_settings',
+                    text: '如果你想让我少刷屏、可以被打断、或者多一点表情反馈，就看这里。',
+                    target: 'settings-sidepanel:chat-settings',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'tour',
+                    operation: 'show-settings-sidepanel:chat-settings'
+                }),
+                Object.freeze({
+                    id: 'day4_proactive_chat',
+                    textKey: 'tutorial.avatarFloating.day4.proactiveChat',
+                    voiceKey: 'avatar_floating_day4_proactive_chat',
+                    text: '主动搭话决定我要不要偶尔找你说话，也能选择我从哪里找话题。',
+                    target: '#${p}-toggle-proactive-chat',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'tour',
+                    operation: 'show-settings-sidepanel:interval-proactive-chat'
+                }),
+                Object.freeze({
+                    id: 'day4_privacy_mode',
+                    textKey: 'tutorial.avatarFloating.day4.privacyMode',
+                    voiceKey: 'avatar_floating_day4_privacy_mode',
+                    text: '隐私模式打开时，我不会主动看屏幕。你可以把边界设得很清楚。',
+                    target: '#${p}-toggle-proactive-vision',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'move',
+                    operation: 'show-settings-sidepanel:interval-proactive-vision'
+                }),
+                Object.freeze({
+                    id: 'day4_animation_tracking',
+                    textKey: 'tutorial.avatarFloating.day4.animationTracking',
+                    voiceKey: 'avatar_floating_day4_animation_tracking',
+                    text: '动画设置会影响我的画质、帧率，还有我会不会跟着你的鼠标看。',
+                    target: 'settings-sidepanel:animation-settings',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'tour',
+                    operation: 'show-settings-sidepanel:animation-settings'
+                }),
+                Object.freeze({
+                    id: 'day4_lock_interaction',
+                    textKey: 'tutorial.avatarFloating.day4.lockInteraction',
+                    voiceKey: 'avatar_floating_day4_lock_interaction',
+                    text: '这个小锁能锁住我的交互。想拖动窗口或避免误点时，它会很有用。',
+                    target: '#${p}-lock-icon',
+                    cursorAction: 'move',
+                    cleanupBefore: true
+                }),
+                Object.freeze({
+                    id: 'day4_goodbye_return',
+                    textKey: 'tutorial.avatarFloating.day4.goodbyeReturn',
+                    voiceKey: 'avatar_floating_day4_goodbye_return',
+                    text: '如果你想一个人安静一会儿，可以让我先离开；想我回来，再点这个按钮就好。',
+                    target: '#${p}-btn-goodbye',
+                    secondary: '#${p}-btn-return',
+                    cursorAction: 'move'
+                }),
+                Object.freeze({
+                    id: 'day4_wrap',
+                    textKey: 'tutorial.avatarFloating.day4.wrap',
+                    voiceKey: 'avatar_floating_day4_wrap',
+                    text: '四天的小教程到这里就结束啦。之后这些按钮都在我旁边，想用的时候叫我就好。',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup'
+                })
+            ])
+        })
+    });
     function wait(ms) {
         return new Promise((resolve) => {
             window.setTimeout(resolve, ms);
@@ -4882,6 +5147,453 @@
                     reason: error && error.message ? error.message : 'unknown'
                 });
                 throw error;
+            }
+        }
+
+        getAvatarFloatingRoundConfig(round) {
+            return AVATAR_FLOATING_GUIDE_ROUNDS[Number(round)] || null;
+        }
+
+        getAvatarFloatingInterruptStep(scene) {
+            const normalizedScene = scene || {};
+            return {
+                id: normalizedScene.id || AVATAR_FLOATING_GUIDE_INTERRUPT_STEP.id,
+                performance: {
+                    interruptible: true,
+                    bubbleText: normalizedScene.text || '',
+                    bubbleTextKey: normalizedScene.textKey || '',
+                    voiceKey: normalizedScene.voiceKey || ''
+                },
+                interrupts: AVATAR_FLOATING_GUIDE_INTERRUPT_STEP.interrupts
+            };
+        }
+
+        getAvatarFloatingBaseTarget(kind) {
+            if (kind === 'chat-window') {
+                return this.getChatWindowTarget() || this.getChatInputTarget();
+            }
+            if (kind === 'floating-buttons') {
+                return this.resolveElement('#${p}-floating-buttons');
+            }
+            return null;
+        }
+
+        getAvatarFloatingSidePanel(type) {
+            const normalizedType = typeof type === 'string' ? type.trim() : '';
+            return normalizedType
+                ? document.querySelector('[data-neko-sidepanel-type="' + normalizedType + '"]')
+                : null;
+        }
+
+        async expandAvatarFloatingSidePanel(panel, anchor) {
+            if (!panel) {
+                return false;
+            }
+            const targetAnchor = anchor || panel._anchorElement || null;
+            if (typeof panel._expand === 'function') {
+                if (panel._hoverCollapseTimer) {
+                    window.clearTimeout(panel._hoverCollapseTimer);
+                    panel._hoverCollapseTimer = null;
+                }
+                panel._expand();
+            } else if (targetAnchor) {
+                try {
+                    targetAnchor.dispatchEvent(new MouseEvent('mouseenter', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }));
+                } catch (_) {}
+            }
+
+            return !!(await this.waitForElement(() => {
+                return this.isElementVisible(panel) && panel.style.display !== 'none' && panel.style.opacity !== '0'
+                    ? panel
+                    : null;
+            }, 1400));
+        }
+
+        async ensureAvatarFloatingSettingsSidePanel(type) {
+            const opened = await this.openSettingsPanel();
+            if (!opened || this.isStopping()) {
+                return null;
+            }
+            const panel = await this.waitForElement(() => this.getAvatarFloatingSidePanel(type), 1200);
+            if (!panel) {
+                return null;
+            }
+            return (await this.expandAvatarFloatingSidePanel(panel, panel._anchorElement || null)) ? panel : null;
+        }
+
+        async ensureAvatarFloatingAgentSidePanel(toggleId) {
+            const normalizedToggleId = toggleId === 'openclaw' ? 'agent-openclaw' : 'agent-user-plugin';
+            const ready = await this.ensureAgentSidePanelVisible(normalizedToggleId);
+            if (!ready || this.isStopping()) {
+                return null;
+            }
+            return this.getAvatarFloatingSidePanel(normalizedToggleId + '-actions');
+        }
+
+        getAvatarFloatingAgentCapabilityTargets() {
+            return [
+                'agent-keyboard',
+                'agent-browser',
+                'agent-openfang',
+                'agent-user-plugin',
+                'agent-openclaw'
+            ].map((toggleId) => this.getAgentToggleElement(toggleId)).filter(Boolean);
+        }
+
+        getAvatarFloatingVisibleChildren(panel, limit) {
+            if (!panel || typeof panel.querySelectorAll !== 'function') {
+                return [];
+            }
+            const maxItems = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 4;
+            return Array.from(panel.querySelectorAll('button, [role="button"], [role="switch"], input, a, [id]'))
+                .filter((element) => element !== panel && this.isElementVisible(element))
+                .slice(0, maxItems);
+        }
+
+        createAvatarFloatingUnionTarget(key, elements, options) {
+            const targets = Array.isArray(elements) ? elements.filter(Boolean) : [];
+            if (targets.length === 0) {
+                return null;
+            }
+            if (targets.length === 1) {
+                return targets[0];
+            }
+            return this.createUnionSpotlight(key, targets, Object.assign({
+                padding: DEFAULT_SPOTLIGHT_PADDING,
+                radius: 18
+            }, options || {}));
+        }
+
+        resolveAvatarFloatingSelector(selector) {
+            if (typeof selector !== 'string' || !selector.trim()) {
+                return null;
+            }
+            if (selector === 'chat-window' || selector === 'floating-buttons') {
+                return this.getAvatarFloatingBaseTarget(selector);
+            }
+            return this.resolveElement(selector);
+        }
+
+        async resolveAvatarFloatingTarget(scene, role) {
+            const targetKey = role === 'secondary' ? scene.secondary : scene.target;
+            if (!targetKey) {
+                return null;
+            }
+            if (targetKey === 'agent-master') {
+                return this.getAgentToggleElement('agent-master') || this.resolveElement('#${p}-toggle-agent-master');
+            }
+            if (targetKey === 'agent-capabilities') {
+                return this.createAvatarFloatingUnionTarget(
+                    scene.id + '-capabilities',
+                    this.getAvatarFloatingAgentCapabilityTargets()
+                );
+            }
+            if (typeof targetKey === 'string' && targetKey.indexOf('settings-sidepanel:') === 0) {
+                const type = targetKey.split(':')[1] || '';
+                const panel = this.getAvatarFloatingSidePanel(type) || await this.ensureAvatarFloatingSettingsSidePanel(type);
+                const anchor = panel && panel._anchorElement ? panel._anchorElement : null;
+                return this.createAvatarFloatingUnionTarget(scene.id + '-' + type, [anchor, panel].filter(Boolean))
+                    || panel
+                    || anchor;
+            }
+            if (targetKey === '.mic-option') {
+                return this.resolveElement('.mic-option') || this.resolveElement('#${p}-popup-mic');
+            }
+            return this.resolveAvatarFloatingSelector(targetKey);
+        }
+
+        async resolveAvatarFloatingPersistent(scene) {
+            const persistent = typeof scene.persistent === 'string' ? scene.persistent : '';
+            if (persistent) {
+                const target = this.resolveAvatarFloatingSelector(persistent);
+                if (target) {
+                    return target;
+                }
+            }
+            return this.getAvatarFloatingBaseTarget('chat-window');
+        }
+
+        async prepareAvatarFloatingScene(scene) {
+            const operation = typeof scene.operation === 'string' ? scene.operation : '';
+            if (scene.cleanupBefore) {
+                await this.closeAvatarFloatingGuidePanels();
+            }
+            if (operation === 'show-task-hud') {
+                const existingHud = document.getElementById('agent-task-hud');
+                this.avatarFloatingGuideTemporaryHudWasVisible = !!(
+                    existingHud && existingHud.style.display !== 'none' && this.isElementVisible(existingHud)
+                );
+                if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
+                    window.AgentHUD.showAgentTaskHUD();
+                    this.avatarFloatingGuideTemporaryHudShown = true;
+                } else if (window.AgentHUD && typeof window.AgentHUD.createAgentTaskHUD === 'function') {
+                    const hud = window.AgentHUD.createAgentTaskHUD();
+                    if (hud) {
+                        hud.style.display = 'flex';
+                        hud.style.opacity = '1';
+                        this.avatarFloatingGuideTemporaryHudShown = true;
+                    }
+                }
+                await this.waitForElement(() => {
+                    const hud = document.getElementById('agent-task-hud');
+                    return hud && this.isElementVisible(hud) ? hud : null;
+                }, 1200);
+                return;
+            }
+            if (operation.indexOf('show-agent-sidepanel:') === 0) {
+                const parts = operation.split(':');
+                await this.openAgentPanel();
+                await this.ensureAvatarFloatingAgentSidePanel(parts[1] || 'user-plugin');
+                return;
+            }
+            if (operation.indexOf('show-settings-sidepanel:') === 0) {
+                await this.ensureAvatarFloatingSettingsSidePanel(operation.split(':')[1] || '');
+            }
+        }
+
+        async runAvatarFloatingSceneOperation(scene, primaryTarget) {
+            const operation = typeof scene.operation === 'string' ? scene.operation : '';
+            if (!operation || operation.indexOf('show-') === 0) {
+                return true;
+            }
+            if (operation === 'cleanup') {
+                await this.closeAvatarFloatingGuidePanels();
+                return true;
+            }
+            if (operation === 'click') {
+                if (primaryTarget && typeof primaryTarget.click === 'function') {
+                    primaryTarget.click();
+                }
+                await this.waitForSceneDelay(360);
+                return true;
+            }
+            if (operation === 'open-agent') {
+                return this.openAgentPanel();
+            }
+            if (operation === 'open-screen-popup') {
+                if (primaryTarget && typeof primaryTarget.click === 'function') {
+                    primaryTarget.click();
+                }
+                await this.waitForElement(() => {
+                    const popup = this.resolveElement('#${p}-popup-screen');
+                    return popup && this.isElementVisible(popup) && popup.style.display === 'flex' ? popup : null;
+                }, 1800);
+                return true;
+            }
+            if (operation === 'open-mic-popup') {
+                if (primaryTarget && typeof primaryTarget.click === 'function') {
+                    primaryTarget.click();
+                }
+                await this.waitForElement(() => {
+                    const popup = this.resolveElement('#${p}-popup-mic');
+                    return popup && this.isElementVisible(popup) && popup.style.display === 'flex' ? popup : null;
+                }, 1800);
+                return true;
+            }
+            if (operation === 'show-settings-management') {
+                await this.closeAgentPanel().catch(() => {});
+                const opened = await this.openSettingsPanel();
+                if (!opened) {
+                    return false;
+                }
+                await this.ensureCharacterSettingsSidePanelVisible();
+                const targets = this.getSettingsPeekTargets();
+                this.setSceneExtraSpotlights([
+                    targets.characterMenu,
+                    this.getCharacterSettingsSidePanel(),
+                    this.resolveElement('#${p}-menu-api-keys'),
+                    this.resolveElement('#${p}-menu-memory')
+                ].filter(Boolean));
+                return true;
+            }
+            return true;
+        }
+
+        async moveAvatarFloatingCursor(scene, primaryTarget, secondaryTarget) {
+            const action = scene.cursorAction || 'move';
+            const targets = [primaryTarget, secondaryTarget].filter(Boolean);
+            if (action === 'tour') {
+                const panel = primaryTarget && primaryTarget.hasAttribute && primaryTarget.hasAttribute('data-neko-sidepanel')
+                    ? primaryTarget
+                    : null;
+                targets.push.apply(targets, this.getAvatarFloatingVisibleChildren(panel, 4));
+            }
+            const uniqueTargets = Array.from(new Set(targets));
+            if (uniqueTargets.length === 0) {
+                return;
+            }
+            if (!this.cursor.hasPosition()) {
+                const origin = this.getDefaultCursorOrigin();
+                this.cursor.showAt(origin.x, origin.y);
+                await this.waitForSceneDelay(120);
+            }
+            for (let index = 0; index < uniqueTargets.length; index += 1) {
+                if (this.isStopping()) {
+                    return;
+                }
+                const moved = await this.moveCursorToElement(uniqueTargets[index], index === 0 ? 760 : 520);
+                if (!moved) {
+                    continue;
+                }
+                if (action === 'click' && index === 0) {
+                    await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                } else if (action === 'wobble' || action === 'tour') {
+                    this.cursor.wobble();
+                    await this.waitForSceneDelay(action === 'tour' ? 220 : 360);
+                }
+            }
+        }
+
+        async closeAvatarFloatingGuidePanels() {
+            this.clearSceneExtraSpotlights();
+            this.clearRetainedExtraSpotlights();
+            this.clearPreciseHighlights();
+            this.overlay.clearActionSpotlight();
+            await this.closeManagedPanels().catch(() => {});
+            ['agent-user-plugin', 'agent-openclaw'].forEach((toggleId) => this.collapseAgentSidePanel(toggleId));
+            this.collapseCharacterSettingsSidePanel();
+            if (
+                this.avatarFloatingGuideTemporaryHudShown
+                && !this.avatarFloatingGuideTemporaryHudWasVisible
+                && window.AgentHUD
+                && typeof window.AgentHUD.hideAgentTaskHUD === 'function'
+            ) {
+                window.AgentHUD.hideAgentTaskHUD();
+            }
+            this.avatarFloatingGuideTemporaryHudShown = false;
+            this.avatarFloatingGuideTemporaryHudWasVisible = false;
+        }
+
+        async playAvatarFloatingScene(scene, day, index, total) {
+            const sceneRunId = ++this.sceneRunId;
+            this.currentSceneId = scene.id;
+            this.currentStep = this.getAvatarFloatingInterruptStep(scene);
+            this.clearSceneTimers();
+            this.overlay.setAngry(false);
+            this.clearPreciseHighlights();
+            this.clearSceneExtraSpotlights();
+            this.clearAllVirtualSpotlights();
+            if (!scene.cleanupBefore) {
+                this.overlay.clearActionSpotlight();
+            }
+
+            await this.prepareAvatarFloatingScene(scene);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            const text = this.resolveGuideCopy(scene.textKey || '', scene.text || '');
+            const voiceKey = scene.voiceKey || '';
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey
+                });
+            }
+
+            const persistentTarget = await this.resolveAvatarFloatingPersistent(scene);
+            const primaryTarget = await this.resolveAvatarFloatingTarget(scene, 'primary');
+            const secondaryTarget = await this.resolveAvatarFloatingTarget(scene, 'secondary');
+            this.applyGuideHighlights({
+                key: scene.id,
+                persistent: persistentTarget,
+                primary: primaryTarget,
+                secondary: secondaryTarget
+            });
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = this.speakGuideLine(text, {
+                voiceKey: voiceKey,
+                minDurationMs: 1800
+            }).catch((error) => {
+                console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+            });
+
+            await this.waitForSceneDelay(220);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.moveAvatarFloatingCursor(scene, primaryTarget, secondaryTarget);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.runAvatarFloatingSceneOperation(scene, primaryTarget);
+            this.applyGuideHighlights({
+                key: scene.id + '-settled',
+                persistent: await this.resolveAvatarFloatingPersistent(scene),
+                primary: await this.resolveAvatarFloatingTarget(scene, 'primary'),
+                secondary: await this.resolveAvatarFloatingTarget(scene, 'secondary')
+            });
+
+            await narrationPromise;
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
+        }
+
+        async playAvatarFloatingRound(round, options) {
+            const config = this.getAvatarFloatingRoundConfig(round);
+            if (!config || !Array.isArray(config.scenes) || config.scenes.length === 0) {
+                return false;
+            }
+            const roundId = 'avatar_floating_day' + Number(round);
+            const startedAt = Date.now();
+            this.recordExperienceMetric('avatar_floating_round_start', {
+                round: Number(round),
+                source: options && options.source ? options.source : ''
+            });
+            this.setTutorialTakingOver(true);
+            this.overlay.hideBubble();
+            this.highlightChatWindow();
+            await this.ensureGuideIdleSwayPerformance();
+            const lookAtHandle = await this.ensurePersistentGhostCursorLookAtPerformance({
+                isCancelled: () => this.isStopping()
+            });
+            try {
+                for (let index = 0; index < config.scenes.length; index += 1) {
+                    if (this.isStopping()) {
+                        return false;
+                    }
+                    const keepGoing = await this.playAvatarFloatingScene(
+                        config.scenes[index],
+                        Number(round),
+                        index,
+                        config.scenes.length
+                    );
+                    if (!keepGoing) {
+                        return false;
+                    }
+                }
+                this.recordExperienceMetric('avatar_floating_round_complete', {
+                    round: Number(round),
+                    durationMs: Math.max(0, Date.now() - startedAt)
+                });
+                return !this.isStopping();
+            } finally {
+                this.disableInterrupts();
+                await this.closeAvatarFloatingGuidePanels();
+                this.clearAllVirtualSpotlights();
+                this.clearPreciseHighlights();
+                this.clearAllExtraSpotlights();
+                this.overlay.clearPersistentSpotlight();
+                this.overlay.clearActionSpotlight();
+                this.cursor.hide();
+                if (lookAtHandle) {
+                    await this.stopIntroVoiceCursorLookAtPerformance(lookAtHandle, roundId + '_complete');
+                } else {
+                    await this.stopPersistentGhostCursorLookAtPerformance(roundId + '_complete');
+                }
+                if (!this.destroyed) {
+                    this.setTutorialTakingOver(false);
+                }
+                this.currentSceneId = null;
+                this.currentStep = null;
             }
         }
 

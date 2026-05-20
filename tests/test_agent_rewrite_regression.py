@@ -1085,6 +1085,8 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert '_PROJECT_ROOT / "static/tutorial-interrupt-controller.js"' in source
     assert '_PROJECT_ROOT / "static/tutorial-skip-controller.js"' in source
     assert '_PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js"' in source
+    assert '_PROJECT_ROOT / "static/universal-tutorial-manager.js"' in source
+    assert '_PROJECT_ROOT / "static/avatar-floating-guide-reset.js"' in source
     assert "driver destroy 未触发结束回调" in manager_source
     assert "skipButtonStillVisible" in manager_source
 

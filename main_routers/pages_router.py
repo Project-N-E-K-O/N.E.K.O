@@ -44,6 +44,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
     _PROJECT_ROOT / "static/js/model_manager.js",
+    _PROJECT_ROOT / "static/universal-tutorial-manager.js",
+    _PROJECT_ROOT / "static/avatar-floating-guide-reset.js",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
