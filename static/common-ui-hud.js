@@ -6,6 +6,12 @@
 window.AgentHUD = window.AgentHUD || {};
 
 var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+const STANDALONE_HUD_POSITION = Object.freeze({
+    top: '0',
+    left: '0',
+    right: 'auto',
+    transform: 'none'
+});
 
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
@@ -387,7 +393,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
     let position = { top: '50%', right: '20px', transform: 'translateY(-50%)' };
 
     if (standaloneAgentHud) {
-        position = { top: '0', left: '0', right: 'auto', transform: 'none' };
+        position = STANDALONE_HUD_POSITION;
     }
 
     if (!standaloneAgentHud && savedPos) {
@@ -701,10 +707,10 @@ window.AgentHUD.showAgentTaskHUD = function () {
     const standaloneAgentHud = isStandaloneAgentHudPage();
     const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
     if (standaloneAgentHud) {
-        hud.style.left = '0';
-        hud.style.top = '0';
-        hud.style.right = 'auto';
-        hud.style.transform = 'none';
+        hud.style.left = STANDALONE_HUD_POSITION.left;
+        hud.style.top = STANDALONE_HUD_POSITION.top;
+        hud.style.right = STANDALONE_HUD_POSITION.right;
+        hud.style.transform = STANDALONE_HUD_POSITION.transform;
     } else if (savedPos) {
         try {
             const parsed = JSON.parse(savedPos);
@@ -738,10 +744,10 @@ window.AgentHUD.hideAgentTaskHUD = function () {
     const standaloneAgentHud = isStandaloneAgentHudPage();
     const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
     if (standaloneAgentHud) {
-        hud.style.left = '0';
-        hud.style.top = '0';
-        hud.style.right = 'auto';
-        hud.style.transform = 'none';
+        hud.style.left = STANDALONE_HUD_POSITION.left;
+        hud.style.top = STANDALONE_HUD_POSITION.top;
+        hud.style.right = STANDALONE_HUD_POSITION.right;
+        hud.style.transform = STANDALONE_HUD_POSITION.transform;
     } else if (!savedPos) {
         hud.style.transform = 'translateY(-50%) translateX(20px)';
     }

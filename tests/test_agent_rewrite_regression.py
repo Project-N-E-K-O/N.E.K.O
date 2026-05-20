@@ -246,21 +246,33 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
     assert "var PLUGIN_DASHBOARD_REDIRECT_URL = 'http://127.0.0.1:48916/ui';" not in hud_source
 
 
-def test_standalone_agent_hud_hide_keeps_origin_position():
+def test_standalone_agent_hud_show_hide_keeps_origin_position():
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
+    show_match = re.search(
+        r"window\.AgentHUD\.showAgentTaskHUD = function \(\) \{(?P<body>[\s\S]*?)\n\};",
+        hud_source,
+    )
     hide_match = re.search(
         r"window\.AgentHUD\.hideAgentTaskHUD = function \(\) \{(?P<body>[\s\S]*?)\n\};",
         hud_source,
     )
 
+    assert "const STANDALONE_HUD_POSITION = Object.freeze({" in hud_source
+    assert "position = STANDALONE_HUD_POSITION;" in hud_source
+    assert show_match is not None
     assert hide_match is not None
+    show_body = show_match.group("body")
     hide_body = hide_match.group("body")
-    assert "const standaloneAgentHud = isStandaloneAgentHudPage();" in hide_body
-    assert "const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');" in hide_body
-    assert "hud.style.left = '0';" in hide_body
-    assert "hud.style.top = '0';" in hide_body
-    assert "hud.style.right = 'auto';" in hide_body
-    assert "hud.style.transform = 'none';" in hide_body
+
+    for body in (show_body, hide_body):
+        assert "const standaloneAgentHud = isStandaloneAgentHudPage();" in body
+        assert "const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');" in body
+        assert "hud.style.left = STANDALONE_HUD_POSITION.left;" in body
+        assert "hud.style.top = STANDALONE_HUD_POSITION.top;" in body
+        assert "hud.style.right = STANDALONE_HUD_POSITION.right;" in body
+        assert "hud.style.transform = STANDALONE_HUD_POSITION.transform;" in body
+
+    assert "translateY(-50%) translateX(0)" in show_body
     assert "translateY(-50%) translateX(20px)" in hide_body
 
 
