@@ -414,6 +414,9 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._isMouthDrivenByMotion = false;
     this._isEyeDrivenByMotion = false;
     this._isLookAtDrivenByMotion = false;
+    this._isBreathDrivenByMotion = false;
+    this._runtimeBreathTime = 0;
+    this._runtimeBreathParamIds = null;
     this._lookAtTimer = undefined;
     this._lookAtNextTime = 0;
     this._lookAtTargetX = 0;
@@ -1038,6 +1041,62 @@ Live2DManager.prototype._updateRandomLookAt = function(delta) {
         coreModel.setParameterValueById('ParamEyeBallX', this._lookAtCurrentX / 30);
         coreModel.setParameterValueById('ParamEyeBallY', this._lookAtCurrentY / 30);
     } catch (_) {}
+};
+
+Live2DManager.prototype._resolveRuntimeBreathParams = function(coreModel) {
+    if (!coreModel) return [];
+    if (Array.isArray(this._runtimeBreathParamIds)) {
+        return this._runtimeBreathParamIds;
+    }
+
+    const candidates = ['ParamBreath', 'ParamBreath2', 'ParamBreath3'];
+    this._runtimeBreathParamIds = candidates.filter(id => {
+        try {
+            return coreModel.getParameterIndex(id) >= 0;
+        } catch (_) {
+            return false;
+        }
+    });
+    return this._runtimeBreathParamIds;
+};
+
+Live2DManager.prototype._updateRuntimeBreath = function(delta) {
+    const coreModel = this.currentModel?.internalModel?.coreModel;
+    if (!coreModel) return;
+
+    const breathParamIds = this._resolveRuntimeBreathParams(coreModel);
+    if (breathParamIds.length === 0) return;
+
+    const safeDelta = Math.min(Math.max(Number(delta) || 0, 0), 0.1);
+    this._runtimeBreathTime = (this._runtimeBreathTime || 0) + safeDelta;
+
+    const phase = this._runtimeBreathTime * Math.PI * 2 / 3.8;
+    const normalized = 0.5 + Math.sin(phase) * 0.5;
+
+    for (const id of breathParamIds) {
+        try {
+            const idx = coreModel.getParameterIndex(id);
+            if (idx < 0) continue;
+
+            let min = 0;
+            let max = 1;
+            if (typeof coreModel.getParameterMinimumValueByIndex === 'function') {
+                min = coreModel.getParameterMinimumValueByIndex(idx);
+            } else if (coreModel.parameters?.minimumValues) {
+                min = coreModel.parameters.minimumValues[idx];
+            }
+            if (typeof coreModel.getParameterMaximumValueByIndex === 'function') {
+                max = coreModel.getParameterMaximumValueByIndex(idx);
+            } else if (coreModel.parameters?.maximumValues) {
+                max = coreModel.parameters.maximumValues[idx];
+            }
+
+            if (!Number.isFinite(min)) min = 0;
+            if (!Number.isFinite(max) || max <= min) max = min + 1;
+
+            coreModel.setParameterValueByIndex(idx, min + (max - min) * normalized);
+        } catch (_) {}
+    }
 };
 
 Live2DManager.prototype._clearIdleMotionLoopTimers = function() {
@@ -1894,12 +1953,16 @@ Live2DManager.prototype.installMouthOverride = function() {
         }
         return idx >= 0 ? { id: paramId, resolvedId, idx, value } : null;
     };
+    const runtimeBreathParams = this._resolveRuntimeBreathParams(coreModel);
+    const runtimeBreathParamIds = new Set(runtimeBreathParams);
+    const isRuntimeBreathParamId = (id) => runtimeBreathParamIds.has(id);
     const isRuntimeManagedSavedParam = (entry) => {
         if (!entry) return true;
         const ids = [entry.id, entry.resolvedId].filter(Boolean);
         return ids.some(id => this._isEyeBlinkParamId(id)) ||
             ids.some(id => lipSyncParams.includes(id)) ||
-            ids.some(id => visibilityParams.includes(id));
+            ids.some(id => visibilityParams.includes(id)) ||
+            ids.some(isRuntimeBreathParamId);
     };
     const isPersistentSavedParam = (entry, persistentIds) => {
         if (!entry || !persistentIds) return false;
@@ -1956,6 +2019,13 @@ Live2DManager.prototype.installMouthOverride = function() {
                     try { preUpdateParams[p.id] = coreModel.getParameterValueByIndex(p.idx); } catch (_) {}
                 }
             }
+            const breathParams = runtimeBreathParams;
+            for (const id of breathParams) {
+                try {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                } catch (_) {}
+            }
             for (const [id, idx] of Object.entries(lookAtParamIndices)) {
                 try {
                     preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
@@ -1985,6 +2055,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isMouthDrivenByMotion = false;
             this._isEyeDrivenByMotion = false;
             this._isLookAtDrivenByMotion = false;
+            this._isBreathDrivenByMotion = false;
             const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
             const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
@@ -2009,6 +2080,19 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
             }
+            for (const id of breathParams) {
+                try {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx >= 0) {
+                        const postVal = coreModel.getParameterValueByIndex(idx);
+                        const preVal = preUpdateParams[id];
+                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                            this._isBreathDrivenByMotion = true;
+                            break;
+                        }
+                    }
+                } catch (_) {}
+            }
             for (const [id, idx] of Object.entries(lookAtParamIndices)) {
                 try {
                     const postVal = coreModel.getParameterValueByIndex(idx);
@@ -2026,6 +2110,10 @@ Live2DManager.prototype.installMouthOverride = function() {
             if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled && !this.isAvatarPerformanceCapabilityLocked('lookAt')) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRandomLookAt(delta);
+            }
+            if (!this._isBreathDrivenByMotion) {
+                const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
+                this._updateRuntimeBreath(delta);
             }
 
             try {
@@ -2099,6 +2187,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                             for (const p of params) {
                                 if (lipSyncParams.includes(p.Id)) continue;
                                 if (this._isEyeBlinkParamId(p.Id)) continue;
+                                if (isRuntimeBreathParamId(p.Id)) continue;
                                 try {
                                     coreModel.setParameterValueById(p.Id, p.Value);
                                 } catch (_) {}
@@ -2174,6 +2263,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         for (const p of params) {
                             if (lipSyncParams.includes(p.Id)) continue;
                             if (this._isEyeBlinkParamId(p.Id)) continue;
+                            if (isRuntimeBreathParamId(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
