@@ -14,6 +14,7 @@
     };
 
     let isPromptVisible = false;
+    let bounceRecordQueue = Promise.resolve();
 
     function now() {
         return Date.now();
@@ -270,7 +271,15 @@
         isPromptVisible = true;
     }
 
-    async function recordEdgeBounce(source) {
+    function recordEdgeBounce(source) {
+        const nextRecord = bounceRecordQueue.then(function () {
+            return recordEdgeBounceNow(source);
+        });
+        bounceRecordQueue = nextRecord.catch(function () {});
+        return nextRecord;
+    }
+
+    async function recordEdgeBounceNow(source) {
         const state = readState();
         if (isSuppressed(state) || isPromptVisible) return false;
 

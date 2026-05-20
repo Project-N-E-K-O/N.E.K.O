@@ -27,6 +27,17 @@ def test_multiscreen_drag_hint_only_observes_multi_display_edge_bounces():
     assert "moveWindowToDisplay" not in source
 
 
+def test_multiscreen_drag_hint_serializes_edge_bounce_counter_updates():
+    source = _source("static/avatar-multiscreen-drag-hint.js")
+
+    assert "let bounceRecordQueue = Promise.resolve();" in source
+    assert "function recordEdgeBounce(source) {" in source
+    assert "const nextRecord = bounceRecordQueue.then(function () {" in source
+    assert "return recordEdgeBounceNow(source);" in source
+    assert "bounceRecordQueue = nextRecord.catch(function () {});" in source
+    assert "async function recordEdgeBounceNow(source)" in source
+
+
 def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
     source = _source("static/avatar-multiscreen-drag-hint.js")
 
