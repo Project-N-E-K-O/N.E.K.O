@@ -25,6 +25,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from config.prompts.prompts_card_assist import (
+    get_card_assist_chat_system_prompt,
     get_card_assist_clarify_prompt,
     get_card_assist_generate_prompt,
     get_card_assist_refine_field_prompt,
@@ -151,9 +152,10 @@ def _build_assist_llm():
     return llm, None
 
 
-async def _invoke_assist(prompt: str) -> tuple[str | None, dict | None]:
-    """Run a single-shot prompt against the assist LLM. Returns
-    ``(content_or_None, error_dict_or_None)``.
+async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
+    """Run a single-shot call against the assist LLM. ``prompt`` may be either
+    a plain string (treated as one user message) or a list of OpenAI-style
+    role/content dicts. Returns ``(content_or_None, error_dict_or_None)``.
     """
     llm, err = _build_assist_llm()
     if err is not None:
@@ -484,3 +486,196 @@ async def refine(request: Request):
                             status_code=502)
 
     return JSONResponse({"success": True, "field_key": field_key, "value": text})
+
+
+# ============================================================================
+# /chat —— 持久陪伴聊天端点。
+#
+# 与 clarify/generate/refine 的「向导式」一锤子流不同，/chat 维护一段对话：
+# 前端把 messages 历史 + 当前卡片状态 + 可用字段 key 一并发过来，LLM 扮演
+# 「设定助手猫娘」(默认 YUI，后续会换开发猫) 回复用户，并在必要时输出
+# 结构化 actions 让前端应用到表单。
+# ============================================================================
+
+# 客户端历史里允许的 role；其他 role（system / tool / function）都不放进去，
+# system prompt 永远由后端按当前卡片状态重新构造。
+_CHAT_HISTORY_ROLES = frozenset({"user", "assistant"})
+
+# 历史轮数上限。聊得太多时只取尾部，避免上下文炸预算。
+_CHAT_MAX_HISTORY_MESSAGES = 20
+
+# 单条消息字符数上限。装设定的卡片字段会跟着 prompt 一起塞，所以这里把每条
+# 单独的对话消息也限一下，给 system + card 的预算让位。
+_CHAT_MAX_MESSAGE_CHARS = 2000
+
+# 一次最多接受多少个 action。LLM 偶尔会爽到一次性产出十几个 refine_field，
+# 全应用上去会把用户的设定全冲掉，需要兜底。
+_CHAT_MAX_ACTIONS = 8
+
+# 字段长度上限（refine_field / add_field 的 value）。和模板里手写的设定字
+# 段长度大致对齐。
+_CHAT_MAX_FIELD_VALUE_CHARS = 800
+
+_VALID_ACTION_TYPES = frozenset({"refine_field", "add_field", "remove_field"})
+
+# 「开发猫」的默认占位名，前端可在 payload.dev_cat_name 里覆盖。等真正的
+# 开发猫角色 ready 后，前端会传那个名字过来。
+_DEFAULT_DEV_CAT_NAME = "YUI"
+
+
+def _normalize_chat_history(raw: Any) -> list[dict]:
+    """Filter+truncate the client's message history. Returns OpenAI-style
+    role/content dicts only, never raises."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "").strip().lower()
+        if role not in _CHAT_HISTORY_ROLES:
+            continue
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        if len(content) > _CHAT_MAX_MESSAGE_CHARS:
+            content = content[:_CHAT_MAX_MESSAGE_CHARS] + "…"
+        out.append({"role": role, "content": content})
+    # 只保留最近的 N 条，但确保以 user 收尾 —— 否则后面一条 LLM 看到的最后一
+    # 句话是 assistant，会迷茫不知道要回什么。
+    if len(out) > _CHAT_MAX_HISTORY_MESSAGES:
+        out = out[-_CHAT_MAX_HISTORY_MESSAGES:]
+    while out and out[-1]["role"] != "user":
+        out.pop()
+    return out
+
+
+def _sanitize_actions(raw: Any) -> list[dict]:
+    """Validate the LLM-proposed action list. Drops anything that touches
+    reserved fields, has unknown types, or carries non-string keys/values."""
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict] = []
+    for a in raw:
+        if len(cleaned) >= _CHAT_MAX_ACTIONS:
+            break
+        if not isinstance(a, dict):
+            continue
+        atype = str(a.get("type") or "").strip()
+        if atype not in _VALID_ACTION_TYPES:
+            continue
+        field_key = str(a.get("field_key") or "").strip()
+        if not field_key or _is_reserved_card_field(field_key):
+            continue
+        reason = a.get("reason")
+        reason_str = str(reason).strip() if isinstance(reason, str) else ""
+        entry: dict[str, Any] = {"type": atype, "field_key": field_key}
+        if reason_str:
+            entry["reason"] = reason_str[:300]
+        if atype == "remove_field":
+            cleaned.append(entry)
+            continue
+        # refine / add 都需要 value
+        v = a.get("value")
+        if isinstance(v, (list, tuple)):
+            value = ", ".join(str(x).strip() for x in v if str(x).strip())
+        elif isinstance(v, dict):
+            try:
+                value = json.dumps(v, ensure_ascii=False)
+            except Exception:
+                value = str(v)
+        elif v is None:
+            value = ""
+        else:
+            value = str(v).strip()
+        if not value:
+            continue
+        if len(value) > _CHAT_MAX_FIELD_VALUE_CHARS:
+            value = value[:_CHAT_MAX_FIELD_VALUE_CHARS] + "…"
+        entry["value"] = value
+        cleaned.append(entry)
+    return cleaned
+
+
+@router.post("/chat")
+async def chat(request: Request):
+    """Persistent companion-style chat. The assistant (default persona: YUI,
+    swappable via ``dev_cat_name``) sees the current card + conversation
+    history and replies with text + optional structured actions to apply."""
+    try:
+        body: Dict[str, Any] = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "invalid_json"},
+                            status_code=400)
+
+    history = _normalize_chat_history(body.get("messages"))
+    if not history:
+        return JSONResponse({"success": False, "error": "messages_required"},
+                            status_code=400)
+
+    lang = _resolve_language(body.get("locale"))
+    locale_code = _resolve_locale_code(body.get("locale"))
+    current_card = body.get("current_card")
+    current_card_text = _format_card_for_prompt(current_card)
+    target_keys = _resolve_target_keys(body, locale_code, current_card)
+    target_keys_text = " / ".join(target_keys)
+
+    dev_cat_name = str(body.get("dev_cat_name") or _DEFAULT_DEV_CAT_NAME).strip()
+    if not dev_cat_name or len(dev_cat_name) > 40:
+        dev_cat_name = _DEFAULT_DEV_CAT_NAME
+
+    system_template = get_card_assist_chat_system_prompt(lang)
+    system_content = system_template % (
+        dev_cat_name, current_card_text, target_keys_text
+    )
+
+    messages = [{"role": "system", "content": system_content}] + history
+
+    content, err = await _invoke_assist(messages)
+    if err is not None:
+        return JSONResponse(
+            err,
+            status_code=502 if err.get("error") == "llm_call_failed" else 400,
+        )
+
+    try:
+        parsed = json.loads(_strip_json_fence(content))
+    except json.JSONDecodeError as exc:
+        # LLM 偶尔会忘记是 JSON 模式，吐回来一段裸的纯文本。这种情况下也别
+        # 整个请求挂掉 —— 把它原样当 reply 返回，actions 留空，用户至少能
+        # 看到一句回复。
+        logger.warning("card-assist/chat: bad JSON from LLM: %s; raw[:200]=%s",
+                       exc, content[:200])
+        return JSONResponse({
+            "success": True,
+            "reply": content[:_CHAT_MAX_MESSAGE_CHARS],
+            "actions": [],
+            "warning": "llm_bad_json",
+        })
+
+    if not isinstance(parsed, dict):
+        return JSONResponse({"success": False, "error": "llm_bad_shape",
+                             "raw": content[:500]}, status_code=502)
+
+    reply = parsed.get("reply")
+    if not isinstance(reply, str):
+        reply = ""
+    reply = reply.strip()
+    if len(reply) > _CHAT_MAX_MESSAGE_CHARS:
+        reply = reply[:_CHAT_MAX_MESSAGE_CHARS] + "…"
+
+    actions = _sanitize_actions(parsed.get("actions"))
+
+    if not reply and not actions:
+        # LLM 既没回话也没动作 —— 给前端一个兜底文案，不然聊天框就僵住了。
+        reply = ("（嗯…我没想好怎么回，能再说一遍喵？）" if lang == "zh"
+                 else "(Hmm... I'm not sure how to reply — could you say that again?)")
+
+    return JSONResponse({
+        "success": True,
+        "reply": reply,
+        "actions": actions,
+    })

@@ -5066,10 +5066,14 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     addFieldSpacer.style.flex = '1';
     addFieldArea.appendChild(addFieldSpacer);
 
-    // AI 辅助生成按钮（位于「新增设定」左侧）
+    // AI 辅助生成按钮（位于「新增设定」左侧）。
+    // `settings-secondary-action` 是 grid placement marker —— 详情面板的 settings
+    // toolbar row 用 CSS Grid 把 `.btn.sm` 默认塞到 grid-column: 4；不显式标 col
+    // 的话 AI 按钮和 Add 按钮会在同一列里堆成上下两行。靠这个 class 把它推到
+    // col 3，跟 `.settings-save-action` / `.settings-cancel-action` 是同一套 pattern。
     const aiAssistBtn = document.createElement('button');
     aiAssistBtn.type = 'button';
-    aiAssistBtn.className = 'btn sm ai-assist';
+    aiAssistBtn.className = 'btn sm ai-assist settings-secondary-action';
     aiAssistBtn.id = 'panel-ai-assist-catgirl-btn';
     aiAssistBtn.style.minWidth = '140px';
     const aiAssistText = (window.t && typeof window.t === 'function')
@@ -5078,9 +5082,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     aiAssistBtn.innerHTML = aiAssistText;
     aiAssistBtn.onclick = function () {
         try {
-            openCardAssistWizard(form, name, isNew);
+            openCardAssistCompanion(form, name, isNew);
         } catch (err) {
-            console.error('[card-assist] open wizard failed:', err);
+            console.error('[card-assist] open companion failed:', err);
             if (typeof showAlertDialog === 'function') {
                 showAlertDialog(String(err && err.message || err), { type: 'error' });
             }
@@ -10166,9 +10170,22 @@ function panelAttachAutoSaveListener(input, catgirlName) {
     });
 }
 
-// ===================== AI 辅助生成猫娘设定（向导窗口） =====================
+// ===================== AI 辅助生成猫娘设定（陪伴式聊天面板） =====================
+// 设计：点击「✨ AI 辅助生成」会在屏幕右侧拉出一个驻留的聊天面板，扮演一只
+// 「设定捏人助手猫娘」（暂用 YUI 的卡面顶替，未来会换成开发猫角色）。面板里：
+//   - 先一句话描述 → AI 抛 2-4 道带 chip 的澄清问题 → AI 一次性生成全部字段
+//     并自动应用到表单 → 进入自由聊天模式
+//   - 聊天模式下用户可以随时让助手再调字段（"让她更外向"、"招牌台词换一句"），
+//     LLM 在 /api/card-assist/chat 返回结构化 actions，前端自动 patch 表单
+//   - 同时监视表单：用户在面板外手改字段时，把这条改动以「你刚改了 X」的
+//     system 气泡告诉助手 + 用户，保持双方对当前状态的共识
+// 助手不主动调 LLM 评论（成本考虑）；用户随时可以用 quick chip 让她审一审。
 
 const CARD_ASSIST_RESERVED_KEYS = ['档案名', 'voice_id', '_reserved', 'live2d', 'live3d', 'vrm', 'mmd', 'system_prompt', 'model_type'];
+
+// 当前用作"开发猫"占位的猫娘 profile name。/api/characters/catgirl/{name}/card-face
+// 命中就用真实卡面，不命中走 fallback 圆圈。未来替换开发猫只需要改这里。
+const CARD_COMPANION_DEV_CAT_NAME = 'YUI';
 
 function _cardAssistT(key, fallback, vars) {
     if (window.t && typeof window.t === 'function') {
@@ -10236,602 +10253,919 @@ async function _cardAssistFetch(path, payload) {
     return body;
 }
 
-function _cardAssistBuildShell(titleText) {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal card-assist-modal';
-    overlay.style.display = 'flex';
+// ========== 入口：打开/复用 companion 面板 ==========
 
-    const content = document.createElement('div');
-    content.className = 'modal-content card-assist-content';
-    content.onclick = function (e) { e.stopPropagation(); };
-
-    const header = document.createElement('div');
-    header.className = 'modal-header card-assist-header';
-    const title = document.createElement('h3');
-    title.className = 'modal-title card-assist-title';
-    title.textContent = titleText;
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'modal-close card-assist-close';
-    closeBtn.type = 'button';
-    closeBtn.innerHTML = '&times;';
-    closeBtn.onclick = function () { _cardAssistClose(overlay); };
-    header.appendChild(title);
-    header.appendChild(closeBtn);
-
-    const body = document.createElement('div');
-    body.className = 'modal-body card-assist-body';
-
-    const footer = document.createElement('div');
-    footer.className = 'modal-footer card-assist-footer';
-
-    content.appendChild(header);
-    content.appendChild(body);
-    content.appendChild(footer);
-    overlay.appendChild(content);
-
-    overlay.addEventListener('click', function (e) {
-        if (e.target === overlay) _cardAssistClose(overlay);
-    });
-
-    return { overlay, title, body, footer, closeBtn };
-}
-
-function _cardAssistOpen(overlay) {
-    document.body.appendChild(overlay);
-    document.documentElement.style.overflowY = 'hidden';
-}
-
-function _cardAssistClose(overlay) {
-    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-    document.documentElement.style.overflowY = '';
-}
-
-function _cardAssistSetBusy(footer, busy) {
-    footer.querySelectorAll('button').forEach(function (b) { b.disabled = !!busy; });
-}
-
-function _cardAssistMakeButton(label, variant, onClick) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn ' + (variant || 'secondary');
-    btn.textContent = label;
-    btn.onclick = onClick;
-    return btn;
-}
-
-async function openCardAssistWizard(form, originalName, isNew) {
-    if (!form) return;
-    const titleText = _cardAssistT('character.aiAssistTitle', 'AI 辅助生成猫娘设定');
-    const shell = _cardAssistBuildShell(titleText);
-    _cardAssistOpen(shell.overlay);
-
-    const state = {
-        description: '',
-        questions: [],
-        answers: {},
-        generated: {},          // {fieldKey: value}
-        originalSnapshot: {},   // current form values keyed by field name
-        targetFieldKeys: [],    // form 上所有可见字段 name，按出现顺序去重
-        selected: {},           // {fieldKey: bool}
-        pendingRefines: new Set(),  // 进行中的字段微调 Promise，Apply 前必须 await 完
-    };
-    state.originalSnapshot = _cardAssistCollectCurrentFormData(form);
-    state.targetFieldKeys = _cardAssistCollectFieldKeys(form);
-
-    _cardAssistRenderStep1(shell, state, form, originalName, isNew);
-}
-
-function _cardAssistRenderStep1(shell, state, form, originalName, isNew) {
-    shell.body.innerHTML = '';
-    shell.footer.innerHTML = '';
-
-    const stepLabel = document.createElement('div');
-    stepLabel.className = 'card-assist-step-label';
-    stepLabel.textContent = _cardAssistT('character.aiAssistStep1', '第 1 步 / 共 3 步 · 描述你想要的角色');
-    shell.body.appendChild(stepLabel);
-
-    const hint = document.createElement('p');
-    hint.className = 'card-assist-hint';
-    hint.textContent = _cardAssistT('character.aiAssistStep1Hint',
-        '用一句话描述你心中的猫娘。例如：「一只来自江户时代的傲娇小狐妖，喜欢茶道」。AI 会根据你的描述追问几个关键问题。');
-    shell.body.appendChild(hint);
-
-    const ta = document.createElement('textarea');
-    ta.className = 'card-assist-description-input';
-    ta.rows = 4;
-    ta.placeholder = _cardAssistT('character.aiAssistDescPlaceholder',
-        '描述你想要的猫娘（例：来自江户时代的傲娇小狐妖，喜欢茶道）');
-    ta.value = state.description || '';
-    shell.body.appendChild(ta);
-
-    const errorBox = document.createElement('div');
-    errorBox.className = 'card-assist-error';
-    shell.body.appendChild(errorBox);
-
-    const cancelBtn = _cardAssistMakeButton(
-        _cardAssistT('common.cancel', '取消'),
-        'btn-secondary',
-        function () { _cardAssistClose(shell.overlay); }
-    );
-    const continueBtn = _cardAssistMakeButton(
-        _cardAssistT('character.aiAssistContinue', '继续 →'),
-        'btn-primary',
-        async function () {
-            const desc = (ta.value || '').trim();
-            if (!desc) {
-                errorBox.textContent = _cardAssistT('character.aiAssistDescRequired', '请先描述一下你想要的角色');
-                return;
+function openCardAssistCompanion(form, originalName, isNew) {
+    if (window._cardCompanion) {
+        const existing = window._cardCompanion;
+        if (existing.form === form) {
+            // 同一只猫娘 → 把已有面板拉回前台
+            existing.overlay.classList.remove('card-companion-minimized');
+            if (existing.inputEl) {
+                try { existing.inputEl.focus(); } catch (_) {}
             }
-            state.description = desc;
-            errorBox.textContent = '';
-            _cardAssistSetBusy(shell.footer, true);
-            continueBtn.textContent = _cardAssistT('character.aiAssistThinking', '生成澄清问题中…');
-            try {
-                const resp = await _cardAssistFetch('/api/card-assist/clarify', {
-                    description: desc,
-                    current_card: state.originalSnapshot,
-                    target_field_keys: state.targetFieldKeys,
-                    locale: _cardAssistCurrentLocale(),
-                });
-                state.questions = resp.questions || [];
-                if (!state.questions.length) {
-                    throw new Error(_cardAssistT('character.aiAssistNoQuestions', '未生成澄清问题，请稍后重试'));
-                }
-                state.answers = {};
-                _cardAssistRenderStep2(shell, state, form, originalName, isNew);
-            } catch (err) {
-                _cardAssistShowError(errorBox, err);
-            } finally {
-                _cardAssistSetBusy(shell.footer, false);
-                continueBtn.textContent = _cardAssistT('character.aiAssistContinue', '继续 →');
-            }
+            return;
         }
-    );
-    shell.footer.appendChild(cancelBtn);
-    shell.footer.appendChild(continueBtn);
-
-    setTimeout(function () { ta.focus(); }, 50);
-}
-
-function _cardAssistRenderStep2(shell, state, form, originalName, isNew) {
-    shell.body.innerHTML = '';
-    shell.footer.innerHTML = '';
-
-    const stepLabel = document.createElement('div');
-    stepLabel.className = 'card-assist-step-label';
-    stepLabel.textContent = _cardAssistT('character.aiAssistStep2', '第 2 步 / 共 3 步 · 回答澄清问题');
-    shell.body.appendChild(stepLabel);
-
-    const hint = document.createElement('p');
-    hint.className = 'card-assist-hint';
-    hint.textContent = _cardAssistT('character.aiAssistStep2Hint',
-        '点击 chip 选择常见选项，或在文本框里填自定义答案。两者都填时以文本框为准。');
-    shell.body.appendChild(hint);
-
-    const questionsWrap = document.createElement('div');
-    questionsWrap.className = 'card-assist-questions';
-    shell.body.appendChild(questionsWrap);
-
-    state.questions.forEach(function (q) {
-        const qWrap = document.createElement('div');
-        qWrap.className = 'card-assist-question';
-
-        const header = document.createElement('div');
-        header.className = 'card-assist-question-header';
-        const tag = document.createElement('span');
-        tag.className = 'card-assist-question-tag';
-        tag.textContent = q.header || q.id;
-        const label = document.createElement('span');
-        label.className = 'card-assist-question-label';
-        label.textContent = q.label;
-        header.appendChild(tag);
-        header.appendChild(label);
-        qWrap.appendChild(header);
-
-        const chipRow = document.createElement('div');
-        chipRow.className = 'card-assist-chip-row';
-        const customInput = document.createElement('input');
-        customInput.type = 'text';
-        customInput.className = 'card-assist-custom-input';
-        customInput.placeholder = _cardAssistT('character.aiAssistCustomPlaceholder', '或填写自定义答案…');
-
-        // 从 preview 用 Back 回到 Step2 时 state.answers 还留着上轮回答；
-        // 这里要把已选 chip / 自定义输入回填，否则 UI 看着是空的但请求里
-        // 仍带着上次的旧答案，"我只改了一题，生成结果却包含没改的旧选择"。
-        const priorAnswer = state.answers[q.id];
-        const priorIsChipOption = priorAnswer != null
-            && (q.options || []).indexOf(priorAnswer) >= 0;
-
-        (q.options || []).forEach(function (opt) {
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.className = 'card-assist-chip';
-            chip.textContent = opt;
-            if (priorIsChipOption && priorAnswer === opt) {
-                chip.classList.add('selected');
-            }
-            chip.addEventListener('click', function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                chipRow.querySelectorAll('.card-assist-chip').forEach(function (c) { c.classList.remove('selected'); });
-                chip.classList.add('selected');
-                state.answers[q.id] = opt;
-                customInput.value = '';
-            });
-            chipRow.appendChild(chip);
-        });
-        qWrap.appendChild(chipRow);
-
-        if (q.allowCustom !== false) {
-            if (priorAnswer != null && !priorIsChipOption) {
-                customInput.value = String(priorAnswer);
-            }
-            customInput.addEventListener('input', function () {
-                if (customInput.value.trim()) {
-                    chipRow.querySelectorAll('.card-assist-chip').forEach(function (c) { c.classList.remove('selected'); });
-                    state.answers[q.id] = customInput.value.trim();
-                } else {
-                    delete state.answers[q.id];
-                }
-            });
-            qWrap.appendChild(customInput);
-        }
-
-        questionsWrap.appendChild(qWrap);
-    });
-
-    const errorBox = document.createElement('div');
-    errorBox.className = 'card-assist-error';
-    shell.body.appendChild(errorBox);
-
-    const backBtn = _cardAssistMakeButton(
-        _cardAssistT('character.aiAssistBack', '← 上一步'),
-        'btn-secondary',
-        function () { _cardAssistRenderStep1(shell, state, form, originalName, isNew); }
-    );
-    const generateBtn = _cardAssistMakeButton(
-        _cardAssistT('character.aiAssistGenerate', '生成草稿 →'),
-        'btn-primary',
-        async function () {
-            errorBox.textContent = '';
-            _cardAssistSetBusy(shell.footer, true);
-            const originalLabel = generateBtn.textContent;
-            generateBtn.textContent = _cardAssistT('character.aiAssistGenerating', '正在生成草稿…');
-            try {
-                const resp = await _cardAssistFetch('/api/card-assist/generate', {
-                    description: state.description,
-                    answers: state.answers,
-                    current_card: state.originalSnapshot,
-                    target_field_keys: state.targetFieldKeys,
-                    locale: _cardAssistCurrentLocale(),
-                });
-                state.generated = resp.fields || {};
-                state.selected = {};
-                Object.keys(state.generated).forEach(function (k) { state.selected[k] = true; });
-                if (!Object.keys(state.generated).length) {
-                    throw new Error(_cardAssistT('character.aiAssistNoFields', '生成结果为空，请稍后重试'));
-                }
-                _cardAssistRenderStep3(shell, state, form, originalName, isNew);
-            } catch (err) {
-                _cardAssistShowError(errorBox, err);
-            } finally {
-                _cardAssistSetBusy(shell.footer, false);
-                generateBtn.textContent = originalLabel;
-            }
-        }
-    );
-    shell.footer.appendChild(backBtn);
-    shell.footer.appendChild(generateBtn);
-}
-
-function _cardAssistRenderStep3(shell, state, form, originalName, isNew) {
-    shell.body.innerHTML = '';
-    shell.footer.innerHTML = '';
-
-    const stepLabel = document.createElement('div');
-    stepLabel.className = 'card-assist-step-label';
-    stepLabel.textContent = _cardAssistT('character.aiAssistStep3', '第 3 步 / 共 3 步 · 预览与微调');
-    shell.body.appendChild(stepLabel);
-
-    const hint = document.createElement('p');
-    hint.className = 'card-assist-hint';
-    hint.textContent = _cardAssistT('character.aiAssistStep3Hint',
-        '勾选要应用的字段。可点击 chip 对单个字段重新生成，或直接编辑新值。点「应用并保存」会把勾选的字段写入表单并保存。');
-    shell.body.appendChild(hint);
-
-    const table = document.createElement('div');
-    table.className = 'card-assist-preview-table';
-    shell.body.appendChild(table);
-
-    Object.keys(state.generated).forEach(function (key) {
-        const row = _cardAssistBuildFieldRow(key, state, table, originalName);
-        table.appendChild(row);
-    });
-
-    const errorBox = document.createElement('div');
-    errorBox.className = 'card-assist-error';
-    shell.body.appendChild(errorBox);
-
-    const backBtn = _cardAssistMakeButton(
-        _cardAssistT('character.aiAssistBack', '← 上一步'),
-        'btn-secondary',
-        function () { _cardAssistRenderStep2(shell, state, form, originalName, isNew); }
-    );
-    const applyBtn = _cardAssistMakeButton(
-        _cardAssistT('character.aiAssistApply', '应用并保存'),
-        'btn-primary',
-        async function () {
-            errorBox.textContent = '';
-            const selectedKeys = Object.keys(state.generated).filter(function (k) { return state.selected[k]; });
-            if (!selectedKeys.length) {
-                errorBox.textContent = _cardAssistT('character.aiAssistNothingSelected', '至少要勾选一个字段才能应用');
-                return;
-            }
-            _cardAssistSetBusy(shell.footer, true);
-            try {
-                // 等所有未完成的 refine 跑完再把 state.generated 落库 ——
-                // 避免 "我点了更傲娇又秒点应用并保存，落库的反而是微调前的值"。
-                if (state.pendingRefines && state.pendingRefines.size) {
-                    await Promise.allSettled(Array.from(state.pendingRefines));
-                }
-                _cardAssistApplyToForm(form, state.generated, selectedKeys, originalName, isNew);
-                // 触发保存：新建态需要有档案名，否则只能提示用户后退出，
-                // 不能继续走 success 流程否则用户会以为已落库。
-                const nameInput = form.querySelector('input[name="档案名"]');
-                if (isNew && !form._autoCreated && (!nameInput || !nameInput.value.trim())) {
-                    if (typeof showAlertDialog === 'function') {
-                        await showAlertDialog(
-                            _cardAssistT('character.aiAssistFillNameFirst', '已写入表单，请填写档案名后再保存'),
-                            { type: 'warning' }
-                        );
-                    }
-                    // 字段已写进表单（用户能直接接着填档案名 + 手动保存），
-                    // 收起向导即可；不要叠一个"已应用"的 success toast 让用户
-                    // 误以为已经存到磁盘。
-                    _cardAssistClose(shell.overlay);
-                    return;
-                }
-                // saveCatgirlFromPanel 失败分支自己已经 showMessage，所以这里
-                // 不再二次报错，只是不要关向导/弹成功提示。
-                const saved = await saveCatgirlFromPanel(form, originalName, isNew);
-                if (!saved) {
-                    return;
-                }
-                _cardAssistClose(shell.overlay);
-                if (typeof showAlertDialog === 'function') {
-                    showAlertDialog(
-                        _cardAssistT('character.aiAssistApplied', 'AI 生成的设定已应用到表单'),
-                        { type: 'success' }
-                    );
-                }
-            } catch (err) {
-                _cardAssistShowError(errorBox, err);
-            } finally {
-                _cardAssistSetBusy(shell.footer, false);
-            }
-        }
-    );
-    shell.footer.appendChild(backBtn);
-    shell.footer.appendChild(applyBtn);
-}
-
-function _cardAssistBuildFieldRow(key, state, table, originalName) {
-    const row = document.createElement('div');
-    row.className = 'card-assist-row';
-    row.dataset.key = key;
-
-    const checkboxLabel = document.createElement('label');
-    checkboxLabel.className = 'card-assist-checkbox';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = state.selected[key] !== false;
-    checkbox.addEventListener('change', function () { state.selected[key] = checkbox.checked; });
-    checkboxLabel.appendChild(checkbox);
-
-    const keyLabel = document.createElement('div');
-    keyLabel.className = 'card-assist-row-key';
-    keyLabel.textContent = key;
-
-    const valuesWrap = document.createElement('div');
-    valuesWrap.className = 'card-assist-row-values';
-
-    const originalVal = state.originalSnapshot[key];
-    if (originalVal) {
-        const originalEl = document.createElement('div');
-        originalEl.className = 'card-assist-row-original';
-        originalEl.innerHTML = '<span class="card-assist-row-original-tag">' +
-            _cardAssistT('character.aiAssistOriginal', '原值') + '</span> ' +
-            _cardAssistEscapeHtml(String(originalVal));
-        valuesWrap.appendChild(originalEl);
+        // 切换到不同的猫娘 → 销毁旧面板再开新的
+        _companionTeardown(existing);
+        _companionDestroy(existing);
+        window._cardCompanion = null;
     }
+    const state = _companionCreate(form, originalName, isNew);
+    window._cardCompanion = state;
+    document.body.appendChild(state.overlay);
+    _companionAttachFormWatchers(state);
+    _companionGreet(state);
+    setTimeout(() => { if (state.inputEl) state.inputEl.focus(); }, 80);
+}
 
-    const newEditor = document.createElement('textarea');
-    newEditor.className = 'card-assist-row-new';
-    newEditor.rows = 1;
-    newEditor.value = state.generated[key] || '';
-    newEditor.addEventListener('input', function () {
-        state.generated[key] = newEditor.value;
-        _cardAssistAutoResize(newEditor);
+function _companionCreate(form, originalName, isNew) {
+    const state = {
+        form: form,
+        originalName: originalName,
+        isNew: !!isNew,
+        devCatName: CARD_COMPANION_DEV_CAT_NAME,
+        // 状态机：
+        //   awaiting_description → 还在等用户给一句话描述
+        //   asking_questions     → AI 抛出了 N 道澄清问题，正在轮流回答
+        //   generating           → 正在调 /generate 写草稿（极短瞬态）
+        //   chat                 → 草稿已应用，自由对话 + 局部 patch
+        mode: 'awaiting_description',
+        description: '',
+        pendingQuestions: [],
+        currentQuestionIdx: 0,
+        collectedAnswers: {},
+        // /chat 调用时发回去的对话历史（OpenAI 格式）
+        chatHistory: [],
+        // 表单监视：detach 列表 + 上次快照
+        formWatchHandlers: [],
+        formWatchSnapshot: {},
+        // DOM refs
+        overlay: null,
+        threadEl: null,
+        inputEl: null,
+        sendBtnEl: null,
+        quickRowEl: null,
+        busy: false,
+    };
+    state.overlay = _companionBuildPanel(state);
+    return state;
+}
+
+function _companionDestroy(state) {
+    if (state.overlay && state.overlay.parentNode) {
+        state.overlay.parentNode.removeChild(state.overlay);
+    }
+}
+
+function _companionTeardown(state) {
+    if (!state || !state.form || !state.formWatchHandlers) return;
+    state.formWatchHandlers.forEach(function (pair) {
+        try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
     });
-    setTimeout(function () { _cardAssistAutoResize(newEditor); }, 0);
-    valuesWrap.appendChild(newEditor);
+    state.formWatchHandlers = [];
+}
 
-    const chipBar = document.createElement('div');
-    chipBar.className = 'card-assist-row-chips';
-    const refineOptions = [
-        { instruction: _cardAssistT('character.aiAssistRefineRandomInstr', '完全重新随机生成，保持与其他字段的整体调性一致'),
-          label: _cardAssistT('character.aiAssistRefineRandom', '🎲 再随机') },
-        { instruction: _cardAssistT('character.aiAssistRefineTsundereInstr', '变得更傲娇一些，更有反差萌'),
-          label: _cardAssistT('character.aiAssistRefineTsundere', '更傲娇') },
-        { instruction: _cardAssistT('character.aiAssistRefineGentleInstr', '变得更温柔治愈一些'),
-          label: _cardAssistT('character.aiAssistRefineGentle', '更温柔') },
+function _companionBuildPanel(state) {
+    const overlay = document.createElement('aside');
+    overlay.className = 'card-companion-panel';
+    overlay.setAttribute('role', 'complementary');
+    // 阻止面板上的点击冒泡到外层的"点击外部关闭"之类的逻辑（虽然没有，但
+    // 防御一下）
+    overlay.addEventListener('click', function (e) { e.stopPropagation(); });
+
+    // --- header ---
+    const header = document.createElement('div');
+    header.className = 'card-companion-header';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'card-companion-avatar';
+    const avatarImg = document.createElement('img');
+    avatarImg.alt = state.devCatName;
+    avatarImg.src = '/api/characters/catgirl/' + encodeURIComponent(state.devCatName) + '/card-face?t=' + Date.now();
+    avatarImg.onerror = function () {
+        avatarImg.remove();
+        const fallback = document.createElement('div');
+        fallback.className = 'card-companion-avatar-fallback';
+        fallback.textContent = (state.devCatName || 'AI').slice(0, 2);
+        avatar.appendChild(fallback);
+    };
+    avatar.appendChild(avatarImg);
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'card-companion-title';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'card-companion-name';
+    nameEl.textContent = state.devCatName;
+    const subEl = document.createElement('div');
+    subEl.className = 'card-companion-sub';
+    subEl.textContent = _cardAssistT('character.aiCompanionSub', '设定捏人助手 · 暂代开发猫');
+    titleWrap.appendChild(nameEl);
+    titleWrap.appendChild(subEl);
+
+    const minimizeBtn = document.createElement('button');
+    minimizeBtn.type = 'button';
+    minimizeBtn.className = 'card-companion-minimize';
+    minimizeBtn.title = _cardAssistT('character.aiCompanionMinimize', '收起');
+    minimizeBtn.innerHTML = '—';
+    minimizeBtn.addEventListener('click', function () {
+        overlay.classList.toggle('card-companion-minimized');
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'card-companion-close';
+    closeBtn.title = _cardAssistT('character.aiCompanionClose', '关闭');
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('click', function () {
+        _companionTeardown(state);
+        _companionDestroy(state);
+        if (window._cardCompanion === state) window._cardCompanion = null;
+    });
+
+    header.appendChild(avatar);
+    header.appendChild(titleWrap);
+    header.appendChild(minimizeBtn);
+    header.appendChild(closeBtn);
+    overlay.appendChild(header);
+
+    // --- thread ---
+    const thread = document.createElement('div');
+    thread.className = 'card-companion-thread';
+    overlay.appendChild(thread);
+    state.threadEl = thread;
+
+    // --- input bar ---
+    const inputBar = document.createElement('div');
+    inputBar.className = 'card-companion-input-bar';
+
+    const inputRow = document.createElement('div');
+    inputRow.className = 'card-companion-input-row';
+
+    const input = document.createElement('textarea');
+    input.className = 'card-companion-input';
+    input.rows = 1;
+    input.placeholder = _cardAssistT('character.aiCompanionPlaceholder',
+        '说点什么…（Enter 发送、Shift+Enter 换行）');
+    input.addEventListener('input', function () { _cardAssistAutoResize(input); });
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            _companionSubmit(state);
+        }
+    });
+    inputRow.appendChild(input);
+    state.inputEl = input;
+
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'card-companion-send';
+    sendBtn.textContent = _cardAssistT('character.aiCompanionSend', '发送');
+    sendBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        _companionSubmit(state);
+    });
+    inputRow.appendChild(sendBtn);
+    state.sendBtnEl = sendBtn;
+
+    inputBar.appendChild(inputRow);
+
+    // 一些预设的快捷指令，方便用户不用手动输入
+    const quickRow = document.createElement('div');
+    quickRow.className = 'card-companion-quick-row';
+    const quickActions = [
+        { label: _cardAssistT('character.aiCompanionQuickAdvice', '💡 给点建议'),
+          send: _cardAssistT('character.aiCompanionQuickAdviceMsg',
+                '看一下当前的角色设定，给我几条具体的改进建议吧。'),
+          requireMode: 'chat' },
+        { label: _cardAssistT('character.aiCompanionQuickCheck', '🔍 帮我审一下'),
+          send: _cardAssistT('character.aiCompanionQuickCheckMsg',
+                '审一下角色设定有没有矛盾、空泛或者重复的地方，并提出修改方案。'),
+          requireMode: 'chat' },
+        { label: _cardAssistT('character.aiCompanionQuickRegen', '🎲 重写整张卡'),
+          send: _cardAssistT('character.aiCompanionQuickRegenMsg',
+                '把所有可见字段都按原本的角色定位重新写一遍。'),
+          requireMode: 'chat' },
     ];
-    refineOptions.forEach(function (opt) {
+    quickActions.forEach(function (qa) {
         const chip = document.createElement('button');
         chip.type = 'button';
-        chip.className = 'card-assist-chip card-assist-refine-chip';
-        chip.textContent = opt.label;
+        chip.className = 'card-companion-quick-chip';
+        chip.textContent = qa.label;
+        chip.dataset.requireMode = qa.requireMode || '';
         chip.addEventListener('click', function (e) {
             e.preventDefault();
             e.stopPropagation();
-            _cardAssistRefineField(key, opt.instruction, row, state);
+            if (chip.disabled) return;
+            input.value = qa.send;
+            _companionSubmit(state);
         });
-        chipBar.appendChild(chip);
+        quickRow.appendChild(chip);
     });
-    const customChip = document.createElement('button');
-    customChip.type = 'button';
-    customChip.className = 'card-assist-chip card-assist-refine-chip card-assist-refine-custom';
-    customChip.textContent = _cardAssistT('character.aiAssistRefineCustom', '✎ 自定义…');
-    customChip.addEventListener('click', async function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        let instruction = '';
-        if (typeof showPrompt === 'function') {
-            instruction = await showPrompt(
-                _cardAssistT('character.aiAssistRefineCustomPrompt', '想怎么调整这个字段？'),
-                '',
-                _cardAssistT('character.aiAssistRefineCustomTitle', '自定义微调指令')
-            );
-        } else {
-            instruction = window.prompt(_cardAssistT('character.aiAssistRefineCustomPrompt', '想怎么调整这个字段？'));
-        }
-        instruction = (instruction || '').trim();
-        if (!instruction) return;
-        _cardAssistRefineField(key, instruction, row, state);
-    });
-    chipBar.appendChild(customChip);
-    valuesWrap.appendChild(chipBar);
+    inputBar.appendChild(quickRow);
+    state.quickRowEl = quickRow;
 
-    row.appendChild(checkboxLabel);
-    row.appendChild(keyLabel);
-    row.appendChild(valuesWrap);
+    overlay.appendChild(inputBar);
 
-    return row;
+    return overlay;
 }
 
-async function _cardAssistRefineField(key, instruction, row, state) {
-    if (!row || row.dataset.busy === '1') return;
-    row.dataset.busy = '1';
-    row.classList.add('card-assist-row-busy');
-    // 把任务塞进 state.pendingRefines，Apply 流程会等所有 pending refine 跑完
-    // 才把 state.generated 落库；否则用户点完"更傲娇"立刻"应用并保存"，
-    // 落库的还是微调前的旧值，但向导里 textarea 一会儿又变成新值，UI 和保存
-    // 结果就分叉了。
-    const task = (async function () {
-        try {
-            const ctx = Object.assign({}, state.originalSnapshot, state.generated);
-            const resp = await _cardAssistFetch('/api/card-assist/refine', {
-                field_key: key,
-                instruction: instruction,
-                current_card: ctx,
-                locale: _cardAssistCurrentLocale(),
-            });
-            const newVal = resp.value || '';
-            state.generated[key] = newVal;
-            const editor = row.querySelector('.card-assist-row-new');
-            if (editor) {
-                editor.value = newVal;
-                _cardAssistAutoResize(editor);
-            }
-        } catch (err) {
-            console.warn('[card-assist] refine failed:', err);
-            if (typeof showAlertDialog === 'function') {
-                showAlertDialog(
-                    _cardAssistT('character.aiAssistRefineFailed', '微调失败：') + (err && err.message || err),
-                    { type: 'error' }
-                );
-            }
-        } finally {
-            row.dataset.busy = '0';
-            row.classList.remove('card-assist-row-busy');
+function _companionGreet(state) {
+    // 入口分流：
+    //   - 空白卡（profile name 之外没有任何已填字段）→ 走多轮 Asking 流程
+    //     （awaiting_description → clarify → generate → chat）
+    //   - 已经有 tag 的卡 → 跳过 Asking，直接进入 chat（AI Design）。
+    //     问候里列出现有字段做摘要，提示用 "💡/🔍" quick chip 让 AI 基于
+    //     已有 tag 给建议；不预先消耗一次 LLM 调用。
+    //
+    // _cardAssistCollectCurrentFormData 已经过滤掉 CARD_ASSIST_RESERVED_KEYS
+    // （包括档案名/voice_id 等），所以只剩"真·角色设定字段"。空对象 → 空白卡。
+    const existingData = _cardAssistCollectCurrentFormData(state.form);
+    const filledKeys = Object.keys(existingData);
+    if (!filledKeys.length) {
+        _companionAppendAssistant(state,
+            _cardAssistT('character.aiCompanionGreeting',
+                '喵～我是设定捏人助手，先告诉我你想要一只什么样的猫娘呀？一句话描述就好，我会再问几个细节，然后帮你把整张卡写好喵。'));
+        // mode 默认就是 awaiting_description（_companionCreate 里初始化的）
+    } else {
+        _companionEnterDesignMode(state, existingData, filledKeys);
+    }
+    _companionUpdateQuickAvailability(state);
+}
+
+// 已有 tag 的卡：跳过 Asking，直接进 chat。第一条 assistant 气泡把现有字段
+// 列一下，让用户和 AI 都对得上号，再提示一下后续怎么交互。
+function _companionEnterDesignMode(state, existingData, filledKeys) {
+    state.mode = 'chat';
+    // 太多字段时只列前 12 条，剩下的折叠成"…还有 N 项"，避免气泡铺一屏
+    const MAX_LIST = 12;
+    const head = filledKeys.slice(0, MAX_LIST);
+    const lines = head.map(function (k) {
+        return '• ' + k + '：' + _companionTruncate(String(existingData[k] || ''), 30);
+    });
+    if (filledKeys.length > MAX_LIST) {
+        lines.push('• ' + _cardAssistT('character.aiCompanionDesignMore',
+            '…（还有 {n} 项）').replace('{n}', String(filledKeys.length - MAX_LIST)));
+    }
+    const greeting = _cardAssistT('character.aiCompanionDesignGreeting',
+        '喵～我是设定捏人助手。看到你这只猫娘已经有点雏形啦，我先看看你已经填了什么：') +
+        '\n\n' + lines.join('\n') +
+        '\n\n' + _cardAssistT('character.aiCompanionDesignAsk',
+        '想让我帮你做点啥呢？直接告诉我就行（比如「让她更傲娇一点」、「招牌台词换一句」），也可以点下面的「🔍 帮我审一下」让我整体看看~');
+    _companionAppendAssistant(state, greeting);
+    // 注：不预先塞 chatHistory，让 quick chip 触发的"帮我审一下"消息成为第一条
+    // user 输入，对话上下文更自然；current_card / target_field_keys 在每次
+    // /chat 调用前都重新收集，AI 永远看得到最新表单状态。
+}
+
+function _companionUpdateQuickAvailability(state) {
+    if (!state.quickRowEl) return;
+    state.quickRowEl.querySelectorAll('.card-companion-quick-chip').forEach(function (chip) {
+        const req = chip.dataset.requireMode || '';
+        const ok = !req || state.mode === req;
+        chip.disabled = !ok || state.busy;
+        chip.classList.toggle('card-companion-quick-chip-disabled', !ok);
+    });
+}
+
+function _companionSetBusy(state, busy) {
+    state.busy = !!busy;
+    if (state.sendBtnEl) state.sendBtnEl.disabled = !!busy;
+    if (state.inputEl) state.inputEl.disabled = !!busy;
+    _companionUpdateQuickAvailability(state);
+}
+
+async function _companionSubmit(state) {
+    if (state.busy) return;
+    const txt = (state.inputEl && state.inputEl.value ? state.inputEl.value : '').trim();
+    if (!txt) return;
+    state.inputEl.value = '';
+    _cardAssistAutoResize(state.inputEl);
+    await _companionHandleUserText(state, txt);
+}
+
+async function _companionHandleUserText(state, text) {
+    _companionAppendUser(state, text);
+    if (state.mode === 'awaiting_description') {
+        state.description = text;
+        await _companionRunClarify(state);
+    } else if (state.mode === 'asking_questions') {
+        // 用户没点 chip，而是在输入框敲了自定义答案 → 当作当前问题的回答
+        const q = state.pendingQuestions[state.currentQuestionIdx];
+        if (q) {
+            state.collectedAnswers[q.id] = text;
+            state.currentQuestionIdx++;
+            _companionRenderNextQuestion(state);
         }
-    })();
-    if (state && state.pendingRefines) state.pendingRefines.add(task);
-    try {
-        await task;
-    } finally {
-        if (state && state.pendingRefines) state.pendingRefines.delete(task);
+    } else {
+        // chat 模式：进 /api/card-assist/chat
+        state.chatHistory.push({ role: 'user', content: text });
+        await _companionRunChat(state);
     }
 }
 
+async function _companionRunClarify(state) {
+    _companionSetBusy(state, true);
+    const typing = _companionAppendTyping(state);
+    try {
+        _companionEnsureLiveForm(state);
+        const resp = await _cardAssistFetch('/api/card-assist/clarify', {
+            description: state.description,
+            current_card: _cardAssistCollectCurrentFormData(state.form),
+            target_field_keys: _cardAssistCollectFieldKeys(state.form),
+            locale: _cardAssistCurrentLocale(),
+        });
+        typing.remove();
+        state.pendingQuestions = resp.questions || [];
+        state.currentQuestionIdx = 0;
+        if (!state.pendingQuestions.length) {
+            // 没出问题就直接跳到 generate
+            await _companionRunGenerate(state);
+            return;
+        }
+        state.mode = 'asking_questions';
+        _companionUpdateQuickAvailability(state);
+        _companionRenderNextQuestion(state);
+    } catch (err) {
+        typing.remove();
+        _companionAppendError(state, err);
+        state.mode = 'awaiting_description';
+        _companionUpdateQuickAvailability(state);
+    } finally {
+        _companionSetBusy(state, false);
+    }
+}
+
+function _companionRenderNextQuestion(state) {
+    if (state.currentQuestionIdx >= state.pendingQuestions.length) {
+        _companionRunGenerate(state);
+        return;
+    }
+    const q = state.pendingQuestions[state.currentQuestionIdx];
+    const total = state.pendingQuestions.length;
+    const prefix = '【' + (state.currentQuestionIdx + 1) + '/' + total + ' · ' + (q.header || '') + '】';
+    _companionAppendAssistant(state, q.label, {
+        prefix: prefix,
+        chips: (q.options || []).map(function (opt) {
+            return {
+                label: opt,
+                onClick: function () {
+                    state.collectedAnswers[q.id] = opt;
+                    _companionAppendUser(state, opt);
+                    state.currentQuestionIdx++;
+                    _companionRenderNextQuestion(state);
+                }
+            };
+        }),
+        allowCustom: q.allowCustom !== false,
+    });
+}
+
+async function _companionRunGenerate(state) {
+    _companionSetBusy(state, true);
+    const typing = _companionAppendTyping(state,
+        _cardAssistT('character.aiCompanionGenerating', '正在帮你写草稿…'));
+    try {
+        _companionEnsureLiveForm(state);
+        const resp = await _cardAssistFetch('/api/card-assist/generate', {
+            description: state.description,
+            answers: state.collectedAnswers,
+            current_card: _cardAssistCollectCurrentFormData(state.form),
+            target_field_keys: _cardAssistCollectFieldKeys(state.form),
+            locale: _cardAssistCurrentLocale(),
+        });
+        typing.remove();
+        const fields = resp.fields || {};
+        const fieldKeys = Object.keys(fields);
+        if (!fieldKeys.length) {
+            _companionAppendAssistant(state,
+                _cardAssistT('character.aiCompanionEmptyDraft',
+                    '草稿空空的喵，我们再聊几句吧～'));
+            state.mode = 'chat';
+            _companionUpdateQuickAvailability(state);
+            return;
+        }
+        // 直接应用到表单
+        const applyRes = _cardAssistApplyToForm(state.form, fields, fieldKeys,
+                                                 state.originalName, state.isNew);
+        _companionRefreshFormSnapshot(state);
+        await _companionTryAutoSave(state);
+        // 用一条 assistant 气泡总结。区分 update vs create，让用户能立即看出
+        // LLM 用的 key 是不是和表单里的字段对上号了 —— 如果 created 一大堆，
+        // 说明 LLM 没听话用错 key，老字段没被覆盖。
+        const lines = [];
+        if (applyRes.updated.length) {
+            lines.push(_cardAssistT('character.aiCompanionDraftUpdated', '✎ 改写') + '：' +
+                applyRes.updated.map(function (k) { return k; }).join('、'));
+        }
+        if (applyRes.created.length) {
+            lines.push(_cardAssistT('character.aiCompanionDraftCreated', '+ 新增') + '：' +
+                applyRes.created.map(function (k) { return k; }).join('、'));
+        }
+        if (applyRes.skipped.length) {
+            lines.push(_cardAssistT('character.aiCompanionDraftSkipped', '⤬ 跳过') + '：' +
+                applyRes.skipped.map(function (k) { return k; }).join('、'));
+        }
+        const msg = _cardAssistT('character.aiCompanionDraftReady',
+            '草稿写好啦，已经填进表单了喵～你随时改、随时跟我说要调啥都行：') +
+            (lines.length ? '\n' + lines.join('\n') : '');
+        _companionAppendAssistant(state, msg);
+        // 进入聊天模式，把 description + 生成结果当上下文塞进 chatHistory
+        state.mode = 'chat';
+        state.chatHistory.push({ role: 'user',
+            content: '基于这段描述生成猫娘卡：' + state.description });
+        state.chatHistory.push({ role: 'assistant',
+            content: '已生成并填入表单：' + JSON.stringify(fields) });
+        _companionUpdateQuickAvailability(state);
+    } catch (err) {
+        typing.remove();
+        _companionAppendError(state, err);
+        state.mode = 'chat';
+        _companionUpdateQuickAvailability(state);
+    } finally {
+        _companionSetBusy(state, false);
+    }
+}
+
+async function _companionRunChat(state) {
+    _companionSetBusy(state, true);
+    const typing = _companionAppendTyping(state);
+    try {
+        _companionEnsureLiveForm(state);
+        const resp = await _cardAssistFetch('/api/card-assist/chat', {
+            messages: state.chatHistory,
+            current_card: _cardAssistCollectCurrentFormData(state.form),
+            target_field_keys: _cardAssistCollectFieldKeys(state.form),
+            dev_cat_name: state.devCatName,
+            locale: _cardAssistCurrentLocale(),
+        });
+        typing.remove();
+        const reply = (resp.reply || '').trim();
+        if (reply) {
+            _companionAppendAssistant(state, reply);
+            state.chatHistory.push({ role: 'assistant', content: reply });
+        }
+        const actions = Array.isArray(resp.actions) ? resp.actions : [];
+        const summary = _companionApplyActions(state, actions);
+        if (summary) {
+            _companionAppendSystem(state, summary);
+            _companionRefreshFormSnapshot(state);
+            await _companionTryAutoSave(state);
+        }
+    } catch (err) {
+        typing.remove();
+        _companionAppendError(state, err);
+    } finally {
+        _companionSetBusy(state, false);
+    }
+}
+
+function _companionApplyActions(state, actions) {
+    if (!actions || !actions.length) return '';
+    // form 可能已经被 buildCatgirlDetailForm 重新渲染过 → 尝试按 id 重新接上当前
+    // 活着的同名表单。接不上才真的报错。
+    if (!_companionEnsureLiveForm(state)) {
+        return _cardAssistT('character.aiCompanionFormGone',
+            '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。');
+    }
+    const updatedTags = [];
+    const createdTags = [];
+    const removedTags = [];
+    const skippedTags = [];
+    actions.forEach(function (a) {
+        if (!a || !a.type || !a.field_key) return;
+        if (CARD_ASSIST_RESERVED_KEYS.includes(a.field_key)) {
+            skippedTags.push(a.field_key);
+            return;
+        }
+        if (a.type === 'remove_field') {
+            const ta = _findFieldTextareaByName(state.form, a.field_key);
+            if (ta) {
+                const wrapper = ta.closest('.field-row-wrapper');
+                if (wrapper) wrapper.remove();
+                removedTags.push(a.field_key);
+            } else {
+                skippedTags.push(a.field_key);
+            }
+            return;
+        }
+        // refine_field / add_field 都走 ApplyToForm；它会回报到底是 update 了已有字段
+        // 还是新建了一行，我们用这个区分给用户更精确的反馈。
+        const single = {};
+        single[a.field_key] = a.value;
+        const res = _cardAssistApplyToForm(state.form, single, [a.field_key],
+                                           state.originalName, state.isNew);
+        res.updated.forEach(function (k) { updatedTags.push(k); });
+        res.created.forEach(function (k) { createdTags.push(k); });
+        res.skipped.forEach(function (k) { skippedTags.push(k); });
+    });
+    const parts = [];
+    if (updatedTags.length) parts.push('✎ ' + updatedTags.join(', '));
+    if (createdTags.length) parts.push('+ ' + createdTags.join(', '));
+    if (removedTags.length) parts.push('🗑 ' + removedTags.join(', '));
+    if (skippedTags.length) parts.push('⤬ ' + skippedTags.join(', ') +
+        '（' + _cardAssistT('character.aiCompanionSkipped', '未匹配/已保留') + '）');
+    if (!parts.length) return '';
+    return _cardAssistT('character.aiCompanionAppliedPrefix', '已应用：') + parts.join('  ·  ');
+}
+
+async function _companionTryAutoSave(state) {
+    // 任何"对 form 动手"的入口前都先确保 form 还活着，否则保存的是个 detached
+    // 表单 → FormData 拿到空值 / PUT 把字段全清光。
+    if (!_companionEnsureLiveForm(state)) return;
+
+    // ⚠ 关键：空白卡（state.isNew === true 且后端还没收到过 POST）下，绝对不能
+    // 调 saveCatgirlFromPanel —— 它的"首次保存成功"分支会触发 closeCatgirlPanel()
+    // （见 character_card_manager.js ~6331/6334），把整个详情面板收起来，用户跟
+    // companion 聊到一半画面被甩走。
+    //
+    // 解决方案：新卡用户必须先**手动**点一次 Save 把卡建出来；之后 state.isNew
+    // 翻成 false（或者 form._autoCreated 标记起来），auto-save 就可以接管走 PUT。
+    // 手动 Save 后老的 saveCatgirlFromPanel 流程会 buildCatgirlDetailForm
+    // 重新渲染表单，companion 会在下一次 _companionEnsureLiveForm 时自动跟过去。
+    if (state.isNew && !state.form._autoCreated) {
+        // 一只新卡里只提示一次，避免 AI 改几次就刷几条 toast。
+        if (!state._warnedNewCardSaveHint) {
+            state._warnedNewCardSaveHint = true;
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionNewCardSaveHint',
+                    '💡 新卡片要先点一下下面的 Save 才能让我自动保存，' +
+                    '现在字段都已经写进表单了喵～'));
+        }
+        return;
+    }
+    if (typeof saveCatgirlFromPanel === 'function') {
+        try { await saveCatgirlFromPanel(state.form, state.originalName, state.isNew); }
+        catch (e) { console.warn('[card-companion] auto-save after action failed:', e); }
+    }
+}
+
+// ========== 表单监视：用户在面板外手改字段时给个 system 提示 ==========
+
+function _companionAttachFormWatchers(state) {
+    if (!state.form) return;
+    // 如果之前 attach 过、但 form 实例换了，先把旧的 listener 清掉，避免旧表单
+    // 还在 DOM 树里时双触发。
+    if (state.formWatchHandlers && state.formWatchHandlers.length) {
+        state.formWatchHandlers.forEach(function (pair) {
+            try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
+        });
+        state.formWatchHandlers = [];
+    }
+    state.formWatchSnapshot = _cardAssistCollectCurrentFormData(state.form);
+    const inputHandler = function (e) {
+        const t = e.target;
+        if (!t || !t.name) return;
+        if (t.tagName !== 'TEXTAREA' && t.tagName !== 'INPUT') return;
+        if (CARD_ASSIST_RESERVED_KEYS.includes(t.name)) return;
+        // 防抖：用户停手 600ms 才看是不是真的改了
+        clearTimeout(t._companionWatchTimer);
+        t._companionWatchTimer = setTimeout(function () {
+            const newVal = (t.value || '').trim();
+            const oldVal = (state.formWatchSnapshot[t.name] || '').trim();
+            if (newVal === oldVal) return;  // companion 自己改的 → snapshot 已同步，会在这里跳过
+            state.formWatchSnapshot[t.name] = newVal;
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionUserEdited', '你刚改了') +
+                ' 「' + t.name + '」' +
+                (oldVal
+                    ? '：' + _companionTruncate(oldVal, 20) + ' → ' + _companionTruncate(newVal, 20)
+                    : '：' + _companionTruncate(newVal, 40)));
+        }, 600);
+    };
+    state.form.addEventListener('input', inputHandler);
+    state.formWatchHandlers.push(['input', inputHandler]);
+}
+
+function _companionRefreshFormSnapshot(state) {
+    if (!state.form) return;
+    state.formWatchSnapshot = _cardAssistCollectCurrentFormData(state.form);
+}
+
+// 切换猫娘 / 关掉再开详情面板 / 重命名 / 任何让 buildCatgirlDetailForm 重新跑过
+// 的操作，都会让 state.form 指向一个 detach 掉的旧 DOM 实例。companion 自己
+// 是侧栏，活得比 form 长。每次要"动 form"之前调一下这个 helper，会按
+//   1) state.form 还在 DOM 里 → 直接用
+//   2) document.getElementById('catgirl-form-' + originalName) → 重新绑定 + 重挂监听
+//   3) 都没有 → 返回 false，调用方据此让 companion 给个明确提示
+// 实现这套自动跟随，用户不用关掉 companion 再开一次。
+function _companionEnsureLiveForm(state) {
+    if (!state) return false;
+    if (state.form && state.form.isConnected) return true;
+    if (!state.originalName) return false;
+    const liveForm = document.getElementById('catgirl-form-' + state.originalName);
+    if (!liveForm) return false;
+    // 拿到了"现行"的同名表单。把 state.form 换过去并重挂 watcher。
+    // 注意：旧 form 上的 listener 已随 DOM 卸载消失，无需手动 remove —— 但
+    // _companionAttachFormWatchers 内部已经做了 defensive removeEventListener。
+    state.form = liveForm;
+    state.formWatchHandlers = [];
+    _companionAttachFormWatchers(state);
+    return true;
+}
+
+function _companionTruncate(s, n) {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+// ========== Bubble 工厂 ==========
+
+function _companionScrollToBottom(state) {
+    if (!state.threadEl) return;
+    // 用 microtask 让 DOM commit 完再算 scrollHeight，否则会拿到 stale 值
+    setTimeout(function () {
+        state.threadEl.scrollTop = state.threadEl.scrollHeight;
+    }, 0);
+}
+
+function _companionAppendAssistant(state, text, opts) {
+    opts = opts || {};
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble card-companion-bubble-assistant';
+
+    if (opts.prefix) {
+        const tag = document.createElement('div');
+        tag.className = 'card-companion-bubble-prefix';
+        tag.textContent = opts.prefix;
+        bubble.appendChild(tag);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'card-companion-bubble-body';
+    body.textContent = text || '';
+    body.style.whiteSpace = 'pre-wrap';
+    bubble.appendChild(body);
+
+    if (opts.chips && opts.chips.length) {
+        const row = document.createElement('div');
+        row.className = 'card-companion-bubble-chips';
+        opts.chips.forEach(function (c) {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'card-companion-chip';
+            chip.textContent = c.label;
+            chip.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                // 一次性 chip：点完整行禁用
+                row.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+                const customInput = bubble.querySelector('.card-companion-bubble-custom-input');
+                if (customInput) customInput.disabled = true;
+                if (typeof c.onClick === 'function') c.onClick();
+            });
+            row.appendChild(chip);
+        });
+        bubble.appendChild(row);
+    }
+
+    if (opts.allowCustom) {
+        const customRow = document.createElement('div');
+        customRow.className = 'card-companion-bubble-custom';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'card-companion-bubble-custom-input';
+        input.placeholder = _cardAssistT('character.aiCompanionInlineCustom', '或者自己填一个…');
+        input.addEventListener('keydown', function (e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            const v = (input.value || '').trim();
+            if (!v) return;
+            input.disabled = true;
+            bubble.querySelectorAll('.card-companion-chip').forEach(function (c) { c.disabled = true; });
+            _companionHandleUserText(state, v);
+        });
+        customRow.appendChild(input);
+        bubble.appendChild(customRow);
+    }
+
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendUser(state, text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble card-companion-bubble-user';
+    const body = document.createElement('div');
+    body.className = 'card-companion-bubble-body';
+    body.textContent = text || '';
+    body.style.whiteSpace = 'pre-wrap';
+    bubble.appendChild(body);
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendSystem(state, text) {
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble-system';
+    bubble.textContent = text || '';
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendTyping(state, label) {
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble card-companion-bubble-assistant card-companion-typing';
+    const body = document.createElement('div');
+    body.className = 'card-companion-bubble-body';
+    body.innerHTML = (label ? _cardAssistEscapeHtml(label) + ' ' : '') +
+        '<span class="card-companion-typing-dot"></span>' +
+        '<span class="card-companion-typing-dot"></span>' +
+        '<span class="card-companion-typing-dot"></span>';
+    bubble.appendChild(body);
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+function _companionAppendError(state, err) {
+    let msg = (err && err.message) || String(err || '');
+    if (err && err.code === 'assist_api_not_configured') {
+        msg = _cardAssistT('character.aiAssistApiMissing',
+            '辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。');
+    }
+    const bubble = document.createElement('div');
+    bubble.className = 'card-companion-bubble-system card-companion-error';
+    bubble.textContent = '⚠ ' + msg;
+    state.threadEl.appendChild(bubble);
+    _companionScrollToBottom(state);
+    return bubble;
+}
+
+// 在表单里查找名为 `key` 的字段 textarea。
+//   1. 精确 [name=key] 命中
+//   2. trim 后命中（应对 characters.json 里手抖留下的首尾空格）
+//   3. 全表扫描 + trimmed 小写对比（应对 zh/en locale 漂移、大小写不一致）
+// 命中返回 textarea，未命中返回 null —— 调用方据此决定 update vs create。
+function _findFieldTextareaByName(form, key) {
+    if (!form || !key) return null;
+    const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s);
+    let ta = form.querySelector('textarea[name="' + esc(key) + '"]');
+    if (ta) return ta;
+    const trimmed = String(key).trim();
+    if (trimmed && trimmed !== key) {
+        ta = form.querySelector('textarea[name="' + esc(trimmed) + '"]');
+        if (ta) return ta;
+    }
+    const lower = trimmed.toLowerCase();
+    const all = form.querySelectorAll('textarea[name]');
+    for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        const n = (el.getAttribute('name') || '').trim();
+        if (n === trimmed) return el;
+        if (n.toLowerCase() === lower) return el;
+    }
+    return null;
+}
+
+// 给一个 field-row-wrapper 闪一下绿色渐变 + 自动滚到视野中央，让用户能立刻
+// 跟上 companion 改了哪一行。
+// opts:
+//   scrollIntoView (bool, default false)
+//     true 时把 row 平滑滚到容器中央。批量 apply 时只对"第一行"传 true，
+//     避免视野被多次 yank 来 yank 去
+//   focusTextarea (HTMLElement | null, default null)
+//     传一个 textarea 进来，闪烁结束前若用户没在其它输入框打字，会顺手把光标
+//     落在它上面 —— 对"AI 改了这个字段、你想接着调"场景挺顺手；
+//     用户正在 companion 输入框里打字的话不抢焦点。
+function _cardAssistFlashRow(wrapperEl, opts) {
+    if (!wrapperEl) return;
+    opts = opts || {};
+    wrapperEl.classList.remove('card-assist-row-flash');
+    // force reflow so re-applying class re-triggers the animation
+    void wrapperEl.offsetWidth;
+    wrapperEl.classList.add('card-assist-row-flash');
+    setTimeout(function () {
+        wrapperEl.classList.remove('card-assist-row-flash');
+    }, 1500);
+
+    if (opts.scrollIntoView) {
+        // 用 microtask 让 DOM 把新插入的 row 算进 layout，再 scrollIntoView 才
+        // 不会拿到 0 高度的 stale rect。
+        setTimeout(function () {
+            try {
+                wrapperEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch (_) {
+                // 老浏览器 fallback：没有 smooth 也照样要滚到位
+                wrapperEl.scrollIntoView();
+            }
+        }, 0);
+    }
+
+    if (opts.focusTextarea) {
+        // 用户正在 companion 输入框 / 其它表单输入框里打字 → 不抢焦点
+        const active = document.activeElement;
+        const userIsTypingElsewhere = active &&
+            (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') &&
+            active !== opts.focusTextarea;
+        if (!userIsTypingElsewhere) {
+            try { opts.focusTextarea.focus({ preventScroll: true }); }
+            catch (_) { try { opts.focusTextarea.focus(); } catch (__) {} }
+        }
+    }
+}
+
+// 将一组 generated[key] = value 写到表单。返回 {updated: [key,...], created: [key,...]}
+// 让上层能区分"改了已有"和"插了新行"，给用户更准确的反馈。
 function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isNew) {
-    if (!form || !selectedKeys || !selectedKeys.length) return;
+    const result = { updated: [], created: [], skipped: [] };
+    if (!form || !selectedKeys || !selectedKeys.length) return result;
+    // 防御：form 已经从 DOM 卸载（用户切了猫娘 / 关掉了详情面板）的情况下，
+    // 写值不会有任何视觉效果。给上层一个明确信号。
+    if (!form.isConnected) {
+        selectedKeys.forEach((k) => result.skipped.push(k));
+        return result;
+    }
     const addFieldArea = form.querySelector('.add-field-area');
+    // 批量应用时只对"第一个真正落到 form 上的字段"做 scrollIntoView，避免一次
+    // generate 写 9 个字段把视野往下连甩 9 次。
+    let didScroll = false;
     selectedKeys.forEach(function (key) {
-        if (!key || CARD_ASSIST_RESERVED_KEYS.includes(key)) return;
+        if (!key || CARD_ASSIST_RESERVED_KEYS.includes(key)) {
+            result.skipped.push(key);
+            return;
+        }
         const value = String(generated[key] == null ? '' : generated[key]);
-        let textarea = form.querySelector('textarea[name="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+        const textarea = _findFieldTextareaByName(form, key);
         if (textarea) {
             textarea.value = value;
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             textarea.dispatchEvent(new Event('change', { bubbles: true }));
-        } else {
-            // 字段不存在 → 复用「新增设定」分支的 DOM 构造
-            const wrapper = document.createElement('div');
-            wrapper.className = 'field-row-wrapper custom-row';
-
-            const labelEl = document.createElement('label');
-            if (typeof _panelSetFieldLabel === 'function') {
-                _panelSetFieldLabel(labelEl, key);
-            } else {
-                labelEl.textContent = key;
-            }
-            wrapper.appendChild(labelEl);
-
-            const fr = document.createElement('div');
-            fr.className = 'field-row';
-            const textareaEl = document.createElement('textarea');
-            textareaEl.name = key;
-            textareaEl.rows = 1;
-            textareaEl.value = value;
-            fr.appendChild(textareaEl);
-            wrapper.appendChild(fr);
-
-            const delBtn = document.createElement('button');
-            delBtn.type = 'button';
-            delBtn.className = 'btn sm delete';
-            const delLabel = (window.t && typeof window.t === 'function')
-                ? window.t('character.deleteField')
-                : '删除设定';
-            delBtn.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + delLabel + '</span>';
-            delBtn.addEventListener('click', function () { wrapper.remove(); });
-            wrapper.appendChild(delBtn);
-
-            if (addFieldArea && addFieldArea.parentNode === form) {
-                form.insertBefore(wrapper, addFieldArea);
-            } else {
-                form.appendChild(wrapper);
-            }
-            if (typeof _panelAttachTextareaAutoResize === 'function') {
-                _panelAttachTextareaAutoResize(textareaEl);
-            }
-            if (!isNew && originalName && typeof panelAttachAutoSaveListener === 'function') {
-                panelAttachAutoSaveListener(textareaEl, originalName);
-            }
-            textareaEl.dispatchEvent(new Event('input', { bubbles: true }));
+            const row = textarea.closest('.field-row-wrapper') || textarea.parentNode;
+            _cardAssistFlashRow(row, {
+                scrollIntoView: !didScroll,
+                focusTextarea: didScroll ? null : textarea,
+            });
+            didScroll = true;
+            result.updated.push(textarea.getAttribute('name') || key);
+            return;
         }
+        // 字段不存在 → 复用「新增设定」分支的 DOM 构造
+        const wrapper = document.createElement('div');
+        wrapper.className = 'field-row-wrapper custom-row';
+
+        const labelEl = document.createElement('label');
+        if (typeof _panelSetFieldLabel === 'function') {
+            _panelSetFieldLabel(labelEl, key);
+        } else {
+            labelEl.textContent = key;
+        }
+        wrapper.appendChild(labelEl);
+
+        const fr = document.createElement('div');
+        fr.className = 'field-row';
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = key;
+        textareaEl.rows = 1;
+        textareaEl.value = value;
+        fr.appendChild(textareaEl);
+        wrapper.appendChild(fr);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        const delLabel = (window.t && typeof window.t === 'function')
+            ? window.t('character.deleteField')
+            : '删除设定';
+        delBtn.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + delLabel + '</span>';
+        delBtn.addEventListener('click', function () { wrapper.remove(); });
+        wrapper.appendChild(delBtn);
+
+        if (addFieldArea && addFieldArea.parentNode === form) {
+            form.insertBefore(wrapper, addFieldArea);
+        } else {
+            form.appendChild(wrapper);
+        }
+        if (typeof _panelAttachTextareaAutoResize === 'function') {
+            _panelAttachTextareaAutoResize(textareaEl);
+        }
+        if (!isNew && originalName && typeof panelAttachAutoSaveListener === 'function') {
+            panelAttachAutoSaveListener(textareaEl, originalName);
+        }
+        textareaEl.dispatchEvent(new Event('input', { bubbles: true }));
+        _cardAssistFlashRow(wrapper, {
+            scrollIntoView: !didScroll,
+            focusTextarea: didScroll ? null : textareaEl,
+        });
+        didScroll = true;
+        result.created.push(key);
     });
     // 让用户看到 Save / Cancel
     const sb = form.querySelector('#save-button');
     const cb = form.querySelector('#cancel-button');
     if (sb) sb.style.display = '';
     if (cb) cb.style.display = '';
+    return result;
 }
 
 function _cardAssistAutoResize(textarea) {
     if (!textarea) return;
     textarea.style.height = 'auto';
     textarea.style.height = (textarea.scrollHeight + 2) + 'px';
-}
-
-function _cardAssistShowError(errorBox, err) {
-    if (!errorBox) return;
-    let msg = (err && err.message) || String(err || '');
-    if (err && err.code === 'assist_api_not_configured') {
-        msg = _cardAssistT('character.aiAssistApiMissing',
-            '辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。');
-    }
-    errorBox.textContent = msg;
 }
 
 function _cardAssistEscapeHtml(s) {

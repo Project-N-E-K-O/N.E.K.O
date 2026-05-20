@@ -5952,6 +5952,14 @@ margin-top: 10px;
     grid-column: 4;
 }
 
+/* AI 辅助生成按钮放在 Add 按钮左边的 action 槽位（col 3），保持和
+   Add 按钮同一行 —— 同样的 pattern 用在 save-action / cancel-action 上。
+   注意：必须放在上面 `.settings-toolbar-row .btn.sm { grid-column: 4 }`
+   之后，靠 source order 覆盖（specificity 相同）。 */
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row .settings-secondary-action.btn.sm {
+    grid-column: 3;
+}
+
 .catgirl-panel-right .panel-tab-settings .settings-action-row .settings-save-action {
     grid-column: 3;
 }
@@ -6001,6 +6009,31 @@ margin-top: 10px;
         grid-column: 2;
         justify-self: end;
         width: min(100%, var(--settings-action-col));
+    }
+
+    /* AI 辅助 + Add Field 在 ≤1100px 仍保持同一行：把 toolbar-row 重新撑成
+       "label / spacer / col3 / col4" 四列，AI 占 col 3、Add 占 col 4。
+       通用 `.btn.sm { grid-column: 2 }` 规则被这两条更具体的选择器盖掉。
+       窄于 768px 时 `@media (max-width: 768px)` 会把布局收回 1-col，让两个
+       按钮叠成上下两行（screen 太窄时唯一合理的排版）。 */
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row {
+        grid-template-columns:
+            var(--settings-label-col)
+            minmax(0, 1fr)
+            var(--settings-action-col)
+            var(--settings-action-col);
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .settings-secondary-action.btn.sm {
+        grid-column: 3;
+        justify-self: stretch;
+        width: 100%;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm:not(.settings-secondary-action) {
+        grid-column: 4;
+        justify-self: stretch;
+        width: 100%;
     }
 
     .catgirl-panel-right .panel-tab-settings .personality-row {
@@ -6058,6 +6091,14 @@ margin-top: 10px;
         grid-column: 1;
         justify-self: stretch;
         width: 100%;
+    }
+
+    /* @media (max-width:1100px) 里把 AI 按钮固定在 col 3 / Add 在 col 4，
+       phone breakpoint 1-col grid 时把它们也都收回 col 1，否则 grid-column:3/4
+       会让 CSS Grid 隐式生成额外列，画面错位 */
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .settings-secondary-action.btn.sm,
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm:not(.settings-secondary-action) {
+        grid-column: 1;
     }
 
     .catgirl-panel-right .panel-tab-settings .personality-row {
@@ -7151,310 +7192,517 @@ margin-top: 10px;
     line-height: 1;
 }
 
-.card-assist-modal .modal-content {
-    max-width: 880px;
-    max-height: 88vh;
-}
+/* ===================== Companion 侧边面板（替代旧 wizard） ===================== */
 
-.card-assist-body {
-    padding: 18px 22px;
-    overflow-y: auto;
-    flex: 1 1 auto;
-    min-height: 0;
-}
+/* 入口按钮上方已有 .btn.sm.ai-assist 样式，保留不动 */
 
-.card-assist-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    padding: 12px 22px;
-    border-top: 1px solid #e5e7eb;
-    background: #fafafa;
-}
-
-.card-assist-step-label {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #6366f1;
-    margin-bottom: 6px;
-}
-
-.card-assist-hint {
-    margin: 0 0 14px 0;
-    color: #555;
-    font-size: 13px;
-    line-height: 1.6;
-}
-
-.card-assist-description-input {
-    width: 100%;
-    min-height: 96px;
-    padding: 10px 12px;
-    border: 1px solid #d4d4d8;
-    border-radius: 8px;
-    font-size: 14px;
-    box-sizing: border-box;
-    resize: vertical;
-    font-family: inherit;
-}
-
-.card-assist-description-input:focus {
-    outline: none;
-    border-color: #6366f1;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
-}
-
-.card-assist-error {
-    color: #dc2626;
-    font-size: 13px;
-    margin-top: 8px;
-    min-height: 1em;
-}
-
-.card-assist-questions {
+.card-companion-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 420px;
+    max-width: 95vw;
+    height: 100vh;
+    background: #ffffff;
+    border-left: 1px solid #e5e7eb;
+    box-shadow: -8px 0 24px rgba(15, 23, 42, 0.18);
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    z-index: 10100;
+    font-family: inherit;
+    animation: cardCompanionSlideIn 0.22s ease-out;
 }
 
-.card-assist-question {
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    padding: 12px 14px;
-    background: #fff;
+@keyframes cardCompanionSlideIn {
+    from { transform: translateX(40px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
 }
 
-.card-assist-question-header {
+.card-companion-panel.card-companion-minimized {
+    height: 56px;
+    overflow: hidden;
+}
+
+.card-companion-panel.card-companion-minimized .card-companion-thread,
+.card-companion-panel.card-companion-minimized .card-companion-input-bar {
+    display: none;
+}
+
+.card-companion-header {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
-    margin-bottom: 8px;
-}
-
-.card-assist-question-tag {
-    background: #e0e7ff;
-    color: #4338ca;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 600;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #e5e7eb;
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(99, 102, 241, 0.08));
     flex-shrink: 0;
 }
 
-.card-assist-question-label {
-    color: #1f2937;
-    font-weight: 500;
-    font-size: 14px;
+.card-companion-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 3px rgba(99, 102, 241, 0.3);
 }
 
-.card-assist-chip-row {
+.card-companion-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.card-companion-avatar-fallback {
+    color: #fff;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+}
+
+.card-companion-title {
+    flex: 1;
+    min-width: 0;
+}
+
+.card-companion-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1f2937;
+    line-height: 1.2;
+}
+
+.card-companion-sub {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 2px;
+}
+
+.card-companion-minimize,
+.card-companion-close {
+    background: transparent;
+    border: none;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    color: #6b7280;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+}
+
+.card-companion-close {
+    font-size: 22px;
+}
+
+.card-companion-minimize:hover,
+.card-companion-close:hover {
+    background: rgba(99, 102, 241, 0.12);
+    color: #4338ca;
+}
+
+.card-companion-thread {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 14px 14px 18px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #f9fafb;
+    min-height: 0;
+}
+
+.card-companion-bubble {
+    max-width: 88%;
+    padding: 8px 12px;
+    border-radius: 14px;
+    font-size: 13px;
+    line-height: 1.55;
+    word-wrap: break-word;
+    animation: cardCompanionBubbleIn 0.18s ease-out;
+}
+
+@keyframes cardCompanionBubbleIn {
+    from { transform: translateY(4px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.card-companion-bubble-assistant {
+    align-self: flex-start;
+    background: #fff;
+    color: #1f2937;
+    border: 1px solid #e5e7eb;
+    border-bottom-left-radius: 4px;
+}
+
+.card-companion-bubble-user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #6366f1, #4f46e5);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+
+.card-companion-bubble-system {
+    align-self: center;
+    max-width: 92%;
+    font-size: 11px;
+    color: #6b7280;
+    background: transparent;
+    padding: 2px 6px;
+    border-radius: 8px;
+    text-align: center;
+    line-height: 1.4;
+}
+
+.card-companion-bubble-system.card-companion-error {
+    color: #b91c1c;
+    background: rgba(254, 226, 226, 0.6);
+    border: 1px solid rgba(252, 165, 165, 0.6);
+    padding: 4px 10px;
+}
+
+.card-companion-bubble-prefix {
+    font-size: 10px;
+    font-weight: 600;
+    color: #6366f1;
+    margin-bottom: 4px;
+    letter-spacing: 0.3px;
+}
+
+.card-companion-bubble-body {
+    /* white-space: pre-wrap set inline via JS */
+}
+
+.card-companion-bubble-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 8px;
+    gap: 5px;
+    margin-top: 8px;
 }
 
-.card-assist-chip {
+.card-companion-chip {
     background: #f3f4f6;
     color: #374151;
     border: 1px solid #d1d5db;
     border-radius: 999px;
-    padding: 4px 12px;
-    font-size: 12px;
+    padding: 4px 11px;
+    font-size: 11.5px;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
     font-family: inherit;
 }
 
-.card-assist-chip:hover:not(:disabled) {
+.card-companion-chip:hover:not(:disabled) {
     background: #e0e7ff;
     border-color: #a5b4fc;
     color: #4338ca;
 }
 
-.card-assist-chip.selected,
-[data-theme="dark"] .card-assist-chip.selected {
-    background: #6366f1 !important;
-    border-color: #4f46e5 !important;
-    color: #fff !important;
+.card-companion-chip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
-.card-assist-custom-input {
+.card-companion-bubble-custom {
+    margin-top: 6px;
+}
+
+.card-companion-bubble-custom-input {
     width: 100%;
-    padding: 6px 10px;
+    padding: 4px 9px;
     border: 1px solid #d4d4d8;
     border-radius: 6px;
-    font-size: 13px;
-    box-sizing: border-box;
-    font-family: inherit;
-}
-
-.card-assist-custom-input:focus {
-    outline: none;
-    border-color: #6366f1;
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.18);
-}
-
-.card-assist-preview-table {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.card-assist-row {
-    display: grid;
-    grid-template-columns: 28px 110px 1fr;
-    gap: 12px;
-    padding: 10px 12px;
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    background: #fff;
-    align-items: flex-start;
-    transition: opacity 0.2s;
-}
-
-.card-assist-row.card-assist-row-busy {
-    opacity: 0.5;
-    pointer-events: none;
-}
-
-.card-assist-checkbox {
-    padding-top: 4px;
-    cursor: pointer;
-}
-
-.card-assist-row-key {
-    font-weight: 600;
-    color: #1f2937;
-    font-size: 14px;
-    padding-top: 4px;
-    overflow-wrap: break-word;
-}
-
-.card-assist-row-values {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-}
-
-.card-assist-row-original {
     font-size: 12px;
-    color: #6b7280;
-    padding: 4px 8px;
-    background: #f9fafb;
-    border-radius: 6px;
-    line-height: 1.5;
-    overflow-wrap: break-word;
-}
-
-.card-assist-row-original-tag {
-    color: #9ca3af;
-    font-weight: 600;
-    margin-right: 4px;
-}
-
-.card-assist-row-new {
-    width: 100%;
-    padding: 6px 10px;
-    border: 1px solid #c7d2fe;
-    border-radius: 6px;
-    font-size: 13px;
     box-sizing: border-box;
-    background: #f5f3ff;
-    color: #1f2937;
-    resize: vertical;
-    min-height: 32px;
-    line-height: 1.5;
     font-family: inherit;
-    overflow: hidden;
+    background: #fafafa;
 }
 
-.card-assist-row-new:focus {
+.card-companion-bubble-custom-input:focus {
     outline: none;
     border-color: #6366f1;
     background: #fff;
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.18);
 }
 
-.card-assist-row-chips {
+.card-companion-typing-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin: 0 1px;
+    border-radius: 50%;
+    background: #9ca3af;
+    animation: cardCompanionDot 1s infinite ease-in-out;
+}
+
+.card-companion-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.card-companion-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes cardCompanionDot {
+    0%, 80%, 100% { transform: scale(0.7); opacity: 0.5; }
+    40% { transform: scale(1); opacity: 1; }
+}
+
+.card-companion-input-bar {
+    border-top: 1px solid #e5e7eb;
+    padding: 10px 12px 12px 12px;
+    background: #fff;
+    flex-shrink: 0;
+}
+
+.card-companion-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+.card-companion-input {
+    flex: 1;
+    min-height: 36px;
+    max-height: 120px;
+    padding: 8px 11px;
+    border: 1px solid #d4d4d8;
+    border-radius: 8px;
+    font-size: 13px;
+    box-sizing: border-box;
+    resize: none;
+    font-family: inherit;
+    line-height: 1.5;
+    overflow-y: auto;
+}
+
+.card-companion-input:focus {
+    outline: none;
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
+
+.card-companion-send {
+    background: linear-gradient(135deg, #6366f1, #4f46e5);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 0 16px;
+    height: 36px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s, box-shadow 0.15s;
+    flex-shrink: 0;
+}
+
+.card-companion-send:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 2px 6px rgba(99, 102, 241, 0.35);
+}
+
+.card-companion-send:disabled {
+    background: #d1d5db;
+    cursor: not-allowed;
+}
+
+.card-companion-quick-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 5px;
+    margin-top: 8px;
 }
 
-.card-assist-refine-chip {
+.card-companion-quick-chip {
+    background: #f5f3ff;
+    color: #6d28d9;
+    border: 1px solid #ddd6fe;
+    border-radius: 999px;
+    padding: 3px 10px;
     font-size: 11px;
-    padding: 2px 8px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    font-family: inherit;
 }
 
-/* Dark mode */
-[data-theme="dark"] .btn.sm.ai-assist {
-    box-shadow: 0 1px 4px rgba(99, 102, 241, 0.45);
+.card-companion-quick-chip:hover:not(:disabled) {
+    background: #ede9fe;
+    border-color: #c4b5fd;
 }
 
-[data-theme="dark"] .card-assist-footer {
-    background: #1f2937;
-    border-top-color: #374151;
+.card-companion-quick-chip:disabled,
+.card-companion-quick-chip.card-companion-quick-chip-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
-[data-theme="dark"] .card-assist-hint {
-    color: #cbd5e1;
-}
-
-[data-theme="dark"] .card-assist-description-input,
-[data-theme="dark"] .card-assist-custom-input {
+/* ----- Dark mode ----- */
+[data-theme="dark"] .card-companion-panel {
     background: #0f172a;
-    color: #e5e7eb;
-    border-color: #334155;
+    border-left-color: #1f2937;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
 }
 
-[data-theme="dark"] .card-assist-question {
-    background: #111827;
-    border-color: #1f2937;
+[data-theme="dark"] .card-companion-header {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(79, 70, 229, 0.2));
+    border-bottom-color: #1f2937;
 }
 
-[data-theme="dark"] .card-assist-question-tag {
+[data-theme="dark"] .card-companion-name { color: #e5e7eb; }
+[data-theme="dark"] .card-companion-sub { color: #94a3b8; }
+
+[data-theme="dark"] .card-companion-minimize,
+[data-theme="dark"] .card-companion-close {
+    color: #94a3b8;
+}
+
+[data-theme="dark"] .card-companion-minimize:hover,
+[data-theme="dark"] .card-companion-close:hover {
     background: rgba(99, 102, 241, 0.25);
     color: #c7d2fe;
 }
 
-[data-theme="dark"] .card-assist-question-label {
-    color: #e5e7eb;
+[data-theme="dark"] .card-companion-thread {
+    background: #111827;
 }
 
-[data-theme="dark"] .card-assist-chip {
+[data-theme="dark"] .card-companion-bubble-assistant {
+    background: #1f2937;
+    color: #e5e7eb;
+    border-color: #334155;
+}
+
+[data-theme="dark"] .card-companion-bubble-system {
+    color: #94a3b8;
+}
+
+[data-theme="dark"] .card-companion-bubble-system.card-companion-error {
+    color: #fecaca;
+    background: rgba(127, 29, 29, 0.35);
+    border-color: rgba(239, 68, 68, 0.45);
+}
+
+[data-theme="dark"] .card-companion-bubble-prefix {
+    color: #a5b4fc;
+}
+
+[data-theme="dark"] .card-companion-chip {
     background: #1f2937;
     color: #cbd5e1;
     border-color: #334155;
 }
 
-[data-theme="dark"] .card-assist-chip:hover:not(:disabled) {
-    background: rgba(99, 102, 241, 0.25);
+[data-theme="dark"] .card-companion-chip:hover:not(:disabled) {
+    background: rgba(99, 102, 241, 0.28);
     color: #e0e7ff;
     border-color: #6366f1;
 }
 
-[data-theme="dark"] .card-assist-row {
-    background: #111827;
-    border-color: #1f2937;
-}
-
-[data-theme="dark"] .card-assist-row-key {
+[data-theme="dark"] .card-companion-bubble-custom-input {
+    background: #0f172a;
+    border-color: #334155;
     color: #e5e7eb;
 }
 
-[data-theme="dark"] .card-assist-row-original {
-    background: #0f172a;
-    color: #94a3b8;
+[data-theme="dark"] .card-companion-bubble-custom-input:focus {
+    background: #1e293b;
 }
 
-[data-theme="dark"] .card-assist-row-new {
+[data-theme="dark"] .card-companion-input-bar {
     background: #0f172a;
+    border-top-color: #1f2937;
+}
+
+[data-theme="dark"] .card-companion-input {
+    background: #0f172a;
+    border-color: #334155;
     color: #e5e7eb;
-    border-color: #4338ca;
+}
+
+[data-theme="dark"] .card-companion-quick-chip {
+    background: rgba(99, 102, 241, 0.18);
+    color: #c7d2fe;
+    border-color: rgba(99, 102, 241, 0.35);
+}
+
+[data-theme="dark"] .card-companion-quick-chip:hover:not(:disabled) {
+    background: rgba(99, 102, 241, 0.3);
+    border-color: rgba(99, 102, 241, 0.55);
+}
+
+/* companion 改了某个字段后，该字段所在的 row 闪一下绿色渐变 1.5s，
+   配合 JS 里的 scrollIntoView({block:'center'}) + textarea.focus() 让用户
+   眼睛能直接落到改动位置。
+   动画分三段：
+     0%   -> 透明
+     15%  -> 强亮 + 加粗 outline + 浅绿背景（用户注意力 hook）
+     55%  -> 衰减但仍可见，配合左右移动的渐变扫光
+     100% -> 全部消失，回归原状
+   `position: relative` 给 ::after 一个定位锚点，::after 是那条沿水平方向
+   扫过去的高亮带，强化"AI 刚改了这里"的视觉信号。 */
+.field-row-wrapper.card-assist-row-flash {
+    animation: cardAssistRowFlash 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+    border-radius: 8px;
+    position: relative;
+    z-index: 1;
+}
+
+.field-row-wrapper.card-assist-row-flash::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+        90deg,
+        rgba(34, 197, 94, 0)   0%,
+        rgba(34, 197, 94, 0.32) 35%,
+        rgba(74, 222, 128, 0.42) 50%,
+        rgba(34, 197, 94, 0.32) 65%,
+        rgba(34, 197, 94, 0)   100%
+    );
+    background-size: 220% 100%;
+    background-position: 110% 0;
+    animation: cardAssistRowFlashSweep 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity: 0;
+}
+
+@keyframes cardAssistRowFlash {
+    0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);    background-color: transparent; }
+    15%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.65); background-color: rgba(34, 197, 94, 0.16); }
+    55%  { box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35); background-color: rgba(34, 197, 94, 0.08); }
+    100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);    background-color: transparent; }
+}
+
+@keyframes cardAssistRowFlashSweep {
+    0%   { background-position: 110% 0; opacity: 0; }
+    20%  { opacity: 0.95; }
+    80%  { opacity: 0.55; }
+    100% { background-position: -110% 0; opacity: 0; }
+}
+
+[data-theme="dark"] .field-row-wrapper.card-assist-row-flash {
+    animation-name: cardAssistRowFlashDark;
+}
+
+[data-theme="dark"] .field-row-wrapper.card-assist-row-flash::after {
+    background: linear-gradient(
+        90deg,
+        rgba(74, 222, 128, 0)    0%,
+        rgba(74, 222, 128, 0.4)  35%,
+        rgba(134, 239, 172, 0.55) 50%,
+        rgba(74, 222, 128, 0.4)  65%,
+        rgba(74, 222, 128, 0)    100%
+    );
+    background-size: 220% 100%;
+    background-position: 110% 0;
+}
+
+@keyframes cardAssistRowFlashDark {
+    0%   { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);    background-color: transparent; }
+    15%  { box-shadow: 0 0 0 5px rgba(74, 222, 128, 0.7); background-color: rgba(74, 222, 128, 0.22); }
+    55%  { box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.4); background-color: rgba(74, 222, 128, 0.12); }
+    100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);    background-color: transparent; }
 }
 
 [data-theme="dark"] .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left::after {
