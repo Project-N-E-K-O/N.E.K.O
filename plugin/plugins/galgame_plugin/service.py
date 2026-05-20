@@ -62,8 +62,6 @@ from .dependency_status import (
 from .dxcam_support import inspect_dxcam_installation
 from .reader import expand_bridge_root, normalize_text, read_session_json
 from .rapidocr_support import (
-    _BAIDU_YUN_RAPIDOCR_CODE,
-    _BAIDU_YUN_RAPIDOCR_URL,
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
     DEFAULT_RAPIDOCR_MODEL_TYPE,
@@ -137,13 +135,7 @@ def _build_download_guide_payload(
         and _BAIDU_YUN_TEXTTRACTOR_CODE != "____"
         and not bool(textractor.get("installed"))
     )
-    rapidocr_available = (
-        bool(_BAIDU_YUN_RAPIDOCR_URL)
-        and "____" not in _BAIDU_YUN_RAPIDOCR_URL
-        and bool(_BAIDU_YUN_RAPIDOCR_CODE)
-        and _BAIDU_YUN_RAPIDOCR_CODE != "____"
-        and not bool(rapidocr.get("installed"))
-    )
+    rapidocr_available = False
     return {
         "textractor": {
             "available": textractor_available,
@@ -154,8 +146,8 @@ def _build_download_guide_payload(
         },
         "rapidocr_models": {
             "available": rapidocr_available,
-            "url": _BAIDU_YUN_RAPIDOCR_URL,
-            "code": _BAIDU_YUN_RAPIDOCR_CODE,
+            "url": "",
+            "code": "",
             "target_dir": rapidocr_target,
             "note": "Download the RapidOCR model files manually and place them in the model cache directory.",
         },
