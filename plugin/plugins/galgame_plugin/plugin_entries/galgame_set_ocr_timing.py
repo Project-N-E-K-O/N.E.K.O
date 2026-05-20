@@ -103,8 +103,6 @@ class _GalgameSetOcrTimingMixin:
                     )
             return Err(SdkError(f"persist OCR timing failed: {exc}"))
 
-        if normalized_trigger_mode != OCR_TRIGGER_MODE_AFTER_ADVANCE:
-            self._clear_pending_ocr_advance_captures()
         if fast_loop_enabled is not None:
             try:
                 if bool(fast_loop_enabled) and not old_fast_loop:
@@ -140,6 +138,8 @@ class _GalgameSetOcrTimingMixin:
                         rollback_exc,
                     )
                 return Err(SdkError(f"apply fast_loop_enabled failed: {exc}"))
+        if normalized_trigger_mode != OCR_TRIGGER_MODE_AFTER_ADVANCE:
+            self._clear_pending_ocr_advance_captures()
         await self._ensure_ocr_foreground_advance_monitor()
         self._start_background_bridge_poll()
         trigger_mode_label = (

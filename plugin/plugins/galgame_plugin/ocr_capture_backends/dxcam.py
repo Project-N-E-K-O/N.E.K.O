@@ -121,7 +121,18 @@ class DxcamCaptureBackend:
                 )
             for attempt in range(_DXCAM_GRAB_RETRY_ATTEMPTS + 1):
                 camera = self._camera_instance()
-                frame = camera.grab(region=rect)
+                try:
+                    frame = camera.grab(region=rect)
+                except Exception as exc:
+                    self._reset_camera()
+                    self._consecutive_failures += 1
+                    self._last_failure_time = time.monotonic()
+                    if attempt >= _DXCAM_GRAB_RETRY_ATTEMPTS:
+                        raise RuntimeError(
+                            f"dxcam_grab_failed_after_{_DXCAM_GRAB_RETRY_ATTEMPTS + 1}_attempts: {exc}"
+                        ) from exc
+                    time.sleep(_DXCAM_GRAB_RETRY_DELAY_SECONDS)
+                    continue
                 if frame is not None:
                     self._consecutive_failures = 0
                     break

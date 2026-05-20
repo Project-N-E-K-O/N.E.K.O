@@ -11,4 +11,4 @@ from __future__ import annotations
 
 
 _OCR_BACKEND_SELECTIONS = {"auto", "rapidocr"}
-_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "printwindow"}
+_OCR_CAPTURE_BACKEND_SELECTIONS = {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}

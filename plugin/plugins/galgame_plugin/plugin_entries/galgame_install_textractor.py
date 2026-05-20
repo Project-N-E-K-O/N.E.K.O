@@ -21,9 +21,9 @@ class _GalgameInstallTextractorMixin:
             return Err(SdkError(self._not_configured_message()))
         if not self._textractor_install_lock.acquire(blocking=False):
             return Err(SdkError(self._install_in_progress_message("Textractor")))
-        current_run_id = self._resolve_current_run_id(_)
-        progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
+            current_run_id = self._resolve_current_run_id(_)
+            progress_callback = self._resolve_install_progress_callback(current_run_id)
             install_textractor_fn = _package_public_attr("install_textractor", install_textractor)
             install_result = await install_textractor_fn(
                 logger=self.logger,

@@ -27,6 +27,10 @@ def _public_context_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         return {}
     summary_seed = str(snapshot.get("summary_seed") or "")
+    try:
+        saved_at = float(snapshot.get("saved_at") or 0.0)
+    except (TypeError, ValueError):
+        saved_at = 0.0
     return {
         "scene_id": str(snapshot.get("scene_id") or ""),
         "game_id": str(snapshot.get("game_id") or ""),
@@ -35,7 +39,7 @@ def _public_context_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         if isinstance(snapshot.get("stable_line_ids"), list)
         else 0,
         "summary_seed_chars": len(summary_seed),
-        "saved_at": float(snapshot.get("saved_at") or 0.0),
+        "saved_at": saved_at,
     }
 
 

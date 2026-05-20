@@ -58,7 +58,10 @@ def _normalize_ocr_capture_profile_payload(value: object) -> dict[str, float]:
 
 def _capture_profile_entry_to_stage_map(value: object) -> dict[str, dict[str, float]]:
     if _is_ratio_profile_payload(value):
-        return {OCR_CAPTURE_PROFILE_STAGE_DEFAULT: json_copy(value)}
+        try:
+            return {OCR_CAPTURE_PROFILE_STAGE_DEFAULT: _normalize_ocr_capture_profile_payload(value)}
+        except ValueError:
+            return {}
     raw = value if isinstance(value, dict) else {}
     stage_map: dict[str, dict[str, float]] = {}
     for stage_name, profile in raw.items():
@@ -69,7 +72,12 @@ def _capture_profile_entry_to_stage_map(value: object) -> dict[str, dict[str, fl
             or not _is_ratio_profile_payload(profile)
         ):
             continue
-        stage_map[normalized_stage_name] = json_copy(profile)
+        try:
+            normalized_stage_name = _normalize_ocr_capture_profile_stage(normalized_stage_name)
+            normalized_profile = _normalize_ocr_capture_profile_payload(profile)
+        except ValueError:
+            continue
+        stage_map[normalized_stage_name] = normalized_profile
     return stage_map
 
 
@@ -83,7 +91,12 @@ def _capture_profile_bucket_entry_to_stage_map(value: object) -> dict[str, dict[
         normalized_stage_name = str(stage_name or "").strip().lower()
         if not normalized_stage_name or not _is_ratio_profile_payload(profile):
             continue
-        stage_map[normalized_stage_name] = json_copy(profile)
+        try:
+            normalized_stage_name = _normalize_ocr_capture_profile_stage(normalized_stage_name)
+            normalized_profile = _normalize_ocr_capture_profile_payload(profile)
+        except ValueError:
+            continue
+        stage_map[normalized_stage_name] = normalized_profile
     return stage_map
 
 

@@ -17,7 +17,6 @@ import tempfile
 import threading
 import time
 from collections import deque
-from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
@@ -77,7 +76,7 @@ from .aihong_state import (
     coerce_aihong_menu_choices as _coerce_aihong_menu_choices,
     levenshtein_distance as _levenshtein_distance,
     looks_like_aihong_menu_status_only_text as _looks_like_aihong_menu_status_only_text,
-    matches_aihong_target as _matches_aihong_target_info,
+    matches_aihong_target as _matches_aihong_target,
     normalize_aihong_choice_box_text as _normalize_aihong_choice_box_text,
 )
 from .rapidocr_support import (
@@ -536,7 +535,7 @@ class CaptureMixin:
             if not sample_text or _looks_like_self_ui_text(sample_text):
                 return
             score, cjk_count, significant_chars = _score_ocr_text(sample_text)
-            if significant_chars < 8 or cjk_count <= 0:
+            if significant_chars < 8 or score <= 0.0:
                 return
             distance = abs(round(top_ratio, 2) - current_distance_basis[0]) + abs(
                 round(bottom_inset_ratio, 2) - current_distance_basis[1]

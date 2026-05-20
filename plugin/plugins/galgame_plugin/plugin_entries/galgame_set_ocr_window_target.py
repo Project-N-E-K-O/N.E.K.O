@@ -59,8 +59,11 @@ class _GalgameSetOcrWindowTargetMixin:
             self._state.ocr_window_target = json_copy(target_payload)
             self._state_dirty = True
             self._cached_snapshot = None
-        self._ocr_reader_manager.update_window_target(target_payload)
-        background_poll_started = self._start_background_bridge_poll()
+        try:
+            self._ocr_reader_manager.update_window_target(target_payload)
+            background_poll_started = self._start_background_bridge_poll()
+        except Exception as exc:
+            return Err(SdkError(f"apply OCR window target runtime update failed: {exc}"))
         return Ok(
             {
                 "window_target": json_copy(target_payload),

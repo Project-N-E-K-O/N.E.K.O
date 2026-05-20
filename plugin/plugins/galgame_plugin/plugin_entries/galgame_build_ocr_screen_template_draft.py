@@ -34,8 +34,12 @@ class _GalgameBuildOcrScreenTemplateDraftMixin:
             )
         except Exception as exc:
             return Err(SdkError(f"build OCR screen template draft failed: {exc}"))
+        if not isinstance(payload, dict):
+            return Err(SdkError("build OCR screen template draft failed: invalid payload"))
+        template = payload.get("template")
+        template = template if isinstance(template, dict) else {}
         payload["summary"] = (
-            f"OCR screen template draft stage={payload['template'].get('stage')} "
-            f"id={payload['template'].get('id')}"
+            f"OCR screen template draft stage={template.get('stage')} "
+            f"id={template.get('id')}"
         )
         return Ok(payload)
