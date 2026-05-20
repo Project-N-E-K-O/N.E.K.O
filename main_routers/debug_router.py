@@ -60,7 +60,15 @@ _WATCHDOG_INTERVAL_SECONDS = 5 * 60  # 5 分钟
 # psutil.Process 复用：cpu_percent(None) 必须**用同一个 Process 实例**多次调用，
 # 第一次返回 0（建立基线），之后每次返回距上次的 CPU 利用率%。每次 new Process
 # 都是新基线 → 永远 0%，等于没采。`None` 表示尚未尝试初始化或环境缺 psutil。
-_PSUTIL_PROCESS: Any = None
+# ⚠️ 双 channel 隔离：cpu_percent baseline 在同实例上被共享——watchdog 和
+# endpoint 共用一个 Process 时，任意 endpoint 调用都会重置 watchdog 的窗口
+# 起点，导致下次 watchdog 拿到的 cpu_percent 不是真实 5min 窗口（可能短到几
+# 秒）。所以维护**两个独立** Process 实例：``watchdog`` channel 给 5min 周期
+# task 用，``endpoint`` channel 给按需 HTTP 用，两个 baseline 互不影响。
+# 其他 psutil 调用（memory_info / num_handles / num_threads）都是无状态瞬时
+# 查询，用哪个实例都一样——所以这俩 channel 在它们身上等价。
+_PSUTIL_PROCESS_WATCHDOG: Any = None
+_PSUTIL_PROCESS_ENDPOINT: Any = None
 _PSUTIL_INIT_TRIED = False
 
 
@@ -68,36 +76,43 @@ _PSUTIL_INIT_TRIED = False
 # Snapshot 采集
 # ---------------------------------------------------------------------------
 
-def _get_psutil_process() -> Any:
-    """惰性初始化 + 复用同一个 ``psutil.Process``。
+def _get_psutil_process(channel: str = "watchdog") -> Any:
+    """惰性初始化 + 复用 ``psutil.Process``。两 channel 各自一个实例。
 
-    第一次调用时尝试 import psutil 并 prime ``cpu_percent``（首次调用约定回 0，
-    建立基线，后续才有意义）。失败则永久返回 None，不再重试——既避免反复
-    import 噪音，也让缺 psutil 的环境曲线上看 cpu_percent/num_handles 一律 null
-    跟「真有 leak」明确区分。"""
-    global _PSUTIL_PROCESS, _PSUTIL_INIT_TRIED
-    if _PSUTIL_INIT_TRIED:
-        return _PSUTIL_PROCESS
-    _PSUTIL_INIT_TRIED = True
-    try:
-        import psutil  # type: ignore
-        proc = psutil.Process()
-        # Prime：首次调用约定回 0，立刻丢掉，下次才有真值。
-        proc.cpu_percent(interval=None)
-        _PSUTIL_PROCESS = proc
-    except Exception:
-        _PSUTIL_PROCESS = None
-    return _PSUTIL_PROCESS
+    第一次调用时尝试 import psutil 并 prime 两个实例的 ``cpu_percent``（首次
+    约定回 0 建立基线，后续才有意义）。失败则永久返回 None，不再重试——既
+    避免反复 import 噪音，也让缺 psutil 的环境曲线上 cpu_percent/num_handles
+    一律 null 跟「真有 leak」明确区分。
+
+    ``channel="watchdog"`` / ``"endpoint"`` 选择独立 baseline 实例。其他无状
+    态 psutil 调用（memory_info/num_handles 等）也走这里，channel 选哪个都行
+    且默认 watchdog。"""
+    global _PSUTIL_PROCESS_WATCHDOG, _PSUTIL_PROCESS_ENDPOINT, _PSUTIL_INIT_TRIED
+    if not _PSUTIL_INIT_TRIED:
+        _PSUTIL_INIT_TRIED = True
+        try:
+            import psutil  # type: ignore
+            w = psutil.Process()
+            e = psutil.Process()
+            # Prime 两个实例：首次调用约定回 0，立刻丢掉，下次才有真值。
+            w.cpu_percent(interval=None)
+            e.cpu_percent(interval=None)
+            _PSUTIL_PROCESS_WATCHDOG = w
+            _PSUTIL_PROCESS_ENDPOINT = e
+        except Exception:
+            _PSUTIL_PROCESS_WATCHDOG = None
+            _PSUTIL_PROCESS_ENDPOINT = None
+    return _PSUTIL_PROCESS_ENDPOINT if channel == "endpoint" else _PSUTIL_PROCESS_WATCHDOG
 
 
-def _safe_rss_mb() -> float | None:
+def _safe_rss_mb(channel: str = "watchdog") -> float | None:
     """读取当前进程**当前** RSS（MB）；只在 psutil 可用时返回，否则 None。
 
     历史里曾用 ``resource.getrusage(...).ru_maxrss`` 做 fallback，但那是
     **lifetime peak**——一旦上去就不下降。用来画 leak 趋势会把一次性内存
     高峰永久误读成 leak，比没有这个字段还误导。所以**宁可返回 None**也不
     走 ru_maxrss。打包发行版默认就带 psutil，源码模式 ``uv sync`` 也会装。"""
-    proc = _get_psutil_process()
+    proc = _get_psutil_process(channel)
     if proc is None:
         return None
     try:
@@ -107,7 +122,7 @@ def _safe_rss_mb() -> float | None:
         return None
 
 
-def _safe_psutil_extras() -> dict[str, Any]:
+def _safe_psutil_extras(channel: str = "watchdog") -> dict[str, Any]:
     """补 psutil 能给的廉价 psutil 指标：cpu%、Win handle/POSIX fd。
 
     所有调用都 < 0.01 ms（Windows 实测）。``num_threads()`` 在 Windows 是
@@ -128,7 +143,7 @@ def _safe_psutil_extras() -> dict[str, Any]:
         "cpu_count": None,
         "num_handles": None,
     }
-    proc = _get_psutil_process()
+    proc = _get_psutil_process(channel)
     if proc is None:
         return out
     try:
@@ -155,12 +170,12 @@ def _safe_psutil_extras() -> dict[str, Any]:
     return out
 
 
-def _safe_psutil_heavy() -> dict[str, Any]:
+def _safe_psutil_heavy(channel: str = "watchdog") -> dict[str, Any]:
     """psutil 慢调用——``num_threads()`` 在 Windows 8 ms 系统调用。
 
     Deep tick 专用，不走每次 watchdog 周期。"""
     out: dict[str, Any] = {"num_threads": None}
-    proc = _get_psutil_process()
+    proc = _get_psutil_process(channel)
     if proc is None:
         return out
     try:
@@ -304,7 +319,7 @@ def _safe_proactive_history_size() -> dict[str, int]:
     return out
 
 
-def _collect_snapshot(include_deep: bool = False) -> dict[str, Any]:
+def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> dict[str, Any]:
     """单次快照采集。每个字段独立 try 过——任意一项炸了不影响其他。
 
     Default ``include_deep=False``——cheap-only 采样 ~0.05ms 自身耗时，
@@ -313,7 +328,11 @@ def _collect_snapshot(include_deep: bool = False) -> dict[str, Any]:
     ``include_deep=True`` 跑慢字段：``gc.get_objects()`` 45ms（统计内存对象
     type 分布——定位「是什么对象在涨」的金线）+ Windows ``num_threads()``
     8ms（线程泄漏检测）。两者都是不释放 GIL 的 C 调用，会阻塞 event loop
-    50ms+，所以 **watchdog 永不调它**——仅留给按需 endpoint 主动触发。"""
+    50ms+，所以 **watchdog 永不调它**——仅留给按需 endpoint 主动触发。
+
+    ``channel`` 选 psutil cpu_percent baseline：``"watchdog"`` 5min 周期 task
+    专用，``"endpoint"`` HTTP 按需专用，两个 baseline 独立——避免用户访问
+    endpoint 重置 watchdog 的窗口起点。"""
     snap: dict[str, Any] = {
         "ts": time.time(),
         "uptime_sec": time.monotonic() - _PROCESS_START_MONO,
@@ -323,9 +342,9 @@ def _collect_snapshot(include_deep: bool = False) -> dict[str, Any]:
     except Exception:
         snap["asyncio_tasks"] = None
     snap["asyncio_task_top"] = _safe_asyncio_task_top()
-    snap["rss_mb"] = _safe_rss_mb()
+    snap["rss_mb"] = _safe_rss_mb(channel)
     # psutil extras 一次 dict 展平进顶层，方便画曲线时直接索引同级 key。
-    snap.update(_safe_psutil_extras())
+    snap.update(_safe_psutil_extras(channel))
     snap["conv_history"] = _safe_conv_history_lengths()
     snap["tts_queue_size"] = _safe_tts_queue_sizes()
     snap["is_responding"] = _safe_is_responding_map()
@@ -334,7 +353,7 @@ def _collect_snapshot(include_deep: bool = False) -> dict[str, Any]:
     if include_deep:
         # Deep 字段——~50 ms 阻塞但有 30 min 间隔，长跑曲线仍能画时序。
         snap["gc_object_top"] = _safe_gc_object_top()
-        snap.update(_safe_psutil_heavy())
+        snap.update(_safe_psutil_heavy(channel))
     return snap
 
 
@@ -502,8 +521,11 @@ async def debug_health(deep: bool = False) -> dict[str, Any]:
 
     实现注释：cheap 路径 ~0.13 ms 自身耗时直接同步调；deep 路径 50 ms 阻塞
     是用户**主动**触发的代价，自己等就好——不为这个场景做 to_thread 兜底，
-    省一层 thread 调度 overhead，代码直接。"""
-    current = _collect_snapshot(deep)
+    省一层 thread 调度 overhead，代码直接。
+
+    传 ``channel="endpoint"`` 走独立的 psutil cpu_percent baseline，不打乱
+    watchdog 的 5min 窗口。"""
+    current = _collect_snapshot(include_deep=deep, channel="endpoint")
     return {
         "current": current,
         "ring": list(_HEALTH_RING),
