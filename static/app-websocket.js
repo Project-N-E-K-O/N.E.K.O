@@ -1172,6 +1172,33 @@
                 }
             }).catch(function () { });
 
+            // Capture bridge: tell the backend whether this renderer can
+            // service window-level captures via Electron's desktopCapturer.
+            // The backend uses this to fail /api/capture/health fast when
+            // no Electron renderer is available (e.g. running in a plain
+            // browser tab), which matters for the galgame OCR fallback path
+            // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
+            // windows.
+            // Note: intentionally broadcast for all renderers; non-Electron
+            // environments send available=false and the backend ignores them.
+            try {
+                var dc = window.electronDesktopCapturer;
+                var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
+                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'capture_bridge_status',
+                        available: available,
+                        capabilities: {
+                            getSources: !!(dc && dc.getSources),
+                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                        }
+                    }));
+                }
+            } catch (_capErr) {
+                // capture bridge is best-effort; never block the rest of onopen
+            }
+
             // Start heartbeat
             if (S.heartbeatInterval) {
                 clearInterval(S.heartbeatInterval);
@@ -2082,7 +2109,137 @@
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
 
-                // -------- request_screenshot --------
+                // -------- capture_bridge_request (galgame OCR window capture) --------
+                } else if (response.type === 'capture_bridge_request') {
+                    (async function () {
+                        var requestId = response.request_id || '';
+                        var responseSocket = _thisSocket;
+                        var sendResp = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        var sourcePidMatches = function (source, pidValue) {
+                            if (!source || !pidValue) return false;
+                            var expected = String(pidValue);
+                            var directPid = source.pid || source.processId || source.ownerPid;
+                            if (directPid !== undefined && directPid !== null && String(directPid) === expected) {
+                                return true;
+                            }
+                            return false;
+                        };
+                        var sourceIdMatchesTarget = function (source, targetValue) {
+                            if (!source || !targetValue) return false;
+                            var expected = String(targetValue);
+                            var sourceId = String(source.id || '');
+                            if (sourceId === expected) return true;
+                            var tokens = sourceId.split(/[^0-9A-Za-z]+/);
+                            for (var idx = 0; idx < tokens.length; idx++) {
+                                if (tokens[idx] === expected) return true;
+                            }
+                            return false;
+                        };
+                        var normalizeCaptureBridgeImage = function (result) {
+                            if (typeof result === 'string') return result || null;
+                            if (!result || typeof result !== 'object') return null;
+                            if (result.success === false) return null;
+                            return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
+                        };
+                        try {
+                            var dc = window.electronDesktopCapturer;
+                            if (!dc || !dc.getSources) {
+                                sendResp({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var targetId = typeof response.target_id === 'string'
+                                ? response.target_id.trim() : '';
+                            if (targetId === '0' || targetId === '<target_id>') {
+                                targetId = '';
+                            }
+                            var pid = typeof response.pid === 'number' ? response.pid : 0;
+                            var title = typeof response.title === 'string' ? response.title : '';
+                            var pidStr = pid > 0 ? String(pid) : '';
+                            var lowerTitle = title.toLowerCase();
+                            var sources = [];
+                            try {
+                                sources = await dc.getSources({
+                                    types: ['window'],
+                                    thumbnailSize: { width: 80, height: 45 }
+                                });
+                            } catch (gsErr) {
+                                sendResp({ success: false, error: 'get_sources_failed' });
+                                return;
+                            }
+                            if (!sources || !sources.length) {
+                                sendResp({ success: false, error: 'source_not_found' });
+                                return;
+                            }
+                            // Match priority: target_id exact/source-token > exact pid/token > title substring.
+                            // Never blindly pick the first window.
+                            var matched = null;
+                            if (targetId) {
+                                for (var i = 0; i < sources.length; i++) {
+                                    if (sourceIdMatchesTarget(sources[i], targetId)) {
+                                        matched = sources[i];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched && pidStr) {
+                                for (var j = 0; j < sources.length; j++) {
+                                    if (sourcePidMatches(sources[j], pidStr)) {
+                                        matched = sources[j];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched && lowerTitle) {
+                                for (var k = 0; k < sources.length; k++) {
+                                    var name = (sources[k].name || '').toLowerCase();
+                                    if (name && name.indexOf(lowerTitle) !== -1) {
+                                        matched = sources[k];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched) {
+                                sendResp({ success: false, error: 'source_not_found' });
+                                return;
+                            }
+                            var dataUrl = null;
+                            var captureResult = null;
+                            if (typeof dc.captureSourceWithoutNeko === 'function') {
+                                try {
+                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
+                                } catch (_woNekoErr) {
+                                    dataUrl = null;
+                                }
+                            }
+                            if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
+                                try {
+                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
+                                } catch (_dataUrlErr) {
+                                    dataUrl = null;
+                                }
+                            }
+                            if (!dataUrl) {
+                                sendResp({ success: false, error: 'capture_failed' });
+                                return;
+                            }
+                            sendResp({
+                                success: true,
+                                image: dataUrl,
+                                source_id: matched.id || ''
+                            });
+                        } catch (capErr) {
+                            try { sendResp({ success: false, error: 'internal_error' }); } catch (_) {}
+                        }
+                    })();
+
+                // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         try {

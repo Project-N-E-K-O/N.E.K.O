@@ -3252,11 +3252,14 @@ class ConfigManager:
                 config['CORE_URL'] = resolved_core_url
 
         # Assist API profile
+        # 显式选择的 assistApi 一律被尊重，即使 coreApi=free。这样用户可以组合
+        # 「免费实时（core=free）+ 付费文本/Agent（assist=qwen 等）」——免费 realtime
+        # 端点和付费 assist 端点是独立的两条链路，没有理由把后者绑死在 free 上。
+        # 仅当用户没有显式选 assist 时，沿用 coreApi 的偏好做默认：core=free 默认 free，
+        # 其他默认 qwen。
         assist_api_value = core_cfg.get('assistApi')
-        if core_api_value == 'free':
-            assist_api_value = 'free'
         if not assist_api_value:
-            assist_api_value = 'qwen'
+            assist_api_value = 'free' if core_api_value == 'free' else 'qwen'
 
         config['assistApi'] = assist_api_value
 

@@ -279,22 +279,38 @@ class TestCustomApiToggle:
 
 
 # ---------------------------------------------------------------------------
-# 3. Assist follows core when free
+# 3. Assist / Core 独立选择
 # ---------------------------------------------------------------------------
 class TestAssistFollowsCore:
 
     @pytest.mark.unit
-    def test_free_core_forces_free_assist(self, config_manager):
-        """coreApi=free → assistApi forced to free regardless of saved value."""
+    def test_free_core_defaults_assist_to_free_when_empty(self, config_manager):
+        """coreApi=free + assistApi='' → 空值兜底为 free（保持免费版一键到位体验）。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
-            'assistApi': 'qwen',  # User saved qwen, but core is free
+            'assistApi': '',
         })
         cfg = config_manager.get_core_config()
 
-        assert cfg['assistApi'] == 'free', \
-            'When core is free, assist must be forced to free'
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('IS_FREE_VERSION') is True
+
+    @pytest.mark.unit
+    def test_free_core_honors_explicit_assist(self, config_manager):
+        """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'silicon',
+            'assistApiKeySilicon': 'sk-silicon-test',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'silicon', \
+            'core=free 不应强制覆盖用户显式选择的 assist'
+        assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
+        # core profile 仍然给到 IS_FREE_VERSION=True（realtime 是免费的）
         assert cfg.get('IS_FREE_VERSION') is True
 
     @pytest.mark.unit

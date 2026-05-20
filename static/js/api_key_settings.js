@@ -1574,18 +1574,13 @@ function toggleCustomApi(skipAutoFill) {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
+    // core=free 时只锁核心 API Key 输入（free-access 不需要用户填），
+    // 辅助 API 选择器和辅助 Key 输入保持可用，让用户能搭「免费 realtime + 付费 assist」。
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
-    if (isFreeVersion) {
-        if (assistApiSelect) assistApiSelect.disabled = true;
-        if (apiKeyInput) apiKeyInput.disabled = true;
-        if (assistApiKeyInput) assistApiKeyInput.disabled = true;
-        if (coreApiSelect) coreApiSelect.disabled = false;
-    } else {
-        if (coreApiSelect) coreApiSelect.disabled = false;
-        if (assistApiSelect) assistApiSelect.disabled = false;
-        if (apiKeyInput) apiKeyInput.disabled = false;
-        if (assistApiKeyInput) assistApiKeyInput.disabled = false;
-    }
+    if (coreApiSelect) coreApiSelect.disabled = false;
+    if (assistApiSelect) assistApiSelect.disabled = false;
+    if (assistApiKeyInput) assistApiKeyInput.disabled = false;
+    if (apiKeyInput) apiKeyInput.disabled = isFreeVersion;
 
     // 控制自定义API容器的折叠状态
     const customApiContainer = document.getElementById('custom-api-container');
@@ -2196,17 +2191,26 @@ function updateAssistApiRecommendation() {
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
         }
+        // 辅助 API 与核心 API 解耦：core=free 仅锁核心 API Key（免费 realtime 不需要 key），
+        // 辅助 API 选择器和辅助 Key 输入保持可用，允许「免费 realtime + 付费 assist/Agent」组合。
         if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = true;
-            assistApiKeyInput.value = '';
+            assistApiKeyInput.disabled = false;
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
         }
 
-        // 禁用辅助API选择框，强制为免费版
-        assistApiSelect.disabled = true;
-        assistApiSelect.value = 'free';
+        assistApiSelect.disabled = false;
+        // free 选项保持可用——core=free 时它是合理默认；用户也能切换到其它 provider。
+        const freeOption = assistApiSelect.querySelector('option[value="free"]');
+        if (freeOption) {
+            freeOption.disabled = false;
+            freeOption.textContent = window.t ? window.t('api.freeVersion') : '免费版';
+        }
+        // 用户未显式选择 assist 时默认填 'free'，保持原免费版一键到位体验。
+        if (!assistApiSelect.value) {
+            assistApiSelect.value = 'free';
+        }
         // Directly recompute follow_assist slots instead of dispatching a change
         // event, which would re-enter updateAssistApiRecommendation() recursively.
         autoFillAssistApiKey();
