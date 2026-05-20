@@ -97,6 +97,7 @@ from .models import (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_OCR_VERSION,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
@@ -2848,6 +2849,10 @@ class GalgamePlugin(
         if value is not None and value in {"ch", "japan", "korean", "en"}:
             self._cfg.rapidocr.rapidocr_lang_type = value
             self._cfg.rapidocr.rapidocr_auto_detect_last_lang = value
+
+        value = overrides.get(STORE_RAPIDOCR_OCR_VERSION)
+        if value is not None and value in {"PP-OCRv4", "PP-OCRv5"}:
+            self._cfg.rapidocr.rapidocr_ocr_version = value
 
         value = overrides.get(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG)
         if value is not None and value in {"ch", "japan", "korean", "en"}:
