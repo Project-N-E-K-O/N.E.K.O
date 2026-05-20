@@ -1856,6 +1856,7 @@
         "aiCompanionSkipped": "no coincide / reservado",
         "aiCompanionFormGone": "⚠ El formulario del personaje ya no está en pantalla, así que no puedo aplicar esto. Vuelve a abrir el panel de detalles de esta NEKO e inténtalo otra vez.",
         "aiCompanionNewCardSaveHint": "💡 Carta nueva — pulsa Guardar abajo una vez para persistirla, luego guardaré tus cambios automáticamente. Los campos ya están en el formulario, miau~",
+        "aiCompanionAutoSaveFailed": "⚠ Error de guardado automático — los campos están escritos en el formulario, comprueba el mensaje de error y pulsa Guardar manualmente para reintentar.",
         "aiCompanionDraftUpdated": "✎ actualizado",
         "aiCompanionDraftCreated": "+ añadido",
         "aiCompanionDraftSkipped": "⤬ omitido",

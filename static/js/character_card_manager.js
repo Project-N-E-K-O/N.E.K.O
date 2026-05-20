@@ -10806,8 +10806,26 @@ async function _companionTryAutoSave(state) {
         return;
     }
     if (typeof saveCatgirlFromPanel === 'function') {
-        try { await saveCatgirlFromPanel(state.form, state.originalName, state.isNew); }
-        catch (e) { console.warn('[card-companion] auto-save after action failed:', e); }
+        // saveCatgirlFromPanel 自己已经 toast 了错误（HTTP 非 2xx / success:false
+        // / 网络异常都会经 showMessage(... ,'error')），但它**不抛**而是 `return false`。
+        // 之前 catch{} 把 return value 丢了 —— 用户在 toast 之外看到 companion 的
+        // 系统气泡仍然显示「✎ 已应用」，体感是「字段改了 + 已保存」，实际上后端
+        // 拒绝了。这里读回 ok 值，false 时再补一条 system 错误气泡兜底。
+        // 注：`undefined` 表示 "form.dataset.submitting === 'true' 重复提交" 那
+        // 一支早 return，不是失败，跳过提示。
+        let ok = true;
+        try {
+            const ret = await saveCatgirlFromPanel(state.form, state.originalName, state.isNew);
+            if (ret === false) ok = false;
+        } catch (e) {
+            console.warn('[card-companion] auto-save after action failed:', e);
+            ok = false;
+        }
+        if (!ok) {
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionAutoSaveFailed',
+                    '⚠ 自动保存失败了喵——表单里的字段已经写好，请看下弹出的错误提示再手动点 Save 重试。'));
+        }
     }
 }
 

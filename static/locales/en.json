@@ -1858,6 +1858,7 @@
         "aiCompanionSkipped": "unmatched / reserved",
         "aiCompanionFormGone": "⚠ The character form isn't on screen anymore, so I can't apply this. Open this catgirl's detail panel again and try once more.",
         "aiCompanionNewCardSaveHint": "💡 New card — click Save below once to persist it, then I'll auto-save your future changes. The fields are already in the form, meow~",
+        "aiCompanionAutoSaveFailed": "⚠ Auto-save failed — fields are written into the form, please check the error toast and click Save manually to retry.",
         "aiCompanionDraftUpdated": "✎ updated",
         "aiCompanionDraftCreated": "+ added",
         "aiCompanionDraftSkipped": "⤬ skipped",
