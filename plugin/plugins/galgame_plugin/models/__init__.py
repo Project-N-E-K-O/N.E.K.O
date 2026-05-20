@@ -235,12 +235,6 @@ __all__ = [
     "STORE_TUTORIAL_PROGRESS",
     "SessionCandidate",
     "SharedStatePayload",
-    "_ConfigFieldProxy",
-    "_bool",
-    "_float",
-    "_int",
-    "_sanitize_choice_bounds",
-    "_string",
     "build_ocr_capture_profile_bucket_key",
     "compute_ocr_window_aspect_ratio",
     "json_copy",
@@ -255,5 +249,4 @@ __all__ = [
     "sanitize_screen_ui_elements",
     "sanitize_session_snapshot",
     "sanitize_snapshot_state",
-    "_RAPIDOCR_OCR_VERSIONS",
 ]
