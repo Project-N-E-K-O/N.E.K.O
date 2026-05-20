@@ -80,7 +80,10 @@
     };
 
     // ── 2. RAF 频率统计 ─────────────────────────────────────────────────
-    // 累计最近 60s 内的 RAF 触发次数（理想是 60×60=3600；远低于说明渲染器卡）。
+    // 计算自上次 snapshot 推送以来的平均 RAF 触发频率（FPS，理想 ~60；远低
+    // 于此说明渲染器卡）。窗口长度等于 snapshot 间隔——首次 ~30s，之后 5min。
+    // 字段名 raf_fps_60s 是历史命名（早期版本曾按 60s 计），现在保留是为了
+    // 前后端契约稳定，含义仍是「FPS」不是「60s 内总次数」。
     var _rafCount = 0;
     var _rafCountWindowStart = performance.now();
     var _origRAF = window.requestAnimationFrame;
