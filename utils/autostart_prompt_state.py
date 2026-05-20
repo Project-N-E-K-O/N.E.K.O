@@ -151,10 +151,9 @@ def _normalize_autostart_prompt_state(raw_state: Any) -> dict[str, Any]:
         state["recent_heartbeat_tokens"] = _normalize_recent_heartbeat_tokens(
             state.get("recent_heartbeat_tokens")
         )
-        state["can_never_remind"] = (
-            clamp_int(state.get("funnel_counts", {}).get("later"))
-            >= AUTOSTART_NEVER_AFTER_LATER_COUNT
-        )
+        # 不再提示按钮自首次弹窗起即可见，避免给用户"被推着走"的压迫感；
+        # AUTOSTART_NEVER_AFTER_LATER_COUNT 现仅用于展示上限的渐进抬升逻辑。
+        state["can_never_remind"] = True
 
     def _resolve_status(state: dict[str, Any]) -> None:
         if state["autostart_enabled"] or state["completed_at"] > 0:

@@ -1713,6 +1713,20 @@ def test_autostart_decision_is_idempotent_for_repeated_token(tmp_path):
 
 
 @pytest.mark.unit
+def test_autostart_can_never_remind_from_first_prompt(tmp_path):
+    config = DummyConfig(tmp_path)
+    heartbeat = process_autostart_prompt_heartbeat(
+        {"foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS},
+        config_manager=config,
+        now_ms=1_000,
+    )
+
+    assert heartbeat["should_prompt"] is True
+    assert heartbeat["state"]["funnel_counts"]["later"] == 0
+    assert heartbeat["state"]["can_never_remind"] is True
+
+
+@pytest.mark.unit
 def test_autostart_can_offer_never_after_three_later_decisions(tmp_path):
     config = DummyConfig(tmp_path)
     runtime_config = load_autostart_prompt_runtime_config(config)
