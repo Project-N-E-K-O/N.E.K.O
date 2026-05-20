@@ -161,17 +161,21 @@ from .plugin_util_helpers import (
 from .plugin_constants import (
     _OCR_BACKEND_SELECTIONS,
     _OCR_CAPTURE_BACKEND_SELECTIONS,
-    _BACKGROUND_BRIDGE_POLL_MIN_STALE_SECONDS,
-    _BRIDGE_TICK_INTERVAL_SECONDS,
-    _OCR_FOREGROUND_REFRESH_TTL_SECONDS,
-    _LATENCY_SAMPLE_LIMIT,
-    _LATENCY_MIN_SAMPLES_FOR_P95,
-    _OCR_POLL_P95_DEGRADE_THRESHOLD_SECONDS,
-    _OCR_FOREGROUND_ADVANCE_MONITOR_INTERVAL_SECONDS,
-    _OCR_AFTER_ADVANCE_CAPTURE_DELAY_SECONDS,
-    _OCR_AFTER_ADVANCE_SETTLE_POLL_SECONDS,
-    _OCR_AFTER_ADVANCE_MAX_SETTLE_SECONDS,
 )
+
+
+_BACKGROUND_BRIDGE_POLL_MIN_STALE_SECONDS = 45.0
+_BRIDGE_TICK_INTERVAL_SECONDS = 1.0
+# Foreground refresh TTL: repeated calls within two seconds return early so
+# bridge_tick, advance monitor, and status payload refreshes stay idempotent.
+_OCR_FOREGROUND_REFRESH_TTL_SECONDS = 2.0
+_LATENCY_SAMPLE_LIMIT = 120
+_LATENCY_MIN_SAMPLES_FOR_P95 = 5
+_OCR_POLL_P95_DEGRADE_THRESHOLD_SECONDS = 3.0
+_OCR_FOREGROUND_ADVANCE_MONITOR_INTERVAL_SECONDS = 0.05
+_OCR_AFTER_ADVANCE_CAPTURE_DELAY_SECONDS = 0.15
+_OCR_AFTER_ADVANCE_SETTLE_POLL_SECONDS = 0.15
+_OCR_AFTER_ADVANCE_MAX_SETTLE_SECONDS = 2.0
 
 
 from .plugin_ocr_helpers import (
@@ -205,88 +209,95 @@ from .plugin_capture_profile_helpers import (
 
 
 from .plugin_config_service import GalgamePluginConfigService
-from .plugin_entries.galgame_get_status import _GalgameGetStatusMixin
-from .plugin_entries.galgame_install_textractor import _GalgameInstallTextractorMixin
-from .plugin_entries.galgame_download_rapidocr_models import _GalgameDownloadRapidocrModelsMixin
-from .plugin_entries.galgame_get_snapshot import _GalgameGetSnapshotMixin
-from .plugin_entries.galgame_get_history import _GalgameGetHistoryMixin
-from .plugin_entries.galgame_set_mode import _GalgameSetModeMixin
-from .plugin_entries.galgame_set_ocr_backend import _GalgameSetOcrBackendMixin
-from .plugin_entries.galgame_set_rapidocr_lang import _GalgameSetRapidocrLangMixin
-from .plugin_entries.galgame_set_ocr_timing import _GalgameSetOcrTimingMixin
-from .plugin_entries.galgame_set_llm_vision import _GalgameSetLlmVisionMixin
-from .plugin_entries.galgame_set_ocr_screen_templates import _GalgameSetOcrScreenTemplatesMixin
-from .plugin_entries.galgame_build_ocr_screen_template_draft import _GalgameBuildOcrScreenTemplateDraftMixin
-from .plugin_entries.galgame_validate_ocr_screen_templates import _GalgameValidateOcrScreenTemplatesMixin
-from .plugin_entries.galgame_get_ocr_screen_awareness_snapshot import _GalgameGetOcrScreenAwarenessSnapshotMixin
-from .plugin_entries.galgame_train_ocr_screen_awareness_model import _GalgameTrainOcrScreenAwarenessModelMixin
-from .plugin_entries.galgame_evaluate_ocr_screen_awareness_model import _GalgameEvaluateOcrScreenAwarenessModelMixin
-from .plugin_entries.galgame_bind_game import _GalgameBindGameMixin
-from .plugin_entries.galgame_set_ocr_capture_profile import _GalgameSetOcrCaptureProfileMixin
-from .plugin_entries.galgame_auto_recalibrate_ocr_dialogue_profile import _GalgameAutoRecalibrateOcrDialogueProfileMixin
-from .plugin_entries.galgame_apply_recommended_ocr_capture_profile import _GalgameApplyRecommendedOcrCaptureProfileMixin
-from .plugin_entries.galgame_rollback_ocr_capture_profile import _GalgameRollbackOcrCaptureProfileMixin
-from .plugin_entries.galgame_list_memory_reader_processes import _GalgameListMemoryReaderProcessesMixin
-from .plugin_entries.galgame_set_memory_reader_target import _GalgameSetMemoryReaderTargetMixin
-from .plugin_entries.galgame_list_ocr_windows import _GalgameListOcrWindowsMixin
-from .plugin_entries.galgame_set_ocr_window_target import _GalgameSetOcrWindowTargetMixin
-from .plugin_entries.galgame_open_ui import _GalgameOpenUiMixin
-from .plugin_entries.galgame_explain_line import _GalgameExplainLineMixin
-from .plugin_entries.galgame_summarize_scene import _GalgameSummarizeSceneMixin
-from .plugin_entries.galgame_suggest_choice import _GalgameSuggestChoiceMixin
+
+
+# Mixin imports for GalgamePlugin entries — sorted alphabetically by mixin
+# class name so the order here matches the class bases list below. Adding a
+# new entry means: (1) drop a file under plugin_entries/, (2) add its import
+# here, and (3) insert the mixin into the GalgamePlugin bases list — both in
+# alphabetical position.
 from .plugin_entries.galgame_agent_command import _GalgameAgentCommandMixin
+from .plugin_entries.galgame_apply_recommended_ocr_capture_profile import _GalgameApplyRecommendedOcrCaptureProfileMixin
+from .plugin_entries.galgame_auto_recalibrate_ocr_dialogue_profile import _GalgameAutoRecalibrateOcrDialogueProfileMixin
+from .plugin_entries.galgame_bind_game import _GalgameBindGameMixin
+from .plugin_entries.galgame_build_ocr_screen_template_draft import _GalgameBuildOcrScreenTemplateDraftMixin
 from .plugin_entries.galgame_continue_auto_advance import _GalgameContinueAutoAdvanceMixin
-from .plugin_entries.galgame_get_scene_context import _GalgameGetSceneContextMixin
-from .plugin_entries.galgame_get_story_so_far import _GalgameGetStorySoFarMixin
-from .plugin_entries.galgame_get_recent_lines import _GalgameGetRecentLinesMixin
-from .plugin_entries.galgame_get_push_history import _GalgameGetPushHistoryMixin
-from .plugin_entries.galgame_set_character_mode import _GalgameSetCharacterModeMixin
+from .plugin_entries.galgame_download_rapidocr_models import _GalgameDownloadRapidocrModelsMixin
+from .plugin_entries.galgame_evaluate_ocr_screen_awareness_model import _GalgameEvaluateOcrScreenAwarenessModelMixin
+from .plugin_entries.galgame_explain_line import _GalgameExplainLineMixin
 from .plugin_entries.galgame_get_character_list import _GalgameGetCharacterListMixin
 from .plugin_entries.galgame_get_character_profile import _GalgameGetCharacterProfileMixin
+from .plugin_entries.galgame_get_history import _GalgameGetHistoryMixin
+from .plugin_entries.galgame_get_ocr_screen_awareness_snapshot import _GalgameGetOcrScreenAwarenessSnapshotMixin
+from .plugin_entries.galgame_get_push_history import _GalgameGetPushHistoryMixin
+from .plugin_entries.galgame_get_recent_lines import _GalgameGetRecentLinesMixin
+from .plugin_entries.galgame_get_scene_context import _GalgameGetSceneContextMixin
+from .plugin_entries.galgame_get_snapshot import _GalgameGetSnapshotMixin
+from .plugin_entries.galgame_get_status import _GalgameGetStatusMixin
+from .plugin_entries.galgame_get_story_so_far import _GalgameGetStorySoFarMixin
 from .plugin_entries.galgame_import_character_data import _GalgameImportCharacterDataMixin
+from .plugin_entries.galgame_install_textractor import _GalgameInstallTextractorMixin
+from .plugin_entries.galgame_list_memory_reader_processes import _GalgameListMemoryReaderProcessesMixin
+from .plugin_entries.galgame_list_ocr_windows import _GalgameListOcrWindowsMixin
+from .plugin_entries.galgame_open_ui import _GalgameOpenUiMixin
+from .plugin_entries.galgame_rollback_ocr_capture_profile import _GalgameRollbackOcrCaptureProfileMixin
+from .plugin_entries.galgame_set_character_mode import _GalgameSetCharacterModeMixin
+from .plugin_entries.galgame_set_llm_vision import _GalgameSetLlmVisionMixin
+from .plugin_entries.galgame_set_memory_reader_target import _GalgameSetMemoryReaderTargetMixin
+from .plugin_entries.galgame_set_mode import _GalgameSetModeMixin
+from .plugin_entries.galgame_set_ocr_backend import _GalgameSetOcrBackendMixin
+from .plugin_entries.galgame_set_ocr_capture_profile import _GalgameSetOcrCaptureProfileMixin
+from .plugin_entries.galgame_set_ocr_screen_templates import _GalgameSetOcrScreenTemplatesMixin
+from .plugin_entries.galgame_set_ocr_timing import _GalgameSetOcrTimingMixin
+from .plugin_entries.galgame_set_ocr_window_target import _GalgameSetOcrWindowTargetMixin
+from .plugin_entries.galgame_set_rapidocr_lang import _GalgameSetRapidocrLangMixin
+from .plugin_entries.galgame_suggest_choice import _GalgameSuggestChoiceMixin
+from .plugin_entries.galgame_summarize_scene import _GalgameSummarizeSceneMixin
+from .plugin_entries.galgame_train_ocr_screen_awareness_model import _GalgameTrainOcrScreenAwarenessModelMixin
+from .plugin_entries.galgame_validate_ocr_screen_templates import _GalgameValidateOcrScreenTemplatesMixin
 
 
 @neko_plugin
 class GalgamePlugin(
-    _GalgameGetStatusMixin,
-    _GalgameInstallTextractorMixin,
-    _GalgameDownloadRapidocrModelsMixin,
-    _GalgameGetSnapshotMixin,
-    _GalgameGetHistoryMixin,
-    _GalgameSetModeMixin,
-    _GalgameSetOcrBackendMixin,
-    _GalgameSetRapidocrLangMixin,
-    _GalgameSetOcrTimingMixin,
-    _GalgameSetLlmVisionMixin,
-    _GalgameSetOcrScreenTemplatesMixin,
-    _GalgameBuildOcrScreenTemplateDraftMixin,
-    _GalgameValidateOcrScreenTemplatesMixin,
-    _GalgameGetOcrScreenAwarenessSnapshotMixin,
-    _GalgameTrainOcrScreenAwarenessModelMixin,
-    _GalgameEvaluateOcrScreenAwarenessModelMixin,
-    _GalgameBindGameMixin,
-    _GalgameSetOcrCaptureProfileMixin,
-    _GalgameAutoRecalibrateOcrDialogueProfileMixin,
-    _GalgameApplyRecommendedOcrCaptureProfileMixin,
-    _GalgameRollbackOcrCaptureProfileMixin,
-    _GalgameListMemoryReaderProcessesMixin,
-    _GalgameSetMemoryReaderTargetMixin,
-    _GalgameListOcrWindowsMixin,
-    _GalgameSetOcrWindowTargetMixin,
-    _GalgameOpenUiMixin,
-    _GalgameExplainLineMixin,
-    _GalgameSummarizeSceneMixin,
-    _GalgameSuggestChoiceMixin,
     _GalgameAgentCommandMixin,
+    _GalgameApplyRecommendedOcrCaptureProfileMixin,
+    _GalgameAutoRecalibrateOcrDialogueProfileMixin,
+    _GalgameBindGameMixin,
+    _GalgameBuildOcrScreenTemplateDraftMixin,
     _GalgameContinueAutoAdvanceMixin,
-    _GalgameGetSceneContextMixin,
-    _GalgameGetStorySoFarMixin,
-    _GalgameGetRecentLinesMixin,
-    _GalgameGetPushHistoryMixin,
-    _GalgameSetCharacterModeMixin,
+    _GalgameDownloadRapidocrModelsMixin,
+    _GalgameEvaluateOcrScreenAwarenessModelMixin,
+    _GalgameExplainLineMixin,
     _GalgameGetCharacterListMixin,
     _GalgameGetCharacterProfileMixin,
+    _GalgameGetHistoryMixin,
+    _GalgameGetOcrScreenAwarenessSnapshotMixin,
+    _GalgameGetPushHistoryMixin,
+    _GalgameGetRecentLinesMixin,
+    _GalgameGetSceneContextMixin,
+    _GalgameGetSnapshotMixin,
+    _GalgameGetStatusMixin,
+    _GalgameGetStorySoFarMixin,
     _GalgameImportCharacterDataMixin,
+    _GalgameInstallTextractorMixin,
+    _GalgameListMemoryReaderProcessesMixin,
+    _GalgameListOcrWindowsMixin,
+    _GalgameOpenUiMixin,
+    _GalgameRollbackOcrCaptureProfileMixin,
+    _GalgameSetCharacterModeMixin,
+    _GalgameSetLlmVisionMixin,
+    _GalgameSetMemoryReaderTargetMixin,
+    _GalgameSetModeMixin,
+    _GalgameSetOcrBackendMixin,
+    _GalgameSetOcrCaptureProfileMixin,
+    _GalgameSetOcrScreenTemplatesMixin,
+    _GalgameSetOcrTimingMixin,
+    _GalgameSetOcrWindowTargetMixin,
+    _GalgameSetRapidocrLangMixin,
+    _GalgameSuggestChoiceMixin,
+    _GalgameSummarizeSceneMixin,
+    _GalgameTrainOcrScreenAwarenessModelMixin,
+    _GalgameValidateOcrScreenTemplatesMixin,
     NekoPluginBase,
 ):
     def __init__(self, ctx):
@@ -4754,18 +4765,6 @@ class GalgamePlugin(
                 int(last_seq or 0),
                 int(push_seq or 0),
             )
-
-
-
-
-
-    # ------------------------------------------------------------------
-    # Character profile entries (galgame-host-play-mode plan, step 6)
-    # ------------------------------------------------------------------
-
-
-
-
 
 
 GalgameBridgePlugin = GalgamePlugin
