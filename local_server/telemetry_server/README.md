@@ -63,9 +63,9 @@ _report_to_server()  检查距上次上报是否 ≥ 60s（1分钟）
               └── 失败 → 放回 _unsent，下次重试
 
 ∴ 每进程最多 1 req / 1min
-  3 个 server 进程 = 180 req/h/device
-  20k DAU × 180 × 8h ≈ 28.8M req/day ≈ 333 req/s peak
-  SQLite WAL ~500 write/s → 单实例够用
+  3 个 server 进程 = 180 req/h/device 上限（实际由服务端 120 req/h 削顶，超出返回 429 累积到下次）
+  20k DAU × 180 × 8h ≈ 28.8M req/day ≈ 333 req/s 日均（活跃窗口峰值 ~1000 req/s）
+  SQLite WAL ~500 write/s → 日均够用
 ```
 
 ## 管理端
