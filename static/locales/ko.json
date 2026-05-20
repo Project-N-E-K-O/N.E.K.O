@@ -1848,7 +1848,7 @@
         "aiCompanionGreeting": "냐~ 설정 보조야. 먼저 어떤 캐릭터를 원하는지 한 줄로 알려줘! 몇 가지 후속 질문하고 카드 전체를 적어줄게.",
         "aiCompanionDesignGreeting": "냐~ 설정 보조야. 이 캐릭터는 이미 어느 정도 모양이 잡혀 있네 — 먼저 뭐가 적혀 있는지 볼게:",
         "aiCompanionDesignAsk": "뭘 도와드릴까? 직접 말해도 좋아 (예: 「더 츤데레로」, 「대표 대사 바꿔」), 아래 「🔍 카드 검토」를 누르면 전체를 봐줄게~",
-        "aiCompanionDesignMore": "…({n} 개 더)",
+        "aiCompanionDesignMore": "…({{n}} 개 더)",
         "aiCompanionGenerating": "초안을 작성 중…",
         "aiCompanionEmptyDraft": "초안이 비어서 돌아왔어, 냐 — 좀 더 얘기해보자.",
         "aiCompanionDraftReady": "초안 다 됐어, 폼에 이미 채워 넣었어 냐~ 마음대로 고쳐도 되고, 조정할 게 있으면 말해줘:",

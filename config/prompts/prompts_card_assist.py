@@ -11,8 +11,12 @@ assistant with four entry points:
   4) chat     — persistent companion-style chat with structured actions
                 (used by the right-side companion panel after generate)
 
-All four prompts require the LLM to output STRICT JSON only (no markdown
-fences). The router strips ```json fences defensively before json.loads.
+Three of the four prompts (clarify / generate / chat) require the LLM to
+output STRICT JSON only (no markdown fences); the router strips ```json
+fences defensively before json.loads. The `refine` prompt is the exception:
+it asks for a **plain string** with no JSON wrapping (so a single field's
+new value can be substituted directly into the form textarea), and the
+router strips fences + matching quote pairs before returning.
 """
 
 from __future__ import annotations

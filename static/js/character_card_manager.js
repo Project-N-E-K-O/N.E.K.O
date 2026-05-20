@@ -10514,8 +10514,14 @@ function _companionEnterDesignMode(state, existingData, filledKeys) {
         return '• ' + k + '：' + _companionTruncate(String(existingData[k] || ''), 30);
     });
     if (filledKeys.length > MAX_LIST) {
+        // i18next 风格的 {{n}} 占位符，跟 repo 里其它 60+ 处 {{var}} 一致。
+        // _cardAssistT 把 vars 透传给 window.t(key, vars) → i18next 标准插值。
+        // fallback 字符串里把数字直接内联，避免 i18next 没加载时 {{n}} 字面量
+        // 漏出给用户。
+        const remaining = filledKeys.length - MAX_LIST;
         lines.push('• ' + _cardAssistT('character.aiCompanionDesignMore',
-            '…（还有 {n} 项）').replace('{n}', String(filledKeys.length - MAX_LIST)));
+            '…（还有 ' + remaining + ' 项）',
+            { n: remaining }));
     }
     const greeting = _cardAssistT('character.aiCompanionDesignGreeting',
         '喵～我是设定捏人助手。看到你这只猫娘已经有点雏形啦，我先看看你已经填了什么：') +
@@ -10954,18 +10960,23 @@ function _companionRefreshFormSnapshot(state) {
 function _companionEnsureLiveForm(state) {
     if (!state) return false;
     if (state.form && state.form.isConnected) return true;
-    // 找 live form 的两条路：
-    //   1) 有 originalName → 按 id 精确查（已保存卡常态：切猫娘 / 重命名 / 关再开）
-    //   2) 没 originalName（companion 是在**空白新卡**上启动的，state.originalName='') →
-    //      用 DOM 选择器在当前 catgirl panel 里找那个唯一 form。这一支专门覆盖
-    //      「用户在新卡上开 companion → 填档案名 → 手动 Save → 卡被建出来后 form
-    //      id 从 catgirl-form-new 变成 catgirl-form-<actualName>」的场景。否则
-    //      `getElementById('catgirl-form-' + '')` 永远找不到、companion 永久陷在
-    //      "form gone"。详情面板同时只能有一个 form，所以 querySelector 命中唯一。
+    // 找 live form 的两条路（按顺序回退）：
+    //   1) 有 originalName → 按 `catgirl-form-${originalName}` 精确查（已保存卡
+    //      常态：切猫娘 / 关再开）
+    //   2) 上一步失败 / originalName 为空 → 用 DOM 选择器在当前 catgirl panel 里
+    //      找那个唯一 form。详情面板同时只能有一个 form，所以选择器命中唯一。
+    //      这一支专门覆盖两个场景：
+    //        a. 「空白新卡 → 填档案名 → 手动 Save → form id 从 catgirl-form-new
+    //           变成 catgirl-form-<actualName>」（originalName='', id 漂移）
+    //        b. **重命名**：用户在 companion 开着的情况下改了档案名，
+    //           saveCatgirlFromPanel 用新名 rebuild 表单，旧 id 找不到，但新
+    //           form 已经挂在 panel 里、companion 应该顺势跟过去
+    //      然后下面的 sync 逻辑会把 state.originalName 回填成新 form 的真实名字。
     let liveForm = null;
     if (state.originalName) {
         liveForm = document.getElementById('catgirl-form-' + state.originalName);
-    } else {
+    }
+    if (!liveForm) {
         liveForm = document.querySelector('.catgirl-panel-right form[id^="catgirl-form-"]');
     }
     if (!liveForm) return false;

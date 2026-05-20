@@ -1848,7 +1848,7 @@
         "aiCompanionGreeting": "喵～我是設定捏人助手，先告訴我你想要一隻什麼樣的貓娘呀？一句話描述就好，我會再問幾個細節，然後幫你把整張卡寫好喵。",
         "aiCompanionDesignGreeting": "喵～我是設定捏人助手。看到你這隻貓娘已經有點雛形啦，我先看看你已經填了什麼：",
         "aiCompanionDesignAsk": "想讓我幫你做點啥呢？直接告訴我就行（比如「讓她更傲嬌一點」、「招牌台詞換一句」），也可以點下面的「🔍 幫我審一下」讓我整體看看~",
-        "aiCompanionDesignMore": "…（還有 {n} 項）",
+        "aiCompanionDesignMore": "…（還有 {{n}} 項）",
         "aiCompanionGenerating": "正在幫你寫草稿…",
         "aiCompanionEmptyDraft": "草稿空空的喵，我們再聊幾句吧～",
         "aiCompanionDraftReady": "草稿寫好啦，已經填進表單了喵～你隨時改、隨時跟我說要調啥都行：",

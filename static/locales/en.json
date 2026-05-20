@@ -1850,7 +1850,7 @@
         "aiCompanionGreeting": "Meow~ I'm your card-design buddy. First, tell me what kind of catgirl you want — one line is enough! I'll ask a few follow-up questions and then write the whole card for you.",
         "aiCompanionDesignGreeting": "Meow~ I'm your card-design buddy. This catgirl already has some shape — let me see what you've filled in:",
         "aiCompanionDesignAsk": "What would you like me to help with? Just tell me directly (e.g. \"make her more tsundere\", \"swap the signature line\"), or hit \"🔍 Audit the card\" below and I'll review the whole thing.",
-        "aiCompanionDesignMore": "…(and {n} more)",
+        "aiCompanionDesignMore": "…(and {{n}} more)",
         "aiCompanionGenerating": "Writing the draft for you…",
         "aiCompanionEmptyDraft": "The draft came back empty, nya — let's chat a bit more.",
         "aiCompanionDraftReady": "Draft is ready and already filled into the form, meow~ Change anything you want, or just tell me what to tweak:",

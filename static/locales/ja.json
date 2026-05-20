@@ -1848,7 +1848,7 @@
         "aiCompanionGreeting": "にゃ〜 設定捏ね助手だよ。まず、どんな猫娘がいいか一言で教えてくれる？ いくつか追加で質問して、それからカード全体を書いてあげるね。",
         "aiCompanionDesignGreeting": "にゃ〜 設定捏ね助手だよ。この子はもう形ができてきてるね — まず何が書いてあるか見てみるね：",
         "aiCompanionDesignAsk": "なにを手伝おうか？ 直接言ってくれていいよ（例えば「もっとツンデレに」「キャッチフレーズを変えて」とか）、下の「🔍 カードを審査」を押せば全体を見てあげるよ〜",
-        "aiCompanionDesignMore": "…（あと {n} 項目）",
+        "aiCompanionDesignMore": "…（あと {{n}} 項目）",
         "aiCompanionGenerating": "下書きを書いてるところ…",
         "aiCompanionEmptyDraft": "下書きが空っぽだったにゃ — もう少し話そっか。",
         "aiCompanionDraftReady": "下書きできたよ、もうフォームに入れたにゃ〜 自由に直してね、なにか調整したいことがあれば言って：",
