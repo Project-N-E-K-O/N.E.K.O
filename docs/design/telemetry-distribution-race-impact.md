@@ -272,10 +272,10 @@ WHERE distribution = 'steam' AND steam_user_id = '';
 
 **客户端修复（任务二，待批准后开工）**：合并两个函数为单一调用，确保 `distribution` 和 `steam_user_id` 同源同观测点。修复后：
 
-- **新装用户**：再不会进入 race。`release` 始终 `''`，`steam` 始终带 ID。
+- **race 消除**：`release + 非空 ID` 永不再出现（这是修复的核心保证）。`steam` 在 SDK 起来拿到 Steam64 时带 ID；下面 Cohort C 描述的 `steam + ''` 是 by-design 合法尾部，仍可能出现。
 - **Cohort B**：他们本来就在覆写自愈，修复后不会再被错标，下次上报继续覆写到 `steam`。
 - **Cohort A**：客户端代码逻辑不变其结果（SDK 真挂了仍报 `release + ''`）—— 这是真的 release 还是真的 Steam 但 SDK 挂了，本来就**信息不足**，客户端无法区分。
-- **Cohort C**：客户端修复改成 anchor on first signal，若 `Users.GetSteamID()` 为 0 但 workshop signal 真，仍是 `steam + ''` —— 是 legitimate signed state，不需改。
+- **Cohort C**：客户端修复改成 anchor on first signal，若 `Users.GetSteamID()` 为 0 但 workshop signal 真（订阅 > 0 或 workshop_config.json 兜底），仍是 `steam + ''` —— 是 legitimate signed state，不需改。
 
 **Server 端数据修复**：明确**不在本 PR scope 内**。运维如要追溯历史矛盾态记录，建议：
 
