@@ -24,7 +24,8 @@ class _GalgameInstallTextractorMixin:
         current_run_id = self._resolve_current_run_id(_)
         progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
-            install_result = await install_textractor(
+            install_textractor_fn = _package_public_attr("install_textractor", install_textractor)
+            install_result = await install_textractor_fn(
                 logger=self.logger,
                 configured_path=self._cfg.memory_reader_textractor_path,
                 install_target_dir_raw=self._cfg.memory_reader_install_target_dir,

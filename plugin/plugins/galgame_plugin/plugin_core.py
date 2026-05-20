@@ -151,6 +151,7 @@ from .screen_awareness_training import (
 
 from .plugin_util_helpers import (
     _log_plugin_noncritical,
+    _package_public_attr,
     _public_context_snapshot,
     _migrate_legacy_capture_backend,
     _duration_percentile,
@@ -2435,7 +2436,8 @@ class GalgamePlugin(
 
     def _get_character_profile_manager(self) -> CharacterProfileManager:
         if self._character_profile_manager is None:
-            self._character_profile_manager = CharacterProfileManager(
+            manager_cls = _package_public_attr("CharacterProfileManager", CharacterProfileManager)
+            self._character_profile_manager = manager_cls(
                 data_dir=Path(__file__).parent / "character_data",
                 logger=self.logger,
             )
@@ -3175,21 +3177,27 @@ class GalgamePlugin(
             )
             return Err(SdkError(f"failed to restore galgame_plugin store: {exc}"))
 
-        self._host_agent_adapter = HostAgentAdapter(self.logger)
-        self._llm_gateway = LLMGateway(self, self.logger, self._cfg)
-        self._game_agent = GameLLMAgent(
+        host_agent_adapter_cls = _package_public_attr("HostAgentAdapter", HostAgentAdapter)
+        llm_gateway_cls = _package_public_attr("LLMGateway", LLMGateway)
+        game_agent_cls = _package_public_attr("GameLLMAgent", GameLLMAgent)
+        memory_reader_manager_cls = _package_public_attr("MemoryReaderManager", MemoryReaderManager)
+        ocr_reader_manager_cls = _package_public_attr("OcrReaderManager", OcrReaderManager)
+
+        self._host_agent_adapter = host_agent_adapter_cls(self.logger)
+        self._llm_gateway = llm_gateway_cls(self, self.logger, self._cfg)
+        self._game_agent = game_agent_cls(
             plugin=self,
             logger=self.logger,
             llm_gateway=self._llm_gateway,
             host_adapter=self._host_agent_adapter,
             config=self._cfg,
         )
-        self._memory_reader_manager = MemoryReaderManager(
+        self._memory_reader_manager = memory_reader_manager_cls(
             logger=self.logger,
             config=self._cfg,
         )
         self._memory_reader_manager.update_process_target(self._state.memory_reader_target)
-        self._ocr_reader_manager = OcrReaderManager(
+        self._ocr_reader_manager = ocr_reader_manager_cls(
             logger=self.logger,
             config=self._cfg,
             rapidocr_lang_changed_callback=self._on_rapidocr_auto_lang_changed,
@@ -3215,7 +3223,11 @@ class GalgamePlugin(
             port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916")
             url = f"http://127.0.0.1:{port}/plugin/{self.plugin_id}/ui/"
             try:
-                await asyncio.to_thread(_open_url_in_browser, url)
+                open_url_in_browser = _package_public_attr(
+                    "_open_url_in_browser",
+                    _open_url_in_browser,
+                )
+                await asyncio.to_thread(open_url_in_browser, url)
             except Exception as exc:
                 _log_plugin_noncritical(
                     self.logger,

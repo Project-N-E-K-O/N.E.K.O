@@ -16,6 +16,13 @@ def _log_plugin_noncritical(logger: Any, level: str, message: str, *args: Any) -
         return
 
 
+def _package_public_attr(name: str, fallback: Any) -> Any:
+    package = sys.modules.get("plugin.plugins.galgame_plugin")
+    if package is None:
+        return fallback
+    return getattr(package, name, fallback)
+
+
 def _public_context_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         return {}

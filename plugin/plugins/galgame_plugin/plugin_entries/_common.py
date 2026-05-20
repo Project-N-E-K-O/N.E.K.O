@@ -155,6 +155,7 @@ from ..screen_awareness_training import (
 )
 from ..plugin_util_helpers import (
     _log_plugin_noncritical,
+    _package_public_attr,
     _public_context_snapshot,
     _migrate_legacy_capture_backend,
     _duration_percentile,
