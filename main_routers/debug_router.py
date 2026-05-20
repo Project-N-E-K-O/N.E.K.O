@@ -140,6 +140,8 @@ def _safe_psutil_extras() -> dict[str, Any]:
         # 归一化到任务管理器规模：raw / cpu_count
         out["cpu_percent"] = raw / cpu_count
     except Exception:
+        # 故意吞：psutil 子调用（cpu_count / cpu_percent）失败留 None 即可，
+        # 曲线上看到 cpu_percent=null 知道是 psutil 异常不是「真有 leak」。
         pass
     # Windows: num_handles; POSIX: num_fds. psutil 在错误平台抛 AttributeError。
     try:
@@ -148,6 +150,7 @@ def _safe_psutil_extras() -> dict[str, Any]:
         try:
             out["num_handles"] = proc.num_fds()
         except Exception:
+            # 故意吞：两个平台 API 都拿不到（容器 / 罕见 OS），num_handles 留 None。
             pass
     return out
 
@@ -163,6 +166,7 @@ def _safe_psutil_heavy() -> dict[str, Any]:
     try:
         out["num_threads"] = proc.num_threads()
     except Exception:
+        # 故意吞：num_threads 拿不到留 None，零侵入语义保留。
         pass
     return out
 
