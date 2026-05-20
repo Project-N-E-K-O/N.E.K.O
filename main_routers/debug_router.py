@@ -51,11 +51,11 @@ _PROCESS_START_MONO = time.monotonic()
 _HEALTH_RING: deque[dict[str, Any]] = deque(maxlen=200)
 _WATCHDOG_TASK: asyncio.Task | None = None
 _WATCHDOG_INTERVAL_SECONDS = 5 * 60  # 5 分钟
-# 「deep」字段（gc.get_objects 45ms + num_threads 8ms in Windows）单 tick 阻塞
-# 50ms+ 且 C 调用不释放 GIL，to_thread 也救不了 main thread。降频到 30min
-# 一次（每 6 个 watchdog tick），让 5/6 的 tick 完全无感（<5ms 阻塞）。
-_DEEP_TICK_EVERY_N = 6
-_watchdog_tick_count = 0
+# 「Deep」字段（``gc.get_objects()`` 45ms + Windows ``num_threads()`` 8ms）
+# 是 C 调用不释放 GIL，watchdog 跑就直接阻塞 event loop 50ms+。本来想降频
+# 到 30min 一次缓和，但用户体感「致命」否决——索性 watchdog **不收**这俩，
+# 只在按需 endpoint ``/api/debug/health?deep=1`` 触发。代价：ring/jsonl 没
+# 有 gc 时序数据；用户排查内存问题时手动多次访问 endpoint 自己构建时序。
 
 # psutil.Process 复用：cpu_percent(None) 必须**用同一个 Process 实例**多次调用，
 # 第一次返回 0（建立基线），之后每次返回距上次的 CPU 利用率%。每次 new Process
@@ -300,12 +300,16 @@ def _safe_proactive_history_size() -> dict[str, int]:
     return out
 
 
-def _collect_snapshot(include_deep: bool = True) -> dict[str, Any]:
+def _collect_snapshot(include_deep: bool = False) -> dict[str, Any]:
     """单次快照采集。每个字段独立 try 过——任意一项炸了不影响其他。
 
-    ``include_deep`` 控制是否跑慢字段（``gc.get_objects()`` 45 ms +
-    ``num_threads()`` 8 ms 在 Windows）。Watchdog 5/6 tick 用 False，剩 1/6
-    tick 用 True。HTTP endpoint 按需调用，默认 True 给完整数据。"""
+    Default ``include_deep=False``——cheap-only 采样 ~0.05ms 自身耗时，
+    watchdog 直接同步调即可，对 event loop 几乎无感。
+
+    ``include_deep=True`` 跑慢字段：``gc.get_objects()`` 45ms（统计内存对象
+    type 分布——定位「是什么对象在涨」的金线）+ Windows ``num_threads()``
+    8ms（线程泄漏检测）。两者都是不释放 GIL 的 C 调用，会阻塞 event loop
+    50ms+，所以 **watchdog 永不调它**——仅留给按需 endpoint 主动触发。"""
     snap: dict[str, Any] = {
         "ts": time.time(),
         "uptime_sec": time.monotonic() - _PROCESS_START_MONO,
@@ -442,20 +446,16 @@ async def _watchdog_loop() -> None:
         await asyncio.sleep(60)
     except asyncio.CancelledError:
         return
-    global _watchdog_tick_count
     while True:
         try:
-            # Deep tick 频率：每 _DEEP_TICK_EVERY_N 次跑一次完整 snapshot（含 gc
-            # 和 num_threads，那部分 ~50 ms 阻塞）。其他 tick 只跑 cheap 字段（~3 ms）。
-            # ⚠️ Python C 函数（gc / Windows API）不释放 GIL：即便 to_thread，
-            # main thread 仍在 GIL 切换间隔（默认 5 ms）内被卡。to_thread 还是
-            # 必要的——能让 main thread 在 worker 主动让出时见缝插针。
-            include_deep = (_watchdog_tick_count % _DEEP_TICK_EVERY_N) == 0
-            _watchdog_tick_count += 1
-            snap = await asyncio.to_thread(_collect_snapshot, include_deep)
+            # Watchdog **不收 deep 字段**——cheap snapshot 自身 < 0.05ms，直接同
+            # 步调反而比 to_thread 更轻（to_thread 有线程调度 overhead）。Deep
+            # 字段（gc / num_threads）改成按需 endpoint，详见 _collect_snapshot
+            # 注释。
+            snap = _collect_snapshot(include_deep=False)
             _absorb_recent_client_payload(snap)
             _HEALTH_RING.append(snap)
-            # _append_to_log 含 stat + rotate + 文件 IO，可能十几 ms：也丢 thread。
+            # 文件 IO 可能十几 ms（rotation 时 os.replace）：丢 thread 避免阻塞。
             await asyncio.to_thread(_append_to_log, snap)
         except asyncio.CancelledError:
             raise
@@ -486,15 +486,16 @@ def start_watchdog() -> None:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/debug/health")
-async def debug_health() -> dict[str, Any]:
+async def debug_health(deep: bool = False) -> dict[str, Any]:
     """返回当前快照 + 最近 ring buffer。
 
     Ring buffer 让用户不用等到下一个 5-min tick——任意时刻请求都能拿到
     最近 16 小时的曲线，刷新即用。
 
-    同 watchdog：``_collect_snapshot()`` 同步且重（gc.get_objects 50-100ms），
-    丢到 thread pool 避免阻塞 event loop。"""
-    current = await asyncio.to_thread(_collect_snapshot)
+    ``deep=true`` 触发慢字段（``gc.get_objects()`` 45ms 内存对象 type 分布 +
+    Windows ``num_threads()`` 8ms 线程数）。Watchdog 永不调它们——用户排查
+    内存泄漏时手动 ``?deep=1`` 一次拿当下数据；想要时序就多次调。"""
+    current = await asyncio.to_thread(_collect_snapshot, deep)
     return {
         "current": current,
         "ring": list(_HEALTH_RING),
