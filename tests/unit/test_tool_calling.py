@@ -2429,7 +2429,7 @@ async def test_stream_text_summary_gibberish_fallback_emits_invalid(monkeypatch)
 @pytest.mark.asyncio
 async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypatch):
     """没开 summary 的 client（game/默认 stream_text 调用）必须保持原来的
-    abort+inline truncate 行为，不被新路径干扰。"""
+    abort+inline truncate 行为，不被新路径干扰，并且小模型摘要器一次也不能调。"""
     from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk, SystemMessage
@@ -2440,6 +2440,14 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
         "truncate_to_tokens",
         lambda text, budget: " ".join((text or "").split()[:budget]),
     )
+
+    summarize_calls: list = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_calls.append((prefix, tail))
+        return "should never run"
+
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
 
     async def _astream(self, messages, **overrides):
         # 6 词，budget=4 → 过线触发旧 guard 路径
@@ -2491,3 +2499,5 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
     assert delta_calls, "至少要 emit 过一次"
     for c in delta_calls:
         assert c["ui_enabled"] and c["tts_enabled"]
+    # 关键回归：禁用模式下小模型摘要器一次都不能被调
+    assert summarize_calls == []

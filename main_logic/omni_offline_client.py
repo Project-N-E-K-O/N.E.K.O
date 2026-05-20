@@ -68,12 +68,25 @@ _SUMMARY_LATE_FINISH_SLACK = 25
 # discard flow.
 _SUMMARY_GIBBERISH_RECHECK_TOKENS = 100
 
-# Hard max-completion-tokens when ``enable_long_response_summary`` is on.
-# The whole point of the summary path is to let the model keep writing
-# past the soft budget — so we lift the API-side ceiling significantly.
-# 3000 tokens is roughly 2000 Chinese chars / 1500 English words, well
-# above any "took a long detour" reply we want to recover from.
-_SUMMARY_HARD_MAX_TOKENS = 3000
+# Hard char cap on the summary LLM output. Defensive backstop: prompt
+# asks for "1-2 sentences ≤ 40 chars" but small models drift. After
+# stripping quotes and slicing to the first 2 sentence-end-delimited
+# segments, we still hard-truncate to this many chars before feeding
+# TTS. 80 chars ≈ 25 Chinese / 12 English words — short enough that the
+# summary stays in the "quick wrap-up" tonal zone regardless of model
+# obedience.
+_SUMMARY_HARD_CHAR_CAP = 80
+
+
+# Floor on API-side ``max_completion_tokens`` when summary mode is on.
+# NOT a hard ceiling — if the caller's ``max_response_length`` already
+# exceeds this value, we let API budget grow with it (budget + slack).
+# The floor only kicks in to lift the default-300-budget chat case up
+# to ~3000 so the model has room to finish its thought before we
+# summarize. 3000 tokens is roughly 2000 Chinese chars / 1500 English
+# words, well above any "took a long detour" reply we want to recover
+# from.
+_SUMMARY_API_BUDGET_FLOOR = 3000
 _API_KEY_REJECTED_KEYWORDS = (
     "incorrect api key",
     "incorect api key",
@@ -145,15 +158,16 @@ def _budget_to_max_tokens(budget: int, summary_mode: bool = False) -> int | None
     request omits the field entirely (large fixed values get rejected as
     out-of-range by some providers).
 
-    When ``summary_mode`` is True the API-side ceiling is lifted to
-    ``_SUMMARY_HARD_MAX_TOKENS`` (or the budget+slack, whichever is
-    larger). The Python-side guard then decides per-response whether to
-    abandon, summarize, or pass through the overshoot.
+    When ``summary_mode`` is True the API-side ceiling is lifted to at
+    least ``_SUMMARY_API_BUDGET_FLOOR`` (or the caller's budget+slack if
+    that is larger — never CAPS to the floor, just raises the small
+    defaults). The Python-side guard then decides per-response whether
+    to abandon, summarize, or pass through the overshoot.
     """
     if budget >= _UNLIMITED_BUDGET:
         return None
     if summary_mode:
-        return max(budget + _MAX_TOKENS_SLACK, _SUMMARY_HARD_MAX_TOKENS)
+        return max(budget + _MAX_TOKENS_SLACK, _SUMMARY_API_BUDGET_FLOOR)
     return budget + _MAX_TOKENS_SLACK
 
 
@@ -516,19 +530,21 @@ class OmniOfflineClient:
         self.max_response_rerolls = 1
 
         # 长回复 summary 路径开关：开 → 长但可读的回复不再 inline abort+truncate，
-        # 而是让模型继续写到 _SUMMARY_HARD_MAX_TOKENS，TTS 在 budget 后的下个
-        # terminator 停掉，emotion-tier 小模型用人设口吻把尾巴压成一两句话续到
-        # TTS。前端 live 看完整原文、history 存 prefix+summary，刻意的语义分叉。
-        # 默认 False（保留 game 这种 max=100 短台词的现行 abort 行为），core 在
-        # 创建 chat client 时显式打开。
+        # 而是让模型继续写到 budget+slack（最少 _SUMMARY_API_BUDGET_FLOOR），TTS
+        # 在 budget 后的下个 terminator 停掉，emotion-tier 小模型用人设口吻把
+        # 尾巴压成一两句话续到 TTS。前端 live 看完整原文、history 存 prefix+summary，
+        # 刻意的语义分叉。默认 False（保留 game 这种 max=100 短台词的现行 abort
+        # 行为），core 在创建 chat client 时显式打开。
         self.enable_long_response_summary = bool(enable_long_response_summary)
 
         # Initialize ChatOpenAI client. max_completion_tokens 设为
         # max_response_length + 20 让 LLM API 自然在 budget+20 token 处停下来，
         # 既省掉无效生成成本，又给 fence 留 20 token slack 看到 overshoot
         # 能区分 truncate / gibberish-filter 路径。
-        # summary 模式下硬 cap 抬到 _SUMMARY_HARD_MAX_TOKENS（=3000），让模型有
-        # 足够空间走完真正想说的内容，再由 Python 侧决定截断/摘要/原文。
+        # summary 模式下 API budget 至少抬到 _SUMMARY_API_BUDGET_FLOOR（=3000），
+        # 让模型有足够空间走完真正想说的内容；caller budget 比 floor 还大时
+        # 直接用 budget+slack，floor 不再起作用。Python 侧 epilogue 决定截断/
+        # 摘要/原文。
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
@@ -1343,6 +1359,26 @@ class OmniOfflineClient:
             summary = summary[1:-1].strip()
         if not summary:
             return None
+        # 硬性收口：emotion-tier 模型即使被 prompt 约束也可能输出 3-4 句话，
+        # 直接灌进 TTS 会把"短促收尾"这个核心目标打废。最多保留 2 个 sentence-end
+        # 段，再硬截到 ``_SUMMARY_HARD_CHAR_CAP`` 字符。两个限制叠加：先按句末
+        # 切，再按字符兜底——任意一条触发都收口。
+        sentence_segments: list[str] = []
+        cursor = 0
+        for idx, ch in enumerate(summary):
+            if ch in _SENTENCE_END_CHARS:
+                sentence_segments.append(summary[cursor:idx + 1])
+                cursor = idx + 1
+                if len(sentence_segments) >= 2:
+                    break
+        if sentence_segments:
+            trimmed = "".join(sentence_segments)
+            # 若模型在 2 句之外还塞了尾巴，丢弃
+            summary = trimmed.strip()
+        if len(summary) > _SUMMARY_HARD_CHAR_CAP:
+            summary = summary[:_SUMMARY_HARD_CHAR_CAP].rstrip()
+        if not summary:
+            return None
         return summary
 
     async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
@@ -1545,9 +1581,30 @@ class OmniOfflineClient:
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
-                                # Summary 状态同步重置：tool 之后是新一段语义单元，
-                                # 旧的 cutover/tail 都已经被 inline 持久化到
-                                # assistant.tool_calls.content，不应跨段共用。
+                                # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
+                                # 发出去了，但 TTS 还没听到。tool 边界处不知道
+                                # post-tool 段会有多长，没法走"final < max+slack"
+                                # 那套判断，所以一律 abandon —— 把 tail 续给 TTS
+                                # 当原文读完。`_astream_*_with_tools` 已经把含
+                                # tail 的完整 pre-tool 文本写进 assistant.tool_calls.content
+                                # 持久化到 _conversation_history，UI/TTS/history 这下
+                                # 三家口径一致。然后再重置 state 让 post-tool 重新
+                                # 走 idle 起点。
+                                if (
+                                    summary_mode_enabled
+                                    and summary_state == 'cutover_done'
+                                    and summary_tail_buffer
+                                ):
+                                    logger.info(
+                                        "OmniOfflineClient summary: tool 边界 abandon "
+                                        "(pre-tool tail %d chars 续给 TTS)",
+                                        len(summary_tail_buffer),
+                                    )
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(
+                                            summary_tail_buffer, False,
+                                            ui_enabled=False, tts_enabled=True,
+                                        )
                                 summary_state = 'idle'
                                 summary_prefix_for_history = ""
                                 summary_tail_buffer = ""
@@ -1818,6 +1875,14 @@ class OmniOfflineClient:
                                                         is_first_chunk = False
                                                     summary_prefix_for_history = assistant_message
                                                     summary_state = 'cutover_done'
+                                                    # 对偶 chunk-loop emit fork 的 cutover 日志：
+                                                    # 用 summary_trigger_tokens（flush 入口写入的）
+                                                    # 把"什么时候触发的"信息留在日志里。
+                                                    logger.info(
+                                                        "OmniOfflineClient summary: cutover 完成于 flush "
+                                                        "(prefix_chars=%d, trigger=%d tokens)",
+                                                        len(assistant_message), summary_trigger_tokens,
+                                                    )
                                                     if post:
                                                         assistant_message += post
                                                         assistant_message_total += post

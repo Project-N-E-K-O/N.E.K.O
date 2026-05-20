@@ -4018,10 +4018,12 @@ class LLMSessionManager:
                         master_name=self.master_name,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
-                        # 主对话开启长回复 summary：模型超 budget 时不再 abort+truncate，
-                        # 由 emotion-tier 小模型用人设口吻把尾巴压成 1-2 句续给 TTS，
-                        # UI 保持完整原文（live ≠ reload，分岔语义在 handle_text_data 里）。
-                        enable_long_response_summary=True,
+                        # 长回复 summary 必须有 TTS 才有意义：summary 文本是
+                        # `tts_enabled=True, ui_enabled=False` 注入的，若 use_tts=False
+                        # 它会被 handle_text_data 静默丢掉，但 history 仍被重写成
+                        # prefix+summary —— 文本-only 会话会"live 看到全文、reload
+                        # 看不到尾巴"，是隐性内容丢失。所以 gate 在 self.use_tts 上。
+                        enable_long_response_summary=self.use_tts,
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
                 else:
@@ -4476,8 +4478,11 @@ class LLMSessionManager:
                     master_name=self.master_name,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
-                    # 与上方对偶：热切换准备的 chat client 也走 summary 路径。
-                    enable_long_response_summary=True,
+                    # 与上方对偶：长回复 summary 必须有 TTS 才有意义（理由见
+                    # main session 构造点的注释）。pending_use_tts 是热切换准备
+                    # 时已 resolve 的下一轮 use_tts，与 self.use_tts 切轨之后保持
+                    # 一致。
+                    enable_long_response_summary=self.pending_use_tts,
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
