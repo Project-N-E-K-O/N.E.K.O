@@ -587,9 +587,11 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 | LLM Token 用量（prompt / cached / completion） | 对话内容、文本、语音、图片 |
 | 模型名称、调用类型（conversation / memory 等） | 用户名、用户 ID、API Key、GitHub ID |
 | 调用次数 / 错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
-| 匿名设备指纹 `SHA256(machine_id + salt)`（不可逆） | 任何能反推到个人的 PII |
+| 假名化设备标识 `SHA256(machine_id + 安装路径)`（单向哈希，不可逆） | 任何能反推到个人的 PII |
 
-完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多 1 次/10min 上报，不影响主流程性能。
+> 关于"假名化设备标识"：该哈希由系统 machine-id 与安装路径合成，单向不可逆、不含用户信息，无法用于反向定位个人；但同一台机器的同一安装会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。我们仅用它做去重 DAU 计数与版本兼容性归因。
+
+完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
 
 </details>
 

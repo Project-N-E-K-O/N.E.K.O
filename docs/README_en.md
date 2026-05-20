@@ -525,9 +525,11 @@ N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** s
 | LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
 | Model name, call type (`conversation` / `memory` / …) | Username, user ID, API key, GitHub ID |
 | Call counts, error counts | IP address, geolocation, MAC, hardware serial |
-| Anonymous device fingerprint `SHA256(machine_id + salt)` (irreversible) | Any PII that could be traced back to a person |
+| Pseudonymous device identifier `SHA256(machine_id + install_path)` (one-way hash, irreversible) | Any PII that could be traced back to a person |
 
-Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most once per 10 minutes — no impact on the hot path.
+> About the **pseudonymous device identifier**: it is a one-way SHA-256 of the OS machine-id concatenated with the install path. It is irreversible and contains no user data — we cannot use it to identify an individual. However, the same machine + same install will reproduce the same identifier, so under GDPR / PIPL classification it is a *pseudonymous* identifier rather than fully anonymous data. We use it only for deduplicated DAU counting and version-compatibility attribution.
+
+Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most ~once per 60 seconds (shares the same throttling timer as local disk-flush) — no impact on the hot path.
 
 </details>
 
