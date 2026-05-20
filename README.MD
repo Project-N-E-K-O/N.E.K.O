@@ -585,11 +585,15 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 | ✅ 收集 | ❌ 不收集 |
 | --- | --- |
 | LLM Token 用量（prompt / cached / completion） | 对话内容、文本、语音、图片 |
-| 模型名称、调用类型（conversation / memory 等） | 用户名、用户 ID、API Key、GitHub ID |
+| 模型名称、调用类型（conversation / memory 等） | 用户名、API Key、GitHub ID |
 | 调用次数 / 错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
-| 假名化设备标识 `SHA256(machine_id + 安装路径)`（单向哈希，不可逆） | 任何能反推到个人的 PII |
+| 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
+| 假名化设备标识：主路径 `SHA256(OS_machine_id ‖ namespace)`，回退路径 `SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`；迁移期同时上报新旧两个 ID 以便 server 端 fold | 任何能反推到个人的 PII |
+| **仅 Steam 发行版且用户已登录 Steam 时**：Steam64 user ID（可在 Steam 个人页查到的公开数字 ID） | 上述以外的任何账号体系 ID（GitHub / Google / OpenAI 等） |
 
-> 关于"假名化设备标识"：该哈希由系统 machine-id 与安装路径合成，单向不可逆、不含用户信息，无法用于反向定位个人；但同一台机器的同一安装会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。我们仅用它做去重 DAU 计数与版本兼容性归因。
+> **关于"假名化设备标识"**：单向 SHA-256，不可逆、不含用户信息。同一台机器（同一 OS 安装）会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。仅用于去重 DAU 计数与版本兼容性归因。
+>
+> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定，因此我们把它如实列在"收集"列里 — **如果你不希望它被上报，运行源码版即可（源码版的发行渠道是 `source`，不会调 Steam SDK），或者直接 `DO_NOT_TRACK=1` 全关。**
 
 完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
 

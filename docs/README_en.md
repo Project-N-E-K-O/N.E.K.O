@@ -523,11 +523,15 @@ N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** s
 | ✅ Collected | ❌ Never collected |
 | --- | --- |
 | LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
-| Model name, call type (`conversation` / `memory` / …) | Username, user ID, API key, GitHub ID |
+| Model name, call type (`conversation` / `memory` / …) | Username, API key, GitHub ID |
 | Call counts, error counts | IP address, geolocation, MAC, hardware serial |
-| Pseudonymous device identifier `SHA256(machine_id + install_path)` (one-way hash, irreversible) | Any PII that could be traced back to a person |
+| App version, A/B branch, locale, timezone, distribution channel (`source` / `release` / `steam`) | File paths, cookies, browser fingerprints |
+| Pseudonymous device identifier — primary: `SHA256(OS_machine_id ‖ namespace)`; fallback: `SHA256(uuid.getnode() ‖ install_path ‖ namespace)`. During the migration window, both new and legacy IDs are sent so the server can fold cohorts | Any PII that could be traced back to a person |
+| **Only on Steam releases when the user is logged into the Steam client**: Steam64 user ID (the public numeric ID visible in your Steam profile URL) | Any other account-system IDs (GitHub / Google / OpenAI / …) |
 
-> About the **pseudonymous device identifier**: it is a one-way SHA-256 of the OS machine-id concatenated with the install path. It is irreversible and contains no user data — we cannot use it to identify an individual. However, the same machine + same install will reproduce the same identifier, so under GDPR / PIPL classification it is a *pseudonymous* identifier rather than fully anonymous data. We use it only for deduplicated DAU counting and version-compatibility attribution.
+> **About the pseudonymous device identifier**: one-way SHA-256, irreversible, contains no user data. The same machine (same OS install) reproduces the same identifier, so under GDPR / PIPL it counts as a *pseudonymous identifier*, not fully anonymous data. Used only for deduplicated DAU counting and version-compatibility attribution.
+>
+> **About Steam64**: this is the public numeric ID that the Steam client exposes to any third-party SDK once you are logged in (the trailing number in your Steam profile URL is exactly it). It contains no email, phone number, or real name, but it is stable across sessions, so we list it honestly under "Collected." **If you do not want it sent, just run from source (the source distribution channel is `source` and never calls the Steam SDK), or use `DO_NOT_TRACK=1` to disable everything.**
 
 Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most ~once per 60 seconds (shares the same throttling timer as local disk-flush) — no impact on the hot path.
 
