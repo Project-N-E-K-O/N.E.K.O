@@ -6175,10 +6175,30 @@ def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
                 return image_data
 
             rgb = img.convert('RGB')
-            top_mean = rgb.crop((0, 0, width, header_height)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+            header_region = rgb.crop((0, 0, width, header_height))
+            top_mean = header_region.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
             header_color = (64, 197, 241)
             if max(abs(top_mean[i] - header_color[i]) for i in range(3)) > 24:
                 return image_data
+
+            # Avoid mistaking an ordinary blue illustration/background for the
+            # legacy solid-color name header.
+            sample = header_region.resize((16, 16), Image.Resampling.BOX)
+            pixels = list(sample.getdata())
+            channel_spread = max(
+                max(px[i] for px in pixels) - min(px[i] for px in pixels)
+                for i in range(3)
+            )
+            if channel_spread > 28:
+                return image_data
+
+            # The old header usually has a visible color break at the body.
+            # If the next band is effectively the same blue, keep the image.
+            body_band = rgb.crop((0, header_height, width, min(height, header_height * 2)))
+            if body_band.size[1] > 0:
+                body_mean = body_band.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+                if max(abs(body_mean[i] - header_color[i]) for i in range(3)) < 10:
+                    return image_data
 
             cropped = img.convert('RGBA').crop((0, header_height, width, height))
             normalized = cropped.resize((width, height), Image.Resampling.LANCZOS)
