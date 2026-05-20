@@ -51,6 +51,11 @@ _PROCESS_START_MONO = time.monotonic()
 _HEALTH_RING: deque[dict[str, Any]] = deque(maxlen=200)
 _WATCHDOG_TASK: asyncio.Task | None = None
 _WATCHDOG_INTERVAL_SECONDS = 5 * 60  # 5 分钟
+# 「deep」字段（gc.get_objects 45ms + num_threads 8ms in Windows）单 tick 阻塞
+# 50ms+ 且 C 调用不释放 GIL，to_thread 也救不了 main thread。降频到 30min
+# 一次（每 6 个 watchdog tick），让 5/6 的 tick 完全无感（<5ms 阻塞）。
+_DEEP_TICK_EVERY_N = 6
+_watchdog_tick_count = 0
 
 # psutil.Process 复用：cpu_percent(None) 必须**用同一个 Process 实例**多次调用，
 # 第一次返回 0（建立基线），之后每次返回距上次的 CPU 利用率%。每次 new Process
@@ -103,14 +108,16 @@ def _safe_rss_mb() -> float | None:
 
 
 def _safe_psutil_extras() -> dict[str, Any]:
-    """补 psutil 能给的几个长跑泄漏经典指标：cpu%、线程数、Win handle/POSIX fd。
+    """补 psutil 能给的廉价 psutil 指标：cpu%、Win handle/POSIX fd。
+
+    所有调用都 < 0.01 ms（Windows 实测）。``num_threads()`` 在 Windows 是
+    ~8 ms 系统调用，挪到 ``_safe_psutil_heavy()`` 走 deep tick。
 
     - cpu_percent: **原始问题的金线指标**——任务管理器看到 31.9% 就是这个。
       ⚠️ 关键归一化：``proc.cpu_percent(None)`` 用 UNIX 语义（单核 100% = 100，
       多核并行可 > 100%），但任务管理器显示「占总 CPU 的百分比」（8 核单核
       打满 = 12.5%）。为了曲线**直接对得上用户截图**，除以 ``cpu_count``。
       另外报 ``cpu_percent_raw`` 留 UNIX 原值，方便要看「占了几个核」的场景。
-    - num_threads: 线程泄漏 cheap 检测。
     - num_handles / num_fds: Windows 句柄 / POSIX fd 泄漏。重启即恢复的 case
       多数对得上这个。先试 Windows 的 num_handles，再试 POSIX 的 num_fds，
       都拿不到就 None。
@@ -119,7 +126,6 @@ def _safe_psutil_extras() -> dict[str, Any]:
         "cpu_percent": None,       # 任务管理器规模（占总 CPU 百分比）
         "cpu_percent_raw": None,   # psutil 原始值（占单核百分比，多核可 > 100）
         "cpu_count": None,
-        "num_threads": None,
         "num_handles": None,
     }
     proc = _get_psutil_process()
@@ -135,10 +141,6 @@ def _safe_psutil_extras() -> dict[str, Any]:
         out["cpu_percent"] = raw / cpu_count
     except Exception:
         pass
-    try:
-        out["num_threads"] = proc.num_threads()
-    except Exception:
-        pass
     # Windows: num_handles; POSIX: num_fds. psutil 在错误平台抛 AttributeError。
     try:
         out["num_handles"] = proc.num_handles()
@@ -147,6 +149,21 @@ def _safe_psutil_extras() -> dict[str, Any]:
             out["num_handles"] = proc.num_fds()
         except Exception:
             pass
+    return out
+
+
+def _safe_psutil_heavy() -> dict[str, Any]:
+    """psutil 慢调用——``num_threads()`` 在 Windows 8 ms 系统调用。
+
+    Deep tick 专用，不走每次 watchdog 周期。"""
+    out: dict[str, Any] = {"num_threads": None}
+    proc = _get_psutil_process()
+    if proc is None:
+        return out
+    try:
+        out["num_threads"] = proc.num_threads()
+    except Exception:
+        pass
     return out
 
 
@@ -283,8 +300,12 @@ def _safe_proactive_history_size() -> dict[str, int]:
     return out
 
 
-def _collect_snapshot() -> dict[str, Any]:
-    """单次快照采集。每个字段独立 try 过——任意一项炸了不影响其他。"""
+def _collect_snapshot(include_deep: bool = True) -> dict[str, Any]:
+    """单次快照采集。每个字段独立 try 过——任意一项炸了不影响其他。
+
+    ``include_deep`` 控制是否跑慢字段（``gc.get_objects()`` 45 ms +
+    ``num_threads()`` 8 ms 在 Windows）。Watchdog 5/6 tick 用 False，剩 1/6
+    tick 用 True。HTTP endpoint 按需调用，默认 True 给完整数据。"""
     snap: dict[str, Any] = {
         "ts": time.time(),
         "uptime_sec": time.monotonic() - _PROCESS_START_MONO,
@@ -297,12 +318,15 @@ def _collect_snapshot() -> dict[str, Any]:
     snap["rss_mb"] = _safe_rss_mb()
     # psutil extras 一次 dict 展平进顶层，方便画曲线时直接索引同级 key。
     snap.update(_safe_psutil_extras())
-    snap["gc_object_top"] = _safe_gc_object_top()
     snap["conv_history"] = _safe_conv_history_lengths()
     snap["tts_queue_size"] = _safe_tts_queue_sizes()
     snap["is_responding"] = _safe_is_responding_map()
     snap["ack_waiters"] = _safe_ack_waiters_size()
     snap["proactive_history"] = _safe_proactive_history_size()
+    if include_deep:
+        # Deep 字段——~50 ms 阻塞但有 30 min 间隔，长跑曲线仍能画时序。
+        snap["gc_object_top"] = _safe_gc_object_top()
+        snap.update(_safe_psutil_heavy())
     return snap
 
 
@@ -405,18 +429,34 @@ def _absorb_recent_client_payload(server_snap: dict[str, Any]) -> None:
 
 
 async def _watchdog_loop() -> None:
-    """5-min 周期采样。任何单轮异常吞掉继续——多日跑下来不能因为一次失败掉队。"""
+    """5-min 周期采样。任何单轮异常吞掉继续——多日跑下来不能因为一次失败掉队。
+
+    ⚠️ 关键：``_collect_snapshot()`` 是同步的，里面 ``gc.get_objects()`` 在
+    N.E.K.O 实际堆下扫 28w+ 对象耗时 ~55 ms，``psutil`` / file IO 也有零星
+    几 ms。直接 ``snap = _collect_snapshot()`` 会**阻塞 event loop 50-100 ms**
+    —— 这段时间所有 async 操作（语音 chunk 处理、TTS streaming、WS ping/pong）
+    都被推迟。所以必须用 ``asyncio.to_thread`` 把 collect 跑到 thread pool，
+    event loop 可以继续工作。append/log 操作（≤1ms）继续在 loop 里跑。"""
     # 启动后先睡一段，避开冷启动 noise（asyncio task 数在 startup 阶段会高一下）。
     try:
         await asyncio.sleep(60)
     except asyncio.CancelledError:
         return
+    global _watchdog_tick_count
     while True:
         try:
-            snap = _collect_snapshot()
+            # Deep tick 频率：每 _DEEP_TICK_EVERY_N 次跑一次完整 snapshot（含 gc
+            # 和 num_threads，那部分 ~50 ms 阻塞）。其他 tick 只跑 cheap 字段（~3 ms）。
+            # ⚠️ Python C 函数（gc / Windows API）不释放 GIL：即便 to_thread，
+            # main thread 仍在 GIL 切换间隔（默认 5 ms）内被卡。to_thread 还是
+            # 必要的——能让 main thread 在 worker 主动让出时见缝插针。
+            include_deep = (_watchdog_tick_count % _DEEP_TICK_EVERY_N) == 0
+            _watchdog_tick_count += 1
+            snap = await asyncio.to_thread(_collect_snapshot, include_deep)
             _absorb_recent_client_payload(snap)
             _HEALTH_RING.append(snap)
-            _append_to_log(snap)
+            # _append_to_log 含 stat + rotate + 文件 IO，可能十几 ms：也丢 thread。
+            await asyncio.to_thread(_append_to_log, snap)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -450,8 +490,11 @@ async def debug_health() -> dict[str, Any]:
     """返回当前快照 + 最近 ring buffer。
 
     Ring buffer 让用户不用等到下一个 5-min tick——任意时刻请求都能拿到
-    最近 16 小时的曲线，刷新即用。"""
-    current = _collect_snapshot()
+    最近 16 小时的曲线，刷新即用。
+
+    同 watchdog：``_collect_snapshot()`` 同步且重（gc.get_objects 50-100ms），
+    丢到 thread pool 避免阻塞 event loop。"""
+    current = await asyncio.to_thread(_collect_snapshot)
     return {
         "current": current,
         "ring": list(_HEALTH_RING),
