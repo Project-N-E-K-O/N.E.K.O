@@ -56,15 +56,15 @@ record()             即时写入内存，零 I/O
     ↓
 save() [每 60s]      本地 JSON 落盘 → 然后调用 _report_to_server()
     ↓
-_report_to_server()  检查距上次上报是否 ≥ 600s（10分钟）
+_report_to_server()  检查距上次上报是否 ≥ 60s（1分钟）
     ├── 否 → 累积到 _unsent_daily，跳过
     └── 是 → POST /api/v1/telemetry
               ├── 成功 → 清除 _unsent，更新时间戳
               └── 失败 → 放回 _unsent，下次重试
 
-∴ 每进程最多 1 req / 10min
-  3 个 server 进程 = 18 req/h/device
-  20k DAU × 18 × 8h ≈ 2.88M req/day ≈ 33 req/s peak
+∴ 每进程最多 1 req / 1min
+  3 个 server 进程 = 180 req/h/device
+  20k DAU × 180 × 8h ≈ 28.8M req/day ≈ 333 req/s peak
   SQLite WAL ~500 write/s → 单实例够用
 ```
 
