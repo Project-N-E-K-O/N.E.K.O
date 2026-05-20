@@ -10814,8 +10814,18 @@ function _companionApplyActions(state, actions) {
             }
             return;
         }
-        // refine_field / add_field 都走 ApplyToForm；它会回报到底是 update 了已有字段
-        // 还是新建了一行，我们用这个区分给用户更精确的反馈。
+        // refine_field 严格要求字段已存在 —— LLM 偶尔会把目标字段名打错 / 大
+        // 小写漂移（"Personality archetype" vs "Personality Archetype"），
+        // 如果直接走 ApplyToForm 那条「找不到就创建」分支，会静默新建一条
+        // 重复字段然后被 autoSave 持久化，留下脏 schema。把这种 typo case
+        // 当 skipped 处理，让用户能看见。
+        // add_field 反过来：本意就是新增，找不到才正常。
+        if (a.type === 'refine_field') {
+            if (!_findFieldTextareaByName(state.form, a.field_key)) {
+                skippedTags.push(a.field_key);
+                return;
+            }
+        }
         const single = {};
         single[a.field_key] = a.value;
         const res = _cardAssistApplyToForm(state.form, single, [a.field_key],
