@@ -56,7 +56,7 @@
         "message": "다음에 컴퓨터를 켜면 N.E.K.O가 자동으로 준비되어 직접 실행하지 않아도 됩니다.",
         "note": "현재 사용자에게만 적용되며 나중에 언제든지 끌 수 있습니다.",
         "startNow": "자동 실행 켜기",
-        "later": "나중에",
+        "later": "나중에 알려줘",
         "never": "다시 묻지 않기",
         "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요.",
         "requiresApproval": "먼저 시스템 설정에서 자동 실행을 승인해야 합니다. 승인 후 적용됩니다."
@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTS 오디오 워터마크(비프음)가 감지되었습니다. 워터마크를 비활성화하려면 Zhipu 콘솔에서 수동으로 설정하세요.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL이 설정되지 않았습니다. API 설정에서 커스텀 TTS를 활성화하고 설정하세요.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL은 localhost여야 합니다",
-        "TTS_AUDIO_API_KEY_MISSING": "오디오 API 키(AUDIO_API_KEY)가 설정되지 않았습니다",
+        "TTS_AUDIO_API_KEY_MISSING": "선택한 음성 제공업체의 API Key가 설정되지 않았습니다. API 설정에서 해당 Key를 입력하세요.",
         "TTS_VOICE_NOT_REGISTERED": "이 캐릭터에 등록된 음성이 없습니다",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "필수 매개변수가 누락되었습니다",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL을 입력하세요",
@@ -1032,6 +1032,10 @@
             "cancel": "취소",
             "continue": "계속 저장"
         },
+        "aliyunUsApiWarning": {
+            "title": "Alibaba 미국 API 안내",
+            "message": "현재 Alibaba의 미국 API를 사용 중입니다. 이 API는 TTS와 실시간 음성을 지원하지 않으므로 Alibaba 싱가포르 API로 변경하는 것을 권장합니다."
+        },
         "conversationModelConfig": "텍스트 대화 모델 구성",
         "summaryModelConfig": "요약 모델 구성",
         "correctionModelConfig": "수정 모델 구성",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "API 설정으로 이동",
         "noApiKeyPrompt": "복제 기능에 사용할 수 있는 API 키가 아직 설정되지 않았습니다. 설정하시겠습니까?",
         "dismissNoApiPrompt": "나중에",
-        "alibabaApiRequired": "이 기능에는 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
+        "alibabaApiRequired": "이 기능에는 Alibaba Bailian CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba Bailian API 키를 저장하세요 (Assist API 활성화 불필요). 또는 로컬 음성 서버를 구성하세요.",
+        "alibabaIntlApiRequired": "이 기능에는 Alibaba 국제판 CosyVoice 모델이 필요합니다. API 키 설정에서 Alibaba 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxApiRequired": "이 기능에는 MiniMax 모델 (China)이 필요합니다. API 키 설정에서 MiniMax API 키를 저장하세요 (Assist API 활성화 불필요).",
         "minimaxIntlApiRequired": "이 기능에는 MiniMax 모델(국제판)이 필요합니다. API 키 설정에서 MiniMax 국제판 API 키를 저장하세요 (Assist API 활성화 불필요).",
         "providerLabel": "음성 복제 제공업체",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba 국제판 CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (국제판)",
             "elevenlabs": "ElevenLabs"
@@ -1719,6 +1725,9 @@
         "maintenanceWaitingStatus": "서비스가 복구될 때까지 이 페이지에 머물면서 자동으로 다시 시도합니다.",
         "maintenanceWaitingSubtitle": "종료 중입니다. 종료 후 데이터를 이전하고 서비스가 자동으로 다시 시작됩니다.",
         "migrationPending": "완료되지 않은 이전 계획이 감지되었습니다. 서비스를 다시 사용할 수 있을 때까지 홈 화면은 계속 차단됩니다.",
+        "openPathFailed": "현재 환경에서는 폴더를 열 수 없습니다. 해당 경로로 직접 이동해 주세요.",
+        "openRetainedRoot": "이전 데이터 디렉터리 열기",
+        "openTargetRoot": "활성 경로 열기",
         "pickFolder": "폴더 선택",
         "pickFolderUnavailable": "시스템 폴더 선택기를 사용할 수 없습니다. 경로를 직접 입력해 주세요.",
         "pickFolderFailed": "폴더 선택기를 열지 못했습니다. 경로를 직접 입력해 주세요.",
@@ -1740,6 +1749,7 @@
         "progressVerifying": "이전 결과를 확인하는 중",
         "progressWaitingShutdown": "종료 중",
         "rebindPreviewNotice": "백엔드가 원래 경로에 다시 연결할 수 있음을 확인했습니다. 이제 그 경로로 다시 시작합니다. 이번에는 실행 데이터를 복사하지 않습니다.",
+        "recommendedPath": "추천 경로",
         "selectedPath": "선택한 경로",
         "recoveryRequired": "복구 가능한 저장소 상태가 감지되었습니다. 계속하기 전에 이번 실행에 사용할 저장 위치를 확인해 주세요.",
         "recoverySourceUnavailable": "원래 데이터 경로를 사용할 수 없습니다. 다시 연결하거나 권장 기본 경로로 명시적으로 전환해 주세요.",
@@ -1771,7 +1781,8 @@
         "targetFreeSpace": "대상 볼륨의 남은 공간",
         "targetLabel": "활성 경로",
         "unknownBytes": "아직 추정되지 않음",
-        "useCurrent": "현재 경로 그대로 사용하기"
+        "useCurrent": "현재 경로 그대로 사용하기",
+        "useRecommended": "추천 경로 사용하기"
     },
     "character": {
         "manager": "캐릭터 관리자",
@@ -2457,6 +2468,7 @@
             "AGENT_PRECHECK_PENDING": "연결 확인 중...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "데스크톱 표시 세션에 접근할 수 없습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 모듈이 로드되지 않았습니다",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",
@@ -3370,27 +3382,27 @@
     "characterModelNotSet": "현재 캐릭터에 모델이 설정되지 않았습니다",
     "cookiesLogin": {
         "title": "N.E.K.O 자격 증명 제어 센터",
-        "header": "🔐 자격 증명 획득 센터",
-        "bilibili": "📺 빌리빌리 (Bilibili)",
-        "douyin": "🎵 도인 (Douyin)",
-        "kuaishou": "🧡 쾌수 (Kuaishou)",
-        "weibo": "🌏 위보 (Weibo)",
-        "twitter": "🐦 트위터/X (Twitter/X)",
-        "reddit": "👽 레딧 (Reddit)",
-        "netease": "🎶 넷이즈 뮤직 (NetEase)",
+        "header": "자격 증명 획득 센터",
+        "bilibili": "빌리빌리 (Bilibili)",
+        "douyin": "도인 (Douyin)",
+        "kuaishou": "쾌수 (Kuaishou)",
+        "weibo": "위보 (Weibo)",
+        "twitter": "트위터/X (Twitter/X)",
+        "reddit": "레딧 (Reddit)",
+        "netease": "넷이즈 뮤직 (NetEase)",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
         "removeCredentials": "삭제",
         "confirmRemove": "{{platformName}}의 로그인 자격 증명을 정말로 지우시겠습니까?",
-        "credentialsRemoved": "✅ 자격 증명이 성공적으로 삭제되었습니다",
-        "credentialsSaved": "✅ {{platformName}} 자격 증명이 성공적으로 저장되었습니다!",
+        "credentialsRemoved": "자격 증명이 성공적으로 삭제되었습니다",
+        "credentialsSaved": "{{platformName}} 자격 증명이 성공적으로 저장되었습니다!",
         "credentialsRemovedFailed": "삭제 실패",
-        "removeFailed": "❌ 삭제 실패, 네트워크를 확인해주세요",
-        "requiredField": "⚠️ 필수 항목을 입력해주세요: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}]에 유효하지 않은 문자가 포함되어 있습니다...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}]에 앞/뒤 공백이 포함되어 자동으로 제거되었습니다. 확인 후 다시 제출해주세요",
-        "networkError": "❌ 네트워크 오류: 백엔드 서비스에 연결할 수 없습니다",
+        "removeFailed": "삭제 실패, 네트워크를 확인해주세요",
+        "requiredField": "필수 항목을 입력해주세요: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}]에 유효하지 않은 문자가 포함되어 있습니다...",
+        "whitespaceTrimmed": "[{{fieldName}}]에 앞/뒤 공백이 포함되어 자동으로 제거되었습니다. 확인 후 다시 제출해주세요",
+        "networkError": "네트워크 오류: 백엔드 서비스에 연결할 수 없습니다",
         "saveFailed": "저장 실패, 형식이 올바른지 확인해주세요",
         "pasteHere": "여기에 붙여넣기",
         "submitting": "안전하게 암호화하여 전송 중...",
@@ -3398,13 +3410,13 @@
         "statusLoadFailed": "상태 로드 실패",
         "thisPlatform": "이 플랫폼",
         "instructions": {
-            "bilibili": "📌 <b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "douyin": "📌 <b>대상:</b> <b>douyin.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "kuaishou": "📌 <b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "weibo": "📌 <b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "twitter": "📌 <b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "netease": "📌 <b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
+            "bilibili": "<b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "douyin": "<b>대상:</b> <b>douyin.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "kuaishou": "<b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "weibo": "<b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "twitter": "<b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "reddit": "<b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "netease": "<b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -3502,9 +3514,9 @@
         },
         "qrLogin": {
             "tryQR": "또는... QR 코드 로그인을 시도해 보시겠습니까?",
-            "openQR": "📱 QR 로그인 열기",
+            "openQR": "QR 로그인 열기",
             "loading": "QR 코드 가져오는 중...",
-            "scanTitle": "📱 {{platform}} QR 로그인",
+            "scanTitle": "{{platform}} QR 로그인",
             "qrCodeAlt": "로그인 QR 코드",
             "waiting": "스캔 대기 중...",
             "validFor": "QR 코드 유효 시간: {{seconds}}초",
@@ -3513,9 +3525,9 @@
             "retry": "재시도",
             "networkError": "네트워크 요청 실패, 연결을 확인하세요",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, 새로고침하세요",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, 새로고침하세요",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3525,7 +3537,7 @@
                 "waiting": "스캔 대기 중"
             },
             "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요",
-            "extractFailed": "⚠️ QR 로그인은 성공했지만 필드를 자동으로 추출하지 못했습니다. 수동으로 확인해 주세요."
+            "extractFailed": "QR 로그인은 성공했지만 필드를 자동으로 추출하지 못했습니다. 수동으로 확인해 주세요."
         }
     },
     "music": {

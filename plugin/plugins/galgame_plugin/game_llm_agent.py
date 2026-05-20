@@ -7,14 +7,32 @@ import re
 import time
 from typing import Any, Callable
 
+from .agent_consultation import (
+    CONSULT_REASON_CHOICE,
+    CONSULT_REASON_SCENE_CHANGE,
+    ConsultInputs,
+    MAX_CAT_OPINIONS,
+    build_consult_prompt,
+    decide_consultation,
+    inject_cat_opinion,
+    render_cat_opinions_for_strategy,
+    summarize_character_voice,
+)
+from .cross_scene_memory import (
+    empty_memory as _cross_scene_empty_memory,
+    render_for_push as _render_cross_scene_memory_for_push,
+    sanitize_memory as _cross_scene_sanitize,
+)
 from .host_agent_adapter import HostAgentAdapter, HostAgentError
 from .context_builder import (
     _compute_dynamic_line_limit,
     _context_window_bounds,
+    _fixed_character_pov_context as _build_fixed_character_pov_context,
     _matching_context_snapshot,
     _recency_ordered_context_lines,
     _scene_summary_seed_with_restored_context,
 )
+from .push_composer import PushComposer
 from .local_input_actuator import (
     VIRTUAL_MOUSE_DIALOGUE_CANDIDATES,
     perform_local_input_actuation,
@@ -43,6 +61,7 @@ from .models import (
     OCR_TRIGGER_MODE_AFTER_ADVANCE,
     OCR_TRIGGER_MODE_INTERVAL,
     GalgameLLMConfig,
+    STORE_CROSS_SCENE_MEMORY,
     SharedStatePayload,
     json_copy,
     sanitize_snapshot_state,
@@ -714,6 +733,8 @@ class GameLLMAgent:
         self._pending_choice_advice: dict[str, Any] | None = None
         self._summary_tasks: set[asyncio.Task[bool]] = set()
         self._summary_task_meta: dict[asyncio.Task[bool], dict[str, Any]] = {}
+        self._consultation_tasks: set[asyncio.Task[bool]] = set()
+        self._pending_consults: set[str] = set()
         self._summary_generation = 0
         self._summary_debug: dict[str, Any] = {}
         self._failure_memory: list[dict[str, Any]] = []
@@ -722,11 +743,20 @@ class GameLLMAgent:
         self._suggestion_reasons: dict[str, str] = {}
         self._observed_session_id = ""
         self._observed_session_fingerprint: dict[str, Any] = {}
+        # host-play-mode plan, steps 8 + 10 + 12 + 13.
+        self._last_cat_consult_ts: float = 0.0
+        self._lines_seen_for_consult: int = 0
+        self._last_consult_seen_line_count: int = 0
+        self._cat_opinions: list[dict[str, Any]] = []
+        self._push_seq_counter: int = 0
+        self._cross_scene_memory_dirty: bool = False
+        self._push_composer = PushComposer(logger=self._logger)
         self._last_session_transition_type = ""
         self._last_session_transition_reason = ""
         self._last_session_transition_fields: dict[str, Any] = {}
         self._session_transition_actuation_blocked = False
         self._observed_scene_id = ""
+        self._observed_route_id = ""
         self._observed_choice_marker = ""
         self._observed_context_boundary: dict[str, str] = {}
         self._observed_context_boundary_key = ""
@@ -751,6 +781,12 @@ class GameLLMAgent:
         self._last_delivered_summary_seq = 0
         self._last_delivered_summary_scene_id = ""
         self._agent_reply_lock: asyncio.Lock | None = None
+
+    def _reset_consult_state(self) -> None:
+        self._last_cat_consult_ts = 0.0
+        self._lines_seen_for_consult = 0
+        self._last_consult_seen_line_count = 0
+        self._pending_consults.clear()
 
     @property
     def _scene_memory(self) -> list[dict[str, Any]]:
@@ -890,6 +926,24 @@ class GameLLMAgent:
                 task.cancel()
         self._summary_tasks.clear()
         self._summary_task_meta.clear()
+
+    async def _cancel_consultation_tasks(self) -> None:
+        if not self._consultation_tasks:
+            return
+        current = asyncio.current_task()
+        tasks = [
+            task
+            for task in list(self._consultation_tasks)
+            if task is not current
+        ]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            self._consultation_tasks.discard(task)
+        self._pending_consults.clear()
 
     @staticmethod
     def _summary_delivery_key(
@@ -1060,17 +1114,21 @@ class GameLLMAgent:
         self._last_interruption = {}
         self._pending_choice_advice = None
         self._cancel_summary_tasks()
+        await self._cancel_consultation_tasks()
         self._failure_memory.clear()
         self._recent_local_inputs.clear()
         self._virtual_mouse_stats.clear()
         self._suggestion_reasons.clear()
         self._observed_session_id = ""
         self._observed_session_fingerprint = {}
+        self._reset_consult_state()
+        self._cat_opinions.clear()
         self._last_session_transition_type = ""
         self._last_session_transition_reason = ""
         self._last_session_transition_fields = {}
         self._session_transition_actuation_blocked = False
         self._observed_scene_id = ""
+        self._observed_route_id = ""
         self._observed_choice_marker = ""
         self._observed_context_boundary = {}
         self._observed_context_boundary_key = ""
@@ -1377,6 +1435,7 @@ class GameLLMAgent:
             self._planning_task.cancel()
             await asyncio.gather(self._planning_task, return_exceptions=True)
             self._planning_task = None
+        await self._cancel_consultation_tasks()
         self._planning_candidates = []
         self._planning_choice_signature = ()
         self._planning_started_at = 0.0
@@ -1507,6 +1566,7 @@ class GameLLMAgent:
         context: dict[str, Any],
         now: float,
     ) -> None:
+        context = self._with_strategy_memory_context(shared, context)
         try:
             suggestion = await asyncio.wait_for(
                 self._llm_gateway.suggest_choice(context),
@@ -3410,6 +3470,17 @@ class GameLLMAgent:
         snapshot: dict[str, Any],
         now: float,
     ) -> None:
+        if not self._should_push_choice(shared):
+            self._planning_choice_signature = build_choice_signature(current_choices)
+            await self._run_choice_planning_inline(
+                shared,
+                context=build_suggest_context(
+                    shared,
+                    config=self._context_config,
+                ),
+                now=now,
+            )
+            return
         candidates = await self._build_choice_candidates(
             current_choices,
             {"degraded": True, "choices": [], "diagnostic": "waiting_for_cat_advice"},
@@ -3606,6 +3677,155 @@ class GameLLMAgent:
             "diagnostic": str(pending.get("pre_choice_save_diagnostic") or ""),
             "input_source": self._current_input_source(shared),
             "selected_choice": json_copy(selected),
+        }
+
+    def _pending_cat_consultation_message(
+        self,
+        *,
+        message_id: str = "",
+    ) -> dict[str, Any] | None:
+        target_id = str(message_id or "").strip()
+        for outbound in reversed(self._outbound_messages):
+            if str(outbound.get("kind") or "") != "cat_consultation":
+                continue
+            if target_id and str(outbound.get("message_id") or "") != target_id:
+                continue
+            if str(outbound.get("acked_at") or ""):
+                continue
+            if str(outbound.get("status") or "") not in {"delivered", "completed"}:
+                continue
+            return outbound
+        return None
+
+    def _is_explicit_cat_consultation_reply(
+        self,
+        inbound: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        metadata = inbound.get("metadata") if isinstance(inbound.get("metadata"), dict) else {}
+        reply_to = str(metadata.get("reply_to_message_id") or "").strip()
+        if reply_to:
+            return self._pending_cat_consultation_message(message_id=reply_to)
+        sender_role = str(metadata.get("sender_role") or "").strip().lower()
+        if bool(metadata.get("consultation_reply")) and sender_role in {
+            "cat",
+            "catgirl",
+            "character",
+        }:
+            return self._pending_cat_consultation_message()
+        return None
+
+    def _with_cat_opinions_for_strategy(
+        self,
+        shared: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        cat_opinions = self._cat_opinion_snapshot(shared)
+        if not cat_opinions:
+            return context
+        local_shared = dict(shared)
+        local_shared["cat_opinions"] = cat_opinions
+        rendered = render_cat_opinions_for_strategy(local_shared)
+        if not rendered:
+            return context
+        enriched = dict(context)
+        enriched["cat_opinion_context"] = rendered
+        enriched["cat_opinions"] = json_copy(cat_opinions)
+        return enriched
+
+    def _with_strategy_memory_context(
+        self,
+        shared: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched = self._with_cat_opinions_for_strategy(shared, context)
+        pov_context = self._fixed_character_pov_context(
+            shared, applied_to="suggest_choice"
+        )
+        if pov_context:
+            enriched = {**dict(enriched), **pov_context}
+        memory = self._cross_scene_memory_snapshot(shared)
+        rendered = _render_cross_scene_memory_for_push(memory, max_chars=360)
+        if not rendered:
+            return enriched
+        enriched = dict(enriched)
+        enriched["cross_scene_memory"] = json_copy(memory)
+        enriched["cross_scene_memory_context"] = rendered
+        return enriched
+
+    def _cross_scene_memory_snapshot(self, shared: dict[str, Any]) -> dict[str, Any]:
+        plugin = getattr(self, "_plugin", None)
+        state = getattr(plugin, "_state", None) if plugin else None
+        state_memory = getattr(state, "cross_scene_memory", None) if state else None
+        if isinstance(state_memory, dict):
+            memory = _cross_scene_sanitize(state_memory)
+            if _render_cross_scene_memory_for_push(memory):
+                return memory
+        shared_memory = shared.get("cross_scene_memory") if isinstance(shared, dict) else None
+        return _cross_scene_sanitize(shared_memory if isinstance(shared_memory, dict) else None)
+
+    def _cat_opinion_snapshot(self, shared: dict[str, Any]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        shared_queue = shared.get("cat_opinions")
+        sources = []
+        if isinstance(shared_queue, list):
+            sources.append([dict(item) for item in shared_queue if isinstance(item, dict)])
+        sources.append(self._cat_opinions)
+        for source in sources:
+            for entry in source:
+                if not isinstance(entry, dict):
+                    continue
+                item = dict(entry)
+                key = (
+                    str(item.get("opinion") or ""),
+                    str(item.get("scene_id") or ""),
+                    str(item.get("reason") or ""),
+                    str(item.get("ts") or ""),
+                )
+                if not key[0] or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        return json_copy(merged[-MAX_CAT_OPINIONS:])
+
+    def _apply_pending_cat_consultation_reply(
+        self,
+        shared: dict[str, Any],
+        *,
+        message: str,
+        pending: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        text = str(message or "").strip()
+        if not text:
+            return None
+        metadata = pending.get("metadata") if isinstance(pending.get("metadata"), dict) else {}
+        scene_id = str(metadata.get("scene_id") or "")
+        reason = str(metadata.get("consultation_reason") or "")
+        record = self.receive_cat_opinion(
+            shared,
+            text,
+            scene_id=scene_id,
+            reason=reason,
+        )
+        if record is None:
+            return None
+        self._mark_message(
+            pending,
+            status="acked",
+            acked=True,
+            metadata={"cat_opinion_recorded": True},
+        )
+        self._recent_pushes = self._recent_push_records()
+        status = self._compute_status(shared)
+        self._last_status = status
+        return {
+            "action": "send_message",
+            "result": "已记录猫娘意见，将作为后续选择和推进策略的参考。",
+            "status": status,
+            "degraded": False,
+            "diagnostic": "",
+            "input_source": self._current_input_source(shared),
+            "cat_opinion": record,
         }
 
     def _build_retry_strategy(
@@ -4405,7 +4625,15 @@ class GameLLMAgent:
             }
         return None
 
-    async def send_message(self, shared: dict[str, Any], *, message: str) -> dict[str, Any]:
+    async def send_message(
+        self,
+        shared: dict[str, Any],
+        *,
+        message: str,
+        reply_to_message_id: str = "",
+        sender_role: str = "",
+        consultation_reply: bool = False,
+    ) -> dict[str, Any]:
         self._ensure_loop_affinity()
         inbound: dict[str, Any]
         reply_context: dict[str, Any] | None = None
@@ -4416,11 +4644,28 @@ class GameLLMAgent:
             kind="send_message",
             content=message,
             priority=8,
+            metadata={
+                "reply_to_message_id": str(reply_to_message_id or "").strip(),
+                "sender_role": str(sender_role or "").strip(),
+                "consultation_reply": bool(consultation_reply),
+            },
         )
         self._mark_message(inbound, status="processing")
         try:
             await self._interrupt_for_inbound_message(inbound)
             self._recover_retryable_error_if_ready(time.monotonic())
+            pending_consultation = self._is_explicit_cat_consultation_reply(inbound)
+            if pending_consultation is not None:
+                consultation_payload = self._apply_pending_cat_consultation_reply(
+                    shared,
+                    message=message,
+                    pending=pending_consultation,
+                )
+                if consultation_payload is not None:
+                    self._mark_message(inbound, status="completed", delivered=True)
+                    consultation_payload["message"] = json_copy(inbound)
+                    return consultation_payload
+
             control_payload = self._handle_low_frequency_control_message(shared, message=message)
             if control_payload is not None:
                 self._mark_message(inbound, status="completed", delivered=True)
@@ -4498,11 +4743,13 @@ class GameLLMAgent:
             self._last_session_transition_reason = transition_reason
             self._last_session_transition_fields = transition_fields
             await self._reset_runtime_state(cancel_host_task=True, clear_retry=True)
+            self._reset_consult_state()
             self._pending_choice_advice = None
             if transition_type == "real_session_reset":
                 self._cancel_summary_tasks()
                 self._scene_tracker.reset(scene_id=str(snapshot.get("scene_id") or ""))
                 self._summary_debug.clear()
+                self._cat_opinions.clear()
                 self._last_delivered_summary_key = ""
                 self._last_delivered_summary_seq = 0
                 self._last_delivered_summary_scene_id = ""
@@ -4531,6 +4778,7 @@ class GameLLMAgent:
             self._last_interruption = {}
             self._observed_choice_marker = ""
             self._observed_scene_id = str(snapshot.get("scene_id") or "")
+            self._observed_route_id = str(snapshot.get("route_id") or "")
             self._observed_session_id = session_id
             self._observed_session_fingerprint = current_fingerprint
             self._remember_context_boundary(context_boundary)
@@ -4564,7 +4812,10 @@ class GameLLMAgent:
 
         current_scene_id = str(snapshot.get("scene_id") or "")
         current_route_id = str(snapshot.get("route_id") or "")
-        scene_changed = current_scene_id and current_scene_id != self._observed_scene_id
+        scene_changed = bool(current_scene_id) and (
+            current_scene_id != self._observed_scene_id
+            or current_route_id != self._observed_route_id
+        )
         if scene_changed:
             if not allow_agent_side_effects:
                 return
@@ -4605,8 +4856,24 @@ class GameLLMAgent:
                     update_scene_memory=True,
                 )
             self._observed_scene_id = current_scene_id
+            self._observed_route_id = current_route_id
             self._scene_tracker.reset_summary(scene_id=current_scene_id)
             self._remember_context_boundary(context_boundary)
+            # host-play-mode plan, step 13: refresh cross-scene memory on every
+            # confirmed scene change. Heuristic merge today; LLM-driven update
+            # routed through this same hook once a summary-tier extraction op
+            # lands in LLMGateway.
+            try:
+                self._maybe_update_cross_scene_memory(
+                    shared,
+                    scene_id=current_scene_id,
+                    route_id=current_route_id,
+                )
+            except Exception:  # noqa: BLE001 — cross-scene merge must never break observe
+                self._logger.warning(
+                    "galgame cross_scene_memory update failed",
+                    exc_info=True,
+                )
 
         if allow_agent_side_effects:
             if not scene_changed:
@@ -4617,6 +4884,21 @@ class GameLLMAgent:
                     boundary=context_boundary,
                 )
             await self._maybe_push_periodic_scene_summary(shared, snapshot=snapshot)
+            # host-play-mode plan, steps 8 + 10: fire-and-forget consultation.
+            # Re-enqueues the consult prompt through _push_agent_message so the
+            # cat receives it via the normal channel; replies arrive via the
+            # existing inbound queue and update shared['cat_opinions'].
+            try:
+                await self._maybe_consult_cat(
+                    shared,
+                    snapshot=snapshot,
+                    scene_changed=bool(scene_changed),
+                )
+            except Exception:  # noqa: BLE001 — consultation must never break observe
+                self._logger.warning(
+                    "galgame cat consultation failed",
+                    exc_info=True,
+                )
 
         if selected is not None:
             if not allow_agent_side_effects:
@@ -4920,7 +5202,7 @@ class GameLLMAgent:
                     "summary_delivery_key": delivery_key,
                 },
             )
-            await self._push_agent_message(
+            delivered = await self._push_agent_message(
                 shared,
                 kind="scene_summary",
                 content=(
@@ -4936,26 +5218,18 @@ class GameLLMAgent:
                 route_id=route_id,
                 metadata=push_metadata,
             )
-            last_outbound = self._outbound_messages[-1] if self._outbound_messages else {}
-            delivered = (
-                isinstance(last_outbound, dict)
-                and str(last_outbound.get("kind") or "") == "scene_summary"
-                and str(last_outbound.get("status") or "") == "delivered"
-            )
             if not delivered:
                 self._summary_debug["last_drop"] = {
                     "reason": "push_not_delivered",
                     "scene_id": scene_id,
                     "trigger": trigger,
                     "summary_delivery_key": delivery_key,
-                    "last_outbound_status": str(last_outbound.get("status") or "")
-                    if isinstance(last_outbound, dict)
-                    else "",
+                    "last_outbound_status": "not_delivered",
                 }
                 self._logger.warning(
                     "galgame scene_summary drop: push_not_delivered scene=%s status=%s",
                     scene_id,
-                    str(last_outbound.get("status") or "") if isinstance(last_outbound, dict) else "",
+                    "not_delivered",
                 )
                 return False
             self._logger.info(
@@ -4966,6 +5240,24 @@ class GameLLMAgent:
             self._last_delivered_summary_seq = scheduled_seq
             self._last_delivered_summary_scene_id = scene_id
             self._scene_tracker.mark_scene_summary_delivered(scene_id, seq=scheduled_seq)
+            story_recorder = getattr(
+                self._plugin,
+                "_record_story_progress_from_scene_summary",
+                None,
+            )
+            if callable(story_recorder):
+                try:
+                    story_recorder(
+                        scene_id=scene_id,
+                        route_id=route_id,
+                        summary=str(summary_meta.get("scene_summary") or summary),
+                        push_seq=scheduled_seq,
+                    )
+                except Exception:
+                    self._logger.warning(
+                        "galgame story_so_far update failed",
+                        exc_info=True,
+                    )
             self._last_push_ts = time.monotonic()
             self._record_summary_task_event(
                 "after_push",
@@ -5309,6 +5601,11 @@ class GameLLMAgent:
         route_id: str,
         snapshot: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
+        pov_context = self._fixed_character_pov_context(
+            context, applied_to="scene_summary"
+        )
+        if pov_context:
+            context = {**dict(context), **pov_context}
         summary = ""
         key_points: list[dict[str, Any]] = []
         meta: dict[str, Any] = {"summary_source": "local_context"}
@@ -5534,9 +5831,18 @@ class GameLLMAgent:
         route_id: str,
         metadata: dict[str, Any] | None = None,
         priority: int = 6,
-    ) -> None:
+    ) -> bool:
         if not content:
-            return
+            return False
+        # host-play-mode plan, step 12: when fixed character mode is on, prepend
+        # the catgirl-facing character anchor so every push is self-contained
+        # (catgirl never needs prior pushes to make sense of the current one).
+        content = self._maybe_augment_with_cross_scene_memory(
+            shared, content, kind=kind
+        )
+        content = self._maybe_augment_with_character_anchor(
+            shared, content, kind=kind
+        )
         outbound = self._enqueue_outbound_message(
             kind=kind,
             content=content,
@@ -5551,7 +5857,8 @@ class GameLLMAgent:
             outbound["metadata"] = outbound_metadata
             self._mark_message(outbound, status="completed", delivered=False)
             self._recent_pushes = self._recent_push_records()
-            return
+            return False
+        delivered = False
         try:
             # push_message is synchronous in the plugin SDK; keep this call inline
             # so delivery failures can be caught and retried below.
@@ -5564,6 +5871,7 @@ class GameLLMAgent:
                 metadata=outbound_metadata,
             )
             self._mark_message(outbound, status="delivered", delivered=True)
+            delivered = True
         except Exception as exc:
             self._logger.warning("galgame outbound message delivery failed (will retry): {}", exc)
             try:
@@ -5583,12 +5891,23 @@ class GameLLMAgent:
                     delivered=True,
                     metadata={"retried": True, "initial_error": str(exc)},
                 )
+                delivered = True
             except Exception as retry_exc:
                 self._mark_message(outbound, status="failed", metadata={
                     "error": str(retry_exc), "initial_error": str(exc), "retried": True,
                 })
                 self._logger.warning("galgame outbound message retry also failed: {}", retry_exc)
         self._recent_pushes = self._recent_push_records()
+        # host-play-mode plan, step 19 / G4: record minimal push metadata for the
+        # `galgame_get_push_history` query entry. Never store original line text
+        # here — it goes to the privacy log path only.
+        self._record_push_history(
+            outbound,
+            kind=kind,
+            scene_id=scene_id,
+            content_len=len(content),
+        )
+        return delivered
 
     def _build_agent_reply_context(self, shared: dict[str, Any], *, prompt: str) -> dict[str, Any]:
         snapshot = sanitize_snapshot_state(shared.get("latest_snapshot", {}))
@@ -5753,6 +6072,14 @@ class GameLLMAgent:
             "push_policy": self._current_push_policy(shared),
             "standby_requested": self._explicit_standby,
         }
+        pov_context = self._fixed_character_pov_context(
+            shared, applied_to="agent_reply"
+        )
+        if pov_context:
+            context.update(pov_context)
+            public_context["fixed_character_pov"] = json_copy(
+                pov_context["fixed_character_pov"]
+            )
         context.update(self._vision_context_payload(shared, snapshot=snapshot))
         return context
 
@@ -6395,3 +6722,486 @@ class GameLLMAgent:
             return
         self._last_trace_message = message
         self._logger.info("galgame_agent {}", message)
+
+    # ------------------------------------------------------------------
+    # host-play-mode plan integration
+    # ------------------------------------------------------------------
+
+    def _character_mode_state(self) -> tuple[str, str]:
+        """Return ``(character_mode, character_fixed_name)`` from plugin state.
+
+        Always falls back to ``("off", "")`` when the plugin has not exposed
+        a state (e.g. in unit tests using a stub plugin).
+        """
+        plugin = getattr(self, "_plugin", None)
+        if plugin is None:
+            return "off", ""
+        state = getattr(plugin, "_state", None)
+        if state is None:
+            return "off", ""
+        mode = str(getattr(state, "character_mode", "off") or "off")
+        name = str(getattr(state, "character_fixed_name", "") or "")
+        return mode, name
+
+    def _resolve_character_profile(self, name: str) -> dict[str, Any] | None:
+        if not name:
+            return None
+        plugin = getattr(self, "_plugin", None)
+        state = getattr(plugin, "_state", None) if plugin else None
+        profiles = getattr(state, "character_profiles", None) if state else None
+        if isinstance(profiles, dict):
+            profile = profiles.get(name)
+            if isinstance(profile, dict):
+                return profile
+        # Prefer the same runtime-aware resolver used by the character-profile
+        # UI, so Agent restarts do not fall back to bound_game_id-only loading.
+        context_loader = getattr(plugin, "_load_character_profiles_for_current_context", None)
+        if context_loader is not None:
+            try:
+                load = context_loader()
+            except Exception:  # noqa: BLE001
+                load = None
+            profiles = (load or {}).get("profiles") if isinstance(load, dict) else None
+            if isinstance(profiles, dict):
+                profile = profiles.get(name)
+                if isinstance(profile, dict):
+                    return profile
+        # Lazy-activate when bound game is known but profiles not loaded yet.
+        activator = getattr(plugin, "_activate_character_profiles", None)
+        bound_game_id = (
+            str(getattr(state, "bound_game_id", "") or "") if state else ""
+        )
+        if activator and bound_game_id:
+            try:
+                load = activator(bound_game_id)
+            except Exception:  # noqa: BLE001
+                return None
+            profiles = (load or {}).get("profiles") if isinstance(load, dict) else None
+            if isinstance(profiles, dict):
+                profile = profiles.get(name)
+                if isinstance(profile, dict):
+                    return profile
+        return None
+
+    def _fixed_character_anchor_block(
+        self,
+        name: str,
+        profile: dict[str, Any] | None,
+        *,
+        level: str = "L1",
+    ) -> str:
+        if not name or not profile:
+            return ""
+        plugin = getattr(self, "_plugin", None)
+        manager_getter = getattr(plugin, "_get_character_profile_manager", None)
+        if manager_getter is None:
+            return ""
+        try:
+            manager = manager_getter()
+        except Exception:  # noqa: BLE001
+            return ""
+        state = getattr(plugin, "_state", None)
+        runtime_state = (
+            getattr(state, "character_runtime_state", {}) or {}
+        ).get(name) if state is not None else None
+        payload = manager.build_character_push_payload(
+            [name],
+            {name: profile},
+            runtime_states={name: runtime_state} if runtime_state else {},
+            level=level,
+            fixed_character=name,
+        )
+        try:
+            return self._push_composer.build_character_block(payload)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _fixed_character_pov_context(
+        self,
+        shared: dict[str, Any],
+        *,
+        applied_to: str,
+    ) -> dict[str, Any]:
+        mode, name = self._character_mode_state()
+        if mode != "fixed" or not name:
+            return {}
+        source = dict(shared) if isinstance(shared, dict) else {}
+        source["character_mode"] = mode
+        source["character_fixed_name"] = name
+        profile = self._resolve_character_profile(name)
+        if profile:
+            source["character_profiles"] = {name: profile}
+        plugin = getattr(self, "_plugin", None)
+        state = getattr(plugin, "_state", None) if plugin else None
+        if state is not None:
+            source.setdefault(
+                "character_profile_game_id",
+                str(getattr(state, "character_profile_game_id", "") or ""),
+            )
+            source.setdefault(
+                "character_profile_match_reason",
+                str(getattr(state, "character_profile_match_reason", "") or ""),
+            )
+            runtime_states = getattr(state, "character_runtime_state", {}) or {}
+            if isinstance(runtime_states, dict) and name in runtime_states:
+                source["character_runtime_state"] = {name: runtime_states.get(name)}
+        result = _build_fixed_character_pov_context(source)
+        pov = result.get("fixed_character_pov") if isinstance(result, dict) else None
+        if not isinstance(pov, dict):
+            return {}
+        pov = dict(pov)
+        pov["applied_to"] = applied_to
+        block = self._fixed_character_anchor_block(name, profile, level="L1")
+        if block:
+            pov["profile_context"] = block
+        return {"fixed_character_pov": pov}
+
+    def _maybe_augment_with_character_anchor(
+        self,
+        shared: dict[str, Any],
+        content: str,
+        *,
+        kind: str,
+    ) -> str:
+        """Prepend the catgirl-facing character anchor when fixed mode is on.
+
+        Only scene-context-like pushes get augmented — choice acks and similar
+        short replies pass through unchanged so the prepend cost is bounded.
+        """
+        if not content:
+            return content
+        if kind not in {
+            "scene_context",
+            "scene_summary",
+            "choice_reason",
+            "cat_consultation",
+            "proactive_notification",
+        }:
+            return content
+        mode, name = self._character_mode_state()
+        if mode != "fixed" or not name:
+            return content
+        profile = self._resolve_character_profile(name)
+        if not profile:
+            return content
+        character_block = self._fixed_character_anchor_block(name, profile, level="L1")
+        if not character_block:
+            return content
+        return f"{character_block}\n\n{content}"
+
+    def _maybe_augment_with_cross_scene_memory(
+        self,
+        shared: dict[str, Any],
+        content: str,
+        *,
+        kind: str,
+    ) -> str:
+        if not content:
+            return content
+        if kind not in {"scene_context", "scene_summary", "choice_reason"}:
+            return content
+        memory = self._cross_scene_memory_snapshot(shared)
+        rendered = _render_cross_scene_memory_for_push(memory, max_chars=360)
+        if not rendered:
+            return content
+        return f"Cross-scene memory (reference only):\n{rendered}\n\n{content}"
+
+    def _record_push_history(
+        self,
+        outbound: dict[str, Any] | None,
+        *,
+        kind: str,
+        scene_id: str,
+        content_len: int,
+    ) -> None:
+        plugin = getattr(self, "_plugin", None)
+        history = getattr(plugin, "_push_history", None) if plugin else None
+        if history is None:
+            return
+        self._push_seq_counter += 1
+        record = {
+            "push_seq": self._push_seq_counter,
+            "kind": kind,
+            "scene_id": scene_id,
+            "content_size": int(content_len),
+            "ts": time.time(),
+            "delivered": bool(
+                outbound and str(outbound.get("status") or "") == "delivered"
+            ),
+        }
+        try:
+            history.append(record)
+        except Exception:  # noqa: BLE001 — deque may have a maxlen
+            self._logger.warning(
+                "galgame push_history record append failed", exc_info=True
+            )
+
+    def _build_consult_inputs(
+        self,
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        scene_changed: bool,
+    ) -> ConsultInputs:
+        mode, name = self._character_mode_state()
+        profile_known = bool(self._resolve_character_profile(name)) if name else False
+        history_lines = shared.get("history_lines") or []
+        seen_total = len(history_lines) if isinstance(history_lines, list) else 0
+        delta = max(0, seen_total - self._last_consult_seen_line_count)
+        choices_raw = list(snapshot.get("choices") or [])
+        visible_choices = tuple(
+            str(item.get("text") or "").strip()
+            for item in choices_raw
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        )
+        return ConsultInputs(
+            character_mode=mode,
+            character_fixed_name=name,
+            scene_id=str(snapshot.get("scene_id") or ""),
+            visible_choices=visible_choices,
+            scene_changed=bool(scene_changed),
+            lines_since_last_consult=delta,
+            now=time.monotonic(),
+            last_consult_ts=float(self._last_cat_consult_ts or 0.0),
+            profile_known=profile_known,
+        )
+
+    async def _maybe_consult_cat(
+        self,
+        shared: dict[str, Any],
+        *,
+        snapshot: dict[str, Any],
+        scene_changed: bool,
+    ) -> None:
+        if not self._should_push_scene(shared):
+            return
+        inputs = self._build_consult_inputs(
+            shared, snapshot=snapshot, scene_changed=scene_changed
+        )
+        decision = decide_consultation(inputs)
+        if not decision.should_consult:
+            return
+        profile = self._resolve_character_profile(decision.character_name)
+        if not profile:
+            return
+        voice = summarize_character_voice(profile)
+        scene_summary = self._latest_scene_summary_text(snapshot)
+        recent_lines = self._latest_recent_line_texts(shared, limit=5)
+        prompt = build_consult_prompt(
+            reason=decision.reason,
+            character_name=decision.character_name,
+            character_voice_summary=voice,
+            scene_summary=scene_summary,
+            visible_choices=inputs.visible_choices,
+            recent_lines=recent_lines,
+        )
+        pending_key = ":".join(
+            [
+                str(snapshot.get("scene_id") or ""),
+                str(snapshot.get("route_id") or ""),
+                str(decision.character_name or ""),
+                str(decision.reason or ""),
+            ]
+        )
+        if pending_key in self._pending_consults:
+            return
+        self._pending_consults.add(pending_key)
+        # Fire-and-forget — the cat reply arrives via the existing inbound
+        # channel; the strategy builder consumes shared['cat_opinions'] later.
+        seen_after_consult = (
+            self._last_consult_seen_line_count + inputs.lines_since_last_consult
+        )
+        session_id = str(shared.get("active_session_id") or "")
+
+        async def _deliver_consult() -> bool:
+            if session_id and session_id != self._observed_session_id:
+                return False
+            return await self._push_agent_message(
+                shared,
+                kind="cat_consultation",
+                content=prompt,
+                scene_id=str(snapshot.get("scene_id") or ""),
+                route_id=str(snapshot.get("route_id") or ""),
+                priority=5,
+                metadata={
+                    "consultation": True,
+                    "consultation_reason": decision.reason,
+                    "consultation_character": decision.character_name,
+                },
+            )
+
+        def _advance_consult_state(task: asyncio.Task[bool]) -> None:
+            self._consultation_tasks.discard(task)
+            self._pending_consults.discard(pending_key)
+            try:
+                delivered = bool(task.result())
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("cat consultation delivery task failed: {}", exc)
+                return
+            if not delivered:
+                return
+            if session_id and session_id != self._observed_session_id:
+                return
+            self._last_cat_consult_ts = inputs.now
+            self._last_consult_seen_line_count = max(
+                self._last_consult_seen_line_count,
+                seen_after_consult,
+            )
+
+        task = asyncio.create_task(_deliver_consult())
+        self._consultation_tasks.add(task)
+        task.add_done_callback(_advance_consult_state)
+
+    def receive_cat_opinion(
+        self,
+        shared: dict[str, Any],
+        opinion: str,
+        *,
+        scene_id: str = "",
+        reason: str = "",
+    ) -> dict[str, Any] | None:
+        """Public entry point so the plugin's inbound handler can route a cat
+        reply into ``shared['cat_opinions']``. Idempotent on empty input."""
+        opinion_state = {"cat_opinions": json_copy(self._cat_opinions)}
+        record = inject_cat_opinion(
+            opinion_state, opinion=opinion, scene_id=scene_id, reason=reason
+        )
+        self._cat_opinions = json_copy(opinion_state.get("cat_opinions") or [])
+        shared["cat_opinions"] = json_copy(self._cat_opinions)
+        return record.to_dict() if record is not None else None
+
+    def _maybe_update_cross_scene_memory(
+        self,
+        shared: dict[str, Any],
+        *,
+        scene_id: str,
+        route_id: str,
+    ) -> None:
+        """Heuristic merge of the latest scene summary into ``cross_scene_memory``.
+
+        Today the merge is deterministic (no LLM): the most recent scene's
+        summary becomes ``last_key_event`` for every fixed-mode character known
+        to the plugin, and a plot thread is appended/refreshed for the scene.
+        The hook is already wired so the eventual ``summary``-tier extractor
+        from cross_scene_memory.update_cross_scene_memory only needs to be
+        swapped in.
+        """
+        plugin = getattr(self, "_plugin", None)
+        state = getattr(plugin, "_state", None) if plugin else None
+        if state is None:
+            return
+        scene_memory = list(self._scene_memory or [])
+        if not scene_memory:
+            return
+        recent = [
+            dict(entry)
+            for entry in scene_memory[-3:]
+            if isinstance(entry, dict)
+        ]
+        if not recent:
+            return
+        latest_summary = str(recent[-1].get("summary") or "").strip()
+        if not latest_summary:
+            return
+        existing = _cross_scene_sanitize(
+            getattr(state, "cross_scene_memory", None) or _cross_scene_empty_memory()
+        )
+        characters_state = (
+            getattr(state, "character_runtime_state", {}) or {}
+        )
+        merged_characters = dict(existing.get("characters", {}))
+        for name, runtime in (characters_state or {}).items():
+            current_entry = merged_characters.get(name, {})
+            merged_characters[name] = {
+                "arc": str(
+                    (runtime or {}).get("arc_stage")
+                    or current_entry.get("arc")
+                    or ""
+                ),
+                "last_key_event": latest_summary[:120],
+                "current_emotion": str(
+                    (runtime or {}).get("current_emotion")
+                    or current_entry.get("current_emotion")
+                    or ""
+                ),
+                "confidence": float(current_entry.get("confidence") or 0.5),
+            }
+        existing_threads = list(existing.get("plot_threads") or [])
+        route_label = route_id or "unknown"
+        scene_label = scene_id or "unknown"
+        thread_label = f"route::{route_label}::scene::{scene_label}"
+        thread_entry = next(
+            (t for t in existing_threads if str(t.get("thread") or "") == thread_label),
+            None,
+        )
+        if thread_entry is None:
+            existing_threads.append(
+                {
+                    "thread": thread_label,
+                    "status": latest_summary[:160],
+                    "key_scenes": [scene_id] if scene_id else [],
+                    "updated_at_seq": self._push_seq_counter,
+                    "confidence": 0.4,
+                }
+            )
+        else:
+            thread_entry["status"] = latest_summary[:160]
+            scenes = list(thread_entry.get("key_scenes") or [])
+            if scene_id and scene_id not in scenes:
+                scenes.append(scene_id)
+                thread_entry["key_scenes"] = scenes
+            thread_entry["updated_at_seq"] = self._push_seq_counter
+            thread_entry["confidence"] = max(
+                0.4, float(thread_entry.get("confidence") or 0.4)
+            )
+        existing_threads = existing_threads[-16:]  # bound the structure
+        updated = {
+            "characters": merged_characters,
+            "plot_threads": existing_threads,
+            "last_updated_seq": self._push_seq_counter,
+            "low_confidence_streak": int(existing.get("low_confidence_streak") or 0),
+        }
+        state.cross_scene_memory = updated
+        plugin._cached_snapshot = None  # type: ignore[attr-defined]
+        persist = getattr(plugin, "_persist", None)
+        if persist is not None:
+            try:
+                persist.persist_config_override(
+                    STORE_CROSS_SCENE_MEMORY,
+                    json_copy(updated),
+                )
+            except Exception:  # noqa: BLE001
+                self.logger.warning(
+                    "failed to persist galgame cross_scene_memory",
+                    exc_info=True,
+                )
+        self._cross_scene_memory_dirty = True
+
+    def _latest_scene_summary_text(self, snapshot: dict[str, Any]) -> str:
+        scene_id = str((snapshot or {}).get("scene_id") or "")
+        for entry in reversed(self._scene_memory or []):
+            if str(entry.get("scene_id") or "") == scene_id:
+                return str(entry.get("summary") or "")
+        if self._scene_memory:
+            return str(self._scene_memory[-1].get("summary") or "")
+        return ""
+
+    @staticmethod
+    def _latest_recent_line_texts(
+        shared: dict[str, Any], *, limit: int = 5
+    ) -> tuple[str, ...]:
+        history = shared.get("history_lines") if isinstance(shared, dict) else None
+        if not isinstance(history, list):
+            return ()
+        lines: list[str] = []
+        for entry in history[-limit:]:
+            if not isinstance(entry, dict):
+                continue
+            speaker = str(entry.get("speaker") or "").strip()
+            text = str(entry.get("text") or "").strip()
+            if not text:
+                continue
+            lines.append(f"{speaker}：{text}" if speaker else text)
+        return tuple(lines)

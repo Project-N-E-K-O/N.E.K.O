@@ -183,7 +183,7 @@ _DO_NOT_TRACK = any(
     for v in ("NEKO_DO_NOT_TRACK", "DO_NOT_TRACK")
 )
 
-# 上报间隔（3 分钟）
+# 上报间隔（60 秒）
 # 节流设计：
 #   record() → 即时写入内存（零 I/O）
 #   save()   → 每 60s 本地落盘，然后调用 _report_to_server()

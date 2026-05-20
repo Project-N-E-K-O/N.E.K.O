@@ -699,6 +699,18 @@
             </div>
         </div>
 
+        <!-- 阿里美国 API 提醒 -->
+        <div id="aliyun-us-api-warning-modal" class="modal-overlay" onclick="closeAliyunUsApiWarningModal()">
+            <div class="modal-warning" onclick="event.stopPropagation()">
+                <h3 data-i18n="api.aliyunUsApiWarning.title">阿里美国 API 提醒</h3>
+                <p data-i18n="api.aliyunUsApiWarning.message">当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API</p>
+                <div class="modal-buttons">
+                    <button type="button" class="btn" onclick="closeAliyunUsApiWarningModal()"
+                        data-i18n="api.wsWarning.confirm">我知道了</button>
+                </div>
+            </div>
+        </div>
+
         <!-- 清空自定义API确认弹窗 -->
         <div id="clear-custom-api-modal" class="modal-overlay" onclick="closeClearCustomApiModal()">
             <div class="modal-warning" onclick="event.stopPropagation()">

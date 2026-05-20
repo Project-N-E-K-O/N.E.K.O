@@ -303,6 +303,31 @@
                   </div>
                 </section>
 
+                <section class="plugin-control-card plugin-control-card-wide character-profile-control-card" aria-labelledby="pluginControlCharacterTitle">
+                  <div class="plugin-control-card-head">
+                    <p class="list-kicker">Character</p>
+                    <h3 id="pluginControlCharacterTitle" data-i18n="ui.character_profile.title">角色档案</h3>
+                  </div>
+                  <div class="plugin-control-card-body character-profile-control-body">
+                    <div class="field character-profile-status-field">
+                      <span data-i18n="ui.character_profile.mode_label">角色档案模式</span>
+                      <strong id="characterProfileStatusText" class="character-profile-status-text" data-i18n="ui.character_profile.status_waiting">等待状态刷新</strong>
+                      <small id="characterProfileHint" class="field-note" data-i18n="ui.character_profile.desc">固定某个角色作为 Agent 决策参考视角，或关闭角色档案。</small>
+                    </div>
+                    <label class="field">
+                      <span data-i18n="ui.character_profile.select_label">角色</span>
+                      <select id="characterProfileSelect">
+                        <option value="" data-i18n="ui.character_profile.select_placeholder">等待加载角色列表</option>
+                      </select>
+                    </label>
+                    <div class="plugin-control-actions inline-actions character-profile-actions">
+                      <button id="characterProfileFixedBtn" class="secondary" type="button" data-i18n="ui.character_profile.fixed_action">固定为该角色</button>
+                      <button id="characterProfileOffBtn" class="ghost" type="button" data-i18n="ui.character_profile.off_action">关闭角色档案</button>
+                      <button id="characterProfileRefreshBtn" class="ghost" type="button" data-i18n="ui.character_profile.refresh">刷新角色</button>
+                    </div>
+                  </div>
+                </section>
+
               </div>
               <div class="plugin-control-footer settings-save-row">
                 <button id="saveModeBtn" class="secondary" data-i18n="ui.button.save">保存设置</button>
@@ -442,13 +467,20 @@
                       <p id="rapidocrInstallDetail" class="result-note"></p>
                     </div>
                     <div id="rapidocrCardActions" class="install-card-actions"></div>
+                    <div id="rapidocrVersionBar" class="rapidocr-lang-bar rapidocr-version-bar" hidden>
+                      <span class="rapidocr-lang-label" data-i18n="ui.install.rapidocr.version_label">模型版本</span>
+                      <div class="rapidocr-version-buttons" role="radiogroup" aria-label="RapidOCR 模型版本" data-i18n-aria-label="ui.install.rapidocr.version_label">
+                        <button id="rapidocrVersionV4Btn" class="rapidocr-lang-btn rapidocr-version-btn" type="button" data-version="PP-OCRv4" role="radio" aria-checked="true" tabindex="0" data-i18n="ui.install.rapidocr.version_v4">PP-OCRv4</button>
+                        <button id="rapidocrVersionV5Btn" class="rapidocr-lang-btn rapidocr-version-btn" type="button" data-version="PP-OCRv5" role="radio" aria-checked="false" tabindex="-1" data-i18n="ui.install.rapidocr.version_v5">PP-OCRv5</button>
+                      </div>
+                    </div>
                     <div id="rapidocrLangBar" class="rapidocr-lang-bar" hidden>
                       <span class="rapidocr-lang-label" data-i18n="ui.install.rapidocr.lang.label">识别语言</span>
                       <div class="rapidocr-lang-buttons" role="radiogroup" aria-label="RapidOCR 识别语言" data-i18n-aria-label="ui.install.rapidocr.lang.group_label">
-                        <button id="rapidocrLangChBtn" class="rapidocr-lang-btn" type="button" data-lang="ch" role="radio" aria-checked="true" tabindex="0" aria-label="中文" data-i18n="ui.install.rapidocr.lang.ch_short" data-i18n-aria-label="ui.install.rapidocr.lang.ch">中</button>
-                        <button id="rapidocrLangJapanBtn" class="rapidocr-lang-btn" type="button" data-lang="japan" role="radio" aria-checked="false" tabindex="-1" aria-label="日文" data-i18n="ui.install.rapidocr.lang.japan_short" data-i18n-aria-label="ui.install.rapidocr.lang.japan">日</button>
-                        <button id="rapidocrLangKoreanBtn" class="rapidocr-lang-btn" type="button" data-lang="korean" role="radio" aria-checked="false" tabindex="-1" aria-label="韩文" data-i18n="ui.install.rapidocr.lang.korean_short" data-i18n-aria-label="ui.install.rapidocr.lang.korean">韩</button>
-                        <button id="rapidocrLangEnBtn" class="rapidocr-lang-btn" type="button" data-lang="en" role="radio" aria-checked="false" tabindex="-1" aria-label="英文" data-i18n="ui.install.rapidocr.lang.en_short" data-i18n-aria-label="ui.install.rapidocr.lang.en">EN</button>
+                        <button id="rapidocrLangChBtn" class="rapidocr-lang-btn" type="button" data-lang="ch" role="radio" aria-checked="true" tabindex="0" aria-label="中文" data-i18n="ui.install.rapidocr.lang.ch" data-i18n-aria-label="ui.install.rapidocr.lang.ch">中</button>
+                        <button id="rapidocrLangJapanBtn" class="rapidocr-lang-btn" type="button" data-lang="japan" role="radio" aria-checked="false" tabindex="-1" aria-label="日文" data-i18n="ui.install.rapidocr.lang.japan" data-i18n-aria-label="ui.install.rapidocr.lang.japan">日</button>
+                        <button id="rapidocrLangKoreanBtn" class="rapidocr-lang-btn" type="button" data-lang="korean" role="radio" aria-checked="false" tabindex="-1" aria-label="韩文" data-i18n="ui.install.rapidocr.lang.korean" data-i18n-aria-label="ui.install.rapidocr.lang.korean">韩</button>
+                        <button id="rapidocrLangEnBtn" class="rapidocr-lang-btn" type="button" data-lang="en" role="radio" aria-checked="false" tabindex="-1" aria-label="英文" data-i18n="ui.install.rapidocr.lang.en" data-i18n-aria-label="ui.install.rapidocr.lang.en">EN</button>
                       </div>
                       <label class="rapidocr-auto-detect-toggle">
                         <input type="checkbox" id="rapidocrAutoDetectCheck" checked>
@@ -625,6 +657,6 @@
   </div>
 
   <script src="./i18n.js?v=20260509-ui-i18n-storage-locale"></script>
-  <script src="./main.js?v=20260508-play-assist-hub"></script>
+  <script src="./main.js?v=20260519-character-profile-runtime-target"></script>
 </body>
 </html>

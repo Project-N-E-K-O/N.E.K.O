@@ -11,7 +11,7 @@ from typing import Any
 
 import portalocker
 
-from .models import (
+from ..models import (
     ADVANCE_SPEEDS,
     ADVANCE_SPEED_MEDIUM,
     MODES,
@@ -20,12 +20,18 @@ from .models import (
     OCR_CAPTURE_PROFILE_WINDOW_BUCKETS_KEY,
     STORE_BOUND_GAME_ID,
     STORE_ADVANCE_SPEED,
+    STORE_CHARACTER_FIXED_NAME,
+    STORE_CHARACTER_MODE,
+    STORE_CHARACTER_PROFILE_VERSION,
+    STORE_CHARACTER_PROFILES,
     STORE_CONTEXT_SNAPSHOT,
+    STORE_CROSS_SCENE_MEMORY,
     STORE_DEDUPE_WINDOW,
     STORE_EVENTS_BYTE_OFFSET,
     STORE_EVENTS_FILE_SIZE,
     STORE_LAST_ERROR,
     STORE_LAST_SEQ,
+    STORE_CHARACTER_RUNTIME_STATE,
     STORE_MEMORY_READER_TARGET,
     STORE_MODE,
     STORE_LLM_VISION_ENABLED,
@@ -41,13 +47,17 @@ from .models import (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_OCR_VERSION,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
     STORE_TUTORIAL_PROGRESS,
     build_ocr_capture_profile_bucket_key,
     compute_ocr_window_aspect_ratio,
+    json_copy,
+    normalize_rapidocr_ocr_version,
     parse_ocr_capture_profile_bucket_key,
+    _RAPIDOCR_OCR_VERSIONS,
 )
 
 
@@ -203,6 +213,7 @@ class GalgameStore:
         raw_rapidocr_lang = self._read(STORE_RAPIDOCR_LANG_TYPE, None)
         raw_rapidocr_auto = self._read(STORE_RAPIDOCR_AUTO_DETECT_LANG, None)
         raw_rapidocr_last_lang = self._read(STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG, None)
+        raw_rapidocr_ocr_version = self._read(STORE_RAPIDOCR_OCR_VERSION, None)
         rapidocr_lang = (
             raw_rapidocr_lang.strip().lower()
             if isinstance(raw_rapidocr_lang, str)
@@ -213,6 +224,7 @@ class GalgameStore:
             if isinstance(raw_rapidocr_last_lang, str)
             else ""
         )
+        rapidocr_ocr_version = normalize_rapidocr_ocr_version(raw_rapidocr_ocr_version)
 
         return {
             STORE_OCR_BACKEND_SELECTION: (
@@ -257,6 +269,11 @@ class GalgameStore:
             STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG: (
                 rapidocr_last_lang
                 if rapidocr_last_lang in {"ch", "japan", "korean", "en"}
+                else None
+            ),
+            STORE_RAPIDOCR_OCR_VERSION: (
+                rapidocr_ocr_version
+                if rapidocr_ocr_version in _RAPIDOCR_OCR_VERSIONS
                 else None
             ),
         }
@@ -648,6 +665,35 @@ class GalgameStore:
         )
         warnings.extend(memory_target_warnings)
 
+        def read_dict_store_value(key: str, label: str) -> dict[str, Any]:
+            raw_value = self._read(key, {})
+            if isinstance(raw_value, dict):
+                return json_copy(raw_value)
+            if raw_value not in ({}, None):
+                warnings.append(f"invalid {label} dropped: non-object")
+            return {}
+
+        raw_character_profile_version = self._read(STORE_CHARACTER_PROFILE_VERSION, "")
+        character_profile_version = (
+            raw_character_profile_version if isinstance(raw_character_profile_version, str) else ""
+        )
+        if raw_character_profile_version not in ("", character_profile_version):
+            warnings.append("invalid character_profile_version dropped: non-string")
+
+        raw_character_mode = self._read(STORE_CHARACTER_MODE, "off")
+        character_mode = (
+            raw_character_mode
+            if isinstance(raw_character_mode, str) and raw_character_mode in {"off", "fixed"}
+            else "off"
+        )
+        if raw_character_mode not in ("", character_mode):
+            warnings.append(f"invalid character_mode dropped: {raw_character_mode!r}")
+
+        raw_character_fixed_name = self._read(STORE_CHARACTER_FIXED_NAME, "")
+        character_fixed_name = raw_character_fixed_name if isinstance(raw_character_fixed_name, str) else ""
+        if raw_character_fixed_name not in ("", character_fixed_name):
+            warnings.append("invalid character_fixed_name dropped: non-string")
+
         restored = {
             STORE_BOUND_GAME_ID: self._read(STORE_BOUND_GAME_ID, ""),
             STORE_MODE: mode,
@@ -662,6 +708,21 @@ class GalgameStore:
             STORE_OCR_CAPTURE_PROFILES: ocr_capture_profiles,
             STORE_OCR_WINDOW_TARGET: ocr_window_target,
             STORE_MEMORY_READER_TARGET: memory_reader_target,
+            STORE_CHARACTER_PROFILES: read_dict_store_value(
+                STORE_CHARACTER_PROFILES,
+                "character_profiles",
+            ),
+            STORE_CHARACTER_PROFILE_VERSION: character_profile_version,
+            STORE_CHARACTER_MODE: character_mode,
+            STORE_CHARACTER_FIXED_NAME: character_fixed_name,
+            STORE_CROSS_SCENE_MEMORY: read_dict_store_value(
+                STORE_CROSS_SCENE_MEMORY,
+                "cross_scene_memory",
+            ),
+            STORE_CHARACTER_RUNTIME_STATE: read_dict_store_value(
+                STORE_CHARACTER_RUNTIME_STATE,
+                "character_runtime_state",
+            ),
         }
         if not isinstance(restored[STORE_BOUND_GAME_ID], str):
             warnings.append("invalid bound_game_id dropped: non-string")
@@ -686,6 +747,26 @@ class GalgameStore:
             STORE_ADVANCE_SPEED,
             advance_speed if advance_speed in ADVANCE_SPEEDS else ADVANCE_SPEED_MEDIUM,
         )
+
+    def persist_mode_settings(
+        self,
+        *,
+        bound_game_id: str,
+        mode: str,
+        push_notifications: bool,
+        advance_speed: str,
+        reader_mode: str,
+    ) -> None:
+        with self._locked_store():
+            self._load_values(force=True, locked=True)
+            self._values[STORE_BOUND_GAME_ID] = bound_game_id
+            self._values[STORE_MODE] = mode
+            self._values[STORE_PUSH_NOTIFICATIONS] = push_notifications
+            self._values[STORE_ADVANCE_SPEED] = (
+                advance_speed if advance_speed in ADVANCE_SPEEDS else ADVANCE_SPEED_MEDIUM
+            )
+            self._values[STORE_READER_MODE] = reader_mode
+            self._save_values(locked=True)
 
     def persist_runtime(
         self,

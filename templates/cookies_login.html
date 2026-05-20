@@ -12,7 +12,15 @@
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <script src="/static/js/window_controls.js" defer></script>
     <style>
-        :root { --primary: #4f46e5; --bg: #f4f5f7; --card-bg: #ffffff; --text: #333; }
+        :root {
+            --primary: #40c5f1;
+            --primary-hover: #23aee0;
+            --primary-shadow: rgba(64, 197, 241, 0.22);
+            --primary-shadow-strong: rgba(64, 197, 241, 0.3);
+            --bg: #f4f5f7;
+            --card-bg: #ffffff;
+            --text: #333;
+        }
         
         /* 基础重置 */
         * { -webkit-tap-highlight-color: transparent; /* 去除手机点击高亮色块 */ box-sizing: border-box; }
@@ -116,14 +124,14 @@
             font-family: monospace; font-size: 14px; 
             transition: all 0.2s; -webkit-appearance: none; appearance: none; /* 去除 iOS 默认圆角 */
         }
-        .field-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15); }
+        .field-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-shadow); }
         
         .submit-btn { 
             width: 100%; padding: 14px; margin-top: 10px; 
             font-size: 16px; font-weight: 600; border-radius: 10px; border: none; 
             background: var(--primary); color: white; cursor: pointer; 
             display: flex; justify-content: center; align-items: center; gap: 8px;
-            box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);
+            box-shadow: 0 4px 6px -1px var(--primary-shadow-strong);
         }
         .submit-btn:active { transform: scale(0.98); }
 
@@ -134,7 +142,6 @@
             display: flex; justify-content: space-between; align-items: center; 
         }
         .status-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
-        .status-icon-wrapper { width: 36px; height: 36px; border-radius: 10px; background: #f8fafc; display: flex; justify-content: center; align-items: center; font-size: 18px; flex-shrink: 0; border: 1px solid #f1f5f9;}
         .status-name { font-weight: 600; color: #334155; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .status-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
         .status-tag { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px; }
@@ -147,7 +154,7 @@
         @keyframes slideDown { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         /* ========================================= */
-        /* 📱 移动端深度适配 (Media Queries) */
+        /* 移动端深度适配 (Media Queries) */
         /* ========================================= */
         @media (max-width: 640px) {
             /* 1. 全屏沉浸式布局 */
@@ -200,14 +207,17 @@
         }
         /* 暗色模式样式 */
     [data-theme="dark"] {
-        --primary: #6366f1;
+        --primary: #2fa0cc;
+        --primary-hover: #176f91;
+        --primary-shadow: rgba(47, 160, 204, 0.32);
+        --primary-shadow-strong: rgba(47, 160, 204, 0.36);
         --bg: #1a1a1a;
         --card-bg: #2d2d2d;
         --text: #e0e0e0;
         --border: #404040;
         --input-bg: #3a3a3a;
         --input-border: #555;
-        --button-bg: #4f46e5;
+        --button-bg: #1b7fa5;
         --button-text: #ffffff;
         --tab-bg: #2a2a2a;
         --tab-text: #a0aec0;
@@ -266,7 +276,7 @@
 
     [data-theme="dark"] .field-group input:focus {
         border-color: var(--primary);
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+        box-shadow: 0 0 0 3px var(--primary-shadow);
     }
 
     [data-theme="dark"] .submit-btn {
@@ -275,7 +285,7 @@
     }
 
     [data-theme="dark"] .submit-btn:hover {
-        background: #4338ca;
+        background: var(--primary-hover);
     }
 
     [data-theme="dark"] .tutorial-banner {
@@ -335,11 +345,6 @@
         background: #4a0e0e;
     }
 
-    [data-theme="dark"] .status-icon-wrapper {
-        background: #4a5568;
-        border-color: #718096;
-    }
-
     [data-theme="dark"] .field-group label {
         color: var(--text);
     }
@@ -361,7 +366,7 @@
         }
 
         [data-theme="dark"] .tab-btn.active {
-            background: var(--primary);
+            background: var(--button-bg);
             color: white;
         }
     }
@@ -481,7 +486,7 @@
 </head>
 <body>
     <div class="container-header">
-        <h2 data-i18n="cookiesLogin.header">🔐 凭证获取中心</h2>
+        <h2 data-i18n="cookiesLogin.header">凭证获取中心</h2>
         <div class="neko-window-controls">
             <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                 <span class="neko-window-minimize-icon"></span>
@@ -497,20 +502,20 @@
     <div class="dashboard-wrapper">
     <div class="dashboard">
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('netease', this)" data-i18n="cookiesLogin.netease">🎶 网易云音乐</button>
-            <button class="tab-btn" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">📺 Bilibili</button>
-            <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">🎵 抖音</button>
-            <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">🧡 快手</button>
-            <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">🌏 微博</button>
-            <button class="tab-btn" onclick="switchTab('twitter', this)" data-i18n="cookiesLogin.twitter">🐦 Twitter/X</button>
-            <button class="tab-btn" onclick="switchTab('reddit', this)" data-i18n="cookiesLogin.reddit">👽 Reddit</button>
+            <button class="tab-btn active" onclick="switchTab('netease', this)" data-i18n="cookiesLogin.netease">网易云音乐</button>
+            <button class="tab-btn" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">Bilibili</button>
+            <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">抖音</button>
+            <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">快手</button>
+            <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">微博</button>
+            <button class="tab-btn" onclick="switchTab('twitter', this)" data-i18n="cookiesLogin.twitter">Twitter/X</button>
+            <button class="tab-btn" onclick="switchTab('reddit', this)" data-i18n="cookiesLogin.reddit">Reddit</button>
         </div>
 
         <div class="tab-content" id="main-panel">
             
             <div class="tutorial-banner">
                 <div class="tutorial-title">
-                    🎓 <span data-i18n="cookiesLogin.guide.title">新手通用获取教程</span>
+                    <span data-i18n="cookiesLogin.guide.title">新手通用获取教程</span>
                 </div>
                 <div class="tutorial-steps">
                     <!-- 修复：补全初始的 HTML 默认内容，防止网络缓慢或 i18n 失效时变成空白 -->

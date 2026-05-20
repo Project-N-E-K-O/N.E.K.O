@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -2430,6 +2431,19 @@ class OcrBackend(Protocol):
 
 
 def _target_window_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    from .capture_platform import is_linux, is_macos, is_windows  # noqa: PLC0415
+
+    if is_windows():
+        return _target_window_rect_win32(target)
+    if is_macos():
+        return _target_window_rect_macos(target)
+    if is_linux():
+        return _target_window_rect_linux(target)
+    raise RuntimeError(f"unsupported platform for window rect: {sys.platform}")
+
+
+def _target_window_rect_win32(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    """Windows: win32gui.GetWindowRect (original implementation, unchanged)."""
     import win32gui
 
     def _read_rect() -> tuple[int, int, int, int]:
@@ -2442,6 +2456,143 @@ def _target_window_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Invalid window dimensions: {width}x{height}")
     return rect
+
+
+def _target_window_rect_macos(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    """macOS: CGWindowListCopyWindowInfo via pyobjc.
+
+    Uses kCGWindowListOptionOnScreenOnly to avoid stale coordinates from
+    windows on inactive Spaces (consistent with _scan_windows_macos).
+    Raises if Quartz cannot resolve the real absolute window bounds.
+    Returning a synthetic (0, 0, width, height) rectangle would be treated as
+    screen coordinates by pixel-based backends and silently capture the wrong
+    region for non-origin windows.
+    """
+    try:
+        import Quartz  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("macos_quartz_not_available") from exc
+
+    window_list = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+    )
+    if not window_list:
+        raise RuntimeError("macos_target_window_rect_unavailable")
+
+    target_window_id = max(0, int(getattr(target, "hwnd", 0) or 0))
+    target_pid = max(0, int(getattr(target, "pid", 0) or 0))
+    target_title = _normalize_window_title(getattr(target, "title", "") or "")
+    pid_matches: list[Any] = []
+
+    def _window_rect(window: Any) -> tuple[int, int, int, int] | None:
+        bounds = window.get(Quartz.kCGWindowBounds)
+        if not isinstance(bounds, dict):
+            return None
+        x = int(bounds.get("X", 0))
+        y = int(bounds.get("Y", 0))
+        w = int(bounds.get("Width", target.width))
+        h = int(bounds.get("Height", target.height))
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, x + w, y + h)
+
+    for window in window_list:
+        window_id = max(0, int(window.get(Quartz.kCGWindowNumber, 0) or 0))
+        if target_window_id and window_id == target_window_id:
+            rect = _window_rect(window)
+            if rect is not None:
+                return rect
+        if target_pid and window.get(Quartz.kCGWindowOwnerPID) == target_pid:
+            pid_matches.append(window)
+
+    for window in pid_matches:
+        name = _normalize_window_title(window.get(Quartz.kCGWindowName, "") or "")
+        if target_title and name == target_title:
+            rect = _window_rect(window)
+            if rect is not None:
+                return rect
+
+    if not target_window_id and len(pid_matches) == 1:
+        rect = _window_rect(pid_matches[0])
+        if rect is not None:
+            return rect
+
+    raise RuntimeError("macos_target_window_rect_unavailable")
+
+
+def _target_window_rect_linux(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    """Linux: window rect via python-xlib (X11) or wmctrl.
+
+    Translates X11 relative coordinates to absolute screen coordinates
+    by walking up the window tree. Falls back to wmctrl subprocess and
+    raises if neither source can resolve the real absolute window bounds.
+    Returning a synthetic (0, 0, width, height) rectangle would be treated as
+    screen coordinates by pixel-based backends and silently capture the wrong
+    region for non-origin windows.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        from Xlib import display as xdisplay  # type: ignore[import-not-found]  # noqa: PLC0415
+
+        d = xdisplay.Display()
+        try:
+            root = d.screen().root
+            net_client_list = d.intern_atom("_NET_CLIENT_LIST")
+            raw = root.get_full_property(net_client_list, 0)
+            window_ids = raw.value if raw else []
+            for wid in window_ids:
+                if int(wid) == int(target.hwnd):
+                    window = d.create_resource_object("window", wid)
+                    geom = window.get_geometry()
+                    child = window
+                    abs_x, abs_y = 0, 0
+                    while child is not None:
+                        g = child.get_geometry()
+                        abs_x += g.x
+                        abs_y += g.y
+                        parent = child.query_tree().parent
+                        child = parent if parent != root else None
+                    w = max(0, int(geom.width))
+                    h = max(0, int(geom.height))
+                    if w > 0 and h > 0:
+                        return (abs_x, abs_y, abs_x + w, abs_y + h)
+        finally:
+            try:
+                d.close()
+            except Exception as exc:
+                logger.debug("linux xlib display close failed: %s", exc)
+    except Exception as exc:
+        logger.debug("linux xlib target rect lookup failed: %s", exc)
+
+    try:
+        import subprocess  # noqa: PLC0415
+
+        wmctrl_path = shutil.which("wmctrl")
+        if not wmctrl_path:
+            raise RuntimeError("wmctrl_not_available")
+        output = subprocess.check_output(
+            [wmctrl_path, "-lG"], text=True, timeout=5
+        )
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            try:
+                if int(parts[0], 16) == int(target.hwnd):
+                    x, y, w, h = (
+                        int(parts[2]),
+                        int(parts[3]),
+                        int(parts[4]),
+                        int(parts[5]),
+                    )
+                    if w > 0 and h > 0:
+                        return (x, y, x + w, y + h)
+            except (ValueError, IndexError):
+                continue
+    except Exception as exc:
+        logger.debug("linux wmctrl target rect lookup failed: %s", exc)
+
+    raise RuntimeError("linux_target_window_rect_unavailable")
 
 
 def _valid_screen_rect(rect: tuple[int, int, int, int]) -> bool:
@@ -2624,6 +2775,18 @@ def _run_with_thread_dpi_awareness(fn: Callable[[], tuple[int, int, int, int]]) 
 
 
 def _target_client_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    from .capture_platform import is_windows  # noqa: PLC0415
+
+    if is_windows():
+        return _target_client_rect_win32(target)
+    # macOS/Linux: most target games are borderless fullscreen or borderless
+    # windowed. Do not subtract hard-coded title-bar pixels by default; the
+    # capture path crops by OcrCaptureProfile ratios afterwards.
+    return _target_window_rect(target)
+
+
+def _target_client_rect_win32(target: DetectedGameWindow) -> tuple[int, int, int, int]:
+    """Windows: win32gui.GetClientRect + ClientToScreen (original, unchanged)."""
     import win32gui
 
     def _read_rect() -> tuple[int, int, int, int]:
@@ -2641,6 +2804,23 @@ def _target_client_rect(target: DetectedGameWindow) -> tuple[int, int, int, int]
 
 
 def _require_visible_capture_target(target: DetectedGameWindow, *, backend_kind: str) -> None:
+    from .capture_platform import is_windows  # noqa: PLC0415
+
+    if is_windows():
+        return _require_visible_capture_target_win32(target, backend_kind=backend_kind)
+    # macOS/Linux: best-effort check. PyAutoGUI/MSS can still capture
+    # windows that aren't strictly visible via Win32 semantics, so only
+    # validate the invariants we can observe portably.
+    if not target.hwnd and not target.pid:
+        raise RuntimeError(f"{backend_kind}: target_window_not_resolved_for_capture")
+    if getattr(target, "is_minimized", False):
+        raise RuntimeError(f"{backend_kind}: target_window_minimized_for_capture")
+
+
+def _require_visible_capture_target_win32(
+    target: DetectedGameWindow, *, backend_kind: str
+) -> None:
+    """Windows: existing win32gui visibility checks (unchanged from original)."""
     if not target.hwnd:
         raise RuntimeError(f"{backend_kind}: target_window_not_resolved_for_capture")
     try:
@@ -2655,7 +2835,9 @@ def _require_visible_capture_target(target: DetectedGameWindow, *, backend_kind:
     except RuntimeError:
         raise
     except Exception as exc:
-        raise RuntimeError(f"{backend_kind}: target_window_visibility_check_failed: {exc}") from exc
+        raise RuntimeError(
+            f"{backend_kind}: target_window_visibility_check_failed: {exc}"
+        ) from exc
 
 
 def _crop_window_image(
@@ -2782,6 +2964,40 @@ class MssCaptureBackend:
         )
 
 
+def _is_window_on_primary_monitor(
+    rect: tuple[int, int, int, int],
+) -> tuple[bool, str]:
+    """Check whether a window rect lies entirely within the primary monitor.
+
+    On Windows the primary monitor occupies (0, 0, primary_w, primary_h) in
+    virtual-screen coordinates.  pyautogui can only capture the primary
+    monitor, so any window that extends beyond this rectangle will produce
+    a corrupt (black / offset) screenshot.
+
+    The ``import pyautogui`` below is safe because this function is only
+    called from ``capture_frame()``, which is only reached after
+    ``is_available()`` has already confirmed pyautogui can be imported
+    (i.e. we are not headless / WSL / missing-DISPLAY).
+    """
+    import pyautogui
+
+    left, top, right, bottom = rect
+    primary_w, primary_h = pyautogui.size()
+
+    if left >= primary_w:
+        return False, "window_entirely_in_right_secondary_monitor"
+    if right <= 0:
+        return False, "window_entirely_in_left_secondary_monitor"
+    if top >= primary_h:
+        return False, "window_entirely_in_bottom_secondary_monitor"
+    if bottom <= 0:
+        return False, "window_entirely_in_top_secondary_monitor"
+    if left < 0 or top < 0 or right > primary_w or bottom > primary_h:
+        return False, "window_spans_across_primary_and_secondary_monitor"
+
+    return True, ""
+
+
 class PyAutoGuiCaptureBackend:
     """Cross-platform fallback in the spirit of pyautogui's screenshot path.
 
@@ -2789,13 +3005,11 @@ class PyAutoGuiCaptureBackend:
     kept as a defense-in-depth fallback in case mss fails (e.g. handle
     exhaustion).
 
-    Internally we call PIL ImageGrab.grab() directly with all_screens=True
-    instead of pyautogui.screenshot(), because pyautogui 0.9.54 wraps
-    ImageGrab without exposing all_screens — its capture silently truncates
-    to the primary monitor on multi-display setups, which would corrupt
-    OCR for any galgame window placed on a secondary screen or at negative
-    coordinates. The is_available() probe still gates on `import pyautogui`
-    so the backend's lifecycle still tracks the user-facing PyAutoGUI label.
+    The backend intentionally uses pyautogui.screenshot() so the user-facing
+    backend label matches the actual capture mechanism. pyautogui 0.9.54 only
+    captures the primary monitor on Windows, so capture_frame() rejects windows
+    outside the primary monitor and lets auto/smart mode fall through to dxcam
+    or mss.
     """
 
     kind = _CAPTURE_BACKEND_PYAUTOGUI
@@ -2820,17 +3034,23 @@ class PyAutoGuiCaptureBackend:
         return f"{target.process_name}({target.pid}) {target.title}"
 
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
-        from PIL import ImageGrab
+        import pyautogui
 
         _require_visible_capture_target(target, backend_kind=self.kind)
         rect = _target_screen_capture_rect(target)
         left, top, right, bottom = rect
-        # all_screens=True is Windows-only in Pillow but harmlessly ignored
-        # on macOS/Linux — covers multi-monitor layouts including secondary
-        # displays at negative coordinates relative to the primary screen.
-        image = ImageGrab.grab(
-            bbox=(int(left), int(top), int(right), int(bottom)),
-            all_screens=True,
+        # Reject windows that pyautogui cannot capture (not on primary monitor).
+        on_primary, reason = _is_window_on_primary_monitor(rect)
+        if not on_primary:
+            primary_w, primary_h = pyautogui.size()
+            raise RuntimeError(
+                f"pyautogui: {reason}"
+                f" rect=({left},{top},{right},{bottom})"
+                f" primary=({primary_w},{primary_h})"
+                f" -- switch to dxcam or mss backend for multi-monitor support"
+            )
+        image = pyautogui.screenshot(
+            region=(int(left), int(top), int(right - left), int(bottom - top))
         )
         if image.mode != "RGB":
             image = image.convert("RGB")
@@ -3048,6 +3268,19 @@ class Win32CaptureBackend:
         self._pyautogui_backend = PyAutoGuiCaptureBackend(logger=self._logger)
         self._printwindow_backend = PrintWindowCaptureBackend(logger=self._logger)
         self._dxcam_backend = DxcamCaptureBackend(logger=self._logger)
+        # Linux-only: HTTP bridge to Electron desktopCapturer for Wayland
+        # (and as XWayland/X11 fallback). Lazy import to avoid pulling
+        # httpx on platforms that don't need it.
+        from .capture_platform import is_linux  # noqa: PLC0415
+
+        if is_linux():
+            from .electron_capture import ElectronCaptureBackend  # noqa: PLC0415
+
+            self._electron_backend: CaptureBackend | None = ElectronCaptureBackend(
+                logger=self._logger
+            )
+        else:
+            self._electron_backend = None
         self._backends = self._build_backends()
         self._last_backend_lock = threading.RLock()
         self._last_backend_kind = ""
@@ -3077,20 +3310,87 @@ class Win32CaptureBackend:
         # backends. It's still reachable as an explicit user selection
         # (mainly for capturing occluded windows) and as the Smart-mode
         # background-target backend.
+        from .capture_platform import (  # noqa: PLC0415
+            is_linux,
+            is_linux_wayland_session,
+            is_win32_only_backend_kind,
+            is_windows,
+        )
+
+        def _filter(backends: list[CaptureBackend]) -> list[CaptureBackend]:
+            """Remove backends that require Win32 APIs on non-Windows hosts,
+            and append the Electron HTTP bridge as a last-resort entry on Linux
+            (needed for pure Wayland where MSS/PyAutoGUI return blank frames).
+            """
+            if is_windows():
+                return list(backends)
+            cross_platform = [
+                b
+                for b in backends
+                if not is_win32_only_backend_kind(str(getattr(b, "kind", "")))
+            ]
+            if is_linux() and self._electron_backend is not None:
+                if (
+                    is_linux_wayland_session()
+                    and self.selection
+                    in {_CAPTURE_BACKEND_AUTO, _CAPTURE_BACKEND_SMART}
+                ):
+                    # On Wayland, MSS/PyAutoGUI can import successfully yet
+                    # return black frames. Prefer Electron's portal-backed
+                    # path for automatic selections instead of treating those
+                    # import probes as capture viability.
+                    return [self._electron_backend]
+                # X11/XWayland: MSS/PyAutoGUI work; Electron is a tail fallback.
+                cross_platform.append(self._electron_backend)
+            return cross_platform
+
         if self.selection == _CAPTURE_BACKEND_DXCAM:
-            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+            return _filter([self._dxcam_backend, self._mss_backend, self._pyautogui_backend])
         if self.selection == _CAPTURE_BACKEND_MSS:
-            return [self._mss_backend, self._dxcam_backend, self._pyautogui_backend]
+            return _filter([self._mss_backend, self._dxcam_backend, self._pyautogui_backend])
         if self.selection == _CAPTURE_BACKEND_PYAUTOGUI:
-            return [self._pyautogui_backend, self._dxcam_backend, self._mss_backend]
+            return _filter([self._pyautogui_backend, self._dxcam_backend, self._mss_backend])
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
-            return [self._printwindow_backend, self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+            return _filter(
+                [
+                    self._printwindow_backend,
+                    self._dxcam_backend,
+                    self._mss_backend,
+                    self._pyautogui_backend,
+                ]
+            )
         if self.selection == _CAPTURE_BACKEND_SMART:
-            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend, self._printwindow_backend]
-        return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+            return _filter(
+                [
+                    self._dxcam_backend,
+                    self._mss_backend,
+                    self._pyautogui_backend,
+                    self._printwindow_backend,
+                ]
+            )
+        return _filter([self._dxcam_backend, self._mss_backend, self._pyautogui_backend])
 
     def _ordered_backends_for_target(self, target: DetectedGameWindow) -> list[CaptureBackend]:
+        from .capture_platform import is_linux, is_linux_wayland_session, is_windows  # noqa: PLC0415
+
+        is_windows_host = is_windows()
+        is_linux_host = is_linux()
+        is_wayland_host = is_linux_wayland_session() if is_linux_host else False
+        window_level_backends = [
+            backend
+            for backend in self._backends
+            if str(getattr(backend, "kind", "")) == "electron"
+        ]
+        pixel_backends = [
+            backend
+            for backend in self._backends
+            if str(getattr(backend, "kind", "")) not in {"electron", _CAPTURE_BACKEND_PRINTWINDOW}
+        ]
         if self.selection == _CAPTURE_BACKEND_PRINTWINDOW:
+            if not (
+                is_windows_host and self._printwindow_backend in self._backends
+            ):
+                return list(self._backends)
             # Explicit PrintWindow selection: user is opting into the only
             # backend that can capture occluded / background windows. If we
             # silently fell through to dxcam/mss/pyautogui on a background
@@ -3109,8 +3409,27 @@ class Win32CaptureBackend:
             return list(self._backends)
         if bool(getattr(target, "is_minimized", False)):
             raise RuntimeError("smart: target_window_minimized_for_capture")
+        if not is_windows_host:
+            if not is_linux_host:
+                return window_level_backends + pixel_backends
+            if bool(getattr(target, "is_foreground", False)):
+                return window_level_backends + pixel_backends
+            if not is_wayland_host:
+                return window_level_backends + pixel_backends
+            if window_level_backends:
+                return window_level_backends
+            raise RuntimeError("smart: background_capture_requires_window_backend")
         if bool(getattr(target, "is_foreground", False)):
-            return [self._dxcam_backend, self._mss_backend, self._pyautogui_backend]
+            foreground_backends = {
+                id(self._dxcam_backend),
+                id(self._mss_backend),
+                id(self._pyautogui_backend),
+            }
+            return [
+                backend
+                for backend in self._backends
+                if id(backend) in foreground_backends
+            ]
         # Background target: PrintWindow is the only backend that can plausibly
         # capture occluded windows (others read screen pixels and would grab
         # the overlapping window). Quality is unreliable; ocr_reader emits
@@ -3417,7 +3736,22 @@ def _default_window_scanner() -> list[DetectedGameWindow]:
 
 
 def _is_windows_platform() -> bool:
-    return os.name == "nt"
+    from .capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
+
+
+def _platform_scan_windows() -> list[DetectedGameWindow]:
+    """Cross-platform window enumeration entry point.
+
+    Delegates to capture_platform.scan_windows() which dispatches to the
+    correct backend per platform. Used as the non-Windows default for
+    OcrReaderManager._window_scanner. On Windows the manager keeps using
+    _default_window_scanner directly to preserve identity-based tests.
+    """
+    from .capture_platform import scan_windows  # noqa: PLC0415
+
+    return scan_windows()
 
 
 def _foreground_window_handle() -> int:
@@ -4737,9 +5071,19 @@ class OcrReaderManager:
         self._logger = logger
         self._config = config
         self._time_fn = time_fn or time.time
-        self._platform_fn = platform_fn or _is_windows_platform
-        self._window_scanner = window_scanner or _default_window_scanner
+        platform_checker = platform_fn or _is_windows_platform
+        is_windows_runtime = bool(platform_checker())
+        self._platform_fn = platform_checker
+        # Windows keeps _default_window_scanner (identity-preserving for tests).
+        # macOS/Linux use the cross-platform dispatcher in capture_platform.
+        self._window_scanner = window_scanner or (
+            _default_window_scanner if is_windows_runtime else _platform_scan_windows
+        )
         self._custom_capture_backend = capture_backend is not None
+        # Win32CaptureBackend works on all platforms: its _build_backends()
+        # filters out dxcam/printwindow on non-Windows. Linux X11 keeps the
+        # screen-pixel chain plus the optional Electron bridge fallback, while
+        # Wayland automatic selections use the Electron portal path directly.
         self._capture_backend = capture_backend or Win32CaptureBackend(
             logger=logger,
             selection=config.ocr_reader_capture_backend,
@@ -7214,7 +7558,10 @@ class OcrReaderManager:
         self,
         windows: list[DetectedGameWindow],
     ) -> tuple[list[DetectedGameWindow], list[DetectedGameWindow]]:
-        foreground_hwnd = _foreground_window_handle()
+        use_windows_foreground_api = bool(self._platform_fn())
+        foreground_hwnd = (
+            _foreground_window_handle() if use_windows_foreground_api else 0
+        )
         prepared: list[DetectedGameWindow] = []
         for window in windows:
             candidate = replace(window)
@@ -7226,8 +7573,11 @@ class OcrReaderManager:
             candidate.hwnd = max(0, int(candidate.hwnd or 0))
             candidate.area = max(0, int(candidate.area or 0))
             candidate.is_minimized = bool(candidate.is_minimized)
-            foreground_match, _ = _foreground_matches_target(foreground_hwnd, candidate)
-            candidate.is_foreground = foreground_match
+            if use_windows_foreground_api:
+                foreground_match, _ = _foreground_matches_target(foreground_hwnd, candidate)
+                candidate.is_foreground = foreground_match
+            else:
+                candidate.is_foreground = bool(candidate.is_foreground)
             candidate.score = float(max(candidate.area, 1))
             candidate = _classify_window_candidate(candidate)
             prepared.append(candidate)
@@ -7257,11 +7607,10 @@ class OcrReaderManager:
         *,
         force: bool = False,
     ) -> tuple[list[DetectedGameWindow], list[DetectedGameWindow]]:
-        if not self._platform_fn():
-            self._last_detected_windows = []
-            self._last_eligible_windows = []
-            self._last_excluded_windows = []
-            return [], []
+        # Window enumeration is now cross-platform via capture_platform.
+        # The injected _window_scanner dispatches per platform; non-Windows
+        # paths return [] gracefully (Wayland / missing pyobjc / etc.) so
+        # we always run the scan and let the inventory cache absorb empties.
         scanned = self._scan_raw_windows_cached(force=force)
         return self._prepare_window_inventory(scanned)
 
@@ -7288,15 +7637,31 @@ class OcrReaderManager:
             return _TickPreflightResult(result=result, should_return=True)
 
         if not self._platform_fn():
-            self._runtime = self._build_runtime(
-                status="idle",
-                detail="unsupported_platform",
-                plan=SelectedOcrBackendPlan(),
-            )
-            await self._end_session_if_needed(now)
-            result.warnings.append("ocr_reader is Windows-only")
-            result.runtime = self._runtime.to_dict()
-            return _TickPreflightResult(result=result, should_return=True)
+            # macOS / Linux: only refuse if the capture backend really
+            # has no live sub-backend. Win32CaptureBackend filters out
+            # dxcam/printwindow on these platforms and appends the
+            # Electron HTTP bridge on Linux, so is_available() reflects
+            # the actual cross-platform capability. Pure Wayland with
+            # no Electron endpoint reachable returns False here, and the
+            # user sees the documented unsupported_platform path.
+            backend = self._capture_backend
+            backend_alive = False
+            try:
+                backend_alive = bool(await asyncio.to_thread(backend.is_available))
+            except Exception:
+                backend_alive = False
+            if not backend_alive:
+                self._runtime = self._build_runtime(
+                    status="idle",
+                    detail="unsupported_platform",
+                    plan=SelectedOcrBackendPlan(),
+                )
+                await self._end_session_if_needed(now)
+                result.warnings.append(
+                    "ocr_reader: no capture backend available on this platform"
+                )
+                result.runtime = self._runtime.to_dict()
+                return _TickPreflightResult(result=result, should_return=True)
 
         backend_plan_started_at = self._time_fn()
         if self._custom_ocr_backend:
@@ -7371,7 +7736,10 @@ class OcrReaderManager:
                     should_return=True,
                 )
 
-        if not self._capture_backend.is_available():
+        capture_backend_available = await asyncio.to_thread(
+            self._capture_backend.is_available
+        )
+        if not capture_backend_available:
             self._runtime = self._build_runtime(
                 status="candidate",
                 detail="capture_backend_unavailable",
@@ -7402,11 +7770,15 @@ class OcrReaderManager:
         memory_reader_runtime: dict[str, Any],
         result: OcrReaderTickResult,
     ) -> _TickTargetContext:
-        foreground_hwnd_for_scan = _foreground_window_handle()
+        use_windows_foreground_api = bool(self._platform_fn())
+        foreground_hwnd_for_scan = (
+            _foreground_window_handle() if use_windows_foreground_api else 0
+        )
         force_window_scan = (
             self._last_selection.selection_detail == "locked_target_unavailable"
             or (
                 self._attached_window is not None
+                and use_windows_foreground_api
                 and foreground_hwnd_for_scan > 0
                 and not _foreground_matches_target(
                     foreground_hwnd_for_scan,
@@ -9871,11 +10243,17 @@ class OcrReaderManager:
                 else "no_eligible_window"
             )
             if selection.selection_mode == "auto":
-                foreground_hwnd = _foreground_window_handle()
+                use_windows_foreground_api = bool(self._platform_fn())
+                foreground_hwnd = (
+                    _foreground_window_handle() if use_windows_foreground_api else 0
+                )
                 for candidate in excluded:
-                    if candidate.is_foreground or (
-                        foreground_hwnd and candidate.hwnd == foreground_hwnd
-                    ):
+                    candidate_foreground = (
+                        bool(foreground_hwnd and candidate.hwnd == foreground_hwnd)
+                        if use_windows_foreground_api
+                        else bool(candidate.is_foreground)
+                    )
+                    if candidate_foreground:
                         selection.selection_detail = "foreground_window_needs_manual_confirmation"
                         break
             return selection
@@ -9969,18 +10347,26 @@ class OcrReaderManager:
             if selection.selection_mode == "auto":
                 selection.selection_detail = "locked_target_unavailable"
             return selection
-        foreground_hwnd = _foreground_window_handle()
-        if foreground_hwnd:
-            for candidate in windows:
-                if candidate.hwnd == foreground_hwnd:
-                    if not _is_confident_auto_window(candidate):
-                        if selection.selection_mode == "auto":
-                            selection.selection_detail = "foreground_window_needs_manual_confirmation"
-                        return selection
-                    selection.target = candidate
-                    if selection.selection_mode == "auto":
-                        selection.selection_detail = "foreground_window"
-                    return selection
+        use_windows_foreground_api = bool(self._platform_fn())
+        foreground_hwnd = (
+            _foreground_window_handle() if use_windows_foreground_api else 0
+        )
+        for candidate in windows:
+            candidate_foreground = (
+                bool(foreground_hwnd and candidate.hwnd == foreground_hwnd)
+                if use_windows_foreground_api
+                else bool(candidate.is_foreground)
+            )
+            if not candidate_foreground:
+                continue
+            if not _is_confident_auto_window(candidate):
+                if selection.selection_mode == "auto":
+                    selection.selection_detail = "foreground_window_needs_manual_confirmation"
+                return selection
+            selection.target = candidate
+            if selection.selection_mode == "auto":
+                selection.selection_detail = "foreground_window"
+            return selection
         if len(windows) == 1:
             configured_profile = _lookup_capture_profile(
                 self._capture_profiles,

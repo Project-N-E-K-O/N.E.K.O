@@ -56,7 +56,7 @@
         "message": "这样下次打开电脑后，N.E.K.O 会自动准备好，不用你再手动启动。",
         "note": "只会为当前用户开启，之后也可以随时关闭。",
         "startNow": "开启自启动",
-        "later": "稍后再说",
+        "later": "以后提醒",
         "never": "不再提示",
         "enableFailed": "暂时无法开启开机自启动，请稍后再试",
         "requiresApproval": "需要先在系统设置里批准开机自启动，批准后会自动生效"
@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ 检测到智谱CogTTS音频水印（滴滴声），如需去除水印请前往智谱控制台手动配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，请先在 API 设置中启用并配置自定义 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必须为 localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "未配置音频 API 密钥 (AUDIO_API_KEY)",
+        "TTS_AUDIO_API_KEY_MISSING": "未配置所选语音服务商的 API Key，请先在 API 设置中填写对应 Key",
         "TTS_VOICE_NOT_REGISTERED": "该角色未注册声音",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要参数",
         "TTS_GPT_SOVITS_URL_REQUIRED": "请填写 GPT-SoVITS API URL",
@@ -1032,6 +1032,10 @@
             "cancel": "取消",
             "continue": "继续保存"
         },
+        "aliyunUsApiWarning": {
+            "title": "阿里美国 API 提醒",
+            "message": "当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API"
+        },
         "conversationModelConfig": "文本对话模型配置",
         "summaryModelConfig": "摘要模型配置",
         "correctionModelConfig": "纠错模型配置",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "前往API设置",
         "noApiKeyPrompt": "还没有设置任何可使用克隆功能的API，是否前往设置？",
         "dismissNoApiPrompt": "稍后再说",
-        "alibabaApiRequired": "此功能需要阿里CosyVoice模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "alibabaApiRequired": "此功能需要阿里百炼 CosyVoice 模型，请在API密钥设置页中保存阿里百炼API Key（不要求启用辅助API）或配置本地语音服务器",
+        "alibabaIntlApiRequired": "此功能需要阿里国际版 CosyVoice 模型，请在API密钥设置页中保存阿里国际版API Key（不要求启用辅助API）",
         "minimaxApiRequired": "此功能需要MiniMax模型（国服），请在API密钥设置页中保存MiniMax API Key（不要求启用辅助API）",
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（国际服），请在API密钥设置页中保存MiniMax国际服API Key（不要求启用辅助API）",
         "providerLabel": "语音克隆服务商",
         "provider": {
-            "cosyvoice": "阿里云 CosyVoice",
+            "cosyvoice": "阿里百炼 CosyVoice",
+            "cosyvoice_intl": "阿里国际版 CosyVoice",
             "minimax": "MiniMax（国服）",
             "minimax_intl": "MiniMax（国际服）",
             "elevenlabs": "ElevenLabs"
@@ -1719,6 +1725,9 @@
         "maintenanceWaitingStatus": "服务尚未恢复前，页面会继续停留在这里并自动重试连接。",
         "maintenanceWaitingSubtitle": "正在关闭，数据会在关闭后迁移并自动重启。",
         "migrationPending": "检测到尚未完成的迁移计划。当前主页会继续保持阻断，直到服务恢复到可继续状态。",
+        "openPathFailed": "当前环境无法打开该目录，请手动前往路径。",
+        "openRetainedRoot": "打开旧数据目录",
+        "openTargetRoot": "打开当前路径",
         "pickFolder": "选择文件夹",
         "pickFolderUnavailable": "当前系统目录选择器不可用，请手动输入路径。",
         "pickFolderFailed": "打开文件夹选择器失败，请手动输入路径。",
@@ -1740,6 +1749,7 @@
         "progressVerifying": "正在校验迁移结果",
         "progressWaitingShutdown": "正在关闭",
         "rebindPreviewNotice": "后端已确认：原路径已经可以重新连接。后续会重启到该路径，本次不会复制运行时数据。",
+        "recommendedPath": "推荐路径",
         "selectedPath": "选择路径",
         "recoveryRequired": "检测到需要恢复的存储状态，请先重新确认本次使用的存储位置。",
         "recoverySourceUnavailable": "原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。",
@@ -1771,7 +1781,8 @@
         "targetFreeSpace": "目标卷剩余空间",
         "targetLabel": "当前生效路径",
         "unknownBytes": "暂未估算",
-        "useCurrent": "保持当前路径"
+        "useCurrent": "保持当前路径",
+        "useRecommended": "使用推荐路径"
     },
     "character": {
         "manager": "角色管理",
@@ -2457,6 +2468,7 @@
             "AGENT_PRECHECK_PENDING": "连接检查中...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安装",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "桌面显示会话不可访问",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安装",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模块未加载",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模块未加载",
@@ -3370,27 +3382,27 @@
     "characterModelNotSet": "当前角色未设置模型",
     "cookiesLogin": {
         "title": "N.E.K.O 凭证控制中心",
-        "header": "🔐 凭证获取中心",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵 抖音",
-        "kuaishou": "🧡 快手",
-        "weibo": "🌏 微博",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 网易云音乐",
+        "header": "凭证获取中心",
+        "bilibili": "Bilibili",
+        "douyin": "抖音",
+        "kuaishou": "快手",
+        "weibo": "微博",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "网易云音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
         "removeCredentials": "移除",
         "confirmRemove": "确定要清空 {{platformName}} 的登录凭证吗？",
-        "credentialsRemoved": "✅ 已成功移除凭证",
-        "credentialsSaved": "✅ {{platformName}} 凭证保存成功！",
+        "credentialsRemoved": "已成功移除凭证",
+        "credentialsSaved": "{{platformName}} 凭证保存成功！",
         "credentialsRemovedFailed": "删除失败",
-        "removeFailed": "❌ 删除失败，请检查网络",
-        "requiredField": "⚠️ 请填写必填项: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] 包含无效字符...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] 包含前/后空白，已自动修剪，请确认后重新提交",
-        "networkError": "❌ 网络异常: 无法连接至后端服务",
+        "removeFailed": "删除失败，请检查网络",
+        "requiredField": "请填写必填项: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] 包含无效字符...",
+        "whitespaceTrimmed": "[{{fieldName}}] 包含前/后空白，已自动修剪，请确认后重新提交",
+        "networkError": "网络异常: 无法连接至后端服务",
         "saveFailed": "保存失败，请检查格式是否正确",
         "pasteHere": "在此粘贴",
         "submitting": "安全加密传输中...",
@@ -3398,13 +3410,13 @@
         "statusLoadFailed": "状态加载失败",
         "thisPlatform": "此平台",
         "instructions": {
-            "bilibili": "📌 <b>目标：</b>请前往 <b>bilibili.com</b>获取这些 Cookies。",
-            "douyin": "📌 <b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
-            "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
-            "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
-            "twitter": "📌 <b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
-            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
-            "netease": "📌 <b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
+            "bilibili": "<b>目标：</b>请前往 <b>bilibili.com</b>获取这些 Cookies。",
+            "douyin": "<b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
+            "kuaishou": "<b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
+            "weibo": "<b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
+            "twitter": "<b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
+            "reddit": "<b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
+            "netease": "<b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -3502,9 +3514,9 @@
         },
         "qrLogin": {
             "tryQR": "或者...试试扫码登录?",
-            "openQR": "📱 打开扫码登录",
+            "openQR": "打开扫码登录",
             "loading": "正在获取二维码...",
-            "scanTitle": "📱 扫码登录 {{platform}}",
+            "scanTitle": "扫码登录 {{platform}}",
             "qrCodeAlt": "登录二维码",
             "waiting": "等待扫码...",
             "validFor": "二维码有效期: {{seconds}}秒",
@@ -3513,9 +3525,9 @@
             "retry": "重试",
             "networkError": "网络请求失败，请检查连接",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}，请刷新",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}，请刷新",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3525,7 +3537,7 @@
                 "waiting": "等待扫码"
             },
             "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置",
-            "extractFailed": "⚠️ 扫码成功但未能自动提取到字段，请手动检查。"
+            "extractFailed": "扫码成功但未能自动提取到字段，请手动检查。"
         }
     },
     "music": {

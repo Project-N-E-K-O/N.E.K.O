@@ -96,6 +96,7 @@ def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     # 转换字段名：snake_case -> UPPER_SNAKE_CASE
     field_mapping = {
         'core_url': 'CORE_URL',
+        'core_urls': 'CORE_URLS',
         'core_model': 'CORE_MODEL',
         'core_api_key': 'CORE_API_KEY',
         'is_free_version': 'IS_FREE_VERSION',
@@ -123,6 +124,7 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     # 转换字段名：snake_case -> UPPER_SNAKE_CASE
     field_mapping = {
         'openrouter_url': 'OPENROUTER_URL',
+        'openrouter_urls': 'OPENROUTER_URLS',
         'conversation_model': 'CONVERSATION_MODEL',
         'summary_model': 'SUMMARY_MODEL',
         'correction_model': 'CORRECTION_MODEL',
@@ -408,14 +410,39 @@ def get_native_tts_voice_provider_configs() -> Dict[str, Dict[str, Any]]:
 
 
 _COSYVOICE_CLONE_MODEL_DEFAULT = "cosyvoice-v3.5-plus"
+_COSYVOICE_INTL_CLONE_MODEL_DEFAULT = "cosyvoice-v3-plus"
 
 
-def get_cosyvoice_clone_model() -> str:
+def get_cosyvoice_clone_model(provider: str | None = None) -> str:
     """获取 CosyVoice 克隆/合成使用的模型名称。
 
-    读取 api_providers.json → default_models.cosyvoice_clone_model，
-    未配置时 fallback 到 ``cosyvoice-v3.5-plus``。
+    国内版读取 api_providers.json → default_models.cosyvoice_clone_model，
+    国际版读取 default_models.cosyvoice_intl_clone_model。阿里国际部署不支持
+    ``cosyvoice-v3.5-plus``，需要使用国际区域可用的 v3 系列模型。
     """
+    normalized_provider = str(provider or '').strip().lower()
+    intl_aliases = {
+        'cosyvoice_intl',
+        'qwen_intl',
+        'qwen_us',
+        'intl',
+        'international',
+        'us',
+        'usa',
+        'united_states',
+        'dashscope_us',
+        'dashscope-us',
+    }
+    if (
+        normalized_provider in intl_aliases
+        or "dashscope-intl.aliyuncs.com" in normalized_provider
+        or "dashscope-us.aliyuncs.com" in normalized_provider
+    ):
+        return (
+            get_default_models().get('cosyvoice_intl_clone_model')
+            or _COSYVOICE_INTL_CLONE_MODEL_DEFAULT
+        )
+
     return (
         get_default_models().get('cosyvoice_clone_model')
         or _COSYVOICE_CLONE_MODEL_DEFAULT
