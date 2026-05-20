@@ -167,6 +167,27 @@ def initialize_steamworks():
             print(error_msg)
         return None
 
+
+def ensure_steamworks_initialized():
+    """Retry Steamworks initialization after Steam is opened post-startup."""
+    global steamworks
+    if steamworks is not None:
+        return steamworks
+
+    logger.info("尝试重新初始化 Steamworks...")
+    steamworks = initialize_steamworks()
+    try:
+        from main_routers.shared_state import set_steamworks
+
+        set_steamworks(steamworks)
+    except Exception as exc:
+        logger.debug("Steamworks shared-state update failed during retry: %s", exc, exc_info=True)
+
+    if steamworks is not None:
+        get_default_steam_info()
+    return steamworks
+
+
 def get_default_steam_info():
     global steamworks
     # 检查steamworks是否初始化成功
@@ -1491,7 +1512,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
-from main_routers.shared_state import init_shared_state # noqa
+from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
 
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
@@ -2002,6 +2023,7 @@ async def on_startup():
             request_app_shutdown=lambda: asyncio.create_task(request_application_shutdown_async()),
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
+        set_steamworks_initializer(ensure_steamworks_initialized)
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
         # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
         if os.environ.get("NEKO_DEBUG_ASYNC") == "1":

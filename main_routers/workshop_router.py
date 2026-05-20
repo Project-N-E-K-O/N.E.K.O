@@ -30,7 +30,7 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_initialize_character_data
 from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (

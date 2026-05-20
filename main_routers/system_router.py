@@ -60,7 +60,7 @@ from PIL import Image
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
 
-from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
+from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import (
     AUTOSTART_ALLOWED_ORIGINS,
