@@ -2441,6 +2441,59 @@ async def test_stream_text_summary_gibberish_fallback_silently_commits_prefix(mo
 
 
 @pytest.mark.asyncio
+async def test_stream_text_summary_overflow_offset_consumed_across_chunks(monkeypatch):
+    """Trigger chunk 没有 terminator 时 state 停在 pending_cutover，
+    `summary_overflow_offset` 必须消费回 0，让下一个 chunk 能从头扫到
+    leading terminator。没消费回 0 的话，搜索会跳过 chunk 头部，把 cutover
+    错放到 chunk 尾。codex P2 的回归守门。"""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    summarize_called: list = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "总之"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # Trigger chunk: 5 词无 terminator (budget=4) → state 切到 pending_cutover，
+    # 找不到 terminator，offset 必须消费回 0。
+    # 下一个 chunk 头部就有逗号；如果 offset 没消费，搜索从 > 0 起会跳过它。
+    async def _astream(self, messages, **overrides):
+        # 单独 yield，模拟 provider 多 chunk 流；chunk 2 头部加 leading space
+        # 避免 token 边界粘连导致 word-split count_tokens 把 "e" 和 "h," 合并。
+        yield LLMStreamChunk(content="a b c d e")
+        yield LLMStreamChunk(content=" h, i j k l m n o p q r s t u v w x y z aa bb cc dd ee ff.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        return None
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("multi-chunk offset reset")
+
+    # cutover 必须发生（summary 被调），并且 prefix 应该结束于第二 chunk
+    # 头部的逗号 —— 这只有在 offset 消费回 0 时才可能。
+    assert summarize_called, "second chunk 必须能 cutover（offset 已被消费）"
+    captured_prefix = summarize_called[0][0]
+    assert captured_prefix.endswith("h,"), (
+        "cutover 应该落在 second chunk 头部的逗号 (offset=0)，没消费回 0 "
+        "时会跳过该逗号。实际 prefix: %r" % captured_prefix
+    )
+
+
+@pytest.mark.asyncio
 async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypatch):
     """没开 summary 的 client（game/默认 stream_text 调用）必须保持原来的
     abort+inline truncate 行为，不被新路径干扰，并且小模型摘要器一次也不能调。"""
