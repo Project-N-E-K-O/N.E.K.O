@@ -182,7 +182,7 @@ WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
     'audio/x-pn-wav': '.wav',
 }
 WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
-WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
+WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'cosyvoice_intl', 'minimax', 'minimax_intl'}
 WORKSHOP_CARD_FACE_SIZE = (768, 1024)
 WORKSHOP_CARD_FACE_PADDING = 48
 WORKSHOP_CARD_FACE_RATIO_TOLERANCE = 0.02

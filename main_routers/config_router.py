@@ -20,7 +20,7 @@ import os
 import ssl
 import threading
 import urllib.parse
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -645,6 +645,7 @@ async def get_core_config_api():
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
+            "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
             # 自定义API相关字段（Provider / Url / Id / ApiKey per model type）
             **{
                 f'{mt}Model{suffix}': core_cfg.get(f'{mt}Model{suffix}', '')
@@ -749,6 +750,19 @@ async def update_core_config(request: Request):
             core_cfg['coreApi'] = data['coreApi']
         if 'assistApi' in data:
             core_cfg['assistApi'] = data['assistApi']
+        if 'resolvedProviderUrls' in data:
+            resolved_urls = data.get('resolvedProviderUrls')
+            if not isinstance(resolved_urls, dict):
+                return {"success": False, "error": "resolvedProviderUrls must be an object"}
+            sanitized_resolved_urls = {}
+            for key, value in resolved_urls.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    continue
+                normalized_key = key.strip()
+                normalized_value = value.strip()
+                if normalized_key and normalized_value:
+                    sanitized_resolved_urls[normalized_key] = normalized_value
+            core_cfg['resolvedProviderUrls'] = sanitized_resolved_urls
         _api_key_fields = [
             'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai', 'assistApiKeyDeepseek',
             'assistApiKeyGlm', 'assistApiKeyStep', 'assistApiKeySilicon',
@@ -796,6 +810,11 @@ async def update_core_config(request: Request):
                     core_cfg[field] = data[field]
         if 'ttsVoiceId' in data:
             core_cfg['ttsVoiceId'] = data['ttsVoiceId']
+
+        checked_resolved_urls = data.get('connectivityCheckedProviderUrls')
+        if not isinstance(checked_resolved_urls, dict):
+            checked_resolved_urls = {}
+        save_connectivity = await _auto_resolve_provider_urls_for_save(core_cfg, checked_resolved_urls)
         
         # save_json_config 内部已调用 assert_cloudsave_writable + ensure_config_directory
         # + atomic_write_json，不需要再显式栅栏 / 手工拼 core_config_path
@@ -886,7 +905,13 @@ async def update_core_config(request: Request):
             logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
 
         logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
-        return {"success": True, "message": "API Key已保存并重新加载配置", "sessions_ended": len(sessions_ended)}
+        return {
+            "success": True,
+            "message": "API Key已保存并重新加载配置",
+            "sessions_ended": len(sessions_ended),
+            "connectivity": save_connectivity,
+            "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}),
+        }
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -1245,6 +1270,7 @@ class ConnectivityTestResponse(BaseModel):
     success: bool
     error: Optional[str] = None
     error_code: Optional[str] = None
+    resolved_url: Optional[str] = None
 
 
 async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-turbo", is_free: bool = False) -> dict:
@@ -1438,6 +1464,280 @@ async def _test_websocket(url: str, api_key: str, model: str = "") -> dict:
         return {"success": False, "error": f"WebSocket连接失败: {e}", "error_code": "ws_error"}
 
 
+def _normalize_provider_url_candidates(profile: dict[str, Any], primary_field: str) -> list[str]:
+    """读取 provider 的主 URL 和候选 URL，去空去重后保持顺序。"""
+    raw_candidates: list[Any] = [profile.get(primary_field)]
+    list_field = f"{primary_field}s"
+    configured_candidates = profile.get(list_field)
+    if isinstance(configured_candidates, list):
+        raw_candidates.extend(configured_candidates)
+    elif isinstance(configured_candidates, str):
+        raw_candidates.append(configured_candidates)
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_url in raw_candidates:
+        url = str(raw_url or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        result.append(url)
+    return result
+
+
+async def _test_connectivity_candidates(
+    urls: list[str],
+    api_key: str,
+    model: str,
+    provider_type: str,
+    is_free: bool,
+) -> dict:
+    """并发测试候选 URL；任一通过即返回该 URL。"""
+    if not urls:
+        return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
+
+    async def _run_one(candidate_url: str) -> tuple[str, dict]:
+        if provider_type == "websocket":
+            result = await _test_websocket(candidate_url, api_key, model=model)
+        else:
+            result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
+        return candidate_url, result
+
+    tasks = [asyncio.create_task(_run_one(url)) for url in urls]
+    results: list[tuple[str, dict]] = []
+    try:
+        for task in asyncio.as_completed(tasks):
+            try:
+                candidate_url, result = await task
+            except Exception as exc:
+                candidate_url = ""
+                result = {"success": False, "error": str(exc), "error_code": "unknown"}
+            results.append((candidate_url, result))
+            if result.get("success"):
+                for pending in tasks:
+                    if not pending.done():
+                        pending.cancel()
+                resolved = dict(result)
+                resolved["resolved_url"] = candidate_url
+                return resolved
+    finally:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    first_url, first_result = results[0] if results else (urls[0], {"success": False, "error_code": "unknown"})
+    failed_urls = [url for url, _ in results if url]
+    result = dict(first_result)
+    result.setdefault("success", False)
+    result["resolved_url"] = None
+    if len(urls) > 1:
+        result["error"] = result.get("error") or "所有候选 URL 均不可用"
+        logger.info(
+            "[ConnectivityTest] 候选 URL 均未通过: %s",
+            ", ".join(_redact_url_for_log(url) for url in failed_urls or [first_url]),
+        )
+    return result
+
+
+def _get_save_provider_api_key(core_cfg: dict, api_config: dict, provider_key: str) -> str:
+    """从保存配置中取出 provider 对应的 API Key。"""
+    provider_key = str(provider_key or "").strip()
+    if provider_key == "free":
+        return "free-access"
+
+    core_provider = str(core_cfg.get("coreApi") or "").strip()
+    core_key = str(core_cfg.get("coreApiKey") or "").strip()
+
+    registry_entry = (api_config.get("api_key_registry") or {}).get(provider_key, {})
+    field_name = registry_entry.get("config_field") if isinstance(registry_entry, dict) else ""
+    provider_key_value = str(core_cfg.get(field_name) or "").strip() if field_name else ""
+
+    if provider_key_value:
+        return provider_key_value
+    if provider_key == core_provider and core_key:
+        return core_key
+    # 不能把 coreApiKey 当成 assist provider 的 fallback：core/assist 是不同
+    # provider 时（比如 coreApi=openai + assistApi=qwen_intl），coreApiKey 是
+    # OpenAI 的 key，拿去打 qwen_intl 的 candidate URL 必然 401 →
+    # _auto_resolve_provider_urls_for_save 误判连通性失败 → 把之前测通的
+    # qwen_intl 区域 pin 顺手 pop 掉 (Codex P2 #3258802582)。
+    # 唯一应该回退 coreApiKey 的 case 是 provider_key == core_provider，
+    # 上面那条已经处理；这里返回空字符串让 _build_save_connectivity_targets
+    # 把这个 target 过滤掉，跳过本次 probe，保留 resolvedProviderUrls 旧值。
+    return ""
+
+
+def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[str, dict[str, Any]]:
+    """收集保存时需要自动检测的内置 provider。"""
+    targets: dict[str, dict[str, Any]] = {}
+    core_providers = api_config.get("core_api_providers", {}) or {}
+    assist_providers = api_config.get("assist_api_providers", {}) or {}
+
+    def _add(scope: str, provider_key: str) -> None:
+        provider_key = str(provider_key or "").strip()
+        if not provider_key:
+            return
+
+        if scope == "core":
+            profile = core_providers.get(provider_key)
+            if not isinstance(profile, dict):
+                return
+            urls = _normalize_provider_url_candidates(profile, "core_url")
+            model = profile.get("core_model", "")
+            provider_type = "websocket"
+        else:
+            profile = assist_providers.get(provider_key)
+            if not isinstance(profile, dict):
+                return
+            urls = _normalize_provider_url_candidates(profile, "openrouter_url")
+            model = profile.get("conversation_model", "")
+            provider_type = "openai_compatible"
+
+        # 单 URL 不需要解析候选地域；页面全量检测会负责常规连通性状态。
+        if len(urls) < 2:
+            return
+
+        api_key = _get_save_provider_api_key(core_cfg, api_config, provider_key)
+        if not api_key and not profile.get("is_free_version", False):
+            return
+
+        targets[f"{scope}:{provider_key}"] = {
+            "scope": scope,
+            "provider_key": provider_key,
+            "urls": urls,
+            "api_key": api_key,
+            "model": model,
+            "provider_type": provider_type,
+            "is_free": profile.get("is_free_version", False),
+            "label": profile.get("name", provider_key),
+        }
+
+    core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
+    assist_provider = str(core_cfg.get("assistApi") or "qwen").strip()
+    if core_provider == "free":
+        assist_provider = "free"
+
+    _add("core", core_provider)
+    _add("assist", assist_provider)
+
+    if core_cfg.get("enableCustomApi", False):
+        model_types = [
+            "conversation", "summary", "correction", "emotion",
+            "vision", "agent", "omni", "tts",
+        ]
+        for model_type in model_types:
+            provider = str(core_cfg.get(f"{model_type}ModelProvider") or "").strip()
+            if not provider or provider == "custom":
+                continue
+            if provider == "follow_core":
+                _add("core" if model_type == "omni" else "assist", core_provider)
+            elif provider == "follow_assist":
+                _add("assist", assist_provider)
+            else:
+                _add("core" if model_type == "omni" else "assist", provider)
+
+    return targets
+
+
+async def _auto_resolve_provider_urls_for_save(
+    core_cfg: dict,
+    checked_resolved_urls: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """保存 API 配置时自动检测候选 URL，并写入通过检测的地域 URL。"""
+    from utils.api_config_loader import get_config as _get_api_config
+
+    api_config = _get_api_config()
+    targets = _build_save_connectivity_targets(core_cfg, api_config)
+    summary: dict[str, Any] = {
+        "total": len(targets),
+        "success": 0,
+        "failed": 0,
+        "resolved_urls": {},
+        "results": {},
+    }
+    # 起点用 core_cfg 里已经存的 resolved 快照（前端这一次保存连带传上来的
+    # _resolvedProviderUrls + 上一次落盘的值），auto-resolve 只动本次 targets
+    # 里的 provider。其它 provider 之前测通的 URL 留着别扔——比如核心用 GPT
+    # 但 CosyVoice intl 还在用 assist:qwen_intl 的 US 端点，保存非 Qwen 设置
+    # 不该顺手清掉 intl 的地域记忆。
+    existing_resolved: dict[str, str] = {
+        str(k): str(v)
+        for k, v in (core_cfg.get("resolvedProviderUrls") or {}).items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+    if not targets:
+        core_cfg["resolvedProviderUrls"] = existing_resolved
+        return summary
+
+    resolved_urls: dict[str, str] = dict(existing_resolved)
+
+    pending_targets: dict[str, dict[str, Any]] = {}
+    checked_resolved_urls = checked_resolved_urls if isinstance(checked_resolved_urls, dict) else {}
+    for target_key, target in targets.items():
+        checked_url = str(checked_resolved_urls.get(target_key) or "").strip()
+        if checked_url and checked_url in target["urls"]:
+            resolved_urls[target_key] = checked_url
+            summary["success"] += 1
+            summary["resolved_urls"][target_key] = checked_url
+            summary["results"][target_key] = {
+                "success": True,
+                "error": None,
+                "error_code": None,
+                "resolved_url": checked_url,
+            }
+        else:
+            pending_targets[target_key] = target
+
+    if not pending_targets:
+        core_cfg["resolvedProviderUrls"] = resolved_urls
+        return summary
+
+    async def _run_target(target_key: str, target: dict[str, Any]) -> tuple[str, dict]:
+        result = await _test_connectivity_candidates(
+            target["urls"],
+            target["api_key"],
+            target["model"],
+            target["provider_type"],
+            target["is_free"],
+        )
+        return target_key, result
+
+    task_results = await asyncio.gather(
+        *(_run_target(key, target) for key, target in pending_targets.items()),
+        return_exceptions=True,
+    )
+
+    for item in task_results:
+        if isinstance(item, Exception):
+            summary["failed"] += 1
+            continue
+        target_key, result = item
+        clean_result = {
+            "success": bool(result.get("success")),
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+            "resolved_url": result.get("resolved_url"),
+        }
+        summary["results"][target_key] = clean_result
+        if result.get("success") and result.get("resolved_url"):
+            summary["success"] += 1
+            resolved_urls[target_key] = result["resolved_url"]
+            summary["resolved_urls"][target_key] = result["resolved_url"]
+        else:
+            summary["failed"] += 1
+            # 本次测失败的 target 必须把旧 resolved 也丢掉，避免下次继续打不通的旧 URL
+            # (CodeRabbit #3258131687 已要求过的语义)。其它没被 test 到的 provider
+            # 由 existing_resolved 保留，互不影响。
+            resolved_urls.pop(target_key, None)
+            summary["resolved_urls"].pop(target_key, None)
+
+    core_cfg["resolvedProviderUrls"] = resolved_urls
+    logger.info(
+        "[ConnectivityTest] 保存前候选 URL 自动检测完成: success=%s failed=%s",
+        summary["success"],
+        summary["failed"],
+    )
+    return summary
+
+
 @router.post("/test_connectivity")
 async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     """测试 API 连通性。
@@ -1463,11 +1763,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         api_config = _get_api_config()
         provider_key = req.provider_key.strip()
         scope = req.provider_scope.strip().lower()
+        url_candidates: list[str] = []
 
         if scope == "core":
             providers = api_config.get("core_api_providers", {})
             profile = providers.get(provider_key, {})
             url_stripped = profile.get("core_url", "")
+            url_candidates = _normalize_provider_url_candidates(profile, "core_url")
             model = profile.get("core_model", "")
             provider_type = "websocket"
             is_free = profile.get("is_free_version", False)
@@ -1476,6 +1778,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             providers = api_config.get("assist_api_providers", {})
             profile = providers.get(provider_key, {})
             url_stripped = profile.get("openrouter_url", "")
+            url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
             provider_type = "openai_compatible"
@@ -1493,6 +1796,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             fallback_model = assist_profile.get("conversation_model", "")
             if fallback_url and fallback_model:
                 url_stripped = fallback_url
+                url_candidates = _normalize_provider_url_candidates(assist_profile, "openrouter_url")
                 model = fallback_model
                 provider_type = "openai_compatible"
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
@@ -1505,25 +1809,29 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             return {"success": False, "error": "缺少必要参数", "error_code": "missing_params"}
 
         url_stripped = req.url.strip()
+        url_candidates = [url_stripped]
         model = (req.model or "gpt-3.5-turbo").strip()
         provider_type = (req.provider_type or "openai_compatible").strip().lower()
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
 
     try:
-        if provider_type == "websocket":
-            result = await _test_websocket(url_stripped, api_key_stripped, model=model)
-        else:
-            result = await _test_openai_compatible(url_stripped, api_key_stripped, model=model, is_free=is_free)
+        result = await _test_connectivity_candidates(
+            url_candidates or [url_stripped],
+            api_key_stripped,
+            model,
+            provider_type,
+            is_free,
+        )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
         result = {"success": False, "error": str(e), "error_code": "unknown"}
 
     # 单条结果日志：供应商/自定义 + 成功/失败
     if result.get("success"):
-        logger.info("[ConnectivityTest] %s → ✅ 连通", _source_label)
+        logger.info("[ConnectivityTest] %s 连通", _source_label)
     else:
-        logger.info("[ConnectivityTest] %s → ❌ %s", _source_label, result.get("error_code", "unknown"))
+        logger.info("[ConnectivityTest] %s 失败: %s", _source_label, result.get("error_code", "unknown"))
 
     return result
 
@@ -1536,6 +1844,7 @@ def _identify_provider_label(url: str, is_free: bool) -> str:
         "lanlan.tech": "免费版",
         "dashscope.aliyuncs.com": "阿里百炼",
         "dashscope-intl.aliyuncs.com": "阿里国际版",
+        "dashscope-us.aliyuncs.com": "阿里国际版（美国）",
         "api.openai.com": "OpenAI",
         "open.bigmodel.cn": "智谱",
         "api.stepfun.com": "阶跃星辰",

@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ 偵測到智譜CogTTS音訊浮水印（嗶嗶聲），如需去除浮水印請前往智譜控制台手動配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，請先在 API 設置中啟用並配置自訂 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必須為 localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "未配置音訊 API 金鑰 (AUDIO_API_KEY)",
+        "TTS_AUDIO_API_KEY_MISSING": "未配置所選語音服務商的 API Key，請先在 API 設定中填寫對應 Key",
         "TTS_VOICE_NOT_REGISTERED": "該角色未註冊聲音",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要參數",
         "TTS_GPT_SOVITS_URL_REQUIRED": "請填寫 GPT-SoVITS API URL",
@@ -1032,6 +1032,10 @@
             "cancel": "取消",
             "continue": "繼續保存"
         },
+        "aliyunUsApiWarning": {
+            "title": "阿里美國 API 提醒",
+            "message": "目前使用的是阿里的美國 API，不支援 TTS 與即時語音，建議更換為阿里的新加坡 API"
+        },
         "conversationModelConfig": "文本對話模型配置",
         "summaryModelConfig": "摘要模型配置",
         "correctionModelConfig": "糾錯模型配置",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "前往API設定",
         "noApiKeyPrompt": "還沒有設定任何可使用克隆功能的API，是否前往設定？",
         "dismissNoApiPrompt": "稍後再說",
-        "alibabaApiRequired": "此功能需要阿里CosyVoice模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
+        "alibabaApiRequired": "此功能需要阿里百煉 CosyVoice 模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
+        "alibabaIntlApiRequired": "此功能需要阿里國際版 CosyVoice 模型，請在API密鑰設定頁中保存阿里國際版API Key（不要求啟用輔助API）",
         "minimaxApiRequired": "此功能需要MiniMax模型（中國），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "providerLabel": "語音克隆服務商",
         "provider": {
-            "cosyvoice": "阿里雲 CosyVoice",
+            "cosyvoice": "阿里百煉 CosyVoice",
+            "cosyvoice_intl": "阿里國際版 CosyVoice",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際版）",
             "elevenlabs": "ElevenLabs"

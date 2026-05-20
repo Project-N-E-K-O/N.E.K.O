@@ -42,7 +42,15 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from memory.embeddings import cosine_similarity
+try:
+    from memory.embeddings import cosine_similarity
+except ImportError:
+    # See ``embedding_worker`` for context on the fallback path. With a
+    # 0.0-cosine stub the resolver's pending queue stays empty and the
+    # legacy hash + FTS5 dedup is the entire pipeline — same shape as
+    # ``is_available() == False`` in the real module.
+    from memory.embeddings_fallback import cosine_similarity, _warn_once
+    _warn_once(__name__)
 from memory.facts import safe_int_field
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (

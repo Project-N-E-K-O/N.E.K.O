@@ -6,11 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="cardExport.title">卡面制作 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值 -->
-    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
+    <script>
+        const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');
+        window.VRM_DEFAULT_LIGHTING = Object.freeze(JSON.parse(vrmDefaultLightingData?.textContent || '{}'));
+    </script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/base.css">
-    <link rel="stylesheet" href="/static/css/card_maker.css">
+    <link rel="stylesheet" href="/static/css/card_maker.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
@@ -63,9 +67,6 @@
             </div>
         </div>
         <div id="card-preview">
-            <div id="card-header-area">
-                <span id="card-preview-name"></span>
-            </div>
             <div id="card-portrait-area">
                 <div id="sticker-overlay-below"></div>
                 <canvas id="card-portrait-canvas"></canvas>
@@ -164,6 +165,11 @@
     </div>
     </div>
 
+    <script>
+        window._cardExportPage = true;
+        window.renderQuality = 'high';
+    </script>
+
     <!-- Live2D SDK -->
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <script src="/static/libs/live2d.min.js"></script>
@@ -202,9 +208,8 @@
         window.dispatchEvent(new CustomEvent('three-ready'));
     </script>
 
-    <script>window._cardExportPage = true;</script>
     <script src="/static/vrm-init.js"></script>
     <script src="/static/mmd-init.js"></script>
-    <script src="/static/js/card_maker.js"></script>
+    <script src="/static/js/card_maker.js?v={{ static_asset_version | default('0') }}"></script>
 </body>
 </html>

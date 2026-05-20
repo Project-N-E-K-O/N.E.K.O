@@ -91,6 +91,10 @@
       "name": "阿里国际版",
       "description": "阿里云国际版，适合海外用户，支持自定义语音和Agent模式",
       "openrouter_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "openrouter_urls": [
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+      ],
       "conversation_model": "qwen3.6-plus",
       "summary_model": "qwen3.6-plus",
       "correction_model": "qwen3.6-plus",
@@ -268,7 +272,8 @@
     "core_model": "qwen3-omni-flash-realtime",
     "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
     "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "cosyvoice_clone_model": "cosyvoice-v3.5-plus"
+    "cosyvoice_clone_model": "cosyvoice-v3.5-plus",
+    "cosyvoice_intl_clone_model": "cosyvoice-v3-plus"
   },
   "assist_api_key_fields": {
     "qwen": "ASSIST_API_KEY_QWEN",
@@ -295,7 +300,7 @@
     },
     "qwen_intl": {
       "config_field": "assistApiKeyQwenIntl",
-      "restricted": true
+      "restricted": false
     },
     "openai": {
       "config_field": "assistApiKeyOpenai",

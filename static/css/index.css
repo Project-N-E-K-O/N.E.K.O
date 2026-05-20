@@ -442,7 +442,8 @@ button * {
     height: 100%;
     z-index: 10;
     pointer-events: none;
-    background: none;
+    background: transparent !important;
+    background-color: transparent !important;
     opacity: 1;
     overflow: hidden;
     visibility: visible;
@@ -476,7 +477,8 @@ button * {
     display: block;
     opacity: 1;
     visibility: visible;
-    background: transparent;
+    background: transparent !important;
+    background-color: transparent !important;
     /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);

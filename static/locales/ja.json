@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTSの音声ウォーターマーク（ビープ音）を検出しました。ウォーターマークを無効にするには、智譜コンソールで手動設定してください。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URLが設定されていません。API設定でカスタムTTSを有効にして設定してください。",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URLはlocalhostである必要があります",
-        "TTS_AUDIO_API_KEY_MISSING": "音声APIキー（AUDIO_API_KEY）が設定されていません",
+        "TTS_AUDIO_API_KEY_MISSING": "選択した音声プロバイダーの API Key が未設定です。API 設定で対応する Key を入力してください。",
         "TTS_VOICE_NOT_REGISTERED": "このキャラクターには登録された音声がありません",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "必須パラメータが不足しています",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URLを入力してください",
@@ -1032,6 +1032,10 @@
             "cancel": "キャンセル",
             "continue": "保存して続行"
         },
+        "aliyunUsApiWarning": {
+            "title": "Alibaba 米国 API の注意",
+            "message": "現在 Alibaba の米国 API を使用しています。この API は TTS とリアルタイム音声に対応していません。Alibaba のシンガポール API への切り替えをおすすめします。"
+        },
         "conversationModelConfig": "テキスト対話モデル設定",
         "summaryModelConfig": "要約モデル設定",
         "correctionModelConfig": "修正モデル設定",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "API設定へ",
         "noApiKeyPrompt": "クローン機能に使用できるAPIキーがまだ設定されていません。設定しますか？",
         "dismissNoApiPrompt": "後で",
-        "alibabaApiRequired": "この機能にはCosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
+        "alibabaApiRequired": "この機能にはAlibaba Bailian CosyVoiceモデルが必要です。APIキー設定でAlibaba Bailian APIキーを保存してください（Assist APIの有効化は不要）。またはローカル音声サーバーを設定してください",
+        "alibabaIntlApiRequired": "この機能にはAlibaba国際版 CosyVoiceモデルが必要です。APIキー設定でAlibaba国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "minimaxApiRequired": "この機能にはMiniMaxモデル（China）が必要です。APIキー設定でMiniMax APIキーを保存してください（Assist APIの有効化は不要）",
         "minimaxIntlApiRequired": "この機能にはMiniMaxモデル（国際版）が必要です。APIキー設定でMiniMax国際版APIキーを保存してください（Assist APIの有効化は不要）",
         "providerLabel": "音声クローンプロバイダー",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba国際版 CosyVoice",
             "minimax": "MiniMax（中国版）",
             "minimax_intl": "MiniMax（国際版）",
             "elevenlabs": "ElevenLabs"

@@ -257,6 +257,21 @@ class AudioProcessor:
         self._agc_gain = 1.0
         self._agc_attack_coeff = np.exp(-1.0 / (self.AGC_ATTACK_TIME * self.RNNOISE_SAMPLE_RATE))
         self._agc_release_coeff = np.exp(-1.0 / (self.AGC_RELEASE_TIME * self.RNNOISE_SAMPLE_RATE))
+
+        # Streaming downsample resampler: maintains FIR state across chunks.
+        # Stateless soxr.resample() on 10ms chunks produces edge artifacts at every
+        # chunk boundary (perceived as 100Hz periodic clicks → "电流声"), so we use
+        # ResampleStream which carries filter state and outputs a continuous signal.
+        if self.input_sample_rate != self.output_sample_rate:
+            self._downsample_resampler = soxr.ResampleStream(
+                self.input_sample_rate,
+                self.output_sample_rate,
+                1,
+                dtype='float32',
+                quality='HQ',
+            )
+        else:
+            self._downsample_resampler = None
         
         # Debug audio buffers - 累积存储完整音频
         self._debug_audio_before: list[np.ndarray] = []
@@ -343,16 +358,11 @@ class AudioProcessor:
         if self.limiter_enabled and len(audio_int16) > 0:
             audio_int16 = self._apply_limiter(audio_int16)
         
-        # Downsample from 48kHz to 16kHz using high-quality soxr
-        if self.input_sample_rate != self.output_sample_rate and len(audio_int16) > 0:
-            # Convert to float for soxr, resample, then back to int16
+        # Downsample using streaming resampler (maintains FIR state across chunks
+        # to avoid boundary artifacts; see __init__ for context).
+        if self._downsample_resampler is not None and len(audio_int16) > 0:
             audio_float = audio_int16.astype(np.float32) / 32768.0
-            audio_float = soxr.resample(
-                audio_float, 
-                self.input_sample_rate, 
-                self.output_sample_rate, 
-                quality='HQ'
-            )
+            audio_float = self._downsample_resampler.resample_chunk(audio_float)
             audio_int16 = (audio_float * 32768.0).clip(-32768, 32767).astype(np.int16)
         return audio_int16.tobytes()
     
@@ -404,6 +414,15 @@ class AudioProcessor:
                 self._denoiser.reset()
             except Exception as e:
                 logger.warning(f"⚠️ Failed to reset RNNoise denoiser: {e}")
+        # Flush streaming resampler's latency buffer + FIR history. After
+        # multi-second silence the buffer is already silent so this is a no-op,
+        # but on a forced mid-speech reset (interrupt / cancel turn) it prevents
+        # previous-turn tail samples from bleeding into the next turn.
+        if self._downsample_resampler is not None:
+            try:
+                self._downsample_resampler.clear()
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to clear downsample resampler: {e}")
     
     def reset(self) -> None:
         """
