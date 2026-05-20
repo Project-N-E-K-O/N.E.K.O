@@ -230,7 +230,6 @@ def _parse_configured_capture_profiles(
                     normalized_process_name,
                     exc,
                 )
-                continue
         else:
             for stage_name, stage_profile in profile_value.items():
                 normalized_stage_name = str(stage_name or "").strip()
@@ -303,5 +302,4 @@ def _parse_configured_capture_profiles(
                 window_buckets=window_buckets,
             )
     return parsed_profiles
-
 

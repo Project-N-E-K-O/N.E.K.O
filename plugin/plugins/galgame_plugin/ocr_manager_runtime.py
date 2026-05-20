@@ -424,7 +424,7 @@ class RuntimeMixin:
             return float(fallback or 0.0)
 
         return OcrReaderRuntime(
-            enabled=True,
+            enabled=bool(self._config.ocr_reader_enabled),
             status=status,
             detail=detail,
             process_name=str((attached_target.process_name if attached_target is not None else self._runtime.process_name) or ""),
@@ -811,7 +811,7 @@ class RuntimeMixin:
 
         requests: list[tuple[str, OcrCaptureProfile, bool, bool]] = []
         full_profile = self._full_window_profile()
-        if self._capture_profile_key(full_profile) not in seen_profiles and (
+        if (
             bool(self._config.ocr_reader_screen_awareness_full_frame_ocr)
             or bool(self._config.ocr_reader_screen_awareness_visual_rules)
             or bool(self._config.llm_vision_enabled)

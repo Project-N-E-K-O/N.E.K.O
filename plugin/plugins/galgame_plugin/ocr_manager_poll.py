@@ -174,6 +174,40 @@ class PollMixin:
             self._consecutive_no_text_polls = 0
 
 
+    def _handle_background_capture_backend_unsuitable(
+        self,
+        extraction: OcrExtractionResult,
+        *,
+        now: float,
+        result: OcrReaderTickResult,
+    ) -> bool:
+        if not bool(extraction.timing.get("background_capture_backend_unsuitable")):
+            return False
+        reason = str(
+            extraction.timing.get("capture_quality_detail")
+            or extraction.capture_backend_detail
+            or "invalid_background_frame"
+        )
+        self._pause_background_capture_backend(reason=reason, now=now)
+        self._record_capture_error(
+            now=now,
+            error=RuntimeError(f"backend_not_suitable_for_background: {reason}"),
+        )
+        self._record_rejected_ocr_text(
+            extraction.text,
+            reason=f"background_capture_backend_unsuitable:{reason}",
+            now=now,
+            capture_backend_kind=extraction.capture_backend_kind,
+        )
+        self._default_ocr_state.reset()
+        self._ocr_lang_detector.reset()
+        self._reset_aihong_menu_state()
+        result.warnings.append(
+            f"ocr_reader background capture backend not suitable: {reason}"
+        )
+        return True
+
+
     async def shutdown(self) -> None:
         self._stop_foreground_advance_monitor()
         self._shutdown_capture_worker()
@@ -754,21 +788,12 @@ class PollMixin:
             active_backend = extraction.backend if extraction.backend.kind else backend_plan.primary
             backend_detail_override = extraction.backend_detail
             result.warnings.extend(extraction.warnings)
-            if bool(extraction.timing.get("background_capture_backend_unsuitable")):
-                reason = str(
-                    extraction.timing.get("capture_quality_detail")
-                    or extraction.capture_backend_detail
-                    or "invalid_background_frame"
-                )
+            if self._handle_background_capture_backend_unsuitable(
+                extraction,
+                now=now,
+                result=result,
+            ):
                 capture_error = True
-                self._pause_background_capture_backend(reason=reason, now=now)
-                self._record_capture_error(
-                    now=now,
-                    error=RuntimeError(f"backend_not_suitable_for_background: {reason}"),
-                )
-                result.warnings.append(
-                    f"ocr_reader background capture backend not suitable: {reason}"
-                )
             elif self._observe_background_hash(
                 extraction.background_hash,
                 now=now,
@@ -907,12 +932,19 @@ class PollMixin:
                                 followup_extraction.backend_detail or backend_detail_override
                             )
                             result.warnings.extend(followup_extraction.warnings)
-                            if followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
+                            followup_now = self._time_fn()
+                            if self._handle_background_capture_backend_unsuitable(
+                                followup_extraction,
+                                now=followup_now,
+                                result=result,
+                            ):
+                                capture_error = True
+                            elif followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
                                 guard_blocked = True
                                 self._record_rejected_ocr_text(
                                     followup_extraction.text,
                                     reason="self_ui_guard",
-                                    now=self._time_fn(),
+                                    now=followup_now,
                                     capture_backend_kind=followup_extraction.capture_backend_kind,
                                 )
                                 self._default_ocr_state.reset()
@@ -923,7 +955,6 @@ class PollMixin:
                                 )
                             else:
                                 self._record_accepted_ocr_text(followup_extraction.text)
-                                followup_now = self._time_fn()
                                 if self._observe_followup_background_hash(
                                     followup_extraction,
                                     now=followup_now,
@@ -947,7 +978,9 @@ class PollMixin:
                                 if dialogue_emitted:
                                     now = followup_now
                         emitted = dialogue_emitted
-                        if dialogue_emitted:
+                        if capture_error:
+                            emitted = False
+                        elif dialogue_emitted:
                             self._aihong_dialogue_idle_polls = 0
                             self._aihong_menu_missing_polls = 0
                             if dialogue_menu_choices:
@@ -1017,12 +1050,19 @@ class PollMixin:
                                     menu_extraction.backend_detail or backend_detail_override
                                 )
                                 result.warnings.extend(menu_extraction.warnings)
-                                if menu_extraction.text and _looks_like_self_ui_text(menu_extraction.text):
+                                menu_now = self._time_fn()
+                                if self._handle_background_capture_backend_unsuitable(
+                                    menu_extraction,
+                                    now=menu_now,
+                                    result=result,
+                                ):
+                                    capture_error = True
+                                elif menu_extraction.text and _looks_like_self_ui_text(menu_extraction.text):
                                     guard_blocked = True
                                     self._record_rejected_ocr_text(
                                         menu_extraction.text,
                                         reason="self_ui_guard",
-                                        now=self._time_fn(),
+                                        now=menu_now,
                                         capture_backend_kind=menu_extraction.capture_backend_kind,
                                     )
                                     self._default_ocr_state.reset()
@@ -1105,12 +1145,19 @@ class PollMixin:
                             followup_extraction.backend_detail or backend_detail_override
                         )
                         result.warnings.extend(followup_extraction.warnings)
-                        if followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
+                        followup_now = self._time_fn()
+                        if self._handle_background_capture_backend_unsuitable(
+                            followup_extraction,
+                            now=followup_now,
+                            result=result,
+                        ):
+                            capture_error = True
+                        elif followup_extraction.text and _looks_like_self_ui_text(followup_extraction.text):
                             guard_blocked = True
                             self._record_rejected_ocr_text(
                                 followup_extraction.text,
                                 reason="self_ui_guard",
-                                now=self._time_fn(),
+                                now=followup_now,
                                 capture_backend_kind=followup_extraction.capture_backend_kind,
                             )
                             self._default_ocr_state.reset()
@@ -1121,7 +1168,6 @@ class PollMixin:
                             )
                         else:
                             self._record_accepted_ocr_text(followup_extraction.text)
-                            followup_now = self._time_fn()
                             if self._observe_followup_background_hash(
                                 followup_extraction,
                                 now=followup_now,
