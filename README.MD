@@ -588,12 +588,12 @@ N.E.K.O. **默认开启匿名 Token 用量遥测**，用于跟踪版本兼容性
 | 模型名称、调用类型（conversation / memory 等） | 用户名、API Key、GitHub ID |
 | 调用次数 / 错误次数 | IP 地址、地理位置、MAC、硬件序列号 |
 | 应用版本、A/B 分支、locale、时区、发行渠道（source / release / steam） | 文件路径、Cookie、浏览器指纹 |
-| 假名化设备标识：主路径 `SHA256(OS_machine_id ‖ namespace)`，回退路径 `SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`；迁移期同时上报新旧两个 ID 以便 server 端 fold | 任何能反推到个人的 PII |
-| **仅 Steam 发行版且用户已登录 Steam 时**：Steam64 user ID（可在 Steam 个人页查到的公开数字 ID） | 上述以外的任何账号体系 ID（GitHub / Google / OpenAI 等） |
+| 假名化设备标识：主路径 `SHA256(OS_machine_id ‖ namespace)`，回退路径 `SHA256(uuid.getnode() ‖ 安装路径 ‖ namespace)`；迁移期同时上报新旧两个 ID，以便服务端把同一设备在新旧算法下产生的两个标识归并为一个用户队列 | 任何能反推到个人的 PII |
+| **当 Steamworks SDK 在运行时能初始化成功 + 你已登录 Steam 客户端时**：Steam64 user ID（可在 Steam 个人页查到的公开数字 ID） | 上述以外的任何账号体系 ID（GitHub / Google / OpenAI 等） |
 
 > **关于"假名化设备标识"**：单向 SHA-256，不可逆、不含用户信息。同一台机器（同一 OS 安装）会复现相同标识，按 GDPR / PIPL 口径属于"假名化标识"而非"完全匿名数据"。仅用于去重 DAU 计数与版本兼容性归因。
 >
-> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定，因此我们把它如实列在"收集"列里 — **如果你不希望它被上报，运行源码版即可（源码版的发行渠道是 `source`，不会调 Steam SDK），或者直接 `DO_NOT_TRACK=1` 全关。**
+> **关于 Steam64**：这是 Steam 客户端在你登录后向所有第三方 SDK 暴露的公开数字 ID（Steam 个人页 URL 末尾就是它）。本身不含邮箱、手机号或真实姓名，但跨会话稳定。**触发条件以代码为准**：[`app/main_server.py`](app/main_server.py) 启动时无条件调用 `initialize_steamworks()`，[`utils/token_tracker.py`](utils/token_tracker.py) 的 `_get_telemetry_steam_user_id()` 只要 SDK 起来且 `Users.GetSteamID()` 返回非零就上报，并不区分 source / release / steam 这三种 distribution 渠道。典型场景是 Steam 发行版，但源码版如果安装了 `steamworks` Python 包并保留了 `steam_appid.txt`、同时 Steam 客户端在登录态，同样会带 Steam64。**如果你不希望它被上报：(1) 最稳的 `DO_NOT_TRACK=1` 全关；(2) 退出 Steam 客户端；(3) 源码用户可在环境中卸载 `steamworks` 包或移除 `steam_appid.txt`。**
 
 完整实现与传输协议见 [`utils/token_tracker.py`](utils/token_tracker.py) 与 [`local_server/telemetry_server/README.md`](local_server/telemetry_server/README.md)：HMAC-SHA256 防篡改、±5min 时间窗防重放、滑动窗口限流（120 req/h/device）、append-only 存储；每个 server 进程最多约 1 次/60s 上报（与本地落盘节流共用同一计时器），不影响主流程性能。
 
