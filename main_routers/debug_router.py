@@ -106,15 +106,19 @@ def _safe_psutil_extras() -> dict[str, Any]:
     """补 psutil 能给的几个长跑泄漏经典指标：cpu%、线程数、Win handle/POSIX fd。
 
     - cpu_percent: **原始问题的金线指标**——任务管理器看到 31.9% 就是这个。
-      需要复用 ``_get_psutil_process()`` 返回的同一个实例，每次调用返回距上次
-      的 CPU 利用率%。
+      ⚠️ 关键归一化：``proc.cpu_percent(None)`` 用 UNIX 语义（单核 100% = 100，
+      多核并行可 > 100%），但任务管理器显示「占总 CPU 的百分比」（8 核单核
+      打满 = 12.5%）。为了曲线**直接对得上用户截图**，除以 ``cpu_count``。
+      另外报 ``cpu_percent_raw`` 留 UNIX 原值，方便要看「占了几个核」的场景。
     - num_threads: 线程泄漏 cheap 检测。
     - num_handles / num_fds: Windows 句柄 / POSIX fd 泄漏。重启即恢复的 case
       多数对得上这个。先试 Windows 的 num_handles，再试 POSIX 的 num_fds，
       都拿不到就 None。
     """
     out: dict[str, Any] = {
-        "cpu_percent": None,
+        "cpu_percent": None,       # 任务管理器规模（占总 CPU 百分比）
+        "cpu_percent_raw": None,   # psutil 原始值（占单核百分比，多核可 > 100）
+        "cpu_count": None,
         "num_threads": None,
         "num_handles": None,
     }
@@ -122,7 +126,13 @@ def _safe_psutil_extras() -> dict[str, Any]:
     if proc is None:
         return out
     try:
-        out["cpu_percent"] = proc.cpu_percent(interval=None)
+        import psutil  # type: ignore
+        cpu_count = psutil.cpu_count() or 1
+        raw = proc.cpu_percent(interval=None)
+        out["cpu_percent_raw"] = raw
+        out["cpu_count"] = cpu_count
+        # 归一化到任务管理器规模：raw / cpu_count
+        out["cpu_percent"] = raw / cpu_count
     except Exception:
         pass
     try:

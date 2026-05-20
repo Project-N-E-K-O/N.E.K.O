@@ -102,18 +102,25 @@
     // ── 2.5 URL.createObjectURL 计数 ─────────────────────────────────
     // Blob URL 没 revoke 是 audio playback 最经典的 leak——浏览器在 created -
     // revoked 之差里持有 Blob 引用，不被 GC。这里 monkey-patch 计数「活的」
-    // ObjectURL 数（created 减 revoked）。同 setInterval 的玩法。
-    var _liveObjectURLs = 0;
+    // ObjectURL 数。
+    //
+    // 用 Set 跟踪自己 create 出来的 URL，而不是单纯计数器 +/-：浏览器规范里
+    // ``revokeObjectURL(unknown)`` 是 no-op，如果只是无脑 -1 就会让重复 revoke
+    // / revoke 外部 URL 把计数压成负数（或 Math.max 兜底压成 0），把真 leak
+    // 信号悄悄擦掉。Set 只在我们真的 tracked 过的 URL 被 revoke 时才递减。
+    var _trackedObjectURLs = (typeof Set !== 'undefined') ? new Set() : null;
     var _origCreateObjectURL = (typeof URL !== 'undefined' && URL.createObjectURL) ? URL.createObjectURL.bind(URL) : null;
     var _origRevokeObjectURL = (typeof URL !== 'undefined' && URL.revokeObjectURL) ? URL.revokeObjectURL.bind(URL) : null;
-    if (_origCreateObjectURL && _origRevokeObjectURL) {
+    if (_trackedObjectURLs && _origCreateObjectURL && _origRevokeObjectURL) {
         URL.createObjectURL = function () {
             var u = _origCreateObjectURL.apply(null, arguments);
-            _liveObjectURLs += 1;
+            try { _trackedObjectURLs.add(u); } catch (e) { /* noop */ }
             return u;
         };
         URL.revokeObjectURL = function (u) {
-            _liveObjectURLs = Math.max(0, _liveObjectURLs - 1);
+            // Set.delete 自身就有「存在才删」语义——重复 revoke / 未知 URL
+            // 不会动 Set 大小，计数纹丝不动。
+            try { _trackedObjectURLs.delete(u); } catch (e) { /* noop */ }
             return _origRevokeObjectURL(u);
         };
     }
@@ -137,7 +144,7 @@
             raf_fps_60s: _snapshotRAF(),
             dom_nodes: 0,
             js_heap_mb: null,
-            live_object_urls: _liveObjectURLs,
+            live_object_urls: _trackedObjectURLs ? _trackedObjectURLs.size : 0,
             error_count: _errorCount,
             unhandled_rejection_count: _unhandledRejectionCount,
         };
