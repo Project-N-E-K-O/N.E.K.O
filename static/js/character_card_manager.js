@@ -10649,6 +10649,16 @@ function _companionRenderNextQuestion(state) {
             };
         }),
         allowCustom: q.allowCustom !== false,
+        // 同 chip 的 ownIdx 防 race —— 自定义输入框按 Enter 也要先确认这条
+        // bubble 还对应当前题，否则老 bubble 的输入会把答案塞给"现在的题"
+        // 并再次 ++idx 跳过下一题。
+        customSubmit: function (v) {
+            if (state.currentQuestionIdx !== ownIdx) return;
+            state.collectedAnswers[ownQid] = v;
+            _companionAppendUser(state, v);
+            state.currentQuestionIdx++;
+            _companionRenderNextQuestion(state);
+        },
     });
 }
 
@@ -11033,7 +11043,15 @@ function _companionAppendAssistant(state, text, opts) {
             if (!v) return;
             input.disabled = true;
             bubble.querySelectorAll('.card-companion-chip').forEach(function (c) { c.disabled = true; });
-            _companionHandleUserText(state, v);
+            // opts.customSubmit 由调用方提供时优先用它（_companionRenderNextQuestion
+            // 走这一支以便施加 stale-bubble ownIdx 防 race —— 否则用户在老 bubble
+            // 的自定义输入框里按 Enter 会走通用 _companionHandleUserText，把答案
+            // 塞给当前题、再 ++ idx 跳过下一题。chip 那一支也是这个思路）。
+            if (typeof opts.customSubmit === 'function') {
+                opts.customSubmit(v);
+            } else {
+                _companionHandleUserText(state, v);
+            }
         });
         customRow.appendChild(input);
         bubble.appendChild(customRow);
