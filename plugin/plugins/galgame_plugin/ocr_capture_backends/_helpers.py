@@ -608,5 +608,3 @@ def _crop_image_to_screen_rect(
     if crop_right <= crop_left or crop_bottom <= crop_top:
         raise RuntimeError("Crop region outside source image")
     return image.crop((crop_left, crop_top, crop_right, crop_bottom))
-
-

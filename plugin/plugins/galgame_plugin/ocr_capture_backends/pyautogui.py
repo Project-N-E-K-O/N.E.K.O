@@ -1,4 +1,5 @@
 from __future__ import annotations
+import sys
 from typing import Any
 from ..ocr_runtime_types import DetectedGameWindow, OcrCaptureProfile, _CAPTURE_BACKEND_PYAUTOGUI
 from ._helpers import _require_visible_capture_target, _target_screen_capture_rect, _crop_window_image
@@ -25,6 +26,13 @@ def _is_window_on_primary_monitor(
         return False, "window_spans_across_primary_and_secondary_monitor"
 
     return True, ""
+
+
+def _ocr_reader_public_attr(name: str, fallback: Any) -> Any:
+    ocr_reader = sys.modules.get("plugin.plugins.galgame_plugin.ocr_reader")
+    if ocr_reader is None:
+        return fallback
+    return getattr(ocr_reader, name, fallback)
 
 
 class PyAutoGuiCaptureBackend:
@@ -79,10 +87,27 @@ class PyAutoGuiCaptureBackend:
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
         import pyautogui
 
-        _require_visible_capture_target(target, backend_kind=self.kind)
-        rect = _target_screen_capture_rect(target)
+        require_visible_capture_target = _ocr_reader_public_attr(
+            "_require_visible_capture_target",
+            _require_visible_capture_target,
+        )
+        target_screen_capture_rect = _ocr_reader_public_attr(
+            "_target_screen_capture_rect",
+            _target_screen_capture_rect,
+        )
+        crop_window_image = _ocr_reader_public_attr(
+            "_crop_window_image",
+            _crop_window_image,
+        )
+        is_window_on_primary_monitor = _ocr_reader_public_attr(
+            "_is_window_on_primary_monitor",
+            _is_window_on_primary_monitor,
+        )
+
+        require_visible_capture_target(target, backend_kind=self.kind)
+        rect = target_screen_capture_rect(target)
         left, top, right, bottom = rect
-        on_primary, reason = _is_window_on_primary_monitor(rect)
+        on_primary, reason = is_window_on_primary_monitor(rect)
         if not on_primary:
             primary_w, primary_h = pyautogui.size()
             raise RuntimeError(
@@ -96,7 +121,7 @@ class PyAutoGuiCaptureBackend:
         )
         if image.mode != "RGB":
             image = image.convert("RGB")
-        return _crop_window_image(
+        return crop_window_image(
             image,
             window_rect=rect,
             profile=profile,
