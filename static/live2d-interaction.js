@@ -4,7 +4,7 @@
 
 // ===== 自动吸附功能配置 =====
 const SNAP_CONFIG = {
-    // 吸附阈值：模型在屏幕内剩余的像素小于此值时触发吸附（即模型绝大部分超出屏幕）
+    // 兼容旧配置入口；当前拖拽回弹按 margin 触发，不再等模型绝大部分出屏
     threshold: 200,
     // 吸附边距：吸附后距离屏幕边缘的最小距离
     margin: 5,
@@ -47,13 +47,13 @@ const EasingFunctions = {
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
  * @param {Object} options - 可选参数
- * @param {boolean} options.afterDisplaySwitch - 是否为屏幕切换后的吸附（使用更宽松的条件：超出即吸附）
+ * @param {boolean} options.afterDisplaySwitch - 兼容旧调用；当前主屏/副屏统一按安全边距吸附
  * @returns {Object|null} 返回吸附信息，如果不需要吸附则返回 null
  */
 Live2DManager.prototype._checkSnapRequired = async function (model, options = {}) {
     if (!model) return null;
 
-    const { afterDisplaySwitch = false, threshold: customThreshold } = options;
+    const { afterDisplaySwitch = false } = options;
 
     try {
         const bounds = model.getBounds();
@@ -94,44 +94,13 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         let overflowTop = screenTop - modelTop;          // 上边超出
         let overflowBottom = modelBottom - screenBottom; // 下边超出
 
-        // 检查是否有任何边超出阈值
-        // 新逻辑：只有当模型在屏幕内剩余的部分小于 threshold 时才触发吸附
-        // 即模型绝大部分都超出屏幕时才吸附
-        const threshold = customThreshold ?? SNAP_CONFIG.threshold;
         const margin = SNAP_CONFIG.margin;
 
-        // 计算模型在屏幕内剩余的像素数
-        // 水平方向：模型在屏幕内的宽度
-        const visibleLeft = Math.max(modelLeft, screenLeft);
-        const visibleRight = Math.min(modelRight, screenRight);
-        const visibleWidth = Math.max(0, visibleRight - visibleLeft);
-
-        // 垂直方向：模型在屏幕内的高度
-        const visibleTop = Math.max(modelTop, screenTop);
-        const visibleBottom = Math.min(modelBottom, screenBottom);
-        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
-
-        // 判断是否需要吸附
-        // 屏幕切换后：只要超出边界就吸附（更宽松）
-        // 当前屏幕：屏幕内剩余的像素小于阈值时才吸附（即模型绝大部分超出屏幕）
-        let needsSnapLeft, needsSnapRight, needsSnapTop, needsSnapBottom;
-
-        if (afterDisplaySwitch) {
-            // 屏幕切换后，只要超出边界就吸附
-            needsSnapLeft = overflowLeft > margin;
-            needsSnapRight = overflowRight > margin;
-            needsSnapTop = overflowTop > margin;
-            needsSnapBottom = overflowBottom > margin;
-        } else {
-            // 当前屏幕：只有模型绝大部分超出（屏幕内剩余小于 threshold）才吸附
-            const needsSnapHorizontal = visibleWidth < threshold && (overflowLeft > 0 || overflowRight > 0);
-            const needsSnapVertical = visibleHeight < threshold && (overflowTop > 0 || overflowBottom > 0);
-
-            needsSnapLeft = overflowLeft > 0 && needsSnapHorizontal;
-            needsSnapRight = overflowRight > 0 && needsSnapHorizontal;
-            needsSnapTop = overflowTop > 0 && needsSnapVertical;
-            needsSnapBottom = overflowBottom > 0 && needsSnapVertical;
-        }
+        // 与普通窗口一致：主屏/副屏都按安全边距回弹，而不是等模型几乎消失才吸附。
+        const needsSnapLeft = overflowLeft > margin;
+        const needsSnapRight = overflowRight > margin;
+        const needsSnapTop = overflowTop > margin;
+        const needsSnapBottom = overflowBottom > margin;
 
         if (!needsSnapLeft && !needsSnapRight && !needsSnapTop && !needsSnapBottom) {
             return null; // 不需要吸附
@@ -331,8 +300,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         ));
     };
 
-
-
     // 点击触发随机表情和动作（低优先级，会自动恢复）
     // 使用最低优先级 IDLE=1，确保不会覆盖对话等高优先级动作
     window.live2dManager.CLICK_MOTION_PRIORITY = 2; // IDLE priority
@@ -442,6 +409,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 // 如果没有执行吸附，则正常保存位置
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
+                } else if (window.NekoAvatarMultiScreenDragHint &&
+                    typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
+                    window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('live2d');
                 }
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
@@ -1605,6 +1575,10 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
                         await this._savePositionAfterInteraction();
                     }
                     // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
+                    if (window.NekoAvatarMultiScreenDragHint &&
+                        typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
+                        window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('live2d');
+                    }
 
                     return true;  // Display switch occurred
                 }

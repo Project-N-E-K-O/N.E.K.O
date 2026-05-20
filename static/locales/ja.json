@@ -2042,6 +2042,12 @@
         "screenRecordingPermissionDenied": "⚠️ 画面録画の権限が許可されていません。システム設定で画面録画を許可してください",
         "repetitionDetected": "高い繰り返しが検出されました。{{name}}を休ませるために会話を終了することをお勧めします。",
         "modelSwitched": "モデルを切り替えました",
+        "multiScreenDragHint": {
+            "title": "YUI を別の画面へ移動できます",
+            "body": "画面の端へ向かってそのままドラッグし、マウスを離してください。端に近すぎると、先に自動で戻ります。",
+            "ack": "わかった",
+            "never": "今後表示しない"
+        },
         "screenSource": {
             "notAvailable": "画面ソース選択はデスクトップ版のみで利用可能です",
             "loading": "読み込み中...",
