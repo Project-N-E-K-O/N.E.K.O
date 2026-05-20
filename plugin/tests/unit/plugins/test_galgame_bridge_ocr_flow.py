@@ -1596,6 +1596,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_return
         pid=7101,
         width=1000,
         height=500,
+        is_foreground=True,
     )
 
     payload = manager.auto_recalibrate_dialogue_profile()
@@ -1605,6 +1606,35 @@ def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_return
     assert payload["capture_profile"]["top_ratio"] == pytest.approx(0.50)
     assert payload["capture_profile"]["bottom_inset_ratio"] == pytest.approx(0.12)
     assert payload["sample_text"] == "这是自动校准命中的对白文本。"
+
+
+@pytest.mark.plugin_unit
+def test_auto_recalibrate_ocr_dialogue_profile_rejects_background_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=build_config(_make_effective_config(bridge_root, ocr_reader={"enabled": True})),
+        platform_fn=lambda: True,
+        window_scanner=lambda: [],
+        capture_backend=_FakeImageCaptureBackend(size=(1000, 500)),
+        ocr_backend=_CropAwareOcrBackend(lambda _image: "dialogue"),
+    )
+    manager._attached_window = DetectedGameWindow(
+        hwnd=501,
+        title="Demo Window",
+        process_name="DemoGame.exe",
+        pid=7101,
+        width=1000,
+        height=500,
+        is_foreground=False,
+    )
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 9999)
+
+    with pytest.raises(ValueError, match="前台"):
+        manager.auto_recalibrate_dialogue_profile()
 
 
 @pytest.mark.plugin_unit
@@ -1646,6 +1676,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_excludes_title_bar(
         pid=7103,
         width=1000,
         height=500,
+        is_foreground=True,
     )
 
     payload = manager.auto_recalibrate_dialogue_profile()
@@ -1666,6 +1697,7 @@ def test_auto_recalibrate_aihong_dialogue_profile_can_escape_stale_narrow_bucket
         pid=7102,
         width=1040,
         height=807,
+        is_foreground=True,
     )
     expected_box = (0, 484, 1040, 766)
     manager = OcrReaderManager(
@@ -1869,7 +1901,7 @@ def test_ocr_reader_foreground_refresh_rebounds_manual_target_by_signature(
             "window_key": "stale-window-key",
             "process_name": rebound.process_name,
             "normalized_title": rebound.normalized_title,
-            "pid": 9999,
+            "pid": rebound.pid,
             "last_known_hwnd": 9999,
         }
     )
@@ -2675,6 +2707,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survive
         pid=7202,
         width=1000,
         height=500,
+        is_foreground=True,
     )
     manager = OcrReaderManager(
         logger=plugin.logger,
@@ -2746,6 +2779,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survive
                 pid=7202,
                 width=1000,
                 height=500,
+                is_foreground=True,
             )
         ],
         capture_backend=_FakeCaptureBackend(),
@@ -2794,6 +2828,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_failure_does_not_write_stor
         pid=7201,
         width=1000,
         height=500,
+        is_foreground=True,
     )
 
     result = await plugin.galgame_auto_recalibrate_ocr_dialogue_profile()
@@ -2905,7 +2940,7 @@ async def test_poll_bridge_persists_rebound_ocr_window_target(tmp_path: Path) ->
         "window_key": "ocrwin:legacy-window",
         "process_name": rebound_window.process_name,
         "normalized_title": rebound_window.normalized_title,
-        "pid": 4455,
+        "pid": rebound_window.pid,
         "last_known_hwnd": 777,
         "selected_at": "2026-04-24T10:00:00Z",
     }
