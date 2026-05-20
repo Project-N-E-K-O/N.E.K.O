@@ -494,8 +494,12 @@ async def debug_health(deep: bool = False) -> dict[str, Any]:
 
     ``deep=true`` 触发慢字段（``gc.get_objects()`` 45ms 内存对象 type 分布 +
     Windows ``num_threads()`` 8ms 线程数）。Watchdog 永不调它们——用户排查
-    内存泄漏时手动 ``?deep=1`` 一次拿当下数据；想要时序就多次调。"""
-    current = await asyncio.to_thread(_collect_snapshot, deep)
+    内存泄漏时手动 ``?deep=1`` 一次拿当下数据；想要时序就多次调。
+
+    实现注释：cheap 路径 ~0.13 ms 自身耗时直接同步调；deep 路径 50 ms 阻塞
+    是用户**主动**触发的代价，自己等就好——不为这个场景做 to_thread 兜底，
+    省一层 thread 调度 overhead，代码直接。"""
+    current = _collect_snapshot(deep)
     return {
         "current": current,
         "ring": list(_HEALTH_RING),
