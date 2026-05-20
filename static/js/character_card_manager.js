@@ -10573,7 +10573,17 @@ async function _companionRunClarify(state) {
     _companionSetBusy(state, true);
     const typing = _companionAppendTyping(state);
     try {
-        _companionEnsureLiveForm(state);
+        // form 找不到（用户切走了详情面板 / 关掉了）→ 早 return，不要白白吃一次
+        // LLM 调用。同样的 short-circuit 在 _companionRunGenerate / _companionRunChat
+        // 也加了，否则即使后端把 reply + actions 返回回来，前端 apply 阶段也只能
+        // 弹「⚠ 角色表单不在屏幕上了」，钱白花、用户体验冲突。
+        if (!_companionEnsureLiveForm(state)) {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
         const resp = await _cardAssistFetch('/api/card-assist/clarify', {
             description: state.description,
             current_card: _cardAssistCollectCurrentFormData(state.form),
@@ -10631,7 +10641,13 @@ async function _companionRunGenerate(state) {
     const typing = _companionAppendTyping(state,
         _cardAssistT('character.aiCompanionGenerating', '正在帮你写草稿…'));
     try {
-        _companionEnsureLiveForm(state);
+        if (!_companionEnsureLiveForm(state)) {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
         const resp = await _cardAssistFetch('/api/card-assist/generate', {
             description: state.description,
             answers: state.collectedAnswers,
@@ -10702,7 +10718,13 @@ async function _companionRunChat(state) {
     _companionSetBusy(state, true);
     const typing = _companionAppendTyping(state);
     try {
-        _companionEnsureLiveForm(state);
+        if (!_companionEnsureLiveForm(state)) {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
         const resp = await _cardAssistFetch('/api/card-assist/chat', {
             messages: state.chatHistory,
             current_card: _cardAssistCollectCurrentFormData(state.form),
@@ -10881,8 +10903,20 @@ function _companionRefreshFormSnapshot(state) {
 function _companionEnsureLiveForm(state) {
     if (!state) return false;
     if (state.form && state.form.isConnected) return true;
-    if (!state.originalName) return false;
-    const liveForm = document.getElementById('catgirl-form-' + state.originalName);
+    // 找 live form 的两条路：
+    //   1) 有 originalName → 按 id 精确查（已保存卡常态：切猫娘 / 重命名 / 关再开）
+    //   2) 没 originalName（companion 是在**空白新卡**上启动的，state.originalName='') →
+    //      用 DOM 选择器在当前 catgirl panel 里找那个唯一 form。这一支专门覆盖
+    //      「用户在新卡上开 companion → 填档案名 → 手动 Save → 卡被建出来后 form
+    //      id 从 catgirl-form-new 变成 catgirl-form-<actualName>」的场景。否则
+    //      `getElementById('catgirl-form-' + '')` 永远找不到、companion 永久陷在
+    //      "form gone"。详情面板同时只能有一个 form，所以 querySelector 命中唯一。
+    let liveForm = null;
+    if (state.originalName) {
+        liveForm = document.getElementById('catgirl-form-' + state.originalName);
+    } else {
+        liveForm = document.querySelector('.catgirl-panel-right form[id^="catgirl-form-"]');
+    }
     if (!liveForm) return false;
     // 拿到了"现行"的同名表单。把 state.form 换过去并重挂 watcher。
     // 注意：旧 form 上的 listener 已随 DOM 卸载消失，无需手动 remove —— 但
