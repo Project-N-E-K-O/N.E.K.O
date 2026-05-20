@@ -169,12 +169,29 @@ def _resolve_log_path() -> Path | None:
         return None
 
 
+# 单文件大小上限。超过则 rotate 到 .1（覆盖旧 .1），总占用硬封 ~20MB。
+# 算下来：3 个 lanlan + client merged 行 ≈ 500B，10MB ≈ 21000 行 ≈ 73 天数据，
+# 触发 rotation 后还能再写 73 天到新文件——对「报完问题忘关 env」场景完全够用。
+_LOG_ROTATE_BYTES = 10 * 1024 * 1024
+
+
 def _append_to_log(snap: dict[str, Any]) -> None:
     path = _resolve_log_path()
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Rotate：超阈值则 os.replace 到 .1。os.replace 在 Windows / POSIX 都
+        # 原子，且会原子覆盖已有 .1——所以总占用 = current + .1 ≤ 2×10MB。
+        # 用 path.name + ".1" 而不是 with_suffix('.1')——后者会把 .jsonl 替成
+        # .1 得到 debug_health.1，丢了 .jsonl 后缀。
+        try:
+            if path.exists() and path.stat().st_size > _LOG_ROTATE_BYTES:
+                os.replace(path, path.parent / (path.name + ".1"))
+        except OSError as e:
+            # rotation 失败不挂主路径，让 append 照旧写——大不了文件继续涨
+            # 一阵子，下次 tick 还会再试。
+            logger.debug("debug_health: rotate failed: %s", e)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(snap, ensure_ascii=False) + "\n")
     except Exception as e:
