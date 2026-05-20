@@ -8,6 +8,8 @@
 
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <!-- 诊断观测：必须最早加载（与 index.html 同序）。详见 static/debug-health.js。 -->
+    <script src="/static/debug-health.js?v={{ static_asset_version }}"></script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>

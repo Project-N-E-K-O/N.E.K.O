@@ -331,6 +331,16 @@ function isMiniMaxProvider(provider) {
     return provider === 'minimax' || provider === 'minimax_intl';
 }
 
+function getPreferredCloneProviderFromConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') return '';
+    if (cfg.assistApiKeyQwen) return 'cosyvoice';
+    if (cfg.assistApiKeyQwenIntl) return 'cosyvoice_intl';
+    if (cfg.assistApiKeyMinimax) return 'minimax';
+    if (cfg.assistApiKeyMinimaxIntl) return 'minimax_intl';
+    if (cfg.assistApiKeyElevenlabs) return 'elevenlabs';
+    return '';
+}
+
 function sanitizeMiniMaxPrefix(prefix) {
     return String(prefix || '')
         .replace(/[^0-9a-z]/gi, '')
@@ -623,7 +633,15 @@ if (window.i18n && window.i18n.isInitialized) {
                 // 本地TTS服务器(ws/wss协议)不需要云端API Key
                 const ttsUrl = cfg.ttsModelUrl || '';
                 const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
-                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl || cfg.assistApiKeyElevenlabs);
+                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyQwenIntl || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl || cfg.assistApiKeyElevenlabs);
+                const preferredProvider = getPreferredCloneProviderFromConfig(cfg);
+                const providerSelect = document.getElementById('voiceProvider');
+                if (!providerTouchedByUser && preferredProvider && providerSelect && providerSelect.value === 'cosyvoice') {
+                    suppressProviderTouchedTracking = true;
+                    providerSelect.value = preferredProvider;
+                    providerSelect.dispatchEvent(new Event('change'));
+                    suppressProviderTouchedTracking = false;
+                }
                 if (!hasCloneApi) {
                     const modal = document.getElementById('noApiModal');
                     if (modal) modal.style.display = 'flex';
@@ -650,11 +668,13 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         if (!span) return;
 
         const keyMap = {
+            'cosyvoice_intl': 'voice.alibabaIntlApiRequired',
             'minimax': 'voice.minimaxApiRequired',
             'minimax_intl': 'voice.minimaxIntlApiRequired',
             'elevenlabs': 'voice.elevenlabsApiRequired',
         };
         const fallbackMap = {
+            'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
             'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
         };
         const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';

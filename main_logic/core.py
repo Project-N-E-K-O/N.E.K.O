@@ -148,6 +148,40 @@ def _format_callback_source(cb: dict, lang: str) -> str:
     return _loc(descriptor, lang).format(name=name)
 
 
+def apply_role_placeholders(
+    text: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
+    """Substitute ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders in
+    plugin-supplied text at the LLM-injection boundary.
+
+    Plugin authors don't know which ``LLMSessionManager`` (and therefore which
+    ``master_name`` / ``lanlan_name`` pair) the text will route to — that's a
+    host-side visibility decision. So the canonical contract is:
+
+        plugin writes ``"向 {MASTER_NAME} 汇报…"`` →
+        host expands at the injection site, per session.
+
+    Uses ``str.replace`` rather than ``str.format`` so that other braces in
+    the text (JSON fragments, code snippets, user content containing stray
+    ``{``) don't raise ``KeyError``. Empty names short-circuit — the
+    placeholder is left in place rather than replaced with ``""``, on the
+    theory that the literal token is less misleading than an empty hole.
+
+    This is the SINGLE source of truth for the placeholder contract. New
+    plugin-text injection sites should funnel through this helper.
+    """
+    if not text:
+        return text
+    if isinstance(master_name, str) and master_name:
+        text = text.replace("{MASTER_NAME}", master_name)
+    if isinstance(lanlan_name, str) and lanlan_name:
+        text = text.replace("{LANLAN_NAME}", lanlan_name)
+    return text
+
+
 def _render_callback_inner_item(
     cb: dict,
     lang: str,
@@ -161,21 +195,17 @@ def _render_callback_inner_item(
     and detail empty); the caller can then drop the line and rely on the
     outer header alone to express that something happened.
 
-    ``{MASTER_NAME}`` and ``{LANLAN_NAME}`` placeholders in plugin-supplied
-    ``summary``/``detail`` are substituted here so plugin authors can write
-    role-aware text without having to learn the live character names. The
-    substitution uses ``str.replace`` rather than ``str.format`` so that
-    other braces in the text (e.g. JSON fragments in detail) don't trigger
-    a KeyError.
+    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
+    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`.
     """
-    summary = (cb.get("summary") or "").strip()
-    detail = (cb.get("detail") or "").strip()
-    if master_name:
-        summary = summary.replace("{MASTER_NAME}", master_name)
-        detail = detail.replace("{MASTER_NAME}", master_name)
-    if lanlan_name:
-        summary = summary.replace("{LANLAN_NAME}", lanlan_name)
-        detail = detail.replace("{LANLAN_NAME}", lanlan_name)
+    summary = apply_role_placeholders(
+        (cb.get("summary") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
+    detail = apply_role_placeholders(
+        (cb.get("detail") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
     text = summary or detail
     if not text:
         return ""
@@ -304,7 +334,13 @@ def _build_callback_instruction(
     return "\n\n".join(parts)
 
 
-def _format_voice_swap_item(entry: dict, lang: str) -> str:
+def _format_voice_swap_item(
+    entry: dict,
+    lang: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
     """Render a single voice-mode pending_extra_replies entry to a bulleted
     line for the hot-swap injection.
 
@@ -315,11 +351,22 @@ def _format_voice_swap_item(entry: dict, lang: str) -> str:
     (the voice-mode equivalent of the header-only branch in
     ``_build_callback_instruction``).
 
+    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
+    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`. The
+    synthesized placeholder fallback uses host-side localized phrases so it
+    needs no role substitution.
+
     Returns ``""`` when the entry is genuinely empty (no body, no error, and
     a benign ``completed`` status) — caller filters those out.
     """
-    summary = (entry.get("summary") or "").strip()
-    detail = (entry.get("detail") or "").strip()
+    summary = apply_role_placeholders(
+        (entry.get("summary") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
+    detail = apply_role_placeholders(
+        (entry.get("detail") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
     text = summary or detail
     status = entry.get("status") or "completed"
     emoji = _STATUS_EMOJI.get(status, "•")
@@ -400,7 +447,10 @@ def _render_pending_extra_replies_by_origin(
 
     blocks: list[str] = []
     if task_entries:
-        items = [_format_voice_swap_item(e, lang) for e in task_entries]
+        items = [
+            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
+            for e in task_entries
+        ]
         items = [s for s in items if s]
         if items:
             blocks.append(
@@ -409,7 +459,10 @@ def _render_pending_extra_replies_by_origin(
                 + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
             )
     if event_entries:
-        items = [_format_voice_swap_item(e, lang) for e in event_entries]
+        items = [
+            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
+            for e in event_entries
+        ]
         items = [s for s in items if s]
         if items:
             blocks.append(
@@ -3291,6 +3344,19 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
+        # Livestream 上游是 free 路 Gemini 系，服务端始终承担原生 TTS。客户端
+        # 角色卡的 voice_id 不论是不是 free preset，都不应该再开外部 TTS——
+        # 否则文本会被客户端按整句喂给 tts_proxy，丢掉服务端 Gemini → core_proxy
+        # → CV3 那条真 bistream 路径的首音频延迟优势。
+        #
+        # PR #1369 在原 free-preset gate 第三个条件里 OR 了 livestream-active，
+        # 但前两个 AND（_is_free_preset_voice / core_api_type='free'）没拆，
+        # 导致 livestream + 非 free preset 音色（克隆 / 空 voice_id / 主播
+        # 自定义未识别为 preset）仍会 fallback 到外部 TTS。这里独立早退兜底。
+        # _is_livestream_active 内部已经 gate 了 core_api_type='free'。
+        if self._is_livestream_active():
+            logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
+            return False
         base_url = realtime_config.get('base_url', '')
         if should_block_free_native_voice(
             self.core_api_type, self.voice_id, base_url,
@@ -3309,14 +3375,8 @@ class LLMSessionManager:
         if (
             self._is_free_preset_voice
             and self.core_api_type == 'free'
-            and ('lanlan.tech' in realtime_config.get('base_url', '') or self._is_livestream_active())
+            and 'lanlan.tech' in realtime_config.get('base_url', '')
         ):
-            # livestream 启用后 base_url 被重写成主播自建 server_prefix
-            # （非 lanlan.tech 域），导致原 lanlan.tech 字面量判定失效，会 fallback
-            # 到外部 TTS 流水线。但 livestream 上游同样是 free 路 Gemini 系，
-            # 原生音色（voice_id 由 livestream_config 覆盖成 neon 等）直接走
-            # session config 即可，不需要再开外部 TTS。把 livestream-active
-            # 视为与 lanlan.tech 对偶的免费原生音色路径。
             logger.info(f"{log_prefix}🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
             return False
         if self.voice_id or has_custom_tts_config:
@@ -6079,30 +6139,38 @@ class LLMSessionManager:
                             return
                         logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
 
-                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
-                    # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
+                    # 文本模式：把挂起的 agent 任务回调**就地拼到本轮 user
+                    # message 的 content 前缀**——LLM 把它当作"用户当前发声那
+                    # 一刻附带的额外上下文"，在同一轮回答里自然提及，不再起
+                    # 独立 turn（issue #1033）。drain 出来的字符串已含
+                    # ``======[系统通知] 来自xxx的xxx======`` watermark，LLM
+                    # 看得出来是 system notice 而不是用户原话。
+                    #
+                    # 与 voice mode 的对偶：``prime_context(skipped=False)`` 在
+                    # GPT/GLM/Step 上同样走 ``create_response`` 把 callback
+                    # 注入成 user role 消息，offline 这边 inline 进 user
+                    # content 跟那条路径语义一致——callback 文本随 user message
+                    # 进 transcript 持久化（issue 旧注释里担忧的"持久化污染"作
+                    # 废，passive callback 跟用户输入一起留在 history 让 AI
+                    # 后续仍能 reference）。
+                    #
+                    # best-effort 注入：drain 的 ``finally clear`` 是 PR #1032
+                    # 的设计决定（passive=单次软通知），即便 drain 或 stream_text
+                    # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
+                    # snapshot 回滚。
+                    _agent_cb_ctx = ""
                     if self.pending_agent_callbacks:
                         try:
-                            ctx = self.drain_agent_callbacks_for_llm()
-                            if ctx:
-                                # ``ctx`` already includes its own grouped
-                                # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE outer
-                                # headers per (status, source). No extra wrap.
-                                await self.session.prompt_ephemeral(ctx)
-                                # prompt_ephemeral 通过 on_proactive_done → handle_proactive_complete
-                                # 发送 (None, None) 并置 _tts_done_queued_for_turn = True。
-                                # 对于 qwen-tts 的 server_commit 模式，需要为主回复生成新的
-                                # speech_id（触发 qwen worker 重建连接、重置 buffer_committed），
-                                # 并重置 done flag 允许 handle_response_complete 正常发送。
-                                async with self.lock:
-                                    self.current_speech_id = str(uuid4())
-                                    self._tts_done_queued_for_turn = False
-                                    self._tts_done_pending_until_ready = False
+                            _agent_cb_ctx = self.drain_agent_callbacks_for_llm() or ""
                         except Exception as _cb_err:
-                            logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
+                            logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
+                            _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
-                    await self.session.stream_text(data)
+                    await self.session.stream_text(
+                        data,
+                        system_prefix=_agent_cb_ctx or None,
+                    )
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return

@@ -660,6 +660,10 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
         'CORE_MODEL': "qwen3-omni-flash-realtime",
     },
+    'qwen_intl': {
+        'CORE_URL': "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+        'CORE_MODEL': "qwen3-omni-flash-realtime",
+    },
     'glm': {
         'CORE_URL': "wss://open.bigmodel.cn/api/paas/v4/realtime",
         'CORE_MODEL': "glm-realtime-air",
@@ -697,6 +701,19 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
+        'EMOTION_MODEL': "qwen3.6-flash-2026-04-16",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
+    },
+    'qwen_intl': {
+        'OPENROUTER_URL': "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        'OPENROUTER_URLS': [
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        ],
         'CONVERSATION_MODEL' : "qwen3.6-plus",
         'SUMMARY_MODEL': "qwen3.6-plus",
         'CORRECTION_MODEL': "qwen3.6-plus",

@@ -32,12 +32,27 @@ from config import (
     MEMORY_REFINE_REVISIT_AFTER_DAYS,
     MEMORY_REFINE_TOPK_PER_ENTRY,
 )
-from memory.embeddings import (
-    decode_embedding,
-    get_embedding_service,
-    is_cached_embedding_valid,
-    parse_dim_from_model_id,
-)
+try:
+    from memory.embeddings import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+    )
+except ImportError:
+    # See ``embedding_worker`` for context. With the disabled-service
+    # stub, ``MemoryRefineEngine`` sees ``is_available() == False`` on
+    # every pass and short-circuits the cluster scan — the module
+    # docstring already calls out the "embedding unavailable → no-op"
+    # contract.
+    from memory.embeddings_fallback import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+        _warn_once,
+    )
+    _warn_once(__name__)
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 

@@ -77,6 +77,7 @@ from utils.config_manager import (
     set_reserved,
     strip_generated_persona_selection_prompt,
 )
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 from utils.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
@@ -3699,6 +3700,26 @@ async def get_voice_preview(
             core_config = await _config_manager.aget_core_config()
             audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
+        cosyvoice_base_url = ''
+        if provider in ('cosyvoice', 'cosyvoice_intl'):
+            cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+            runtime_key = (cosyvoice_runtime.get('api_key') or '').strip()
+            if runtime_key:
+                audio_api_key = runtime_key
+            elif provider == 'cosyvoice_intl':
+                # intl key 缺失时不要继续用顶上从 tts_custom/AUDIO_API_KEY 拿到的
+                # 国内 key 去打 intl DashScope 端点，必然 401，错误现象比明确缺 key
+                # 难排查。和 minimax/native step/gemini 分支一致显式返回缺 key。
+                return JSONResponse({
+                    'success': False,
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING'
+                }, status_code=400)
+            cosyvoice_base_url = (
+                (voice_data or {}).get('dashscope_base_url')
+                or cosyvoice_runtime.get('base_url', '')
+            )
+
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
 
         preview_language = _get_voice_preview_language(request, language, i18n_language)
@@ -3863,13 +3884,38 @@ async def get_voice_preview(
             return JSONResponse({'success': False, 'error': 'TTS_AUDIO_API_KEY_MISSING', 'code': 'TTS_AUDIO_API_KEY_MISSING'}, status_code=400)
 
         # 生成音频
-        dashscope.api_key = audio_api_key
         try:
-            from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model()
-            synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
-            # 使用 asyncio.to_thread 包装同步阻塞调用
-            audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
+            tts_api_config = _config_manager.get_model_api_config('tts_custom')
+        except Exception as e:
+            logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
+            tts_api_config = {}
+        preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
+
+        from utils.api_config_loader import get_cosyvoice_clone_model
+        clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
+
+        def _do_preview_synthesize():
+            # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
+            # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
+            # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
+            # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
+            # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
+            with DASHSCOPE_GLOBAL_LOCK:
+                dashscope.api_key = audio_api_key
+                try:
+                    configure_dashscope_sdk_urls(
+                        dashscope,
+                        preview_base_url,
+                        websocket_path="inference",
+                    )
+                except Exception as e:
+                    logger.warning("DashScope 预览地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
+                    configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
+                synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
+                return synthesizer, synthesizer.call(text)
+
+        try:
+            synthesizer, audio_data = await asyncio.to_thread(_do_preview_synthesize)
 
             if not audio_data:
                 request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()
@@ -4274,7 +4320,7 @@ async def voice_clone(
         prefix: 音色前缀名
         ref_language: 参考音频的语言，可选值：ch, en, fr, de, ja, ko, ru
                       注意：这是参考音频的语言，不是目标语音的语言
-        provider: 服务商，可选值：cosyvoice (阿里云), minimax (国服), minimax_intl (国际服)
+        provider: 服务商，可选值：cosyvoice (阿里百炼), cosyvoice_intl (阿里国际版), minimax (国服), minimax_intl (国际服), elevenlabs
     """
     # 流式读取上传文件（带大小限制）并增量计算 MD5
     try:
@@ -4393,6 +4439,7 @@ async def voice_clone(
     # ==================== 云端语音克隆：按 provider 对偶分支 ====================
 
     # 统一通过 config_manager 获取 API Key
+    cosyvoice_runtime = None
     api_key = _config_manager.get_tts_api_key(provider)
 
     if provider in ('minimax', 'minimax_intl'):
@@ -4407,16 +4454,18 @@ async def voice_clone(
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
 
-    elif provider == 'cosyvoice':
-        # ---------- 阿里云 CosyVoice ----------
+    elif provider in ('cosyvoice', 'cosyvoice_intl'):
+        # ---------- 阿里 CosyVoice（国内 / 国际）----------
+        cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+        api_key = (cosyvoice_runtime.get('api_key') or '').strip()
         if not api_key:
             return JSONResponse({
                 'error': 'TTS_AUDIO_API_KEY_MISSING',
                 'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
-        base_url = None
-        storage_key = api_key
-        provider_label = '阿里云CosyVoice'
+        base_url = cosyvoice_runtime.get('base_url', '')
+        storage_key = cosyvoice_runtime.get('storage_key') or api_key
+        provider_label = cosyvoice_runtime.get('provider_label') or '阿里百炼CosyVoice'
 
     elif provider == 'elevenlabs':
         if not api_key:
@@ -4433,7 +4482,10 @@ async def voice_clone(
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
     # ---------- 公共流程：MD5 去重 ----------
-    existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+    if provider in ('cosyvoice', 'cosyvoice_intl'):
+        existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
+    else:
+        existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
     if existing:
         voice_id, voice_data = existing
         logger.info(f"{provider_label} 音频 MD5 命中，复用 voice_id: {voice_id}")
@@ -4446,7 +4498,7 @@ async def voice_clone(
 
     # ---------- 公共流程：音频规范化 ----------
     try:
-        if provider == 'cosyvoice':
+        if provider in ('cosyvoice', 'cosyvoice_intl'):
             mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
             if not mime_type:
                 return JSONResponse({'error': error_msg}, status_code=400)
@@ -4509,11 +4561,16 @@ async def voice_clone(
                 'created_at': datetime.now().isoformat()
             }
 
-        else:  # cosyvoice
+        else:  # cosyvoice / cosyvoice_intl
             from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = get_cosyvoice_clone_model()
+            clone_model = get_cosyvoice_clone_model(provider)
             language_hints = qwen_language_hints(ref_language)
-            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+            dashscope_base_url = (cosyvoice_runtime or {}).get('base_url', '')
+            client = QwenVoiceCloneClient(
+                api_key=api_key,
+                tflink_upload_url=TFLINK_UPLOAD_URL,
+                dashscope_base_url=dashscope_base_url,
+            )
             voice_id, tmp_url, _request_id = await client.clone_voice(
                 audio_buffer=normalized_buffer,
                 filename=normalized_filename,
@@ -4527,7 +4584,8 @@ async def voice_clone(
                 'file_url': tmp_url,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
-                'provider': 'cosyvoice',
+                'provider': provider,
+                'dashscope_base_url': dashscope_base_url,
                 'clone_model': clone_model,
                 'created_at': datetime.now().isoformat()
             }
@@ -4590,7 +4648,7 @@ async def voice_clone_direct(request: Request):
             "direct_link": "https://example.com/audio.wav",  // 音频直链URL
             "prefix": "custom_prefix",                        // 音色前缀名
             "ref_language": "ch",                             // 参考音频语言
-            "provider": "cosyvoice"                           // 服务商：cosyvoice / minimax / minimax_intl / elevenlabs
+            "provider": "cosyvoice"                           // 服务商：cosyvoice / cosyvoice_intl / minimax / minimax_intl / elevenlabs
         }
     """
     try:
@@ -4625,7 +4683,7 @@ async def voice_clone_direct(request: Request):
         ref_language = 'ch'
 
     # 验证服务商参数
-    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'elevenlabs']
+    valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'cosyvoice_intl', 'elevenlabs']
     if provider not in valid_providers:
         return JSONResponse({
             'error': f'无效的服务商: {provider}',
@@ -4636,7 +4694,12 @@ async def voice_clone_direct(request: Request):
 
     # 获取 API Key
     _config_manager = get_config_manager()
-    api_key = _config_manager.get_tts_api_key(provider)
+    cosyvoice_runtime = None
+    if provider in ('cosyvoice', 'cosyvoice_intl'):
+        cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
+        api_key = (cosyvoice_runtime.get('api_key') or '').strip()
+    else:
+        api_key = _config_manager.get_tts_api_key(provider)
     if not api_key:
         if provider in ('minimax', 'minimax_intl'):
             return JSONResponse({
@@ -4674,10 +4737,11 @@ async def voice_clone_direct(request: Request):
         base_url = await _get_elevenlabs_base_url(_config_manager)
         storage_key = f'__ELEVENLABS__{api_key[-8:]}'
         provider_label = 'ElevenLabs'
-    else:  # cosyvoice
+    else:  # cosyvoice / cosyvoice_intl
         from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
-        storage_key = api_key
-        provider_label = '阿里云CosyVoice'
+        base_url = (cosyvoice_runtime or {}).get('base_url', '')
+        storage_key = (cosyvoice_runtime or {}).get('storage_key') or api_key
+        provider_label = (cosyvoice_runtime or {}).get('provider_label') or '阿里百炼CosyVoice'
 
     # 验证直链是否可访问（HEAD失败时回退到GET）
     # 每一跳都固定到已校验的解析结果，避免校验后请求阶段被 DNS rebinding 绕过。
@@ -4733,7 +4797,7 @@ async def voice_clone_direct(request: Request):
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
             # 3. MD5 去重检查
-            existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
+            existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
             if existing:
                 voice_id, voice_data = existing
                 logger.info(f"{provider_label} 直链 MD5 命中，复用 voice_id: {voice_id}")
@@ -4829,7 +4893,7 @@ async def voice_clone_direct(request: Request):
 
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
 
-        else:  # cosyvoice
+        else:  # cosyvoice / cosyvoice_intl
             # ========== CosyVoice 直链克隆流程 ==========
             # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
@@ -4860,10 +4924,14 @@ async def voice_clone_direct(request: Request):
 
             # 4. 使用直链注册音色
             language_hints = qwen_language_hints(ref_language)
-            client = QwenVoiceCloneClient(api_key=api_key, tflink_upload_url=TFLINK_UPLOAD_URL)
+            client = QwenVoiceCloneClient(
+                api_key=api_key,
+                tflink_upload_url=TFLINK_UPLOAD_URL,
+                dashscope_base_url=base_url,
+            )
 
             from utils.api_config_loader import get_cosyvoice_clone_model
-            clone_model = get_cosyvoice_clone_model()
+            clone_model = get_cosyvoice_clone_model(provider)
             voice_id, _ = await asyncio.to_thread(
                 client.create_voice,
                 prefix=prefix,
@@ -4878,7 +4946,8 @@ async def voice_clone_direct(request: Request):
                 'file_url': direct_link,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
-                'provider': 'cosyvoice',
+                'provider': provider,
+                'dashscope_base_url': base_url,
                 'clone_model': clone_model,
                 'created_at': datetime.now().isoformat(),
                 'is_direct_link': True

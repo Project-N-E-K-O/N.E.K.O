@@ -1262,14 +1262,29 @@
                         var gameEvent = gameMeta.event || {};
                         console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
                     }
+                    // adapter 用 startNewSegment 抽象统一把每段独立 utterance 处理
+                    // （path A: isNewMessage=true 多 response item；path B: turn_end
+                    // 后的 late continuation, sealed && !isNewMessage）。lifecycle
+                    // 这边也对偶：两条路径都重置 assistantTurn lifecycle 并 emit
+                    // 新的 neko-assistant-turn-start，让 avatar-reaction-bubble /
+                    // subtitle / audio-playback 等 listeners 都拿到独立通知。
+                    //
+                    // path B 尤其关键：avatar-reaction-bubble 的 handleTurnEnd 在
+                    // text-only 段会 schedule fallback hide 定时器，没新 turn-start
+                    // 取消的话 seg2 typing 期间表情气泡会被隐掉。
+                    var sealedContinuation = !isNewMessage && !!window._geminiTurnEndSealed;
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
+                        // 仅 isNewMessage 走这条 voice-msg fix，sealed continuation
+                        // 是同 dialog turn 延续，无新用户语音消息要修。
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
                             S.lastVoiceUserMessage.textContent = '...';
                         }
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
+                    }
+                    if (isNewMessage || sealedContinuation) {
                         S.assistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
@@ -1385,6 +1400,9 @@
 
                     window._geminiTurnFullText = '';
                     window._pendingMusicCommand = '';
+                    // discard 后清掉 turn_end seal flag，避免残留导致下一个 chunk
+                    // 被误判为 sealedContinuation 触发不该触发的 lifecycle reset。
+                    window._geminiTurnEndSealed = false;
 
                     // 推进 epoch 并清空入站音频队列，防止在途 TTS blob 被消费播放
                     S.incomingAudioEpoch += 1;
@@ -2112,6 +2130,8 @@
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
+                        // 同 'turn end' 路径：标记封口，让后续 chunk 在 adapter 里新建气泡
+                        window._geminiTurnEndSealed = true;
                         window._pendingMusicCommand = '';
                         if (window._structuredGeminiStreaming) {
                             window._realisticGeminiBuffer = '';
@@ -2200,6 +2220,13 @@
                         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
                             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
                         }
+                        // 标记本气泡已封口：若同一 dialog turn 内还有后续 chunk
+                        // （Gemini Live late-continuation 或 tool 后续段台词），
+                        // app-chat-adapter.js 的 appendMessage 会据此新建一个气泡，
+                        // 而不是继续往封口气泡追加（封口气泡的 React StreamingText
+                        // 会在 status sent→streaming 切换时重 mount，导致追加文字
+                        // 视觉丢失）。详见 adapter 里的 _geminiTurnEndSealed 注释。
+                        window._geminiTurnEndSealed = true;
                         window._pendingMusicCommand = '';
                         if (window._structuredGeminiStreaming) {
                             window._realisticGeminiBuffer = '';

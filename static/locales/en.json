@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ CogTTS audio watermark (beep) detected. To disable the watermark, go to the Zhipu console and configure it manually.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "GPT-SoVITS API URL not configured. Please enable and configure custom TTS in API settings.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL must be localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Audio API key (AUDIO_API_KEY) not configured",
+        "TTS_AUDIO_API_KEY_MISSING": "API key for the selected voice provider is not configured. Please add it in API settings.",
         "TTS_VOICE_NOT_REGISTERED": "This character has no registered voice",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Missing required parameters",
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL is required",
@@ -1032,6 +1032,10 @@
             "cancel": "Cancel",
             "continue": "Continue Saving"
         },
+        "aliyunUsApiWarning": {
+            "title": "Alibaba US API Notice",
+            "message": "You are currently using Alibaba's US API, which does not support TTS or realtime voice. We recommend switching to Alibaba's Singapore API."
+        },
         "conversationModelConfig": "Text Dialogue Model Configuration",
         "summaryModelConfig": "Summary Model Configuration",
         "correctionModelConfig": "Correction Model Configuration",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "Go to API Settings",
         "noApiKeyPrompt": "No API key for voice cloning has been configured. Would you like to set one up?",
         "dismissNoApiPrompt": "Later",
-        "alibabaApiRequired": "This feature requires the CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "alibabaApiRequired": "This feature requires the Alibaba Bailian CosyVoice model. Please save the Alibaba Bailian API Key in API Keys settings (enabling Assist API is not required), or configure a local voice server.",
+        "alibabaIntlApiRequired": "This feature requires the Alibaba International CosyVoice model. Please save the Alibaba International API Key in API Keys settings (enabling Assist API is not required).",
         "minimaxApiRequired": "This feature requires the MiniMax model (China). Please save the MiniMax API Key in API Keys settings (enabling Assist API is not required).",
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "providerLabel": "Voice Clone Provider",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs"
