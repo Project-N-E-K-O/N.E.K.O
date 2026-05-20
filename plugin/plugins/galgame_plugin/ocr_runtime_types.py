@@ -104,8 +104,6 @@ try:
 except ImportError:  # pragma: no cover
     psutil = None
 
-from typing import ClassVar
-
 from .ocr_text_normalize import *
 from .ocr_capture_profile import *
 

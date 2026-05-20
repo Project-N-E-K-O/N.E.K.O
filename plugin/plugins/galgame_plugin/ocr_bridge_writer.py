@@ -140,6 +140,7 @@ class OcrReaderBridgeWriter:
         self._started_at = ""
         self._last_seq = 0
         self._last_event_ts = ""
+        self._scene_index = 0
         self._keep_unknown_scene_until_visual_scene = False
         self._state = self._initial_state("")
         self._text_to_line_id: dict[str, str] = {}

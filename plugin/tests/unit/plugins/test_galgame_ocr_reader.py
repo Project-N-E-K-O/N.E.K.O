@@ -1211,6 +1211,19 @@ def test_ocr_writer_end_session_resets_runtime_and_rejects_late_events(
     ]
 
 
+def test_ocr_writer_advance_visual_scene_before_session_is_nonfatal(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+
+    scene_id = writer.advance_visual_scene(ts="2026-04-29T03:00:00Z")
+
+    assert scene_id == "ocr:unknown:scene-0001"
+    assert writer.session_id == ""
+
+
 def test_ocr_writer_scene_change_clears_previous_dialogue_state(
     tmp_path: Path,
 ) -> None:
