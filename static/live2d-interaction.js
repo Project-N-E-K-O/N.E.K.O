@@ -48,12 +48,13 @@ const EasingFunctions = {
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
  * @param {Object} options - 可选参数
  * @param {boolean} options.afterDisplaySwitch - 兼容旧调用；当前主屏/副屏统一按安全边距吸附
+ * @param {number} options.threshold - 可选吸附阈值；初始摆放等旧调用可传入更宽松阈值
  * @returns {Object|null} 返回吸附信息，如果不需要吸附则返回 null
  */
 Live2DManager.prototype._checkSnapRequired = async function (model, options = {}) {
     if (!model) return null;
 
-    const { afterDisplaySwitch = false } = options;
+    const { afterDisplaySwitch = false, threshold: customThreshold } = options;
 
     try {
         const bounds = model.getBounds();
@@ -95,12 +96,15 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         let overflowBottom = modelBottom - screenBottom; // 下边超出
 
         const margin = SNAP_CONFIG.margin;
+        const snapThreshold = typeof customThreshold === 'number'
+            ? Math.max(0, customThreshold)
+            : margin;
 
         // 与普通窗口一致：主屏/副屏都按安全边距回弹，而不是等模型几乎消失才吸附。
-        const needsSnapLeft = overflowLeft > margin;
-        const needsSnapRight = overflowRight > margin;
-        const needsSnapTop = overflowTop > margin;
-        const needsSnapBottom = overflowBottom > margin;
+        const needsSnapLeft = overflowLeft > snapThreshold;
+        const needsSnapRight = overflowRight > snapThreshold;
+        const needsSnapTop = overflowTop > snapThreshold;
+        const needsSnapBottom = overflowBottom > snapThreshold;
 
         if (!needsSnapLeft && !needsSnapRight && !needsSnapTop && !needsSnapBottom) {
             return null; // 不需要吸附

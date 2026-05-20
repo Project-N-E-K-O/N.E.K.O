@@ -2046,7 +2046,7 @@
             "title": "Você pode mover a YUI para outra tela",
             "body": "Continue arrastando em direção à borda da tela e solte. Se ela ficar perto demais da borda, voltará primeiro.",
             "ack": "Entendi",
-            "never": "Não lembrar novamente"
+            "never": "Não me lembre novamente"
         },
         "screenSource": {
             "notAvailable": "Seleção de fonte de tela disponível apenas na versão desktop",

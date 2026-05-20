@@ -11,12 +11,23 @@ def _live2d_source() -> str:
 def test_live2d_drag_snap_uses_window_style_edge_margin():
     source = _live2d_source()
 
-    assert "needsSnapLeft = overflowLeft > margin;" in source
-    assert "needsSnapRight = overflowRight > margin;" in source
-    assert "needsSnapTop = overflowTop > margin;" in source
-    assert "needsSnapBottom = overflowBottom > margin;" in source
+    assert "snapThreshold = typeof customThreshold === 'number'" in source
+    assert "needsSnapLeft = overflowLeft > snapThreshold;" in source
+    assert "needsSnapRight = overflowRight > snapThreshold;" in source
+    assert "needsSnapTop = overflowTop > snapThreshold;" in source
+    assert "needsSnapBottom = overflowBottom > snapThreshold;" in source
     assert "visibleWidth < threshold" not in source
     assert "visibleHeight < threshold" not in source
+
+
+def test_live2d_snap_keeps_explicit_threshold_override_for_initial_placement():
+    source = _live2d_source()
+
+    assert "threshold: customThreshold" in source
+    assert "const margin = SNAP_CONFIG.margin;" in source
+    assert "_checkSnapRequired(model, { threshold: 300 })" in (
+        PROJECT_ROOT / "static/live2d-model.js"
+    ).read_text(encoding="utf-8")
 
 
 def test_live2d_display_switch_still_snaps_after_window_move():
