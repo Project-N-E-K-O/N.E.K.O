@@ -293,9 +293,15 @@ def _resolve_target_keys(payload: Dict[str, Any], locale_code: str,
 async def clarify(request: Request):
     """Step 1: given a one-line description, return 2-4 chip-style questions."""
     try:
-        body: Dict[str, Any] = await request.json()
+        body: Any = await request.json()
     except Exception:
         return JSONResponse({"success": False, "error": "invalid_json"}, status_code=400)
+    # request.json() 接受**任意合法 JSON**（list / str / int / null 都过），
+    # 但下面所有 body.get(...) 都假设是 dict。非 object 直接打 400 不要让
+    # AttributeError 飙到 500。
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "error": "invalid_json",
+                             "message": "JSON body must be an object"}, status_code=400)
 
     description = str(body.get("description") or "").strip()
     if not description:
@@ -361,9 +367,15 @@ async def clarify(request: Request):
 async def generate(request: Request):
     """Step 2: given description + answers, return the full field set."""
     try:
-        body: Dict[str, Any] = await request.json()
+        body: Any = await request.json()
     except Exception:
         return JSONResponse({"success": False, "error": "invalid_json"}, status_code=400)
+    # request.json() 接受**任意合法 JSON**（list / str / int / null 都过），
+    # 但下面所有 body.get(...) 都假设是 dict。非 object 直接打 400 不要让
+    # AttributeError 飙到 500。
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "error": "invalid_json",
+                             "message": "JSON body must be an object"}, status_code=400)
 
     description = str(body.get("description") or "").strip()
     if not description:
@@ -439,9 +451,15 @@ async def generate(request: Request):
 async def refine(request: Request):
     """Step 3: regenerate a single field's value given an adjustment instruction."""
     try:
-        body: Dict[str, Any] = await request.json()
+        body: Any = await request.json()
     except Exception:
         return JSONResponse({"success": False, "error": "invalid_json"}, status_code=400)
+    # request.json() 接受**任意合法 JSON**（list / str / int / null 都过），
+    # 但下面所有 body.get(...) 都假设是 dict。非 object 直接打 400 不要让
+    # AttributeError 飙到 500。
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "error": "invalid_json",
+                             "message": "JSON body must be an object"}, status_code=400)
 
     field_key = str(body.get("field_key") or "").strip()
     if not field_key:
@@ -606,9 +624,15 @@ async def chat(request: Request):
     swappable via ``dev_cat_name``) sees the current card + conversation
     history and replies with text + optional structured actions to apply."""
     try:
-        body: Dict[str, Any] = await request.json()
+        body: Any = await request.json()
     except Exception:
         return JSONResponse({"success": False, "error": "invalid_json"},
+                            status_code=400)
+    # 同 clarify/generate/refine：拒绝非 object payload（list/str/null 等），
+    # 否则下面 body.get(...) 会 AttributeError 飙到 500。
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "error": "invalid_json",
+                             "message": "JSON body must be an object"},
                             status_code=400)
 
     history = _normalize_chat_history(body.get("messages"))
