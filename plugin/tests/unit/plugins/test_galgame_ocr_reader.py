@@ -892,6 +892,56 @@ def test_ocr_reader_screen_awareness_skips_duplicate_full_frame_when_primary_is_
     assert extraction.screen_ocr_regions == []
 
 
+def test_ocr_reader_screen_awareness_keeps_full_frame_visual_when_primary_is_full_window(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    class _ImageCaptureBackend(_FakeCaptureBackend):
+        def capture_frame(self, target: DetectedGameWindow, profile):
+            self.capture_calls.append((target.hwnd, profile.to_dict()))
+            return Image.new("RGB", (160, 90), color=(48, 96, 144))
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    capture_backend = _ImageCaptureBackend()
+    ocr_backend = _FakeOcrBackend(["Start Game\nConfig"])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=capture_backend,
+        ocr_backend=ocr_backend,
+    )
+    manager._config.ocr_reader_screen_awareness_full_frame_ocr = True
+    manager._config.ocr_reader_screen_awareness_visual_rules = True
+    manager._config.llm_vision_enabled = True
+    manager._consecutive_no_text_polls = 1
+    extraction = OcrExtractionResult(text="")
+
+    manager._augment_extraction_with_screen_awareness(
+        extraction,
+        target=_window()[0],
+        primary_profile=manager._full_window_profile(),
+        plan=SelectedOcrBackendPlan(
+            primary=OcrBackendDescriptor(
+                kind="fake",
+                backend=ocr_backend,
+                available=True,
+            )
+        ),
+        now=3000.0,
+    )
+
+    assert len(capture_backend.capture_calls) == 1
+    assert ocr_backend.calls == 0
+    assert extraction.screen_ocr_regions == []
+    assert extraction.screen_visual_features["mean_luminance"] > 0
+    assert manager.latest_vision_snapshot()["source"] == "full_frame"
+
+
 def test_ocr_reader_manager_collects_desensitized_screen_awareness_sample(
     tmp_path: Path,
 ) -> None:

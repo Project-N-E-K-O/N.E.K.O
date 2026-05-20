@@ -811,20 +811,25 @@ class RuntimeMixin:
 
         requests: list[tuple[str, OcrCaptureProfile, bool, bool]] = []
         full_profile = self._full_window_profile()
-        if (
-            bool(self._config.ocr_reader_screen_awareness_full_frame_ocr)
-            or bool(self._config.ocr_reader_screen_awareness_visual_rules)
+        full_profile_key = self._capture_profile_key(full_profile)
+        full_frame_text_requested = bool(self._config.ocr_reader_screen_awareness_full_frame_ocr)
+        full_frame_visual_requested = (
+            bool(self._config.ocr_reader_screen_awareness_visual_rules)
             or bool(self._config.llm_vision_enabled)
-        ) and self._capture_profile_key(full_profile) not in seen_profiles:
+        )
+        full_frame_profile_seen = full_profile_key in seen_profiles
+        if full_frame_visual_requested or (
+            full_frame_text_requested and not full_frame_profile_seen
+        ):
             requests.append(
                 (
                     "full_frame",
                     full_profile,
-                    bool(self._config.ocr_reader_screen_awareness_full_frame_ocr),
+                    full_frame_text_requested and not full_frame_profile_seen,
                     True,
                 )
             )
-            seen_profiles.add(self._capture_profile_key(full_profile))
+            seen_profiles.add(full_profile_key)
         if bool(self._config.ocr_reader_screen_awareness_multi_region_ocr):
             for source, profile in (
                 ("menu_region", self._menu_region_profile()),
