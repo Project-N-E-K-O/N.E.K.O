@@ -232,7 +232,7 @@ def _parse_configured_capture_profiles(
                 )
         else:
             for stage_name, stage_profile in profile_value.items():
-                normalized_stage_name = str(stage_name or "").strip()
+                normalized_stage_name = str(stage_name or "").strip().lower()
                 if normalized_stage_name == OCR_CAPTURE_PROFILE_WINDOW_BUCKETS_KEY:
                     continue
                 if not normalized_stage_name or not isinstance(stage_profile, dict):
@@ -273,7 +273,7 @@ def _parse_configured_capture_profiles(
                     continue
                 bucket_stages: dict[str, OcrCaptureProfile] = {}
                 for stage_name, stage_profile in raw_stages.items():
-                    normalized_stage_name = str(stage_name or "").strip()
+                    normalized_stage_name = str(stage_name or "").strip().lower()
                     if not normalized_stage_name or not isinstance(stage_profile, dict):
                         continue
                     try:
@@ -302,4 +302,3 @@ def _parse_configured_capture_profiles(
                 window_buckets=window_buckets,
             )
     return parsed_profiles
-

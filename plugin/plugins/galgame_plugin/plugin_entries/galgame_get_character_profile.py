@@ -50,7 +50,7 @@ class _GalgameGetCharacterProfileMixin:
             with self._state_lock:
                 runtime = dict(self._state.character_runtime_state or {})
         profile = profiles.get(target)
-        if not profile:
+        if profile is None:
             return Err(SdkError(f"character {target!r} not found"))
         return Ok(
             {

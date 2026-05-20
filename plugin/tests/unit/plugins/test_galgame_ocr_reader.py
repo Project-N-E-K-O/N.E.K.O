@@ -855,7 +855,7 @@ def test_ocr_reader_manager_applies_screen_awareness_model_on_low_confidence(
     assert manager._screen_awareness_model_detail == "matched"
 
 
-def test_ocr_reader_screen_awareness_full_frame_runs_when_primary_is_full_window(
+def test_ocr_reader_screen_awareness_skips_duplicate_full_frame_when_primary_is_full_window(
     tmp_path: Path,
 ) -> None:
     bridge_root = tmp_path / "bridge"
@@ -888,9 +888,8 @@ def test_ocr_reader_screen_awareness_full_frame_runs_when_primary_is_full_window
         now=3000.0,
     )
 
-    assert capture_backend.capture_calls
-    assert extraction.screen_ocr_regions[0]["source"] == "full_frame"
-    assert extraction.screen_ocr_regions[0]["text"] == "Start Game\nConfig"
+    assert capture_backend.capture_calls == []
+    assert extraction.screen_ocr_regions == []
 
 
 def test_ocr_reader_manager_collects_desensitized_screen_awareness_sample(
@@ -1368,7 +1367,7 @@ def test_ocr_session_snapshot_write_failure_is_nonfatal(
         del src, dst
         raise OSError("disk full")
 
-    monkeypatch.setattr(galgame_ocr_reader.os, "replace", _fail_replace)
+    monkeypatch.setattr(galgame_ocr_bridge_writer.os, "replace", _fail_replace)
 
     window = _window()[0]
     expected_game_id = galgame_ocr_reader._ocr_game_id_from_process(

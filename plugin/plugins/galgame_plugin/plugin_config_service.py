@@ -18,6 +18,7 @@ from .models import (
     STORE_READER_MODE,
     json_copy,
 )
+from .plugin_util_helpers import _migrate_legacy_capture_backend
 
 
 class GalgamePluginConfigService:
@@ -51,9 +52,10 @@ class GalgamePluginConfigService:
                 backend_selection,
             )
         if capture_backend is not None:
+            normalized_capture_backend = _migrate_legacy_capture_backend(capture_backend)
             self._plugin._persist.persist_config_override(
                 STORE_OCR_CAPTURE_BACKEND,
-                capture_backend,
+                normalized_capture_backend,
             )
 
     def persist_rapidocr_lang(

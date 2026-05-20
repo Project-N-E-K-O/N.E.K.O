@@ -457,11 +457,7 @@ class PollMixin:
             )
             startup_profile_selection = self._capture_profile_selection_for_target(
                 target,
-                stage=(
-                    self._aihong_stage
-                    if aihong_two_stage_enabled
-                    else _AIHONG_DIALOGUE_STAGE
-                ),
+                stage=startup_profile_stage,
             )
             self._runtime = self._build_runtime(
                 status="starting",

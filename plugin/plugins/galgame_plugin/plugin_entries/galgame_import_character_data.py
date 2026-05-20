@@ -44,7 +44,11 @@ class _GalgameImportCharacterDataMixin:
         if not source:
             return Err(SdkError("file_path required"))
         manager = self._get_character_profile_manager()
-        result = manager.import_user_profiles(target_game, source)
+        result = await asyncio.to_thread(
+            manager.import_user_profiles,
+            target_game,
+            source,
+        )
         if not result.ok:
             return Err(
                 SdkError(

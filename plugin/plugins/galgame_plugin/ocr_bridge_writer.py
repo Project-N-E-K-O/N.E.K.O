@@ -818,6 +818,8 @@ class OcrReaderBridgeWriter:
                 + b"\n"
             )
             handle.flush()
+            if update_snapshot:
+                os.fsync(handle.fileno())
         if update_snapshot:
             self._write_session_snapshot()
             return

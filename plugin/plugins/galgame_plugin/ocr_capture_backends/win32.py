@@ -152,7 +152,7 @@ class Win32CaptureBackend:
             if not (
                 is_windows_host and self._printwindow_backend in self._backends
             ):
-                return list(self._backends)
+                return []
             # Explicit PrintWindow selection: user is opting into the only
             # backend that can capture occluded / background windows. If we
             # silently fell through to dxcam/mss/pyautogui on a background
@@ -291,4 +291,3 @@ class Win32CaptureBackend:
             )
         except Exception:
             pass
-

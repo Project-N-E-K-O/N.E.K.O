@@ -815,7 +815,7 @@ class RuntimeMixin:
             bool(self._config.ocr_reader_screen_awareness_full_frame_ocr)
             or bool(self._config.ocr_reader_screen_awareness_visual_rules)
             or bool(self._config.llm_vision_enabled)
-        ):
+        ) and self._capture_profile_key(full_profile) not in seen_profiles:
             requests.append(
                 (
                     "full_frame",

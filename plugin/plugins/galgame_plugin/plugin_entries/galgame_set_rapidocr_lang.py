@@ -71,7 +71,11 @@ class _GalgameSetRapidocrLangMixin:
                     if normalized_lang is None and auto_detect_lang is not None
                     else (False if normalized_lang is not None else None)
                 ),
-                auto_detect_last_lang=normalized_lang,
+                auto_detect_last_lang=(
+                    self._cfg.rapidocr_auto_detect_last_lang
+                    if normalized_lang is None
+                    else normalized_lang
+                ),
             )
         except Exception as exc:
             self._cfg.rapidocr_lang_type = old_lang

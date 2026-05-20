@@ -22,18 +22,13 @@ class _GalgameBindGameMixin:
             return Err(SdkError(f"unknown game_id: {normalized!r}"))
 
         with self._state_lock:
-            self._state.bound_game_id = normalized
-            self._state_dirty = True
-            self._cached_snapshot = None
-            bound_game_id = self._state.bound_game_id
             mode = self._state.mode
             push_notifications = self._state.push_notifications
             advance_speed = self._state.advance_speed
-        self._clear_character_profiles()
 
         try:
             self._config_service.persist_preferences(
-                bound_game_id=bound_game_id,
+                bound_game_id=normalized,
                 mode=mode,
                 push_notifications=push_notifications,
                 advance_speed=advance_speed,
@@ -41,6 +36,11 @@ class _GalgameBindGameMixin:
         except Exception as exc:
             return Err(SdkError(f"persist binding failed: {exc}"))
 
+        with self._state_lock:
+            self._state.bound_game_id = normalized
+            self._state_dirty = True
+            self._cached_snapshot = None
+        self._clear_character_profiles()
         self._load_character_profiles_for_current_context(force=True)
         await self._poll_bridge(force=True)
         with self._state_lock:

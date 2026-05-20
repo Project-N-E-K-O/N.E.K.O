@@ -21,9 +21,9 @@ class _GalgameDownloadRapidocrModelsMixin:
             return Err(SdkError(self._not_configured_message()))
         if not self._rapidocr_models_lock.acquire(blocking=False):
             return Err(SdkError(self._install_in_progress_message("RapidOCR Models")))
-        current_run_id = self._resolve_current_run_id(_)
-        progress_callback = self._resolve_install_progress_callback(current_run_id)
         try:
+            current_run_id = self._resolve_current_run_id(_)
+            progress_callback = self._resolve_install_progress_callback(current_run_id)
             from .rapidocr_support import download_rapidocr_models
 
             download_result = await download_rapidocr_models(
