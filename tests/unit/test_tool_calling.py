@@ -2361,9 +2361,11 @@ async def test_stream_text_summary_abandoned_when_overshoot_under_slack(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_stream_text_summary_gibberish_fallback_emits_invalid(monkeypatch):
-    """cutover 后 tail 在 gibberish 重检阈值上被判定为乱码 → 走 RESPONSE_INVALID
-    故障 placeholder。history 只保留 prefix（= TTS 已经播过的那段），不留 tail。"""
+async def test_stream_text_summary_gibberish_fallback_silently_commits_prefix(monkeypatch):
+    """cutover 后 tail 在 gibberish 重检阈值上被判定为乱码 → 静默截断：
+    不发 RESPONSE_INVALID（那会触发 core 端 _clear_tts_pipeline 把队列里未播完
+    的 prefix 一起清掉，反而让用户已经在听的话被截断）。history 只留 prefix，
+    TTS 自然把队列残余播完。"""
     from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
@@ -2415,10 +2417,9 @@ async def test_stream_text_summary_gibberish_fallback_emits_invalid(monkeypatch)
     await client.stream_text("trigger gibberish tail")
 
     assert summarize_called == [], "gibberish fallback 不应调摘要"
-    assert len(discarded) == 1
-    assert discarded[0]["will_retry"] is False
-    msg = json.loads(discarded[0]["message"])
-    assert msg.get("code") == "RESPONSE_INVALID"
+    # 关键：不再发 response_discarded —— 否则 core 会 _clear_tts_pipeline，
+    # 把已经在 TTS 队列里的 prefix 一并清掉。
+    assert discarded == []
 
     # history 只保留 prefix（cutover 之前的部分），不含 tail
     last_msg = client._conversation_history[-1].content

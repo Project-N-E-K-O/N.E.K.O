@@ -2062,9 +2062,13 @@ class OmniOfflineClient:
                         # ── Summary 模式 epilogue ──
                         # 走到这里 guard_triggered 一定是 False（summary 路径不设
                         # length 类 guard）。根据 summary_state 决定：
-                        #   - gibberish_fallback：tail 被判定胡言乱语，走故障 placeholder
-                        #     (RESPONSE_INVALID)；history 只留 prefix，让下一轮 LLM 看到
-                        #     的与用户听到的一致。
+                        #   - gibberish_fallback：tail 被判定胡言乱语，静默截断
+                        #     —— 不发 RESPONSE_INVALID，因为那会触发 core 端的
+                        #     _clear_tts_pipeline 把还在队列里没读完的 prefix
+                        #     音频也清掉，反而让"已经听到的话"被截断。这里只
+                        #     log + commit prefix 到 history，TTS 自然把队列
+                        #     里残余的 prefix 播完。UI 显示的 gibberish 尾巴
+                        #     与 live ≠ reload 的设计分岔本来就允许。
                         #   - cutover_done + 最终长度 ≤ max+slack：太短没必要摘要，把
                         #     tail 直接续给 TTS 读完，history 留完整原文。
                         #   - cutover_done + 最终长度更长：调小模型摘要，TTS 续上摘要，
@@ -2074,16 +2078,9 @@ class OmniOfflineClient:
                         #     history 写完整原文。
                         #   - idle：从未触发，常规流程，啥也不用做。
                         if summary_mode_enabled and summary_state == 'gibberish_fallback':
-                            total_attempts = self.max_response_rerolls + 1
-                            fault_msg = json.dumps({"code": "RESPONSE_INVALID"})
-                            await self._notify_response_discarded(
-                                f"length>{self.max_response_length} gibberish-tail",
-                                total_attempts, total_attempts, False, fault_msg,
-                            )
-                            status_reported = True
                             logger.warning(
                                 "OmniOfflineClient summary: gibberish fallback, "
-                                "history 仅留 prefix (%d chars)",
+                                "静默 commit prefix (%d chars) 到 history，TTS 残队列保留",
                                 len(summary_prefix_for_history),
                             )
                             if summary_prefix_for_history:

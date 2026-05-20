@@ -4018,12 +4018,17 @@ class LLMSessionManager:
                         master_name=self.master_name,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
-                        # 长回复 summary 必须有 TTS 才有意义：summary 文本是
-                        # `tts_enabled=True, ui_enabled=False` 注入的，若 use_tts=False
-                        # 它会被 handle_text_data 静默丢掉，但 history 仍被重写成
-                        # prefix+summary —— 文本-only 会话会"live 看到全文、reload
-                        # 看不到尾巴"，是隐性内容丢失。所以 gate 在 self.use_tts 上。
-                        enable_long_response_summary=self.use_tts,
+                        # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
+                        # 文本是 `tts_enabled=True, ui_enabled=False` 注入的，若 TTS
+                        # 实际不发声它会被 handle_text_data 静默丢掉，但 history 仍被
+                        # 重写成 prefix+summary —— 静音会话会"live 看到全文、reload 看
+                        # 不到尾巴"，是隐性内容丢失。注意 `_resolve_session_use_tts` 对
+                        # text mode 永远返回 True；真正的"发声"还要 DISABLE_TTS=False，
+                        # 否则 tts_worker 会被换成 dummy_tts_worker。
+                        enable_long_response_summary=(
+                            self.use_tts
+                            and not core_config_snapshot.get('DISABLE_TTS', False)
+                        ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
                 else:
@@ -4478,11 +4483,14 @@ class LLMSessionManager:
                     master_name=self.master_name,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
-                    # 与上方对偶：长回复 summary 必须有 TTS 才有意义（理由见
-                    # main session 构造点的注释）。pending_use_tts 是热切换准备
-                    # 时已 resolve 的下一轮 use_tts，与 self.use_tts 切轨之后保持
-                    # 一致。
-                    enable_long_response_summary=self.pending_use_tts,
+                    # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
+                    # （理由见 main session 构造点的注释）。pending_use_tts 是热切换
+                    # 准备时已 resolve 的下一轮 use_tts；DISABLE_TTS 仍需独立检查
+                    # 因为它会把 worker 换成 dummy_tts_worker。
+                    enable_long_response_summary=(
+                        self.pending_use_tts
+                        and not core_config_snapshot.get('DISABLE_TTS', False)
+                    ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
