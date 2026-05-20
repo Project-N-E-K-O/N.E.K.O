@@ -1,15 +1,17 @@
 """
 Card-Assist prompt templates.
 
-Used by ``main_routers.card_assist_router`` to drive a 3-stage AI assistant
-that helps users author a catgirl character card:
+Used by ``main_routers.card_assist_router`` to drive a card-design AI
+assistant with four entry points:
 
   1) clarify  — given the user's one-line description, ask 2-4 clarifying
                 questions (each with chip options + optional free-text)
   2) generate — given the description + answers, output a full card field set
   3) refine   — regenerate a single field given an instruction
+  4) chat     — persistent companion-style chat with structured actions
+                (used by the right-side companion panel after generate)
 
-All three prompts require the LLM to output STRICT JSON only (no markdown
+All four prompts require the LLM to output STRICT JSON only (no markdown
 fences). The router strips ```json fences defensively before json.loads.
 """
 

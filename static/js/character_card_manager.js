@@ -10342,7 +10342,11 @@ function _companionBuildPanel(state) {
     avatar.className = 'card-companion-avatar';
     const avatarImg = document.createElement('img');
     avatarImg.alt = state.devCatName;
-    avatarImg.src = '/api/characters/catgirl/' + encodeURIComponent(state.devCatName) + '/card-face?t=' + Date.now();
+    // 不加 ?t=Date.now() cache-bust：companion avatar 是个稳定的静态图，让
+    // 浏览器 HTTP cache + 后端 ETag 接管 —— 多次开关 companion / 切换猫娘
+    // 不用每次都拉一次图。如果未来要在 card-face 改了之后立刻刷新，应该用
+    // 一个稳定的 cache key（如卡面文件 mtime / hash）而不是 Date.now()。
+    avatarImg.src = '/api/characters/catgirl/' + encodeURIComponent(state.devCatName) + '/card-face';
     avatarImg.onerror = function () {
         avatarImg.remove();
         const fallback = document.createElement('div');
@@ -10671,12 +10675,18 @@ async function _companionRunGenerate(state) {
             '草稿写好啦，已经填进表单了喵～你随时改、随时跟我说要调啥都行：') +
             (lines.length ? '\n' + lines.join('\n') : '');
         _companionAppendAssistant(state, msg);
-        // 进入聊天模式，把 description + 生成结果当上下文塞进 chatHistory
+        // 进入聊天模式，把 description + 生成结果当上下文塞进 chatHistory。
+        // seed 通过 i18n 走当前 locale —— 之前硬编码中文会让英文 locale 用户
+        // 走完澄清问答后被 LLM 镜像成中文回复。
         state.mode = 'chat';
+        const seedDescribe = _cardAssistT('character.aiCompanionSeedDescribe',
+            'Generate a catgirl card based on this description: ');
+        const seedGenerated = _cardAssistT('character.aiCompanionSeedGenerated',
+            'Generated and filled into the form: ');
         state.chatHistory.push({ role: 'user',
-            content: '基于这段描述生成猫娘卡：' + state.description });
+            content: seedDescribe + state.description });
         state.chatHistory.push({ role: 'assistant',
-            content: '已生成并填入表单：' + JSON.stringify(fields) });
+            content: seedGenerated + JSON.stringify(fields) });
         _companionUpdateQuickAvailability(state);
     } catch (err) {
         typing.remove();
@@ -10860,6 +10870,21 @@ function _companionEnsureLiveForm(state) {
     // 注意：旧 form 上的 listener 已随 DOM 卸载消失，无需手动 remove —— 但
     // _companionAttachFormWatchers 内部已经做了 defensive removeEventListener。
     state.form = liveForm;
+    // ⚠ 必须同步 isNew / originalName ——`buildCatgirlDetailForm` 重建表单时
+    // 会把 `_isNew` / `_catgirlName` 设到最新值（比如用户首次保存新卡后表单
+    // 以 isNew=false 重建、或者用户做了重命名）。companion 这边如果继续用
+    // 创建时的旧 `state.isNew`：
+    //   - `_companionTryAutoSave` 里的 `if (state.isNew && !state.form._autoCreated)`
+    //     永久命中 → 自动保存永远 bail，新卡保存提示反复弹
+    //   - 一旦走到 saveCatgirlFromPanel，`effectiveIsNew=true` 会触发 POST 而
+    //     不是 PUT，造成同名 catgirl 409 / 重复
+    const liveIsNew = liveForm._isNew === true;
+    const wasNew = state.isNew;
+    state.isNew = liveIsNew;
+    if (liveForm._catgirlName) state.originalName = liveForm._catgirlName;
+    // 新卡变成已保存卡的瞬间清掉 "先点 Save" 一次性提示标记；万一未来某次状态
+    // 再翻回新卡（实操路径几乎不可能但便宜），提示能再次出现。
+    if (wasNew && !liveIsNew) state._warnedNewCardSaveHint = false;
     state.formWatchHandlers = [];
     _companionAttachFormWatchers(state);
     return true;
