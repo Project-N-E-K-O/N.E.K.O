@@ -151,4 +151,3 @@ class RapidOcrBackend:
             for score in (_score,)
         ]
         return "\n".join(text for text, _score, _box in lines), boxes
-

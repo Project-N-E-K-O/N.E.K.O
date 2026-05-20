@@ -450,4 +450,3 @@ class _MouseWheelMonitor:
             self._hook_handle = 0
             self._keyboard_hook_handle = 0
             self._thread_id = 0
-

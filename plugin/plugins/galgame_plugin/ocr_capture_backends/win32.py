@@ -291,4 +291,3 @@ class Win32CaptureBackend:
             )
         except Exception:
             pass
-

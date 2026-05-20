@@ -54,5 +54,3 @@ class MssCaptureBackend:
             backend_kind=self.kind,
             backend_detail="selected",
         )
-
-

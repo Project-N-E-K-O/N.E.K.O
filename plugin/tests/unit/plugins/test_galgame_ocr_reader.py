@@ -20,6 +20,7 @@ from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridg
 from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
 from plugin.plugins.galgame_plugin.ocr_capture_backends import printwindow as galgame_printwindow_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
+from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
@@ -2588,8 +2589,8 @@ def test_pyautogui_capture_uses_screenshot_region(monkeypatch: pytest.MonkeyPatc
         "pyautogui",
         SimpleNamespace(size=lambda: (1920, 1080), screenshot=screenshot),
     )
-    monkeypatch.setattr(galgame_ocr_reader, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(galgame_ocr_reader, "_target_screen_capture_rect", lambda _target: (10, 20, 210, 120))
+    monkeypatch.setattr(galgame_pyautogui_backend, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(galgame_pyautogui_backend, "_target_screen_capture_rect", lambda _target: (10, 20, 210, 120))
 
     frame = galgame_ocr_reader.PyAutoGuiCaptureBackend().capture_frame(
         _window()[0],
@@ -2611,8 +2612,8 @@ def test_pyautogui_capture_rejects_secondary_monitor(monkeypatch: pytest.MonkeyP
         "pyautogui",
         SimpleNamespace(size=lambda: (1920, 1080), screenshot=lambda **_kwargs: None),
     )
-    monkeypatch.setattr(galgame_ocr_reader, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(galgame_ocr_reader, "_target_screen_capture_rect", lambda _target: (1920, 0, 3840, 1080))
+    monkeypatch.setattr(galgame_pyautogui_backend, "_require_visible_capture_target", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(galgame_pyautogui_backend, "_target_screen_capture_rect", lambda _target: (1920, 0, 3840, 1080))
 
     with pytest.raises(RuntimeError, match="pyautogui: window_entirely_in_right_secondary_monitor"):
         galgame_ocr_reader.PyAutoGuiCaptureBackend().capture_frame(

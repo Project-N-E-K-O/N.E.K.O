@@ -302,4 +302,3 @@ def _parse_configured_capture_profiles(
                 window_buckets=window_buckets,
             )
     return parsed_profiles
-
