@@ -512,6 +512,23 @@ v0.9: Multi-system support (Linux, mobile). N.E.K.O. Network launch. Expected: A
 
 v1.0: Focus on in-house large models and agent systems. Expected: June 2026.
 
+### Telemetry
+
+N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** so we can track version compatibility, model-usage distribution, and error rates. We believe shipping a product needs data — but we believe even more strongly that nothing should be collected behind your back.
+
+**One-line opt-out**: set the environment variable `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is disabled immediately, no rebuild needed. We follow the [Console Do Not Track](https://consoledonottrack.com/) open convention.
+
+**What we do / do not collect**:
+
+| ✅ Collected | ❌ Never collected |
+| --- | --- |
+| LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
+| Model name, call type (`conversation` / `memory` / …) | Username, user ID, API key, GitHub ID |
+| Call counts, error counts | IP address, geolocation, MAC, hardware serial |
+| Anonymous device fingerprint `SHA256(machine_id + salt)` (irreversible) | Any PII that could be traced back to a person |
+
+Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most once per 10 minutes — no impact on the hot path.
+
 </details>
 
 ## Star History
