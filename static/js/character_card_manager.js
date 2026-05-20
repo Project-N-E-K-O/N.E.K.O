@@ -10875,8 +10875,17 @@ async function _companionTryAutoSave(state) {
         // 之前 catch{} 把 return value 丢了 —— 用户在 toast 之外看到 companion 的
         // 系统气泡仍然显示「✎ 已应用」，体感是「字段改了 + 已保存」，实际上后端
         // 拒绝了。这里读回 ok 值，false 时再补一条 system 错误气泡兜底。
-        // 注：`undefined` 表示 "form.dataset.submitting === 'true' 重复提交" 那
-        // 一支早 return，不是失败，跳过提示。
+        //
+        // ⚠ saveCatgirlFromPanel 的 `return false` 有**两种**语义混用：
+        //   (1) form.dataset.submitting === 'true' 的 debounce skip —— 表示有
+        //       另一个 save 正在飞行中，这次"跳过"不算失败；
+        //   (2) HTTP / validation / 网络异常的真·失败。
+        // companion 这里没法从 false 单值里区分。简化：进 save 前自己看一下
+        // dataset.submitting，如果在 flight 中就静默 skip（用户手动 Save 跟
+        // companion auto-save 同时发生时不会误报"自动保存失败"），其它时候 false
+        // 就当真失败处理。这样不需要改 saveCatgirlFromPanel 的返回契约、不波及
+        // 它的其他 9 个 caller。
+        if (state.form.dataset.submitting === 'true') return;
         let ok = true;
         try {
             const ret = await saveCatgirlFromPanel(state.form, state.originalName, state.isNew);
