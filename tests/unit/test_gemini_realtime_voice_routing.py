@@ -279,6 +279,85 @@ def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():
     )
 
 
+def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
+    """Livestream 上游是 free 路 Gemini 系，无论角色卡 voice_id 是不是 free preset，
+    都应跳过外部 TTS 走服务端原生语音。PR #1369 的 free-preset gate 漏掉了
+    "livestream + 非 preset 音色"（克隆 / 空 voice_id）这条路径——本测试守门。"""
+    monkeypatch.setattr(
+        "main_logic.core.is_livestream_active",
+        lambda: True,
+    )
+    realtime_config = {"base_url": "wss://主播自建.example.com/realtime"}
+    core_config = {
+        "ENABLE_CUSTOM_API": True,
+        "TTS_MODEL_URL": "http://localhost:9880",
+        "GPTSOVITS_ENABLED": True,
+    }
+
+    # 角色卡是克隆音色（非 free preset）
+    mgr_clone = _make_mgr("voice-clone-abc")
+    mgr_clone.core_api_type = "free"
+    mgr_clone._is_free_preset_voice = False
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr_clone, "audio", realtime_config, core_config,
+        )
+        is False
+    )
+
+    # 角色卡 voice_id 为空
+    mgr_empty = _make_mgr("")
+    mgr_empty.core_api_type = "free"
+    mgr_empty._is_free_preset_voice = False
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr_empty, "audio", realtime_config, core_config,
+        )
+        is False
+    )
+
+    # 文本模式仍然启用 TTS（没有 realtime audio 通道兜底）
+    mgr_text = _make_mgr("voice-clone-abc")
+    mgr_text.core_api_type = "free"
+    mgr_text._is_free_preset_voice = False
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr_text, "text", realtime_config, core_config,
+        )
+        is True
+    )
+
+
+def test_non_livestream_free_preset_still_skips_tts_only_on_lanlan_tech(monkeypatch):
+    """回归 PR #1369 原 gate 的窄路径：非 livestream 时，free preset 仅在
+    base_url 指向 lanlan.tech 域时跳 TTS，其他域照旧 fallback 外部 TTS。"""
+    monkeypatch.setattr(
+        "main_logic.core.is_livestream_active",
+        lambda: False,
+    )
+    core_config = {
+        "ENABLE_CUSTOM_API": True,
+        "TTS_MODEL_URL": "http://localhost:9880",
+        "GPTSOVITS_ENABLED": True,
+    }
+    mgr = _make_mgr("qingchunshaonv")
+    mgr.core_api_type = "free"
+    mgr._is_free_preset_voice = True
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr, "audio", {"base_url": "wss://lanlan.tech/realtime"}, core_config,
+        )
+        is False
+    )
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr, "audio", {"base_url": "wss://lanlan.app/realtime"}, core_config,
+        )
+        is True
+    )
+
+
 def test_custom_tts_config_requires_gptsovits_enabled():
     mgr = _make_mgr("")
     realtime_config = {"base_url": "https://generativelanguage.googleapis.com"}

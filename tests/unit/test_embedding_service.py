@@ -235,12 +235,12 @@ def test_detect_avx_vnni_arm64_linux_proc_cpuinfo_fallback(monkeypatch):
     assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
-def test_detect_avx_vnni_x86_cpuid_probe_is_authoritative(monkeypatch):
-    """When the direct CPUID probe returns a definitive answer, x86
+def test_detect_avx_vnni_x86_family_model_lookup_is_authoritative(monkeypatch):
+    """When the family/model lookup returns a definitive answer, x86
     detection MUST trust it and never fall back to py-cpuinfo. py-cpuinfo
     on Windows silently omits ``avx_vnni`` from its flag list (Alder Lake
     onwards on Intel, Zen 4+ on AMD), so consulting it after a positive
-    CPUID would let the stale absence overwrite the correct answer and
+    lookup would let the stale absence overwrite the correct answer and
     re-introduce the sticky-disable that #1395 fixed.
     """
     from memory import embeddings as emb_mod
@@ -248,35 +248,40 @@ def test_detect_avx_vnni_x86_cpuid_probe_is_authoritative(monkeypatch):
     monkeypatch.setattr(emb_mod.platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
 
-    # Force a py-cpuinfo result that disagrees with the probe, so the
-    # test fails loudly if the fallback ever runs ahead of the probe.
+    # Force a py-cpuinfo result that disagrees with the lookup, so the
+    # test fails loudly if the fallback ever runs ahead of the lookup.
     class _CpuinfoNoVnni:
         @staticmethod
         def get_cpu_info():
             return {"flags": ["avx", "avx2"]}
 
     monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+    # Each detect call lazily re-reads the log gate; clear it so the
+    # warning logic is exercised on the positive and negative branch.
+    emb_mod.reset_embedding_service_for_tests()
 
-    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: True)
+    monkeypatch.setattr(emb_mod, "_vnni_via_family_model", lambda: (True, True))
     assert emb_mod.detect_avx_vnni_details() == (True, True)
 
-    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: False)
+    emb_mod.reset_embedding_service_for_tests()
+    monkeypatch.setattr(emb_mod, "_vnni_via_family_model", lambda: (False, True))
     assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
-def test_detect_avx_vnni_x86_falls_back_to_cpuinfo_when_probe_unavailable(
+def test_detect_avx_vnni_x86_falls_back_to_cpuinfo_when_lookup_inconclusive(
     monkeypatch,
 ):
-    """Sandboxes that block executable allocations make the CPUID probe
-    return None. In that case the existing py-cpuinfo / /proc/cpuinfo
-    chain must still drive the decision so we don't lose detection on
-    runtimes that worked before #1395.
+    """Brand-new microarchitectures predate the family/model table and
+    return ``(False, False)`` from the lookup. In that case the existing
+    py-cpuinfo / /proc/cpuinfo chain must still drive the decision so we
+    don't lose detection on runtimes that worked before this PR.
     """
     from memory import embeddings as emb_mod
 
     monkeypatch.setattr(emb_mod.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(emb_mod, "_probe_avx_vnni_via_cpuid", lambda: None)
+    monkeypatch.setattr(emb_mod, "_vnni_via_family_model", lambda: (False, False))
+    emb_mod.reset_embedding_service_for_tests()
 
     class _CpuinfoWithVnni:
         @staticmethod
@@ -292,31 +297,157 @@ def test_detect_avx_vnni_x86_falls_back_to_cpuinfo_when_probe_unavailable(
             return {"flags": ["avx", "avx2"]}
 
     monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+    emb_mod.reset_embedding_service_for_tests()
     assert emb_mod.detect_avx_vnni_details() == (False, True)
 
 
-def test_probe_avx_vnni_skips_non_windows_and_non_x86(monkeypatch):
-    """The probe is scoped to Windows x86_64. On Linux it must NOT issue
-    CPUID — ``arch_prctl(ARCH_SET_CPUID, 0)`` (rr debugger, certain
-    sandboxes) turns ``cpuid`` into SIGSEGV, which Python's try/except
-    cannot catch and would hard-kill the process (Codex P1 on #1402).
-    On macOS Intel there is no chip in the wild with AVX-VNNI anyway,
-    and hardened runtime breaks PROT_EXEC. ARM hosts are handled by the
-    sibling :func:`_detect_int8_fast_path_arm` and must not enter the
-    x86 shellcode path.
+def test_vnni_via_family_model_recognises_known_microarchitectures(monkeypatch):
+    """The lookup table replaces the deleted CPUID shellcode probe. It
+    MUST answer authoritatively for Alder Lake+ Intel client CPUs (the
+    class that py-cpuinfo's Windows backend silently misreports) and
+    for Zen 4+ AMD CPUs, and stay inconclusive on older / unknown
+    vendors so the py-cpuinfo fallback can still try.
     """
     from memory import embeddings as emb_mod
 
+    # Arrow Lake — the chip class that originally motivated #1402 and
+    # broke when CPUID was removed without this lookup.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("GenuineIntel", 6, 0xC6),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Skylake — Family 6 but pre-Alder, ambiguous (might have
+    # AVX512-VNNI as on Cascade Lake-X, might not on plain Skylake).
+    # Lookup stays inconclusive so py-cpuinfo's avx512_vnni flag drives.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("GenuineIntel", 6, 0x55),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, False)
+
+    # Zen 4 desktop — Raphael (Ryzen 7000), Family 0x19 Model 0x61.
+    # Has AVX-VNNI, must be confirmed True.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x61),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Zen 4 mobile — Phoenix (Ryzen 7040), Family 0x19 Model 0x74.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x74),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Zen 4 server — Genoa (EPYC 9004), Family 0x19 Model 0x11.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x11),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Zen 3 desktop — Vermeer (Ryzen 5000), Family 0x19 Model 0x01.
+    # Codex P1: pre-fix code returned (True, True) because the gate was
+    # family-only; correct behaviour is confirmed-no so ``auto``
+    # quantization disables vectors instead of running a slow INT8 path
+    # on a CPU that lacks AVX-VNNI.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x01),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Zen 3 APU — Cezanne (Ryzen 5000G/U), Family 0x19 Model 0x21.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x21),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Zen 3+ — Rembrandt (Ryzen 6000 mobile), Family 0x19 Model 0x44.
+    # Still no AVX-VNNI despite the architectural ``+``.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x44),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Zen 5 (Family 0x1A) — every shipped part has VNNI.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x1A, 0x44),
+    )
+    assert emb_mod._vnni_via_family_model() == (True, True)
+
+    # Unmapped Family-19h model (future stepping not yet in AMD's
+    # documented ranges) — inconclusive so py-cpuinfo can have a try.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x19, 0x80),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, False)
+
+    # Zen 2 (Family 0x17) — no AVX-VNNI, confirmed.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("AuthenticAMD", 0x17, 0x71),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, True)
+
+    # Unknown vendor (Hygon, Centaur, qemu-tcg, ...) — inconclusive.
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("HygonGenuine", 0x18, 0),
+    )
+    assert emb_mod._vnni_via_family_model() == (False, False)
+
+    # No reader could answer at all (locked-down host) — inconclusive.
+    monkeypatch.setattr(emb_mod, "_read_cpu_family_model", lambda: None)
+    assert emb_mod._vnni_via_family_model() == (False, False)
+
+
+def test_log_int8_fast_path_decision_emits_once_per_process(monkeypatch, caplog):
+    """When the chosen CPU lacks the INT8 fast path, the service must
+    log exactly one warning naming the vendor/family/model so triage
+    can recognise the CPU and decide whether to extend the lookup
+    table or raise VECTORS_QUANTIZATION explicitly.
+    """
+    import logging
+
+    from memory import embeddings as emb_mod
+
+    emb_mod.reset_embedding_service_for_tests()
     monkeypatch.setattr(emb_mod.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(emb_mod.platform, "system", lambda: "Linux")
-    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+    monkeypatch.setattr(
+        emb_mod, "_read_cpu_family_model",
+        lambda: ("GenuineIntel", 6, 0x55),
+    )
+    monkeypatch.setattr(emb_mod, "_vnni_via_family_model", lambda: (False, True))
 
-    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Darwin")
-    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+    class _CpuinfoNoVnni:
+        @staticmethod
+        def get_cpu_info():
+            return {"flags": ["avx", "avx2"]}
 
-    monkeypatch.setattr(emb_mod.platform, "machine", lambda: "aarch64")
-    monkeypatch.setattr(emb_mod.platform, "system", lambda: "Windows")
-    assert emb_mod._probe_avx_vnni_via_cpuid() is None
+    monkeypatch.setitem(sys.modules, "cpuinfo", _CpuinfoNoVnni)
+
+    with caplog.at_level(logging.WARNING, logger=emb_mod.logger.name):
+        emb_mod.detect_avx_vnni_details()
+        emb_mod.detect_avx_vnni_details()  # second call must not log again.
+
+    no_fast_path = [
+        r for r in caplog.records if "no INT8 fast path" in r.getMessage()
+    ]
+    assert len(no_fast_path) == 1, no_fast_path
+    msg = no_fast_path[0].getMessage()
+    assert "vendor=GenuineIntel" in msg
+    assert "family=0x6" in msg
+    assert "model=0x55" in msg
+    assert "confirmed=True" in msg
 
 
 def test_parse_dim_from_model_id_picks_runtime_dim_under_ambiguous_profile():

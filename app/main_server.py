@@ -155,7 +155,10 @@ def initialize_steamworks():
         if 'logger' in globals():
             logger.info(f"Steamworks初始化成功，应用ID: {actual_app_id}")
             logger.info(f"Steam客户端运行状态: {steamworks.IsSteamRunning()}")
-            logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            try:
+                logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            except Exception as overlay_error:
+                logger.info("Steam覆盖层状态不可用，跳过覆盖层诊断: %s", overlay_error)
         
         return steamworks
     except Exception as e:
@@ -744,6 +747,19 @@ async def _handle_agent_event(event: dict):
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
+                    # Plugin-supplied direct_reply text bypasses the LLM and
+                    # speaks/types verbatim. Plugin authors may write
+                    # ``{MASTER_NAME}``/``{LANLAN_NAME}`` placeholders since
+                    # they don't know which session their text will route to;
+                    # expand here so the placeholder doesn't reach TTS/UI
+                    # literally. (See main_logic.core.apply_role_placeholders
+                    # for the contract — same helper as the LLM-injection path
+                    # so all plugin-text exits share one spelling.)
+                    detail_text = core.apply_role_placeholders(
+                        detail_text,
+                        lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                        master_name=getattr(mgr, "master_name", "") or "",
+                    )
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
@@ -891,9 +907,19 @@ async def _handle_agent_event(event: dict):
                         # return — otherwise we emit turn-end without a matching
                         # turn-start (frontend never opened the assistant
                         # lifecycle), corrupting proactive rescheduling.
+                        # Same role-placeholder contract as the direct_reply
+                        # path: blind-passthrough text reaches the chat bubble
+                        # verbatim without going through the LLM, so the
+                        # placeholder has to be expanded here or the literal
+                        # ``{MASTER_NAME}`` token would render in the bubble.
+                        passthrough_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         passthrough_dispatched = bool(
                             await mgr.passthrough_to_chat_bubble(
-                                raw_text,
+                                passthrough_text,
                                 request_id=event.get("task_id") or None,
                                 source=passthrough_source,
                             )
@@ -938,9 +964,18 @@ async def _handle_agent_event(event: dict):
                     )
                 elif _is_websocket_connected(ws):
                     try:
+                        # HUD agent_notification renders verbatim to the user;
+                        # expand role placeholders so plugin authors can write
+                        # ``"通知 {MASTER_NAME}..."`` without the literal token
+                        # showing up in the toast.
+                        notif_text = core.apply_role_placeholders(
+                            text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         notif = {
                             "type": "agent_notification",
-                            "text": text,
+                            "text": notif_text,
                             "source": "brain",
                             "status": cb_status,
                         }
@@ -1353,6 +1388,9 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
 _MAIN_LIMITED_MODE_ALLOWED_PREFIXES = (
     "/static/",
     "/api/storage/location/",
+    # 诊断观测：limited-mode 本身就是要排查的故障形态之一（启动阻断），
+    # 这时候反而最需要 /api/debug/health 能读到 ring + watchdog 落盘。
+    "/api/debug/",
 )
 
 
@@ -1512,6 +1550,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
+from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
 
@@ -1562,6 +1601,7 @@ app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
+app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）
 app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
@@ -2049,6 +2089,14 @@ async def on_startup():
                     _last = _now
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
+
+        # 诊断观测 watchdog：5-min 周期采集 counter 写内存 ring buffer，
+        # NEKO_DEBUG_HEALTH_LOG=1 时同时落盘 jsonl。详见 main_routers/debug_router.py。
+        # 无条件启动 —— 单 task + 5-min 周期，开销远低于 heartbeat。
+        try:
+            _start_debug_health_watchdog()
+        except Exception as _e:
+            logger.debug(f"[debug_health] start watchdog failed: {_e}")
 
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:

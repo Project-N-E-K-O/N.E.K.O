@@ -54,6 +54,70 @@ def _prepend_env_path(name: str, entry: str) -> None:
         parts.insert(0, entry)
     os.environ[name] = os.pathsep.join(parts)
 
+
+def _linux_dlopen_mode(*, global_symbols: bool = False, lazy: bool = False) -> int:
+    """Build a Linux dlopen mode while staying portable to Python builds without flags."""
+    mode = 0
+    if global_symbols:
+        mode |= getattr(os, "RTLD_GLOBAL", 0)
+    else:
+        mode |= getattr(os, "RTLD_LOCAL", 0)
+    if lazy:
+        mode |= getattr(os, "RTLD_LAZY", 0)
+    else:
+        mode |= getattr(os, "RTLD_NOW", 0)
+    return mode
+
+
+_LINUX_OPTIONAL_WRAPPER_METHODS = {
+    "SteamShutdown",
+    "SetInputActionManifestFilePath",
+    "GetAnalogActionData",
+    "GetConnectedControllers",
+    "GetDigitalActionData",
+    "GetAuthSessionTicket",
+    "GetNumAchievements",
+    "GetAchievementName",
+    "GetAchievementDisplayAttribute",
+    "Workshop_SetItemSubscribedCallback",
+    "Workshop_SetItemUnsubscribedCallback",
+    "Workshop_SuspendDownloads",
+    "Workshop_SubscribeItem",
+    "Workshop_UnsubscribeItem",
+    "Workshop_CreateQueryUGCDetailsRequest",
+    "Workshop_SetQueryCompletedCallback",
+    "Workshop_SendQueryUGCRequest",
+    "Workshop_GetQueryUGCResult",
+    "MicroTxn_SetAuthorizationResponseCallback",
+}
+
+_LINUX_UNSAFE_WRAPPER_METHODS = {
+    # Present in the bundled Linux wrapper, but segfaults with the current
+    # libsteam_api.so used by source runs. Overlay diagnostics must not be able
+    # to take down Steam initialization.
+    "IsOverlayEnabled",
+}
+
+
+def _make_unavailable_steamworks_method(method_name: str):
+    def _unavailable(*_args, **_kwargs):
+        raise MissingSteamworksLibraryException(
+            f'Linux Steamworks wrapper does not export "{method_name}". '
+            "The bundled wrapper is older than the Linux Steamworks SDK library."
+        )
+    _unavailable._neko_steamworks_unavailable = True
+    _unavailable._neko_steamworks_method_name = method_name
+    return _unavailable
+
+
+def _linux_get_symbol(cdll_handle, *names: str):
+    for name in names:
+        try:
+            return getattr(cdll_handle, name)
+        except AttributeError:
+            continue
+    raise AttributeError("none of the requested Steam API symbols is available: " + ", ".join(names))
+
 from steamworks.interfaces.apps         import SteamApps
 from steamworks.interfaces.friends      import SteamFriends
 from steamworks.interfaces.matchmaking  import SteamMatchmaking
@@ -85,6 +149,7 @@ class STEAMWORKS(object):
         self._supported_platforms = supported_platforms
         self._loaded 	= False
         self._cdll 		= None
+        self._steam_api_cdll = None
 
         self.app_id 	= 0
 
@@ -112,9 +177,15 @@ class STEAMWORKS(object):
             # 优先从应用根目录加载
             libsteam_path = os.path.join(app_root, 'libsteam_api.so')
             if os.path.isfile(libsteam_path):
-                cdll.LoadLibrary(libsteam_path)
+                self._steam_api_cdll = CDLL(
+                    libsteam_path,
+                    mode=_linux_dlopen_mode(global_symbols=True, lazy=True),
+                )
             elif os.path.isfile(os.path.join(os.path.dirname(__file__), 'libsteam_api.so')):
-                cdll.LoadLibrary(os.path.join(os.path.dirname(__file__), 'libsteam_api.so'))
+                self._steam_api_cdll = CDLL(
+                    os.path.join(os.path.dirname(__file__), 'libsteam_api.so'),
+                    mode=_linux_dlopen_mode(global_symbols=True, lazy=True),
+                )
             else:
                 raise MissingSteamworksLibraryException(f'Missing library "libsteam_api.so"')
 
@@ -145,7 +216,18 @@ class STEAMWORKS(object):
             self.app_id	= int(f.read())
 
         try:
-            self._cdll = CDLL(library_path)  # Throw native exception in case of error
+            if platform in ['linux', 'linux2']:
+                # The bundled Linux SteamworksPy wrapper was built against the older
+                # SteamAPI_Init symbol. Current Linux libsteam_api.so exposes
+                # SteamAPI_InitSafe/Flat instead. Load the wrapper lazily so the
+                # missing legacy init symbol does not prevent the rest of the
+                # wrapper from binding to the still-present Steamworks symbols.
+                self._cdll = CDLL(
+                    library_path,
+                    mode=_linux_dlopen_mode(global_symbols=True, lazy=True),
+                )
+            else:
+                self._cdll = CDLL(library_path)  # Throw native exception in case of error
         except OSError as exc:
             if platform == 'darwin':
                 dependency_path = os.path.join(os.path.dirname(library_path), 'libsteam_api.dylib')
@@ -172,7 +254,16 @@ class STEAMWORKS(object):
             raise SteamNotLoadedException('STEAMWORKS not yet loaded')
 
         for method_name, attributes in STEAMWORKS_METHODS.items():
-            f = getattr(self._cdll, method_name)
+            if sys.platform in ('linux', 'linux2') and method_name in _LINUX_UNSAFE_WRAPPER_METHODS:
+                setattr(self, method_name, _make_unavailable_steamworks_method(method_name))
+                continue
+            try:
+                f = getattr(self._cdll, method_name)
+            except AttributeError:
+                if sys.platform in ('linux', 'linux2') and method_name in _LINUX_OPTIONAL_WRAPPER_METHODS:
+                    setattr(self, method_name, _make_unavailable_steamworks_method(method_name))
+                    continue
+                raise
 
             if 'restype' in attributes:
                 f.restype = attributes['restype']
@@ -215,7 +306,16 @@ class STEAMWORKS(object):
             raise SteamNotRunningException('Steam is not running')
 
         # Boot up the Steam API
-        result = self._cdll.SteamInit()
+        if sys.platform in ('linux', 'linux2') and self._steam_api_cdll is not None:
+            init_safe = _linux_get_symbol(
+                self._steam_api_cdll,
+                "SteamAPI_InitSafe",
+                "SteamAPI_Init",
+            )
+            init_safe.restype = c_bool
+            result = 0 if init_safe() else 3
+        else:
+            result = self._cdll.SteamInit()
         if result == 2:
             raise SteamNotRunningException('Steam is not running')
 
@@ -240,7 +340,11 @@ class STEAMWORKS(object):
 
         :return: None
         """
-        self._cdll.SteamShutdown()
+        if sys.platform in ('linux', 'linux2') and self._steam_api_cdll is not None:
+            shutdown = _linux_get_symbol(self._steam_api_cdll, "SteamAPI_Shutdown")
+            shutdown()
+        else:
+            self._cdll.SteamShutdown()
         self._loaded    = False
         self._cdll      = None
 

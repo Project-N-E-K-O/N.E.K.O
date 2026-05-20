@@ -1173,11 +1173,23 @@ class OmniOfflineClient:
             except Exception as e:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
-    async def stream_text(self, text: str) -> None:
+    async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
+
+        ``system_prefix`` 用途：caller（典型场景 SessionManager 把 passive agent
+        callback 渲染成自带 watermark 的 ``======[系统通知] xxx======`` 文本）
+        把这段中性 system notice 文本**就地拼到本轮 user message 的 content
+        前缀**——LLM 把它当作"用户当前发声那一刻附带的额外上下文"，在同一轮
+        回答里自然提及，不再起独立 turn 也不再单开 SystemMessage。
+
+        与 voice mode 的对偶：``OmniRealtimeClient.prime_context(skipped=False)``
+        在 GPT/GLM/Step 上同样走 ``create_response`` 把 callback 注入成 user
+        role 消息触发响应。inline 进 user content 即接受 callback 文本随
+        user message 进入 ``_conversation_history`` 持久化（跟 voice 端 user
+        role 注入语义一致）。
         """
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1185,10 +1197,18 @@ class OmniOfflineClient:
                 text = "请分析这些图片。"
             else:
                 return
-        
+
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
-        
+        # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
+        # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
+        # 落 history，跟 voice mode user-role 注入对偶。
+        _user_text = text.strip()
+        _prefix_clean = (system_prefix or "").strip()
+        _user_text_with_prefix = (
+            f"{_prefix_clean}\n\n{_user_text}" if _prefix_clean else _user_text
+        )
+
         # Prepare user message content
         if has_images:
             # Switch to vision model permanently for this session
@@ -1196,10 +1216,10 @@ class OmniOfflineClient:
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 await self.switch_model(self.vision_model, use_vision_config=True)
-            
+
             # Multi-modal message: images + text
             content = []
-            
+
             # Add images first
             for img_b64 in self._pending_images:
                 content.append({
@@ -1208,30 +1228,30 @@ class OmniOfflineClient:
                         "url": f"data:image/jpeg;base64,{img_b64}"
                     }
                 })
-            
-            # Add text
+
+            # Add text（已含 system_prefix watermark 前缀，若有）
             content.append({
                 "type": "text",
-                "text": text.strip()
+                "text": _user_text_with_prefix,
             })
-            
+
             user_message = HumanMessage(content=content)
             logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
 
             # Clear pending images after using them
             self._pending_images.clear()
         else:
-            # Text-only message
-            user_message = HumanMessage(content=text.strip())
+            # Text-only message（已含 system_prefix watermark 前缀，若有）
+            user_message = HumanMessage(content=_user_text_with_prefix)
 
         self._conversation_history.append(user_message)
         if has_images:
             self._evict_old_images()
-        
+
         # Callback for user input
         if self.on_input_transcript:
             await self.on_input_transcript(text.strip())
-        
+
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
@@ -1753,7 +1773,7 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
-            
+
             # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
             # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
             if not assistant_message_total and not guard_exhausted and not status_reported:

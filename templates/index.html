@@ -13,6 +13,10 @@
     <title data-i18n="app.title">Project N.E.K.O.</title>
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <!-- 诊断观测：必须最早加载——内部 monkey-patch setInterval/setTimeout 计数活跃
+         timer，业务代码之后加载就抓不到早期注册的那些。默认关，靠
+         localStorage.NEKO_DEBUG_HEALTH=1 + 刷新启用。详见 static/debug-health.js。 -->
+    <script src="/static/debug-health.js?v={{ static_asset_version }}"></script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
