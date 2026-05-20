@@ -5,12 +5,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .context_tokens import count_tokens_heuristic
-from .cross_scene_memory import (
+from ..context_tokens import count_tokens_heuristic
+from ..cross_scene_memory import (
     render_for_push as _render_cross_scene_memory_for_push,
     sanitize_memory as _cross_scene_sanitize,
 )
-from .models import (
+from ..models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
@@ -18,7 +18,7 @@ from .models import (
     sanitize_choice,
     sanitize_snapshot_state,
 )
-from .reader import normalize_text
+from ..reader import normalize_text
 
 _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
     ".agent",

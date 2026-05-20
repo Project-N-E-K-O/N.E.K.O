@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover
     psutil = None
 
-from .models import (
+from ..models import (
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
@@ -55,13 +55,13 @@ from .models import (
     sanitize_screen_ui_elements,
     sanitize_snapshot_state,
 )
-from .dependency_status import (
+from ..dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
 )
-from .dxcam_support import inspect_dxcam_installation
-from .reader import expand_bridge_root, normalize_text, read_session_json
-from .rapidocr_support import (
+from ..dxcam_support import inspect_dxcam_installation
+from ..reader import expand_bridge_root, normalize_text, read_session_json
+from ..rapidocr_support import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
     DEFAULT_RAPIDOCR_MODEL_TYPE,
@@ -69,7 +69,7 @@ from .rapidocr_support import (
     inspect_rapidocr_installation,
     resolve_rapidocr_model_cache_dir,
 )
-from .textractor_support import (
+from ..textractor_support import (
     _BAIDU_YUN_TEXTTRACTOR_CODE,
     _BAIDU_YUN_TEXTTRACTOR_URL,
     DEFAULT_TEXTRACTOR_RELEASE_API_URL,
@@ -625,7 +625,7 @@ def _default_bridge_root_raw() -> str:
 
 
 def _default_memory_reader_enabled() -> bool:
-    from .capture_platform import is_windows  # noqa: PLC0415
+    from ..capture_platform import is_windows  # noqa: PLC0415
 
     return is_windows()
 
@@ -633,7 +633,7 @@ def _default_memory_reader_enabled() -> bool:
 def _default_ocr_reader_enabled() -> bool:
     # Keep OCR reader Windows-only for now; do not couple this to
     # rapidocr_enabled because RapidOCR has its own platform checks.
-    from .capture_platform import is_windows  # noqa: PLC0415
+    from ..capture_platform import is_windows  # noqa: PLC0415
 
     return is_windows()
 
@@ -643,7 +643,7 @@ def _default_rapidocr_enabled() -> bool:
     # itself does its own runtime platform check; this default just
     # mirrors the historical behavior so non-Windows users opt-in
     # explicitly rather than getting a surprise enable.
-    from .capture_platform import is_windows  # noqa: PLC0415
+    from ..capture_platform import is_windows  # noqa: PLC0415
 
     return is_windows()
 
@@ -3080,7 +3080,7 @@ def build_explain_context(
     line_id: str,
     config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    from .context_builder import build_explain_context as _build_explain_context
+    from ..context_builder import build_explain_context as _build_explain_context
 
     if config is None:
         return _build_explain_context(local_state, line_id=line_id)
@@ -3094,7 +3094,7 @@ def build_summarize_context(
     merge_from_scene_ids: list[str] | None = None,
     config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    from .context_builder import build_summarize_context as _build_summarize_context
+    from ..context_builder import build_summarize_context as _build_summarize_context
 
     if config is None:
         return _build_summarize_context(
@@ -3115,7 +3115,7 @@ def build_suggest_context(
     *,
     config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    from .context_builder import build_suggest_context as _build_suggest_context
+    from ..context_builder import build_suggest_context as _build_suggest_context
 
     if config is None:
         return _build_suggest_context(local_state)
