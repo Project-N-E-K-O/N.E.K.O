@@ -2238,9 +2238,9 @@ def _build_summary_client(monkeypatch, *, max_response_length: int = 4):
 
 @pytest.mark.asyncio
 async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatch):
-    """Summary 路径 happy path：模型超 budget 很多，第一个 terminator 后的尾巴
-    替换成 emotion-tier 摘要。UI 看完整原文，TTS 听 prefix+summary，history 存
-    prefix+summary。"""
+    """Summary 路径 happy path：模型超 budget 很多，越过 budget 后第一个
+    terminator 后的尾巴替换成 emotion-tier 摘要。UI 看完整原文，TTS 听
+    prefix+summary，history 存 prefix+summary。"""
     from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
@@ -2252,8 +2252,13 @@ async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatc
     fake_summarize.captured = {}
     monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
 
-    # 30 个词的回复：cutover 在第一个 "."；尾巴 ≥ 25 tokens 大于 slack，触发摘要
-    long_text = "one two three four. " + " ".join([f"w{i}" for i in range(30)]) + "."
+    # budget=4，但要让 cutover 落在越界点之后 —— budget 前的句号不该被当
+    # cutover。trigger chunk 后排几个逗号分隔的子句，第一个逗号在 budget
+    # 之后，cutover 应该落到那里。尾巴 ≥ 25 tokens 大于 slack，触发摘要。
+    prefix_segment = "one two three four."  # 4 words, 用尽 budget
+    overshoot_segment = " five, six seven eight nine ten."  # 越界后第一个 terminator 是逗号
+    long_tail = " " + " ".join(f"w{i}" for i in range(25)) + "."
+    long_text = prefix_segment + overshoot_segment + long_tail
 
     async def _astream(self, messages, **overrides):
         yield LLMStreamChunk(content=long_text)
@@ -2293,16 +2298,23 @@ async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatc
     assert len(tts_only_emits) == 1, "summary 必须以 tts-only 注入一次"
     assert tts_only_emits[0]["text"] == "总之就这样啦"
 
-    # _summarize_tail_for_tts 收到的 prefix 应当以 cutover terminator 结尾
-    assert fake_summarize.captured["prefix"].rstrip().endswith(".")
+    # _summarize_tail_for_tts 收到的 prefix 应当以越界后的 terminator 结尾。
+    # 关键：budget 内已经有句号 "four." (offset 18) —— 旧的从 chunk 头扫的实现
+    # 会在那里 cutover；overflow-offset 修复后应当跳过它，落到 "five," 处。
+    captured_prefix = fake_summarize.captured["prefix"].rstrip()
+    assert captured_prefix.endswith(","), (
+        "cutover 应该落在越界后的逗号，不应该在 budget 之内的句号 "
+        "(actual prefix: %r)" % captured_prefix
+    )
     assert fake_summarize.captured["tail"]
 
     # history 写 prefix + summary（与 TTS 听到的对齐）
     last_msg = client._conversation_history[-1].content
     assert last_msg.endswith("总之就这样啦")
-    assert last_msg.startswith("one two three four.")
-    # 不应包含 tail 文本
-    assert "w29" not in last_msg
+    # prefix 必然包含 budget 之前的部分
+    assert "one two three four." in last_msg
+    # 越界后才出现的 tail 词不应进 history
+    assert "w24" not in last_msg
 
 
 @pytest.mark.asyncio
@@ -2319,8 +2331,9 @@ async def test_stream_text_summary_abandoned_when_overshoot_under_slack(monkeypa
         return "should not be used"
     monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
 
-    # budget=4，模型只写 6 词，6 < 4+25 → abandon
-    short_overshoot = "one two three four. five six."
+    # budget=4，模型只写 7 词，7 < 4+25 → abandon。trigger chunk 后必须有
+    # 至少一个 terminator 在越界点之后，否则 cutover 退化到流末 / 没 tail。
+    short_overshoot = "one two three four. five, six seven."
 
     async def _astream(self, messages, **overrides):
         yield LLMStreamChunk(content=short_overshoot)
@@ -2383,10 +2396,10 @@ async def test_stream_text_summary_gibberish_fallback_silently_commits_prefix(mo
         return "unused"
     monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
 
-    # prefix 部分先走 both（"one two three four."），然后 "GIB GIB GIB" 进 tail，
+    # prefix 部分先走 both，cutover 落在越界后的第一个逗号；之后 "GIB" 进 tail，
     # 重检触发 gibberish 命中。
     async def _astream(self, messages, **overrides):
-        yield LLMStreamChunk(content="one two three four. GIB GIB GIB.")
+        yield LLMStreamChunk(content="one two three four. five, GIB GIB GIB.")
 
     monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
 

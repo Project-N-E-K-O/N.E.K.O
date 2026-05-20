@@ -1543,6 +1543,11 @@ class OmniOfflineClient:
                         summary_tail_buffer = ""        # post-cutover UI-only 文本
                         summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
                         summary_trigger_tokens = 0     # 触发 summary 时的 _total（仅日志）
+                        # 越界点 char offset：模型一口气 yield 一个超大 chunk 时
+                        # （多个 sentence/clause），budget 之前的 terminator 不算数 ——
+                        # 应该从这个点开始找 terminator。trigger chunk 之后立即
+                        # 消费回 0，下一 chunk 从头扫（因为它整段已经在 budget 之后）。
+                        summary_overflow_offset = 0
 
                         def _has_unpersisted_recovery_suffix(recovery_text: str) -> bool:
                             if not recovery_text:
@@ -1610,6 +1615,7 @@ class OmniOfflineClient:
                                 summary_tail_buffer = ""
                                 summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
                                 summary_trigger_tokens = 0
+                                summary_overflow_offset = 0
                                 continue
                             if not self._is_responding:
                                 break
@@ -1673,10 +1679,23 @@ class OmniOfflineClient:
                                                 if summary_state == 'idle':
                                                     summary_state = 'pending_cutover'
                                                     summary_trigger_tokens = current_length
+                                                    # 算 chunk 里"刚好越过 budget"的 char offset：
+                                                    # truncate_to_tokens 把 candidate_total 砍到 budget，
+                                                    # 差出来的长度就是这一 chunk 里的越线位置。供下面
+                                                    # emit fork 从该 offset 起找 terminator，避免误把
+                                                    # budget 之前的早期逗号当 cutover。
+                                                    _capped = truncate_to_tokens(
+                                                        candidate_total, self.max_response_length,
+                                                    )
+                                                    summary_overflow_offset = max(
+                                                        0, len(_capped) - len(assistant_message_total),
+                                                    )
                                                     logger.info(
                                                         "OmniOfflineClient summary: 长回复触发 "
-                                                        "(%d tokens > %d)，等待下一个 terminator",
+                                                        "(%d tokens > %d，chunk 内越界 offset=%d)，"
+                                                        "等待下一个 terminator",
                                                         current_length, self.max_response_length,
+                                                        summary_overflow_offset,
                                                     )
                                                 # emit_content 保持原 chunk，下面 emit-split 块继续走
                                             else:
@@ -1714,8 +1733,16 @@ class OmniOfflineClient:
                                             and summary_state in ('pending_cutover', 'cutover_done')
                                         ):
                                             if summary_state == 'pending_cutover':
-                                                term_pos = _find_summary_terminator(emit_content)
-                                                if term_pos >= 0:
+                                                # Trigger chunk 上 offset > 0 表示越界点在 chunk 中段，
+                                                # terminator 搜索从越界点开始；后续 chunk 整段都在
+                                                # budget 之后，offset 复位到 0 从头扫。一次性消费。
+                                                search_from = summary_overflow_offset
+                                                summary_overflow_offset = 0
+                                                term_pos_in_slice = _find_summary_terminator(
+                                                    emit_content[search_from:]
+                                                )
+                                                if term_pos_in_slice >= 0:
+                                                    term_pos = search_from + term_pos_in_slice
                                                     pre = emit_content[:term_pos + 1]
                                                     post = emit_content[term_pos + 1:]
                                                     if pre:
@@ -1830,10 +1857,18 @@ class OmniOfflineClient:
                                                 if summary_state == 'idle':
                                                     summary_state = 'pending_cutover'
                                                     summary_trigger_tokens = current_length
+                                                    # 算 flush_text 内的越界 char offset（与主累加块对偶）
+                                                    _capped = truncate_to_tokens(
+                                                        candidate_total, self.max_response_length,
+                                                    )
+                                                    summary_overflow_offset = max(
+                                                        0, len(_capped) - len(assistant_message_total),
+                                                    )
                                                     logger.info(
                                                         "OmniOfflineClient summary: 长回复触发于 flush "
-                                                        "(%d tokens > %d)",
+                                                        "(%d tokens > %d，flush 内越界 offset=%d)",
                                                         current_length, self.max_response_length,
+                                                        summary_overflow_offset,
                                                     )
                                             else:
                                                 guard_triggered = True
@@ -1863,8 +1898,14 @@ class OmniOfflineClient:
                                             and summary_state in ('pending_cutover', 'cutover_done')
                                         ):
                                             if summary_state == 'pending_cutover':
-                                                term_pos = _find_summary_terminator(emit_flush_text)
-                                                if term_pos >= 0:
+                                                # 与主累加块对偶：消费 trigger flush 的越界 offset
+                                                search_from = summary_overflow_offset
+                                                summary_overflow_offset = 0
+                                                term_pos_in_slice = _find_summary_terminator(
+                                                    emit_flush_text[search_from:]
+                                                )
+                                                if term_pos_in_slice >= 0:
+                                                    term_pos = search_from + term_pos_in_slice
                                                     pre = emit_flush_text[:term_pos + 1]
                                                     post = emit_flush_text[term_pos + 1:]
                                                     if pre:
