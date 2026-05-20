@@ -24,7 +24,7 @@ class _GalgameDownloadRapidocrModelsMixin:
         try:
             current_run_id = self._resolve_current_run_id(_)
             progress_callback = self._resolve_install_progress_callback(current_run_id)
-            from .rapidocr_support import download_rapidocr_models
+            from ..rapidocr_support import download_rapidocr_models
 
             download_result = await download_rapidocr_models(
                 logger=self.logger,
