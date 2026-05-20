@@ -16,6 +16,12 @@ import pytest
 
 from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
+from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
+from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
+from plugin.plugins.galgame_plugin.ocr_capture_backends import printwindow as galgame_printwindow_backend
+from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
+from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
+from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
 from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
 from plugin.plugins.galgame_plugin import install_tasks as galgame_install_tasks
@@ -45,6 +51,7 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     OcrReaderBridgeWriter,
     OcrReaderManager,
     OcrReaderRuntime,
+    OcrWindowTarget,
     OcrTextBox,
     SelectedOcrBackendPlan,
     _OcrLangDetector,
@@ -100,6 +107,34 @@ class _CapturingLogger(_Logger):
         self.warnings.append(args)
 
 
+class _ExplodingLogger(_Logger):
+    def debug(self, *args, **kwargs):
+        raise RuntimeError("logger debug failed")
+
+    def warning(self, *args, **kwargs):
+        raise RuntimeError("logger warning failed")
+
+    def info(self, *args, **kwargs):
+        raise RuntimeError("logger info failed")
+
+
+class _FormattingLogger(_Logger):
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def warning(self, message, *args, **kwargs):
+        del kwargs
+        self.messages.append(str(message).format(*args))
+
+
+class _BadLogArg:
+    def __repr__(self) -> str:
+        raise RuntimeError("repr failed")
+
+    def __str__(self) -> str:
+        raise RuntimeError("str failed")
+
+
 class _FakeCaptureBackend:
     def __init__(self, *, available: bool = True) -> None:
         self.available = available
@@ -114,6 +149,11 @@ class _FakeCaptureBackend:
     def capture_frame(self, target: DetectedGameWindow, profile) -> str:
         self.capture_calls.append((target.hwnd, profile.to_dict()))
         return f"frame:{target.hwnd}:{len(self.capture_calls)}"
+
+
+class _ExplodingAvailabilityCaptureBackend(_FakeCaptureBackend):
+    def is_available(self) -> bool:
+        raise RuntimeError("probe failed")
 
 
 class _FakeOcrBackend:
@@ -133,6 +173,82 @@ class _FakeOcrBackend:
         if len(self._texts) == 1:
             return self._texts[0]
         return self._texts.pop(0)
+
+
+def test_log_warning_falls_back_when_argument_formatting_fails() -> None:
+    manager = object.__new__(OcrReaderManager)
+    logger = _FormattingLogger()
+    manager._logger = logger
+
+    manager._log_warning("ocr_reader backend failed: {}", _BadLogArg())
+
+    assert len(logger.messages) == 1
+    assert logger.messages[0].startswith("ocr_reader backend failed: <")
+
+
+def test_dxcam_create_timeout_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def _create_with_timeout(_dxcam_module, *, timeout_seconds: float):
+        nonlocal calls
+        del timeout_seconds
+        calls += 1
+        raise TimeoutError("dxcam_create_timed_out_after_0.1s")
+
+    monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **_kwargs: object()))
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_create_dxcam_camera_with_timeout",
+        _create_with_timeout,
+    )
+
+    backend = galgame_dxcam_backend.DxcamCaptureBackend(logger=_Logger())
+    with pytest.raises(TimeoutError):
+        backend._camera_instance()
+
+    assert calls == 1
+    assert backend._consecutive_failures == 1
+    assert backend._last_failure_time > 0.0
+
+
+def test_dxcam_create_timeout_rate_limits_after_failure_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def _create_with_timeout(_dxcam_module, *, timeout_seconds: float):
+        nonlocal calls
+        del timeout_seconds
+        calls += 1
+        raise TimeoutError("dxcam_create_timed_out_after_0.1s")
+
+    monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **_kwargs: object()))
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_create_dxcam_camera_with_timeout",
+        _create_with_timeout,
+    )
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_require_visible_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_target_screen_capture_rect",
+        lambda _target: (0, 0, 100, 100),
+    )
+
+    backend = galgame_dxcam_backend.DxcamCaptureBackend(logger=_Logger())
+    target = DetectedGameWindow(hwnd=1, pid=1, width=100, height=100)
+    for expected_failures in (1, 2, 3):
+        with pytest.raises(TimeoutError):
+            backend.capture_frame(target, OcrCaptureProfile())
+        assert backend._consecutive_failures == expected_failures
+    with pytest.raises(RuntimeError, match="dxcam rate limited"):
+        backend.capture_frame(target, OcrCaptureProfile())
+
+    assert calls == 3
 
 
 def _make_config(
@@ -232,6 +348,30 @@ def _window() -> list[DetectedGameWindow]:
             pid=4242,
         )
     ]
+
+
+def test_manual_window_target_signature_requires_pid_when_present() -> None:
+    target = OcrWindowTarget(
+        mode="manual",
+        process_name="DemoGame.exe",
+        normalized_title="demo window",
+        pid=4242,
+    )
+
+    assert not target.matches_signature(
+        DetectedGameWindow(
+            title="Demo Window",
+            process_name="DemoGame.exe",
+            pid=9999,
+        )
+    )
+    assert target.matches_signature(
+        DetectedGameWindow(
+            title="Demo Window",
+            process_name="DemoGame.exe",
+            pid=4242,
+        )
+    )
 
 
 def _assert_poll_runtime_completed(runtime: dict[str, object]) -> None:
@@ -969,6 +1109,55 @@ def test_ocr_writer_discard_session_does_not_delete_existing_history(tmp_path: P
     assert events[-1]["payload"]["discarded"] is True
 
 
+def test_ocr_writer_end_session_resets_runtime_and_rejects_late_events(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    assert writer.emit_line("Yukino: stable line.", ts="2026-04-29T03:00:01Z") is True
+    game_id = writer.game_id
+
+    assert writer.end_session(ts="2026-04-29T03:00:02Z") is True
+    runtime = writer.runtime()
+
+    assert runtime.status == "idle"
+    assert runtime.session_id == ""
+    assert runtime.game_id == ""
+    assert writer.emit_line("Yukino: late line.", ts="2026-04-29T03:00:03Z") is False
+    events = _read_events(bridge_root / game_id / "events.jsonl")
+    assert [event["type"] for event in events] == [
+        "session_started",
+        "line_changed",
+        "session_ended",
+    ]
+
+
+def test_ocr_writer_scene_change_clears_previous_dialogue_state(
+    tmp_path: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+
+    assert writer.emit_line("Yukino: old line.", ts="2026-04-29T03:00:01Z") is True
+    old_line_id = str(writer.current_state["line_id"])
+    scene_id = writer.advance_visual_scene(
+        ts="2026-04-29T03:00:02Z",
+        background_hash="ffffffffffffffff",
+    )
+    state = writer.current_state
+
+    assert state["scene_id"] == scene_id
+    assert state["speaker"] == ""
+    assert state["text"] == ""
+    assert state["line_id"] == ""
+    assert writer.emit_choices(["Save", "Leave"], ts="2026-04-29T03:00:03Z") is True
+    assert writer.current_state["line_id"] != old_line_id
+
+
 def test_ocr_reader_manager_remembers_short_lived_vision_snapshot(tmp_path: Path) -> None:
     from PIL import Image
 
@@ -1104,12 +1293,12 @@ def test_ocr_session_snapshot_write_failure_is_nonfatal(
 
     monkeypatch.setattr(galgame_ocr_reader.os, "replace", _fail_replace)
 
-    writer.start_session(_window()[0])
+    with pytest.raises(RuntimeError, match="session snapshot write failed"):
+        writer.start_session(_window()[0])
 
     assert logger.warnings
     assert logger.warnings[0][0] == "ocr_reader session snapshot write failed: {}"
-    events = _read_events(bridge_root / writer.game_id / "events.jsonl")
-    assert [event["type"] for event in events] == ["session_started"]
+    assert not (bridge_root / writer.game_id / "events.jsonl").exists()
 
 
 def test_ocr_choice_candidates_use_single_read_threshold_when_requested(tmp_path: Path) -> None:
@@ -1710,13 +1899,14 @@ async def test_ocr_reader_capture_timeout_recovery_is_bounded(
             for warning in result.warnings
         )
         with manager._capture_worker_lock:
-            assert manager._capture_future is None
-            assert manager._capture_executor is None
-            assert manager._capture_future_timed_out is False
+            assert manager._capture_future is current
+            assert manager._capture_executor is current_executor
+            assert manager._capture_future_timed_out is True
             assert manager._abandoned_capture_workers == [
                 (abandoned_executor, abandoned),
             ]
 
+        current.set_result(OcrExtractionResult(text="late"))
         retry = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
 
         assert backend.calls == 1
@@ -1796,6 +1986,17 @@ def test_capture_image_hash_normalizes_non_rgb_frames() -> None:
     assert OcrReaderManager._capture_image_hash(rgb) == OcrReaderManager._capture_image_hash(rgba)
 
 
+def test_capture_image_hash_rejects_non_image_frames() -> None:
+    assert OcrReaderManager._capture_image_hash(object()) == ""
+
+
+def test_capture_image_hash_accepts_stable_text_frames() -> None:
+    assert OcrReaderManager._capture_image_hash("frame:1")
+    assert OcrReaderManager._capture_image_hash("frame:1") == OcrReaderManager._capture_image_hash(
+        "frame:1"
+    )
+
+
 def test_perceptual_hash_width_matches_requested_size() -> None:
     from PIL import Image
 
@@ -1842,6 +2043,7 @@ def test_ocr_line_id_collision_suffix_has_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(galgame_ocr_reader, "_OCR_LINE_ID_MAX_COLLISION_SUFFIX", 2)
+    monkeypatch.setattr(galgame_ocr_bridge_writer, "_OCR_LINE_ID_MAX_COLLISION_SUFFIX", 2)
     writer = OcrReaderBridgeWriter(bridge_root=tmp_path)
     text = "same normalized line"
     normalized = galgame_ocr_reader.normalize_text(text)
@@ -1904,26 +2106,11 @@ def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = _window()[0]
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_client_rect",
-        lambda _target: (5, 92, 1301, 1060),
-    )
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_window_uses_overlapped_chrome",
-        lambda _target: True,
-    )
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_monitor_work_rects",
-        lambda _rect: [],
-    )
-    monkeypatch.setattr(
-        galgame_ocr_reader,
-        "_target_monitor_work_rect",
-        lambda _target: (0, 0, 1920, 1040),
-    )
+    for mod in (galgame_ocr_reader, galgame_ocr_capture_backends, galgame_ocr_capture_helpers):
+        monkeypatch.setattr(mod, "_target_client_rect", lambda _t: (5, 92, 1301, 1060))
+        monkeypatch.setattr(mod, "_target_window_uses_overlapped_chrome", lambda _t: True)
+        monkeypatch.setattr(mod, "_target_monitor_work_rects", lambda _r: [])
+        monkeypatch.setattr(mod, "_target_monitor_work_rect", lambda _t: (0, 0, 1920, 1040))
 
     rect = galgame_ocr_reader._target_screen_capture_rect(target)
 
@@ -1940,7 +2127,27 @@ def test_screen_capture_rect_spanning_monitors_keeps_other_display(
         lambda _target: (1800, 100, 2600, 1060),
     )
     monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_client_rect",
+        lambda _target: (1800, 100, 2600, 1060),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_helpers,
+        "_target_client_rect",
+        lambda _target: (1800, 100, 2600, 1060),
+    )
+    monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_helpers,
         "_target_window_uses_overlapped_chrome",
         lambda _target: True,
     )
@@ -1950,7 +2157,27 @@ def test_screen_capture_rect_spanning_monitors_keeps_other_display(
         lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
     )
     monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_monitor_work_rects",
+        lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_helpers,
+        "_target_monitor_work_rects",
+        lambda _rect: [(0, 0, 1920, 1040), (1920, 0, 3840, 1080)],
+    )
+    monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_monitor_work_rect",
+        lambda _target: (0, 0, 1920, 1040),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_helpers,
         "_target_monitor_work_rect",
         lambda _target: (0, 0, 1920, 1040),
     )
@@ -1970,7 +2197,27 @@ def test_screen_capture_rect_ignores_invalid_monitor_payload(
         lambda _target: (10, 20, 800, 600),
     )
     monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_client_rect",
+        lambda _target: (10, 20, 800, 600),
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_helpers,
+        "_target_client_rect",
+        lambda _target: (10, 20, 800, 600),
+    )
+    monkeypatch.setattr(
         galgame_ocr_reader,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_backends,
+        "_target_window_uses_overlapped_chrome",
+        lambda _target: True,
+    )
+    monkeypatch.setattr(
+        galgame_ocr_capture_helpers,
         "_target_window_uses_overlapped_chrome",
         lambda _target: True,
     )
@@ -2019,6 +2266,69 @@ def test_printwindow_client_crop_keeps_profile_coordinates_in_client_space() -> 
         "right": 130.0,
         "bottom": 110.0,
     }
+
+
+def test_printwindow_capture_crops_content_rect_after_full_window_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image, ImageDraw
+
+    full_image = Image.new("RGB", (120, 100), (255, 0, 0))
+    draw = ImageDraw.Draw(full_image)
+    draw.rectangle((0, 20, 119, 99), fill=(0, 255, 0))
+    target = DetectedGameWindow(hwnd=101, width=120, height=100)
+    captured: list[tuple[int, tuple[int, int, int, int]]] = []
+
+    def _raise_screen_rect(_target: DetectedGameWindow) -> tuple[int, int, int, int]:
+        raise RuntimeError("screen rect unavailable")
+
+    def _capture_full_window(
+        _self: object,
+        hwnd: int,
+        window_rect: tuple[int, int, int, int],
+    ):
+        captured.append((hwnd, window_rect))
+        return full_image.copy()
+
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_require_visible_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_target_screen_capture_rect",
+        _raise_screen_rect,
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_target_content_rect",
+        lambda _target: (10, 30, 130, 110),
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend,
+        "_target_window_rect",
+        lambda _target: (10, 10, 130, 110),
+    )
+    monkeypatch.setattr(
+        galgame_printwindow_backend.PrintWindowCaptureBackend,
+        "_capture_full_window",
+        _capture_full_window,
+    )
+
+    image = galgame_printwindow_backend.PrintWindowCaptureBackend().capture_frame(
+        target,
+        OcrCaptureProfile(
+            left_inset_ratio=0.0,
+            right_inset_ratio=0.0,
+            top_ratio=0.0,
+            bottom_inset_ratio=0.0,
+        ),
+    )
+
+    assert captured == [(101, (10, 10, 130, 110))]
+    assert image.size == (120, 80)
+    assert image.getpixel((0, 0)) == (0, 255, 0)
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -2541,6 +2851,57 @@ def test_pending_visual_scene_commits_before_observed_line(tmp_path: Path) -> No
     )
 
 
+def test_committed_pending_visual_scene_requests_rescan(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+        writer=writer,
+    )
+    target = _window()[0]
+    active_backend = OcrBackendDescriptor(kind="fake", available=True)
+    manager._pending_visual_scene_hash = "ffffffffffffffff"
+    manager._pending_visual_scene_at = 3000.0
+
+    manager._commit_pending_visual_scene(
+        now=3000.0,
+        diagnostic="pending_scene_committed_by_finalize",
+    )
+    result = manager._finalize_tick_result(
+        result=galgame_ocr_reader.OcrReaderTickResult(),
+        now=3000.0,
+        poll_started_at=3000.0,
+        backend_plan=SelectedOcrBackendPlan(primary=active_backend),
+        active_backend=active_backend,
+        backend_detail_override="",
+        target=target,
+        aihong_two_stage_enabled=False,
+        runtime_profile=OcrCaptureProfile(),
+        runtime_capture_profile_selection=None,  # type: ignore[arg-type]
+        selection=galgame_ocr_reader.WindowSelectionResult(target=target),
+        emitted=False,
+        guard_blocked=False,
+        screen_classification=ScreenClassification(),
+        screen_event_emitted=False,
+        capture_attempted=True,
+        capture_completed=True,
+        capture_error=False,
+        text_event_seq_before_capture=writer.last_seq,
+        foreground_advance_stable_grace_active=False,
+    )
+
+    assert result.should_rescan is True
+    assert manager._visual_scene_committed is False
+
+
 def test_pending_visual_scene_commits_before_stable_line_when_observed_disabled(
     tmp_path: Path,
 ) -> None:
@@ -2747,6 +3108,10 @@ def test_background_hash_distance_20_does_not_advance_visual_scene(
     assert manager._last_background_hash == "ff01010101010101"
     assert manager._pending_visual_scene_hash == ""
     assert manager._runtime.scene_ordering_diagnostic == "none"
+
+
+def test_malformed_background_hash_distance_does_not_suppress_change() -> None:
+    assert OcrReaderManager._hash_distance("not-a-hex-hash", "ffffffffffffffff") == 64
 
 
 def test_large_background_hash_distance_still_enters_pending_visual_scene(
@@ -4209,6 +4574,7 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         return runtime, {}
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
+    monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
     cache_key = (
         install_target_dir,
         "onnxruntime",
@@ -4254,6 +4620,7 @@ def test_rapidocr_runtime_cache_reloads_after_idle_timeout(
         return runtimes[len(load_calls) - 1], {}
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
+    monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
     monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: now["value"])
     cache_key = (
         install_target_dir,
@@ -4293,6 +4660,7 @@ def test_rapidocr_runtime_cache_key_normalizes_case_and_whitespace(
         return runtime, {}
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
+    monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
     cache_key = (
         install_target_dir,
         "onnxruntime",
@@ -4432,6 +4800,41 @@ def test_rapidocr_auto_lang_skips_when_rapidocr_not_active(
     assert manager._config.rapidocr_lang_type == "ch"
     assert manager._config.rapidocr_auto_detect_last_lang == ""
     assert persisted == []
+
+
+def test_rapidocr_auto_lang_safe_logging_does_not_break_detection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_ExplodingLogger(),
+        config=_make_config(bridge_root, rapidocr_enabled=True),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FakeCaptureBackend(),
+    )
+    manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
+    monkeypatch.setattr(
+        galgame_ocr_reader,
+        "inspect_rapidocr_installation",
+        lambda **_kwargs: {
+            "installed": True,
+            "detail": "installed",
+            "detected_path": "C:/RapidOCR/site-packages/rapidocr_onnxruntime",
+            "selected_model": "PP-OCRv5/korean/mobile",
+        },
+    )
+
+    manager._maybe_auto_switch_rapidocr_lang(
+        "\uc720\ud0a4: \uc548\ub155\ud558\uc138\uc694",
+        rapidocr_active=True,
+    )
+
+    assert manager._config.rapidocr_lang_type == "korean"
+    assert manager._config.rapidocr_auto_detect_last_lang == "korean"
 
 
 def test_rapidocr_auto_lang_skips_when_rapidocr_disabled(
@@ -5058,7 +5461,7 @@ async def test_ocr_reader_manager_locks_auto_target_when_user_focuses_other_wind
         hwnd=303,
         title=game_window.title,
         process_name=game_window.process_name,
-        pid=38828,
+        pid=game_window.pid,
     )
     other_window = DetectedGameWindow(
         hwnd=202,
@@ -5477,6 +5880,33 @@ async def test_ocr_reader_manager_starts_capture_and_emits_stable_line(
 
 
 @pytest.mark.asyncio
+async def test_ocr_reader_tick_treats_capture_backend_probe_error_as_unavailable(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_ExplodingAvailabilityCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["probe should not reach OCR"]),
+    )
+
+    result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+    assert result.runtime["status"] == "candidate"
+    assert result.runtime["detail"] == "capture_backend_unavailable"
+    assert result.warnings == ["ocr_reader capture backend is not available"]
+
+
+@pytest.mark.asyncio
 async def test_ocr_reader_manager_reports_capture_diagnostic_after_repeated_no_text(
     tmp_path: Path,
     ocr_runtime_root: Path,
@@ -5746,7 +6176,7 @@ async def test_ocr_reader_manager_prefers_manual_target_and_rebinds_by_signature
         hwnd=778,
         title=manual_window.title,
         process_name=manual_window.process_name,
-        pid=5566,
+        pid=manual_window.pid,
     )
     other_window = DetectedGameWindow(
         hwnd=100,
