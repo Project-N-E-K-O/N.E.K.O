@@ -72,6 +72,7 @@ def test_model_interactions_report_supported_bounces_and_display_switch_success(
 
     assert "recordEdgeBounce('live2d')" in live2d
     assert "markDisplaySwitchSuccess('live2d')" in live2d
+    assert "recordEdgeBounce('mmd')" in mmd
     assert "markDisplaySwitchSuccess('mmd')" in mmd
     assert "recordEdgeBounce('vrm')" in vrm
     assert "markDisplaySwitchSuccess('vrm')" in vrm
