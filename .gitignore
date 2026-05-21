@@ -123,6 +123,7 @@ backup/
 build*
 !build_frontend.bat
 !build_frontend.sh
+!build-desktop*.yml
 metadata.package.json
 version_info.txt
 
