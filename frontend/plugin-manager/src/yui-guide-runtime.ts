@@ -1851,8 +1851,20 @@ class PluginDashboardGuideRuntime {
     return null
   }
 
+  isHomeSkipForwardActivationEvent(event: Event) {
+    return (
+      event.type === 'pointerdown'
+      || event.type === 'mousedown'
+      || event.type === 'touchstart'
+      || event.type === 'click'
+    )
+  }
+
   forwardHomeSkipClick(event: Event) {
     if (!this.running || !event || !this.activeSessionId) {
+      return false
+    }
+    if (!this.isHomeSkipForwardActivationEvent(event)) {
       return false
     }
 
