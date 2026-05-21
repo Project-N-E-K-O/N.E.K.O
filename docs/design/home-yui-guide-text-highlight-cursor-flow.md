@@ -62,8 +62,9 @@ ghost cursor 流程：
 高亮流程：
 
 1. 这一段延续上一阶段输入区/聊天区的 spotlight 状态。
-2. 不打开新的业务面板。
-3. 不执行真实 UI 点击。
+2. 旁白、拥抱和爱心演出全部结束后，`clearIntroGreetingChatHighlight()` 会设置 `introGreetingChatHighlightCleared = true` 并清掉聊天 persistent spotlight；外置聊天窗模式同步清掉外置窗口 spotlight。
+3. 不打开新的业务面板。
+4. 不执行真实 UI 点击。
 
 ghost cursor 流程：
 
@@ -74,6 +75,7 @@ ghost cursor 流程：
 
 1. `intro_greeting_reply` 有 `showIntroGiftHeart` cue。
 2. cue 只驱动头像演出，不改变高亮或 cursor 目标。
+3. 这一段结束后，后续 `highlightChatWindow()` 在首页会因为 `introGreetingChatHighlightCleared` 直接返回；台词仍进入聊天窗口，但 spotlight 不再回到聊天窗。
 
 ## 2. 语音入口介绍
 
@@ -85,9 +87,9 @@ ghost cursor 流程：
 
 高亮流程：
 
-1. `runIntroVoiceControlButtonShowcase()` 先调用 `highlightChatWindow()`。
-2. persistent spotlight 放到聊天窗口；如果是外置聊天窗，则同步外置窗口 spotlight。
-3. action spotlight 放到语音控制按钮，也就是 `#${p}-btn-mic` 的圆形按钮 shell。
+1. `runIntroVoiceControlButtonShowcase()` 不再恢复聊天窗口 persistent spotlight。
+2. action spotlight 放到语音控制按钮，也就是 `#${p}-btn-mic` 的圆形按钮 shell。
+3. 语音按钮会写入圆形 spotlight geometry hint，聊天窗口只负责承载文本，不再作为本段视觉焦点。
 
 ghost cursor 流程：
 
@@ -122,7 +124,7 @@ ghost cursor 流程：
 高亮流程：
 
 1. 场景开始时 overlay 进入 taking-over。
-2. persistent spotlight 先回到聊天窗口，表示台词仍在聊天区输出。
+2. 由于 intro 问候结束后已清掉聊天 spotlight，本段台词仍写入聊天窗口，但 persistent spotlight 不再回到聊天窗。
 3. 猫爪按钮 `#${p}-btn-agent` 被作为 retained extra spotlight 保留。
 4. 点击猫爪后打开猫爪/Agent 面板。
 5. 猫爪总开关 `agent-master` 用虚拟 spotlight `takeover-agent-master-toggle` 扩大高亮范围。
@@ -161,7 +163,7 @@ ghost cursor 流程：
 
 高亮流程一：
 
-1. 场景开始调用 `highlightChatWindow()`。
+1. 场景开始会调用 `highlightChatWindow()`，但首页在 intro 问候结束后已设置 `introGreetingChatHighlightCleared`，所以这里不会重新显示聊天 persistent spotlight。
 2. 打开或保持猫爪/Agent 面板。
 3. 用户插件开关 `agent-user-plugin` 被高亮并打开。
 4. hover 用户插件开关，露出侧面板里的“管理面板”入口。
@@ -196,14 +198,17 @@ ghost cursor 流程二：
 1. 进入 dashboard 讲解时保存首页 cursor 位置。
 2. 首页 ghost cursor 隐藏。
 3. 插件 dashboard 页面内的 ghost cursor 由插件页 runtime 独立创建、移动、暂停和清理。
-4. dashboard 完成并回到首页后，如果有保存位置，cursor 在原位置恢复显示。
+4. 插件页 runtime 会用 `skipButtonScreenRect` 判断真实用户是否点在首页跳过按钮的屏幕区域内；命中时发送带 `screenX/screenY` 的 skip request，让首页把点击转发给 `#neko-tutorial-skip-btn`。
+5. dashboard 完成并回到首页后，如果有保存位置，cursor 在原位置恢复显示。
 
 打断分支补充：
 
 1. 轻微打断时，插件 dashboard 页面内的 `main` 高亮和 ghost cursor 应暂停当前动画，等待轻微抵抗语音结束后恢复原 dashboard 预览。
 2. 生气退出时，插件 dashboard 页面内的 `main` 高亮和 ghost cursor 必须在触发瞬间消失，不能等语音结束。
-3. 生气退出语音完整播放后，插件 dashboard 发送 skip request，效果等同用户点击跳过按钮；不得发送 `plugin-dashboard:done`。
-4. 以上插件 dashboard 页面内行为是 `frontend/plugin-manager/src/yui-guide-runtime.ts` 的专属适配，不是新的通用生命周期模块。
+3. 生气退出语音完整播放后，插件 dashboard 发送 `source: 'plugin_dashboard_angry_exit'` 的 skip request；首页把它当成明确跳过请求，直接进入 `tutorialManager.handleTutorialSkipRequest()`，不得发送 `plugin-dashboard:done`。
+4. 插件页右上角桌面 skip 按钮发送 `source: 'plugin_dashboard_button'`，同样作为明确跳过请求处理，不要求携带屏幕坐标。
+5. 插件页 skip 按钮和本地教程 tooltip skip 按钮都标记 `data-yui-plugin-dashboard-skip-control="true"`，并在 pointer/mouse/touch/click 链路上阻止事件继续传播，避免点击穿透到后面的插件页面。
+6. 以上插件 dashboard 页面内行为是 `frontend/plugin-manager/src/yui-guide-runtime.ts` 的专属适配，不是新的通用生命周期模块。
 
 弹窗受阻文本：
 
@@ -222,7 +227,7 @@ ghost cursor 流程二：
 
 1. 场景开始先关闭猫爪/Agent 面板。
 2. settings 按钮 `#${p}-btn-settings` 被设置为圆形 spotlight，并作为 retained extra spotlight 保留。
-3. persistent spotlight 仍放在聊天窗口。
+3. `highlightChatWindow()` 会被调用，但首页在 intro 问候结束后不会再恢复聊天 persistent spotlight。
 4. 到 `openSettingsPanel` 语音 cue 时，action spotlight 放到 settings 按钮。
 
 ghost cursor 流程一：

@@ -106,7 +106,7 @@
 3. `frontend/plugin-manager/src/yui-guide-runtime.ts`
    - 插件管理页专属运行时适配层。
    - 插件管理页是独立 Vue 前端产物，不直接加载首页全局模块。
-   - 它拥有页面内 `main` spotlight、页面内 ghost cursor、桌面 IPC skip / interrupt bridge 和 dist 产物重建要求。
+   - 它拥有页面内 `main` spotlight、页面内 ghost cursor、桌面 IPC skip / interrupt bridge、插件页本地 skip 控件和 dist 产物重建要求。
    - 它必须遵守通用语义，但不能依赖首页模块替它清理页面内的高亮或 ghost cursor。
 4. 后续 Day 2 到 Day 4 或新页面教程
    - 可以新增自己的 Director / Page Runtime。
@@ -118,6 +118,7 @@
 如果首页会加载 `yui-guide-director.js`，脚本顺序应至少满足：
 
 ```html
+<script src="/static/yui-guide-steps.js"></script>
 <script src="/static/yui-guide-overlay.js"></script>
 <script src="/static/yui-guide-page-handoff.js"></script>
 <script src="/static/avatar-performance-stage.js"></script>
@@ -135,6 +136,7 @@
 如果非首页页面也加载 `yui-guide-director.js`，但不接入头像演出运行时，至少需要保证：
 
 ```html
+<script src="/static/yui-guide-steps.js"></script>
 <script src="/static/yui-guide-overlay.js"></script>
 <script src="/static/yui-guide-page-handoff.js"></script>
 <script src="/static/tutorial-interaction-takeover.js"></script>
@@ -489,8 +491,13 @@ abortAsAngryExit(source) {
 1. 触发时调用 `stopGhostCursorAnimation()`、`clearSpotlight()` 和 `setAngryVisual(true)`。
 2. 插件页本地 `main` 高亮和 ghost cursor 动画立即停止，后续预览动画用 `isCurrentWithoutAngryExit` 防止重启。
 3. 通过桌面 bridge 或 opener 请求首页播放 `interrupt_angry_exit` 语音。
-4. 首页语音结束后，插件页调用 `requestPluginDashboardSkip({ source: 'plugin_dashboard_angry_exit', reason: 'angry_exit' })`。
+4. 首页语音结束后，插件页调用 `requestPluginDashboardSkip({ source: 'plugin_dashboard_angry_exit', reason: 'angry_exit' })`；首页 Director 会把这个 source 识别为明确 skip 请求，直接转入 `tutorialManager.handleTutorialSkipRequest()`，不要求携带屏幕坐标。
 5. 插件页不再发送 `plugin-dashboard:done`，避免把生气退出误判成插件面板教程正常完成。
+
+插件页 skip 还有两条入口：
+
+1. 用户真实点击首页右上角 `#neko-tutorial-skip-btn` 的屏幕区域时，插件页 runtime 根据 handoff payload 里的 `skipButtonScreenRect` 做命中判断，发送带 `screenX/screenY` 的 `plugin-dashboard:skip-request`。首页 Director 重新读取当前 skip 按钮 rect 校验后调用 `skipButton.click()`，让 `TutorialSkipController` 处理真实首页按钮点击。
+2. 用户点击插件页自己的桌面 skip 按钮时，插件页发送 `source: 'plugin_dashboard_button'`。首页 Director 同样把它视为明确 skip 请求并转入 Manager 统一 skip 入口，而不是走坐标转发。
 
 ### 清理要求
 
@@ -516,6 +523,8 @@ this.interruptController.destroy()
 2. 统一绑定 `pointerdown / mousedown / touchstart / click`
 3. 首次点击后禁用按钮，防止重复 skip
 4. 按钮移除与幂等销毁
+
+注意：这里描述的是首页和普通模板教程的全局 skip 按钮。插件管理页作为独立 Vue runtime，会创建自己的页面内 skip 控件；该控件不属于 `TutorialSkipController` 管理，但必须把 skip 转发回首页 Manager 的统一入口。
 
 它不负责：
 
@@ -604,6 +613,12 @@ controller.hide()
 只要传自己的 `onSkip`，或者在 Manager 里复用 `handleTutorialSkipRequest()` 这种统一退出入口即可。
 
 如果是跨页 handoff 子页面回传 skip，也建议优先转发回 Manager 的 `handleTutorialSkipRequest()`，不要在子链路里重新拼一份 `director.skip() + requestTutorialDestroy()`。
+
+当前插件 dashboard 的实现细分为：
+
+1. 坐标转发：插件页判断真实点击命中首页 skip 按钮屏幕区域后发送 `screenX/screenY`，首页 Director 校验当前按钮 rect 后调用 `#neko-tutorial-skip-btn.click()`。
+2. 明确 skip：`source: 'plugin_dashboard_button'` 和 `source: 'plugin_dashboard_angry_exit'` 不依赖坐标，首页 Director 直接调用 `tutorialManager.handleTutorialSkipRequest()`。
+3. 插件页本地 skip 控件必须继续拦截 pointer/mouse/touch/click 事件，即使已经触发过 skip，也不能 disabled 到让后续事件穿透到底层插件页面。
 
 ## 模块五：TutorialAvatarReloadController
 
@@ -735,7 +750,8 @@ restoreTutorialAvatarOverride() {
 2. 有自己的 ghost cursor 时，必须提供等价 `stopGhostCursorAnimation()` 的停止和隐藏能力。
 3. 有跨窗口 skip / interrupt 时，必须转发到统一教程 skip / interrupt 通道，不能在页面内伪造 done。
 4. 生气退出必须等语音结束后再执行 skip；视觉清理必须在触发瞬间执行。
-5. 如果页面产物需要 build，修改 runtime 后必须重建产物。
+5. 页面内 skip 控件必须用本地事件守卫防穿透，并把业务结果回传统一 skip 入口；不要在独立 runtime 内直接拼首页 teardown。
+6. 如果页面产物需要 build，修改 runtime 后必须重建产物。
 
 ## 该放在专属适配层的逻辑
 
@@ -747,7 +763,7 @@ restoreTutorialAvatarOverride() {
 4. 当前 scene 具体应该高亮哪个业务目标
 5. 鼠标移动是否构成打断、打断次数和 angry exit 阈值
 6. plugin dashboard handoff payload 结构
-7. 插件管理页的本地 spotlight / ghost cursor / IPC bridge 适配逻辑
+7. 插件管理页的本地 spotlight / ghost cursor / IPC bridge / 本地 skip 控件适配逻辑
 8. 业务锁与 tutorial prompt 状态机
 
 尤其首页业务锁仍然由 `static/app-tutorial-prompt.js` 持有，模块化后也没有改 owner。
@@ -775,8 +791,10 @@ restoreTutorialAvatarOverride() {
 5. 圆形 / 矩形 / virtual / extra / precise 高亮是否都能通过 `highlightController` 清理
 6. skip / destroy / angry exit 时是否会调用 `interruptController.destroy()`
 7. angry exit 是否在触发瞬间清掉高亮和 ghost cursor，并在语音结束后走 skip 而不是 done
-8. 插件管理页是否同步重建 `frontend/plugin-manager/dist`，避免桌面端加载旧 runtime
-9. 是否有外置聊天窗模式，需要同步按钮禁用或 spotlight
+8. 插件 dashboard skip 是否区分“坐标转发点击首页按钮”和“插件页按钮 / angry exit 明确 skip”，且两者最终都落到 Manager 统一 skip 入口
+9. 插件管理页本地 skip 控件是否能拦截 pointer/mouse/touch/click，避免点击穿透到底层页面
+10. 插件管理页是否同步重建 `frontend/plugin-manager/dist`，避免桌面端加载旧 runtime
+11. 是否有外置聊天窗模式，需要同步按钮禁用或 spotlight
 
 ## 当前接入文件
 

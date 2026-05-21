@@ -525,6 +525,12 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
         "neko:yui-guide:desktop-interrupt-request",
         "neko:yui-guide:desktop-interrupt-ack",
         "neko:yui-guide:desktop-narration-finished",
+        "isPluginDashboardDirectSkipRequest(data)",
+        "source === 'plugin_dashboard_button' || source === 'plugin_dashboard_angry_exit'",
+        "forwardResult === 'rejected' && !this.isPluginDashboardDirectSkipRequest(data)",
+        "data-yui-plugin-dashboard-skip-control",
+        "tooltip.style.pointerEvents = 'auto'",
+        "button.addEventListener('pointerdown', stopSkipEvent)",
         "onDesktopPluginDashboardInterruptRequest(event)",
         "dispatchDesktopPluginDashboardInterruptAck(ackPayload)",
         "dispatchDesktopPluginDashboardNarrationFinished(payload)",
@@ -535,6 +541,7 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
 
     assert "const speechPromise = wait(budgetMs)" not in plugin_runtime_source
     assert "this.notify(DONE_EVENT, this.activeSessionId)\n    this.cleanup()" not in plugin_runtime_source
+    assert "button.disabled = true" not in plugin_runtime_source
 
 
 def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():

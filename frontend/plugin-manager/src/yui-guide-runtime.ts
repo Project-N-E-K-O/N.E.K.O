@@ -1420,6 +1420,9 @@ class PluginDashboardGuideRuntime {
     this.handleInterrupt(event)
   }
   boundPointerDownHandler = (event: PointerEvent | MouseEvent) => {
+    if (this.isPluginDashboardSkipControlTarget(event)) {
+      return
+    }
     if (this.forwardHomeSkipClick(event)) {
       return
     }
@@ -1427,6 +1430,10 @@ class PluginDashboardGuideRuntime {
   }
   boundInteractionGuard = (event: Event) => {
     if (!this.running || !event) {
+      return
+    }
+
+    if (this.isPluginDashboardSkipControlTarget(event)) {
       return
     }
 
@@ -1686,6 +1693,15 @@ class PluginDashboardGuideRuntime {
     )
   }
 
+  isPluginDashboardSkipControlTarget(event: Event) {
+    const target = event.target
+    return !!(
+      target
+      && target instanceof Element
+      && target.closest('[data-yui-plugin-dashboard-skip-control="true"]')
+    )
+  }
+
   canRequestHomeInterruptPlayback() {
     if (this.hasDesktopTutorialInterruptBridge()) {
       return true
@@ -1739,6 +1755,7 @@ class PluginDashboardGuideRuntime {
     const label = resolveGuideLocale() === 'zh' ? '跳过' : 'Skip'
     button.textContent = label
     button.setAttribute('aria-label', label)
+    button.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
     button.style.position = 'fixed'
     button.style.top = '18px'
     button.style.right = '18px'
@@ -1755,33 +1772,46 @@ class PluginDashboardGuideRuntime {
     button.style.cursor = 'pointer'
 
     let skipHandled = false
-    const handleSkip = (event: Event) => {
-      if (typeof event.preventDefault === 'function') {
-        event.preventDefault()
-      }
+    const stopSkipEvent = (event: Event) => {
       if (typeof event.stopImmediatePropagation === 'function') {
         event.stopImmediatePropagation()
       }
       if (typeof event.stopPropagation === 'function') {
         event.stopPropagation()
       }
+    }
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      stopSkipEvent(event)
       if (skipHandled) {
         return
       }
       skipHandled = true
-      button.disabled = true
       button.setAttribute('aria-disabled', 'true')
+      button.style.opacity = '0.72'
       this.requestPluginDashboardSkip({
         source: 'plugin_dashboard_button',
       })
     }
 
-    button.addEventListener('pointerdown', handleSkip)
+    button.addEventListener('pointerdown', stopSkipEvent)
+    button.addEventListener('pointerup', stopSkipEvent)
+    button.addEventListener('mousedown', stopSkipEvent)
+    button.addEventListener('mouseup', stopSkipEvent)
+    button.addEventListener('touchstart', stopSkipEvent)
+    button.addEventListener('touchend', stopSkipEvent)
     button.addEventListener('click', handleSkip)
     this.root.appendChild(button)
     this.desktopSkipButton = button
     this.desktopSkipButtonCleanup = () => {
-      button.removeEventListener('pointerdown', handleSkip)
+      button.removeEventListener('pointerdown', stopSkipEvent)
+      button.removeEventListener('pointerup', stopSkipEvent)
+      button.removeEventListener('mousedown', stopSkipEvent)
+      button.removeEventListener('mouseup', stopSkipEvent)
+      button.removeEventListener('touchstart', stopSkipEvent)
+      button.removeEventListener('touchend', stopSkipEvent)
       button.removeEventListener('click', handleSkip)
     }
   }
@@ -4156,6 +4186,7 @@ class PluginDashboardLocalTutorialRunner {
     const skipButton = document.createElement('button')
     skipButton.type = 'button'
     skipButton.textContent = labels?.skip || 'Skip'
+    skipButton.setAttribute('data-yui-plugin-dashboard-skip-control', 'true')
     skipButton.style.border = '0'
     skipButton.style.borderRadius = '999px'
     skipButton.style.padding = '8px 14px'
@@ -4164,19 +4195,27 @@ class PluginDashboardLocalTutorialRunner {
     skipButton.style.fontSize = '13px'
     skipButton.style.fontWeight = '600'
     skipButton.style.cursor = 'pointer'
-    const handleSkip = (event: Event) => {
-      if (typeof event.preventDefault === 'function') {
-        event.preventDefault()
-      }
+    const stopSkipEvent = (event: Event) => {
       if (typeof event.stopImmediatePropagation === 'function') {
         event.stopImmediatePropagation()
       }
       if (typeof event.stopPropagation === 'function') {
         event.stopPropagation()
       }
+    }
+    const handleSkip = (event: Event) => {
+      if (typeof event.preventDefault === 'function') {
+        event.preventDefault()
+      }
+      stopSkipEvent(event)
       this.requestCancel()
     }
-    skipButton.addEventListener('pointerdown', handleSkip)
+    skipButton.addEventListener('pointerdown', stopSkipEvent)
+    skipButton.addEventListener('pointerup', stopSkipEvent)
+    skipButton.addEventListener('mousedown', stopSkipEvent)
+    skipButton.addEventListener('mouseup', stopSkipEvent)
+    skipButton.addEventListener('touchstart', stopSkipEvent)
+    skipButton.addEventListener('touchend', stopSkipEvent)
     skipButton.addEventListener('click', handleSkip)
 
     footer.appendChild(hintEl)

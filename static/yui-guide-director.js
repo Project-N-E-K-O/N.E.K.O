@@ -10776,12 +10776,26 @@
             return 'forwarded';
         }
 
+        isPluginDashboardDirectSkipRequest(data) {
+            const detail = data && data.detail && typeof data.detail === 'object'
+                ? data.detail
+                : {};
+            const source = typeof detail.source === 'string'
+                ? detail.source
+                : (data && typeof data.source === 'string' ? data.source : '');
+            return source === 'plugin_dashboard_button' || source === 'plugin_dashboard_angry_exit';
+        }
+
         async handlePluginDashboardSkipRequest(data) {
             const detail = data && data.detail && typeof data.detail === 'object'
                 ? data.detail
                 : null;
             const forwardResult = await this.forwardPluginDashboardSkipRequestToButton(detail);
-            if (forwardResult === 'rejected' || forwardResult === 'forwarded') {
+            if (forwardResult === 'forwarded') {
+                return;
+            }
+
+            if (forwardResult === 'rejected' && !this.isPluginDashboardDirectSkipRequest(data)) {
                 return;
             }
 
