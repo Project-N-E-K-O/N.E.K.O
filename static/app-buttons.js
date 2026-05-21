@@ -1181,6 +1181,58 @@
         }, 250);
     }
 
+    // 切语音前若 assistant 文本回复还在路上，等它跑完再 end_session。
+    // 否则 end_session 会把 message_handler_task / LLM 流强行掐断，
+    // omni_offline_client 收到 httpx ReadError → 给前端发 TEXT_GEN_ERROR_AFTER_PARTIAL
+    // → 用户在切语音的瞬间看到一条"Text generation interrupted (ReadError)"。
+    // gal 模式点选项后紧跟着点麦克风时最容易踩。15s 兜底，防止卡死的流永远不结束。
+    function isAssistantTextResponseInFlight() {
+        // 与 _isGreetingCheckBlocked (app-websocket.js:2889) 对齐：turn-end 后
+        // assistantTurnId 不会被清空（要等下一条用户消息或角色切换才清），
+        // 必须靠 assistantTurnCompletedId 区分"已收尾"和"还在跑"。
+        // 否则"回复跑完，用户停顿一会儿再点麦克风"会被误判成在路上，
+        // 干等到 15s timeout 才进语音。
+        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        if (S.assistantTurnAwaitingBubble) return true;
+        if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
+        // 纯截图 / 纯图片这类没有 typed text 的提交，sendTextPayloadInternal
+        // 会把 _lastSubmittedRequestId 故意清成 ''（rollback 对它没意义），
+        // 上面三条都挡不住"已发 WS、还没收到首 chunk"这段空窗。
+        // pendingTextTurnSubmitAt 专门补这段，15s freshness 兜底防漏清。
+        if (S.pendingTextTurnSubmitAt && (Date.now() - S.pendingTextTurnSubmitAt) < 15000) return true;
+        return false;
+    }
+
+    function waitForAssistantTurnEnd(timeoutMs) {
+        // 不监听 neko-assistant-speech-cancel：response_discarded 即使 will_retry=true
+        // 也会 emit speech-cancel，过早 resolve 会让 end_session 掐掉 retry 那次的
+        // LLM 流，复发 ReadError。改成轮询 isAssistantTextResponseInFlight()——
+        // turn-end 事件做主信号、200ms 轮询兜 "无 event 的真完成"（如 final
+        // discard），15s timeout 防卡死。retry 期间由 response_discarded 里
+        // will_retry 分支刷新 pendingTextTurnSubmitAt 保持 in-flight 为真。
+        return new Promise(function (resolve) {
+            if (!isAssistantTextResponseInFlight()) {
+                resolve('not_in_flight');
+                return;
+            }
+            var settled = false;
+            function done(reason) {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('neko-assistant-turn-end', onEnd);
+                clearInterval(pollTimer);
+                clearTimeout(timeoutTimer);
+                resolve(reason);
+            }
+            function onEnd() { done('turn_end'); }
+            window.addEventListener('neko-assistant-turn-end', onEnd, { once: true });
+            var pollTimer = setInterval(function () {
+                if (!isAssistantTextResponseInFlight()) done('not_in_flight_polled');
+            }, 200);
+            var timeoutTimer = setTimeout(function () { done('timeout'); }, timeoutMs);
+        });
+    }
+
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
@@ -1276,6 +1328,13 @@
 
             // If there is an active text session, end it first
             if (S.isTextSessionActive) {
+                // \u89C1\u9876\u90E8 waitForAssistantTurnEnd \u6CE8\u91CA\uFF1Aassistant \u6587\u672C\u8FD8\u5728\u6D41\u5F0F\u8F93\u51FA\u65F6
+                // \u7ACB\u523B end_session \u4F1A\u89E6\u53D1 ReadError \u2192 \u524D\u7AEF\u5F39\u51FA"Text generation interrupted"\u3002
+                // \u7B49\u672C\u8F6E turn-end / speech-cancel \u540E\u518D end_session\uFF0C15s \u515C\u5E95\u9632\u5361\u6B7B\u3002
+                if (isAssistantTextResponseInFlight()) {
+                    window.showVoicePreparingToast(window.t ? window.t('app.waitForReplyBeforeVoice') : '\u7B49\u56DE\u590D\u7ED3\u675F\u540E\u5207\u6362\u5230\u8BED\u97F3\u2026');
+                    await waitForAssistantTurnEnd(15000);
+                }
                 S.isSwitchingMode = true;
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -2035,6 +2094,10 @@
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
                         markFirstUserInputForAchievement();
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                        // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
+                        // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
+                        // 同时有 15s freshness ceiling 防止漏清永远卡 true。
+                        S.pendingTextTurnSubmitAt = Date.now();
                     }
 
                     // Reset proactive chat timer

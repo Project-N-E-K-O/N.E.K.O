@@ -330,8 +330,14 @@ class MMDInteraction {
                     : false;
 
                 if (!displaySwitched) {
-                    // 拖拽结束后保存位置/旋转/缩放
-                    this._savePositionAfterInteraction();
+                    // 拖拽结束后：若超出屏幕范围，执行回弹；否则保存当前位置。
+                    const snapped = await this._snapModelIntoScreen({ animate: true });
+                    if (!snapped) {
+                        this._savePositionAfterInteraction();
+                    } else if (window.NekoAvatarMultiScreenDragHint &&
+                        typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
+                        window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('mmd');
+                    }
                 }
             }
         };
@@ -572,10 +578,18 @@ class MMDInteraction {
                 mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
             }
 
-            // 6. 等待一帧让新窗口尺寸生效，再保存位置
+            // 6. 等待新窗口尺寸生效，再执行回弹与保存
+            await new Promise(resolve => requestAnimationFrame(resolve));
             await new Promise(resolve => requestAnimationFrame(resolve));
 
-            await this._savePositionAfterInteraction();
+            const snapped = await this._snapModelIntoScreen({ animate: true });
+            if (!snapped) {
+                await this._savePositionAfterInteraction();
+            }
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
+                window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('mmd');
+            }
 
             return true;
         } catch (error) {

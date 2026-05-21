@@ -63,6 +63,7 @@ build_nuitka.bat
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
 .playwright-browsers/
+.playwright-cli/
 # Local embedding model cache (downloaded by scripts/prepare_embedding_model.py)
 data/embedding_models/
 .env
@@ -123,6 +124,7 @@ backup/
 build*
 !build_frontend.bat
 !build_frontend.sh
+!build-desktop*.yml
 metadata.package.json
 version_info.txt
 
@@ -147,6 +149,7 @@ tests/testbench_data/
 latest_report.json
 sendText.js
 tmp/
+output/
 data/browser_use_prompts/*.md
 data/browser_use_extensions/
 .coverage

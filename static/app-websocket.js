@@ -713,6 +713,45 @@
     function clearPendingAssistantTurnStart() {
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
+        // 同时清掉 submit-to-first-chunk 空窗 marker。本函数被所有 turn-end /
+        // response_discarded / socket_close / user_activity_cancel 路径调用，
+        // 等于把 marker 接进了完整的 turn 生命周期收尾。
+        S.pendingTextTurnSubmitAt = 0;
+    }
+
+    // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
+    // buffer 收尾：标 bubble 为 sent、设 _geminiTurnEndSealed 让 adapter 在
+    // 后续 chunk 来时新建气泡而非追加到封口气泡（封口气泡的 React
+    // StreamingText 在 status sent→streaming 切换时重 mount，追加文字会视觉
+    // 丢失，详见 adapter 里的 _geminiTurnEndSealed 注释）、清 pending music、
+    // structured 流 drop 掉残余 buffer（自己有 renderer），realistic 流把
+    // 残余 trim 后 enqueue。
+    // 之前两边各写一份导致这次 PR 修 agent_callback `return` 时才发现行为不
+    // 一致；抽成共享 helper 防止下次又单边演进。
+    function flushRealisticBufferOnTurnEnd() {
+        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+        }
+        window._geminiTurnEndSealed = true;
+        window._pendingMusicCommand = '';
+        if (window._structuredGeminiStreaming) {
+            window._realisticGeminiBuffer = '';
+            window._structuredGeminiStreaming = false;
+            return;
+        }
+        var rest = typeof window._realisticGeminiBuffer === 'string'
+            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            : '';
+        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        window._realisticGeminiBuffer = '';
+        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+        if (trimmed) {
+            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+            window._realisticGeminiQueue.push(trimmed);
+            if (typeof window.processRealisticQueue === 'function') {
+                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+            }
+        }
     }
 
     function clearPendingUserActivityCancel() {
@@ -1172,6 +1211,33 @@
                 }
             }).catch(function () { });
 
+            // Capture bridge: tell the backend whether this renderer can
+            // service window-level captures via Electron's desktopCapturer.
+            // The backend uses this to fail /api/capture/health fast when
+            // no Electron renderer is available (e.g. running in a plain
+            // browser tab), which matters for the galgame OCR fallback path
+            // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
+            // windows.
+            // Note: intentionally broadcast for all renderers; non-Electron
+            // environments send available=false and the backend ignores them.
+            try {
+                var dc = window.electronDesktopCapturer;
+                var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
+                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'capture_bridge_status',
+                        available: available,
+                        capabilities: {
+                            getSources: !!(dc && dc.getSources),
+                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                        }
+                    }));
+                }
+            } catch (_capErr) {
+                // capture bridge is best-effort; never block the rest of onopen
+            }
+
             // Start heartbeat
             if (S.heartbeatInterval) {
                 clearInterval(S.heartbeatInterval);
@@ -1262,14 +1328,29 @@
                         var gameEvent = gameMeta.event || {};
                         console.log(`[GameMirror] 主聊天栏收到游戏台词 | game=${gameMeta.game_type || '-'} session=${gameMeta.session_id || '-'} kind=${gameEvent.kind || '-'} round=${gameEvent.round || '-'} source=${response.metadata.source || '-'}`);
                     }
+                    // adapter 用 startNewSegment 抽象统一把每段独立 utterance 处理
+                    // （path A: isNewMessage=true 多 response item；path B: turn_end
+                    // 后的 late continuation, sealed && !isNewMessage）。lifecycle
+                    // 这边也对偶：两条路径都重置 assistantTurn lifecycle 并 emit
+                    // 新的 neko-assistant-turn-start，让 avatar-reaction-bubble /
+                    // subtitle / audio-playback 等 listeners 都拿到独立通知。
+                    //
+                    // path B 尤其关键：avatar-reaction-bubble 的 handleTurnEnd 在
+                    // text-only 段会 schedule fallback hide 定时器，没新 turn-start
+                    // 取消的话 seg2 typing 期间表情气泡会被隐掉。
+                    var sealedContinuation = !isNewMessage && !!window._geminiTurnEndSealed;
                     if (isNewMessage) {
                         // voice chat 中，AI 新消息到来时若上一条人类消息为纯空白则替换为 ...
+                        // 仅 isNewMessage 走这条 voice-msg fix，sealed continuation
+                        // 是同 dialog turn 延续，无新用户语音消息要修。
                         if (S.lastVoiceUserMessage && S.lastVoiceUserMessage.isConnected &&
                             !S.lastVoiceUserMessage.textContent.trim()) {
                             S.lastVoiceUserMessage.textContent = '...';
                         }
                         S.lastVoiceUserMessage = null;
                         S.lastVoiceUserMessageTime = 0;
+                    }
+                    if (isNewMessage || sealedContinuation) {
                         S.assistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
@@ -1310,6 +1391,15 @@
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     clearPendingAssistantTurnStart();
+                    // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
+                    // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
+                    // pendingTextTurnSubmitAt 都清零了。重新写一次时间戳，让
+                    // isAssistantTextResponseInFlight() 在 retry 的下一个 first-chunk
+                    // 到来前保持 true，否则切语音那条等待循环会过早 resolve 然后
+                    // end_session 把 retry 的 LLM 流又掐掉。
+                    if (response.will_retry) {
+                        S.pendingTextTurnSubmitAt = Date.now();
+                    }
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -1385,6 +1475,9 @@
 
                     window._geminiTurnFullText = '';
                     window._pendingMusicCommand = '';
+                    // discard 后清掉 turn_end seal flag，避免残留导致下一个 chunk
+                    // 被误判为 sealedContinuation 触发不该触发的 lifecycle reset。
+                    window._geminiTurnEndSealed = false;
 
                     // 推进 epoch 并清空入站音频队列，防止在途 TTS blob 被消费播放
                     S.incomingAudioEpoch += 1;
@@ -2064,7 +2157,137 @@
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
 
-                // -------- request_screenshot --------
+                // -------- capture_bridge_request (galgame OCR window capture) --------
+                } else if (response.type === 'capture_bridge_request') {
+                    (async function () {
+                        var requestId = response.request_id || '';
+                        var responseSocket = _thisSocket;
+                        var sendResp = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        var sourcePidMatches = function (source, pidValue) {
+                            if (!source || !pidValue) return false;
+                            var expected = String(pidValue);
+                            var directPid = source.pid || source.processId || source.ownerPid;
+                            if (directPid !== undefined && directPid !== null && String(directPid) === expected) {
+                                return true;
+                            }
+                            return false;
+                        };
+                        var sourceIdMatchesTarget = function (source, targetValue) {
+                            if (!source || !targetValue) return false;
+                            var expected = String(targetValue);
+                            var sourceId = String(source.id || '');
+                            if (sourceId === expected) return true;
+                            var tokens = sourceId.split(/[^0-9A-Za-z]+/);
+                            for (var idx = 0; idx < tokens.length; idx++) {
+                                if (tokens[idx] === expected) return true;
+                            }
+                            return false;
+                        };
+                        var normalizeCaptureBridgeImage = function (result) {
+                            if (typeof result === 'string') return result || null;
+                            if (!result || typeof result !== 'object') return null;
+                            if (result.success === false) return null;
+                            return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
+                        };
+                        try {
+                            var dc = window.electronDesktopCapturer;
+                            if (!dc || !dc.getSources) {
+                                sendResp({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var targetId = typeof response.target_id === 'string'
+                                ? response.target_id.trim() : '';
+                            if (targetId === '0' || targetId === '<target_id>') {
+                                targetId = '';
+                            }
+                            var pid = typeof response.pid === 'number' ? response.pid : 0;
+                            var title = typeof response.title === 'string' ? response.title : '';
+                            var pidStr = pid > 0 ? String(pid) : '';
+                            var lowerTitle = title.toLowerCase();
+                            var sources = [];
+                            try {
+                                sources = await dc.getSources({
+                                    types: ['window'],
+                                    thumbnailSize: { width: 80, height: 45 }
+                                });
+                            } catch (gsErr) {
+                                sendResp({ success: false, error: 'get_sources_failed' });
+                                return;
+                            }
+                            if (!sources || !sources.length) {
+                                sendResp({ success: false, error: 'source_not_found' });
+                                return;
+                            }
+                            // Match priority: target_id exact/source-token > exact pid/token > title substring.
+                            // Never blindly pick the first window.
+                            var matched = null;
+                            if (targetId) {
+                                for (var i = 0; i < sources.length; i++) {
+                                    if (sourceIdMatchesTarget(sources[i], targetId)) {
+                                        matched = sources[i];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched && pidStr) {
+                                for (var j = 0; j < sources.length; j++) {
+                                    if (sourcePidMatches(sources[j], pidStr)) {
+                                        matched = sources[j];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched && lowerTitle) {
+                                for (var k = 0; k < sources.length; k++) {
+                                    var name = (sources[k].name || '').toLowerCase();
+                                    if (name && name.indexOf(lowerTitle) !== -1) {
+                                        matched = sources[k];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched) {
+                                sendResp({ success: false, error: 'source_not_found' });
+                                return;
+                            }
+                            var dataUrl = null;
+                            var captureResult = null;
+                            if (typeof dc.captureSourceWithoutNeko === 'function') {
+                                try {
+                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
+                                } catch (_woNekoErr) {
+                                    dataUrl = null;
+                                }
+                            }
+                            if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
+                                try {
+                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
+                                } catch (_dataUrlErr) {
+                                    dataUrl = null;
+                                }
+                            }
+                            if (!dataUrl) {
+                                sendResp({ success: false, error: 'capture_failed' });
+                                return;
+                            }
+                            sendResp({
+                                success: true,
+                                image: dataUrl,
+                                source_id: matched.id || ''
+                            });
+                        } catch (capErr) {
+                            try { sendResp({ success: false, error: 'internal_error' }); } catch (_) {}
+                        }
+                    })();
+
+                // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         try {
@@ -2109,28 +2332,7 @@
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                            return;
-                        }
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
@@ -2197,28 +2399,7 @@
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                        } else {
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }

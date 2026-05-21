@@ -25,12 +25,17 @@ process is the SDK's own constraint (``SteamAPI_Init`` is process-singleton).
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+import threading
+import time
+from typing import Any, Callable, Optional
 
 # Module-global handle. ``None`` is a valid resting state — Steamworks may fail
 # to initialize (Steam client not running, dev/CI environment without DLL),
 # and every caller is expected to handle that.
 _steamworks: Optional[Any] = None
+_steamworks_initializer: Optional[Callable[[], Optional[Any]]] = None
+_steamworks_lock = threading.RLock()
+_last_init_attempt_monotonic = 0.0
 
 
 def get_steamworks() -> Optional[Any]:
@@ -49,4 +54,45 @@ def set_steamworks(steamworks: Optional[Any]) -> None:
     Pass ``None`` to clear (e.g. on shutdown / failed init).
     """
     global _steamworks
-    _steamworks = steamworks
+    with _steamworks_lock:
+        _steamworks = steamworks
+
+
+def set_steamworks_initializer(initializer: Optional[Callable[[], Optional[Any]]]) -> None:
+    """Register a process-local Steamworks initializer for lazy reconnects.
+
+    The callback is installed by ``app/main_server.py`` because only that layer
+    knows how to create and wire the SDK instance. Keeping the callback here
+    lets routers ask for a retry without importing ``main_server``.
+    """
+    global _steamworks_initializer
+    with _steamworks_lock:
+        _steamworks_initializer = initializer
+
+
+def ensure_steamworks(*, force: bool = False, min_retry_interval_seconds: float = 5.0) -> Optional[Any]:
+    """Return Steamworks, trying to initialize it when it is currently absent.
+
+    This is intentionally separate from ``get_steamworks()`` so low-level
+    helpers can keep doing cheap read-only probes. Steam-facing API endpoints
+    call this function to support the common flow "start N.E.K.O first, open
+    Steam later".
+    """
+    global _steamworks, _last_init_attempt_monotonic
+    with _steamworks_lock:
+        if _steamworks is not None:
+            return _steamworks
+        if _steamworks_initializer is None:
+            return None
+
+        now = time.monotonic()
+        if (
+            not force
+            and _last_init_attempt_monotonic > 0
+            and now - _last_init_attempt_monotonic < min_retry_interval_seconds
+        ):
+            return None
+
+        _last_init_attempt_monotonic = now
+        _steamworks = _steamworks_initializer()
+        return _steamworks

@@ -56,7 +56,7 @@
         "message": "Estará listo automáticamente la próxima vez que encienda su computadora, por lo que no necesitará iniciarlo manualmente.",
         "note": "Esto solo permite el inicio al iniciar sesión para el usuario actual y puede desactivarlo más tarde.",
         "startNow": "Habilitar el inicio automático",
-        "later": "tal vez más tarde",
+        "later": "Recordármelo más tarde",
         "never": "no me lo recuerdes",
         "enableFailed": "El inicio automático no se pudo habilitar en este momento. Inténtelo de nuevo más tarde.",
         "requiresApproval": "Primero apruebe el inicio automático en la configuración de su sistema. Entrará en vigor después de la aprobación."
@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ Se detectó marca de agua de audio CogTTS (bip). Para desactivar la marca de agua, vaya a la consola de Zhipu y configúrela manualmente.",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "La URL de la API GPT-SoVITS no está configurada. Habilite y configure TTS personalizado en la configuración de API.",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "La URL de la API GPT-SoVITS debe ser localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "Clave API de audio (AUDIO_API_KEY) no configurada",
+        "TTS_AUDIO_API_KEY_MISSING": "La API Key del proveedor de voz seleccionado no está configurada. Añádela en la configuración de API.",
         "TTS_VOICE_NOT_REGISTERED": "Este personaje no tiene voz registrada.",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "Faltan parámetros requeridos",
         "TTS_GPT_SOVITS_URL_REQUIRED": "Se requiere la URL de la API GPT-SoVITS",
@@ -1032,6 +1032,10 @@
             "cancel": "Cancelar",
             "continue": "Continuar guardando"
         },
+        "aliyunUsApiWarning": {
+            "title": "Aviso de API de Alibaba en EE. UU.",
+            "message": "Actualmente está usando la API de Alibaba en EE. UU., que no admite TTS ni voz en tiempo real. Se recomienda cambiar a la API de Alibaba en Singapur."
+        },
         "conversationModelConfig": "Configuración del modelo de diálogo de texto",
         "summaryModelConfig": "Configuración del modelo resumido",
         "correctionModelConfig": "Configuración del modelo de corrección",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "Ir a la configuración de API",
         "noApiKeyPrompt": "No se ha configurado ninguna clave API para la clonación de voz. ¿Le gustaría configurar uno?",
         "dismissNoApiPrompt": "Más tarde",
-        "alibabaApiRequired": "Esta función requiere el modelo CosyVoice. Guarde la clave API de Alibaba Bailian en la configuración de claves API (no es necesario habilitar la API Assist) o configure un servidor de voz local.",
+        "alibabaApiRequired": "Esta función requiere el modelo CosyVoice de Alibaba Bailian. Guarde la clave API de Alibaba Bailian en la configuración de claves API (no es necesario habilitar la API auxiliar) o configure un servidor de voz local.",
+        "alibabaIntlApiRequired": "Esta función requiere el modelo CosyVoice de Alibaba Internacional. Guarde la clave API de Alibaba Internacional en la configuración de claves API (no es necesario habilitar la API auxiliar).",
         "minimaxApiRequired": "Esta característica requiere el modelo MiniMax (China). Guarde la clave API MiniMax en la configuración de claves API (no es necesario habilitar Assist API).",
         "minimaxIntlApiRequired": "Esta característica requiere el modelo MiniMax (Internacional). Guarde la clave API de MiniMax International en la configuración de claves API (no es necesario habilitar Assist API).",
         "providerLabel": "Proveedor de clonación de voz",
         "provider": {
-            "cosyvoice": "Alibaba Cloud CosyVoice",
+            "cosyvoice": "Alibaba Bailian CosyVoice",
+            "cosyvoice_intl": "Alibaba Intl CosyVoice",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Int.)",
             "elevenlabs": "ElevenLabs"
@@ -1719,6 +1725,9 @@
         "maintenanceWaitingStatus": "Esta página se quedará aquí y volverá a intentarlo automáticamente hasta que el servicio se recupere.",
         "maintenanceWaitingSubtitle": "Cerrando. Los datos se migrarán después del cierre y el servicio se reiniciará automáticamente.",
         "migrationPending": "Se detectó un plan de migración sin terminar. La página principal seguirá bloqueada hasta que el servicio vuelva a estar disponible.",
+        "openPathFailed": "Este entorno no puede abrir la carpeta. Ve a la ruta manualmente.",
+        "openRetainedRoot": "Abrir directorio de datos antiguo",
+        "openTargetRoot": "Abrir ruta activa",
         "pickFolder": "Elegir carpeta",
         "pickFolderUnavailable": "El selector de carpetas del sistema no está disponible. Introduce la ruta manualmente.",
         "pickFolderFailed": "No se pudo abrir el selector de carpetas. Introduce la ruta manualmente.",
@@ -1740,6 +1749,7 @@
         "progressVerifying": "Verificando los resultados de la migración",
         "progressWaitingShutdown": "Cerrando",
         "rebindPreviewNotice": "El backend confirmó que la ruta original vuelve a estar disponible. La app se reiniciará en esa ruta. Esta vez no se copiarán datos de ejecución.",
+        "recommendedPath": "Ruta recomendada",
         "selectedPath": "Ruta seleccionada",
         "recoveryRequired": "Se detectó un estado de almacenamiento recuperable. Confirma la ubicación de almacenamiento para este inicio antes de continuar.",
         "recoverySourceUnavailable": "La ruta de datos original no está disponible. Vuelve a conectarla o cambia explícitamente a la ruta predeterminada recomendada.",
@@ -1771,7 +1781,8 @@
         "targetFreeSpace": "Espacio libre en el volumen de destino",
         "targetLabel": "Ruta activa",
         "unknownBytes": "Aún sin estimar",
-        "useCurrent": "Mantener la ruta actual"
+        "useCurrent": "Mantener la ruta actual",
+        "useRecommended": "Usar ruta recomendada"
     },
     "character": {
         "manager": "Administrador de personajes",
@@ -1980,6 +1991,7 @@
         "micRequired": "¡Primero habilite el micrófono!",
         "micNotOpen": "¡El micrófono no está abierto!",
         "switchingToVoice": "Cambiando al modo de voz...",
+        "waitForReplyBeforeVoice": "Esperando que termine la respuesta antes de pasar a voz...",
         "initializingVoice": "Iniciando chat de voz...",
         "initializingMic": "Inicializando micrófono...",
         "startFailed": "Inicio fallido: {{error}}",
@@ -2031,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ Permiso de grabación de pantalla denegado. Permita la grabación de pantalla en Configuración del sistema",
         "repetitionDetected": "Alta repetición detectada. Sugiera finalizar la conversación para dejar descansar a {{name}}.",
         "modelSwitched": "Modelo cambiado",
+        "multiScreenDragHint": {
+            "title": "Puedes mover a YUI a otra pantalla",
+            "body": "Sigue arrastrando hacia el borde de la pantalla y suelta. Si queda demasiado cerca del borde, primero rebotará.",
+            "ack": "Entendido",
+            "never": "No recordar de nuevo"
+        },
         "screenSource": {
             "notAvailable": "Selección de fuente de pantalla solo disponible en la versión de escritorio",
             "loading": "Cargando...",
@@ -2456,6 +2474,7 @@
             "AGENT_PRECHECK_PENDING": "Comprobación de conectividad en curso...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API del agente no configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui no instalado",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sesión de pantalla de escritorio no disponible",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso del navegador no instalado",
             "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use no cargado",
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use no cargado",
@@ -3369,27 +3388,27 @@
     "characterModelNotSet": "El personaje actual no tiene ningún modelo establecido.",
     "cookiesLogin": {
         "title": "Centro de control de credenciales N.E.K.O",
-        "header": "🔐 Centro de adquisición de credenciales",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏Weibo",
-        "twitter": "🐦Twitter/X",
-        "reddit": "👽Reddit",
-        "netease": "🎶 Música en la nube NetEase",
+        "header": "Centro de adquisición de credenciales",
+        "bilibili": "Bilibili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "Música en la nube NetEase",
         "saveConfig": "Guardar configuración",
         "encryptStorage": "Cifre y almacene de forma segura en un archivo local",
         "localMonitoring": "Monitoreo de estado local",
         "removeCredentials": "Eliminar",
         "confirmRemove": "¿Está seguro de que desea borrar las credenciales de inicio de sesión de {{platformName}}?",
-        "credentialsRemoved": "✅ Credenciales eliminadas exitosamente",
-        "credentialsSaved": "✅ ¡{{platformName}} credenciales guardadas exitosamente!",
+        "credentialsRemoved": "Credenciales eliminadas exitosamente",
+        "credentialsSaved": "¡{{platformName}} credenciales guardadas exitosamente!",
         "credentialsRemovedFailed": "La eliminación falló",
-        "removeFailed": "❌ Error en la eliminación, verifique su red",
-        "requiredField": "⚠️ Complete el campo requerido: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] contiene caracteres no válidos...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] contiene espacios iniciales/finales, que se han recortado automáticamente. Por favor confirme y vuelva a enviar.",
-        "networkError": "❌ Error de red: no se puede conectar al servicio backend",
+        "removeFailed": "Error en la eliminación, verifique su red",
+        "requiredField": "Complete el campo requerido: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] contiene caracteres no válidos...",
+        "whitespaceTrimmed": "[{{fieldName}}] contiene espacios iniciales/finales, que se han recortado automáticamente. Por favor confirme y vuelva a enviar.",
+        "networkError": "Error de red: no se puede conectar al servicio backend",
         "saveFailed": "Error al guardar, verifique si el formato es correcto",
         "pasteHere": "Pegar aquí",
         "submitting": "Cifrar y transmitir de forma segura...",
@@ -3397,13 +3416,13 @@
         "statusLoadFailed": "Error al cargar el estado",
         "thisPlatform": "esta plataforma",
         "instructions": {
-            "bilibili": "📌 <b>Target:</b> Vaya a <b>bilibili.com</b> para buscar estas cookies.",
-            "douyin": "📌 <b>Target:</b> Vaya a <b>douyin.com</b> para buscar estas cookies.",
-            "kuaishou": "📌 <b>Target:</b> Vaya a <b>kuaishou.com</b> para buscar estas cookies.",
-            "weibo": "📌 <b>Destino:</b> Vaya a <b>weibo.com</b> para buscar estas cookies.",
-            "twitter": "📌 <b>Target:</b> Vaya a <b>x.com</b> para buscar estas cookies.",
-            "reddit": "📌 <b>Target:</b> Vaya a <b>reddit.com</b> para buscar estas cookies.",
-            "netease": "📌 <b>Target:</b> Vaya a <b>music.163.com</b> para buscar estas cookies."
+            "bilibili": "<b>Destino:</b> Vaya a <b>bilibili.com</b> para buscar estas cookies.",
+            "douyin": "<b>Destino:</b> Vaya a <b>douyin.com</b> para buscar estas cookies.",
+            "kuaishou": "<b>Destino:</b> Vaya a <b>kuaishou.com</b> para buscar estas cookies.",
+            "weibo": "<b>Destino:</b> Vaya a <b>weibo.com</b> para buscar estas cookies.",
+            "twitter": "<b>Destino:</b> Vaya a <b>x.com</b> para buscar estas cookies.",
+            "reddit": "<b>Destino:</b> Vaya a <b>reddit.com</b> para buscar estas cookies.",
+            "netease": "<b>Destino:</b> Vaya a <b>music.163.com</b> para buscar estas cookies."
         },
         "guide": {
             "title": "Guía universal para principiantes",
@@ -3501,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "O... ¿intenta iniciar sesión con un código QR?",
-            "openQR": "📱 Abrir QR Iniciar sesión",
+            "openQR": "Abrir inicio de sesión por QR",
             "loading": "Obteniendo código QR...",
-            "scanTitle": "📱 Escanear para iniciar sesión {{platform}}",
+            "scanTitle": "Escanear para iniciar sesión {{platform}}",
             "qrCodeAlt": "Iniciar sesión código QR",
             "waiting": "Esperando escaneo...",
             "validFor": "Código QR válido para: {{seconds}}s",
@@ -3512,9 +3531,9 @@
             "retry": "Rever",
             "networkError": "La solicitud de red falló, verifique la conexión",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, actualice",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, actualice",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3524,7 +3543,7 @@
                 "waiting": "Esperando escaneo"
             },
             "successAlert": "¡Inicio de sesión QR exitoso! Las cookies se han completado automáticamente, haga clic en Guardar configuración",
-            "extractFailed": "⚠️ El inicio de sesión QR se realizó correctamente pero no se pudieron extraer los campos automáticamente. Por favor verifíquelo manualmente."
+            "extractFailed": "El inicio de sesión QR se realizó correctamente pero no se pudieron extraer los campos automáticamente. Por favor verifíquelo manualmente."
         }
     },
     "music": {

@@ -83,6 +83,8 @@
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
         S.assistantSpeechActiveTurnId = null;
+        // 角色切换路径不走 clearPendingAssistantTurnStart()，要自己清 submit-to-first-chunk marker
+        S.pendingTextTurnSubmitAt = 0;
         window.dispatchEvent(new CustomEvent('neko-assistant-speech-cancel', {
             detail: {
                 turnId: turnId ? String(turnId) : null,
@@ -680,6 +682,7 @@
             // 重置聊天相关的全局状态
             window.currentGeminiMessage = null;
             window._geminiTurnFullText = '';
+            window._geminiTurnEndSealed = false;
             window.currentTurnGeminiBubbles = [];
             window.currentTurnGeminiAttachments = [];
             // 清空realistic synthesis队列和缓冲区，防止旧角色的语音继续播放
@@ -1847,6 +1850,7 @@
 
         window.currentGeminiMessage = null;
         window._geminiTurnFullText = '';
+        window._geminiTurnEndSealed = false;
         window.currentTurnGeminiBubbles = [];
         window.currentTurnGeminiAttachments = [];
         window._realisticGeminiQueue = [];

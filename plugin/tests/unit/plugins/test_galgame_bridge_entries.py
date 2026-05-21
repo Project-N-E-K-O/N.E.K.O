@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from _galgame_test_support import *
+from plugin.plugins.galgame_plugin.models import STORE_RAPIDOCR_OCR_VERSION
 
 
 @pytest.mark.asyncio
@@ -38,15 +39,23 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_download_rapidocr_models",
         "galgame_evaluate_ocr_screen_awareness_model",
         "galgame_explain_line",
+        "galgame_get_character_list",
+        "galgame_get_character_profile",
         "galgame_get_history",
         "galgame_get_ocr_screen_awareness_snapshot",
+        "galgame_get_push_history",
+        "galgame_get_recent_lines",
+        "galgame_get_scene_context",
         "galgame_get_snapshot",
         "galgame_get_status",
+        "galgame_get_story_so_far",
+        "galgame_import_character_data",
         "galgame_install_textractor",
         "galgame_list_memory_reader_processes",
         "galgame_list_ocr_windows",
         "galgame_open_ui",
         "galgame_rollback_ocr_capture_profile",
+        "galgame_set_character_mode",
         "galgame_set_llm_vision",
         "galgame_set_memory_reader_target",
         "galgame_set_mode",
@@ -70,6 +79,9 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_set_mode",
     ):
         assert phase1_entry in entry_ids
+    rapidocr_lang_schema = plugin.collect_entries()["galgame_set_rapidocr_lang"].meta.input_schema
+    assert "4" in rapidocr_lang_schema["properties"]["ocr_version"]["enum"]
+    assert "5" in rapidocr_lang_schema["properties"]["ocr_version"]["enum"]
 
     assert plugin.get_list_actions() == [
         {
@@ -84,6 +96,152 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
     assert static_ui is not None
     assert static_ui["plugin_id"] == "galgame_plugin"
     assert Path(str(static_ui["directory"])).name == "static"
+
+
+async def _started_plugin_for_rapidocr_entry(tmp_path: Path) -> GalgameBridgePlugin:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    startup = await plugin.startup()
+    assert isinstance(startup, Ok)
+    plugin._refresh_dependency_status = lambda: None
+    plugin._start_background_bridge_poll = lambda: None
+    return plugin
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_accepts_ocr_version_and_persists(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    updates: list[str] = []
+    plugin._ocr_reader_manager = SimpleNamespace(
+        update_config=lambda config: updates.append(config.rapidocr_ocr_version)
+    )
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(ocr_version="v5")
+
+        assert isinstance(result, Ok)
+        assert result.value["ocr_version"] == "PP-OCRv5"
+        assert plugin._cfg.rapidocr_ocr_version == "PP-OCRv5"
+        assert plugin._persist.load_config_overrides()[STORE_RAPIDOCR_OCR_VERSION] == "PP-OCRv5"
+        assert updates == ["PP-OCRv5"]
+        assert "PP-OCRv5" in result.value["summary"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_preserves_ocr_version_on_lang_only_change(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    plugin._cfg.rapidocr_ocr_version = "PP-OCRv5"
+    plugin._ocr_reader_manager = SimpleNamespace(update_config=lambda config: None)
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(lang_type="korean")
+
+        assert isinstance(result, Ok)
+        assert result.value["lang_type"] == "korean"
+        assert result.value["ocr_version"] == "PP-OCRv5"
+        assert plugin._cfg.rapidocr_ocr_version == "PP-OCRv5"
+        assert plugin._persist.load_config_overrides()[STORE_RAPIDOCR_OCR_VERSION] is None
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_rejects_invalid_ocr_version(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(ocr_version="PP-OCRv6")
+
+        assert isinstance(result, Err)
+        assert plugin._cfg.rapidocr_ocr_version == "PP-OCRv4"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_ocr_version_noop_when_same_value(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    updates: list[str] = []
+    plugin._ocr_reader_manager = SimpleNamespace(
+        update_config=lambda config: updates.append(config.rapidocr_ocr_version)
+    )
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(ocr_version="PP-OCRv4")
+
+        assert isinstance(result, Ok)
+        assert result.value["skipped"] is True
+        assert result.value["ocr_version"] == "PP-OCRv4"
+        assert updates == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_auto_detect_noop_when_same_value(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    updates: list[bool] = []
+    plugin._ocr_reader_manager = SimpleNamespace(
+        update_config=lambda config: updates.append(config.rapidocr_auto_detect_lang)
+    )
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(auto_detect_lang=True)
+
+        assert isinstance(result, Ok)
+        assert result.value["skipped"] is True
+        assert result.value["already_applied"] is True
+        assert result.value["auto_detect_lang"] is True
+        assert updates == []
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_set_rapidocr_lang_rolls_back_ocr_version_when_update_config_fails(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+
+    def _raise_update(_config):
+        raise RuntimeError("boom")
+
+    plugin._ocr_reader_manager = SimpleNamespace(update_config=_raise_update)
+    try:
+        result = await plugin.galgame_set_rapidocr_lang(ocr_version="PP-OCRv5")
+
+        assert isinstance(result, Err)
+        assert plugin._cfg.rapidocr_ocr_version == "PP-OCRv4"
+        assert plugin._persist.load_config_overrides()[STORE_RAPIDOCR_OCR_VERSION] is None
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_auto_detect_lang_preserves_user_ocr_version(tmp_path: Path) -> None:
+    plugin = await _started_plugin_for_rapidocr_entry(tmp_path)
+    calls: list[dict[str, object]] = []
+    plugin._cfg.rapidocr_ocr_version = "PP-OCRv5"
+    plugin._config_service = SimpleNamespace(
+        persist_rapidocr_lang=lambda **kwargs: calls.append(dict(kwargs))
+    )
+    try:
+        plugin._on_rapidocr_auto_lang_changed("ch")
+
+        assert plugin._cfg.rapidocr_lang_type == "ch"
+        assert plugin._cfg.rapidocr_ocr_version == "PP-OCRv5"
+        assert calls == [
+            {
+                "lang_type": "ch",
+                "auto_detect_lang": True,
+                "auto_detect_last_lang": "ch",
+            }
+        ]
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -250,6 +408,121 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
     assert isinstance(agent_reply, Ok)
     assert agent_reply.value["action"] == "query_context"
     assert "scene query" in agent_reply.value["result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_story_so_far_uses_existing_scene_summaries(tmp_path: Path) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(
+            scene_memory=[
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "summary": "雪乃和主角确认放学后的约定。",
+                    "push_seq": 7,
+                },
+                {
+                    "scene_id": "scene-b",
+                    "route_id": "",
+                    "summary": "两人来到中庭，谈起接下来要调查的线索。",
+                    "push_seq": 11,
+                },
+            ]
+        )
+    )
+
+    result = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(result, Ok)
+    assert result.value["available"] is True
+    assert "雪乃和主角确认放学后的约定" in result.value["story_so_far"]
+    assert "两人来到中庭" in result.value["story_so_far"]
+    assert result.value["last_updated_seq"] == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_story_so_far_keeps_newer_recorded_summary_when_layer1_is_stale(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(
+            scene_memory=[
+                {
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "summary": "old layer1 scene summary",
+                    "push_seq": 7,
+                },
+            ]
+        )
+    )
+
+    plugin._record_story_progress_from_scene_summary(
+        scene_id="scene-a",
+        summary="new line-count progress summary",
+        push_seq=12,
+    )
+
+    result = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(result, Ok)
+    assert result.value["available"] is True
+    assert "new line-count progress summary" in result.value["story_so_far"]
+    assert "old layer1 scene summary" not in result.value["story_so_far"]
+    assert result.value["last_updated_seq"] == 12
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_story_so_far_refreshes_zero_seq_scene_summaries(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    scene_memory: list[dict[str, object]] = [
+        {
+            "scene_id": "scene-a",
+            "route_id": "",
+            "summary": "first in-memory summary without push seq",
+        },
+    ]
+    plugin._game_agent = SimpleNamespace(
+        _scene_tracker=SimpleNamespace(scene_memory=scene_memory)
+    )
+
+    first = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(first, Ok)
+    assert "first in-memory summary" in first.value["story_so_far"]
+    assert first.value["last_updated_seq"] == 0
+    plugin._query_rate_limits["galgame_get_story_so_far"].clear()
+
+    scene_memory.append(
+        {
+            "scene_id": "scene-b",
+            "route_id": "",
+            "summary": "second in-memory summary without push seq",
+        }
+    )
+
+    second = await plugin.galgame_get_story_so_far()
+
+    assert isinstance(second, Ok)
+    assert "first in-memory summary" in second.value["story_so_far"]
+    assert "second in-memory summary" in second.value["story_so_far"]
+    assert second.value["last_updated_seq"] == 0
 
 
 @pytest.mark.asyncio

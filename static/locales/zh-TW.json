@@ -56,7 +56,7 @@
         "message": "下次打開電腦後，N.E.K.O 會自動準備好，不需要再手動啟動。",
         "note": "只會為目前使用者啟用，之後也可以隨時關閉。",
         "startNow": "開啟自啟動",
-        "later": "稍後再說",
+        "later": "以後提醒",
         "never": "不再提示",
         "enableFailed": "暫時無法開啟開機自啟動，請稍後再試",
         "requiresApproval": "需要先在系統設定裡核准開機自啟動，核准後會自動生效"
@@ -614,7 +614,7 @@
         "TTS_WATERMARK_DETECTED": "⚠️ 偵測到智譜CogTTS音訊浮水印（嗶嗶聲），如需去除浮水印請前往智譜控制台手動配置。",
         "TTS_CUSTOM_URL_NOT_CONFIGURED": "未配置 GPT-SoVITS API URL，請先在 API 設置中啟用並配置自訂 TTS",
         "TTS_CUSTOM_URL_LOCALHOST_ONLY": "GPT-SoVITS API URL 必須為 localhost",
-        "TTS_AUDIO_API_KEY_MISSING": "未配置音訊 API 金鑰 (AUDIO_API_KEY)",
+        "TTS_AUDIO_API_KEY_MISSING": "未配置所選語音服務商的 API Key，請先在 API 設定中填寫對應 Key",
         "TTS_VOICE_NOT_REGISTERED": "該角色未註冊聲音",
         "TTS_VOICE_REGISTER_MISSING_PARAMS": "缺少必要參數",
         "TTS_GPT_SOVITS_URL_REQUIRED": "請填寫 GPT-SoVITS API URL",
@@ -1032,6 +1032,10 @@
             "cancel": "取消",
             "continue": "繼續保存"
         },
+        "aliyunUsApiWarning": {
+            "title": "阿里美國 API 提醒",
+            "message": "目前使用的是阿里的美國 API，不支援 TTS 與即時語音，建議更換為阿里的新加坡 API"
+        },
         "conversationModelConfig": "文本對話模型配置",
         "summaryModelConfig": "摘要模型配置",
         "correctionModelConfig": "糾錯模型配置",
@@ -1419,12 +1423,14 @@
         "gotoApiSettings": "前往API設定",
         "noApiKeyPrompt": "還沒有設定任何可使用克隆功能的API，是否前往設定？",
         "dismissNoApiPrompt": "稍後再說",
-        "alibabaApiRequired": "此功能需要阿里CosyVoice模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
+        "alibabaApiRequired": "此功能需要阿里百煉 CosyVoice 模型，請在API密鑰設定頁中保存阿里百煉API Key（不要求啟用輔助API）或配置本地語音伺服器",
+        "alibabaIntlApiRequired": "此功能需要阿里國際版 CosyVoice 模型，請在API密鑰設定頁中保存阿里國際版API Key（不要求啟用輔助API）",
         "minimaxApiRequired": "此功能需要MiniMax模型（中國），請在API密鑰設定頁中保存MiniMax API Key（不要求啟用輔助API）",
         "minimaxIntlApiRequired": "此功能需要MiniMax模型（國際版），請在API密鑰設定頁中保存MiniMax國際版API Key（不要求啟用輔助API）",
         "providerLabel": "語音克隆服務商",
         "provider": {
-            "cosyvoice": "阿里雲 CosyVoice",
+            "cosyvoice": "阿里百煉 CosyVoice",
+            "cosyvoice_intl": "阿里國際版 CosyVoice",
             "minimax": "MiniMax（中國）",
             "minimax_intl": "MiniMax（國際版）",
             "elevenlabs": "ElevenLabs"
@@ -1719,6 +1725,9 @@
         "maintenanceWaitingStatus": "服務尚未恢復前，頁面會繼續停留在這裡並自動重試連線。",
         "maintenanceWaitingSubtitle": "正在關閉，資料會在關閉後遷移並自動重啟。",
         "migrationPending": "檢測到尚未完成的遷移計畫。目前首頁會繼續保持阻斷，直到服務恢復到可繼續狀態。",
+        "openPathFailed": "目前環境無法開啟該目錄，請手動前往路徑。",
+        "openRetainedRoot": "開啟舊資料目錄",
+        "openTargetRoot": "開啟目前路徑",
         "pickFolder": "選擇資料夾",
         "pickFolderUnavailable": "目前系統資料夾選擇器不可用，請手動輸入路徑。",
         "pickFolderFailed": "開啟資料夾選擇器失敗，請手動輸入路徑。",
@@ -1740,6 +1749,7 @@
         "progressVerifying": "正在校驗遷移結果",
         "progressWaitingShutdown": "正在關閉",
         "rebindPreviewNotice": "後端已確認：原路徑已可以重新連線。後續會重新啟動到該路徑，本次不會複製執行時資料。",
+        "recommendedPath": "推薦路徑",
         "selectedPath": "選擇路徑",
         "recoveryRequired": "檢測到需要恢復的存儲狀態，請先重新確認本次使用的存儲位置。",
         "recoverySourceUnavailable": "原始資料路徑目前不可用。請先重新連接原路徑，或明確切回建議預設路徑繼續目前會話。",
@@ -1771,7 +1781,8 @@
         "targetFreeSpace": "目標卷剩餘空間",
         "targetLabel": "目前生效路徑",
         "unknownBytes": "暫未估算",
-        "useCurrent": "保持當前路徑"
+        "useCurrent": "保持當前路徑",
+        "useRecommended": "使用推薦路徑"
     },
     "character": {
         "manager": "角色管理",
@@ -1980,6 +1991,7 @@
         "micRequired": "請先開啓麥剋風錄音！",
         "micNotOpen": "沒開麥啊喂！",
         "switchingToVoice": "正在切換到語音模式...",
+        "waitForReplyBeforeVoice": "等回覆結束後切換到語音...",
         "initializingVoice": "正在初始化語音對話...",
         "initializingMic": "正在初始化麥剋風...",
         "startFailed": "啓動失敗: {{error}}",
@@ -2031,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ 螢幕錄製權限未授權，請在系統設定中允許螢幕錄製",
         "repetitionDetected": "檢測到高重復度對話。建議您終止對話，讓{{name}}休息片刻。",
         "modelSwitched": "模型已切換",
+        "multiScreenDragHint": {
+            "title": "可以把 YUI 拖到副螢幕哦",
+            "body": "繼續往螢幕邊緣拖，放開滑鼠後她會去另一個螢幕；靠邊太近時會先自動回彈。",
+            "ack": "知道了",
+            "never": "不再提醒"
+        },
         "screenSource": {
             "notAvailable": "屏幕源選擇僅在桌麵版可用",
             "loading": "加載中...",
@@ -2456,6 +2474,7 @@
             "AGENT_PRECHECK_PENDING": "連接檢查中...",
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安裝",
+            "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "桌面顯示工作階段無法存取",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安裝",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模組未載入",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模組未載入",
@@ -3369,27 +3388,27 @@
     "characterModelNotSet": "當前角色未設定模型",
     "cookiesLogin": {
         "title": "N.E.K.O 憑證控制中心",
-        "header": "🔐 憑證取得中心",
-        "bilibili": "📺 嗶哩嗶哩",
-        "douyin": "🎵 抖音",
-        "kuaishou": "🧡 快手",
-        "weibo": "🌏 微博",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 網易雲音樂",
+        "header": "憑證取得中心",
+        "bilibili": "嗶哩嗶哩",
+        "douyin": "抖音",
+        "kuaishou": "快手",
+        "weibo": "微博",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "網易雲音樂",
         "saveConfig": "儲存設定",
         "encryptStorage": "安全加密儲存至本地檔案",
         "localMonitoring": "本地狀態監控",
         "removeCredentials": "移除",
         "confirmRemove": "確定要清空 {{platformName}} 的登入憑證嗎？",
-        "credentialsRemoved": "✅ 已成功移除憑證",
-        "credentialsSaved": "✅ {{platformName}} 憑證儲存成功！",
+        "credentialsRemoved": "已成功移除憑證",
+        "credentialsSaved": "{{platformName}} 憑證儲存成功！",
         "credentialsRemovedFailed": "刪除失敗",
-        "removeFailed": "❌ 刪除失敗，請檢查網路",
-        "requiredField": "⚠️ 請填寫必填項: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] 包含無效字元...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] 包含前/後空白，已自動修剪，請確認後重新提交",
-        "networkError": "❌ 網路異常: 無法連接至後端服務",
+        "removeFailed": "刪除失敗，請檢查網路",
+        "requiredField": "請填寫必填項: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] 包含無效字元...",
+        "whitespaceTrimmed": "[{{fieldName}}] 包含前/後空白，已自動修剪，請確認後重新提交",
+        "networkError": "網路異常: 無法連接至後端服務",
         "saveFailed": "儲存失敗，請檢查格式是否正確",
         "pasteHere": "在此貼上",
         "submitting": "安全加密傳輸中...",
@@ -3397,13 +3416,13 @@
         "statusLoadFailed": "狀態載入失敗",
         "thisPlatform": "該平台",
         "instructions": {
-            "bilibili": "📌 <b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
-            "douyin": "📌 <b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
-            "kuaishou": "📌 <b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
-            "weibo": "📌 <b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
-            "twitter": "📌 <b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
-            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。",
-            "netease": "📌 <b>目標：</b> 請前往 <b>music.163.com</b> 獲取這些 Cookies。"
+            "bilibili": "<b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
+            "douyin": "<b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
+            "kuaishou": "<b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
+            "weibo": "<b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
+            "twitter": "<b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
+            "reddit": "<b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。",
+            "netease": "<b>目標：</b> 請前往 <b>music.163.com</b> 獲取這些 Cookies。"
         },
         "guide": {
             "title": "新手通用獲取教學",
@@ -3501,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "或者...試試掃碼登入？",
-            "openQR": "📱 開啟掃碼登入",
+            "openQR": "開啟掃碼登入",
             "loading": "正在取得二維碼...",
-            "scanTitle": "📱 掃碼登入 {{platform}}",
+            "scanTitle": "掃碼登入 {{platform}}",
             "qrCodeAlt": "登入二維碼",
             "waiting": "等待掃碼...",
             "validFor": "二維碼有效期: {{seconds}}秒",
@@ -3512,9 +3531,9 @@
             "retry": "重試",
             "networkError": "網路請求失敗，請檢查連線",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}，請重新整理",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}，請重新整理",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3524,7 +3543,7 @@
                 "waiting": "等待掃碼"
             },
             "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定",
-            "extractFailed": "⚠️ 掃碼成功但未能自動擷取到欄位，請手動檢查。"
+            "extractFailed": "掃碼成功但未能自動擷取到欄位，請手動檢查。"
         }
     },
     "music": {

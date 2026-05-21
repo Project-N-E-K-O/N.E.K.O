@@ -30,7 +30,7 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_initialize_character_data
 from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
@@ -77,6 +77,10 @@ _ITEM_STATE_INSTALLED = 4
 _ITEM_STATE_NEEDS_UPDATE = 8
 _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
+
+
+class UnsupportedUGCDetailsError(RuntimeError):
+    """Raised when the loaded Steamworks wrapper cannot query UGC item details."""
 
 
 def _safe_get_workshop_install_folder(steamworks, item_id_int: int) -> str:
@@ -178,7 +182,7 @@ WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
     'audio/x-pn-wav': '.wav',
 }
 WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
-WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
+WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'cosyvoice_intl', 'minimax', 'minimax_intl'}
 WORKSHOP_CARD_FACE_SIZE = (768, 1024)
 WORKSHOP_CARD_FACE_PADDING = 48
 WORKSHOP_CARD_FACE_RATIO_TOLERANCE = 0.02
@@ -344,6 +348,24 @@ def _all_items_cache_valid(item_ids: list[int]) -> bool:
     return all(_is_item_cache_valid(iid) for iid in item_ids)
 
 
+def _steamworks_method_unavailable(method) -> bool:
+    return bool(getattr(method, '_neko_steamworks_unavailable', False))
+
+
+def _ugc_details_query_supported(steamworks) -> bool:
+    required_methods = (
+        'Workshop_CreateQueryUGCDetailsRequest',
+        'Workshop_SetQueryCompletedCallback',
+        'Workshop_SendQueryUGCRequest',
+        'Workshop_GetQueryUGCResult',
+    )
+    for method_name in required_methods:
+        method = getattr(steamworks, method_name, None)
+        if method is None or _steamworks_method_unavailable(method):
+            return False
+    return True
+
+
 async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries: int = 2) -> dict[int, object]:
     """
     批量查询 UGC 物品详情，带重试逻辑。
@@ -358,6 +380,15 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     """
     if not item_ids:
         return {}
+
+    if not _ugc_details_query_supported(steamworks):
+        logger.info(
+            "UGC 批量详情查询不可用：当前 Steamworks wrapper 缺少 Linux UGC query 桥接，"
+            "将保留订阅/安装目录扫描并跳过标题、作者等详情预热"
+        )
+        raise UnsupportedUGCDetailsError(
+            "Steamworks wrapper does not expose UGC details query methods"
+        )
     
     for attempt in range(max_retries):
         try:
@@ -456,26 +487,218 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     return {}
 
 
+# 本地 Steam 用户身份缓存：(steam_id, persona_name)，TTL 5 分钟
+# 用于检测 GetFriendPersonaName 返回值是否被 fallback 成本地用户名。
+_local_steam_identity_cache: tuple[int | None, str | None] | None = None
+_local_steam_identity_cache_ts: float = 0.0
+_LOCAL_IDENTITY_TTL = 300
+
+# Steam Community 公开 XML 接口的 persona name 缓存
+# { steam_id(int): (name_or_empty, _cache_ts) }
+# 缓存值用空串表示「200 OK 但没解析出名字」的 negative-hit；
+# 瞬时失败（超时 / 非 200 / 异常）不写入此缓存。
+_persona_web_cache: dict[int, tuple[str, float]] = {}
+_PERSONA_WEB_TTL = 3600
+# Steam Community Web 兜底的并发上限。订阅一多就一次性 fan-out 容易把
+# 自己打超时或被对端限流，限制并发到 8 个比较稳。
+_PERSONA_WEB_CONCURRENCY = 8
+# Web 兜底整轮的总耗时上限（秒）。Steam Community 慢 / 抖动时，几十个
+# 非好友 owner × 5s 单请求 × 8 并发批次会让 /subscribed-items 阻塞几十
+# 秒。这里给整轮 fan-out 设个硬墙：超时直接收割已完成的结果，剩下的
+# task 全部 cancel，让接口尽快返回；没补回来的下次刷新会重试（因为
+# transient failure 不写缓存）。
+_PERSONA_WEB_TOTAL_DEADLINE = 8.0
+
+
+def _get_local_steam_identity(steamworks) -> tuple[int | None, str | None]:
+    """获取本地 Steam 用户的 (steam_id, persona_name)，带短期缓存。
+
+    Steamworks 在未通过 RequestUserInformation 请求过的 Steam ID 上调用
+    GetFriendPersonaName 时，可能 fallback 返回本地用户的 persona name —
+    这会让所有非好友工坊条目都显示成本地用户（典型症状：开发者上传的
+    所有卡片都显示成发行账号本人）。这里读出本地用户信息，便于上游做
+    伪造检测。
+    """
+    global _local_steam_identity_cache, _local_steam_identity_cache_ts
+    if (
+        _local_steam_identity_cache is not None
+        and time.time() - _local_steam_identity_cache_ts < _LOCAL_IDENTITY_TTL
+    ):
+        return _local_steam_identity_cache
+    local_id: int | None = None
+    local_name: str | None = None
+    try:
+        raw_id = steamworks.Users.GetSteamID()
+        local_id = int(raw_id) if raw_id else None
+    except Exception as e:
+        logger.debug(f"读取本地 Steam ID 失败: {e}")
+    try:
+        raw_name = steamworks.Friends.GetPlayerName()
+        if isinstance(raw_name, bytes):
+            raw_name = raw_name.decode('utf-8', errors='replace')
+        local_name = (raw_name or '').strip() or None
+    except Exception as e:
+        logger.debug(f"读取本地 Steam persona name 失败: {e}")
+    _local_steam_identity_cache = (local_id, local_name)
+    _local_steam_identity_cache_ts = time.time()
+    return _local_steam_identity_cache
+
+
 def _resolve_author_name(steamworks, owner_id: int) -> str | None:
     """
-    将 Steam ID 解析为显示名称。
-    
+    将 Steam ID 解析为显示名称（同步路径，仅依赖 Friends API）。
+
+    Steamworks 的 GetFriendPersonaName 对未通过 RequestUserInformation
+    预热过的非好友 Steam ID，可能返回 "[unknown]" 或——更糟——本地用户
+    的 persona name。后者会让所有创意工坊条目都显示成开发者本人。这里
+    做硬性过滤；返回 None 时由 ``_fetch_persona_via_steam_web`` 走 Web
+    API 兜底。
+
     Returns:
-        str | None: 用户名或 None（解析失败时）
+        str | None: 用户名或 None（解析失败 / 被判定为伪造时）
     """
     if not owner_id:
         return None
     try:
         persona_name = steamworks.Friends.GetFriendPersonaName(owner_id)
-        if persona_name:
-            if isinstance(persona_name, bytes):
-                persona_name = persona_name.decode('utf-8', errors='replace')
-            # 过滤空串和纯数字 ID；保留 [unknown] 作为合法 fallback
-            if persona_name and persona_name.strip() and persona_name != str(owner_id):
-                return persona_name.strip()
     except Exception as e:
         logger.debug(f"解析 Steam ID {owner_id} 名称失败: {e}")
-    return None
+        return None
+    if isinstance(persona_name, bytes):
+        persona_name = persona_name.decode('utf-8', errors='replace')
+    persona_name = (persona_name or '').strip()
+    if not persona_name:
+        return None
+    # 占位符与纯数字 ID 串
+    if persona_name == '[unknown]' or persona_name == str(owner_id):
+        return None
+    # 伪造检测：返回值等于本地 persona，但 owner_id 不是本地 Steam ID
+    local_id, local_name = _get_local_steam_identity(steamworks)
+    if local_name and persona_name == local_name and local_id and owner_id != local_id:
+        logger.debug(
+            f"忽略 owner_id={owner_id} 的伪造 persona '{persona_name}' "
+            f"(等于本地用户 {local_id}/{local_name})"
+        )
+        return None
+    return persona_name
+
+
+async def _fetch_persona_via_steam_web(owner_id: int) -> str | None:
+    """通过 steamcommunity.com 公开 XML 接口拉取 persona name。
+
+    用于在 Steamworks Friends API 因未走 RequestUserInformation 而无法
+    解析时兜底。该端点对所有公开个人资料都可访问，无需 API key；带 1
+    小时模块级缓存避免反复请求同一 owner。
+
+    只在拿到确定性结果（HTTP 200 + 完整解析）时写缓存——拿到名字就缓存
+    名字，拿到 200 但 XML 里没有名字（私人资料 / 已注销）就缓存空串当
+    negative-hit；超时 / 非 200 / 连接错误等瞬时失败不写缓存，避免一次
+    抖动把同一 owner 的兜底路径黑洞化 1 小时。
+
+    Returns:
+        str | None: persona name；瞬时失败 / 私人资料 / 解析失败 → None
+    """
+    if not owner_id:
+        return None
+    cached = _persona_web_cache.get(owner_id)
+    if cached is not None and time.time() - cached[1] < _PERSONA_WEB_TTL:
+        return cached[0] or None
+    name: str | None = None
+    cacheable = False
+    try:
+        import re as _re
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            resp = await client.get(
+                f"https://steamcommunity.com/profiles/{owner_id}/",
+                params={"xml": "1"},
+                headers={"User-Agent": "Mozilla/5.0 N.E.K.O Workshop"},
+            )
+            if resp.status_code == 200:
+                cacheable = True
+                match = _re.search(
+                    r"<steamID>\s*<!\[CDATA\[(.*?)\]\]>\s*</steamID>",
+                    resp.text,
+                    _re.DOTALL,
+                )
+                if match:
+                    candidate = match.group(1).strip()
+                    if candidate:
+                        name = candidate
+    except Exception as e:
+        logger.debug(f"Steam Web 获取 persona name 失败 (owner_id={owner_id}): {e}")
+    if cacheable:
+        _persona_web_cache[owner_id] = (name or '', time.time())
+    return name
+
+
+async def _resolve_missing_author_names(items_info: list[dict]) -> None:
+    """对 items_info 中缺失 authorName 的条目，并发走 Web API 兜底回填。
+
+    in-place 修改 items_info；同时把解析出的名字写回 ``_ugc_details_cache``，
+    避免下次列表请求又落到同一兜底路径。
+    """
+    missing: list[tuple[dict, int]] = []
+    for it in items_info:
+        if it.get('authorName'):
+            continue
+        raw_owner = it.get('steamIDOwner') or ''
+        try:
+            owner_id = int(raw_owner) if raw_owner else 0
+        except (TypeError, ValueError):
+            owner_id = 0
+        if owner_id:
+            missing.append((it, owner_id))
+    if not missing:
+        return
+    unique_owners = list({owner_id for _, owner_id in missing})
+    semaphore = asyncio.Semaphore(_PERSONA_WEB_CONCURRENCY)
+
+    async def _bounded(oid: int) -> tuple[int, str | None]:
+        async with semaphore:
+            try:
+                return (oid, await _fetch_persona_via_steam_web(oid))
+            except Exception:
+                return (oid, None)
+
+    tasks = [asyncio.create_task(_bounded(oid)) for oid in unique_owners]
+    name_by_owner: dict[int, str] = {}
+    try:
+        done, pending = await asyncio.wait(
+            tasks, timeout=_PERSONA_WEB_TOTAL_DEADLINE
+        )
+    except Exception as e:
+        logger.debug(f"Web 兜底 wait 异常: {e}")
+        done, pending = set(), set(tasks)
+    if pending:
+        for t in pending:
+            t.cancel()
+        # 把取消的 task 收割掉，避免 "Task was destroyed but it is pending!"
+        await asyncio.gather(*pending, return_exceptions=True)
+        logger.info(
+            f"Web 兜底超过 {_PERSONA_WEB_TOTAL_DEADLINE}s 总预算，"
+            f"已收割 {len(done)} 个、取消 {len(pending)} 个；剩余 owner 下次刷新重试"
+        )
+    for t in done:
+        try:
+            oid, name = t.result()
+        except Exception:
+            continue
+        if name:
+            name_by_owner[oid] = name
+    if not name_by_owner:
+        return
+    for it, owner_id in missing:
+        name = name_by_owner.get(owner_id)
+        if not name:
+            continue
+        it['authorName'] = name
+        try:
+            item_id_int = int(it.get('publishedFileId') or 0)
+        except (TypeError, ValueError):
+            item_id_int = 0
+        if item_id_int and item_id_int in _ugc_details_cache:
+            _ugc_details_cache[item_id_int]['authorName'] = name
 
 
 def _safe_text(value) -> str:
@@ -569,7 +792,11 @@ async def warmup_ugc_cache() -> None:
             return
         
         logger.info(f"UGC 缓存预热: 开始查询 {len(all_item_ids)} 个物品...")
-        ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        try:
+            ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        except UnsupportedUGCDetailsError:
+            logger.info("UGC 缓存预热: 当前平台不支持详情查询，跳过预热")
+            return
         
         if ugc_results:
             # 将结果写入缓存
@@ -1571,6 +1798,8 @@ async def get_subscribed_workshop_items():
                 else:
                     logger.info(f'批量查询 {len(all_item_ids)} 个物品的详细信息')
                     ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
+        except UnsupportedUGCDetailsError:
+            logger.info("UGC 详情查询不可用，订阅列表将使用安装目录/默认信息降级返回")
         except Exception as batch_error:
             logger.warning(f"批量查询物品详情失败: {batch_error}")
         
@@ -1876,13 +2105,22 @@ async def get_subscribed_workshop_items():
                     logger.error(f"添加基本物品信息也失败了: {basic_error}")
                 # 继续处理下一个物品
                 continue
-        
+
+        # 对于 Friends API 没能解析出 authorName 的物品（典型是
+        # GetFriendPersonaName 把非好友 owner 误回成本地用户名，被
+        # _resolve_author_name 判伪丢弃），走 Steam Community 公开 XML
+        # 接口兜底，并发查询并写回 items / 缓存。
+        try:
+            await _resolve_missing_author_names(items_info)
+        except Exception as fallback_err:
+            logger.debug(f"Web API 补全 authorName 时出错（忽略）: {fallback_err}")
+
         return {
             "success": True,
             "items": items_info,
             "total": len(items_info)
         }
-        
+
     except Exception as e:
         logger.error(f"获取订阅物品列表时出错: {e}")
         return JSONResponse({
@@ -2105,6 +2343,140 @@ def get_workshop_item_download_status(item_id: str):
     }
 
 
+def _build_ugc_details_unsupported_item_response(steamworks, item_id_int: int, item_state: int):
+    """Build an explicit partial detail response when UGC details are unsupported."""
+    install_info = None
+    installed = False
+    folder = ''
+    size = 0
+
+    try:
+        install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug(f"获取物品 {item_id_int} 安装信息失败（可能刚取消订阅）: {exc}")
+    except Exception as exc:
+        logger.warning(f"获取物品 {item_id_int} 安装信息失败: {exc}")
+
+    if install_info and isinstance(install_info, dict):
+        raw_folder = install_info.get('folder', '') or ''
+        folder = str(raw_folder) if raw_folder else ''
+        installed = bool(folder and os.path.isdir(folder))
+        disk_size = install_info.get('disk_size')
+        if installed and isinstance(disk_size, (int, float)):
+            size = int(disk_size)
+    elif isinstance(install_info, tuple) and len(install_info) >= 3:
+        raw_installed, raw_folder, raw_size = install_info[:3]
+        folder = str(raw_folder) if raw_folder and isinstance(raw_folder, (str, bytes)) else ''
+        installed = bool(raw_installed) and bool(folder and os.path.isdir(folder))
+        if installed and isinstance(raw_size, (int, float)):
+            size = int(raw_size)
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) 失败: {exc}")
+        download_info = {}
+
+    downloaded = 0
+    total = 0
+    progress = 0.0
+    if isinstance(download_info, dict):
+        downloaded = int(download_info.get("downloaded", 0) or 0)
+        total = int(download_info.get("total", 0) or 0)
+    elif isinstance(download_info, tuple) and len(download_info) >= 3:
+        downloaded = int(download_info[0] or 0)
+        total = int(download_info[1] or 0)
+        progress = float(download_info[2] or 0.0)
+    downloading = total > 0 and downloaded < total
+
+    return {
+        "success": True,
+        "partial": True,
+        "detailsAvailable": False,
+        "detailsUnavailableReason": "ugc_details_query_unsupported",
+        "item": {
+            "publishedFileId": item_id_int,
+            "title": f"未知物品_{item_id_int}",
+            "description": "",
+            "steamIDOwner": "",
+            "authorName": None,
+            "timeCreated": 0,
+            "timeUpdated": 0,
+            "previewImageUrl": "",
+            "associatedUrl": "",
+            "fileUrl": "",
+            "fileSize": 0,
+            "fileId": 0,
+            "previewFileId": 0,
+            "tags": [],
+            "state": {
+                "subscribed": bool(item_state & _ITEM_STATE_SUBSCRIBED),
+                "legacyItem": bool(item_state & 2),
+                "installed": installed,
+                "needsUpdate": bool(item_state & _ITEM_STATE_NEEDS_UPDATE),
+                "downloading": bool(item_state & _ITEM_STATE_DOWNLOADING) or downloading,
+                "downloadPending": bool(item_state & _ITEM_STATE_DOWNLOAD_PENDING),
+                "isWorkshopItem": bool(item_state & 128),
+            },
+            "installedFolder": folder if installed else None,
+            "fileSizeOnDisk": size if installed else 0,
+            "downloadProgress": {
+                "bytesDownloaded": downloaded if downloading else 0,
+                "bytesTotal": total if downloading else 0,
+                "percentage": (progress * 100) if progress > 0 and downloading
+                else ((downloaded / total * 100) if total > 0 and downloading else 0),
+            },
+        },
+    }
+
+
+def _is_known_item_when_ugc_details_unsupported(steamworks, item_id_int: int, item_state: int) -> bool:
+    """Return whether an item is known without rich UGC details.
+
+    Linux wrappers can lack UGC details query methods, but that degradation must
+    not turn arbitrary numeric IDs into fake successful items. Only return a
+    partial response when Steam still exposes local/subscription state for the
+    item through the non-UGC-detail APIs.
+    """
+    known_state_bits = (
+        _ITEM_STATE_SUBSCRIBED
+        | _ITEM_STATE_INSTALLED
+        | _ITEM_STATE_NEEDS_UPDATE
+        | _ITEM_STATE_DOWNLOADING
+        | _ITEM_STATE_DOWNLOAD_PENDING
+    )
+    if item_state & known_state_bits:
+        return True
+
+    try:
+        subscribed_items = steamworks.Workshop.GetSubscribedItems()
+        parsed_subscribed_items = set()
+        for raw_item_id in subscribed_items or []:
+            try:
+                parsed_subscribed_items.add(int(raw_item_id))
+            except (TypeError, ValueError):
+                continue
+        if item_id_int in parsed_subscribed_items:
+            return True
+    except Exception as exc:
+        logger.debug(f"GetSubscribedItems fallback for {item_id_int} failed: {exc}")
+
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
+    if folder and os.path.isdir(folder):
+        return True
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) fallback failed: {exc}")
+        download_info = {}
+    if isinstance(download_info, dict):
+        return int(download_info.get("total", 0) or 0) > 0
+    if isinstance(download_info, tuple) and len(download_info) >= 2:
+        return int(download_info[1] or 0) > 0
+    return False
+
+
 @router.get('/item/{item_id}/path')
 def get_workshop_item_path(item_id: str):
     """
@@ -2314,7 +2686,17 @@ async def get_workshop_item_details(item_id: str):
         item_state = steamworks.Workshop.GetItemState(item_id_int)
         
         # 使用统一的批量查询辅助函数（带重试）查询单个物品
-        ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        try:
+            ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        except UnsupportedUGCDetailsError:
+            if not _is_known_item_when_ugc_details_unsupported(steamworks, item_id_int, item_state):
+                return JSONResponse({
+                    "success": False,
+                    "error": "获取物品详情失败，未找到物品",
+                    "detailsAvailable": False,
+                    "detailsUnavailableReason": "ugc_details_query_unsupported",
+                }, status_code=404)
+            return _build_ugc_details_unsupported_item_response(steamworks, item_id_int, item_state)
         result = ugc_results.get(item_id_int)
         
         # 如果查询失败，尝试使用缓存（按条目粒度检查 TTL）
@@ -2457,7 +2839,13 @@ async def get_workshop_item_details(item_id: str):
                     "percentage": (bytes_downloaded / bytes_total * 100) if bytes_total > 0 and downloading else 0
                 }
             }
-            
+
+            # 走 Web API 兜底补全 authorName（Friends API 在非好友 owner 上常返回伪造值）
+            try:
+                await _resolve_missing_author_names([item_info])
+            except Exception as fallback_err:
+                logger.debug(f"Web API 补全单条 authorName 出错（忽略）: {fallback_err}")
+
             return {
                 "success": True,
                 "item": item_info
@@ -4302,7 +4690,11 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 # 增强的Steam连接状态验证
                 # 基础连接状态检查
                 is_steam_running = steamworks.IsSteamRunning()
-                is_overlay_enabled = steamworks.IsOverlayEnabled()
+                try:
+                    is_overlay_enabled = steamworks.IsOverlayEnabled()
+                except Exception as overlay_error:
+                    is_overlay_enabled = None
+                    logger.warning(f"Steam覆盖层启用状态检查不可用: {overlay_error}")
                 is_logged_on = steamworks.Users.LoggedOn()
                 steam_id = steamworks.Users.GetSteamID()
             
@@ -4313,7 +4705,10 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
                 # 记录详细的连接状态
                 logger.info(f"Steam客户端运行状态: {is_steam_running}")
-                logger.info(f"Steam覆盖层启用状态: {is_overlay_enabled}")
+                logger.info(
+                    "Steam覆盖层启用状态: "
+                    + ("不可用" if is_overlay_enabled is None else str(is_overlay_enabled))
+                )
                 logger.info(f"用户登录状态: {is_logged_on}")
                 logger.info(f"用户SteamID: {steam_id}")
                 logger.info(f"应用ID {app_id} 安装状态: {app_owned}")

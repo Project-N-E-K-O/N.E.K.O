@@ -39,13 +39,14 @@
                 <div class="field-row">
                     <label data-i18n="voice.providerLabel">语音克隆服务商</label>
                     <select id="voiceProvider">
-                        <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里云 CosyVoice</option>
+                        <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里百炼 CosyVoice</option>
+                        <option value="cosyvoice_intl" data-i18n="voice.provider.cosyvoice_intl">阿里国际版 CosyVoice</option>
                         <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
                         <option value="minimax_intl" data-i18n="voice.provider.minimax_intl">MiniMax（国际服）</option>
                         <option value="elevenlabs" data-i18n="voice.provider.elevenlabs">ElevenLabs</option>
                     </select>
                 </div>
-                <div id="provider-notice" class="alibaba-api-notice">
+                <div id="provider-notice" class="alibaba-api-notice" style="display: none;">
                     <span data-i18n="voice.alibabaApiRequired">此功能只支持特定语音模型，请在API密钥设置页中保存对应API Key（不要求启用辅助API）或配置本地语音服务器</span>
                 </div>
                 <div id="workshopVoiceSource" class="workshop-source-card" style="display: none;">

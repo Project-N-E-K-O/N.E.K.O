@@ -417,8 +417,8 @@ def format_duration_mmss(ms: float) -> str:
 
 def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[io.BytesIO, str]:
     """
-    如果输入不是 WAV，使用 pydub/ffmpeg 转换为 WAV。
-    对 WAV 文件直接返回。
+    如果输入不是 WAV，使用 pyav 解码为 16-bit PCM 单声道 WAV。
+    对 WAV 文件直接返回（不做重采样/格式转换）。
 
     返回: (wav_buffer, original_format)
     """
@@ -426,7 +426,6 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
 
     if ext == 'wav':
         audio_buffer.seek(0)
-        # 验证是否为有效 WAV
         try:
             with wave.open(audio_buffer, 'rb') as _:
                 pass
@@ -435,21 +434,70 @@ def convert_to_wav_if_needed(audio_buffer: io.BytesIO, filename: str) -> tuple[i
         except Exception as err:
             raise ValueError("无效的 WAV 文件") from err
 
-    # 对于 MP3/M4A 等格式，尝试使用 pydub 转换
     try:
-        from pydub import AudioSegment
+        import av
     except ImportError as err:
         raise ValueError(
             f"不支持直接处理 .{ext} 格式的音频文件。"
-            "请安装 pydub 和 ffmpeg，或上传 WAV 格式文件。"
+            "请安装 pyav，或上传 WAV 格式文件。"
         ) from err
 
     audio_buffer.seek(0)
-    audio_seg = AudioSegment.from_file(audio_buffer, format=ext)
-    wav_buf = io.BytesIO()
-    audio_seg.export(wav_buf, format='wav')
-    wav_buf.seek(0)
-    return wav_buf, ext
+    try:
+        with av.open(audio_buffer, mode='r') as container:
+            audio_streams = [s for s in container.streams if s.type == 'audio']
+            if not audio_streams:
+                raise ValueError('文件中没有音频流')
+            stream = audio_streams[0]
+
+            sample_rate = 0
+            resampler: av.AudioResampler | None = None
+            audio_chunks: list[np.ndarray] = []
+
+            def _drain(resampled):
+                if resampled is None:
+                    return
+                frames = resampled if isinstance(resampled, list) else [resampled]
+                for rf in frames:
+                    chunk = rf.to_ndarray()
+                    if chunk is None:
+                        continue
+                    audio_chunks.append(np.asarray(chunk).reshape(-1))
+
+            for packet in container.demux(stream):
+                for frame in packet.decode():
+                    if resampler is None:
+                        # 优先用流元数据；某些容器/编码下 stream.sample_rate
+                        # 会缺失或为 0，此时回退到首个解码帧的采样率
+                        sample_rate = int(stream.sample_rate or frame.sample_rate or 0)
+                        if sample_rate <= 0:
+                            raise ValueError('无法确定音频采样率')
+                        resampler = av.AudioResampler(
+                            format='s16', layout='mono', rate=sample_rate
+                        )
+                    _drain(resampler.resample(frame))
+
+            if resampler is None:
+                raise ValueError('音频数据为空')
+            _drain(resampler.resample(None))
+
+            if not audio_chunks:
+                raise ValueError('音频数据为空')
+
+            samples = np.concatenate(audio_chunks).astype(np.int16, copy=False)
+
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(samples.tobytes())
+            wav_buf.seek(0)
+            return wav_buf, ext
+    except ValueError:
+        raise
+    except Exception as err:
+        raise ValueError(f"无法解析 .{ext} 音频文件: {err}") from err
 
 
 def convert_wav_back(wav_buffer: io.BytesIO, original_format: str, original_params: dict) -> io.BytesIO:

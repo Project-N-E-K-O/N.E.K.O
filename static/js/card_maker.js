@@ -27,6 +27,21 @@
     // 构图参数
     const composition = { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 };
 
+    // 卡面以 3:4 输出。UI 仍按 CSS 尺寸显示，内部使用更高像素密度避免把模型截图放大后发糊。
+    const CARD_BASE_WIDTH = 600;
+    const CARD_BASE_HEIGHT = 800;
+    const CARD_OUTPUT_SCALE = 2;       // 保存/导出 1200×1600
+    const MODEL_PREVIEW_SOURCE_SCALE = 2; // 实时预览源画布 1200×1600，保证流畅
+    const MODEL_EXPORT_SOURCE_SCALE = 3;  // 保存/导出时临时升到 1800×2400
+    const MODEL_PREVIEW_MAX_SOURCE_SCALE = 4;
+    const MODEL_EXPORT_MAX_SOURCE_SCALE = 6;
+    const PREVIEW_MIN_PIXEL_RATIO = 2;
+    const PREVIEW_TARGET_FPS = 60;
+    const PREVIEW_FRAME_INTERVAL_MS = 1000 / PREVIEW_TARGET_FPS;
+    let activeModelSourceScale = MODEL_PREVIEW_SOURCE_SCALE;
+
+    window.renderQuality = 'high';
+
     // 贴纸状态
     const stickers = [];           // { id, src, x, y, w, h, rotation, layer, imgEl }
     let stickerIdCounter = 0;
@@ -56,7 +71,6 @@
     const offsetYVal    = $('#offset-y-val');
     const scaleVal      = $('#scale-val');
     const rotationVal   = $('#rotation-val');
-    const cardName      = $('#card-preview-name');
     const placeholder   = $('#portrait-placeholder');
     const portraitCanvas = $('#card-portrait-canvas');
     const loadingOverlay = $('#model-loading-overlay');
@@ -146,6 +160,7 @@
         scaleInput.addEventListener('input', () => {
             composition.scale = Number(scaleInput.value);
             scaleVal.textContent = composition.scale + '%';
+            updatePreviewSourceScaleForZoom();
         });
         rotationInput.addEventListener('input', () => {
             composition.rotation = Number(rotationInput.value);
@@ -431,7 +446,6 @@
     async function onCharacterSelected(name) {
         if (!name) return;
         currentCharaName = name;
-        cardName.textContent = name;
 
         isModelLoaded = false;
         showLoading(true);
@@ -476,6 +490,7 @@
     async function loadCharacterModel(type, cfg) {
         isModelLoaded = false;
         stopPreviewLoop();
+        prepareHiddenModelViewport();
 
         // 先隐藏所有渲染容器
         const l2dContainer = $('#live2d-container');
@@ -519,9 +534,12 @@
         // 初始化 PIXI（如果尚未初始化），启用 preserveDrawingBuffer 以便截图
         if (!window.live2dManager.pixi_app) {
             await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container', {
-                preserveDrawingBuffer: true
+                preserveDrawingBuffer: true,
+                resolution: MODEL_PREVIEW_SOURCE_SCALE,
+                autoDensity: true
             });
         }
+        resizeModelRendererForCard('live2d');
         await window.live2dManager.loadModel(modelPath);
 
         // 将模型居中（默认布局放在右下角，导出页面需要居中）
@@ -532,6 +550,7 @@
             model.x = screen.width / 2;
             model.y = screen.height / 2;
         }
+        resizeModelRendererForCard('live2d');
     }
 
     async function loadVRMModel(modelPath, lighting) {
@@ -549,11 +568,13 @@
         if (!window.vrmManager.renderer) {
             await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
         }
+        resizeModelRendererForCard('vrm');
         if (lighting) {
             window.lanlan_config.lighting = lighting;
         }
         await window.vrmManager.loadModel(modelPath);
         // 重置相机：让模型居中填满画布（忽略主页面保存的相机位置）
+        resizeModelRendererForCard('vrm');
         centerThreeCamera(window.vrmManager);
     }
 
@@ -571,6 +592,7 @@
         if (!window.mmdManager.core?.renderer) {
             await window.mmdManager.init('mmd-canvas', 'mmd-container');
         }
+        resizeModelRendererForCard('mmd');
         await window.mmdManager.loadModel(modelPath);
         // 重置相机：让模型居中填满画布
         const mmdProxy = {
@@ -578,7 +600,96 @@
             camera: window.mmdManager.core?.camera,
             renderer: window.mmdManager.core?.renderer
         };
+        resizeModelRendererForCard('mmd');
         centerThreeCamera(mmdProxy);
+    }
+
+    function prepareHiddenModelViewport() {
+        const viewport = $('#model-viewport');
+        if (!viewport) return;
+        viewport.style.inset = 'auto';
+        viewport.style.left = '-10000px';
+        viewport.style.top = '0';
+        viewport.style.width = CARD_BASE_WIDTH + 'px';
+        viewport.style.height = CARD_BASE_HEIGHT + 'px';
+    }
+
+    function resizeModelRendererForCard(type = currentModelType, sourceScale = MODEL_PREVIEW_SOURCE_SCALE) {
+        const w = CARD_BASE_WIDTH;
+        const h = CARD_BASE_HEIGHT;
+        const ratio = sourceScale;
+        activeModelSourceScale = sourceScale;
+
+        if (type === 'live2d') {
+            const mgr = window.live2dManager;
+            const renderer = mgr?.pixi_app?.renderer;
+            if (!renderer) return;
+            renderer.resolution = ratio;
+            renderer.resize(w, h);
+            const view = renderer.view || document.getElementById('live2d-canvas');
+            if (view) {
+                view.style.width = w + 'px';
+                view.style.height = h + 'px';
+            }
+            const model = mgr.currentModel;
+            if (model) {
+                model.anchor?.set?.(0.5, 0.5);
+                model.x = renderer.screen.width / 2;
+                model.y = renderer.screen.height / 2;
+            }
+            return;
+        }
+
+        const mgr = type === 'vrm'
+            ? window.vrmManager
+            : {
+                renderer: window.mmdManager?.core?.renderer,
+                camera: window.mmdManager?.core?.camera,
+                effect: window.mmdManager?.core?.effect || window.mmdManager?.effect
+            };
+        const renderer = mgr?.renderer;
+        if (!renderer) return;
+        renderer.setPixelRatio?.(ratio);
+        renderer.setSize?.(w, h, false);
+        if (renderer.domElement) {
+            renderer.domElement.style.width = w + 'px';
+            renderer.domElement.style.height = h + 'px';
+        }
+        if (mgr.camera) {
+            mgr.camera.aspect = w / h;
+            mgr.camera.updateProjectionMatrix?.();
+        }
+        mgr.effect?.setSize?.(w, h);
+    }
+
+    function getZoomFactor(compositionOverride = composition) {
+        const scale = Number(compositionOverride?.scale);
+        return Math.max(1, Number.isFinite(scale) ? scale / 100 : 1);
+    }
+
+    function getPreviewSourceScaleForZoom() {
+        return clamp(
+            Math.ceil(MODEL_PREVIEW_SOURCE_SCALE * getZoomFactor()),
+            MODEL_PREVIEW_SOURCE_SCALE,
+            MODEL_PREVIEW_MAX_SOURCE_SCALE
+        );
+    }
+
+    function getExportSourceScaleForZoom(compositionOverride = composition) {
+        return clamp(
+            Math.ceil(MODEL_EXPORT_SOURCE_SCALE * getZoomFactor(compositionOverride)),
+            MODEL_EXPORT_SOURCE_SCALE,
+            MODEL_EXPORT_MAX_SOURCE_SCALE
+        );
+    }
+
+    function updatePreviewSourceScaleForZoom() {
+        if (!isModelLoaded || !currentModelType) return;
+        const nextScale = getPreviewSourceScaleForZoom();
+        if (nextScale === activeModelSourceScale) return;
+        resizeModelRendererForCard(currentModelType, nextScale);
+        ensureRender();
+        refreshPreview();
     }
 
     /**
@@ -737,7 +848,7 @@
     // ====== 预览循环 ======
 
     /**
-     * 启动持续预览刷新（~15fps，用 requestAnimationFrame 节流）
+     * 启动持续预览刷新（目标 60fps，用 requestAnimationFrame 对齐显示刷新）
      */
     function startPreviewLoop() {
         stopPreviewLoop();
@@ -745,7 +856,8 @@
 
         function loop(timestamp) {
             previewLoopId = requestAnimationFrame(loop);
-            if (timestamp - lastPreviewTime < 66) return;
+            if (document.hidden) return;
+            if (timestamp - lastPreviewTime < PREVIEW_FRAME_INTERVAL_MS) return;
             lastPreviewTime = timestamp;
             refreshPreview();
         }
@@ -761,6 +873,7 @@
 
     function refreshPreview() {
         if (!isModelLoaded) return;
+        updatePreviewSourceScaleForZoom();
 
         const srcCanvas = getModelCanvas();
         if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) return;
@@ -773,7 +886,7 @@
         const h = areaEl.clientHeight;
         if (w <= 0 || h <= 0) return;
 
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = Math.max(PREVIEW_MIN_PIXEL_RATIO, window.devicePixelRatio || 1);
         const needW = Math.round(w * dpr);
         const needH = Math.round(h * dpr);
         if (portraitCanvas.width !== needW || portraitCanvas.height !== needH) {
@@ -782,6 +895,8 @@
             portraitCanvas.style.width = w + 'px';
             portraitCanvas.style.height = h + 'px';
         }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
 
@@ -833,6 +948,7 @@
                 composition.scale = clamp(composition.scale + delta, 50, 300);
                 scaleInput.value = composition.scale;
                 scaleVal.textContent = composition.scale + '%';
+                updatePreviewSourceScaleForZoom();
             } else if (activeTab === 'decor-tab') {
                 const s = getSelectedSticker();
                 if (!s) return;
@@ -1031,24 +1147,44 @@
 
     /**
      * 根据构图参数渲染最终立绘 Blob
-     * 输出尺寸与后端卡片立绘区域完全一致（600 × (800 - 800//6)），确保所见即所得
+     * 输出尺寸与卡面预览比例一致，内部用 2 倍像素导出，确保所见即所得且更清晰。
      */
     async function renderFinalPortrait(options = {}) {
-        const srcCanvas = getModelCanvas();
-        if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) return null;
+        const outputScale = Number.isFinite(options.outputScale) ? options.outputScale : CARD_OUTPUT_SCALE;
+        const previousSourceScale = activeModelSourceScale;
+        const exportSourceScale = Math.max(
+            outputScale,
+            getExportSourceScaleForZoom(options.composition || composition)
+        );
 
+        if (activeModelSourceScale !== exportSourceScale) {
+            resizeModelRendererForCard(currentModelType, exportSourceScale);
+        }
         ensureRender();
 
-        // 与后端卡片尺寸保持一致：600×800，header = Math.floor(800/6) = 133
-        const cardW = 600, cardH = 800;
-        const headerH = Math.floor(cardH / 6);
+        const srcCanvas = getModelCanvas();
+        if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) {
+            if (activeModelSourceScale !== previousSourceScale) {
+                resizeModelRendererForCard(currentModelType, previousSourceScale);
+                ensureRender();
+            }
+            return null;
+        }
+
+        const cardW = CARD_BASE_WIDTH * outputScale;
+        const cardH = CARD_BASE_HEIGHT * outputScale;
         const outW = cardW;
-        const outH = cardH - headerH;
+        const outH = cardH;
 
         const outCanvas = document.createElement('canvas');
         outCanvas.width = outW;
         outCanvas.height = outH;
         const ctx = outCanvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        ctx.fillStyle = '#E8F4F8';
+        ctx.fillRect(0, 0, outW, outH);
 
         // 绘制顺序：模型下方贴纸 → 模型 → 模型上方贴纸
         // 按 layerOrder 排序确保与预览一致
@@ -1062,71 +1198,40 @@
         const belowStickers = stickerOrder.filter(s => s.layer === 'below');
         const aboveStickers = stickerOrder.filter(s => s.layer === 'above');
 
-        if (belowStickers.length > 0) {
-            await drawStickerList(ctx, belowStickers, outW, outH);
+        try {
+            if (belowStickers.length > 0) {
+                await drawStickerList(ctx, belowStickers, outW, outH);
+            }
+
+            drawModelWithComposition(ctx, srcCanvas, outW, outH, options.composition);
+
+            if (aboveStickers.length > 0) {
+                await drawStickerList(ctx, aboveStickers, outW, outH);
+            }
+
+            return await new Promise((resolve) => {
+                outCanvas.toBlob((blob) => resolve(blob), 'image/png');
+            });
+        } finally {
+            if (activeModelSourceScale !== previousSourceScale) {
+                resizeModelRendererForCard(currentModelType, previousSourceScale);
+                ensureRender();
+                refreshPreview();
+            }
         }
-
-        drawModelWithComposition(ctx, srcCanvas, outW, outH, options.composition);
-
-        if (aboveStickers.length > 0) {
-            await drawStickerList(ctx, aboveStickers, outW, outH);
-        }
-
-        return new Promise((resolve) => {
-            outCanvas.toBlob((blob) => resolve(blob), 'image/png');
-        });
     }
 
     /**
-     * 渲染完整角色卡（蓝色头部 + 角色名 + 立绘）用于卡面保存
-     * 输出尺寸 600×800，与后端角色卡完全一致
+     * 渲染完整角色卡用于卡面保存。
+     * 输出尺寸 1200×1600，不再绘制角色名称栏。
      */
     async function renderFullCard(options = {}) {
-        const portraitBlob = await renderFinalPortrait(options);
-        if (!portraitBlob) {
+        const cardBlob = await renderFinalPortrait(options);
+        if (!cardBlob) {
             console.warn('[card_maker] renderFinalPortrait returned null, aborting card render');
             return null;
         }
-
-        const cardW = 600, cardH = 800;
-        const headerH = Math.floor(cardH / 6); // 133px
-
-        const outCanvas = document.createElement('canvas');
-        outCanvas.width = cardW;
-        outCanvas.height = cardH;
-        const ctx = outCanvas.getContext('2d');
-
-        // 底色
-        ctx.fillStyle = '#E8F4F8';
-        ctx.fillRect(0, 0, cardW, cardH);
-
-        // 蓝色头部
-        ctx.fillStyle = '#40C5F1';
-        ctx.fillRect(0, 0, cardW, headerH);
-
-        // 角色名称（白色，带阴影）
-        const displayName = currentCharaName || '';
-        ctx.font = 'bold 42px "Microsoft YaHei", "SimHei", "PingFang SC", sans-serif';
-        ctx.textBaseline = 'middle';
-
-        // 阴影
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-        ctx.fillText(displayName, 42, headerH / 2 + 2);
-
-        // 白色文字
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(displayName, 40, headerH / 2);
-
-        // 绘制立绘到头部下方
-        if (portraitBlob) {
-            const portraitImg = await createImageBitmap(portraitBlob);
-            ctx.drawImage(portraitImg, 0, headerH, cardW, cardH - headerH);
-            portraitImg.close();
-        }
-
-        return new Promise((resolve) => {
-            outCanvas.toBlob((blob) => resolve(blob), 'image/png');
-        });
+        return cardBlob;
     }
 
     // ====== 贴纸系统 ======

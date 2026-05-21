@@ -48,12 +48,26 @@ from __future__ import annotations
 import logging
 import re
 
-from memory.embeddings import (
-    decode_embedding,
-    get_embedding_service,
-    is_cached_embedding_valid,
-    parse_dim_from_model_id,
-)
+try:
+    from memory.embeddings import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+    )
+except ImportError:
+    # See ``embedding_worker`` for context. With the disabled-service
+    # stub, ``MemoryRecallReranker`` keeps working but skips the cosine
+    # prefilter (decode_embedding returns None for every candidate) —
+    # callers already handle that path via ``rerank=False`` semantics.
+    from memory.embeddings_fallback import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+        _warn_once,
+    )
+    _warn_once(__name__)
 
 logger = logging.getLogger(__name__)
 

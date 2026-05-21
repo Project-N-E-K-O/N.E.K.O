@@ -7,11 +7,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="live2d.manager">模型管理器 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
-    <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
+    <script>
+        const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');
+        window.VRM_DEFAULT_LIGHTING = Object.freeze(JSON.parse(vrmDefaultLightingData?.textContent || '{}'));
+    </script>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
-    <link rel="stylesheet" href="/static/css/model_manager.css">
+    <link rel="stylesheet" href="/static/css/model_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <link rel="stylesheet" href="/static/css/tutorial-styles.css">
     <link rel="stylesheet" href="/static/css/model-profiler.css">
@@ -636,7 +640,7 @@
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
     <script src="/static/avatar-portrait.js"></script>
 
-    <script src="/static/js/model_manager.js"></script>
+    <script src="/static/js/model_manager.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- 性能分析器 -->
     <script src="/static/model-profiler.js"></script>

@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover
     psutil = None
 
-from .models import (
+from ..models import (
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
@@ -55,15 +55,13 @@ from .models import (
     sanitize_screen_ui_elements,
     sanitize_snapshot_state,
 )
-from .dependency_status import (
+from ..dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
 )
-from .dxcam_support import inspect_dxcam_installation
-from .reader import expand_bridge_root, normalize_text, read_session_json
-from .rapidocr_support import (
-    _BAIDU_YUN_RAPIDOCR_CODE,
-    _BAIDU_YUN_RAPIDOCR_URL,
+from ..dxcam_support import inspect_dxcam_installation
+from ..reader import expand_bridge_root, normalize_text, read_session_json
+from ..rapidocr_support import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
     DEFAULT_RAPIDOCR_MODEL_TYPE,
@@ -71,7 +69,7 @@ from .rapidocr_support import (
     inspect_rapidocr_installation,
     resolve_rapidocr_model_cache_dir,
 )
-from .textractor_support import (
+from ..textractor_support import (
     _BAIDU_YUN_TEXTTRACTOR_CODE,
     _BAIDU_YUN_TEXTTRACTOR_URL,
     DEFAULT_TEXTRACTOR_RELEASE_API_URL,
@@ -137,13 +135,7 @@ def _build_download_guide_payload(
         and _BAIDU_YUN_TEXTTRACTOR_CODE != "____"
         and not bool(textractor.get("installed"))
     )
-    rapidocr_available = (
-        bool(_BAIDU_YUN_RAPIDOCR_URL)
-        and "____" not in _BAIDU_YUN_RAPIDOCR_URL
-        and bool(_BAIDU_YUN_RAPIDOCR_CODE)
-        and _BAIDU_YUN_RAPIDOCR_CODE != "____"
-        and not bool(rapidocr.get("installed"))
-    )
+    rapidocr_available = False
     return {
         "textractor": {
             "available": textractor_available,
@@ -154,8 +146,8 @@ def _build_download_guide_payload(
         },
         "rapidocr_models": {
             "available": rapidocr_available,
-            "url": _BAIDU_YUN_RAPIDOCR_URL,
-            "code": _BAIDU_YUN_RAPIDOCR_CODE,
+            "url": "",
+            "code": "",
             "target_dir": rapidocr_target,
             "note": "Download the RapidOCR model files manually and place them in the model cache directory.",
         },
@@ -633,11 +625,27 @@ def _default_bridge_root_raw() -> str:
 
 
 def _default_memory_reader_enabled() -> bool:
-    return sys.platform.startswith("win")
+    from ..capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
 
 
 def _default_ocr_reader_enabled() -> bool:
-    return sys.platform.startswith("win")
+    # Keep OCR reader Windows-only for now; do not couple this to
+    # rapidocr_enabled because RapidOCR has its own platform checks.
+    from ..capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
+
+
+def _default_rapidocr_enabled() -> bool:
+    # RapidOCR remains Windows-only at the default level. RapidOCR
+    # itself does its own runtime platform check; this default just
+    # mirrors the historical behavior so non-Windows users opt-in
+    # explicitly rather than getting a surprise enable.
+    from ..capture_platform import is_windows  # noqa: PLC0415
+
+    return is_windows()
 
 
 def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
@@ -958,7 +966,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
         ),
         rapidocr_enabled=_coerce_bool(
             rapidocr_obj.get("enabled"),
-            _default_ocr_reader_enabled(),
+            _default_rapidocr_enabled(),
         ),
         rapidocr_enabled_explicit="enabled" in rapidocr_obj,
         # NOTE: `rapidocr_install_manifest_url` and `rapidocr_install_timeout_seconds`
@@ -2526,6 +2534,15 @@ def _build_status_payload_unchecked(
             "summary": summary,
         }
     )
+    character_mode = str(getattr(state, "character_mode", "off") or "off")
+    character_fixed_name = str(getattr(state, "character_fixed_name", "") or "")
+    character_profiles = getattr(state, "character_profiles", {}) or {}
+    character_profile_known = (
+        isinstance(character_profiles, dict)
+        and bool(character_fixed_name)
+        and isinstance(character_profiles.get(character_fixed_name), dict)
+    )
+    character_pov_active = character_mode == "fixed" and bool(character_fixed_name)
     return {
         "connection_state": state.current_connection_state,
         "mode": state.mode,
@@ -2533,6 +2550,23 @@ def _build_status_payload_unchecked(
         "advance_speed": getattr(state, "advance_speed", "medium"),
         "bound_game_id": state.bound_game_id,
         "available_game_ids": list(state.available_game_ids),
+        "active_game_id": state.active_game_id,
+        "character_mode": character_mode,
+        "character_fixed_name": character_fixed_name,
+        "character_profile_count": len(character_profiles),
+        "character_profile_game_id": str(getattr(state, "character_profile_game_id", "") or ""),
+        "character_profile_match_reason": str(
+            getattr(state, "character_profile_match_reason", "") or ""
+        ),
+        "character_mode_stale": bool(getattr(state, "character_mode_stale", False)),
+        "character_pov_active": character_pov_active,
+        "character_pov_name": character_fixed_name if character_pov_active else "",
+        "character_pov_profile_known": character_profile_known,
+        "character_pov_applied_to": (
+            ["suggest_choice", "scene_summary", "cat_consultation", "push"]
+            if character_pov_active
+            else []
+        ),
         "active_session_id": state.active_session_id,
         "active_data_source": state.active_data_source,
         "stream_reset_pending": state.stream_reset_pending,
@@ -3046,7 +3080,7 @@ def build_explain_context(
     line_id: str,
     config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    from .context_builder import build_explain_context as _build_explain_context
+    from ..context_builder import build_explain_context as _build_explain_context
 
     if config is None:
         return _build_explain_context(local_state, line_id=line_id)
@@ -3060,7 +3094,7 @@ def build_summarize_context(
     merge_from_scene_ids: list[str] | None = None,
     config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    from .context_builder import build_summarize_context as _build_summarize_context
+    from ..context_builder import build_summarize_context as _build_summarize_context
 
     if config is None:
         return _build_summarize_context(
@@ -3081,7 +3115,7 @@ def build_suggest_context(
     *,
     config: GalgameLLMConfig | None = None,
 ) -> dict[str, Any]:
-    from .context_builder import build_suggest_context as _build_suggest_context
+    from ..context_builder import build_suggest_context as _build_suggest_context
 
     if config is None:
         return _build_suggest_context(local_state)
