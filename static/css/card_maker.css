@@ -620,6 +620,38 @@ body {
     background: rgba(179, 229, 252, 0.35);
 }
 
+.sticker-variant-item {
+    position: relative;
+}
+
+.sticker-variant-toggle-btn {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(64, 197, 241, 0.45);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.88);
+    color: #40C5F1;
+    cursor: pointer;
+    padding: 0;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s, transform 0.15s;
+}
+
+.sticker-variant-item:hover .sticker-variant-toggle-btn {
+    opacity: 1;
+}
+
+.sticker-variant-toggle-btn:hover {
+    background: #ffffff;
+    transform: scale(1.06);
+}
+
 .sticker-item img {
     width: 100%;
     height: 100%;
@@ -698,29 +730,39 @@ body {
 
 .sticker-placed {
     position: absolute;
-    pointer-events: auto;
-    cursor: grab;
+    pointer-events: none;
+    cursor: default;
     user-select: none;
-    outline: 2px solid transparent;
-    outline-offset: 2px;
     border-radius: 4px;
-    transition: outline-color 0.15s;
 }
 
-.sticker-placed:hover,
 .sticker-placed.selected {
-    outline-color: #40C5F1;
+    cursor: grab;
+    pointer-events: auto;
 }
 
 .model-focused .sticker-placed,
 .model-focused .sticker-placed:hover,
 .model-focused .sticker-placed.selected {
-    outline-color: transparent;
     pointer-events: none;
 }
 
-.sticker-placed:active {
+.sticker-placed.selected:active {
     cursor: grabbing;
+}
+
+.sticker-selection-frame {
+    position: absolute;
+    display: none;
+    border: 2px solid #40C5F1;
+    border-radius: 4px;
+    box-sizing: border-box;
+    pointer-events: none;
+    z-index: 99;
+}
+
+.sticker-selection-frame.visible {
+    display: block;
 }
 
 /* --- 贴纸旋转手柄 --- */
@@ -785,6 +827,34 @@ body {
 
 .lock-ratio-btn:hover {
     border-color: #40C5F1;
+}
+
+.sticker-variant-control-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    font-size: 12px;
+    padding: 6px 10px;
+    border: 1.5px solid rgba(64, 197, 241, 0.45);
+    border-radius: 6px;
+    background: rgba(64, 197, 241, 0.08);
+    color: #40C5F1;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+    user-select: none;
+    box-sizing: border-box;
+}
+
+.sticker-variant-control-btn:hover {
+    border-color: #40C5F1;
+    background: rgba(64, 197, 241, 0.16);
+}
+
+.sticker-variant-control-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 /* --- 滚动条 --- */
@@ -1062,10 +1132,31 @@ body {
     color: #40C5F1;
 }
 
+[data-theme="dark"] .sticker-variant-toggle-btn {
+    border-color: rgba(74, 163, 223, 0.45);
+    background: rgba(22, 33, 62, 0.9);
+    color: #4aa3df;
+}
+
+[data-theme="dark"] .sticker-variant-toggle-btn:hover {
+    background: #20304f;
+}
+
 [data-theme="dark"] .lock-ratio-btn {
     border-color: #444;
     background: #2a2a3e;
     color: #666;
+}
+
+[data-theme="dark"] .sticker-variant-control-btn {
+    border-color: rgba(74, 163, 223, 0.45);
+    background: rgba(74, 163, 223, 0.08);
+    color: #4aa3df;
+}
+
+[data-theme="dark"] .sticker-variant-control-btn:hover {
+    border-color: #4aa3df;
+    background: rgba(74, 163, 223, 0.16);
 }
 
 [data-theme="dark"] .lock-ratio-btn.active {

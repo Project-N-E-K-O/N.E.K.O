@@ -3751,6 +3751,7 @@
         "stickerWidth": "Ширина",
         "stickerHeight": "Высота",
         "lockRatio": "Фикс. пропорции",
+        "switchStickerVariant": "Сменить вариант",
         "stickerRotation": "Поворот",
         "removeSticker": "Удалить выбранный",
         "clearStickers": "Очистить все",

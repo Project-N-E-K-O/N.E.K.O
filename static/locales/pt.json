@@ -3751,6 +3751,7 @@
         "stickerWidth": "Largura",
         "stickerHeight": "Altura",
         "lockRatio": "Taxa de bloqueio",
+        "switchStickerVariant": "Trocar variação",
         "stickerRotation": "Rotação",
         "removeSticker": "Remover selecionado",
         "clearStickers": "Limpar tudo",

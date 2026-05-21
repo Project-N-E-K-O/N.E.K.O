@@ -3751,6 +3751,7 @@
         "stickerWidth": "너비",
         "stickerHeight": "높이",
         "lockRatio": "비율 고정",
+        "switchStickerVariant": "형태 전환",
         "stickerRotation": "회전",
         "removeSticker": "선택 삭제",
         "clearStickers": "모두 삭제",

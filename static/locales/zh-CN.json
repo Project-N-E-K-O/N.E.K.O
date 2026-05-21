@@ -3751,6 +3751,7 @@
         "stickerWidth": "宽",
         "stickerHeight": "高",
         "lockRatio": "锁定比例",
+        "switchStickerVariant": "切换形态",
         "stickerRotation": "旋转",
         "removeSticker": "删除选中",
         "clearStickers": "清除全部",

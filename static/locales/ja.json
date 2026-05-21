@@ -3751,6 +3751,7 @@
         "stickerWidth": "幅",
         "stickerHeight": "高さ",
         "lockRatio": "比率をロック",
+        "switchStickerVariant": "形態を切替",
         "stickerRotation": "回転",
         "removeSticker": "選択を削除",
         "clearStickers": "すべて削除",
