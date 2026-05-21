@@ -30,7 +30,8 @@ from ._paths import (
     resolve_rapidocr_runtime_dir,
     resolve_rapidocr_site_packages_dir,
 )
-from ._runtime import _rapidocr_package_dir, load_rapidocr_runtime
+from . import _runtime
+from ._runtime import _rapidocr_package_dir
 
 
 def inspect_rapidocr_installation(
@@ -113,7 +114,7 @@ def inspect_rapidocr_installation(
         # that may legitimately be broken. Frequency is low (only when bundled
         # path is unavailable AND legacy dir exists).
         try:
-            _runtime, runtime_meta = load_rapidocr_runtime(
+            _rapidocr_runtime, runtime_meta = _runtime.load_rapidocr_runtime(
                 install_target_dir_raw=install_target_dir_raw,
                 engine_type=engine_type,
                 lang_type=lang_type,

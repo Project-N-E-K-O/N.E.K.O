@@ -52,7 +52,6 @@ _PROXY_TO_INSPECT_DOWNLOAD = frozenset(
         "_verify_model_sha256",
         "required_rapidocr_model_files",
         "missing_rapidocr_model_files",
-        "load_rapidocr_runtime",
     }
 )
 _PROXY_TO_RUNTIME = frozenset(

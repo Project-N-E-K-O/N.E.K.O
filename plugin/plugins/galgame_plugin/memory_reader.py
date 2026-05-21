@@ -1268,10 +1268,12 @@ class MemoryReaderManager:
 # split, tests that monkeypatch ``memory_reader.<name>`` must keep affecting the
 # call sites in the submodules where the name now actually lives (process
 # scanning resolves ``psutil`` in ``_process_detection``; the Textractor
-# handle resolves ``subprocess`` in ``_textractor_handle``). This proxy reroutes
-# the writes so the old test-time semantics survive the split unchanged.
+# handle resolves ``subprocess`` in ``_textractor_handle``; Win32 job setup
+# resolves ``ctypes`` in ``_win32_job_objects``). This proxy reroutes the writes
+# so the old test-time semantics survive the split unchanged.
 _PROXY_TO_PROCESS_DETECTION = frozenset({"psutil"})
 _PROXY_TO_TEXTRACTOR_HANDLE = frozenset({"subprocess"})
+_PROXY_TO_WIN32_JOB_OBJECTS = frozenset({"ctypes"})
 
 
 class _ShimModule(_types.ModuleType):
@@ -1281,10 +1283,14 @@ class _ShimModule(_types.ModuleType):
             from . import _process_detection
 
             setattr(_process_detection, name, value)
-        elif name in _PROXY_TO_TEXTRACTOR_HANDLE:
+        if name in _PROXY_TO_TEXTRACTOR_HANDLE:
             from . import _textractor_handle
 
             setattr(_textractor_handle, name, value)
+        if name in _PROXY_TO_WIN32_JOB_OBJECTS:
+            from . import _win32_job_objects
+
+            setattr(_win32_job_objects, name, value)
 
 
 sys.modules[__name__].__class__ = _ShimModule
