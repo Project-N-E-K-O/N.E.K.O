@@ -415,6 +415,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._isEyeDrivenByMotion = false;
     this._isLookAtDrivenByMotion = false;
     this._isBreathDrivenByMotion = false;
+    this._motionDrivenBreathParamIds = null;
     this._runtimeBreathTime = 0;
     this._runtimeBreathParamIds = null;
     this._lookAtTimer = undefined;
@@ -1060,12 +1061,13 @@ Live2DManager.prototype._resolveRuntimeBreathParams = function(coreModel) {
     return this._runtimeBreathParamIds;
 };
 
-Live2DManager.prototype._hasNativeRuntimeBreath = function(internalModel, coreModel) {
+Live2DManager.prototype._getNativeRuntimeBreathParamIds = function(internalModel, coreModel) {
+    const nativeBreathParamIds = new Set();
     const breath = internalModel?.breath;
-    if (!breath || typeof breath.updateParameters !== 'function') return false;
+    if (!breath || typeof breath.updateParameters !== 'function') return nativeBreathParamIds;
 
     const runtimeBreathParamIds = new Set(this._resolveRuntimeBreathParams(coreModel));
-    if (runtimeBreathParamIds.size === 0) return false;
+    if (runtimeBreathParamIds.size === 0) return nativeBreathParamIds;
 
     let nativeParams = null;
     try {
@@ -1076,25 +1078,33 @@ Live2DManager.prototype._hasNativeRuntimeBreath = function(internalModel, coreMo
     if (!Array.isArray(nativeParams) && Array.isArray(breath._breathParameters)) {
         nativeParams = breath._breathParameters;
     }
-    if (!Array.isArray(nativeParams) || nativeParams.length === 0) return false;
+    if (!Array.isArray(nativeParams) || nativeParams.length === 0) return nativeBreathParamIds;
 
-    return nativeParams.some(param => {
+    for (const param of nativeParams) {
         const id = param && (param.parameterId || param.id || param.Id);
-        if (!runtimeBreathParamIds.has(id)) return false;
+        if (!runtimeBreathParamIds.has(id)) continue;
         const weight = Number(param.weight);
         const peak = Number(param.peak);
-        if (Number.isFinite(weight) && weight === 0) return false;
-        if (Number.isFinite(peak) && peak === 0) return false;
-        return true;
-    });
+        if (Number.isFinite(weight) && weight === 0) continue;
+        if (Number.isFinite(peak) && peak === 0) continue;
+        nativeBreathParamIds.add(id);
+    }
+
+    return nativeBreathParamIds;
 };
 
-Live2DManager.prototype._updateRuntimeBreath = function(delta) {
+Live2DManager.prototype._updateRuntimeBreath = function(delta, options = {}) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
 
     const breathParamIds = this._resolveRuntimeBreathParams(coreModel);
     if (breathParamIds.length === 0) return;
+
+    const excludedParamIds = options.excludedParamIds instanceof Set
+        ? options.excludedParamIds
+        : new Set(Array.isArray(options.excludedParamIds) ? options.excludedParamIds : []);
+    const targetParamIds = breathParamIds.filter(id => !excludedParamIds.has(id));
+    if (targetParamIds.length === 0) return;
 
     const safeDelta = Math.min(Math.max(Number(delta) || 0, 0), 0.1);
     this._runtimeBreathTime = (this._runtimeBreathTime || 0) + safeDelta;
@@ -1102,7 +1112,7 @@ Live2DManager.prototype._updateRuntimeBreath = function(delta) {
     const phase = this._runtimeBreathTime * Math.PI * 2 / 3.8;
     const normalized = 0.5 + Math.sin(phase) * 0.5;
 
-    for (const id of breathParamIds) {
+    for (const id of targetParamIds) {
         try {
             const idx = coreModel.getParameterIndex(id);
             if (idx < 0) continue;
@@ -2085,6 +2095,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isEyeDrivenByMotion = false;
             this._isLookAtDrivenByMotion = false;
             this._isBreathDrivenByMotion = false;
+            this._motionDrivenBreathParamIds = new Set();
             const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
             const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
@@ -2117,7 +2128,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         const preVal = preUpdateParams[id];
                         if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
                             this._isBreathDrivenByMotion = true;
-                            break;
+                            this._motionDrivenBreathParamIds.add(id);
                         }
                     }
                 } catch (_) {}
@@ -2140,9 +2151,15 @@ Live2DManager.prototype.installMouthOverride = function() {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRandomLookAt(delta);
             }
-            if (!this._isBreathDrivenByMotion && !this._hasNativeRuntimeBreath(internalModel, coreModel)) {
+            {
+                const excludedBreathParamIds = this._getNativeRuntimeBreathParamIds(internalModel, coreModel);
+                if (this._motionDrivenBreathParamIds instanceof Set) {
+                    for (const id of this._motionDrivenBreathParamIds) {
+                        excludedBreathParamIds.add(id);
+                    }
+                }
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
-                this._updateRuntimeBreath(delta);
+                this._updateRuntimeBreath(delta, { excludedParamIds: excludedBreathParamIds });
             }
 
             try {
