@@ -246,19 +246,24 @@ class MinimaxVoiceCloneClient:
         text: str,
         *,
         model: str = "speech-2.8-hd",
+        emotion: str | None = None,
     ) -> bytes:
         """使用 MiniMax T2A 接口生成预览音频，返回 MP3 bytes。"""
+        voice_setting = {
+            'voice_id': voice_id,
+            'speed': 1,
+            'vol': 1,
+            'pitch': 0,
+        }
+        if emotion:
+            voice_setting["emotion"] = emotion
+
         url = f"{self.base_url}/v1/t2a_v2"
         payload = {
             'model': model,
             'text': text,
             'stream': False,
-            'voice_setting': {
-                'voice_id': voice_id,
-                'speed': 1,
-                'vol': 1,
-                'pitch': 0,
-            },
+            'voice_setting': voice_setting,
             'audio_setting': {
                 'sample_rate': 32000,
                 'bitrate': 128000,

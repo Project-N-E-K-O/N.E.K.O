@@ -79,6 +79,7 @@ from utils.config_manager import (
 )
 from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 from utils.native_voice_registry import (
+    get_provider,
     get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
     normalize_native_voice,
@@ -136,6 +137,18 @@ logger = get_module_logger(__name__, "Main")
 CHARACTER_RESERVED_FIELD_SET = set(CHARACTER_RESERVED_FIELDS)
 VOICE_SESSION_STARTING_ERROR = "语音会话正在启动，请稍后再切换音色"
 DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+EXIT_RETENTION_TTS_TEXT_MAX_CHARS = 280
+EXIT_RETENTION_TTS_STYLE = "sad_reluctant"
+EXIT_RETENTION_TTS_PROVIDER_EMOTION = "sad"
+EXIT_RETENTION_TTS_GEMINI_STYLE_INSTRUCTION = (
+    "Say the exact text softly, with a sad, reluctant, slightly wronged tone. "
+    "Do not omit or add any spoken words:"
+)
+EXIT_RETENTION_TTS_QWEN_STYLE_INSTRUCTION = (
+    "Speak softly with a sad, reluctant, slightly wronged tone. "
+    "Do not omit or add any spoken words."
+)
+EXIT_RETENTION_TTS_ELEVENLABS_STYLE = 0.45
 _DIRECT_LINK_MAX_REDIRECTS = 10
 _DIRECT_LINK_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
@@ -517,6 +530,64 @@ def _is_free_preset_voice_id(voice_id: object) -> bool:
     return normalized in free_voice_ids
 
 
+async def _resolve_exit_retention_voice_id(config_manager, current_catgirl_payload: dict) -> str:
+    """Resolve the voice used by exit-retention TTS.
+
+    Prefer the current character binding. If the character has no explicit
+    voice, fall back to the active TTS route's effective default voice so the
+    PC shell still matches what users hear in normal chat.
+    """
+    core_config = await config_manager.aget_core_config()
+    realtime_config = config_manager.get_model_api_config('realtime')
+    core_api_type = str(
+        realtime_config.get('api_type')
+        or core_config.get('CORE_API_TYPE')
+        or core_config.get('coreApi')
+        or ''
+    ).strip().lower()
+
+    character_voice_id = str(get_reserved(
+        current_catgirl_payload,
+        'voice_id',
+        default='',
+        legacy_keys=('voice_id',),
+    ) or '').strip()
+    free_preset_mismatches_route = (
+        _is_free_preset_voice_id(character_voice_id)
+        and core_api_type != 'free'
+    )
+    if character_voice_id and config_manager.validate_voice_id(character_voice_id) and not free_preset_mismatches_route:
+        return character_voice_id
+    if character_voice_id:
+        logger.info("退出挽留 TTS 跳过当前角色不可用音色: %s", character_voice_id)
+
+    configured_tts_voice_id = str(
+        core_config.get('TTS_VOICE_ID')
+        or core_config.get('ttsVoiceId')
+        or ''
+    ).strip()
+    if (
+        configured_tts_voice_id
+        and core_config.get('ENABLE_CUSTOM_API')
+        and not configured_tts_voice_id.startswith('__gptsovits_disabled__|')
+        and config_manager.validate_voice_id(configured_tts_voice_id)
+        and not (_is_free_preset_voice_id(configured_tts_voice_id) and core_api_type != 'free')
+    ):
+        return configured_tts_voice_id
+
+    if core_api_type in ('qwen', 'qwen_intl'):
+        return "Momo"
+    if core_api_type in ('free', 'step'):
+        from utils.stepfun_tts_voices import get_stepfun_tts_default_voice
+        return get_stepfun_tts_default_voice(core_api_type)
+
+    native_provider = get_provider(core_api_type)
+    if native_provider and native_provider.default_voice:
+        return native_provider.default_voice
+
+    return ''
+
+
 def _get_active_native_preview_provider(config_manager, voice_id: object) -> str | None:
     """判断 voice_id 是否应走当前实时 Provider 的原生预览路径。"""
     normalized = str(voice_id or "").strip()
@@ -566,6 +637,7 @@ async def _synthesize_step_voice_preview(
     audio_api_key: str = "",
     *,
     free_mode: bool = False,
+    emotion: str | None = None,
 ) -> bytes:
     """使用 StepFun/free TTS WebSocket 生成试听 WAV。"""
     import websockets
@@ -602,6 +674,8 @@ async def _synthesize_step_voice_preview(
                 raise RuntimeError("TTS 连接未返回 session_id")
 
             create_data = _build_step_tts_create_data(session_id, voice_id, lang_hint, is_lanlan_app)
+            if emotion:
+                create_data["emotion"] = emotion
 
             await ws.send(json.dumps({"type": "tts.create", "data": create_data}))
             await ws.send(json.dumps({
@@ -637,7 +711,14 @@ async def _synthesize_step_voice_preview(
     return _build_wav_payload(pcm_chunks, channels, sample_width, sample_rate)
 
 
-async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, preview_language: str, audio_api_key: str = "") -> bytes:
+async def _synthesize_free_voice_preview(
+    voice_id: str,
+    preview_line: str,
+    preview_language: str,
+    audio_api_key: str = "",
+    *,
+    emotion: str | None = None,
+) -> bytes:
     """使用 free TTS WebSocket 为免费预设音色生成试听 WAV。"""
     return await _synthesize_step_voice_preview(
         voice_id=voice_id,
@@ -645,10 +726,98 @@ async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, previ
         preview_language=preview_language,
         audio_api_key=audio_api_key,
         free_mode=True,
+        emotion=emotion,
     )
 
 
-async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: str, audio_api_key: str) -> bytes:
+async def _synthesize_qwen_voice_preview(
+    voice_id: str,
+    preview_line: str,
+    preview_language: str,
+    audio_api_key: str,
+    *,
+    style_instruction: str | None = None,
+) -> bytes:
+    """使用 Qwen realtime TTS 生成试听 WAV。"""
+    import time
+    import websockets
+
+    from main_logic.tts_client import _resolve_qwen_realtime_tts_url
+
+    tts_url = _resolve_qwen_realtime_tts_url()
+    headers = {"Authorization": f"Bearer {audio_api_key}"}
+    pcm_chunks: list[bytes] = []
+
+    def build_config_message() -> dict:
+        session = {
+            "mode": "server_commit",
+            "voice": voice_id or "Momo",
+            "response_format": "pcm",
+            "sample_rate": 24000,
+            "channels": 1,
+            "bit_depth": 16,
+        }
+        if style_instruction:
+            session["instructions"] = style_instruction
+        if preview_language == "ja":
+            session["language_type"] = "Japanese"
+        return {
+            "type": "session.update",
+            "event_id": f"event_{int(time.time() * 1000)}",
+            "session": session,
+        }
+
+    async with asyncio.timeout(20):
+        async with websockets.connect(tts_url, additional_headers=headers) as ws:
+            await ws.send(json.dumps(build_config_message()))
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                if isinstance(raw, bytes):
+                    continue
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type in ("session.created", "session.updated"):
+                    break
+                if event_type == "error":
+                    raise RuntimeError(str(event.get("error") or event))
+
+            await ws.send(json.dumps({
+                "type": "input_text_buffer.append",
+                "event_id": f"event_{int(time.time() * 1000)}",
+                "text": preview_line,
+            }))
+            await ws.send(json.dumps({
+                "type": "input_text_buffer.commit",
+                "event_id": f"event_{int(time.time() * 1000)}_commit",
+            }))
+
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=12.0)
+                if isinstance(raw, bytes):
+                    continue
+                event = json.loads(raw)
+                event_type = event.get("type")
+                if event_type == "error":
+                    raise RuntimeError(str(event.get("error") or event))
+                if event_type == "response.audio.delta":
+                    audio_b64 = event.get("delta", "")
+                    if audio_b64:
+                        pcm_chunks.append(base64.b64decode(audio_b64))
+                elif event_type in ("response.done", "response.audio.done", "output.done"):
+                    break
+
+    if not pcm_chunks:
+        raise RuntimeError("Qwen TTS 未返回音频")
+    return _build_wav_payload(pcm_chunks, 1, 2, 24000)
+
+
+async def _synthesize_gemini_native_voice_preview(
+    voice_id: str,
+    preview_line: str,
+    audio_api_key: str,
+    *,
+    style_instruction: str | None = None,
+) -> bytes:
     """使用 Gemini 原生 TTS 生成试听 WAV。"""
     from utils.gemini_tts_voices import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
 
@@ -660,8 +829,9 @@ async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: s
         "https://generativelanguage.googleapis.com/v1beta/"
         f"models/{GEMINI_TTS_MODEL}:generateContent?key={audio_api_key}"
     )
+    instruction = style_instruction or "Say the text with a proper tone, don't omit or add any words:"
     payload = {
-        "contents": [{"parts": [{"text": f"Say the text with a proper tone, don't omit or add any words:\n\"{preview_line}\""}]}],
+        "contents": [{"parts": [{"text": f"{instruction}\n\"{preview_line}\""}]}],
         "generationConfig": {
             "response_modalities": ["AUDIO"],
             "speechConfig": {
@@ -1165,6 +1335,7 @@ async def _elevenlabs_synthesize_preview(
     text: str,
     *,
     base_url: str | None = None,
+    style: float = 0.0,
 ) -> tuple[bytes, str]:
     api_key = config_manager.get_tts_api_key('elevenlabs')
     if not api_key:
@@ -1182,7 +1353,7 @@ async def _elevenlabs_synthesize_preview(
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75,
-            "style": 0.0,
+            "style": style,
             "use_speaker_boost": True,
         },
     }
@@ -3682,12 +3853,73 @@ async def get_voices():
     return result
 
 
+@router.post('/exit_retention_tts')
+async def synthesize_exit_retention_tts(request: Request):
+    """使用当前角色音色合成退出挽留短语，失败时由 PC 端继续使用本地预设语音。"""
+    data, error_response = await _read_json_object_or_400(request)
+    if error_response:
+        return error_response
+
+    text = str((data or {}).get('text') or '').strip()
+    if not text:
+        return JSONResponse({
+            'success': False,
+            'error': 'EXIT_RETENTION_TTS_TEXT_MISSING',
+            'code': 'EXIT_RETENTION_TTS_TEXT_MISSING',
+        }, status_code=400)
+    text = text[:EXIT_RETENTION_TTS_TEXT_MAX_CHARS]
+
+    language = (
+        _normalize_voice_preview_language((data or {}).get('language'))
+        or _normalize_voice_preview_language((data or {}).get('i18n_language'))
+        or _get_voice_preview_language(request)
+    )
+
+    try:
+        _config_manager = get_config_manager()
+        characters = await _config_manager.aload_characters()
+        current_catgirl = str(characters.get('当前猫娘') or '').strip()
+        current_catgirl_payload = (characters.get('猫娘') or {}).get(current_catgirl)
+        if not current_catgirl or not isinstance(current_catgirl_payload, dict):
+            return JSONResponse({
+                'success': False,
+                'error': 'CURRENT_CATGIRL_NOT_FOUND',
+                'code': 'CURRENT_CATGIRL_NOT_FOUND',
+            }, status_code=404)
+
+        voice_id = await _resolve_exit_retention_voice_id(_config_manager, current_catgirl_payload)
+        if not voice_id:
+            return JSONResponse({
+                'success': False,
+                'error': 'EXIT_RETENTION_TTS_VOICE_MISSING',
+                'code': 'EXIT_RETENTION_TTS_VOICE_MISSING',
+            }, status_code=404)
+
+        return await get_voice_preview(
+            request,
+            voice_id=voice_id,
+            language=language,
+            i18n_language=language,
+            text=text,
+            voice_style=EXIT_RETENTION_TTS_STYLE,
+        )
+    except Exception as e:
+        logger.error(f"退出挽留当前角色 TTS 生成失败: {e}")
+        return JSONResponse({
+            'success': False,
+            'error': f'退出挽留语音生成失败: {str(e)}',
+            'code': 'EXIT_RETENTION_TTS_FAILED',
+        }, status_code=500)
+
+
 @router.get('/voice_preview')
 async def get_voice_preview(
     request: Request,
     voice_id: str,
     language: str | None = None,
     i18n_language: str | None = None,
+    text: str | None = None,
+    voice_style: str | None = None,
 ):
     """获取音色预览音频"""
     try:
@@ -3734,7 +3966,57 @@ async def get_voice_preview(
         logger.info(f"正在为音色 {voice_id} 生成预览音频...")
 
         preview_language = _get_voice_preview_language(request, language, i18n_language)
-        text = _loc(VOICE_PREVIEW_TEXTS, preview_language)
+        is_exit_retention_style = str(voice_style or '').strip() == EXIT_RETENTION_TTS_STYLE
+        explicit_text = str(text or '').strip() if is_exit_retention_style else ''
+        if explicit_text:
+            explicit_text = explicit_text[:EXIT_RETENTION_TTS_TEXT_MAX_CHARS]
+        preview_line = explicit_text or _loc(VOICE_PREVIEW_TEXTS, preview_language)
+        style_instruction = EXIT_RETENTION_TTS_GEMINI_STYLE_INSTRUCTION if is_exit_retention_style else None
+        qwen_style_instruction = EXIT_RETENTION_TTS_QWEN_STYLE_INSTRUCTION if is_exit_retention_style else None
+        provider_emotion = EXIT_RETENTION_TTS_PROVIDER_EMOTION if is_exit_retention_style else None
+        elevenlabs_style = EXIT_RETENTION_TTS_ELEVENLABS_STYLE if is_exit_retention_style else 0.0
+
+        core_config_for_preview = await _config_manager.aget_core_config()
+        core_api_type = str(
+            core_config_for_preview.get('CORE_API_TYPE')
+            or core_config_for_preview.get('coreApi')
+            or ''
+        ).strip().lower()
+        if (
+            core_api_type in ('qwen', 'qwen_intl')
+            and not voice_data
+            and voice_id
+            and not is_free_preset_voice
+            and is_exit_retention_style
+        ):
+            qwen_api_key = str(core_config_for_preview.get('CORE_API_KEY') or '').strip()
+            if not qwen_api_key:
+                return JSONResponse({
+                    'success': False,
+                    'error': 'TTS_AUDIO_API_KEY_MISSING',
+                    'code': 'TTS_AUDIO_API_KEY_MISSING'
+                }, status_code=400)
+            try:
+                audio_data = await _synthesize_qwen_voice_preview(
+                    voice_id=voice_id,
+                    preview_line=preview_line,
+                    preview_language=preview_language,
+                    audio_api_key=qwen_api_key,
+                    style_instruction=qwen_style_instruction,
+                )
+                logger.info(f"Qwen 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                return {
+                    'success': True,
+                    'audio': audio_base64,
+                    'mime_type': 'audio/wav'
+                }
+            except Exception as e:
+                logger.error(f"Qwen 音色 {voice_id} 预览生成失败: {e}")
+                return JSONResponse({
+                    'success': False,
+                    'error': f'Qwen音色预览生成失败: {str(e)}'
+                }, status_code=500)
 
         native_preview_provider = _get_active_native_preview_provider(_config_manager, voice_id)
         if native_preview_provider:
@@ -3758,10 +4040,11 @@ async def get_voice_preview(
                         }, status_code=400)
                     audio_data = await _synthesize_step_voice_preview(
                         voice_id=native_voice_id,
-                        preview_line=text,
+                        preview_line=preview_line,
                         preview_language=preview_language,
                         audio_api_key=native_audio_api_key,
                         free_mode=(native_preview_provider == 'free'),
+                        emotion=provider_emotion,
                     )
                 elif native_preview_provider == 'gemini':
                     core_config = await _config_manager.aget_core_config()
@@ -3774,8 +4057,9 @@ async def get_voice_preview(
                         }, status_code=400)
                     audio_data = await _synthesize_gemini_native_voice_preview(
                         voice_id=native_voice_id,
-                        preview_line=text,
+                        preview_line=preview_line,
                         audio_api_key=native_audio_api_key,
+                        style_instruction=style_instruction,
                     )
                 else:
                     return JSONResponse({
@@ -3803,8 +4087,9 @@ async def get_voice_preview(
                 audio_data, error_code = await _elevenlabs_synthesize_preview(
                     _config_manager,
                     voice_id,
-                    text,
-                    base_url=(voice_data or {}).get('elevenlabs_base_url')
+                    preview_line,
+                    base_url=(voice_data or {}).get('elevenlabs_base_url'),
+                    style=elevenlabs_style,
                 )
                 if error_code:
                     return JSONResponse({
@@ -3844,9 +4129,10 @@ async def get_voice_preview(
             try:
                 audio_data = await _synthesize_free_voice_preview(
                     voice_id=voice_id,
-                    preview_line=text,
+                    preview_line=preview_line,
                     preview_language=preview_language,
                     audio_api_key=audio_api_key or '',
+                    emotion=provider_emotion,
                 )
                 logger.info(f"免费预设音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
@@ -3876,7 +4162,11 @@ async def get_voice_preview(
 
             try:
                 minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key, base_url=minimax_base_url)
-                audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)
+                audio_data = await minimax_client.synthesize_preview(
+                    voice_id=voice_id,
+                    text=preview_line,
+                    emotion=provider_emotion,
+                )
                 logger.info(f"{provider_label} 音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
                 audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                 return {
@@ -3922,8 +4212,14 @@ async def get_voice_preview(
                 except Exception as e:
                     logger.warning("DashScope 预览地域 URL 配置失败，已重置为默认地域: %s", e, exc_info=True)
                     configure_dashscope_sdk_urls(dashscope, "", websocket_path="inference")
-                synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
-                return synthesizer, synthesizer.call(text)
+                if provider_emotion:
+                    try:
+                        synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id, emotion=provider_emotion)
+                    except TypeError:
+                        synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
+                else:
+                    synthesizer = SpeechSynthesizer(model=clone_model, voice=voice_id)
+                return synthesizer, synthesizer.call(preview_line)
 
         try:
             synthesizer, audio_data = await asyncio.to_thread(_do_preview_synthesize)
