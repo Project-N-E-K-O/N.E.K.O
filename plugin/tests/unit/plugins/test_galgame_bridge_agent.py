@@ -350,7 +350,7 @@ async def test_game_llm_agent_receive_cat_opinion_merges_shared_history(
         "cached opinion",
         "new opinion",
     ]
-    assert agent._cat_opinions == shared["cat_opinions"]
+    assert agent._cat_opinions is shared["cat_opinions"]
 
 
 @pytest.mark.asyncio

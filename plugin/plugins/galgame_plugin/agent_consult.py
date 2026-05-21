@@ -311,6 +311,7 @@ class AgentConsultMixin:
         record = inject_cat_opinion(
             opinion_state, opinion=opinion, scene_id=scene_id, reason=reason
         )
-        self._cat_opinions = json_copy(opinion_state.get("cat_opinions") or [])
-        shared["cat_opinions"] = json_copy(self._cat_opinions)
+        merged_opinions = json_copy(opinion_state.get("cat_opinions") or [])
+        self._cat_opinions = merged_opinions
+        shared["cat_opinions"] = merged_opinions
         return record.to_dict() if record is not None else None
