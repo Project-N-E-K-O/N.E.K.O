@@ -182,6 +182,14 @@ def _nondegenerate_unit_interval(start: float, end: float) -> tuple[float, float
 
 
 def _normalized_bounds(bounds: dict[str, float], metadata: dict[str, Any]) -> dict[str, float]:
+    try:
+        bounds_left = float(bounds["left"])
+        bounds_top = float(bounds["top"])
+        bounds_right = float(bounds["right"])
+        bounds_bottom = float(bounds["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return {}
+
     capture_rect = _coerce_rect(metadata.get("capture_rect"))
     window_rect = _coerce_rect(metadata.get("window_rect"))
     if not capture_rect or not window_rect:
@@ -196,12 +204,12 @@ def _normalized_bounds(bounds: dict[str, float], metadata: dict[str, Any]) -> di
         if width <= 0 or height <= 0:
             return {}
         left, right = _nondegenerate_unit_interval(
-            float(bounds["left"]) / width,
-            float(bounds["right"]) / width,
+            bounds_left / width,
+            bounds_right / width,
         )
         top, bottom = _nondegenerate_unit_interval(
-            float(bounds["top"]) / height,
-            float(bounds["bottom"]) / height,
+            bounds_top / height,
+            bounds_bottom / height,
         )
         return {
             "left": left,
@@ -212,12 +220,12 @@ def _normalized_bounds(bounds: dict[str, float], metadata: dict[str, Any]) -> di
     window_width = max(window_rect["right"] - window_rect["left"], 1.0)
     window_height = max(window_rect["bottom"] - window_rect["top"], 1.0)
     left, right = _nondegenerate_unit_interval(
-        (capture_rect["left"] + float(bounds["left"]) - window_rect["left"]) / window_width,
-        (capture_rect["left"] + float(bounds["right"]) - window_rect["left"]) / window_width,
+        (capture_rect["left"] + bounds_left - window_rect["left"]) / window_width,
+        (capture_rect["left"] + bounds_right - window_rect["left"]) / window_width,
     )
     top, bottom = _nondegenerate_unit_interval(
-        (capture_rect["top"] + float(bounds["top"]) - window_rect["top"]) / window_height,
-        (capture_rect["top"] + float(bounds["bottom"]) - window_rect["top"]) / window_height,
+        (capture_rect["top"] + bounds_top - window_rect["top"]) / window_height,
+        (capture_rect["top"] + bounds_bottom - window_rect["top"]) / window_height,
     )
     return {
         "left": left,

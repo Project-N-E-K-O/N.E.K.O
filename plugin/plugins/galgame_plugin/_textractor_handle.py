@@ -129,17 +129,17 @@ class _AsyncioTextractorHandle:
         await asyncio.to_thread(self._process.stdin.flush)
 
     async def readline(self, timeout: float) -> str | None:
-        """Read one line. Returns str on success, '' on EOF, None on timeout."""
+        """Read one line. Returns str on success, None on EOF or timeout."""
         try:
             return await asyncio.to_thread(self._queue.get, timeout=timeout)
         except queue.Empty:
             return None
 
     def poll(self) -> int | None:
-        return self._process.returncode
+        return self._process.poll()
 
     async def terminate(self) -> None:
-        if self._process.returncode is not None:
+        if self._process.poll() is not None:
             _untrack_textractor_process(self._process)
             return
         if self._process.stdin is not None and not self._process.stdin.closed:
@@ -147,19 +147,20 @@ class _AsyncioTextractorHandle:
                 self._process.stdin.close()
             except Exception:
                 pass
-        if self._process.returncode is None:
+        if self._process.poll() is None:
             self._process.terminate()
 
     async def wait(self, timeout: float) -> int | None:
         try:
             await asyncio.wait_for(asyncio.to_thread(self._process.wait), timeout=timeout)
         except asyncio.TimeoutError:
-            if self._process.returncode is None:
+            if self._process.poll() is None:
                 self._process.kill()
                 await asyncio.to_thread(self._process.wait)
-        if self._process.returncode is not None:
+        returncode = self._process.poll()
+        if returncode is not None:
             _untrack_textractor_process(self._process)
-        return self._process.returncode
+        return returncode
 
 
 async def _default_process_factory(

@@ -15,7 +15,8 @@ def _template_regions(value: object) -> list[dict[str, float]]:
             top = float(item.get("top"))
             right = float(item.get("right"))
             bottom = float(item.get("bottom"))
-            min_overlap = float(item.get("min_overlap") or 0.35)
+            raw_min_overlap = item.get("min_overlap")
+            min_overlap = float(0.35 if raw_min_overlap is None else raw_min_overlap)
         except (TypeError, ValueError):
             continue
         if right <= left or bottom <= top:
@@ -61,7 +62,9 @@ def _template_region_hits(
                 continue
             element_area = max((right - left) * (bottom - top), 0.0001)
             overlap_area = (overlap_right - overlap_left) * (overlap_bottom - overlap_top)
-            if overlap_area / element_area >= float(region.get("min_overlap") or 0.35):
+            raw_min_overlap = region.get("min_overlap")
+            min_overlap = float(0.35 if raw_min_overlap is None else raw_min_overlap)
+            if overlap_area / element_area >= min_overlap:
                 hits += 1
                 break
     return hits

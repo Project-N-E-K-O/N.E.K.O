@@ -75,8 +75,10 @@ def _resolve_virtual_mouse_dialogue_target(
                 }
             )
             continue
-        screen_x = left + int(max(0.0, min(relative_x, 1.0)) * width)
-        screen_y = top + int(max(0.0, min(relative_y, 1.0)) * height)
+        clamped_x = max(0.0, min(relative_x, 1.0))
+        clamped_y = max(0.0, min(relative_y, 1.0))
+        screen_x = left + min(int(clamped_x * width), width - 1)
+        screen_y = top + min(int(clamped_y * height), height - 1)
         return {
             "success": True,
             "target_id": str(candidate.get("target_id") or ""),
@@ -202,8 +204,10 @@ def _resolve_choice_bounds_click_target(
     )
     screen_points: list[dict[str, int]] = []
     for raw_x, raw_y in ((center_x, center_y), (text_left_x, center_y)):
-        x = left + int(max(0.0, min(raw_x / source_width, 1.0)) * width)
-        y = top + int(max(0.0, min(raw_y / source_height, 1.0)) * height)
+        clamped_x = max(0.0, min(raw_x / source_width, 1.0))
+        clamped_y = max(0.0, min(raw_y / source_height, 1.0))
+        x = left + min(int(clamped_x * width), width - 1)
+        y = top + min(int(clamped_y * height), height - 1)
         screen_points.append({"x": int(x), "y": int(y)})
 
     return {

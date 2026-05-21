@@ -101,6 +101,7 @@ def inspect_rapidocr_installation(
             install_target_dir_raw=install_target_dir_raw,
             ocr_version=ocr_version,
             lang_type=lang_type,
+            model_type=model_type,
         )
         if missing:
             detail = "missing_model_files"
@@ -131,6 +132,7 @@ def inspect_rapidocr_installation(
                 install_target_dir_raw=install_target_dir_raw,
                 ocr_version=ocr_version,
                 lang_type=lang_type,
+                model_type=model_type,
             )
             if legacy_missing:
                 detail = "missing_model_files"
@@ -143,6 +145,7 @@ def inspect_rapidocr_installation(
         install_target_dir_raw=install_target_dir_raw,
         ocr_version=ocr_version,
         lang_type=lang_type,
+        model_type=model_type,
     )
     total_size_estimate = sum(int(f.get("size") or 0) for f in missing_files)
     return {
@@ -213,6 +216,7 @@ async def download_rapidocr_models(
     install_target_dir_raw: str,
     ocr_version: str,
     lang_type: str,
+    model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
     timeout_seconds: float = 180.0,
     force: bool = False,
     task_id: str | None = None,
@@ -255,6 +259,7 @@ async def download_rapidocr_models(
         install_target_dir_raw=install_target_dir_raw,
         ocr_version=ocr_version,
         lang_type=lang_type,
+        model_type=model_type,
     )
     if not required:
         await _before_completed_safely()

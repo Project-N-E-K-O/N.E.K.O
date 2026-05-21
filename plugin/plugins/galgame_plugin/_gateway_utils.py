@@ -12,7 +12,9 @@ _KEY_POINT_TYPES = frozenset({"plot", "emotion", "decision", "reveal", "objectiv
 _LLM_RESPONSE_CACHE_MAX_ITEMS = 50
 _LLM_NEAR_MATCH_CACHE_MAX_ITEMS = 50
 _LLM_PROVIDER_BACKOFF_SECONDS = 2.0
-_LLM_PROVIDER_BACKOFF_CATEGORIES = frozenset({"busy", "gateway_unavailable", "timeout"})
+_LLM_PROVIDER_BACKOFF_CATEGORIES = frozenset(
+    {"busy", "gateway_unavailable", "provider_unavailable", "timeout"}
+)
 _LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC = "timeout: llm semaphore acquire timed out"
 _REPEAT_GUARD_MAX_ITEMS = 8
 _NEAR_MATCH_SUPPORTED_OPERATIONS = frozenset(
@@ -69,7 +71,12 @@ def _stable_json_fingerprint(value: Any) -> str:
 
 
 def _normalize_observed_text(value: object) -> str:
-    return " ".join(str(value or "").strip().lower().split())
+    raw = "" if value is None else str(value)
+    return " ".join(raw.strip().lower().split())
+
+
+def _string_or_empty(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _line_similarity_signature(line: Any) -> str:
@@ -114,11 +121,11 @@ def _hash_line(line: Any) -> str:
         return ""
     return _stable_json_fingerprint(
         {
-            "line_id": str(line.get("line_id") or ""),
-            "speaker": str(line.get("speaker") or ""),
-            "text": str(line.get("text") or ""),
-            "scene_id": str(line.get("scene_id") or ""),
-            "route_id": str(line.get("route_id") or ""),
+            "line_id": _string_or_empty(line.get("line_id")),
+            "speaker": _string_or_empty(line.get("speaker")),
+            "text": _string_or_empty(line.get("text")),
+            "scene_id": _string_or_empty(line.get("scene_id")),
+            "route_id": _string_or_empty(line.get("route_id")),
         }
     )
 
@@ -142,13 +149,13 @@ def _context_lines(context: dict[str, Any], key: str) -> list[Any]:
 
 
 def _current_line_for_near_match(context: dict[str, Any]) -> dict[str, Any]:
-    if str(context.get("line_id") or "") or str(context.get("text") or ""):
+    if _string_or_empty(context.get("line_id")) or _string_or_empty(context.get("text")):
         return {
-            "line_id": str(context.get("line_id") or ""),
-            "speaker": str(context.get("speaker") or ""),
-            "text": str(context.get("text") or ""),
-            "scene_id": str(context.get("scene_id") or ""),
-            "route_id": str(context.get("route_id") or ""),
+            "line_id": _string_or_empty(context.get("line_id")),
+            "speaker": _string_or_empty(context.get("speaker")),
+            "text": _string_or_empty(context.get("text")),
+            "scene_id": _string_or_empty(context.get("scene_id")),
+            "route_id": _string_or_empty(context.get("route_id")),
         }
     for key in ("current_line", "current_snapshot"):
         value = context.get(key)

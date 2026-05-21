@@ -59,6 +59,7 @@ _PROXY_TO_RUNTIME = frozenset(
     {
         "_onnxruntime_intra_op_thread_cap",
         "_build_runtime_constructor_kwargs",
+        "load_rapidocr_runtime",
     }
 )
 _PROXY_TO_PATHS = frozenset(
@@ -76,7 +77,7 @@ class _ShimModule(_types.ModuleType):
             from . import _inspect_download
 
             setattr(_inspect_download, name, value)
-        elif name in _PROXY_TO_RUNTIME:
+        if name in _PROXY_TO_RUNTIME:
             from . import _runtime
 
             setattr(_runtime, name, value)

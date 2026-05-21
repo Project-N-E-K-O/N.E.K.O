@@ -209,11 +209,35 @@ def _registry_lookup(ocr_version: str, lang_type: str) -> dict[str, dict[str, An
     return _RAPIDOCR_MODEL_REGISTRY.get(_normalize_model_key(ocr_version, lang_type))
 
 
+def _registry_spec_for_model_type(
+    spec: dict[str, Any],
+    *,
+    kind: str,
+    model_type: str,
+) -> dict[str, Any]:
+    model_kind = (str(model_type or DEFAULT_RAPIDOCR_MODEL_TYPE).strip() or DEFAULT_RAPIDOCR_MODEL_TYPE).lower()
+    if model_kind != "server" or kind == "cls":
+        return dict(spec)
+    name = str(spec.get("name") or "")
+    url = str(spec.get("url") or "")
+    if name.endswith("_mobile.onnx"):
+        name = name[: -len("_mobile.onnx")] + "_server.onnx"
+    if url.endswith("_mobile.onnx"):
+        url = url[: -len("_mobile.onnx")] + "_server.onnx"
+    return {
+        **spec,
+        "name": name,
+        "url": url,
+        "sha256": "",
+    }
+
+
 def required_rapidocr_model_files(
     *,
     install_target_dir_raw: str,
     ocr_version: str,
     lang_type: str,
+    model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
 ) -> list[dict[str, Any]]:
     """Files that must exist on disk for a given selection. Empty for the bundled combo."""
     key = _normalize_model_key(ocr_version, lang_type)
@@ -228,6 +252,7 @@ def required_rapidocr_model_files(
         spec = registry.get(kind)
         if not spec:
             continue
+        spec = _registry_spec_for_model_type(spec, kind=kind, model_type=model_type)
         files.append({
             "kind": kind,
             "name": str(spec["name"]),
@@ -244,6 +269,7 @@ def missing_rapidocr_model_files(
     install_target_dir_raw: str,
     ocr_version: str,
     lang_type: str,
+    model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
 ) -> list[dict[str, Any]]:
     """Required files that the resolver can't locate on disk.
 
@@ -262,6 +288,7 @@ def missing_rapidocr_model_files(
         install_target_dir_raw=install_target_dir_raw,
         ocr_version=ocr_version,
         lang_type=lang_type,
+        model_type=model_type,
     )
     if not required:
         return []
@@ -298,7 +325,7 @@ def missing_rapidocr_model_files(
             package_models_dir=pkg_dir,
             lang_type=lang_type,
             ocr_version=ocr_version,
-            model_type=DEFAULT_RAPIDOCR_MODEL_TYPE,
+            model_type=model_type,
         )
         found_by_kind["det"] = found_by_kind["det"] or det_path
         found_by_kind["cls"] = found_by_kind["cls"] or cls_path
