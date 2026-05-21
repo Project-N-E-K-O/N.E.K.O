@@ -3977,8 +3977,10 @@ async def get_voice_preview(
         elevenlabs_style = EXIT_RETENTION_TTS_ELEVENLABS_STYLE if is_exit_retention_style else 0.0
 
         core_config_for_preview = await _config_manager.aget_core_config()
+        realtime_config_for_preview = _config_manager.get_model_api_config('realtime')
         core_api_type = str(
-            core_config_for_preview.get('CORE_API_TYPE')
+            realtime_config_for_preview.get('api_type')
+            or core_config_for_preview.get('CORE_API_TYPE')
             or core_config_for_preview.get('coreApi')
             or ''
         ).strip().lower()

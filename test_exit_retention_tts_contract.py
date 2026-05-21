@@ -90,6 +90,8 @@ def test_qwen_direct_preview_is_limited_to_exit_retention_style():
     voice_preview = router.split("async def get_voice_preview(", 1)[1]
 
     assert "and is_exit_retention_style" in voice_preview
+    assert "realtime_config_for_preview = _config_manager.get_model_api_config('realtime')" in voice_preview
+    assert "realtime_config_for_preview.get('api_type')" in voice_preview
     assert "qwen_style_instruction = EXIT_RETENTION_TTS_QWEN_STYLE_INSTRUCTION" in voice_preview
 
 
