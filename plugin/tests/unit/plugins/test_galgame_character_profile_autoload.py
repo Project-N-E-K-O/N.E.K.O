@@ -317,6 +317,45 @@ def test_scene_change_cross_scene_memory_update_persists_immediately() -> None:
     assert agent._cross_scene_memory_dirty is True
 
 
+def test_scene_change_cross_scene_memory_persist_failure_is_best_effort() -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.character_runtime_state = {
+        "Yukino": {
+            "arc_stage": "route guard",
+            "current_emotion": "focused",
+        }
+    }
+
+    def _raise_persist(*_args, **_kwargs):
+        raise RuntimeError("persist failed")
+
+    warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    plugin._persist = SimpleNamespace(persist_config_override=_raise_persist)
+    agent = SimpleNamespace(
+        _plugin=plugin,
+        _scene_memory=[{"summary": "Yukino protects the secret route."}],
+        _push_seq_counter=17,
+        _cross_scene_memory_dirty=False,
+        _logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: warnings.append((args, kwargs))
+        ),
+    )
+
+    GameLLMAgent._maybe_update_cross_scene_memory(
+        agent,
+        {},
+        scene_id="scene-b",
+        route_id="route-a",
+    )
+
+    assert plugin._state.cross_scene_memory["characters"]["Yukino"][
+        "last_key_event"
+    ] == "Yukino protects the secret route."
+    assert warnings
+    assert warnings[-1][1]["exc_info"] is True
+    assert agent._cross_scene_memory_dirty is True
+
+
 def test_activate_character_profiles_rebuilds_runtime_for_new_game() -> None:
     plugin, writes = _plugin_with_persist_writes()
     profile_name = next(
