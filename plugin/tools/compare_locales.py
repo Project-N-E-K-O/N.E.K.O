@@ -11,13 +11,11 @@ from typing import Any
 
 EXPECTED_LOCALES = ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "es", "pt")
 PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_REQUIRED_LOCALE_DIRS = frozenset(
-    {
-        "static/locales",
-        "plugin/plugins/galgame_plugin/i18n",
-        "plugin/plugins/galgame_plugin/locales",
-    }
+_REQUIRED_LOCALE_DIRS = (
+    "static/locales",
+    "plugin/plugins/galgame_plugin/i18n",
 )
+_REQUIRED_LOCALE_DIR_SET = frozenset(_REQUIRED_LOCALE_DIRS)
 
 
 def _repo_root() -> Path:
@@ -25,17 +23,16 @@ def _repo_root() -> Path:
 
 
 def _default_locale_dirs(root: Path) -> list[Path]:
-    dirs: list[Path] = []
-    project_locale_dir = root / "static" / "locales"
-    if project_locale_dir.exists():
-        dirs.append(project_locale_dir)
+    dirs = [root / relative for relative in _REQUIRED_LOCALE_DIRS]
+    seen = set(dirs)
     plugins_root = root / "plugin" / "plugins"
     if plugins_root.exists():
         for plugin_dir in sorted(path for path in plugins_root.iterdir() if path.is_dir()):
             for name in ("locales", "i18n"):
                 locale_dir = plugin_dir / name
-                if locale_dir.exists():
+                if locale_dir.exists() and locale_dir not in seen:
                     dirs.append(locale_dir)
+                    seen.add(locale_dir)
     return dirs
 
 
@@ -158,7 +155,7 @@ def _is_default_required_dir(root: Path, locale_dir: Path) -> bool:
         # User-supplied directories outside the repo should fail strictly instead of
         # being downgraded to warnings by the default plugin allowlist.
         return True
-    return relative in _REQUIRED_LOCALE_DIRS
+    return relative in _REQUIRED_LOCALE_DIR_SET
 
 
 def _report_results(
@@ -216,7 +213,7 @@ def main() -> int:
     skipped: list[Path] = []
     for locale_dir in locale_dirs:
         if not locale_dir.exists():
-            if custom_locale_dirs:
+            if custom_locale_dirs or _is_default_required_dir(root, locale_dir):
                 errors.append(f"{locale_dir}: directory does not exist")
             else:
                 skipped.append(locale_dir)
