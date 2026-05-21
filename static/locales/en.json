@@ -3752,6 +3752,7 @@
         "stickerHeight": "Height",
         "lockRatio": "Lock Ratio",
         "switchStickerVariant": "Switch Variant",
+        "stickerOverlapCycleHint": "Right-click overlapping stickers to cycle selection by layer order",
         "stickerRotation": "Rotation",
         "removeSticker": "Remove Selected",
         "clearStickers": "Clear All",

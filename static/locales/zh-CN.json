@@ -3752,6 +3752,7 @@
         "stickerHeight": "高",
         "lockRatio": "锁定比例",
         "switchStickerVariant": "切换形态",
+        "stickerOverlapCycleHint": "右键重叠贴纸可按图层顺序切换选择",
         "stickerRotation": "旋转",
         "removeSticker": "删除选中",
         "clearStickers": "清除全部",

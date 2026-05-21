@@ -946,6 +946,7 @@
 
         previewEl.addEventListener('pointerdown', (e) => {
             if (!isModelLoaded) return;
+            if (e.button !== 0) return;
             if (activeTab !== 'model-tab' && !modelLayerSelected) return;
             dragging = true;
             startX = e.clientX;
@@ -991,6 +992,12 @@
                 updateStickerElement(s);
             }
         }, { passive: false });
+
+        previewEl.addEventListener('contextmenu', (e) => {
+            if (activeTab !== 'decor-tab') return;
+            e.preventDefault();
+            cycleStickerSelectionAtPointer(e);
+        });
     }
 
     // ====== 导出 ======
@@ -1765,6 +1772,27 @@
         return hitSticker;
     }
 
+    function getStickersAtPointer(clientX, clientY) {
+        syncLayerOrder();
+        const ordered = layerOrder
+            .filter(entry => entry.type === 'sticker')
+            .map(entry => stickers.find(s => s.id === entry.id))
+            .filter(Boolean);
+        stickers.forEach(s => {
+            if (!ordered.includes(s)) ordered.push(s);
+        });
+        return ordered.filter(s => isPointerInsideStickerSelectionBox(s, clientX, clientY));
+    }
+
+    function cycleStickerSelectionAtPointer(event) {
+        const candidates = getStickersAtPointer(event.clientX, event.clientY);
+        if (candidates.length === 0) return;
+        const currentIdx = candidates.findIndex(s => s.id === selectedStickerId);
+        const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % candidates.length : 0;
+        selectSticker(candidates[nextIdx].id);
+        refreshLayerPanel();
+    }
+
     function setupStickerDrag(sticker, el) {
         let dragging = false;
         let dragTarget = null;
@@ -1773,6 +1801,7 @@
         el.addEventListener('pointerdown', (e) => {
             if (activeTab !== 'decor-tab') return;
             if (modelLayerSelected) return;
+            if (e.button !== 0) return;
             dragTarget = getStickerDragTarget(sticker, e);
             if (dragTarget.id !== selectedStickerId) {
                 selectSticker(dragTarget.id);

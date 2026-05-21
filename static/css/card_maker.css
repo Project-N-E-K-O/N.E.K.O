@@ -608,6 +608,16 @@ body {
     background: rgba(179, 229, 252, 0.45);
 }
 
+.sticker-selection-hint {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #6a8a96;
+    background: rgba(64, 197, 241, 0.08);
+    border: 1px solid rgba(64, 197, 241, 0.18);
+    border-radius: 6px;
+    padding: 7px 9px;
+}
+
 .sticker-import-btn {
     border: 2px dashed #b3e5fc;
     color: #90a4ae;
@@ -1076,6 +1086,12 @@ body {
 
 [data-theme="dark"] .range-val {
     color: #8899aa;
+}
+
+[data-theme="dark"] .sticker-selection-hint {
+    color: #9fb3bf;
+    background: rgba(74, 163, 223, 0.08);
+    border-color: rgba(74, 163, 223, 0.22);
 }
 
 [data-theme="dark"] .range-unit {

@@ -95,14 +95,23 @@ def test_card_maker_registers_variant_stickers():
 
 def test_card_maker_preview_can_select_stickers_directly():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    template = CARD_MAKER_TEMPLATE.read_text(encoding="utf-8")
+    styles = CARD_MAKER_CSS.read_text(encoding="utf-8")
 
     assert "function getStickerDragTarget(hitSticker, event)" in script
     assert "function isPointerInsideStickerSelectionBox(s, clientX, clientY)" in script
+    assert "function getStickersAtPointer(clientX, clientY)" in script
+    assert "function cycleStickerSelectionAtPointer(event)" in script
+    assert "previewEl.addEventListener('contextmenu'" in script
+    assert "cycleStickerSelectionAtPointer(e);" in script
     assert "dragTarget = getStickerDragTarget(sticker, e);" in script
     assert "if (dragTarget.id !== selectedStickerId) {" in script
     assert "selectSticker(dragTarget.id);" in script
     assert "refreshLayerPanel();" in script
+    assert "if (e.button !== 0) return;" in script
     assert "if (selectedStickerId !== sticker.id) return;" not in script
+    assert "cardExport.stickerOverlapCycleHint" in template
+    assert ".sticker-selection-hint" in styles
 
 
 def test_card_maker_layer_order_matches_visual_stacking():
@@ -140,7 +149,7 @@ def test_card_maker_model_loading_message_exists_in_all_locales():
     for locale_path in sorted(LOCALE_DIR.glob("*.json")):
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
         card_export = payload.get("cardExport")
-        required_keys = ["modelStillLoading", "switchStickerVariant"]
+        required_keys = ["modelStillLoading", "switchStickerVariant", "stickerOverlapCycleHint"]
         if not isinstance(card_export, dict) or any(key not in card_export for key in required_keys):
             missing.append(locale_path.name)
 
