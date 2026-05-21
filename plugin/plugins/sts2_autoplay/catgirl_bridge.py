@@ -4,6 +4,11 @@ from hashlib import sha1
 from typing import Any
 
 
+class _SafeFormatDict(dict[str, Any]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
 class STS2CatgirlBridge:
     def __init__(self, i18n: Any = None, *, source_id: str = "sts2_autoplay") -> None:
         self._i18n = i18n
@@ -12,7 +17,12 @@ class STS2CatgirlBridge:
     def t(self, key: str, *, default: str = "", **params: Any) -> str:
         if self._i18n is not None:
             return self._i18n.t(key, default=default, **params)
-        return default.format(**params) if params and default else (default or key)
+        if params and default:
+            try:
+                return default.format_map(_SafeFormatDict(params))
+            except Exception:
+                return default
+        return default or key
 
     def build_sync_packet(self, snapshot: dict[str, Any], *, standby: bool = False) -> dict[str, Any]:
         classification = snapshot.get("classification") if isinstance(snapshot.get("classification"), dict) else {}
