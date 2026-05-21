@@ -1060,6 +1060,35 @@ Live2DManager.prototype._resolveRuntimeBreathParams = function(coreModel) {
     return this._runtimeBreathParamIds;
 };
 
+Live2DManager.prototype._hasNativeRuntimeBreath = function(internalModel, coreModel) {
+    const breath = internalModel?.breath;
+    if (!breath || typeof breath.updateParameters !== 'function') return false;
+
+    const runtimeBreathParamIds = new Set(this._resolveRuntimeBreathParams(coreModel));
+    if (runtimeBreathParamIds.size === 0) return false;
+
+    let nativeParams = null;
+    try {
+        if (typeof breath.getParameters === 'function') {
+            nativeParams = breath.getParameters();
+        }
+    } catch (_) {}
+    if (!Array.isArray(nativeParams) && Array.isArray(breath._breathParameters)) {
+        nativeParams = breath._breathParameters;
+    }
+    if (!Array.isArray(nativeParams) || nativeParams.length === 0) return false;
+
+    return nativeParams.some(param => {
+        const id = param && (param.parameterId || param.id || param.Id);
+        if (!runtimeBreathParamIds.has(id)) return false;
+        const weight = Number(param.weight);
+        const peak = Number(param.peak);
+        if (Number.isFinite(weight) && weight === 0) return false;
+        if (Number.isFinite(peak) && peak === 0) return false;
+        return true;
+    });
+};
+
 Live2DManager.prototype._updateRuntimeBreath = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
@@ -2104,14 +2133,14 @@ Live2DManager.prototype.installMouthOverride = function() {
                 } catch (_) {}
             }
 
-            // === 注入点 1（物理引擎前）：视线微动 ===
-            // 仅当 Motion 未接管时注入，让物理引擎能看到这些变化
-            // 注意：呼吸由 SDK 原生 Breath 系统接管，无需我们干预
+            // === 注入点 1（物理引擎前）：视线微动与运行时呼吸 ===
+            // 仅当 Motion 未接管时注入，让物理引擎能看到这些变化。
+            // 呼吸 fallback 只在 SDK 原生 Breath 未覆盖同名参数时启用，避免双重叠加。
             if (!this._isLookAtDrivenByMotion && !this._mouseTrackingEnabled && !this.isAvatarPerformanceCapabilityLocked('lookAt')) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRandomLookAt(delta);
             }
-            if (!this._isBreathDrivenByMotion) {
+            if (!this._isBreathDrivenByMotion && !this._hasNativeRuntimeBreath(internalModel, coreModel)) {
                 const delta = (this.currentModel?.deltaTime || 16.66) / 1000;
                 this._updateRuntimeBreath(delta);
             }
