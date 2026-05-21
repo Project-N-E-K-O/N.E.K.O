@@ -211,7 +211,7 @@ jobs:
         shell: bash
         run: |
           ./build_frontend.sh
-          test -f static/yui-origin/yui-origin.model3.json
+          bash scripts/verify_frontend_build.sh
 
       # --- Build with Nuitka ---
       - name: Build with Nuitka
