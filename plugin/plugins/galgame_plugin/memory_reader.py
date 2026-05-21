@@ -11,6 +11,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import types as _types
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,8 @@ from ._process_detection import (
     _default_process_scanner,
     _engine_from_text,
     _scan_processes,
+    _KIRIKIRI_DIR_CACHE,
+    _KIRIKIRI_DIR_CACHE_LOCK,
 )
 from ._textractor_handle import (
     _AsyncioTextractorHandle,
@@ -62,6 +65,7 @@ from ._textractor_handle import (
     _textractor_hook_command,
 )
 from . import _win32_job_objects  # noqa: F401  # registers atexit handler
+from ._win32_job_objects import _create_kill_on_close_job_for_process
 
 MEMORY_READER_VERSION = "0.1.0"
 MEMORY_READER_BRIDGE_VERSION = f"memory-reader-{MEMORY_READER_VERSION}"
@@ -1258,3 +1262,29 @@ class MemoryReaderManager:
         for text in texts:
             emitted = self._writer.emit_line(text, ts=ts) or emitted
         return emitted
+
+
+# Pre-split, all memory_reader symbols lived in this one module. After the
+# split, tests that monkeypatch ``memory_reader.<name>`` must keep affecting the
+# call sites in the submodules where the name now actually lives (process
+# scanning resolves ``psutil`` in ``_process_detection``; the Textractor
+# handle resolves ``subprocess`` in ``_textractor_handle``). This proxy reroutes
+# the writes so the old test-time semantics survive the split unchanged.
+_PROXY_TO_PROCESS_DETECTION = frozenset({"psutil"})
+_PROXY_TO_TEXTRACTOR_HANDLE = frozenset({"subprocess"})
+
+
+class _ShimModule(_types.ModuleType):
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        if name in _PROXY_TO_PROCESS_DETECTION:
+            from . import _process_detection
+
+            setattr(_process_detection, name, value)
+        elif name in _PROXY_TO_TEXTRACTOR_HANDLE:
+            from . import _textractor_handle
+
+            setattr(_textractor_handle, name, value)
+
+
+sys.modules[__name__].__class__ = _ShimModule

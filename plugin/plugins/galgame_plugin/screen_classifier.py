@@ -39,7 +39,6 @@ except ImportError:  # pragma: no cover - optional in non-visual test environmen
     _PIL_RESAMPLING = None
 
 
-SCREEN_UI_ELEMENT_LIMIT = 10
 _RAW_OCR_TEXT_LIMIT = 20
 _RAW_OCR_LINE_MAX_CHARS = 120
 _DIALOGUE_COLON_RE = re.compile(r"^[^:：]{1,40}[:：]\s*.+\S$")
@@ -95,7 +94,7 @@ from ._ocr_pipeline import (
     _ocr_lines,
     _screen_ui_elements,
 )
-from ._layout import _layout_features
+from ._layout import _layout_features, _normalized_bounds
 from ._ocr_utils import (
     _bounded_debug_value,
     _bounded_raw_text,

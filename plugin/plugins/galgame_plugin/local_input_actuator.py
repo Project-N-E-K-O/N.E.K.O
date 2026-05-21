@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types as _types
 from typing import Any
 
 from .models import DATA_SOURCE_MEMORY_READER, DATA_SOURCE_OCR_READER, SharedStatePayload
@@ -77,6 +78,42 @@ from ._choice_resolver import (
     _snapshot_screen_type,
     _snapshot_text,
 )
+
+# Pre-split, all symbols below lived in this one module. After the split, tests
+# that monkeypatch ``local_input_actuator.<name>`` (or assign directly) must keep
+# affecting the call sites in the submodules where the name now actually lives.
+# This proxy reroutes assignments to the owning submodule so the old test-time
+# semantics survive the split unchanged.
+_PROXY_TO_WINDOW_MANAGER = frozenset(
+    {
+        "_LAST_FOCUS_WINDOW_DIAGNOSTIC",
+        "_LAST_FOCUS_WINDOW_DIAGNOSTIC_LOCK",
+        "_LOGGER",
+        "_WAIT_EVENT",
+    }
+)
+_PROXY_TO_INPUT_PRIMITIVES = frozenset(
+    {
+        "_is_current_process_elevated",
+        "_is_process_elevated",
+    }
+)
+
+
+class _ShimModule(_types.ModuleType):
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        if name in _PROXY_TO_WINDOW_MANAGER:
+            from . import _window_manager
+
+            setattr(_window_manager, name, value)
+        elif name in _PROXY_TO_INPUT_PRIMITIVES:
+            from . import _input_primitives
+
+            setattr(_input_primitives, name, value)
+
+
+sys.modules[__name__].__class__ = _ShimModule
 
 
 def perform_local_input_actuation(
