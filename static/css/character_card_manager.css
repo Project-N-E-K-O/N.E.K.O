@@ -4527,6 +4527,11 @@ margin-top: 10px;
         max-height: 55vh;
         overflow-y: visible;
     }
+    .catgirl-panel-wrapper.card-only:not(.phase-expand) .catgirl-panel-left {
+        height: auto;
+        max-height: 55vh;
+        overflow-y: visible;
+    }
     .catgirl-panel-wrapper.card-only .catgirl-panel-card-image,
     .catgirl-panel-wrapper.card-only.phase-center .catgirl-panel-card-image,
     .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
