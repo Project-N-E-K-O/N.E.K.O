@@ -210,9 +210,7 @@ export default {
         imported: '导入',
         market: '市场',
       },
-      // v2 (neko-market-version-sync §3.1.1): Market 渠道值 (stable / beta)
-      // 在 SourceDetailRow 上展示用，跟顶部的 channel 标签区分（顶部 channel
-      // 是 install-source 的"安装方式"）。
+      // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: '稳定版',
         beta: '测试版',
