@@ -195,6 +195,10 @@ def _handle_auth_callback(params: dict) -> int:
         json.dumps({"code": code, "state": state, "timestamp": time.time()}),
         encoding="utf-8",
     )
+    try:
+        callback_file.chmod(0o600)
+    except OSError as exc:
+        logger.warning("Failed to tighten OAuth callback file permissions: {}", exc)
     logger.info("OAuth callback saved to {}", callback_file)
     _show_notification("Market 授权成功，请返回 N.E.K.O", "N.E.K.O")
     return 0

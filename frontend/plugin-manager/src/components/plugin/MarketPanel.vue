@@ -420,7 +420,7 @@ function marketIdentityKeys(plugin: {
   return [...keys]
 }
 
-function resolveExpectedTomlId(plugin: MarketWorkbenchItem): string | null {
+function resolveExpectedTomlId(plugin: Pick<MarketPlugin, 'slug' | 'github_repo'>): string | null {
   return extractRepoPluginId(plugin.github_repo) || plugin.slug || null
 }
 
@@ -436,7 +436,7 @@ const localPluginKeys = computed(() => {
   return keys
 })
 
-function isInstalled(plugin: MarketWorkbenchItem): boolean {
+function isInstalled(plugin: MarketPlugin): boolean {
   for (const key of marketIdentityKeys(plugin)) {
     if (installedByPid.value.has(key)) return true
   }

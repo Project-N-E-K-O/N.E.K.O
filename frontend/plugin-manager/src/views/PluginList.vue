@@ -52,6 +52,21 @@
                 </el-icon>
               </button>
               <el-button
+                v-if="marketUrl"
+                class="market-auth-trigger"
+                :class="{ 'market-auth-trigger--connected': marketAuth.authenticated }"
+                :loading="marketAuthBusy"
+                plain
+                @click="marketAuth.authenticated ? logoutMarketAccount() : startMarketLogin()"
+              >
+                <el-icon><User /></el-icon>
+                {{
+                  marketAuth.authenticated
+                    ? $t('market.accountConnected', { name: marketAuthDisplayName })
+                    : $t('market.login')
+                }}
+              </el-button>
+              <el-button
                 class="multi-select-trigger"
                 :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
                 :type="multiSelectEnabled ? 'primary' : 'default'"
@@ -324,7 +339,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -349,6 +364,7 @@ import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
 import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
+import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { useI18n } from 'vue-i18n'
@@ -379,6 +395,14 @@ const dangerDialogLoading = ref(false)
 const pendingDangerAction = ref<ResolvedPluginListAction | null>(null)
 const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
 const marketUrl = ref('')
+const {
+  marketAuth,
+  marketAuthBusy,
+  marketAuthDisplayName,
+  loadMarketAuthStatus,
+  logoutMarketAccount,
+  startMarketLogin,
+} = useMarketAuth()
 
 // confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
 // 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
@@ -1038,6 +1062,7 @@ onMounted(async () => {
       const data = await res.json()
       if (data.market_url) {
         marketUrl.value = data.market_url
+        loadMarketAuthStatus().catch(() => {})
       }
     }
   } catch {
@@ -1209,6 +1234,19 @@ onUnmounted(() => {
 .market-trigger--active .market-trigger__arrow {
   opacity: 1;
   transform: translateX(0);
+}
+
+.market-auth-trigger {
+  --el-button-border-radius: var(--radius-control);
+  font-weight: 600;
+  padding: 8px 14px;
+  gap: 6px;
+}
+
+.market-auth-trigger--connected {
+  --el-button-text-color: var(--el-color-success);
+  --el-button-border-color: color-mix(in srgb, var(--el-color-success) 35%, transparent);
+  --el-button-bg-color: color-mix(in srgb, var(--el-color-success) 8%, transparent);
 }
 
 /* ── Multi-select trigger button (top) ── */

@@ -1,5 +1,5 @@
 <template>
-  <template v-if="source && source !== 'unknown'">
+  <span v-if="source && source !== 'unknown'" class="source-tag-group">
     <!-- Match the cadence of the surrounding tags (extension / disabled
          / manual-start): ``size="small"`` + ``effect="plain"``, icon
          inline, single Chinese/English word. Intentionally no custom
@@ -12,7 +12,7 @@
       <el-icon class="source-tag__icon"><Top /></el-icon>
       {{ t('plugins.installSource.updateAvailable') }}
     </el-tag>
-  </template>
+  </span>
 </template>
 
 <script setup lang="ts">
@@ -70,6 +70,15 @@ const icon = computed(() => {
   vertical-align: -1px;
 }
 
-/* ``el-tag[size=small]`` uses ``display: inline-flex`` by default, which
- * already lines the icon + text up for us — no extra overrides needed. */
+.source-tag-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.source-tag-group :deep(.el-tag) {
+  flex: 0 0 auto;
+}
 </style>

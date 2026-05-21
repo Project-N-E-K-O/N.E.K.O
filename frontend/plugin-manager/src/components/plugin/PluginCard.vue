@@ -19,10 +19,6 @@
           <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
             {{ t('plugins.manualStart') }}
           </el-tag>
-          <SourceTag
-            :source="plugin.install_source?.source"
-            :has-update="hasUpdate"
-          />
         </div>
       </div>
     </template>
@@ -44,6 +40,10 @@
 
       <div class="plugin-meta">
         <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
+        <SourceTag
+          :source="plugin.install_source?.source"
+          :has-update="hasUpdate"
+        />
         <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
           → {{ plugin.host_plugin_id }}
         </span>
@@ -175,15 +175,18 @@ const hasUpdate = computed<boolean>(() => {
 .plugin-meta {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
   margin-top: auto;
   padding-top: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .plugin-entries {
   margin-left: auto;
+  white-space: nowrap;
 }
 
 .plugin-host {

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import hashlib
 import json
@@ -21,9 +22,11 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from plugin.logging_config import get_logger
@@ -61,6 +64,15 @@ _TASK_MAX_ENTRIES = 200
 # 短期一次性配对码；成功交换后立即消费。
 _ONE_TIME_CODES: dict[str, float] = {}
 _ONE_TIME_CODE_TTL_SECONDS = 5 * 60
+
+# OAuth 登录状态存储在本机用户目录，仅供本地插件面板使用。
+_OAUTH_CLIENT_ID = "neko-desktop"
+_OAUTH_REDIRECT_PATH = "/market/oauth/callback"
+_OAUTH_SESSION_TTL_SECONDS = 5 * 60
+_NEKO_STATE_DIR = Path.home() / ".neko"
+_OAUTH_PENDING_FILE = _NEKO_STATE_DIR / "market_oauth_pending.json"
+_OAUTH_CALLBACK_FILE = _NEKO_STATE_DIR / "oauth_callback.json"
+_OAUTH_TOKEN_FILE = _NEKO_STATE_DIR / "market_auth.json"
 
 # 下载限制
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -261,6 +273,30 @@ class MarketBridgeTokenResponse(BaseModel):
     """供同源前端（plugin-manager UI）直接获取 bridge token。"""
     bridge_token: str
     port: int = 48911
+
+
+class MarketOAuthStartResponse(BaseModel):
+    auth_url: str
+    state: str
+    expires_in: int = _OAUTH_SESSION_TTL_SECONDS
+
+
+class MarketOAuthStatusResponse(BaseModel):
+    authenticated: bool
+    user: dict[str, Any] | None = None
+    expires_at: float | None = None
+    market_web_url: str = ""
+
+
+class MarketOAuthCompleteResponse(BaseModel):
+    completed: bool
+    authenticated: bool
+    user: dict[str, Any] | None = None
+    message: str = ""
+
+
+class MarketOAuthLogoutResponse(BaseModel):
+    message: str
 
 
 # ─── 端点 ──────────────────────────────────────────────────────────
@@ -476,6 +512,215 @@ async def market_bridge_token(request: Request):
     return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=48911)
 
 
+@router.post("/oauth/start", response_model=MarketOAuthStartResponse)
+async def market_oauth_start(
+    request: Request,
+    token: str = Query(..., description="Bridge token"),
+):
+    """启动 N.E.K.O → Market OAuth 登录。
+
+    本地服务生成 PKCE verifier/challenge 并只把 verifier 存到本机文件；
+    前端只拿授权 URL，避免把可换 token 的 secret 暴露到浏览器状态里。
+    """
+    _verify_token(token)
+    if not MARKET_URL or not MARKET_WEB_URL:
+        raise HTTPException(status_code=400, detail="Market URL 未配置")
+
+    state = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = _pkce_s256_challenge(code_verifier)
+    expires_at = time.time() + _OAUTH_SESSION_TTL_SECONDS
+    redirect_uri = _oauth_redirect_uri_for_request(request)
+
+    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    _write_private_json(
+        _OAUTH_PENDING_FILE,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+            "created_at": time.time(),
+            "expires_at": expires_at,
+            "market_url": MARKET_URL,
+        },
+    )
+
+    query = urlencode({
+        "client_id": _OAUTH_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "response_type": "code",
+        "scope": "read write",
+    })
+    auth_url = f"{MARKET_WEB_URL.rstrip('/')}/#/oauth/authorize?{query}"
+    return MarketOAuthStartResponse(auth_url=auth_url, state=state)
+
+
+@router.get("/oauth/callback", response_class=HTMLResponse)
+async def market_oauth_callback(
+    code: str = Query(...),
+    state: str = Query(...),
+):
+    """Browser loopback callback for Market OAuth.
+
+    Linux desktop environments often do not have the custom ``neko://`` scheme
+    registered, causing xdg-open/KIO to treat the callback as an unreadable
+    file URL. A loopback redirect mirrors the pattern used by desktop apps such
+    as VS Code and lets the already-running local server receive the code.
+    """
+    pending = _read_json_file(_OAUTH_PENDING_FILE)
+    if not pending:
+        raise HTTPException(status_code=400, detail="OAuth 登录尚未开始")
+    if time.time() > float(pending.get("expires_at") or 0):
+        _unlink_if_exists(_OAUTH_PENDING_FILE)
+        raise HTTPException(status_code=400, detail="OAuth 登录已过期，请重新登录")
+    expected_state = str(pending.get("state") or "")
+    if not expected_state or not secrets.compare_digest(state, expected_state):
+        raise HTTPException(status_code=400, detail="OAuth state 校验失败")
+
+    _write_private_json(
+        _OAUTH_CALLBACK_FILE,
+        {"code": code, "state": state, "timestamp": time.time()},
+    )
+    return HTMLResponse(
+        """
+        <!doctype html>
+        <html lang="zh-CN">
+          <head>
+            <meta charset="utf-8" />
+            <title>N.E.K.O Market 授权完成</title>
+            <style>
+              body {
+                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #0f0f1a;
+                color: #f8fafc;
+                display: grid;
+                min-height: 100vh;
+                place-items: center;
+                margin: 0;
+              }
+              main {
+                max-width: 520px;
+                padding: 32px;
+                border: 1px solid rgba(148, 163, 184, 0.24);
+                border-radius: 18px;
+                background: rgba(26, 26, 46, 0.92);
+                text-align: center;
+              }
+              p { color: #cbd5e1; line-height: 1.7; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <h1>Market 授权已完成</h1>
+              <p>请回到 N.E.K.O 插件管理器，登录状态会在几秒内自动更新。</p>
+              <p>这个页面现在可以关闭。</p>
+            </main>
+          </body>
+        </html>
+        """,
+        status_code=200,
+    )
+
+
+@router.get("/oauth/status", response_model=MarketOAuthStatusResponse)
+async def market_oauth_status(
+    token: str = Query(..., description="Bridge token"),
+):
+    """返回本地保存的 Market 登录状态。"""
+    _verify_token(token)
+    token_data = _read_json_file(_OAUTH_TOKEN_FILE)
+    if not token_data:
+        return MarketOAuthStatusResponse(
+            authenticated=False,
+            market_web_url=MARKET_WEB_URL,
+        )
+
+    return MarketOAuthStatusResponse(
+        authenticated=bool(token_data.get("access_token")),
+        user=token_data.get("user") if isinstance(token_data.get("user"), dict) else None,
+        expires_at=token_data.get("expires_at"),
+        market_web_url=MARKET_WEB_URL,
+    )
+
+
+@router.post("/oauth/complete", response_model=MarketOAuthCompleteResponse)
+async def market_oauth_complete(
+    token: str = Query(..., description="Bridge token"),
+):
+    """消费浏览器回调写入的授权码并换取 Market token。"""
+    _verify_token(token)
+
+    pending = _read_json_file(_OAUTH_PENDING_FILE)
+    if not pending:
+        return MarketOAuthCompleteResponse(
+            completed=False,
+            authenticated=False,
+            message="OAuth 登录尚未开始",
+        )
+    if time.time() > float(pending.get("expires_at") or 0):
+        _unlink_if_exists(_OAUTH_PENDING_FILE)
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+        raise HTTPException(status_code=400, detail="OAuth 登录已过期，请重新登录")
+
+    callback = _read_json_file(_OAUTH_CALLBACK_FILE)
+    if not callback:
+        return MarketOAuthCompleteResponse(
+            completed=False,
+            authenticated=False,
+            message="等待浏览器授权回调",
+        )
+
+    state = str(callback.get("state") or "")
+    if not state or not secrets.compare_digest(state, str(pending.get("state") or "")):
+        _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+        raise HTTPException(status_code=400, detail="OAuth state 校验失败")
+
+    code = str(callback.get("code") or "")
+    code_verifier = str(pending.get("code_verifier") or "")
+    if not code or not code_verifier:
+        raise HTTPException(status_code=400, detail="OAuth 回调数据不完整")
+
+    redirect_uri = str(pending.get("redirect_uri") or _oauth_default_redirect_uri())
+    token_payload = await _exchange_oauth_code(code, code_verifier, redirect_uri)
+    user = await _fetch_market_user(token_payload.get("access_token"))
+    expires_in = int(token_payload.get("expires_in") or 3600)
+    stored = {
+        "access_token": token_payload.get("access_token"),
+        "refresh_token": token_payload.get("refresh_token"),
+        "token_type": token_payload.get("token_type", "bearer"),
+        "scope": token_payload.get("scope", ""),
+        "expires_at": time.time() + expires_in,
+        "market_url": MARKET_URL,
+        "user": user,
+        "created_at": time.time(),
+    }
+    _write_private_json(_OAUTH_TOKEN_FILE, stored)
+    _unlink_if_exists(_OAUTH_PENDING_FILE)
+    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+
+    return MarketOAuthCompleteResponse(
+        completed=True,
+        authenticated=True,
+        user=user,
+        message="Market 登录成功",
+    )
+
+
+@router.post("/oauth/logout", response_model=MarketOAuthLogoutResponse)
+async def market_oauth_logout(
+    token: str = Query(..., description="Bridge token"),
+):
+    """清除本地保存的 Market OAuth token。"""
+    _verify_token(token)
+    _unlink_if_exists(_OAUTH_TOKEN_FILE)
+    _unlink_if_exists(_OAUTH_PENDING_FILE)
+    _unlink_if_exists(_OAUTH_CALLBACK_FILE)
+    return MarketOAuthLogoutResponse(message="已退出 Market 登录")
+
+
 # ─── 内部实现 ──────────────────────────────────────────────────────
 
 
@@ -483,6 +728,172 @@ def _verify_token(token: str) -> None:
     """验证 bridge token。"""
     if not secrets.compare_digest(token, _BRIDGE_TOKEN):
         raise HTTPException(status_code=403, detail="无效的 bridge token")
+
+
+def _pkce_s256_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _oauth_default_redirect_uri() -> str:
+    return f"http://127.0.0.1:48911{_OAUTH_REDIRECT_PATH}"
+
+
+def _oauth_redirect_uri_for_request(request: Request) -> str:
+    host = request.url.hostname or "127.0.0.1"
+    port = request.url.port
+    # OAuth loopback callbacks should stay on loopback even if the Host header
+    # was an IPv6 or localhost spelling; this avoids custom protocol handling.
+    if host in {"localhost", "::1"}:
+        host = "127.0.0.1"
+    netloc = host if port is None else f"{host}:{port}"
+    return f"{request.url.scheme}://{netloc}{_OAUTH_REDIRECT_PATH}"
+
+
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError as exc:
+        logger.warning("Failed to tighten {} permissions: {}", path, exc)
+
+
+def _read_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read JSON file {}: {}", path, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _unlink_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Failed to remove {}: {}", path, exc)
+
+
+async def _exchange_oauth_code(
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            res = await client.post(
+                f"{MARKET_URL.rstrip('/')}/api/v1/oauth/token",
+                json={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "code_verifier": code_verifier,
+                    "client_id": _OAUTH_CLIENT_ID,
+                    "redirect_uri": redirect_uri,
+                },
+            )
+            res.raise_for_status()
+            data = res.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text
+        logger.warning("Market OAuth token exchange rejected: {}", detail)
+        raise HTTPException(status_code=400, detail="Market OAuth token 交换失败") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Market OAuth token exchange failed: {}", exc)
+        raise HTTPException(status_code=502, detail="无法连接 Market OAuth 服务") from exc
+
+    if not isinstance(data, dict) or not data.get("access_token"):
+        raise HTTPException(status_code=502, detail="Market OAuth token 响应无效")
+    return data
+
+
+async def _fetch_market_user(access_token: Any) -> dict[str, Any] | None:
+    if not isinstance(access_token, str) or not access_token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            res = await client.get(
+                f"{MARKET_URL.rstrip('/')}/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if res.status_code != 200:
+                return None
+            data = res.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Failed to fetch Market user after OAuth login: {}", exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def _report_market_install_best_effort(
+    payload: MarketInstallRequest,
+    task: dict[str, Any],
+) -> None:
+    token_data = _read_json_file(_OAUTH_TOKEN_FILE)
+    if not token_data or not token_data.get("access_token"):
+        return
+    if token_data.get("market_url") and token_data.get("market_url") != MARKET_URL:
+        logger.debug("Skip Market install report: token belongs to a different Market URL")
+        return
+    if time.time() > float(token_data.get("expires_at") or 0):
+        logger.info("Skip Market install report: saved Market token is expired")
+        return
+
+    try:
+        market_plugin_id = int(str(payload.plugin_id or ""))
+    except ValueError:
+        logger.debug(
+            "Skip Market install report: plugin_id is not a Market numeric id: {}",
+            payload.plugin_id,
+        )
+        return
+
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    install = result.get("install") if isinstance(result, dict) else {}
+    if not isinstance(install, dict):
+        install = {}
+
+    report_payload = {
+        "plugin_id": market_plugin_id,
+        "version": payload.version,
+        "channel": payload.channel or install.get("channel"),
+        "package_sha256": payload.package_sha256 or install.get("package_sha256"),
+        "payload_hash": payload.payload_hash or install.get("payload_hash"),
+        "installed_plugin_id": install.get("plugin_id") or payload.expected_plugin_toml_id,
+        "client_id": _OAUTH_CLIENT_ID,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            res = await client.post(
+                f"{MARKET_URL.rstrip('/')}/api/v1/me/installs",
+                headers={
+                    "Authorization": f"Bearer {token_data['access_token']}",
+                    "Content-Type": "application/json",
+                },
+                json=report_payload,
+            )
+            if res.status_code == 401:
+                logger.info("Market install report rejected: saved token is unauthorized")
+                return
+            res.raise_for_status()
+            logger.info(
+                "Market install reported plugin_id={} version={} status={}",
+                market_plugin_id,
+                payload.version or "",
+                res.status_code,
+            )
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Market install report failed status={} body={}",
+            exc.response.status_code,
+            exc.response.text,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("Market install report failed: {}", exc)
 
 
 async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
@@ -516,6 +927,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
+        await _report_market_install_best_effort(payload, task)
         _finalize_task_success(task, started_at, log_ctx)
     except _TaskError as exc:
         _finalize_task_failure(task, exc, started_at, log_ctx)
