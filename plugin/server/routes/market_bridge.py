@@ -15,6 +15,7 @@ import hashlib
 import os
 import secrets
 import shutil
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from plugin.server.application.install_source import (
     SourceDetailMarket,
     get_install_source_manager,
 )
+from plugin.server.application.plugin_cli import service as plugin_cli_service_module
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
@@ -142,8 +144,11 @@ class MarketInstallResponse(BaseModel):
 class MarketTaskStatus(BaseModel):
     task_id: str
     status: str
+    stage: str = "pending"
     progress: float = 0.0  # 0.0 ~ 1.0
     message: str = ""
+    downloaded_bytes: int = 0
+    total_bytes: int | None = None
     result: dict[str, Any] | None = None
     # v2 (R10.1 / R10.2): error 字段保留 message 以便旧前端展示；新增 error_code
     # 让前端识别稳定错误码（upgrade_rollback_completed / version_already_at_target / ...）。
@@ -152,6 +157,7 @@ class MarketTaskStatus(BaseModel):
     created_at: float = 0.0
     completed_at: float | None = None
     install_source_warning: str | None = None
+    rollback: dict[str, Any] | None = None
 
 
 class MarketInstalledPlugin(BaseModel):
@@ -243,13 +249,17 @@ async def market_install(
     _tasks[task_id] = {
         "task_id": task_id,
         "status": "pending",
+        "stage": "pending",
         "progress": 0.0,
         "message": "任务已创建",
+        "downloaded_bytes": 0,
+        "total_bytes": None,
         "result": None,
         "error": None,
         "error_code": None,
         "created_at": time.time(),
         "completed_at": None,
+        "rollback": None,
     }
 
     # 异步执行安装
@@ -347,6 +357,7 @@ def _project_market_source_detail(
     if not isinstance(detail, SourceDetailMarket):
         return None
     return {
+        "plugin_market_id": detail.plugin_market_id,
         "channel": detail.channel,
         "version": detail.version,
         "package_sha256": detail.package_sha256,
@@ -478,6 +489,7 @@ def _finalize_task_success(
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
     task["status"] = "completed"
+    task["stage"] = "completed"
     task["progress"] = 1.0
     task["completed_at"] = time.time()
     if not task.get("message"):
@@ -504,6 +516,7 @@ def _finalize_task_failure(
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
     task["status"] = "failed"
+    task["stage"] = task.get("stage") or "failed"
     task["progress"] = task.get("progress", 0.0)
     task["error"] = err.message
     task["error_code"] = err.code
@@ -529,11 +542,28 @@ _HUMAN_MESSAGES: dict[str, str] = {
     "version_already_at_target": "当前已是目标版本",
     "lock_write_failed": "安装记录写入失败",
     "market_list_fetch_failed": "无法连接到 Market",
+    "download_failed": "下载失败",
+    "package_hash_mismatch": "插件包校验失败",
+    "install_failed": "安装失败，已清理临时文件",
 }
 
 
 def _human_message_for(code: str) -> str:
     return _HUMAN_MESSAGES.get(code, "")
+
+
+def _set_task_stage(
+    task: dict[str, Any],
+    *,
+    status: str,
+    stage: str,
+    progress: float,
+    message: str,
+) -> None:
+    task["status"] = status
+    task["stage"] = stage
+    task["progress"] = max(0.0, min(1.0, progress))
+    task["message"] = message
 
 
 # ─── install / upgrade flows ─────────────────────────────────────────
@@ -551,33 +581,60 @@ async def _do_install(
     to the lock record.
     """
 
-    task["status"] = "downloading"
-    task["progress"] = 0.1
-    task["message"] = f"正在下载: {payload.package_url}"
+    _set_task_stage(
+        task,
+        status="downloading",
+        stage="download",
+        progress=0.1,
+        message="正在下载插件包...",
+    )
 
-    content = await _download_package(payload.package_url, task)
-
-    sha_check = _verify_sha256(content, payload.package_sha256, task)
-    log_ctx["package_sha256_check"] = sha_check
-
-    task["status"] = "installing"
-    task["progress"] = 0.8
-    task["message"] = "正在安装插件..."
-
-    filename = _extract_filename(payload.package_url)
-    market_override = _build_market_override(payload, content, mode="install")
+    package_path: Path | None = None
+    try:
+        package_path = await _download_package(payload.package_url, task)
+    except Exception as exc:
+        raise _TaskError(code="download_failed", message=str(exc)) from exc
 
     try:
-        result = await _cli_service.upload_and_install(
-            filename=filename,
-            content=content,
-            on_conflict=payload.on_conflict,
-            install_source_override=market_override,
+        try:
+            sha_check = _verify_sha256_file(
+                package_path,
+                payload.package_sha256,
+                task,
+            )
+        except ValueError as exc:
+            raise _TaskError(code="package_hash_mismatch", message=str(exc)) from exc
+        log_ctx["package_sha256_check"] = sha_check
+
+        _set_task_stage(
+            task,
+            status="installing",
+            stage="install",
+            progress=0.8,
+            message="正在安装插件...",
         )
-    except InstallSourceError as exc:
-        if exc.code == "lock_write_failed":
-            raise _TaskError(code="lock_write_failed", message=str(exc.message)) from exc
-        raise _TaskError(code="internal_error", message=str(exc.message)) from exc
+
+        filename = _extract_filename(payload.package_url)
+        market_override = _build_market_override(payload, mode="install")
+
+        try:
+            result = await _cli_service.upload_and_install(
+                filename=filename,
+                package_path=str(package_path),
+                on_conflict=payload.on_conflict,
+                install_source_override=market_override,
+            )
+        except InstallSourceError as exc:
+            if exc.code == "lock_write_failed":
+                raise _TaskError(
+                    code="lock_write_failed",
+                    message=str(exc.message),
+                ) from exc
+            raise _TaskError(code="internal_error", message=str(exc.message)) from exc
+        except Exception as exc:
+            raise _TaskError(code="install_failed", message=str(exc)) from exc
+    finally:
+        _cleanup_download_file(package_path)
 
     _post_install_payload_check(payload, result)
 
@@ -652,11 +709,24 @@ async def _do_upgrade(
 
     # Step 3: lifecycle stop.
     if was_running:
-        task["message"] = "正在停止旧版本插件..."
+        _set_task_stage(
+            task,
+            status="installing",
+            stage="stop_old",
+            progress=0.05,
+            message="正在停止旧版本插件...",
+        )
         await _safely_stop(plugin_id)
 
     # Step 4: rename old dir → backup.
     try:
+        _set_task_stage(
+            task,
+            status="installing",
+            stage="backup_old",
+            progress=0.08,
+            message="正在备份旧版本...",
+        )
         await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
     except OSError as exc:
         if was_running:
@@ -666,50 +736,85 @@ async def _do_upgrade(
             message=f"无法备份旧目录: {exc}",
         ) from exc
     rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
+    task["rollback"] = {
+        "prepared": True,
+        "backup_dir": str(backup_dir),
+        "restored": False,
+    }
 
     try:
         # Step 5: download + verify sha256.
-        task["status"] = "downloading"
-        task["progress"] = 0.1
-        task["message"] = "正在下载新版本..."
-        content = await _download_package(payload.package_url, task)
-        sha_check = _verify_sha256(content, payload.package_sha256, task)
-        log_ctx["package_sha256_check"] = sha_check
-
-        # Step 6: unpack + record_market_upgrade (single atomic call).
-        task["status"] = "installing"
-        task["progress"] = 0.8
-        task["message"] = "正在升级插件..."
-
-        market_override = _build_market_override(
-            payload,
-            content,
-            mode="reinstall" if allow_same_version else "upgrade",
+        _set_task_stage(
+            task,
+            status="downloading",
+            stage="download",
+            progress=0.1,
+            message="正在下载新版本...",
         )
-
+        package_path: Path | None = None
         try:
-            result = await _cli_service.upload_and_install(
-                filename=_extract_filename(payload.package_url),
-                content=content,
-                on_conflict="fail",  # backup already moved aside
-                install_source_override=market_override,
-            )
-        except InstallSourceError as exc:
-            if exc.code == "lock_write_failed":
+            package_path = await _download_package(payload.package_url, task)
+        except Exception as exc:
+            raise _TaskError(code="download_failed", message=str(exc)) from exc
+        try:
+            try:
+                sha_check = _verify_sha256_file(
+                    package_path,
+                    payload.package_sha256,
+                    task,
+                )
+            except ValueError as exc:
                 raise _TaskError(
-                    code="lock_write_failed",
+                    code="package_hash_mismatch",
+                    message=str(exc),
+                ) from exc
+            log_ctx["package_sha256_check"] = sha_check
+
+            # Step 6: unpack + record_market_upgrade (single atomic call).
+            _set_task_stage(
+                task,
+                status="installing",
+                stage="install",
+                progress=0.8,
+                message="正在写入新版本...",
+            )
+
+            market_override = _build_market_override(
+                payload,
+                mode="reinstall" if allow_same_version else "upgrade",
+            )
+
+            try:
+                result = await _cli_service.upload_and_install(
+                    filename=_extract_filename(payload.package_url),
+                    package_path=str(package_path),
+                    on_conflict="fail",  # backup already moved aside
+                    install_source_override=market_override,
+                )
+            except InstallSourceError as exc:
+                if exc.code == "lock_write_failed":
+                    raise _TaskError(
+                        code="lock_write_failed",
+                        message=str(exc.message),
+                    ) from exc
+                raise _TaskError(
+                    code="upgrade_rollback_completed",
                     message=str(exc.message),
                 ) from exc
-            raise _TaskError(
-                code="upgrade_rollback_completed",
-                message=str(exc.message),
-            ) from exc
+        finally:
+            _cleanup_download_file(package_path)
 
         rollback_steps.append(_make_remove_dir_step(plugin_dir))
 
         # Step 7: lifecycle start.
         if was_running:
-            task["message"] = "正在启动新版本..."
+            _set_task_stage(
+                task,
+                status="installing",
+                stage="restart",
+                progress=0.92,
+                message="正在启动新版本...",
+            )
             await _safely_start(plugin_id)
 
         # Step 8: async cleanup of backup.
@@ -719,19 +824,27 @@ async def _do_upgrade(
         )
 
         task["progress"] = 1.0
+        task["stage"] = "completed"
         task["message"] = "升级成功"
         task["result"] = result
 
         if isinstance(result, dict) and "install_source_warning" in result:
             task["install_source_warning"] = result["install_source_warning"]
 
-    except _TaskError:
-        # _TaskError already carries a stable code; just roll back fs.
-        await _run_rollback(rollback_steps, was_running, plugin_id)
+    except _TaskError as exc:
+        await _run_rollback(task, rollback_steps, was_running, plugin_id)
+        if rollback_steps and exc.code not in (
+            "version_already_at_target",
+            "plugin_not_installed_for_upgrade",
+        ):
+            raise _TaskError(
+                code="upgrade_rollback_completed",
+                message=f"升级失败已回滚: {exc.message}",
+            ) from exc
         raise
     except Exception as exc:
         # Other (network / sha256 / unpack) failures collapse into one code.
-        await _run_rollback(rollback_steps, was_running, plugin_id)
+        await _run_rollback(task, rollback_steps, was_running, plugin_id)
         raise _TaskError(
             code="upgrade_rollback_completed",
             message=f"升级失败已回滚: {exc}",
@@ -740,7 +853,6 @@ async def _do_upgrade(
 
 def _build_market_override(
     payload: MarketInstallRequest,
-    content: bytes,
     *,
     mode: str,
 ) -> dict[str, Any]:
@@ -770,6 +882,47 @@ def _build_market_override(
     }
 
 
+def _verify_sha256_file(
+    path: Path,
+    expected_hash: str | None,
+    task: dict[str, Any],
+) -> Literal["passed", "skipped", "mismatch"]:
+    """Verify sha256 from a downloaded file; raise ValueError on mismatch."""
+
+    raw = (expected_hash or "").strip().lower()
+    skip = (
+        not raw
+        or raw == "0" * 64
+        or len(raw) != 64
+        or not all(c in "0123456789abcdef" for c in raw)
+    )
+    if skip:
+        logger.warning(
+            "Market install skipping SHA256 verification (no hash provided)"
+        )
+        task["message"] = "跳过 SHA256 校验（Market 未提供）"
+        return "skipped"
+
+    _set_task_stage(
+        task,
+        status="verifying",
+        stage="verify",
+        progress=0.7,
+        message="正在校验文件完整性...",
+    )
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest().lower()
+    if actual != raw:
+        raise ValueError(
+            f"SHA256 校验失败\n  期望: {raw}\n  实际: {actual}"
+        )
+    return "passed"
+
+
 def _verify_sha256(
     content: bytes,
     expected_hash: str | None,
@@ -794,9 +947,13 @@ def _verify_sha256(
         task["message"] = "跳过 SHA256 校验（Market 未提供）"
         return "skipped"
 
-    task["status"] = "verifying"
-    task["progress"] = 0.7
-    task["message"] = "正在校验文件完整性..."
+    _set_task_stage(
+        task,
+        status="verifying",
+        stage="verify",
+        progress=0.7,
+        message="正在校验文件完整性...",
+    )
 
     actual = hashlib.sha256(content).hexdigest().lower()
     if actual != raw:
@@ -969,6 +1126,7 @@ async def _async_remove_dir(target_dir: Path) -> None:
 
 
 async def _run_rollback(
+    task: dict[str, Any] | None,
     rollback_steps: list[Callable[[], Awaitable[None]]],
     was_running: bool,
     plugin_id: str,
@@ -979,10 +1137,25 @@ async def _run_rollback(
     rest from running. ``_safely_start`` itself is non-throwing.
     """
 
+    if task is not None:
+        _set_task_stage(
+            task,
+            status="installing",
+            stage="rollback",
+            progress=0.9,
+            message="安装失败，正在回滚...",
+        )
+        rollback_info = dict(task.get("rollback") or {})
+        rollback_info["running"] = True
+        rollback_info["restored"] = False
+        task["rollback"] = rollback_info
+
+    rollback_ok = True
     for step in reversed(rollback_steps):
         try:
             await step()
         except Exception as exc:
+            rollback_ok = False
             logger.error(
                 "rollback step failed plugin_id={} err={}",
                 plugin_id,
@@ -990,6 +1163,11 @@ async def _run_rollback(
             )
     if was_running:
         await _safely_start(plugin_id)
+    if task is not None:
+        rollback_info = dict(task.get("rollback") or {})
+        rollback_info["running"] = False
+        rollback_info["restored"] = rollback_ok
+        task["rollback"] = rollback_info
 
 
 def _utc_micro_ts() -> str:
@@ -1012,8 +1190,18 @@ def _utc_iso_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-async def _download_package(url: str, task: dict[str, Any]) -> bytes:
-    """下载插件包，带进度更新。"""
+async def _download_package(url: str, task: dict[str, Any]) -> Path:
+    """Download a plugin package to a temp file with progress updates."""
+
+    download_dir = plugin_cli_service_module._TARGET_ROOT / ".downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(
+        prefix="neko-market-",
+        suffix=".neko-plugin",
+        dir=download_dir,
+    )
+    os.close(fd)
+    package_path = Path(raw_path)
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT),
@@ -1023,7 +1211,6 @@ async def _download_package(url: str, task: dict[str, Any]) -> bytes:
             async with client.stream("GET", url) as response:
                 response.raise_for_status()
 
-                # 检查 content-length
                 content_length = response.headers.get("content-length")
                 if content_length and int(content_length) > _DOWNLOAD_MAX_BYTES:
                     raise ValueError(
@@ -1031,35 +1218,68 @@ async def _download_package(url: str, task: dict[str, Any]) -> bytes:
                         f"(最大 {_DOWNLOAD_MAX_BYTES} bytes)"
                     )
 
-                chunks: list[bytes] = []
                 downloaded = 0
+                total_bytes = int(content_length) if content_length else None
+                task["total_bytes"] = total_bytes
+                task["downloaded_bytes"] = 0
 
-                async for chunk in response.aiter_bytes(chunk_size=65536):
-                    chunks.append(chunk)
-                    downloaded += len(chunk)
+                with package_path.open("wb") as handle:
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        task["downloaded_bytes"] = downloaded
 
-                    if downloaded > _DOWNLOAD_MAX_BYTES:
-                        raise ValueError(
-                            f"下载超过大小限制: {_DOWNLOAD_MAX_BYTES} bytes"
-                        )
+                        if downloaded > _DOWNLOAD_MAX_BYTES:
+                            raise ValueError(
+                                f"下载超过大小限制: {_DOWNLOAD_MAX_BYTES} bytes"
+                            )
 
-                    # 更新进度（下载占 0.1 ~ 0.7）
-                    if content_length:
-                        dl_progress = downloaded / int(content_length)
-                        task["progress"] = 0.1 + dl_progress * 0.6
-                        task["message"] = (
-                            f"正在下载: {downloaded // 1024}KB"
-                            f" / {int(content_length) // 1024}KB"
-                        )
+                        if total_bytes:
+                            dl_progress = downloaded / total_bytes
+                            task["progress"] = 0.1 + dl_progress * 0.6
+                            task["message"] = (
+                                f"正在下载: {_format_bytes(downloaded)}"
+                                f" / {_format_bytes(total_bytes)}"
+                            )
+                        else:
+                            task["progress"] = min(
+                                0.65,
+                                task.get("progress", 0.1) + 0.01,
+                            )
+                            task["message"] = (
+                                f"正在下载: {_format_bytes(downloaded)}"
+                            )
 
-                return b"".join(chunks)
-
+        return package_path
     except httpx.HTTPStatusError as exc:
+        _cleanup_download_file(package_path)
         raise ValueError(f"下载失败: HTTP {exc.response.status_code}") from exc
     except httpx.TimeoutException as exc:
+        _cleanup_download_file(package_path)
         raise ValueError("下载超时") from exc
     except httpx.RequestError as exc:
+        _cleanup_download_file(package_path)
         raise ValueError(f"下载网络错误: {exc}") from exc
+    except Exception:
+        _cleanup_download_file(package_path)
+        raise
+
+
+def _cleanup_download_file(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("failed to remove downloaded package {}: {}", path, exc)
+
+
+def _format_bytes(value: int) -> str:
+    if value >= 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f}MB"
+    if value >= 1024:
+        return f"{value / 1024:.1f}KB"
+    return f"{value}B"
 
 
 def _extract_filename(url: str) -> str:

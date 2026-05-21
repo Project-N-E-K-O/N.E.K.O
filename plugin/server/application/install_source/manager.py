@@ -1848,27 +1848,27 @@ class InstallSourceManager:
             is_upgrade=True,
         )
 
-    def find_active_market_entry(self, plugin_id: str) -> LockEntry | None:
-        """Return the active (non-removed) market entry for ``plugin_id``, if any.
+    def find_active_market_entry(self, plugin_ref: str) -> LockEntry | None:
+        """Return the active (non-removed) market entry for ``plugin_ref``, if any.
 
-        Used by Bridge ``_do_upgrade`` to discover the current install state
-        before kicking off the rename → unpack → record sequence (design §3.4.3).
-        Returns ``None`` if the plugin is not installed via Market or has
-        been soft-removed since.
-
-        Linear scan over ``_current.entries``: same complexity argument as
-        :meth:`_find_entry`. Lock-free read.
+        ``plugin_ref`` may be either the unpacked ``plugin.toml`` id **or**
+        the Market-side numeric/string ``plugin_market_id`` stored in the
+        lock entry's ``source_detail``.
         """
 
-        if not plugin_id:
+        if not plugin_ref:
             return None
         for entry in self._current.entries:
             if entry.removed:
                 continue
             if entry.channel != "market":
                 continue
-            if entry.plugin_id == plugin_id:
+            if entry.plugin_id == plugin_ref:
                 return entry
+            detail = entry.source_detail
+            if isinstance(detail, SourceDetailMarket):
+                if detail.plugin_market_id == plugin_ref:
+                    return entry
         return None
 
     def snapshot(self) -> LockFile:

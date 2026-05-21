@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.core.install import PackageInstaller
+from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
 from plugin.neko_plugin_cli.public import (
     analyze_bundle_plugins,
     inspect_package,
@@ -104,6 +106,7 @@ class PluginCliService:
         plugins_root: str | None = None,
         profiles_root: str | None = None,
         on_conflict: str = "rename",
+        use_staging: bool = False,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._install_sync,
@@ -111,6 +114,7 @@ class PluginCliService:
             plugins_root=plugins_root,
             profiles_root=profiles_root,
             on_conflict=on_conflict,
+            use_staging=use_staging,
         )
 
     async def analyze(
@@ -139,60 +143,8 @@ class PluginCliService:
         self,
         *,
         filename: str,
-        content: bytes,
-        on_conflict: str = "rename",
-        install_source_override: dict | None = None,
-    ) -> dict[str, object]:
-        """Upload a package file and immediately install it.
-
-        Combines ``save_uploaded_package`` and ``install`` into a single operation
-        for convenience.
-
-        After a successful install, records the install source in the
-        install-source lock (design §7 / Req 9). When ``install_source_override``
-        is ``None`` (the default, used by the direct ``/plugin-cli/upload-and-install``
-        route), the entry is recorded with ``channel="imported"`` and
-        ``source_detail.package_filename`` / ``source_detail.package_sha256``
-        derived from the upload. When ``install_source_override`` is provided
-        (used by ``market_bridge`` — design Fix 8), it drives the subsequent
-        call to ``record_market`` instead, bypassing the imported channel
-        entirely so the lock file never passes through an ``imported →
-        market`` intermediate state.
-
-        If the install-source manager is unavailable, degraded, or
-        otherwise raises during recording, the response body still
-        returns the original upload + install payload plus an
-        ``install_source_warning`` field describing the issue (Req 9.6
-        / 10.8). The HTTP status stays 200 — install-source failures
-        must never mask a successful install.
-        """
-        import hashlib
-
-        save_result = await self.save_uploaded_package(filename=filename, content=content)
-        saved_path = str(save_result["path"])
-        install_result = await self.install(package=saved_path, on_conflict=on_conflict)
-
-        package_sha256 = hashlib.sha256(content).hexdigest().lower()
-        warning = await self._record_install_source_best_effort(
-            install_result=install_result,
-            package_filename=filename,
-            package_sha256=package_sha256,
-            override=install_source_override,
-        )
-
-        payload: dict[str, object] = {
-            "upload": save_result,
-            "install": install_result,
-        }
-        if warning is not None:
-            payload["install_source_warning"] = warning
-        return payload
-
-    async def upload_and_install(
-        self,
-        *,
-        filename: str,
-        content: bytes,
+        content: bytes | None = None,
+        package_path: str | None = None,
         on_conflict: str = "rename",
         install_source_override: dict[str, Any] | None = None,
     ) -> dict[str, object]:
@@ -238,10 +190,46 @@ class PluginCliService:
           error code.
         """
 
+        if content is None and package_path is None:
+            raise ValueError("upload_and_install requires content or package_path")
+        if content is not None and package_path is not None:
+            raise ValueError("upload_and_install accepts content or package_path, not both")
+
         if install_source_override is None:
-            return await self.upload_and_unpack(
-                filename=filename, content=content, on_conflict=on_conflict
+            if package_path is not None:
+                saved = await asyncio.to_thread(
+                    self._package_ref_from_path,
+                    filename=filename,
+                    package_path=package_path,
+                )
+                actual_sha256 = await asyncio.to_thread(
+                    self._sha256_file,
+                    package_path,
+                )
+            else:
+                saved = await self.save_uploaded_package(
+                    filename=filename,
+                    content=content or b"",
+                )
+                actual_sha256 = hashlib.sha256(content or b"").hexdigest().lower()
+
+            install_result = await self.install(
+                package=str(saved["path"]),
+                on_conflict=on_conflict,
             )
+            warning = await self._record_install_source_best_effort(
+                install_result=install_result,
+                package_filename=filename,
+                package_sha256=actual_sha256,
+                override=None,
+            )
+            payload: dict[str, object] = {
+                "upload": saved,
+                "install": install_result,
+            }
+            if warning is not None:
+                payload["install_source_warning"] = warning
+            return payload
 
         channel = install_source_override.get("channel")
         if channel != "market":
@@ -253,24 +241,38 @@ class PluginCliService:
         saved: dict[str, object] | None = None
         unpack_result: dict[str, object] | None = None
         unpacked_target_dir: Path | None = None
+        owns_saved_package = False
 
         try:
-            # Step 1 — save uploaded bytes.
-            saved = await self.save_uploaded_package(
-                filename=filename, content=content
-            )
+            # Step 1 — materialise package bytes on disk when needed.
+            if package_path is not None:
+                saved = await asyncio.to_thread(
+                    self._package_ref_from_path,
+                    filename=filename,
+                    package_path=package_path,
+                )
+                actual_sha256 = await asyncio.to_thread(
+                    self._sha256_file,
+                    package_path,
+                )
+            else:
+                saved = await self.save_uploaded_package(
+                    filename=filename,
+                    content=content or b"",
+                )
+                owns_saved_package = True
+                actual_sha256 = hashlib.sha256(content or b"").hexdigest().lower()
 
-            # Step 2 — re-compute SHA256 in case the caller's value was stale
-            # or the bytes were tampered with in transit.
-            actual_sha256 = hashlib.sha256(content).hexdigest().lower()
-
-            # Step 3 — install/unpack into the user plugin root.
+            # Step 2 — install/unpack into the user plugin root.
             saved_path = str(saved["path"])
+            install_mode = install_source_override.get("mode") or "install"
+            use_staging = install_mode == "install"
             unpack_result = await self.install(
                 package=saved_path,
                 plugins_root=None,
                 profiles_root=None,
                 on_conflict=on_conflict,
+                use_staging=use_staging,
             )
             target_dir, target_plugin_id = self._extract_unpack_target(
                 unpack_result
@@ -415,12 +417,16 @@ class PluginCliService:
             # Lock write failed — fs cleanup still runs, but propagate the
             # structured error so Bridge can map it to ``lock_write_failed``.
             self._cleanup_after_failure(
-                saved=saved, unpacked_target_dir=unpacked_target_dir
+                saved=saved,
+                unpacked_target_dir=unpacked_target_dir,
+                delete_saved_package=owns_saved_package,
             )
             raise
         except Exception:
             self._cleanup_after_failure(
-                saved=saved, unpacked_target_dir=unpacked_target_dir
+                saved=saved,
+                unpacked_target_dir=unpacked_target_dir,
+                delete_saved_package=owns_saved_package,
             )
             raise
 
@@ -506,6 +512,7 @@ class PluginCliService:
         *,
         saved: dict[str, object] | None,
         unpacked_target_dir: Path | None,
+        delete_saved_package: bool = True,
     ) -> None:
         """Best-effort fs cleanup on upload_and_install failure (R3.6).
 
@@ -518,7 +525,7 @@ class PluginCliService:
 
         if unpacked_target_dir is not None:
             self._cleanup_failed_unpack(unpacked_target_dir)
-        if saved is not None:
+        if delete_saved_package and saved is not None:
             saved_path_raw = saved.get("path")
             if isinstance(saved_path_raw, str) and saved_path_raw:
                 try:
@@ -726,6 +733,7 @@ class PluginCliService:
         plugins_root: str | None,
         profiles_root: str | None,
         on_conflict: str,
+        use_staging: bool = False,
     ) -> dict[str, object]:
         try:
             plugins_root_path = (
@@ -738,15 +746,123 @@ class PluginCliService:
                 if profiles_root
                 else _INSTALL_PROFILES_ROOT
             )
-            result = install_package(
-                self._resolve_package_path(package),
-                plugins_root=plugins_root_path,
-                profiles_root=profiles_root_path,
-                on_conflict=on_conflict,
-            )
+            package_path = self._resolve_package_path(package)
+            if use_staging:
+                result = self._install_via_staging_sync(
+                    package=package_path,
+                    plugins_root=plugins_root_path,
+                    profiles_root=profiles_root_path,
+                    on_conflict=on_conflict,
+                )
+            else:
+                result = install_package(
+                    package_path,
+                    plugins_root=plugins_root_path,
+                    profiles_root=profiles_root_path,
+                    on_conflict=on_conflict,
+                )
             return result.model_dump(mode="json")
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="install") from exc
+
+    def _install_via_staging_sync(
+        self,
+        *,
+        package: Path,
+        plugins_root: Path,
+        profiles_root: Path,
+        on_conflict: str,
+    ) -> InstallResult:
+        """Extract into a staging tree, then rename into place atomically."""
+
+        staging_token = uuid.uuid4().hex
+        staging_plugins = plugins_root / f".neko_staging_{staging_token}"
+        staging_profiles = profiles_root / f".neko_staging_{staging_token}"
+        staging_plugins.mkdir(parents=True, exist_ok=True)
+        staging_profiles.mkdir(parents=True, exist_ok=True)
+        installer = PackageInstaller()
+        promoted_plugins: list[InstalledPlugin] = []
+        promoted_profile: Path | None = None
+
+        try:
+            staged = install_package(
+                package,
+                plugins_root=staging_plugins,
+                profiles_root=staging_profiles,
+                on_conflict="fail",
+            )
+
+            for item in staged.installed_plugins:
+                source_dir = Path(item.target_dir)
+                desired = plugins_root / item.target_plugin_id
+                final_dir = installer.resolve_target_dir(
+                    desired,
+                    on_conflict=on_conflict,
+                )
+                if source_dir.resolve() != final_dir.resolve():
+                    final_dir.parent.mkdir(parents=True, exist_ok=True)
+                    source_dir.rename(final_dir)
+                promoted_plugins.append(
+                    InstalledPlugin(
+                        source_folder=item.source_folder,
+                        target_plugin_id=final_dir.name,
+                        target_dir=final_dir,
+                        renamed=(final_dir.name != item.source_folder),
+                    )
+                )
+
+            if staged.profile_dir is not None:
+                source_profile = Path(staged.profile_dir)
+                desired_profile = installer.resolve_target_dir(
+                    profiles_root / source_profile.name,
+                    on_conflict=on_conflict,
+                )
+                if source_profile.resolve() != desired_profile.resolve():
+                    desired_profile.parent.mkdir(parents=True, exist_ok=True)
+                    source_profile.rename(desired_profile)
+                promoted_profile = desired_profile
+
+            return InstallResult(
+                package_path=staged.package_path,
+                package_type=staged.package_type,
+                package_id=staged.package_id,
+                plugins_root=plugins_root,
+                profiles_root=profiles_root,
+                installed_plugins=promoted_plugins,
+                profile_dir=promoted_profile,
+                metadata_found=staged.metadata_found,
+                payload_hash=staged.payload_hash,
+                payload_hash_verified=staged.payload_hash_verified,
+                conflict_strategy=on_conflict,
+            )
+        except Exception:
+            for item in promoted_plugins:
+                shutil.rmtree(item.target_dir, ignore_errors=True)
+            if promoted_profile is not None:
+                shutil.rmtree(promoted_profile, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(staging_plugins, ignore_errors=True)
+            shutil.rmtree(staging_profiles, ignore_errors=True)
+
+    @staticmethod
+    def _sha256_file(path: str | Path) -> str:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest().lower()
+
+    @staticmethod
+    def _package_ref_from_path(*, filename: str, package_path: str) -> dict[str, object]:
+        resolved = Path(package_path).expanduser().resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(f"package file not found: {package_path}")
+        return {
+            "name": filename,
+            "path": str(resolved),
+            "size": resolved.stat().st_size,
+        }
 
     def _analyze_sync(
         self,
