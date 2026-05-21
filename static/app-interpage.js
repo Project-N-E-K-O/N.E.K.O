@@ -1187,7 +1187,8 @@
     function handleHideMainUI(options) {
         if (!_isModelHostPage()) return;
         options = options || {};
-        if (!options.skipHiddenStateUpdate) {
+        var skipHiddenStateUpdate = options.skipHiddenStateUpdate || options.preserveHiddenState;
+        if (!skipHiddenStateUpdate) {
             setMainUIHiddenByModelManager(true);
         }
         console.log('[UI] 隐藏主界面并暂停渲染');
