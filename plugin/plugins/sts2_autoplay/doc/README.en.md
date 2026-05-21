@@ -223,31 +223,43 @@ Takes the suggested step directly.
 2. Confirm `http://127.0.0.1:8080/health` is accessible.
 3. Call `sts2_health_check` in N.E.K.O.
 
-### Manually Execute One Step
+### Manually Review and Execute the Next Step
 
-Call:
-
-```text
-sts2_step_once
-```
-
-The plugin will pick and execute a legal action based on the current `mode` and `character_strategy`.
-
-### Let the Catgirl Play a Card
-
-The user can say something like:
+First inspect the current suggestion:
 
 ```text
-pick a card and play it for me
+sts2_get_planned_operation
 ```
 
-The host should call:
+If the suggestion looks good, then execute it:
 
 ```text
-sts2_play_one_card_by_neko
+sts2_execute_planned_operation
 ```
 
-The plugin will only pick from currently playable cards and will not pick end-turn, map, reward, or other actions.
+This matches the current public entry model better than calling a removed one-step action directly.
+
+### Check the Current Run Before Acting
+
+A common safe flow is:
+
+1. Check the full current run state with:
+
+```text
+sts2_read_state
+```
+
+2. See what she wants to do next with:
+
+```text
+sts2_get_planned_operation
+```
+
+3. If needed, adjust the strategy in one sentence.
+
+4. Finally decide whether to:
+   - take the suggested step with `sts2_execute_planned_operation`, or
+   - let autoplay continue with `sts2_start_autoplay`.
 
 ### Let the Catgirl Help Clear a Floor
 
@@ -263,41 +275,32 @@ The host should call:
 sts2_start_autoplay
 ```
 
-Recommended parameters:
+Once autoplay starts, use the pause / resume / stop entries to control it. Observation pushes are only progress feedback and should not be treated as task completion signals by themselves.
 
-```json
-{
-  "objective": "clear this floor for me",
-  "stop_condition": "current_floor"
-}
-```
+### Adjust Strategy Mid-run
 
-While the task is running, observation events are only progress reports and do not represent completion. Only after receiving the semi-auto task completion event should you tell the user that the floor is done.
-
-### Mid-task Guidance
-
-During autoplay, the user or catgirl can send guidance:
+If the user wants to change the direction while the run is in progress, they can say something like:
 
 ```text
 defend first, don't take too much damage
 ```
 
-Should call:
+The host should call:
 
 ```text
-sts2_send_neko_guidance
+sts2_apply_user_override
 ```
 
 Recommended parameters:
 
 ```json
 {
-  "content": "defend first, don't take too much damage",
-  "type": "soft_guidance"
+  "instruction": "defend first, don't take too much damage",
+  "source": "user"
 }
 ```
 
-The guidance will be referenced in later recommendations and autoplay execution.
+If autoplay is currently running, this entry will pause autoplay first, apply the strategy update, and then ask the user to resume autoplay manually if they want to continue.
 
 ## Frontend Push Events
 
@@ -358,24 +361,20 @@ Check:
 - During integration testing, you can first set `llm_frontend_output_probability` to `1`.
 - Whether the host frontend is actually receiving plugin push messages.
 
-### Catgirl mid-task guidance has no obvious effect
+### Catgirl mid-run strategy changes have no obvious effect
 
 Check:
 
-- Whether the current mode is `half-program` or `full-model`.
-- Whether `sts2_send_neko_guidance` returned `ok`.
-- Whether the guidance content is specific enough, such as "prioritize defense", "hit the lowest-HP enemy first", or "save the potion".
-- Whether the current legal actions can actually satisfy the guidance.
+- Whether the plugin is currently in standby.
+- Whether `sts2_apply_user_override` returned `ok`.
+- Whether the instruction is specific enough, such as "prioritize defense", "hit the lowest-HP enemy first", or "save the potion".
+- Whether the current legal actions can actually satisfy the requested adjustment.
 
-### Semi-auto task never finishes
+Remember that `sts2_apply_user_override` updates strategy preferences. It does not instantly force a specific card to be played on the current frame.
 
-Check `stop_condition`:
+### Auto-play keeps running in a direction you no longer want
 
-- If it is `manual` / `none`, the task will not complete automatically; you must call `sts2_stop_autoplay`.
-- If it is `current_combat`, the task completes after combat has been entered during the task and then exited.
-- If it is `current_floor`, it usually completes after the current floor is cleared or the next floor is entered.
-
-You can call `sts2_get_status` to inspect `autoplay.task`.
+Use `sts2_pause_autoplay` first, then call `sts2_apply_user_override` to adjust the strategy, and finally decide whether to resume with `sts2_resume_autoplay`.
 
 ### Stuck in events, popups, or transitional states
 

@@ -28,7 +28,7 @@ class STS2CompanionEvaluator:
         static_text = str(situation_summary.get("static_text") or situation_summary.get("text") or "")
         strategy_name = str(strategy_context.get("strategy_name") or "unknown")
         directives = strategy_context.get("strategy_directives") if isinstance(strategy_context.get("strategy_directives"), dict) else {}
-        player_operation_observation = {}
+        player_operation_observation = dict(getattr(runtime_state, "latest_player_operation_observation", {}) or {}) if runtime_state is not None else {}
 
         risk_level = self._risk_level(summary_kind=summary_kind, payload=payload)
         focus = self._focus(summary_kind=summary_kind, payload=payload)

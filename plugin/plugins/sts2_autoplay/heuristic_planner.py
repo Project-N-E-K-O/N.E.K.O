@@ -716,25 +716,6 @@ class STS2HeuristicPlanner:
             return 65
         return 10
 
-    def _reward_deck_policy(self, records: list[dict[str, Any]]) -> dict[str, set[str]]:
-        prefer_tags: set[str] = set()
-        avoid_tags: set[str] = set()
-        archetype_bias: set[str] = set()
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            value = record.get("value") if isinstance(record.get("value"), dict) else {}
-            if str(value.get("instruction_type") or "") != "deck_policy":
-                continue
-            prefer_tags.update(str(tag).strip().lower() for tag in (value.get("prefer_tags") if isinstance(value.get("prefer_tags"), list) else []) if str(tag).strip())
-            avoid_tags.update(str(tag).strip().lower() for tag in (value.get("avoid_tags") if isinstance(value.get("avoid_tags"), list) else []) if str(tag).strip())
-            archetype_bias.update(str(tag).strip().lower() for tag in (value.get("archetype_bias") if isinstance(value.get("archetype_bias"), list) else []) if str(tag).strip())
-        return {
-            "prefer_tags": prefer_tags,
-            "avoid_tags": avoid_tags,
-            "archetype_bias": archetype_bias,
-        }
-
     def _route_policy(self, preferences: dict[str, Any]) -> dict[str, Any]:
         records = preferences.get("records") if isinstance(preferences.get("records"), list) else []
         for record in records:

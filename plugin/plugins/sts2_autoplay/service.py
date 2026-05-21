@@ -52,7 +52,7 @@ class STS2AutoplayService:
         self._planner = STS2HeuristicPlanner(logger)
         self._candidate_generator = STS2CandidateGenerator(self._planner)
         self._action_registry = STS2ActionRegistry()
-        self._action_engine = STS2ActionEngine()
+        self._action_engine = STS2ActionEngine(self._i18n)
         self._loop_runner = STS2LoopRunner(self)
         self.neko = STS2NekoInterface(self)
 

@@ -57,13 +57,6 @@ class STS2PreferenceExtractor:
                 "value": {"instruction": raw_text},
             }
 
-        if screen == "combat" or any(token in lowered for token in ["战斗", "打牌", "出牌", "保血", "斩杀", "护盾", "能量"]):
-            return {
-                "domain": "combat_preferences",
-                "key": self._generic_key(context, fallback="combat_default"),
-                "value": {"instruction": raw_text},
-            }
-
         return None
 
     def _primary_enemy_id(self, context: dict[str, Any]) -> Any:
@@ -77,6 +70,8 @@ class STS2PreferenceExtractor:
                 return enemy_id
         return None
 
+
+    def _generic_key(self, context: dict[str, Any], *, fallback: str) -> str:
         screen = str(context.get("screen") or "").strip().lower()
         floor = context.get("floor")
         if floor is not None:

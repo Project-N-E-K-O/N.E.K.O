@@ -6,6 +6,14 @@ from .planner_interface import PlannedOperation
 
 
 class STS2ActionEngine:
+    def __init__(self, i18n: Any = None) -> None:
+        self._i18n = i18n
+
+    def t(self, key: str, *, default: str = "", **params: Any) -> str:
+        if self._i18n is not None:
+            return self._i18n.t(key, default=default, **params)
+        return default.format(**params) if params and default else (default or key)
+
     def validate(self, snapshot: dict[str, Any], operation: dict[str, Any] | PlannedOperation | None) -> dict[str, Any] | None:
         if operation is None:
             return None
@@ -62,13 +70,15 @@ class STS2ActionEngine:
     async def execute(self, client: Any, snapshot: dict[str, Any], operation: dict[str, Any] | PlannedOperation | None) -> dict[str, Any]:
         validated = self.validate(snapshot, operation)
         if validated is None:
+            message = self.t("action_engine.no_legal_action", default="当前没有可执行的合法动作。")
             return {
                 "status": "idle",
-                "message": "当前没有可执行的合法动作。",
+                "message": message,
+                "summary": message,
                 "executed": False,
             }
         result = await client.execute_action(validated["action_type"], **validated["kwargs"])
-        message = f"已执行动作: {validated['action_type']}"
+        message = self.t("action_engine.executed_action", default="已执行动作: {action_type}", action_type=validated["action_type"])
         return {
             "status": "ok",
             "message": message,

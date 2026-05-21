@@ -34,6 +34,8 @@
   "status.connected": "STS2-Agent connected: {base_url}",
   "status.refreshed": "State refreshed, screen={screen}",
   "status.snapshot": "Current snapshot: screen={screen}",
+  "action_engine.no_legal_action": "There is currently no executable legal action.",
+  "action_engine.executed_action": "Executed action: {action_type}",
   "errors.client_not_started": "STS2 client is not started",
   "autoplay.standby_blocked": "Currently in standby mode. No action will be executed.",
   "autoplay.no_planned_operation": "There is currently no executable planned operation.",

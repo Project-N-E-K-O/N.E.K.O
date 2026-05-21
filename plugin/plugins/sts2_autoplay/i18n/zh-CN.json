@@ -34,6 +34,8 @@
   "status.connected": "STS2-Agent 已连接: {base_url}",
   "status.refreshed": "已刷新状态，screen={screen}",
   "status.snapshot": "当前快照：screen={screen}",
+  "action_engine.no_legal_action": "当前没有可执行的合法动作。",
+  "action_engine.executed_action": "已执行动作: {action_type}",
   "errors.client_not_started": "STS2 client 未启动",
   "autoplay.standby_blocked": "当前处于 standby 模式，不执行动作。",
   "autoplay.no_planned_operation": "当前没有可执行的规划动作。",

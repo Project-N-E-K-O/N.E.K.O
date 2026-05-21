@@ -229,6 +229,14 @@ class STS2LoopRunner:
         thread = threading.Thread(target=_run_loop, name="sts2-companion-poll", daemon=True)
         thread.start()
         if not ready.wait(timeout=2.0):
+            loop = holder.get("loop")
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+            if thread.is_alive():
+                thread.join(timeout=3.0)
             return None
         self._owner_loop = holder.get("loop")
         self._owner_thread = thread
