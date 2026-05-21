@@ -162,7 +162,7 @@ class STS2CatgirlBridge:
         screen_label = str(screen or "unknown")
         body = summary_text.strip() or self.t("sync.no_summary", default="当前暂无局势摘要。")
         short_body = body[:12].rstrip("，。； ") if len(body) > 12 else body
-        return self._host_reply_text(f"[{screen_label}] {short_body}")
+        return f"[{screen_label}] {self._host_reply_text(short_body, limit=20)}"
 
     def _card_cost_text(self, card: dict[str, Any]) -> str:
         if bool(card.get("costs_x")):

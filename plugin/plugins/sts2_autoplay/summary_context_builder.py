@@ -208,6 +208,8 @@ class STS2SummaryContextBuilder:
         enemies = combat.get("enemies") if isinstance(combat.get("enemies"), list) else []
         return {
             "turn": raw_state.get("turn") if raw_state.get("turn") is not None else combat.get("turn"),
+            "floor": snapshot.get("floor") if snapshot.get("floor") is not None else raw_state.get("run", {}).get("floor"),
+            "act": snapshot.get("act") if snapshot.get("act") is not None else raw_state.get("run", {}).get("act"),
             "player": {
                 "current_hp": player.get("current_hp") or player.get("hp"),
                 "max_hp": player.get("max_hp"),
