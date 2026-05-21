@@ -1991,6 +1991,7 @@
         "micRequired": "Please enable microphone first!",
         "micNotOpen": "Microphone is not open!",
         "switchingToVoice": "Switching to voice mode...",
+        "waitForReplyBeforeVoice": "Finishing reply before voice...",
         "initializingVoice": "Initializing voice chat...",
         "initializingMic": "Initializing microphone...",
         "startFailed": "Start failed: {{error}}",
@@ -2042,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ Screen recording permission denied. Please allow screen recording in System Settings",
         "repetitionDetected": "High repetition detected. Suggest ending conversation to let {{name}} rest.",
         "modelSwitched": "Model switched",
+        "multiScreenDragHint": {
+            "title": "You can move YUI to another screen",
+            "body": "Keep dragging toward the screen edge and release. If she is too close to the edge, she will bounce back first.",
+            "ack": "Got it",
+            "never": "Do not remind me"
+        },
         "screenSource": {
             "notAvailable": "Screen source selection only available in desktop version",
             "loading": "Loading...",
@@ -3381,27 +3388,27 @@
     "characterModelNotSet": "Current character has no model set",
     "cookiesLogin": {
         "title": "N.E.K.O Credential Control Center",
-        "header": "🔐 Credential Acquisition Center",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵 Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏 Weibo",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 NetEase Cloud Music",
+        "header": "Credential Acquisition Center",
+        "bilibili": "Bilibili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "NetEase Cloud Music",
         "saveConfig": "Save Configuration",
         "encryptStorage": "Securely encrypt and store to local file",
         "localMonitoring": "Local Status Monitoring",
         "removeCredentials": "Remove",
         "confirmRemove": "Are you sure you want to clear the login credentials for {{platformName}}?",
-        "credentialsRemoved": "✅ Credentials removed successfully",
-        "credentialsSaved": "✅ {{platformName}} credentials saved successfully!",
+        "credentialsRemoved": "Credentials removed successfully",
+        "credentialsSaved": "{{platformName}} credentials saved successfully!",
         "credentialsRemovedFailed": "Removal failed",
-        "removeFailed": "❌ Removal failed, please check your network",
-        "requiredField": "⚠️ Please fill in the required field: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] contains invalid characters...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] contains leading/trailing spaces, which have been automatically trimmed. Please confirm and resubmit.",
-        "networkError": "❌ Network error: Unable to connect to backend service",
+        "removeFailed": "Removal failed, please check your network",
+        "requiredField": "Please fill in the required field: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] contains invalid characters...",
+        "whitespaceTrimmed": "[{{fieldName}}] contains leading/trailing spaces, which have been automatically trimmed. Please confirm and resubmit.",
+        "networkError": "Network error: Unable to connect to backend service",
         "saveFailed": "Save failed, please check if the format is correct",
         "pasteHere": "Paste here",
         "submitting": "Securely encrypting and transmitting...",
@@ -3409,13 +3416,13 @@
         "statusLoadFailed": "Status load failed",
         "thisPlatform": "this platform",
         "instructions": {
-            "bilibili": "📌 <b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
-            "douyin": "📌 <b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
-            "kuaishou": "📌 <b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
-            "weibo": "📌 <b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
-            "twitter": "📌 <b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
-            "reddit": "📌 <b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
-            "netease": "📌 <b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
+            "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
+            "douyin": "<b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
+            "kuaishou": "<b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
+            "weibo": "<b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
+            "twitter": "<b>Target:</b> Go to <b>x.com</b> to fetch these cookies.",
+            "reddit": "<b>Target:</b> Go to <b>reddit.com</b> to fetch these cookies.",
+            "netease": "<b>Target:</b> Go to <b>music.163.com</b> to fetch these cookies."
         },
         "guide": {
             "title": "Universal Guide for Beginners",
@@ -3513,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "Or... try QR code login?",
-            "openQR": "📱 Open QR Login",
+            "openQR": "Open QR Login",
             "loading": "Getting QR code...",
-            "scanTitle": "📱 Scan to Login {{platform}}",
+            "scanTitle": "Scan to Login {{platform}}",
             "qrCodeAlt": "Login QR code",
             "waiting": "Waiting for scan...",
             "validFor": "QR code valid for: {{seconds}}s",
@@ -3524,9 +3531,9 @@
             "retry": "Retry",
             "networkError": "Network request failed, please check connection",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, please refresh",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, please refresh",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3536,7 +3543,7 @@
                 "waiting": "Waiting for scan"
             },
             "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration",
-            "extractFailed": "⚠️ QR login succeeded but failed to extract fields automatically. Please check manually."
+            "extractFailed": "QR login succeeded but failed to extract fields automatically. Please check manually."
         }
     },
     "music": {

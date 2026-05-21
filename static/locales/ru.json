@@ -1991,6 +1991,7 @@
         "micRequired": "Включите микрофон!",
         "micNotOpen": "Микрофон не открыт!",
         "switchingToVoice": "Переключение в голосовой режим...",
+        "waitForReplyBeforeVoice": "Ждём окончания ответа перед переключением на голос...",
         "initializingVoice": "Инициализация голосового чата...",
         "initializingMic": "Инициализация микрофона...",
         "startFailed": "Ошибка запуска: {{error}}",
@@ -2042,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ Разрешение на запись экрана не предоставлено. Разрешите запись экрана в системных настройках",
         "repetitionDetected": "Обнаружено повторение. Рекомендуем завершить разговор, чтобы {{name}} отдохнула.",
         "modelSwitched": "Модель переключена",
+        "multiScreenDragHint": {
+            "title": "YUI можно перенести на другой экран",
+            "body": "Продолжайте тянуть к краю экрана и отпустите. Если она окажется слишком близко к краю, сначала отскочит назад.",
+            "ack": "Понятно",
+            "never": "Больше не напоминать"
+        },
         "screenSource": {
             "notAvailable": "Выбор источника экрана доступен только в десктопной версии",
             "loading": "Загрузка...",
@@ -3381,27 +3388,27 @@
     "characterModelNotSet": "Для текущего персонажа модель не установлена",
     "cookiesLogin": {
         "title": "Центр управления учетными данными N.E.K.O",
-        "header": "🔐 Центр получения учетных данных",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵 Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏 Weibo",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 NetEase Cloud Music",
+        "header": "Центр получения учетных данных",
+        "bilibili": "Bilibili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "NetEase Cloud Music",
         "saveConfig": "Сохранить конфигурацию",
         "encryptStorage": "Безопасное шифрование и сохранение в локальный файл",
         "localMonitoring": "Мониторинг локального статуса",
         "removeCredentials": "Удалить",
         "confirmRemove": "Вы уверены, что хотите очистить учетные данные для входа в {{platformName}}?",
-        "credentialsRemoved": "✅ Учетные данные успешно удалены",
-        "credentialsSaved": "✅ Учетные данные {{platformName}} успешно сохранены!",
+        "credentialsRemoved": "Учетные данные успешно удалены",
+        "credentialsSaved": "Учетные данные {{platformName}} успешно сохранены!",
         "credentialsRemovedFailed": "Ошибка удаления",
-        "removeFailed": "❌ Ошибка удаления, проверьте сеть",
-        "requiredField": "⚠️ Пожалуйста, заполните обязательное поле: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] содержит недопустимые символы...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] содержит начальные/конечные пробелы, которые были автоматически удалены. Пожалуйста, подтвердите и отправьте повторно",
-        "networkError": "❌ Сетевая ошибка: не удается подключиться к бэкенд-сервису",
+        "removeFailed": "Ошибка удаления, проверьте сеть",
+        "requiredField": "Пожалуйста, заполните обязательное поле: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] содержит недопустимые символы...",
+        "whitespaceTrimmed": "[{{fieldName}}] содержит начальные/конечные пробелы, которые были автоматически удалены. Пожалуйста, подтвердите и отправьте повторно",
+        "networkError": "Сетевая ошибка: не удается подключиться к бэкенд-сервису",
         "saveFailed": "Ошибка сохранения, проверьте правильность формата",
         "pasteHere": "Вставьте сюда",
         "submitting": "Безопасное шифрование и отправка...",
@@ -3409,13 +3416,13 @@
         "statusLoadFailed": "Ошибка загрузки статуса",
         "thisPlatform": "Эта платформа",
         "instructions": {
-            "bilibili": "📌 <b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
-            "douyin": "📌 <b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
-            "kuaishou": "📌 <b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
-            "weibo": "📌 <b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
-            "twitter": "📌 <b>Цель:</b> Перейдите на <b>x.com</b>, чтобы получить эти файлы cookie.",
-            "reddit": "📌 <b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie.",
-            "netease": "📌 <b>Цель:</b> Перейдите на <b>music.163.com</b>, чтобы получить эти файлы cookie."
+            "bilibili": "<b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
+            "douyin": "<b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
+            "kuaishou": "<b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
+            "weibo": "<b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
+            "twitter": "<b>Цель:</b> Перейдите на <b>x.com</b>, чтобы получить эти файлы cookie.",
+            "reddit": "<b>Цель:</b> Перейдите на <b>reddit.com</b>, чтобы получить эти файлы cookie.",
+            "netease": "<b>Цель:</b> Перейдите на <b>music.163.com</b>, чтобы получить эти файлы cookie."
         },
         "guide": {
             "title": "Универсальное руководство для новичков",
@@ -3513,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "Или... попробовать вход по QR-коду?",
-            "openQR": "📱 Открыть QR-вход",
+            "openQR": "Открыть QR-вход",
             "loading": "Получение QR-кода...",
-            "scanTitle": "📱 Вход по QR {{platform}}",
+            "scanTitle": "Вход по QR {{platform}}",
             "qrCodeAlt": "QR-код для входа",
             "waiting": "Ожидание сканирования...",
             "validFor": "QR-код действителен: {{seconds}}сек",
@@ -3524,9 +3531,9 @@
             "retry": "Повторить",
             "networkError": "Ошибка сети, проверьте подключение",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, обновите",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, обновите",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3536,7 +3543,7 @@
                 "waiting": "Ожидание сканирования"
             },
             "successAlert": "QR-вход успешен! Cookies автоматически заполнены, нажмите Сохранить конфигурацию",
-            "extractFailed": "⚠️ QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."
+            "extractFailed": "QR-вход выполнен, но не удалось автоматически извлечь поля. Проверьте вручную."
         }
     },
     "music": {

@@ -1991,6 +1991,7 @@
         "micRequired": "請先開啓麥剋風錄音！",
         "micNotOpen": "沒開麥啊喂！",
         "switchingToVoice": "正在切換到語音模式...",
+        "waitForReplyBeforeVoice": "等回覆結束後切換到語音...",
         "initializingVoice": "正在初始化語音對話...",
         "initializingMic": "正在初始化麥剋風...",
         "startFailed": "啓動失敗: {{error}}",
@@ -2042,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ 螢幕錄製權限未授權，請在系統設定中允許螢幕錄製",
         "repetitionDetected": "檢測到高重復度對話。建議您終止對話，讓{{name}}休息片刻。",
         "modelSwitched": "模型已切換",
+        "multiScreenDragHint": {
+            "title": "可以把 YUI 拖到副螢幕哦",
+            "body": "繼續往螢幕邊緣拖，放開滑鼠後她會去另一個螢幕；靠邊太近時會先自動回彈。",
+            "ack": "知道了",
+            "never": "不再提醒"
+        },
         "screenSource": {
             "notAvailable": "屏幕源選擇僅在桌麵版可用",
             "loading": "加載中...",
@@ -3381,27 +3388,27 @@
     "characterModelNotSet": "當前角色未設定模型",
     "cookiesLogin": {
         "title": "N.E.K.O 憑證控制中心",
-        "header": "🔐 憑證取得中心",
-        "bilibili": "📺 嗶哩嗶哩",
-        "douyin": "🎵 抖音",
-        "kuaishou": "🧡 快手",
-        "weibo": "🌏 微博",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 網易雲音樂",
+        "header": "憑證取得中心",
+        "bilibili": "嗶哩嗶哩",
+        "douyin": "抖音",
+        "kuaishou": "快手",
+        "weibo": "微博",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "網易雲音樂",
         "saveConfig": "儲存設定",
         "encryptStorage": "安全加密儲存至本地檔案",
         "localMonitoring": "本地狀態監控",
         "removeCredentials": "移除",
         "confirmRemove": "確定要清空 {{platformName}} 的登入憑證嗎？",
-        "credentialsRemoved": "✅ 已成功移除憑證",
-        "credentialsSaved": "✅ {{platformName}} 憑證儲存成功！",
+        "credentialsRemoved": "已成功移除憑證",
+        "credentialsSaved": "{{platformName}} 憑證儲存成功！",
         "credentialsRemovedFailed": "刪除失敗",
-        "removeFailed": "❌ 刪除失敗，請檢查網路",
-        "requiredField": "⚠️ 請填寫必填項: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] 包含無效字元...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] 包含前/後空白，已自動修剪，請確認後重新提交",
-        "networkError": "❌ 網路異常: 無法連接至後端服務",
+        "removeFailed": "刪除失敗，請檢查網路",
+        "requiredField": "請填寫必填項: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] 包含無效字元...",
+        "whitespaceTrimmed": "[{{fieldName}}] 包含前/後空白，已自動修剪，請確認後重新提交",
+        "networkError": "網路異常: 無法連接至後端服務",
         "saveFailed": "儲存失敗，請檢查格式是否正確",
         "pasteHere": "在此貼上",
         "submitting": "安全加密傳輸中...",
@@ -3409,13 +3416,13 @@
         "statusLoadFailed": "狀態載入失敗",
         "thisPlatform": "該平台",
         "instructions": {
-            "bilibili": "📌 <b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
-            "douyin": "📌 <b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
-            "kuaishou": "📌 <b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
-            "weibo": "📌 <b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
-            "twitter": "📌 <b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
-            "reddit": "📌 <b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。",
-            "netease": "📌 <b>目標：</b> 請前往 <b>music.163.com</b> 獲取這些 Cookies。"
+            "bilibili": "<b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
+            "douyin": "<b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
+            "kuaishou": "<b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
+            "weibo": "<b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
+            "twitter": "<b>目標：</b> 請前往 <b>x.com</b> 獲取這些 Cookies。",
+            "reddit": "<b>目標：</b> 請前往 <b>reddit.com</b> 獲取這些 Cookies。",
+            "netease": "<b>目標：</b> 請前往 <b>music.163.com</b> 獲取這些 Cookies。"
         },
         "guide": {
             "title": "新手通用獲取教學",
@@ -3513,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "或者...試試掃碼登入？",
-            "openQR": "📱 開啟掃碼登入",
+            "openQR": "開啟掃碼登入",
             "loading": "正在取得二維碼...",
-            "scanTitle": "📱 掃碼登入 {{platform}}",
+            "scanTitle": "掃碼登入 {{platform}}",
             "qrCodeAlt": "登入二維碼",
             "waiting": "等待掃碼...",
             "validFor": "二維碼有效期: {{seconds}}秒",
@@ -3524,9 +3531,9 @@
             "retry": "重試",
             "networkError": "網路請求失敗，請檢查連線",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}，請重新整理",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}，請重新整理",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3536,7 +3543,7 @@
                 "waiting": "等待掃碼"
             },
             "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定",
-            "extractFailed": "⚠️ 掃碼成功但未能自動擷取到欄位，請手動檢查。"
+            "extractFailed": "掃碼成功但未能自動擷取到欄位，請手動檢查。"
         }
     },
     "music": {

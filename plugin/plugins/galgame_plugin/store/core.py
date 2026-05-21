@@ -11,7 +11,7 @@ from typing import Any
 
 import portalocker
 
-from .models import (
+from ..models import (
     ADVANCE_SPEEDS,
     ADVANCE_SPEED_MEDIUM,
     MODES,
@@ -747,6 +747,26 @@ class GalgameStore:
             STORE_ADVANCE_SPEED,
             advance_speed if advance_speed in ADVANCE_SPEEDS else ADVANCE_SPEED_MEDIUM,
         )
+
+    def persist_mode_settings(
+        self,
+        *,
+        bound_game_id: str,
+        mode: str,
+        push_notifications: bool,
+        advance_speed: str,
+        reader_mode: str,
+    ) -> None:
+        with self._locked_store():
+            self._load_values(force=True, locked=True)
+            self._values[STORE_BOUND_GAME_ID] = bound_game_id
+            self._values[STORE_MODE] = mode
+            self._values[STORE_PUSH_NOTIFICATIONS] = push_notifications
+            self._values[STORE_ADVANCE_SPEED] = (
+                advance_speed if advance_speed in ADVANCE_SPEEDS else ADVANCE_SPEED_MEDIUM
+            )
+            self._values[STORE_READER_MODE] = reader_mode
+            self._save_values(locked=True)
 
     def persist_runtime(
         self,

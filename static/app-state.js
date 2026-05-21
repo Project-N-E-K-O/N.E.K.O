@@ -113,6 +113,11 @@
         assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
         assistantTurnAwaitingBubble: false,
+        // 文本会话刚把 WS payload 发出去（text 和/或 screenshot），但 gemini_response
+        // 还没回第一个 chunk 的那段空窗。用 ms 时间戳 + 15s 上限自我兜底，避免
+        // 错过 clear 时永远卡 true。专门给 isAssistantTextResponseInFlight()
+        // 用（_lastSubmittedRequestId 对纯截图请求会被故意清空，挡不住这段空窗）。
+        pendingTextTurnSubmitAt: 0,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
         assistantTurnCompletionSource: null,

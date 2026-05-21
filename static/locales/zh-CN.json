@@ -1991,6 +1991,7 @@
         "micRequired": "请先开启麦克风录音！",
         "micNotOpen": "没开麦啊喂！",
         "switchingToVoice": "正在切换到语音模式...",
+        "waitForReplyBeforeVoice": "等回复结束后切换到语音...",
         "initializingVoice": "正在初始化语音对话...",
         "initializingMic": "正在初始化麦克风...",
         "startFailed": "启动失败: {{error}}",
@@ -2042,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ 屏幕录制权限未授权，请在系统设置中允许屏幕录制",
         "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。",
         "modelSwitched": "模型已切换",
+        "multiScreenDragHint": {
+            "title": "可以把 YUI 拖到副屏哦",
+            "body": "继续往屏幕边缘拖，松开鼠标后她会去另一块屏幕；靠边太近时会先自动回弹。",
+            "ack": "知道了",
+            "never": "不再提醒"
+        },
         "screenSource": {
             "notAvailable": "屏幕源选择仅在桌面版可用",
             "loading": "加载中...",
@@ -3381,27 +3388,27 @@
     "characterModelNotSet": "当前角色未设置模型",
     "cookiesLogin": {
         "title": "N.E.K.O 凭证控制中心",
-        "header": "🔐 凭证获取中心",
-        "bilibili": "📺 Bilibili",
-        "douyin": "🎵 抖音",
-        "kuaishou": "🧡 快手",
-        "weibo": "🌏 微博",
-        "twitter": "🐦 Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 网易云音乐",
+        "header": "凭证获取中心",
+        "bilibili": "Bilibili",
+        "douyin": "抖音",
+        "kuaishou": "快手",
+        "weibo": "微博",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "网易云音乐",
         "saveConfig": "保存配置",
         "encryptStorage": "安全加密存储至本地文件",
         "localMonitoring": "本地状态监控",
         "removeCredentials": "移除",
         "confirmRemove": "确定要清空 {{platformName}} 的登录凭证吗？",
-        "credentialsRemoved": "✅ 已成功移除凭证",
-        "credentialsSaved": "✅ {{platformName}} 凭证保存成功！",
+        "credentialsRemoved": "已成功移除凭证",
+        "credentialsSaved": "{{platformName}} 凭证保存成功！",
         "credentialsRemovedFailed": "删除失败",
-        "removeFailed": "❌ 删除失败，请检查网络",
-        "requiredField": "⚠️ 请填写必填项: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] 包含无效字符...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] 包含前/后空白，已自动修剪，请确认后重新提交",
-        "networkError": "❌ 网络异常: 无法连接至后端服务",
+        "removeFailed": "删除失败，请检查网络",
+        "requiredField": "请填写必填项: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] 包含无效字符...",
+        "whitespaceTrimmed": "[{{fieldName}}] 包含前/后空白，已自动修剪，请确认后重新提交",
+        "networkError": "网络异常: 无法连接至后端服务",
         "saveFailed": "保存失败，请检查格式是否正确",
         "pasteHere": "在此粘贴",
         "submitting": "安全加密传输中...",
@@ -3409,13 +3416,13 @@
         "statusLoadFailed": "状态加载失败",
         "thisPlatform": "此平台",
         "instructions": {
-            "bilibili": "📌 <b>目标：</b>请前往 <b>bilibili.com</b>获取这些 Cookies。",
-            "douyin": "📌 <b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
-            "kuaishou": "📌 <b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
-            "weibo": "📌 <b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
-            "twitter": "📌 <b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
-            "reddit": "📌 <b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
-            "netease": "📌 <b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
+            "bilibili": "<b>目标：</b>请前往 <b>bilibili.com</b>获取这些 Cookies。",
+            "douyin": "<b>目标：</b> 请前往 <b>douyin.com</b> 获取这些 Cookies。",
+            "kuaishou": "<b>目标：</b> 请前往 <b>kuaishou.com</b> 获取这些 Cookies。",
+            "weibo": "<b>目标：</b> 请前往 <b>weibo.com</b> 获取这些 Cookies。",
+            "twitter": "<b>目标：</b> 请前往 <b>x.com</b> 获取这些 Cookies。",
+            "reddit": "<b>目标：</b> 请前往 <b>reddit.com</b> 获取这些 Cookies。",
+            "netease": "<b>目标：</b> 请前往 <b>music.163.com</b> 获取这些 Cookies。"
         },
         "guide": {
             "title": "新手通用获取教程",
@@ -3513,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "或者...试试扫码登录?",
-            "openQR": "📱 打开扫码登录",
+            "openQR": "打开扫码登录",
             "loading": "正在获取二维码...",
-            "scanTitle": "📱 扫码登录 {{platform}}",
+            "scanTitle": "扫码登录 {{platform}}",
             "qrCodeAlt": "登录二维码",
             "waiting": "等待扫码...",
             "validFor": "二维码有效期: {{seconds}}秒",
@@ -3524,9 +3531,9 @@
             "retry": "重试",
             "networkError": "网络请求失败，请检查连接",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}，请刷新",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}，请刷新",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3536,7 +3543,7 @@
                 "waiting": "等待扫码"
             },
             "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置",
-            "extractFailed": "⚠️ 扫码成功但未能自动提取到字段，请手动检查。"
+            "extractFailed": "扫码成功但未能自动提取到字段，请手动检查。"
         }
     },
     "music": {

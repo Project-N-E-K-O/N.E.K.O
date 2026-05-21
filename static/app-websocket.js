@@ -713,6 +713,45 @@
     function clearPendingAssistantTurnStart() {
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
+        // 同时清掉 submit-to-first-chunk 空窗 marker。本函数被所有 turn-end /
+        // response_discarded / socket_close / user_activity_cancel 路径调用，
+        // 等于把 marker 接进了完整的 turn 生命周期收尾。
+        S.pendingTextTurnSubmitAt = 0;
+    }
+
+    // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
+    // buffer 收尾：标 bubble 为 sent、设 _geminiTurnEndSealed 让 adapter 在
+    // 后续 chunk 来时新建气泡而非追加到封口气泡（封口气泡的 React
+    // StreamingText 在 status sent→streaming 切换时重 mount，追加文字会视觉
+    // 丢失，详见 adapter 里的 _geminiTurnEndSealed 注释）、清 pending music、
+    // structured 流 drop 掉残余 buffer（自己有 renderer），realistic 流把
+    // 残余 trim 后 enqueue。
+    // 之前两边各写一份导致这次 PR 修 agent_callback `return` 时才发现行为不
+    // 一致；抽成共享 helper 防止下次又单边演进。
+    function flushRealisticBufferOnTurnEnd() {
+        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+        }
+        window._geminiTurnEndSealed = true;
+        window._pendingMusicCommand = '';
+        if (window._structuredGeminiStreaming) {
+            window._realisticGeminiBuffer = '';
+            window._structuredGeminiStreaming = false;
+            return;
+        }
+        var rest = typeof window._realisticGeminiBuffer === 'string'
+            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            : '';
+        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        window._realisticGeminiBuffer = '';
+        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+        if (trimmed) {
+            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+            window._realisticGeminiQueue.push(trimmed);
+            if (typeof window.processRealisticQueue === 'function') {
+                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+            }
+        }
     }
 
     function clearPendingUserActivityCancel() {
@@ -1352,6 +1391,15 @@
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     clearPendingAssistantTurnStart();
+                    // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
+                    // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
+                    // pendingTextTurnSubmitAt 都清零了。重新写一次时间戳，让
+                    // isAssistantTextResponseInFlight() 在 retry 的下一个 first-chunk
+                    // 到来前保持 true，否则切语音那条等待循环会过早 resolve 然后
+                    // end_session 把 retry 的 LLM 流又掐掉。
+                    if (response.will_retry) {
+                        S.pendingTextTurnSubmitAt = Date.now();
+                    }
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -2284,30 +2332,7 @@
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        // 同 'turn end' 路径：标记封口，让后续 chunk 在 adapter 里新建气泡
-                        window._geminiTurnEndSealed = true;
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                            return;
-                        }
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
@@ -2374,35 +2399,7 @@
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        // 标记本气泡已封口：若同一 dialog turn 内还有后续 chunk
-                        // （Gemini Live late-continuation 或 tool 后续段台词），
-                        // app-chat-adapter.js 的 appendMessage 会据此新建一个气泡，
-                        // 而不是继续往封口气泡追加（封口气泡的 React StreamingText
-                        // 会在 status sent→streaming 切换时重 mount，导致追加文字
-                        // 视觉丢失）。详见 adapter 里的 _geminiTurnEndSealed 注释。
-                        window._geminiTurnEndSealed = true;
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                        } else {
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
