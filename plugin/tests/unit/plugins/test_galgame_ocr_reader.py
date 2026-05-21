@@ -1298,7 +1298,10 @@ def test_ocr_writer_discard_session_recovers_when_snapshot_write_fails(
 
     assert writer.session_id == ""
     assert not (bridge_root / game_id / "session.json").exists()
-    assert events[-1]["type"] == "session_ended"
+    assert [event["type"] for event in events] == [
+        "session_started",
+        "session_ended",
+    ]
     assert events[-1]["payload"]["discarded"] is True
 
 
@@ -4623,6 +4626,7 @@ async def test_ocr_reader_discards_new_failed_session_with_existing_history(
     await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
     assert manager._writer.session_id == ""
     events_after_failure = _read_events(bridge_root / seed_game_id / "events.jsonl")
+    assert events_after_failure[: len(seed_events)] == seed_events
     assert events_after_failure[-1]["type"] == "session_ended"
     assert events_after_failure[-1]["payload"]["discarded"] is True
 
@@ -4633,6 +4637,7 @@ async def test_ocr_reader_discards_new_failed_session_with_existing_history(
     assert "session_started" in [
         event["type"] for event in events[len(events_after_failure) :]
     ]
+    assert events[: len(seed_events)] == seed_events
 
 
 def test_build_config_defaults_ocr_languages_to_chi_sim_jpn_eng(tmp_path: Path) -> None:
