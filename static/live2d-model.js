@@ -416,6 +416,7 @@ Live2DManager.prototype._resetDerivedModelMetadata = function() {
     this._isLookAtDrivenByMotion = false;
     this._isBreathDrivenByMotion = false;
     this._motionDrivenBreathParamIds = null;
+    this._motionDrivenBreathMotionKey = null;
     this._runtimeBreathTime = 0;
     this._runtimeBreathParamIds = null;
     this._lookAtTimer = undefined;
@@ -2096,8 +2097,17 @@ Live2DManager.prototype.installMouthOverride = function() {
             this._isEyeDrivenByMotion = false;
             this._isLookAtDrivenByMotion = false;
             this._isBreathDrivenByMotion = false;
-            this._motionDrivenBreathParamIds = new Set();
-            const motionPriority = Number(internalModel.motionManager?.state?.currentPriority ?? 0);
+            const motionState = internalModel.motionManager?.state;
+            const motionPriority = Number(motionState?.currentPriority ?? 0);
+            const activeMotionKey = motionPriority > LIVE2D_MOTION_PRIORITY.NONE
+                ? [motionPriority, motionState?.currentGroup ?? '', motionState?.currentIndex ?? ''].join(':')
+                : null;
+            if (this._motionDrivenBreathMotionKey !== activeMotionKey) {
+                this._motionDrivenBreathMotionKey = activeMotionKey;
+                this._motionDrivenBreathParamIds = new Set();
+            } else if (!(this._motionDrivenBreathParamIds instanceof Set)) {
+                this._motionDrivenBreathParamIds = new Set();
+            }
             const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {
@@ -2128,12 +2138,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                         const postVal = coreModel.getParameterValueByIndex(idx);
                         const preVal = preUpdateParams[id];
                         if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._isBreathDrivenByMotion = true;
                             this._motionDrivenBreathParamIds.add(id);
                         }
                     }
                 } catch (_) {}
             }
+            this._isBreathDrivenByMotion = this._motionDrivenBreathParamIds.size > 0;
             for (const [id, idx] of Object.entries(lookAtParamIndices)) {
                 try {
                     const postVal = coreModel.getParameterValueByIndex(idx);
