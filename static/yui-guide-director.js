@@ -10255,17 +10255,21 @@
                 return 'unavailable';
             }
 
-            const point = detail && typeof detail === 'object'
-                ? {
-                    screenX: Number(detail.screenX),
-                    screenY: Number(detail.screenY)
-                }
-                : null;
-            if (point && Number.isFinite(point.screenX) && Number.isFinite(point.screenY)) {
-                const currentRect = await this.getSkipButtonScreenRect();
-                if (currentRect && !this.isPointInsideScreenRect(point, currentRect)) {
-                    return 'rejected';
-                }
+            if (!detail || typeof detail !== 'object') {
+                return 'rejected';
+            }
+
+            const point = {
+                screenX: Number(detail.screenX),
+                screenY: Number(detail.screenY)
+            };
+            if (!Number.isFinite(point.screenX) || !Number.isFinite(point.screenY)) {
+                return 'rejected';
+            }
+
+            const currentRect = await this.getSkipButtonScreenRect();
+            if (!currentRect || !this.isPointInsideScreenRect(point, currentRect)) {
+                return 'rejected';
             }
 
             skipButton.click();
