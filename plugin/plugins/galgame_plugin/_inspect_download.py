@@ -31,7 +31,6 @@ from ._paths import (
     resolve_rapidocr_site_packages_dir,
 )
 from . import _runtime
-from ._runtime import _rapidocr_package_dir
 
 
 def inspect_rapidocr_installation(
@@ -49,7 +48,7 @@ def inspect_rapidocr_installation(
     runtime_dir = resolve_rapidocr_runtime_dir(install_target_dir_raw)
     site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
     model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
-    package_dir = _rapidocr_package_dir(install_target_dir_raw)
+    package_dir = _runtime._rapidocr_package_dir(install_target_dir_raw)
     install_state_path = _rapidocr_install_state_path(install_target_dir_raw)
     selected_model = rapidocr_selected_model_name(
         ocr_version=ocr_version,
