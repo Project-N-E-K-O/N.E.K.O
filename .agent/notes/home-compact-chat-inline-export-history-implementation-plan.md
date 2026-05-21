@@ -363,15 +363,14 @@ Pointer intent 规则：
 3. History 关闭时完全移除 geometry item。
 4. 透明 wrapper 不进入 native hit region。
 5. 只有可见气泡、滚动区和按钮区进入 hit region。
-6. 如果 history 使用 body portal，collector 必须像 `compact-input-tool-fan` / `compact-chat-choice-anchor` 一样允许它被收集。
-7. 如果 history 外层 rect 与内部可交互区不一致，先扩展 collector 支持显式 hit rect 或子 item，不用整块 wrapper rect 充当 hitRect。
-8. History 的 geometry 采集必须消费实际渲染后的 DOM rect；不要在 NEKO-PC 里复刻 history 尺寸公式。尺寸公式只属于 NEKO React/CSS，桌面端只消费页面提供的 rect。
-9. ChoicePrompt / GalGame 选项打开时：
+6. 如果 history 外层 rect 与内部可交互区不一致，先扩展 collector 支持显式 hit rect 或子 item，不用整块 wrapper rect 充当 hitRect。
+7. History 的 geometry 采集必须消费实际渲染后的 DOM rect；不要在 NEKO-PC 里复刻 history 尺寸公式。尺寸公式只属于 NEKO React/CSS，桌面端只消费页面提供的 rect。
+8. ChoicePrompt / GalGame 选项打开时：
    - choice item 层级高于 history / preview。
    - 只有选项 placement 在上方并覆盖 history / preview 时，history / preview 才进入视觉让位和不可点击状态。
    - 选项 placement 在下方时，history / preview 保持正常显示和交互。
    - 不发生重排，不推动聊天框。
-10. 同步产出 NEKO-PC 可直接消费的 geometry 合同；网页端 collector 的输出必须能表达桌面端需要的 window bounds 和 native hit，不留给 preload 猜测。
+9. 同步产出 NEKO-PC 可直接消费的 geometry 合同；网页端 collector 的输出必须能表达桌面端需要的 window bounds 和 native hit，不留给 preload 猜测。
 
 建议数据约定：
 
@@ -410,13 +409,12 @@ Pointer intent 规则：
    - `history:native` 只输出 native union，`hitRect: null`，避免透明外层吃点击。
    - scroll / controls / preview 子 item 输出真实 DOM rect；只有 `pointer-events !== none` 时进入 `hitRect`。
    - ChoicePrompt / GalGame 选项位于上方时，history / preview 通过 CSS `pointer-events: none` 进入视觉让位，不抢点击；选项位于下方时不让位。
-4. Collector 仍允许 body portal 中的 `.compact-export-history-anchor` 被采集，和 toolFan / choice portal 一致。
-5. `getCompactSurfaceBaseRect()` 的 base anchor 候选仍只包含 `input` / `capsule`；history / preview 不参与聊天框本体锚点计算。
-6. Geometry item 语义已收敛为 composite：
+4. `getCompactSurfaceBaseRect()` 的 base anchor 候选仍只包含 `input` / `capsule`；history / preview 不参与聊天框本体锚点计算。
+5. Geometry item 语义已收敛为 composite：
    - `history:native` 用于窗口 bounds union。
    - `history:native` 不进入 hit，不吃点击。
    - scroll / controls / preview 子区域才进入真实 hit。
-7. 设计文档中的 geometry 规则已同步修正：
+6. 设计文档中的 geometry 规则已同步修正：
    - 无消息空状态打开时也输出 history 真实可见区域，不退回旧导出入口。
    - `interactive` 不再简单写成 `true`，而是 composite item 语义，避免后续桌面端把 native union 误当整块 hit region。
 
@@ -486,78 +484,6 @@ Pointer intent 规则：
 7. 最小化小球位置不受 history / preview 影响。
 8. 拖动紧凑聊天框后松手，history / preview 不把聊天框吸回模型头部或其它自动位置。
 9. 打开右侧工具轮盘、history、preview、choice 的任意组合时，聊天框本体不因为 extra item bounds 变化而跳动。
-
-### 第 6 步收口状态
-
-收口结论：第 6 步已经完成 NEKO-PC 对 compact inline history / preview geometry 合同的桌面端消费修正。桌面壳继续只消费 NEKO 页面输出的 geometry，不复制 history 尺寸、导出选择、导出格式化或消息业务。
-
-已落地内容：
-
-1. `src/preload-chat-react.js` 的 `buildDesktopCompactWindowLayout()` 已保持 extra item 的显式命中语义：
-   - `nativeRect` 进入 compact window bounds union。
-   - `hitRect` 只在页面 geometry 明确提供时进入 setShape / native hit。
-   - `hitRect: null` 不再被回填成 `nativeRect`。
-2. `history:native` 这类 composite native union item 可以扩展窗口 bounds，但不会把透明外层变成可点击遮罩。
-3. `history` / `preview` 仍然不属于 `isDesktopCompactSurfaceAnchorKind()`：
-   - 聊天框本体 anchor 仍只看 `capsule` / `input`。
-   - 用户拖动后保存的位置仍通过 `getDesktopCompactBaseSurfaceScreenRect()` 读取本体 surface。
-   - history / preview 打开、关闭或尺寸变化不会写入新的本体位置。
-4. `choice` 的空间不足上 / 下重定位逻辑仍只对 `item.kind === 'choice'` 生效，不会套到 history / preview。
-5. 新增 `test/compact-history-geometry-contract.test.js` 锁定桌面端契约：
-   - history / preview 不进入 anchor kind。
-   - extra item 的 `nativeRect` 与显式 `hitRect` 分离。
-   - 旧的 `hitRect || nativeRect` 回填不会回归。
-   - 拖拽保存位置不引用 history / preview。
-   - 通过抽取当前 `preload-chat-react.js` 中的真实 layout 相关函数，模拟网页端输出的 `surfaceItems`，验证 history / preview 的 bounds、hit、surface anchor 和 choice 重定位关系。
-6. 桌面端实际显示修正：
-   - `chat.html` 的 `<body>` 带 `electron-chat-window subtitle-web-host`。
-   - 桌面端 compact history 不再留在 React root / `.chat-window` 内部，而是和 toolFan / ChoicePrompt 一样通过 body portal 挂到 `document.body`。
-   - 这样 history 首帧不会被紧凑聊天窗口内部 `overflow: hidden` / 小窗口 bounds 裁切，geometry collector 也能像其它 interaction island 一样采集它。
-   - 网页端不带 `electron-chat-window`，仍保持原挂载方式，避免污染网页表现。
-
-真实模拟覆盖：
-
-1. 网页端打开 history 后输出：
-   - `history:native`：进入 window bounds union，不进入 hit。
-   - `history:scroll` / `history:controls`：进入 native hit / setShape。
-   模拟结果确认透明 history 外层点位不在 hitRects 内，滚动区和操作区点位在 hitRects 内。
-2. Inline preview 展开后输出 preview hit region：
-   - window bounds 随 preview 扩展。
-   - 聊天框本体 surface 的屏幕坐标保持不变。
-   - preview 可交互区域进入 hitRects，preview / history 透明边缘不吃点击。
-3. ChoicePrompt / GalGame 选项空间不足时：
-   - 只有 `choice` 被移动到上方。
-   - `history` 保持网页端提供的位置。
-   - choice 原本越界位置不再可点，移动后的 choice 可点。
-   - history 透明 native 区域仍不进入 hit。
-
-已验证：
-
-1. `node --check src/preload-chat-react.js`（目录：`/Users/tonnodoubt/N.E.K.O.-PC`）
-2. `node --test test/compact-history-geometry-contract.test.js`（目录：`/Users/tonnodoubt/N.E.K.O.-PC`，5 tests passed）
-3. `git diff --check`（目录：`/Users/tonnodoubt/N.E.K.O.-PC`）
-4. `node --check static/app-react-chat-window.js`（目录：`/Users/tonnodoubt/N.E.K.O`）
-5. `npm --prefix frontend/react-neko-chat test -- --run App.test.tsx -t "compact export history|compact export action|desktop compact options"`（12 tests passed）
-6. `npm --prefix frontend/react-neko-chat test -- --run App.test.tsx -t "compact export history|desktop body portal"`（11 tests passed）
-7. `npm --prefix frontend/react-neko-chat test -- --run App.test.tsx`（85 tests passed）
-8. `npm --prefix frontend/react-neko-chat run typecheck`
-9. `bash build_frontend.sh`
-10. `git diff --check`（目录：`/Users/tonnodoubt/N.E.K.O`）
-
-补充测试结果：
-
-1. 已尝试执行 `node --test test/*.test.js`（目录：`/Users/tonnodoubt/N.E.K.O.-PC`）。
-2. 该全量桌面端测试当前存在 3 个与本轮 compact geometry 无关的既有失败，集中在 `test/storage-window-display-contract.test.js`：
-   - `NEKO web hook remains host-optional and backend-authoritative when available`
-   - `retained recommended root cleanup stays backend-owned and selective`
-   - `storage selection emphasizes recommended location before current path`
-3. 新增的 compact history geometry contract 测试在该全量运行中也通过；上述 storage 测试不属于第 6 步修改范围，本阶段不夹带修复。
-
-阶段 6 边界：
-
-1. 第 6 步只修正 NEKO-PC 对新增 geometry 的消费契约，不修改 NEKO 页面 UI、导出业务或后端协议。
-2. 第 6 步不接入真实 Markdown / Image 导出构建能力。
-3. 第 6 步的桌面端实际窗口交互仍需要在最终全流程验收中配合 NEKO-PC 真实启动确认，包括窗口不抖、透明区域穿透、ChoicePrompt 覆盖和用户拖动位置保持。
 
 ## 第 7 步：前端行为测试、桌面端契约测试和 i18n key 初步补齐
 

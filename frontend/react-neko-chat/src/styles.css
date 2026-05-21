@@ -1845,10 +1845,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   position: fixed;
   left: calc(var(--compact-surface-left, 50vw) + (var(--compact-surface-width, 430px) / 2));
   bottom: calc(100vh - var(--compact-surface-top, 68vh) + 12px);
-  --compact-export-history-region-height: var(
-    --compact-history-slot-height,
-    min(calc(var(--compact-surface-width, 430px) * 1.18), 63vh)
-  );
+  --compact-export-history-region-height: min(calc(var(--compact-surface-width, 430px) * 1.18), 63vh);
   width: min(var(--compact-surface-width, 430px), calc(100vw - 24px));
   max-height: min(calc(var(--compact-surface-width, 430px) * 1.46), 78vh);
   transform: translateX(-50%);
@@ -1900,10 +1897,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   flex-direction: column;
   gap: 8px;
   min-height: 100%;
-}
-
-.compact-export-history-scroll-content > .compact-export-history-message:first-child {
-  margin-top: auto;
+  justify-content: flex-end;
 }
 
 .compact-export-history-scroll:hover,

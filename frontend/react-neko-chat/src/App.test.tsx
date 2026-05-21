@@ -1338,114 +1338,6 @@ describe('App', () => {
     expect(exportButton).toHaveAttribute('data-compact-tool-active', 'false');
   });
 
-  it('mounts compact export history as a desktop body portal to avoid compact window clipping', async () => {
-    const originalBodyClass = document.body.className;
-    document.body.classList.add('electron-chat-window');
-    const message = parseChatMessage({
-      id: 'compact-export-desktop-portal-message',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      blocks: [{ type: 'text', text: '桌面端历史层需要脱离 chat-window 裁切' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      fireEvent.pointerDown(fan, { pointerId: 91, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 91, clientX: 156, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 91, clientX: 156, buttons: 0, pointerType: 'mouse' });
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-      });
-
-      fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
-
-      const history = document.body.querySelector('.compact-export-history-anchor') as HTMLElement;
-      expect(history).not.toBeNull();
-      expect(history.parentElement).toBe(document.body);
-      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-      expect(history).toHaveAttribute('data-compact-geometry-owner', 'surface');
-      expect(history.querySelector('[data-compact-export-history-message-id="compact-export-desktop-portal-message"]')).not.toBeNull();
-    } finally {
-      document.body.className = originalBodyClass;
-    }
-  });
-
-  it('keeps compact input state while interacting with desktop compact history and preview portals', async () => {
-    const originalBodyClass = document.body.className;
-    document.body.classList.add('electron-chat-window');
-    const onCompactChatStateChange = vi.fn();
-    const message = parseChatMessage({
-      id: 'compact-export-history-input-island',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      blocks: [{ type: 'text', text: '历史层本身属于紧凑交互岛' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[message]}
-          onCompactChatStateChange={onCompactChatStateChange}
-        />,
-      );
-
-      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      fireEvent.pointerDown(fan, { pointerId: 92, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 92, clientX: 156, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 92, clientX: 156, buttons: 0, pointerType: 'mouse' });
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-      });
-      fireEvent.click(fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement);
-      onCompactChatStateChange.mockClear();
-
-      const input = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
-      const history = document.body.querySelector('.compact-export-history-anchor') as HTMLElement;
-      const row = history.querySelector('[data-compact-export-history-message-id="compact-export-history-input-island"]') as HTMLElement;
-      input.focus();
-      fireEvent.pointerDown(row, { pointerId: 93, clientX: 20, clientY: 20, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.blur(input, { relatedTarget: row });
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-      });
-
-      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
-      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
-
-      fireEvent.click(row);
-      fireEvent.click(history.querySelectorAll('.compact-export-history-control')[3] as HTMLButtonElement);
-      const preview = history.querySelector('.compact-export-preview-region') as HTMLElement;
-      fireEvent.pointerDown(preview, { pointerId: 94, clientX: 24, clientY: 24, button: 0, buttons: 1, pointerType: 'mouse' });
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-      });
-
-      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
-      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-export-preview-open', 'true');
-
-      fireEvent.pointerDown(document.body, { pointerId: 95, clientX: 1, clientY: 1, button: 0, buttons: 1, pointerType: 'mouse' });
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-      });
-
-      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
-    } finally {
-      document.body.className = originalBodyClass;
-    }
-  });
-
   it('closes compact export history state after leaving compact mode', async () => {
     const message = parseChatMessage({
       id: 'compact-export-history-close-message',
@@ -2897,14 +2789,14 @@ describe('App', () => {
     });
     document.body.appendChild(live2dContainer);
 
-    const compactHistoryLayer = document.createElement('section');
-    compactHistoryLayer.className = 'compact-export-history-anchor';
-    document.body.appendChild(compactHistoryLayer);
+    const compactButton = document.createElement('button');
+    compactButton.className = 'live2d-floating-btn';
+    document.body.appendChild(compactButton);
 
     const originalElementsFromPoint = document.elementsFromPoint;
     Object.defineProperty(document, 'elementsFromPoint', {
       configurable: true,
-      value: () => [compactHistoryLayer],
+      value: () => [compactButton],
     });
 
     Object.assign(window, {
@@ -2935,7 +2827,7 @@ describe('App', () => {
         value: originalElementsFromPoint || (() => []),
       });
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      compactHistoryLayer.remove();
+      compactButton.remove();
       live2dContainer.remove();
     }
   });

@@ -32,7 +32,6 @@ type CompactExportHistoryPanelProps = {
   onInvertSelection: () => void;
   onRequestPreview: () => void;
   onClosePreview: () => void;
-  onInteractivePointerDown?: () => void;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -83,7 +82,6 @@ export default function CompactExportHistoryPanel({
   onInvertSelection,
   onRequestPreview,
   onClosePreview,
-  onInteractivePointerDown,
   onAction,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -261,7 +259,6 @@ export default function CompactExportHistoryPanel({
       data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
       data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
       aria-label={i18n('chat.exportConversation', 'Export Conversation')}
-      onPointerDownCapture={onInteractivePointerDown}
       onPointerDown={(event) => event.stopPropagation()}
       onPointerMove={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}

@@ -234,31 +234,6 @@
         };
     }
 
-    function getElectronCompactStableHistorySlotHeight(surface) {
-        if (!isElectronChatWindow() || !surface) return null;
-        var layout = window.__nekoDesktopCompactLayout;
-        var windowBounds = layout && layout.windowBounds;
-        var workArea = layout && layout.workArea;
-        var windowY = Number(windowBounds && windowBounds.y);
-        var workAreaY = Number(workArea && workArea.y);
-        var workAreaHeight = Number(workArea && workArea.height);
-        if (
-            !Number.isFinite(windowY)
-            || !Number.isFinite(workAreaY)
-            || !Number.isFinite(workAreaHeight)
-            || workAreaHeight <= 0
-        ) {
-            return null;
-        }
-
-        var surfaceScreenTop = windowY + surface.top;
-        var availableAbove = Math.max(0, surfaceScreenTop - workAreaY);
-        var widthLimit = Math.max(180, Math.round(surface.width * 1.18));
-        var workAreaLimit = Math.max(180, Math.round(workAreaHeight * 0.63));
-        var availableLimit = Math.max(180, Math.round(availableAbove - 24));
-        return Math.max(180, Math.min(widthLimit, workAreaLimit, availableLimit));
-    }
-
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
     }
@@ -684,7 +659,6 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
-                && !element.classList.contains('compact-export-history-anchor')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
@@ -754,12 +728,10 @@
         shell.style.removeProperty('--compact-surface-top');
         shell.style.removeProperty('--compact-surface-width');
         shell.style.removeProperty('--compact-surface-height');
-        shell.style.removeProperty('--compact-history-slot-height');
         document.documentElement.style.removeProperty('--compact-surface-left');
         document.documentElement.style.removeProperty('--compact-surface-top');
         document.documentElement.style.removeProperty('--compact-surface-width');
         document.documentElement.style.removeProperty('--compact-surface-height');
-        document.documentElement.style.removeProperty('--compact-history-slot-height');
         compactSurfaceAnchorSnapshot = '';
         compactSurfaceAnchorLocked = false;
         syncCompactInteractionGeometry();
@@ -781,14 +753,11 @@
             clearCompactSurfaceAnchor();
             return;
         }
-        var stableHistorySlotHeight = getElectronCompactStableHistorySlotHeight(target);
-
         var snapshot = [
             Math.round(target.left),
             Math.round(target.top),
             Math.round(target.width),
-            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT),
-            stableHistorySlotHeight ? Math.round(stableHistorySlotHeight) : 0
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
@@ -803,13 +772,6 @@
         document.documentElement.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
         document.documentElement.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
         document.documentElement.style.setProperty('--compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
-        if (stableHistorySlotHeight) {
-            shell.style.setProperty('--compact-history-slot-height', Math.round(stableHistorySlotHeight) + 'px');
-            document.documentElement.style.setProperty('--compact-history-slot-height', Math.round(stableHistorySlotHeight) + 'px');
-        } else {
-            shell.style.removeProperty('--compact-history-slot-height');
-            document.documentElement.style.removeProperty('--compact-history-slot-height');
-        }
         syncCompactInteractionGeometry();
     }
 
@@ -3904,7 +3866,6 @@
         window.addEventListener('neko:desktop-compact-layout-change', function () {
             compactSurfaceAnchorLocked = false;
             compactSurfaceAnchorSnapshot = '';
-            syncCompactSurfaceAnchor();
             scheduleCompactMinimizeBallTracking();
         });
         window.addEventListener('neko:desktop-avatar-bounds-change', function () {

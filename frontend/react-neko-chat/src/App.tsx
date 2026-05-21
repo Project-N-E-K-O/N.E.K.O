@@ -315,8 +315,6 @@ const compactCursorZoneSelector = [
   '.composer-icon-button',
   '.compact-input-tool-fan',
   '.compact-input-tool-toggle',
-  '.compact-chat-choice-anchor',
-  '.compact-export-history-anchor',
   '.send-button-circle',
   '.window-topbar-actions',
   '.topbar-action-btn',
@@ -837,7 +835,6 @@ export default function App({
   const compactInputToolWheelPointerRef = useRef<CompactToolWheelPointerState | null>(null);
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const lastCompactInteractivePointerDownAtRef = useRef(0);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
   const overflowMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1645,59 +1642,27 @@ export default function App({
     setComposerBottomBarNode(prev => (prev === node ? prev : node));
   }, []);
 
-  const isInsideCompactInteractiveIsland = useCallback((target: EventTarget | null) => (
-    target instanceof Node
-    && (
-      !!compactInputShellRef.current?.contains(target)
-      || !!compactInputToolFanRef.current?.contains(target)
-      || !!compactChoiceLayerRef.current?.contains(target)
-      || (
-        target instanceof Element
-        && !!target.closest('.compact-export-history-anchor')
-      )
-    )
-  ), []);
-
-  const markCompactInteractivePointerDown = useCallback(() => {
-    lastCompactInteractivePointerDownAtRef.current = (
-      typeof performance !== 'undefined' && typeof performance.now === 'function'
-        ? performance.now()
-        : Date.now()
-    );
-  }, []);
-
   const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean }) => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
     if (compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
-    if (!options?.ignoreFocusedShell && compactExportHistoryOpen) return;
-    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
-      ? performance.now()
-      : Date.now();
-    if (
-      !options?.ignoreFocusedShell
-      && now - lastCompactInteractivePointerDownAtRef.current < 160
-    ) {
-      return;
-    }
     const activeElement = document.activeElement;
     if (
       !options?.ignoreFocusedShell
+      && compactInputShellRef.current
       && activeElement instanceof Node
-      && isInsideCompactInteractiveIsland(activeElement)
+      && compactInputShellRef.current.contains(activeElement)
     ) {
       return;
     }
     requestCompactChatState('default');
   }, [
     compactInputToolFanOpen,
-    compactExportHistoryOpen,
     composerAttachments.length,
     effectiveCompactChatState,
     isCompactSurface,
-    isInsideCompactInteractiveIsland,
     requestCompactChatState,
   ]);
 
@@ -1717,11 +1682,17 @@ export default function App({
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
 
+    const isInsideCompactInputIsland = (target: EventTarget | null) => (
+      target instanceof Node
+      && (
+        !!compactInputShellRef.current?.contains(target)
+        || !!compactInputToolFanRef.current?.contains(target)
+        || !!compactChoiceLayerRef.current?.contains(target)
+      )
+    );
+
     const handlePointerDown = (event: PointerEvent) => {
-      if (isInsideCompactInteractiveIsland(event.target)) {
-        markCompactInteractivePointerDown();
-        return;
-      }
+      if (isInsideCompactInputIsland(event.target)) return;
       scheduleForcedCompactInputCollapse();
     };
 
@@ -1738,13 +1709,7 @@ export default function App({
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [
-    effectiveCompactChatState,
-    isCompactSurface,
-    isInsideCompactInteractiveIsland,
-    markCompactInteractivePointerDown,
-    scheduleForcedCompactInputCollapse,
-  ]);
+  }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
@@ -2786,7 +2751,6 @@ export default function App({
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
       style={compactInputToolFanStyle ?? undefined}
-      onPointerDownCapture={markCompactInteractivePointerDown}
       onPointerDown={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         if (event.target === event.currentTarget) {
@@ -3078,7 +3042,6 @@ export default function App({
       data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
-      onPointerDownCapture={isCompactSurface ? markCompactInteractivePointerDown : undefined}
     >
       {galgameModeEnabled && !choicePromptHasOptions ? (
         <div
@@ -3203,17 +3166,10 @@ export default function App({
       onInvertSelection={handleCompactExportInvertSelection}
       onRequestPreview={handleCompactExportPreviewRequest}
       onClosePreview={handleCompactExportPreviewClose}
-      onInteractivePointerDown={markCompactInteractivePointerDown}
       onAction={onMessageAction}
     />
   ) : null;
-  const compactExportHistoryNode = compactExportHistoryElement
-    ? (
-      typeof document !== 'undefined' && document.body.classList.contains('electron-chat-window')
-        ? createPortal(compactExportHistoryElement, document.body)
-        : compactExportHistoryElement
-    )
-    : null;
+  const compactExportHistoryNode = compactExportHistoryElement;
 
   const chatBodyNode = isCompactSurface ? (
     <section
@@ -3446,7 +3402,6 @@ export default function App({
                 data-compact-geometry-item="input"
                 data-compact-geometry-owner="surface"
                 data-compact-chat-state={effectiveCompactChatState}
-                onPointerDownCapture={markCompactInteractivePointerDown}
                 onBlurCapture={scheduleCompactInputCollapse}
               >
                 <div
