@@ -84,6 +84,7 @@ from utils.native_voice_registry import (
     get_native_voice_catalog_for_ui,
     normalize_native_voice,
     resolve_native_voice_for_routing,
+    should_block_free_voice_for_route,
 )
 from utils.audio import normalize_voice_clone_api_audio, validate_audio_file
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
@@ -545,6 +546,11 @@ async def _resolve_exit_retention_voice_id(config_manager, current_catgirl_paylo
         or core_config.get('coreApi')
         or ''
     ).strip().lower()
+    realtime_base_url = str(
+        realtime_config.get('base_url')
+        or core_config.get('CORE_URL')
+        or ''
+    ).strip()
 
     character_voice_id = str(get_reserved(
         current_catgirl_payload,
@@ -556,7 +562,18 @@ async def _resolve_exit_retention_voice_id(config_manager, current_catgirl_paylo
         _is_free_preset_voice_id(character_voice_id)
         and core_api_type != 'free'
     )
-    if character_voice_id and config_manager.validate_voice_id(character_voice_id) and not free_preset_mismatches_route:
+    route_blocks_free_voice = should_block_free_voice_for_route(
+        core_api_type,
+        character_voice_id,
+        realtime_base_url,
+        config_manager.voice_id_exists_in_any_storage,
+    )
+    if (
+        character_voice_id
+        and config_manager.validate_voice_id(character_voice_id)
+        and not free_preset_mismatches_route
+        and not route_blocks_free_voice
+    ):
         return character_voice_id
     if character_voice_id:
         logger.info("退出挽留 TTS 跳过当前角色不可用音色: %s", character_voice_id)
@@ -572,6 +589,12 @@ async def _resolve_exit_retention_voice_id(config_manager, current_catgirl_paylo
         and not configured_tts_voice_id.startswith('__gptsovits_disabled__|')
         and config_manager.validate_voice_id(configured_tts_voice_id)
         and not (_is_free_preset_voice_id(configured_tts_voice_id) and core_api_type != 'free')
+        and not should_block_free_voice_for_route(
+            core_api_type,
+            configured_tts_voice_id,
+            realtime_base_url,
+            config_manager.voice_id_exists_in_any_storage,
+        )
     ):
         return configured_tts_voice_id
 
@@ -3991,7 +4014,12 @@ async def get_voice_preview(
             and not is_free_preset_voice
             and is_exit_retention_style
         ):
-            qwen_api_key = str(core_config_for_preview.get('CORE_API_KEY') or '').strip()
+            qwen_tts_config_for_preview = _config_manager.get_model_api_config('tts_default')
+            qwen_api_key = str(
+                qwen_tts_config_for_preview.get('api_key')
+                or core_config_for_preview.get('CORE_API_KEY')
+                or ''
+            ).strip()
             if not qwen_api_key:
                 return JSONResponse({
                     'success': False,

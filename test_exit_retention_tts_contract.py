@@ -30,6 +30,8 @@ def test_exit_retention_tts_falls_back_to_current_tts_route_when_character_voice
     assert "async def _resolve_exit_retention_voice_id(" in router
     assert "config_manager.validate_voice_id(character_voice_id)" in router
     assert "free_preset_mismatches_route" in router
+    assert "should_block_free_voice_for_route" in router
+    assert "route_blocks_free_voice" in router
     assert "logger.info(\"退出挽留 TTS 跳过当前角色不可用音色" in router
     assert "core_config = await config_manager.aget_core_config()" in router
     assert "realtime_config = config_manager.get_model_api_config('realtime')" in router
@@ -92,6 +94,9 @@ def test_qwen_direct_preview_is_limited_to_exit_retention_style():
     assert "and is_exit_retention_style" in voice_preview
     assert "realtime_config_for_preview = _config_manager.get_model_api_config('realtime')" in voice_preview
     assert "realtime_config_for_preview.get('api_type')" in voice_preview
+    assert "qwen_tts_config_for_preview = _config_manager.get_model_api_config('tts_default')" in voice_preview
+    assert "qwen_tts_config_for_preview.get('api_key')" in voice_preview
+    assert "or core_config_for_preview.get('CORE_API_KEY')" in voice_preview
     assert "qwen_style_instruction = EXIT_RETENTION_TTS_QWEN_STYLE_INSTRUCTION" in voice_preview
 
 
