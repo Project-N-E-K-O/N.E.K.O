@@ -1316,7 +1316,18 @@
         };
         syncPreview();
 
-        item.addEventListener('click', () => addSticker(variants[activeVariantIndex]));
+        item.tabIndex = 0;
+        item.setAttribute('role', 'button');
+        const addActiveVariantSticker = () => addSticker(variants[activeVariantIndex]);
+        item.addEventListener('click', addActiveVariantSticker);
+        item.addEventListener('keydown', (event) => {
+            if (event.target !== item) return;
+            const isEnter = event.key === 'Enter' || event.keyCode === 13;
+            const isSpace = event.key === ' ' || event.keyCode === 32;
+            if (!isEnter && !isSpace) return;
+            if (isSpace) event.preventDefault();
+            addActiveVariantSticker();
+        });
 
         if (variants.length > 1) {
             const switchBtn = document.createElement('button');
@@ -1706,8 +1717,7 @@
     function updateStickerInteractivity() {
         const enabled = (activeTab === 'decor-tab');
         document.querySelectorAll('.sticker-placed').forEach(el => {
-            const isSelected = Number(el.dataset.stickerId) === selectedStickerId;
-            el.style.pointerEvents = (enabled && !modelLayerSelected && isSelected) ? 'auto' : 'none';
+            el.style.pointerEvents = (enabled && !modelLayerSelected) ? 'auto' : 'none';
         });
         // 模型模式显示拖拽光标，装饰模式显示默认光标
         const preview = $('#card-preview');
@@ -1736,7 +1746,10 @@
         el.addEventListener('pointerdown', (e) => {
             if (activeTab !== 'decor-tab') return;
             if (modelLayerSelected) return;
-            if (selectedStickerId !== sticker.id) return;
+            if (selectedStickerId !== sticker.id) {
+                selectSticker(sticker.id);
+                refreshLayerPanel();
+            }
             e.stopPropagation();
             dragging = true;
             startX = e.clientX;
@@ -1774,7 +1787,7 @@
         document.querySelectorAll('.sticker-placed').forEach(el => {
             const isSelected = Number(el.dataset.stickerId) === id;
             el.classList.toggle('selected', isSelected);
-            el.style.pointerEvents = (activeTab === 'decor-tab' && !modelLayerSelected && isSelected) ? 'auto' : 'none';
+            el.style.pointerEvents = (activeTab === 'decor-tab' && !modelLayerSelected) ? 'auto' : 'none';
         });
 
         const s = getSelectedSticker();

@@ -86,12 +86,20 @@ def test_card_maker_registers_variant_stickers():
     assert "STICKER_VARIANT_GROUPS" in script
     assert "switchSelectedStickerVariant" in script
     assert 'id="sticker-switch-variant-btn"' in template
+    assert "item.tabIndex = 0;" in script
+    assert "item.setAttribute('role', 'button');" in script
+    assert "item.addEventListener('keydown'" in script
+    assert "event.key === 'Enter' || event.keyCode === 13" in script
+    assert "event.key === ' ' || event.keyCode === 32" in script
 
 
-def test_card_maker_layer_selection_controls_preview_sticker_dragging():
+def test_card_maker_preview_can_select_stickers_directly():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
 
-    assert "if (selectedStickerId !== sticker.id) return;" in script
+    assert "if (selectedStickerId !== sticker.id) {" in script
+    assert "selectSticker(sticker.id);" in script
+    assert "refreshLayerPanel();" in script
+    assert "if (selectedStickerId !== sticker.id) return;" not in script
 
 
 def test_card_maker_layer_order_matches_visual_stacking():
@@ -110,7 +118,7 @@ def test_card_maker_selected_sticker_uses_overlay_selection_frame():
 
     assert "function updateStickerSelectionFrame(s)" in script
     assert "sticker-selection-frame" in styles
-    assert "el.style.pointerEvents = (activeTab === 'decor-tab' && !modelLayerSelected && isSelected) ? 'auto' : 'none';" in script
+    assert "el.style.pointerEvents = (activeTab === 'decor-tab' && !modelLayerSelected) ? 'auto' : 'none';" in script
     assert "const target = (s.layer === 'below') ? below : above;" in script
 
 
@@ -134,3 +142,9 @@ def test_card_maker_model_loading_message_exists_in_all_locales():
             missing.append(locale_path.name)
 
     assert missing == [], f"Missing cardExport keys in locale files: {', '.join(missing)}"
+
+
+def test_card_maker_japanese_sticker_variant_translation_is_consistent():
+    payload = json.loads((LOCALE_DIR / "ja.json").read_text(encoding="utf-8"))
+
+    assert payload["cardExport"]["switchStickerVariant"] == "形態を切り替え"
