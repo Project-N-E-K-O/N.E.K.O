@@ -10884,14 +10884,59 @@ async function _companionTryAutoSave(state) {
         //
         // ⚠ saveCatgirlFromPanel 的 `return false` 有**两种**语义混用：
         //   (1) form.dataset.submitting === 'true' 的 debounce skip —— 表示有
-        //       另一个 save 正在飞行中，这次"跳过"不算失败；
+        //       另一个 save 正在飞行中；
         //   (2) HTTP / validation / 网络异常的真·失败。
-        // companion 这里没法从 false 单值里区分。简化：进 save 前自己看一下
-        // dataset.submitting，如果在 flight 中就静默 skip（用户手动 Save 跟
-        // companion auto-save 同时发生时不会误报"自动保存失败"），其它时候 false
-        // 就当真失败处理。这样不需要改 saveCatgirlFromPanel 的返回契约、不波及
-        // 它的其他 9 个 caller。
-        if (state.form.dataset.submitting === 'true') return;
+        //
+        // 上一轮 (3bf0b171) 把 (1) 当失败误报；上一轮的 fix (722ada87) 简单粗暴
+        // 改成 "in-flight 就 return"。但**那条捷径会丢数据**：
+        //   T0: 用户手动 Save → saveCatgirlFromPanel 用 T0 的 form 数据起 POST
+        //   T1: companion 把 AI 的新字段写进**同一个**form 的 textarea
+        //   T2: companion tryAutoSave → 看到 dataset.submitting='true' → return
+        //   T3: 后端 success → buildCatgirlDetailForm() 用 server 返回的数据
+        //       (T0 的快照) 重建 form → companion 写进去的 T1 字段被抹掉
+        //   T4: 既没存进后端、也不在 form 里、companion 也不知道要重试 —— 静默丢失
+        //
+        // 修法：不再 return，改成**等 in-flight save 收尾**（轮询 dataset.submitting
+        // 翻 'false'），然后 _companionEnsureLiveForm 接上可能 rebuild 出来的新
+        // form。如果 form 实例真的换了，比对 formWatchSnapshot（这次 tryAutoSave
+        // 之前刚 refresh 过、代表 companion 期望的状态）和新 form 的实际字段值，
+        // 把丢失/被抹掉的字段 replay 一遍，然后再调 saveCatgirlFromPanel 把
+        // companion 的修改真正落盘。
+        const formBeforeWait = state.form;
+        const WAIT_TIMEOUT_MS = 8000;
+        const POLL_MS = 100;
+        let waited = 0;
+        while (waited < WAIT_TIMEOUT_MS) {
+            if (!_companionEnsureLiveForm(state)) return;
+            if (state.form.dataset.submitting !== 'true') break;
+            await new Promise(function (r) { setTimeout(r, POLL_MS); });
+            waited += POLL_MS;
+        }
+        // 二次 sanity check：超时还在 submitting 就放弃，避免 hang 死
+        if (state.form && state.form.dataset.submitting === 'true') {
+            console.warn('[card-companion] auto-save waited 8s for in-flight save, giving up');
+            return;
+        }
+        // form 实例换过 → 把 companion 期望的字段值重新灌回新 form。仅当 snapshot
+        // 里某 key 的值跟当前 form 里不一致时才 apply，避免覆盖 server 端的合法
+        // 数据 / 重复触发 input 事件。
+        if (state.form !== formBeforeWait && state.formWatchSnapshot) {
+            const replayValues = {};
+            const replayKeys = [];
+            Object.keys(state.formWatchSnapshot).forEach(function (k) {
+                const ta = _findFieldTextareaByName(state.form, k);
+                const cur = ((ta && ta.value) || '').trim();
+                const want = (state.formWatchSnapshot[k] || '').trim();
+                if (want && cur !== want) {
+                    replayValues[k] = state.formWatchSnapshot[k];
+                    replayKeys.push(k);
+                }
+            });
+            if (replayKeys.length) {
+                _cardAssistApplyToForm(state.form, replayValues, replayKeys,
+                    state.originalName, state.isNew);
+            }
+        }
         let ok = true;
         try {
             const ret = await saveCatgirlFromPanel(state.form, state.originalName, state.isNew);
