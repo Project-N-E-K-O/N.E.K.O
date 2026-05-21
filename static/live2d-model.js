@@ -1085,8 +1085,9 @@ Live2DManager.prototype._getNativeRuntimeBreathParamIds = function(internalModel
         if (!runtimeBreathParamIds.has(id)) continue;
         const weight = Number(param.weight);
         const peak = Number(param.peak);
+        const offset = Number(param.offset);
         if (Number.isFinite(weight) && weight === 0) continue;
-        if (Number.isFinite(peak) && peak === 0) continue;
+        if (Number.isFinite(peak) && peak === 0 && Number.isFinite(offset) && offset === 0) continue;
         nativeBreathParamIds.add(id);
     }
 
