@@ -62,7 +62,9 @@ class STS2CatgirlBridge:
             "event_override": bool(strategy_context.get("event_override")),
             "enemy_override": bool(strategy_context.get("enemy_override")),
         }
-        player_operation_observation = {}
+        player_operation_observation = snapshot.get("player_operation_observation") if isinstance(snapshot.get("player_operation_observation"), dict) else {}
+        if not player_operation_observation and companion_evaluation:
+            player_operation_observation = companion_evaluation.get("player_operation_observation") if isinstance(companion_evaluation.get("player_operation_observation"), dict) else {}
         if companion_evaluation:
             payload["companion_evaluation"] = companion_evaluation
             primary_message = str(companion_evaluation.get("primary_message") or "").strip()

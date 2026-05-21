@@ -1029,36 +1029,6 @@ class STS2AutoplayService:
             ai_behavior = "respond"
         push_scene_key = f"{payload.get('screen')}|{payload.get('summary_kind')}|{payload.get('trigger')}"
         push_reason = str(catgirl_sync.get("reason") or "")
-        if (
-            str(companion_evaluation.get("trigger") or payload.get("trigger") or "") != "combat_turn"
-            and push_scene_key == self._state.last_push_scene_key
-            and push_reason == self._state.last_push_reason
-            and self._state.step_count - self._state.last_push_step_count < 2
-        ):
-            if str(companion_evaluation.get("trigger") or payload.get("trigger") or "") == "combat_turn":
-                try:
-                    self.logger.info(
-                        "[sts2_combat_turn_path] return=throttled turn_key=%s last_turn_key=%s scene_key=%s reason=%s step_count=%s last_step=%s",
-                        companion_evaluation.get("turn_key"),
-                        self._state.last_companion_turn_key,
-                        push_scene_key,
-                        push_reason,
-                        self._state.step_count,
-                        self._state.last_push_step_count,
-                    )
-                except Exception:
-                    pass
-            try:
-                self.logger.info(
-                    "[sts2_push_debug] deliver_catgirl_sync skipped: throttled scene_key=%s reason=%s step_count=%s last_step=%s",
-                    push_scene_key,
-                    push_reason,
-                    self._state.step_count,
-                    self._state.last_push_step_count,
-                )
-            except Exception:
-                pass
-            return
         notifier(
             content=self._host_reply_text(str(payload.get("message") or payload.get("summary") or self.t("sync.default", default="尖塔局势已同步。"))),
             description="STS2 catgirl sync",
