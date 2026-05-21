@@ -481,6 +481,7 @@ class AgentSummaryMixin:
                 "_record_story_progress_from_scene_summary",
                 None,
             )
+            story_recorded = True
             if callable(story_recorder):
                 try:
                     story_recorder(
@@ -494,7 +495,9 @@ class AgentSummaryMixin:
                         "galgame story_so_far update failed",
                         exc_info=True,
                     )
-            self._last_push_ts = time.monotonic()
+                    story_recorded = False
+            if story_recorded:
+                self._last_push_ts = time.monotonic()
             self._record_summary_task_event(
                 "after_push",
                 {

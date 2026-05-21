@@ -148,6 +148,10 @@ class AgentConsultMixin:
             try:
                 load = context_loader()
             except Exception:  # noqa: BLE001
+                self._logger.warning(
+                    "galgame character profile context load failed",
+                    exc_info=True,
+                )
                 load = None
             profiles = (load or {}).get("profiles") if isinstance(load, dict) else None
             if isinstance(profiles, dict):
@@ -163,6 +167,10 @@ class AgentConsultMixin:
             try:
                 load = activator(bound_game_id)
             except Exception:  # noqa: BLE001
+                self._logger.warning(
+                    "galgame character profile activation failed",
+                    exc_info=True,
+                )
                 return None
             profiles = (load or {}).get("profiles") if isinstance(load, dict) else None
             if isinstance(profiles, dict):

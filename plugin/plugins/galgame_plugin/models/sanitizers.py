@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 from .store_keys import _RAPIDOCR_OCR_VERSIONS
@@ -21,7 +20,7 @@ def json_copy(value: Any) -> Any:
         return {key: json_copy(item) for key, item in value.items()}
     elif isinstance(value, tuple):
         return tuple(json_copy(item) for item in value)
-    return copy.deepcopy(value)
+    raise TypeError(f"value is not JSON-compatible: {type(value).__name__}")
 
 
 def normalize_rapidocr_ocr_version(value: object) -> str:

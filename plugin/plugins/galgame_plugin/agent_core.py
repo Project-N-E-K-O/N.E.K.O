@@ -485,7 +485,7 @@ class GameLLMAgent(
             self._next_actuation_at = now + 0.2
             return
         except Exception as exc:
-            self._logger.warning("galgame choice planning failed: {}", exc)
+            self._logger.error("galgame choice planning failed", exc_info=True)
             suggestion = {"degraded": True, "choices": [], "diagnostic": str(exc)}
 
         current_choices = list((shared.get("latest_snapshot") or {}).get("choices") or [])

@@ -25,7 +25,7 @@ class AgentChoicePlanningMixin:
                 "diagnostic": "timeout: choice planning exceeded fallback window",
             }
         except Exception as exc:
-            self._logger.warning("galgame choice planning failed: {}", exc)
+            self._logger.error("galgame choice planning failed", exc_info=True)
             suggestion = {"degraded": True, "choices": [], "diagnostic": str(exc)}
 
         current_choices = list((shared.get("latest_snapshot") or {}).get("choices") or [])

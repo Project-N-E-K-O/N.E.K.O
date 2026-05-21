@@ -12,11 +12,13 @@ class AgentMessageRouter:
         self.push_delivery_history: list[dict[str, Any]] = []
         self.last_interruption: dict[str, Any] = {}
         self._message_seq = 0
+        self.dropped_message_count = 0
 
     def reset(self) -> None:
         self.inbound_messages.clear()
         self.outbound_messages.clear()
         self.last_interruption = {}
+        self.dropped_message_count = 0
 
     def new_message_id(self, *, direction: str, kind: str) -> str:
         self._message_seq += 1
@@ -176,8 +178,10 @@ class AgentMessageRouter:
             "last_outbound_message": json_copy(self.outbound_messages[-1])
             if self.outbound_messages
             else None,
+            "dropped_message_count": self.dropped_message_count,
         }
 
     def _trim(self, messages: list[dict[str, Any]]) -> None:
         if len(messages) > self._limit:
+            self.dropped_message_count += len(messages) - self._limit
             del messages[:-self._limit]
