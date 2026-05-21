@@ -161,10 +161,7 @@ def test_catgirl_sync_payload_is_lightweight_structured_package() -> None:
     assert payload["enemies"][0]["name"] == "海洋混混"
     assert payload["cards"][0]["cost"] == "1费"
     assert payload["cards"][0]["effect"] == "获得格挡并过牌"
-    assert payload["player_operation"] == {
-        "event_type": "player_card_or_action_committed",
-        "summary": "玩家刚打出一张攻击牌。",
-    }
+    assert payload["player_operation"] == {}
 
 
 

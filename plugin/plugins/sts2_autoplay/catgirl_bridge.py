@@ -62,9 +62,6 @@ class STS2CatgirlBridge:
             "event_override": bool(strategy_context.get("event_override")),
             "enemy_override": bool(strategy_context.get("enemy_override")),
         }
-        player_operation_observation = snapshot.get("player_operation_observation") if isinstance(snapshot.get("player_operation_observation"), dict) else {}
-        if not player_operation_observation and companion_evaluation:
-            player_operation_observation = companion_evaluation.get("player_operation_observation") if isinstance(companion_evaluation.get("player_operation_observation"), dict) else {}
         if companion_evaluation:
             payload["companion_evaluation"] = companion_evaluation
             primary_message = str(companion_evaluation.get("primary_message") or "").strip()
@@ -99,13 +96,6 @@ class STS2CatgirlBridge:
                 for card in cards[:5]
                 if isinstance(card, dict)
             ]
-        if player_operation_observation:
-            payload["player_operation"] = {
-                "event_type": str(player_operation_observation.get("event_type") or ""),
-                "summary": str(player_operation_observation.get("summary") or ""),
-            }
-            if payload["trigger"] == "player_operation":
-                payload["ai_behavior"] = "read"
         return {
             "should_sync": should_sync,
             "should_comment": bool(companion_evaluation.get("should_comment", should_sync)) if companion_evaluation else should_sync,
