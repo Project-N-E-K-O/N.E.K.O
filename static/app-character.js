@@ -73,6 +73,30 @@
         }
     }
 
+    function isMainUIHiddenByModelManager() {
+        if (typeof window.isMainUIHiddenByModelManager === 'function') {
+            return window.isMainUIHiddenByModelManager();
+        }
+        return window.__NEKO_MAIN_UI_HIDDEN_BY_MODEL_MANAGER === true;
+    }
+
+    function rehideMainUIIfModelManagerOwnsVisibility(reason) {
+        if (!isMainUIHiddenByModelManager()) return false;
+        if (typeof window.handleHideMainUI === 'function') {
+            window.handleHideMainUI({ preserveHiddenState: true, reason: reason || 'character-switch' });
+        }
+        return true;
+    }
+
+    function restoreChatComposerUnlessModelManagerHidden(chatContainer, textInputArea) {
+        if (isMainUIHiddenByModelManager()) return;
+        if (chatContainer) chatContainer.classList.remove('minimized');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+    }
+
     function supportsLocalModelRuntime() {
         return !/^\/chat(?:\/|$)/.test(window.location.pathname || '');
     }
@@ -744,7 +768,7 @@
             if (!supportsLocalModelRuntime()) {
                 console.log('[猫娘切换] 当前页面不加载本地模型，跳过模型热切换');
                 // chat.html 不走模型分支，在此显式恢复 composer（兜底 onclose 路径）
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                if (!isMainUIHiddenByModelManager() && typeof window.syncVoiceChatComposerHidden === 'function') {
                     window.syncVoiceChatComposerHidden(false);
                 }
             } else if (effectiveModelType === 'vrm') {
@@ -1135,17 +1159,14 @@
                 const chatContainerVrm = document.getElementById('chat-container');
                 const textInputArea = document.getElementById('text-input-area');
                 console.log('[猫娘切换] VRM - 恢复对话框 - chatContainer存在:', !!chatContainerVrm, '当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
-                if (chatContainerVrm) chatContainerVrm.classList.remove('minimized');
-                if (textInputArea) textInputArea.classList.remove('hidden');
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
+                restoreChatComposerUnlessModelManagerHidden(chatContainerVrm, textInputArea);
                 console.log('[猫娘切换] VRM - 对话框已恢复，当前类:', chatContainerVrm ? chatContainerVrm.className : 'N/A');
 
                 // 确保 VRM 按钮和锁图标可见
                 setTimeout(() => {
                     // fire-and-forget 延迟回调：用户在 300ms 内切到别角色时旧回调会重建错类型按钮
                     if (!isStillActiveSwitchTarget()) return;
+                    if (rehideMainUIIfModelManagerOwnsVisibility('character-switch-vrm-delay')) return;
                     const vrmButtons = document.getElementById('vrm-floating-buttons');
                     console.log('[猫娘切换] VRM按钮检查 - 存在:', !!vrmButtons);
                     if (vrmButtons) {
@@ -1368,15 +1389,12 @@
 
                 const chatContainerMmd = document.getElementById('chat-container');
                 const textInputAreaMmd = document.getElementById('text-input-area');
-                if (chatContainerMmd) chatContainerMmd.classList.remove('minimized');
-                if (textInputAreaMmd) textInputAreaMmd.classList.remove('hidden');
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
+                restoreChatComposerUnlessModelManagerHidden(chatContainerMmd, textInputAreaMmd);
 
                 // 延时显示 MMD 浮动按钮和锁图标
                 setTimeout(() => {
                     if (!isStillActiveSwitchTarget()) return;
+                    if (rehideMainUIIfModelManagerOwnsVisibility('character-switch-mmd-delay')) return;
                     const mmdButtons = document.getElementById('mmd-floating-buttons');
                     if (mmdButtons) {
                         mmdButtons.style.removeProperty('display');
@@ -1556,15 +1574,12 @@
 
                 const chatContainerL2d = document.getElementById('chat-container');
                 const textInputAreaL2d = document.getElementById('text-input-area');
-                if (chatContainerL2d) chatContainerL2d.classList.remove('minimized');
-                if (textInputAreaL2d) textInputAreaL2d.classList.remove('hidden');
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
-                }
+                restoreChatComposerUnlessModelManagerHidden(chatContainerL2d, textInputAreaL2d);
 
                 // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {
                     if (!isStillActiveSwitchTarget()) return;
+                    if (rehideMainUIIfModelManagerOwnsVisibility('character-switch-live2d-delay')) return;
 
                     window.dispatchEvent(new Event('resize'));
 
@@ -1645,6 +1660,7 @@
                 Promise.resolve(window.resetAgentUiForCharacterSwitch(newCatgirl))
                     .catch(err => console.warn('[猫娘切换] 刷新猫爪状态失败:', err));
             }
+            rehideMainUIIfModelManagerOwnsVisibility('character-switch-commit');
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
 
             // 【成就】解锁换肤成就
