@@ -88,6 +88,7 @@ Cargo.lock
 
 # Node/Front-end temp (if any)
 node_modules/
+.vite/
 *.cache/
 *.tsbuildinfo
 dist/

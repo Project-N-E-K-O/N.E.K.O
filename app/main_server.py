@@ -108,6 +108,7 @@ try:
     from fastapi import FastAPI, Request # noqa
     from fastapi.responses import JSONResponse # noqa
     from fastapi.staticfiles import StaticFiles # noqa
+    from fastapi.middleware.cors import CORSMiddleware # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
     from fastapi.templating import Jinja2Templates # noqa
@@ -1296,6 +1297,15 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
+# 允许 battle-arena 前端及其他跨域来源访问头像同步端点
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 _main_runtime_limited_mode_enabled = False
 _main_runtime_limited_mode_reason = ""
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
@@ -1519,6 +1529,29 @@ async def beacon_shutdown():
     except Exception as e:
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
+
+# ── Battle-Arena 跨域头像同步端点 ────────────────────────────────
+_battle_arena_avatars: dict = {}  # side -> {dataUrl, name}
+
+
+@app.post('/battle-arena/avatar')
+async def set_battle_avatar(payload: dict):
+    """由 app-chat-avatar.js 在捕获头像后调用，存储 dataUrl 和角色名供 battle-arena 获取。"""
+    side = str(payload.get('side', 'left'))
+    data_url = str(payload.get('dataUrl', ''))
+    name = str(payload.get('name', ''))
+    if data_url:
+        _battle_arena_avatars[side] = {'dataUrl': data_url, 'name': name}
+    return {"ok": True}
+
+
+@app.get('/battle-arena/avatar/{side}')
+async def get_battle_avatar(side: str):
+    """battle-arena 前端轮询此端点获取最新头像 dataUrl 和角色名。"""
+    from fastapi.responses import JSONResponse
+    entry = _battle_arena_avatars.get(side, {})
+    return JSONResponse({'dataUrl': entry.get('dataUrl', ''), 'name': entry.get('name', '')})
+
 
 # 挂载全部路由
 app.include_router(config_router)

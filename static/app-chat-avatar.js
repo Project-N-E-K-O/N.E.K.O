@@ -346,6 +346,27 @@
         );
     }
 
+    /** 将当前头像 dataUrl 推送到 battle-arena 后端（非关键，静默失败） */
+    function syncAvatarToBattleArena(dataUrl) {
+        if (!dataUrl) return;
+        var _nekoName = (typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name)
+            ? lanlan_config.lanlan_name
+            : '';
+        fetch('/battle-arena/avatar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ side: 'left', dataUrl: dataUrl, name: _nekoName })
+        }).then(function (res) {
+            if (!res.ok) {
+                console.warn('[AvatarSync] POST /battle-arena/avatar failed:', res.status, res.statusText);
+            } else {
+                console.log('[AvatarSync] Avatar synced to battle-arena successfully');
+            }
+        }).catch(function (err) {
+            console.warn('[AvatarSync] Avatar sync error:', err.message || err);
+        });
+    }
+
     function applyPreviewResult(result, cacheKey) {
         cachedPreview = {
             cacheKey,
@@ -368,6 +389,8 @@
                 capturedAt: cachedPreview.capturedAt
             }
         }));
+
+        syncAvatarToBattleArena(cachedPreview.dataUrl);
     }
 
     /** 仅清内存，让 scheduleAutoCapture 不被跳过；localStorage 按角色隔离，无需清除 */
@@ -1127,6 +1150,7 @@
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
             );
             setPreviewNote(translateLabel('chat.avatarPreviewReadyHint', '这是从当前模型画布实时提取的头像预览。'));
+            syncAvatarToBattleArena(cachedPreview.dataUrl);
         } else if (stored) {
             cachedPreview = {
                 cacheKey: stored.cacheKey || getCurrentModelCacheKey(),
@@ -1147,6 +1171,7 @@
                     source: 'storage'
                 }
             }));
+            syncAvatarToBattleArena(cachedPreview.dataUrl);
         } else {
             cachedPreview = null;
             setPreviewImage('');
@@ -1285,6 +1310,7 @@
                 capturedAt: Date.now()
             };
             saveToStorage(cachedPreview);
+            syncAvatarToBattleArena(externalAvatarDataUrl);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。
