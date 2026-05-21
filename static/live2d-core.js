@@ -578,6 +578,10 @@ class Live2DManager {
     // 保存用户偏好
     async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
         try {
+            // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
+            if (window.isViewerMode) {
+                return false;
+            }
             // 验证位置和缩放值是否为有效的有限数值
             if (!isValidModelPreferences(scale, position)) {
                 console.error('位置或缩放值无效:', { scale, position });

@@ -331,17 +331,19 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
                         # 检查是否为日文，如果是则翻译
                         if is_japanese(current_subtitle):
                             translated_text = await translate_japanese_to_chinese(current_subtitle)
-                            current_subtitle = translated_text
-                            clients = subtitle_clients.copy()
-                            for client in clients:
-                                try:
-                                    await client.send_json({
-                                        "type": "subtitle",
-                                        "text": translated_text
-                                    })
-                                except Exception as e:
-                                    print(f"翻译字幕广播错误: {e}")
-                                    subtitle_clients.discard(client)
+                            # 翻译未实现/失败时返回 None，保留原文，避免 current_subtitle 被置空后下一轮 += 崩溃
+                            if translated_text:
+                                current_subtitle = translated_text
+                                clients = subtitle_clients.copy()
+                                for client in clients:
+                                    try:
+                                        await client.send_json({
+                                            "type": "subtitle",
+                                            "text": translated_text
+                                        })
+                                    except Exception as e:
+                                        print(f"翻译字幕广播错误: {e}")
+                                        subtitle_clients.discard(client)
 
                     # 清空字幕区域，准备下一条
                     global should_clear_next
@@ -409,54 +411,47 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
         print(f"🗑️ [CLIENT] 已移除客户端，当前剩余: {len(connected_clients)}")
 
 
-# 广播消息到所有客户端
-async def broadcast_message(message):
+# 单个客户端发送（带超时），供并发广播复用
+# 串行 await 会被慢客户端拖住整条管线（队头阻塞），并发 fan-out + 超时让慢的不再拖快的
+async def _send_to_client(client, sender, label):
+    try:
+        await asyncio.wait_for(sender(client), timeout=2.0)
+        return client, True
+    except Exception as e:
+        print(f"❌ [{label}] 广播错误到 {client.client}: {e}")
+        return client, False
+
+
+async def _broadcast(sender, label, success_msg):
     clients = connected_clients.copy()
-    success_count = 0
-    fail_count = 0
-    disconnected_clients = []
-    
-    for client in clients:
-        try:
-            await client.send_json(message)
-            success_count += 1
-        except Exception as e:
-            print(f"❌ [BROADCAST] 广播错误到 {client.client}: {e}")
-            fail_count += 1
-            disconnected_clients.append(client)
-    
-    # 移除所有断开的客户端
+    if not clients:
+        return
+
+    results = await asyncio.gather(*(
+        _send_to_client(client, sender, label) for client in clients
+    ))
+
+    success_count = sum(1 for _, ok in results if ok)
+    disconnected_clients = [client for client, ok in results if not ok]
+
+    # 移除所有断开/超时的客户端
     for client in disconnected_clients:
         connected_clients.discard(client)
-        print(f"🗑️ [BROADCAST] 移除断开的客户端: {client.client}")
-    
+        print(f"🗑️ [{label}] 移除断开的客户端: {client.client}")
+
+    fail_count = len(disconnected_clients)
     if success_count > 0:
-        print(f"✅ [BROADCAST] 成功广播到 {success_count} 个客户端" + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
+        print(success_msg.format(success_count) + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
+
+
+# 广播消息到所有客户端
+async def broadcast_message(message):
+    await _broadcast(lambda client: client.send_json(message), "BROADCAST", "✅ [BROADCAST] 成功广播到 {} 个客户端")
 
 
 # 广播二进制数据到所有客户端
 async def broadcast_binary(data):
-    clients = connected_clients.copy()
-    success_count = 0
-    fail_count = 0
-    disconnected_clients = []
-    
-    for client in clients:
-        try:
-            await client.send_bytes(data)
-            success_count += 1
-        except Exception as e:
-            print(f"❌ [BINARY BROADCAST] 二进制广播错误到 {client.client}: {e}")
-            fail_count += 1
-            disconnected_clients.append(client)
-    
-    # 移除所有断开的客户端
-    for client in disconnected_clients:
-        connected_clients.discard(client)
-        print(f"🗑️ [BINARY BROADCAST] 移除断开的客户端: {client.client}")
-    
-    if success_count > 0:
-        print(f"✅ [BINARY BROADCAST] 成功广播音频到 {success_count} 个客户端" + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
+    await _broadcast(lambda client: client.send_bytes(data), "BINARY BROADCAST", "✅ [BINARY BROADCAST] 成功广播音频到 {} 个客户端")
 
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
