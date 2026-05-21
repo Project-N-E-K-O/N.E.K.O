@@ -254,17 +254,18 @@ class OcrReaderBridgeWriter:
             return 0
         last_seq = 0
         try:
-            for raw_line in events_path.read_bytes().splitlines():
-                try:
-                    event = json.loads(raw_line.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                try:
-                    last_seq = max(last_seq, int(event.get("seq") or 0))
-                except (TypeError, ValueError):
-                    continue
+            with events_path.open("rb") as handle:
+                for raw_line in handle:
+                    try:
+                        event = json.loads(raw_line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    try:
+                        last_seq = max(last_seq, int(event.get("seq") or 0))
+                    except (TypeError, ValueError):
+                        continue
         except OSError:
             return 0
         return last_seq

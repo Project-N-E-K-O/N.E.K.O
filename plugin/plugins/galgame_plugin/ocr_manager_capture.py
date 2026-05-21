@@ -77,7 +77,7 @@ from .aihong_state import (
     coerce_aihong_menu_choices as _coerce_aihong_menu_choices,
     levenshtein_distance as _levenshtein_distance,
     looks_like_aihong_menu_status_only_text as _looks_like_aihong_menu_status_only_text,
-    matches_aihong_target as _matches_aihong_target_info,
+    matches_aihong_target as _matches_aihong_target,
     normalize_aihong_choice_box_text as _normalize_aihong_choice_box_text,
 )
 from .rapidocr_support import (
@@ -343,9 +343,18 @@ class CaptureMixin:
             foreground_hwnd = int(_ocr_reader_module._foreground_window_handle())
         except Exception:
             foreground_hwnd = 0
-        if not bool(getattr(target, "is_foreground", False)) and foreground_hwnd != int(
-            target.hwnd or 0
-        ):
+        foreground_matches_target = False
+        if foreground_hwnd:
+            try:
+                foreground_matches_target = bool(
+                    _ocr_reader_module._foreground_matches_target(
+                        foreground_hwnd,
+                        target,
+                    )[0]
+                )
+            except Exception:
+                foreground_matches_target = foreground_hwnd == int(target.hwnd or 0)
+        if not foreground_matches_target:
             raise ValueError("请先将目标窗口切到前台后再自动重校准对白区")
         process_name = str(target.process_name or "").strip()
         if not process_name:

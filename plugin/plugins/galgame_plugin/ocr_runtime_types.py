@@ -360,7 +360,7 @@ _DXCAM_GRAB_RETRY_DELAY_SECONDS = 0.05
 _STALE_CAPTURE_FRAME_THRESHOLD = 3
 _WINDOW_SCAN_CACHE_TTL_SECONDS = 5.0
 _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS = 300.0
-_RAPIDOCR_RUNTIME_CACHE_LOCK = threading.Lock()
+_RAPIDOCR_RUNTIME_CACHE_LOCK = threading.RLock()
 _RAPIDOCR_RUNTIME_CACHE: dict[tuple[str, str, str, str, str], tuple[Any, float]] = {}
 _RAPIDOCR_INFERENCE_LOCK = threading.Lock()
 _OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE = 900
@@ -454,13 +454,14 @@ def _rapidocr_runtime_cache_key(
 
 
 def _prune_rapidocr_runtime_cache(now: float) -> None:
-    stale_keys = [
-        key
-        for key, (_runtime, last_used_at) in _RAPIDOCR_RUNTIME_CACHE.items()
-        if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
-    ]
-    for key in stale_keys:
-        _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        stale_keys = [
+            key
+            for key, (_runtime, last_used_at) in _RAPIDOCR_RUNTIME_CACHE.items()
+            if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+        ]
+        for key in stale_keys:
+            _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
 
 
 def _get_rapidocr_runtime_cache(
@@ -468,15 +469,16 @@ def _get_rapidocr_runtime_cache(
     *,
     now: float,
 ) -> Any | None:
-    cached = _RAPIDOCR_RUNTIME_CACHE.get(key)
-    if cached is None:
-        return None
-    runtime, last_used_at = cached
-    if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS:
-        _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
-        return None
-    _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
-    return runtime
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        cached = _RAPIDOCR_RUNTIME_CACHE.get(key)
+        if cached is None:
+            return None
+        runtime, last_used_at = cached
+        if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS:
+            _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+            return None
+        _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
+        return runtime
 
 
 def _store_rapidocr_runtime_cache(
@@ -485,8 +487,9 @@ def _store_rapidocr_runtime_cache(
     *,
     now: float,
 ) -> None:
-    _prune_rapidocr_runtime_cache(now)
-    _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        _prune_rapidocr_runtime_cache(now)
+        _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
 
 
 def _aihong_choice_boxes(

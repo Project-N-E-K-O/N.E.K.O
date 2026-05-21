@@ -158,7 +158,8 @@ class ObserveMixin:
             if bool(memory_reader_runtime.get("last_text_recent")) and last_text_seq > 0:
                 self._last_memory_reader_text_at = now
                 return True
-            self._last_memory_reader_text_at = 0.0
+            if last_text_seq <= 0:
+                self._last_memory_reader_text_at = 0.0
             return False
 
         session_changed = (

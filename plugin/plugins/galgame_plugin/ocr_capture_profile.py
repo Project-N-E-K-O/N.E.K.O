@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,7 +60,7 @@ class OcrCaptureProfile:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> OcrCaptureProfile:
-        return cls(
+        profile = cls(
             left_inset_ratio=float(
                 value.get("left_inset_ratio", DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO)
             ),
@@ -71,6 +72,24 @@ class OcrCaptureProfile:
                 value.get("bottom_inset_ratio", DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO)
             ),
         )
+        ratios = {
+            "left_inset_ratio": profile.left_inset_ratio,
+            "right_inset_ratio": profile.right_inset_ratio,
+            "top_ratio": profile.top_ratio,
+            "bottom_inset_ratio": profile.bottom_inset_ratio,
+        }
+        for field_name, ratio in ratios.items():
+            if not math.isfinite(ratio):
+                raise ValueError(f"{field_name} must be finite")
+            if ratio < 0.0 or ratio > 1.0:
+                raise ValueError(f"{field_name} must be between 0 and 1")
+        if profile.left_inset_ratio + profile.right_inset_ratio >= 1.0:
+            raise ValueError(
+                "left_inset_ratio and right_inset_ratio must sum to less than 1"
+            )
+        if profile.top_ratio + profile.bottom_inset_ratio >= 1.0:
+            raise ValueError("top_ratio and bottom_inset_ratio must sum to less than 1")
+        return profile
 
 
 def _matches_aihong_target(target: DetectedGameWindow | None) -> bool:

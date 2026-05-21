@@ -86,7 +86,9 @@ class DxcamCaptureBackend:
             if last_exc is not None:
                 self._record_create_failure(last_exc)
                 raise RuntimeError(f"dxcam_create_failed: {last_exc}") from last_exc
-            raise RuntimeError("dxcam_create_failed: returned None after retries")
+            exc = RuntimeError("dxcam_create_failed: returned None after retries")
+            self._record_create_failure(exc)
+            raise exc
 
     def _record_create_failure(self, exc: BaseException) -> None:
         self._last_create_error = str(exc)

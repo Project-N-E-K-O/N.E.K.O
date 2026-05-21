@@ -1575,6 +1575,7 @@ async def test_ocr_reader_runtime_exposes_window_bucket_match_metadata(tmp_path:
 @pytest.mark.plugin_unit
 def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_returns_bucket(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     manager = OcrReaderManager(
@@ -1598,6 +1599,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_return
         height=500,
         is_foreground=True,
     )
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 501)
 
     payload = manager.auto_recalibrate_dialogue_profile()
 
@@ -1629,7 +1631,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_rejects_background_target(
         pid=7101,
         width=1000,
         height=500,
-        is_foreground=False,
+        is_foreground=True,
     )
     monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 9999)
 
@@ -1678,6 +1680,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_excludes_title_bar(
         height=500,
         is_foreground=True,
     )
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 503)
 
     payload = manager.auto_recalibrate_dialogue_profile()
 
@@ -1688,6 +1691,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_excludes_title_bar(
 @pytest.mark.plugin_unit
 def test_auto_recalibrate_aihong_dialogue_profile_can_escape_stale_narrow_bucket(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     target = DetectedGameWindow(
@@ -1734,6 +1738,7 @@ def test_auto_recalibrate_aihong_dialogue_profile_can_escape_stale_narrow_bucket
         }
     )
     manager._attached_window = target
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: target.hwnd)
     payload = manager.auto_recalibrate_dialogue_profile()
 
     assert payload["bucket_key"] == "1040x807"

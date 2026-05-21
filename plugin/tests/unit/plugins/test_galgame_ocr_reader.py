@@ -196,7 +196,11 @@ def test_dxcam_create_timeout_does_not_retry(monkeypatch: pytest.MonkeyPatch) ->
         calls += 1
         raise TimeoutError("dxcam_create_timed_out_after_0.1s")
 
-    monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **_kwargs: object()))
+    monkeypatch.setitem(
+        sys.modules,
+        "dxcam",
+        SimpleNamespace(create=lambda **_kwargs: object()),
+    )
     monkeypatch.setattr(
         galgame_dxcam_backend,
         "_create_dxcam_camera_with_timeout",
@@ -208,6 +212,34 @@ def test_dxcam_create_timeout_does_not_retry(monkeypatch: pytest.MonkeyPatch) ->
         backend._camera_instance()
 
     assert calls == 1
+    assert backend._consecutive_failures == 1
+    assert backend._last_failure_time > 0.0
+
+
+def test_dxcam_create_none_after_retries_records_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def _create_with_timeout(_dxcam_module, *, timeout_seconds: float):
+        nonlocal calls
+        del timeout_seconds
+        calls += 1
+        return None
+
+    monkeypatch.setitem(sys.modules, "dxcam", SimpleNamespace(create=lambda **_kwargs: object()))
+    monkeypatch.setattr(
+        galgame_dxcam_backend,
+        "_create_dxcam_camera_with_timeout",
+        _create_with_timeout,
+    )
+    monkeypatch.setattr(galgame_dxcam_backend.time, "sleep", lambda _seconds: None)
+
+    backend = galgame_dxcam_backend.DxcamCaptureBackend(logger=_Logger())
+    with pytest.raises(RuntimeError, match="returned None after retries"):
+        backend._camera_instance()
+
+    assert calls == 3
     assert backend._consecutive_failures == 1
     assert backend._last_failure_time > 0.0
 
@@ -349,6 +381,66 @@ def _window() -> list[DetectedGameWindow]:
             pid=4242,
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"left_inset_ratio": -0.01},
+        {"right_inset_ratio": 1.01},
+        {"top_ratio": float("nan")},
+        {"left_inset_ratio": 0.5, "right_inset_ratio": 0.5},
+        {"top_ratio": 0.9, "bottom_inset_ratio": 0.1},
+    ],
+)
+def test_ocr_capture_profile_rejects_invalid_ratios(profile: dict[str, float]) -> None:
+    with pytest.raises(ValueError):
+        OcrCaptureProfile.from_dict(profile)
+
+
+def test_ocr_writer_existing_last_seq_streams_events_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = OcrReaderBridgeWriter(bridge_root=tmp_path)
+    writer.start_session(_window()[0])
+    events_path = tmp_path / writer.game_id / "events.jsonl"
+    events_path.write_bytes(b'{"seq": 2}\nnot-json\n{"seq": 7}\n')
+
+    def _fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("events.jsonl should be streamed")
+
+    monkeypatch.setattr(Path, "read_bytes", _fail_read_bytes)
+
+    assert writer._existing_last_seq_unlocked() == 7
+
+
+def test_memory_reader_last_text_recent_false_keeps_takeover_timestamp(
+    tmp_path: Path,
+) -> None:
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(tmp_path),
+        platform_fn=lambda: True,
+        window_scanner=lambda: [],
+        capture_backend=None,
+        ocr_backend=None,
+    )
+    manager._last_memory_reader_text_at = 123.0
+
+    observed = manager._observe_memory_reader_text_progress(
+        {
+            "status": "active",
+            "game_id": "demo",
+            "session_id": "session",
+            "last_text_seq": 5,
+            "last_text_recent": False,
+        },
+        now=456.0,
+    )
+
+    assert observed is False
+    assert manager._last_memory_reader_text_at == pytest.approx(123.0)
 
 
 def test_manual_window_target_signature_ignores_pid_when_stable_fields_match() -> None:
