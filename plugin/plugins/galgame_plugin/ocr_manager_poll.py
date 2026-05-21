@@ -433,6 +433,7 @@ class PollMixin:
         )
         profile = capture_profile_selection.profile
 
+        started_session = False
         if (
             self._attached_window is None
             or self._attached_window.pid != target.pid
@@ -443,6 +444,7 @@ class PollMixin:
                 or self._writer.game_id != _ocr_game_id_from_process(target.process_name or target.title)
             ):
                 self._writer.start_session(target)
+                started_session = True
                 if legacy_geometryless_auto_target:
                     self._writer.keep_unknown_scene_until_visual_scene()
                 now = max(now, self._time_fn())
@@ -490,6 +492,7 @@ class PollMixin:
             capture_profile_selection=capture_profile_selection,
             legacy_geometryless_auto_target=legacy_geometryless_auto_target,
             aihong_two_stage_enabled=aihong_two_stage_enabled,
+            started_session=started_session,
             window_scan_duration=window_scan_duration,
             now=now,
         )
@@ -693,6 +696,7 @@ class PollMixin:
         capture_profile_selection = target_context.capture_profile_selection
         legacy_geometryless_auto_target = target_context.legacy_geometryless_auto_target
         aihong_two_stage_enabled = target_context.aihong_two_stage_enabled
+        started_session_this_tick = target_context.started_session
         window_scan_duration = target_context.window_scan_duration
         now = target_context.now
 
@@ -706,6 +710,12 @@ class PollMixin:
         runtime_capture_profile_selection = capture_profile_selection
         event_seq_before_capture = int(self._writer.last_seq or 0)
         text_event_seq_before_capture = event_seq_before_capture
+
+        def _should_discard_failed_session() -> bool:
+            if started_session_this_tick:
+                return int(self._writer.last_seq or 0) <= event_seq_before_capture
+            return int(self._writer.last_seq or 0) <= 1
+
         after_advance_trigger_mode = (
             str(self._config.ocr_reader_trigger_mode or "").strip().lower()
             == OCR_TRIGGER_MODE_AFTER_ADVANCE
@@ -817,7 +827,7 @@ class PollMixin:
                 self._reset_aihong_menu_state()
                 if (
                     not legacy_geometryless_auto_target
-                    and int(event_seq_before_capture or 0) <= 1
+                    and _should_discard_failed_session()
                 ):
                     self._writer.discard_session()
                     self._ocr_lang_detector.reset(clear_switch_time=True)
@@ -1201,7 +1211,7 @@ class PollMixin:
             self._record_capture_error(now=now, error=exc)
             self._ocr_lang_detector.reset()
             self._reset_aihong_menu_state()
-            if int(self._writer.last_seq or 0) <= 1:
+            if _should_discard_failed_session():
                 self._writer.discard_session()
                 self._ocr_lang_detector.reset(clear_switch_time=True)
             result.warnings.append(f"ocr_reader capture timed out: {exc}")
@@ -1211,7 +1221,7 @@ class PollMixin:
             self._record_capture_error(now=now, error=exc)
             self._ocr_lang_detector.reset()
             self._reset_aihong_menu_state()
-            if int(self._writer.last_seq or 0) <= 1:
+            if _should_discard_failed_session():
                 self._writer.discard_session()
                 self._ocr_lang_detector.reset(clear_switch_time=True)
             result.warnings.append(f"ocr_reader capture failed: {exc}")

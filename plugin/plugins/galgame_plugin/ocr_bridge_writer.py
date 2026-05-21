@@ -244,6 +244,7 @@ class OcrReaderBridgeWriter:
                     "discarded": True,
                 },
                 ts=utc_now_iso(self._time_fn()),
+                update_snapshot=False,
             )
             self._clear_session_snapshot_unlocked()
         self._reset_session_unlocked()

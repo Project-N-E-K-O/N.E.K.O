@@ -1278,6 +1278,30 @@ def test_ocr_writer_discard_session_does_not_delete_existing_history(tmp_path: P
     assert events[-1]["payload"]["discarded"] is True
 
 
+def test_ocr_writer_discard_session_recovers_when_snapshot_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 3000.0)
+    writer.start_session(_window()[0])
+    game_id = writer.game_id
+
+    def _fail_snapshot() -> None:
+        raise RuntimeError("snapshot write failed")
+
+    monkeypatch.setattr(writer, "_write_session_snapshot", _fail_snapshot)
+
+    writer.discard_session()
+    events = _read_events(bridge_root / game_id / "events.jsonl")
+
+    assert writer.session_id == ""
+    assert not (bridge_root / game_id / "session.json").exists()
+    assert events[-1]["type"] == "session_ended"
+    assert events[-1]["payload"]["discarded"] is True
+
+
 def test_ocr_writer_end_session_resets_runtime_and_rejects_late_events(
     tmp_path: Path,
 ) -> None:
@@ -4555,6 +4579,60 @@ async def test_ocr_reader_restarts_session_after_initial_capture_failure(
     events = _read_events(bridge_root / manager._writer.game_id / "events.jsonl")
     assert manager._writer.session_id
     assert events[-1]["type"] == "line_changed"
+
+
+@pytest.mark.asyncio
+async def test_ocr_reader_discards_new_failed_session_with_existing_history(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    seed_writer = OcrReaderBridgeWriter(bridge_root=bridge_root, time_fn=lambda: 2900.0)
+    seed_writer.start_session(_window()[0])
+    seed_game_id = seed_writer.game_id
+    assert seed_writer.emit_line("Yukino: previous line.", ts="2026-04-29T02:00:01Z")
+    assert seed_writer.end_session(ts="2026-04-29T02:00:02Z")
+    seed_events = _read_events(bridge_root / seed_game_id / "events.jsonl")
+    assert seed_events[-1]["seq"] > 1
+
+    class _FailOnceCaptureBackend(_FakeCaptureBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self._failed = False
+
+        def capture_frame(self, target: DetectedGameWindow, profile) -> str:
+            if not self._failed:
+                self._failed = True
+                raise RuntimeError("first capture failed")
+            return super().capture_frame(target, profile)
+
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_FailOnceCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["Yukino: recovered.", "Yukino: recovered."]),
+    )
+
+    await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+    assert manager._writer.session_id == ""
+    events_after_failure = _read_events(bridge_root / seed_game_id / "events.jsonl")
+    assert events_after_failure[-1]["type"] == "session_ended"
+    assert events_after_failure[-1]["payload"]["discarded"] is True
+
+    await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+    events = _read_events(bridge_root / seed_game_id / "events.jsonl")
+
+    assert manager._writer.session_id
+    assert "session_started" in [
+        event["type"] for event in events[len(events_after_failure) :]
+    ]
 
 
 def test_build_config_defaults_ocr_languages_to_chi_sim_jpn_eng(tmp_path: Path) -> None:

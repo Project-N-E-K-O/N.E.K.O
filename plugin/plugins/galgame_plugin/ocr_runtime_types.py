@@ -1724,6 +1724,7 @@ class _TickTargetContext:
     )
     legacy_geometryless_auto_target: bool = False
     aihong_two_stage_enabled: bool = False
+    started_session: bool = False
     window_scan_duration: float = 0.0
     now: float = 0.0
     should_return: bool = False
