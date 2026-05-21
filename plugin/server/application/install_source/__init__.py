@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import threading
 
-from plugin.logging_config import get_logger
 from plugin.server.application.install_source.manager import (
     InstallSourceError,
     InstallSourceManager,
@@ -31,8 +30,6 @@ from plugin.server.application.install_source.scanner import (
     DiscoveredPlugin,
     PluginDirectoryScanner,
 )
-
-logger = get_logger("server.application.install_source")
 
 _GLOBAL_MANAGER: InstallSourceManager | None = None
 _GLOBAL_LOCK: threading.RLock = threading.RLock()

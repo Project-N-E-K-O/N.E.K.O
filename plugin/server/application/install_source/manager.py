@@ -44,10 +44,7 @@ if TYPE_CHECKING:
     # :class:`InstallSourceError` and :func:`classify_plugin_path` from this
     # module. The manager only needs the Scanner type for static hints, and
     # :class:`DiscoveredPlugin` for the reconcile loop's diff signature.
-    from plugin.server.application.install_source.scanner import (
-        DiscoveredPlugin,
-        PluginDirectoryScanner,
-    )
+    from plugin.server.application.install_source.scanner import DiscoveredPlugin
 from plugin.server.application.install_source.models import (
     Channel,
     LockEntry,

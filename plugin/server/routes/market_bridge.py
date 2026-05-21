@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import json
 import os
 import secrets
 import shutil
@@ -35,9 +36,12 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.plugin_cli import service as plugin_cli_service_module
 from plugin.server.application.plugin_cli import PluginCliService
-from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.settings import MARKET_URL, MARKET_WEB_URL, USER_PLUGIN_CONFIG_ROOT
+from plugin.settings import (
+    MARKET_URL,
+    MARKET_WEB_URL,
+    PLUGIN_CONFIG_ROOTS,
+    USER_PLUGIN_CONFIG_ROOT,
+)
 
 router = APIRouter(prefix="/market", tags=["market-bridge"])
 logger = get_logger("server.routes.market_bridge")
@@ -48,10 +52,15 @@ _cli_service = PluginCliService()
 # 每次服务启动时生成，防止恶意网页未经授权调用本地 API。
 # Market 前端需要通过 neko:// 协议或用户手动配对获取此 token。
 _BRIDGE_TOKEN: str = secrets.token_urlsafe(32)
-_BRIDGE_TOKEN_FILE: Path | None = None
 
 # 安装任务存储（内存，重启清空）
 _tasks: dict[str, dict[str, Any]] = {}
+_TASK_TTL_SECONDS = 60 * 60
+_TASK_MAX_ENTRIES = 200
+
+# 短期一次性配对码；成功交换后立即消费。
+_ONE_TIME_CODES: dict[str, float] = {}
+_ONE_TIME_CODE_TTL_SECONDS = 5 * 60
 
 # 下载限制
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
@@ -66,17 +75,81 @@ def get_bridge_token() -> str:
 
 def write_bridge_token_file(directory: Path) -> Path:
     """将 bridge token 写入文件，供外部进程读取。"""
-    global _BRIDGE_TOKEN_FILE
     directory.mkdir(parents=True, exist_ok=True)
     token_file = directory / "bridge.json"
-    import json
+    one_time_code = _issue_one_time_code()
     token_file.write_text(
-        json.dumps({"token": _BRIDGE_TOKEN, "port": 48911}, indent=2),
+        json.dumps(
+            {
+                "token": _BRIDGE_TOKEN,
+                "port": 48911,
+                "one_time_code": one_time_code,
+                "one_time_code_expires_in": _ONE_TIME_CODE_TTL_SECONDS,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
-    _BRIDGE_TOKEN_FILE = token_file
+    try:
+        token_file.chmod(0o600)
+    except OSError as exc:
+        logger.warning("Failed to tighten bridge token file permissions: {}", exc)
     logger.info("Bridge token written to {}", token_file)
     return token_file
+
+
+def _issue_one_time_code() -> str:
+    _cleanup_one_time_codes()
+    code = secrets.token_urlsafe(18)
+    _ONE_TIME_CODES[code] = time.time() + _ONE_TIME_CODE_TTL_SECONDS
+    return code
+
+
+def _cleanup_one_time_codes(now: float | None = None) -> None:
+    current = time.time() if now is None else now
+    expired = [code for code, expires_at in _ONE_TIME_CODES.items() if expires_at <= current]
+    for code in expired:
+        _ONE_TIME_CODES.pop(code, None)
+
+
+def _consume_one_time_code(code: str) -> bool:
+    now = time.time()
+    _cleanup_one_time_codes(now)
+    for stored_code, expires_at in list(_ONE_TIME_CODES.items()):
+        if expires_at > now and secrets.compare_digest(stored_code, code):
+            _ONE_TIME_CODES.pop(stored_code, None)
+            return True
+    return False
+
+
+def _cleanup_tasks() -> None:
+    now = time.time()
+    expired = [
+        task_id
+        for task_id, task in _tasks.items()
+        if task.get("completed_at") is not None
+        and now - float(task.get("completed_at") or 0) > _TASK_TTL_SECONDS
+    ]
+    for task_id in expired:
+        _tasks.pop(task_id, None)
+
+    if len(_tasks) <= _TASK_MAX_ENTRIES:
+        return
+    overflow = len(_tasks) - _TASK_MAX_ENTRIES
+    ordered = sorted(
+        _tasks.items(),
+        key=lambda item: float(item[1].get("created_at") or 0),
+    )
+    for task_id, _task in ordered[:overflow]:
+        _tasks.pop(task_id, None)
+
+
+def _plugin_config_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for root in (*PLUGIN_CONFIG_ROOTS, USER_PLUGIN_CONFIG_ROOT):
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
 
 
 # ─── 请求/响应模型 ─────────────────────────────────────────────────
@@ -245,6 +318,7 @@ async def market_install(
                 },
             )
 
+    _cleanup_tasks()
     task_id = secrets.token_urlsafe(16)
     _tasks[task_id] = {
         "task_id": task_id,
@@ -282,6 +356,7 @@ async def market_task_status(
 ):
     """查询安装任务进度。"""
     _verify_token(token)
+    _cleanup_tasks()
 
     task = _tasks.get(task_id)
     if not task:
@@ -303,8 +378,6 @@ async def market_installed(
     _verify_token(token)
 
     try:
-        result = await _cli_service.list_local_plugins()
-        plugins = result.get("plugins", [])
         # 一次性拿全量 lock 索引
         mgr = get_install_source_manager()
         snapshot = mgr.snapshot() if mgr is not None else None
@@ -316,25 +389,26 @@ async def market_installed(
                 if not e.removed and e.plugin_id
             }
 
-        from plugin.settings import PLUGIN_CONFIG_ROOTS
         installed: list[MarketInstalledPlugin] = []
-        for plugin_id in plugins:
-            # 查找插件实际路径
-            plugin_dir: Path | None = None
-            for root in PLUGIN_CONFIG_ROOTS:
-                candidate = root / plugin_id
-                if candidate.is_dir():
-                    plugin_dir = candidate
-                    break
-            if plugin_dir is None:
+        seen: set[str] = set()
+        for root in _plugin_config_roots():
+            if not root.is_dir():
                 continue
-            installed.append(MarketInstalledPlugin(
-                plugin_id=plugin_id,
-                path=str(plugin_dir),
-                latest_install_source=_project_market_source_detail(
-                    entries_by_pid.get(plugin_id)
-                ),
-            ))
+            for manifest in root.glob("*/plugin.toml"):
+                if not manifest.is_file():
+                    continue
+                plugin_dir = manifest.parent
+                plugin_id = plugin_dir.name
+                if plugin_id in seen:
+                    continue
+                seen.add(plugin_id)
+                installed.append(MarketInstalledPlugin(
+                    plugin_id=plugin_id,
+                    path=str(plugin_dir),
+                    latest_install_source=_project_market_source_detail(
+                        entries_by_pid.get(plugin_id)
+                    ),
+                ))
         return MarketInstalledResponse(installed=installed, count=len(installed))
     except Exception as exc:
         logger.warning("Failed to list installed plugins: {}", exc)
@@ -378,12 +452,13 @@ async def market_token_exchange(payload: MarketTokenExchangeRequest):
 
     注意：此端点本身不需要 token（因为是用来获取 token 的）。
     """
-    # 简化实现：one-time code 就是 bridge token 的前 8 位
-    # 生产环境应该用独立的 OTP 存储
-    if not secrets.compare_digest(payload.one_time_code, _BRIDGE_TOKEN[:8]):
+    if not _consume_one_time_code(payload.one_time_code):
         raise HTTPException(status_code=403, detail="无效的一次性码")
 
-    return MarketTokenExchangeResponse(bridge_token=_BRIDGE_TOKEN)
+    return MarketTokenExchangeResponse(
+        bridge_token=_BRIDGE_TOKEN,
+        expires_in=None,
+    )
 
 
 @router.get("/bridge-token", response_model=MarketBridgeTokenResponse)

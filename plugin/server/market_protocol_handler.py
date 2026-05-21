@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from plugin.logging_config import get_logger
 
@@ -28,11 +28,12 @@ logger = get_logger("server.market_protocol_handler")
 
 def handle_uri(uri: str) -> int:
     """解析并处理 neko:// URI。返回退出码。"""
-    logger.info("Handling protocol URI: {}", uri)
-
     parsed = urlparse(uri)
+    safe_uri = _safe_uri_for_log(parsed)
+    logger.info("Handling protocol URI: {}", safe_uri)
+
     if parsed.scheme != "neko":
-        logger.error("Not a neko:// URI: {}", uri)
+        logger.error("Not a neko:// URI: {}", safe_uri)
         return 1
 
     # netloc 是 action（如 install, auth, pair, open）
@@ -53,6 +54,17 @@ def handle_uri(uri: str) -> int:
     else:
         logger.warning("Unknown protocol action: {}:{}", action, sub_path)
         return 1
+
+
+def _safe_uri_for_log(parsed) -> str:
+    """Return a URI representation with OAuth-like secrets redacted."""
+    sensitive_keys = {"code", "state", "token", "bridge_token", "one_time_code"}
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    redacted = {
+        key: (["<redacted>"] if key in sensitive_keys else value)
+        for key, value in query.items()
+    }
+    return urlunparse(parsed._replace(query=urlencode(redacted, doseq=True)))
 
 
 def _handle_install(params: dict) -> int:
@@ -116,16 +128,23 @@ async def _call_local_install(
 
             data = res.json()
             task_id = data.get("task_id")
+            if not task_id:
+                logger.error("Install task response did not include task_id")
+                return 1
             logger.info("Install task created: {}", task_id)
 
             # 轮询等待完成
-            import time
-            for _ in range(180):  # 最多等 3 分钟
+            for _ in range(60):  # 最多等 1 分钟，单次失败继续轮询
                 await asyncio.sleep(1)
-                status_res = await client.get(
-                    f"{base_url}/market/tasks/{task_id}",
-                    params={"token": token},
-                )
+                try:
+                    status_res = await client.get(
+                        f"{base_url}/market/tasks/{task_id}",
+                        params={"token": token},
+                        timeout=10.0,
+                    )
+                except httpx.HTTPError as exc:
+                    logger.warning("Task poll failed for {}: {}", task_id, exc)
+                    continue
                 if status_res.status_code != 200:
                     continue
 
@@ -218,10 +237,12 @@ def _show_notification(message: str, title: str) -> None:
                 pass
         elif system == "Darwin":
             import subprocess
-            subprocess.Popen([
-                "osascript", "-e",
-                f'display notification "{message}" with title "{title}"'
-            ])
+            script = (
+                "on run argv\n"
+                "display notification (item 1 of argv) with title (item 2 of argv)\n"
+                "end run"
+            )
+            subprocess.Popen(["osascript", "-e", script, message, title])
         elif system == "Linux":
             import subprocess
             subprocess.Popen(["notify-send", title, message])
