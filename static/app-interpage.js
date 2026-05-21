@@ -24,6 +24,7 @@
     const mod = {};
     const S = window.appState;
     // const C = window.appConst;  // not used in this module currently
+    const MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY = '__NEKO_MAIN_UI_HIDDEN_BY_MODEL_MANAGER';
 
     // =====================================================================
     // Message deduplication (BC + postMessage deliver the same message twice)
@@ -41,6 +42,51 @@
         _processedMsgKeys[key] = true;
         setTimeout(function () { delete _processedMsgKeys[key]; }, 5000);
         return false;
+    }
+
+    function isMainUIHiddenByModelManager() {
+        return window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] === true;
+    }
+
+    function ensureMainUIHiddenStyle() {
+        if (document.getElementById('neko-main-ui-hidden-by-model-manager-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-main-ui-hidden-by-model-manager-style';
+        style.textContent = [
+            'body.neko-main-ui-hidden-by-model-manager #live2d-container,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-container,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-container,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-return-button-container {',
+            '  display: none !important;',
+            '  visibility: hidden !important;',
+            '  pointer-events: none !important;',
+            '}'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function setMainUIHiddenByModelManager(hidden) {
+        window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] = !!hidden;
+        ensureMainUIHiddenStyle();
+        if (document.body) {
+            document.body.classList.toggle('neko-main-ui-hidden-by-model-manager', !!hidden);
+        }
+        try {
+            window.dispatchEvent(new CustomEvent('neko:main-ui-hidden-by-model-manager-changed', {
+                detail: { hidden: !!hidden }
+            }));
+        } catch (_) {}
     }
 
     function applyTutorialChatIdentityOverride(payload) {
@@ -892,6 +938,13 @@
             window._modelReloadInFlight = false;
             resolveReload();
 
+            // If the model manager is still open, keep the Pet UI hidden even
+            // though the reload path briefly re-created containers/buttons.
+            if (isMainUIHiddenByModelManager()) {
+                console.log('[Model] 主界面处于模型管理隐藏状态，模型重载完成后重新隐藏 UI');
+                handleHideMainUI({ preserveHiddenState: true });
+            }
+
             // Process any queued reload request
             if (window._pendingModelReload) {
                 console.log('[Model] 执行待处理的模型重载请求');
@@ -1131,8 +1184,13 @@
     /**
      * Hide main-page model rendering (entering model manager).
      */
-    function handleHideMainUI() {
+    function handleHideMainUI(options) {
         if (!_isModelHostPage()) return;
+        options = options || {};
+        var skipHiddenStateUpdate = options.skipHiddenStateUpdate || options.preserveHiddenState;
+        if (!skipHiddenStateUpdate) {
+            setMainUIHiddenByModelManager(true);
+        }
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -1206,13 +1264,15 @@
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
                 '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
             ).forEach(function (el) {
-                var computedDisplay = '';
-                try {
-                    computedDisplay = window.getComputedStyle(el).display || '';
-                } catch (_) {}
-                el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
-                    ? computedDisplay
-                    : (el.style.display || 'none');
+                if (!el.dataset.nekoPreHideDisplay) {
+                    var computedDisplay = '';
+                    try {
+                        computedDisplay = window.getComputedStyle(el).display || '';
+                    } catch (_) {}
+                    el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
+                        ? computedDisplay
+                        : (el.style.display || 'none');
+                }
                 el.style.display = 'none';
             });
         } catch (error) {
@@ -1225,6 +1285,7 @@
      */
     function handleShowMainUI() {
         if (!_isModelHostPage()) return;
+        setMainUIHiddenByModelManager(false);
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
@@ -2277,6 +2338,7 @@
     mod.resetToDefaultModel = resetToDefaultModel;
     mod.handleHideMainUI = handleHideMainUI;
     mod.handleShowMainUI = handleShowMainUI;
+    mod.isMainUIHiddenByModelManager = isMainUIHiddenByModelManager;
     mod.handleMemoryEdited = handleMemoryEdited;
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
@@ -2292,6 +2354,7 @@
     window.resetToDefaultModel = resetToDefaultModel;
     window.handleHideMainUI = handleHideMainUI;
     window.handleShowMainUI = handleShowMainUI;
+    window.isMainUIHiddenByModelManager = isMainUIHiddenByModelManager;
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;
