@@ -207,6 +207,8 @@ def _coerce_int_range(value: Any, *, default: int, minimum: int, maximum: int) -
 def _coerce_bool(value: Any, *, default: bool) -> bool:
     if isinstance(value, bool):
         return value
+    if isinstance(value, (int, float)):
+        return bool(value)
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"true", "1", "yes", "on"}:

@@ -449,10 +449,13 @@ async def test_get_history_sanitizes_limit_and_include_events(tmp_path: Path) ->
     )
 
     result = await plugin.galgame_get_history(limit="bad", include_events="false")
+    numeric_false = await plugin.galgame_get_history(limit=20, include_events=0)
 
     assert isinstance(result, Ok)
     assert result.value["events"] == []
     assert "observed_lines" in result.value
+    assert isinstance(numeric_false, Ok)
+    assert numeric_false.value["events"] == []
 
 
 @pytest.mark.asyncio
