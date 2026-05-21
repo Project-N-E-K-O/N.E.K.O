@@ -1739,39 +1739,70 @@
         updateStickerOverlayOrder();
     }
 
+    function isPointerInsideStickerSelectionBox(s, clientX, clientY) {
+        const area = $('#card-portrait-area');
+        if (!area || !s) return false;
+        const rect = area.getBoundingClientRect();
+        const centerX = rect.left + (s.x / 100) * rect.width;
+        const centerY = rect.top + (s.y / 100) * rect.height;
+        const dx = clientX - centerX;
+        const dy = clientY - centerY;
+        const rad = s.rotation * Math.PI / 180;
+        const localX = dx * Math.cos(rad) + dy * Math.sin(rad);
+        const localY = -dx * Math.sin(rad) + dy * Math.cos(rad);
+        return Math.abs(localX) <= s.w / 2 && Math.abs(localY) <= s.h / 2;
+    }
+
+    function getStickerDragTarget(hitSticker, event) {
+        const selected = getSelectedSticker();
+        if (
+            selected &&
+            selected.id !== hitSticker.id &&
+            isPointerInsideStickerSelectionBox(selected, event.clientX, event.clientY)
+        ) {
+            return selected;
+        }
+        return hitSticker;
+    }
+
     function setupStickerDrag(sticker, el) {
         let dragging = false;
+        let dragTarget = null;
         let startX, startY, startPctX, startPctY;
 
         el.addEventListener('pointerdown', (e) => {
             if (activeTab !== 'decor-tab') return;
             if (modelLayerSelected) return;
-            if (selectedStickerId !== sticker.id) {
-                selectSticker(sticker.id);
+            dragTarget = getStickerDragTarget(sticker, e);
+            if (dragTarget.id !== selectedStickerId) {
+                selectSticker(dragTarget.id);
                 refreshLayerPanel();
             }
             e.stopPropagation();
             dragging = true;
             startX = e.clientX;
             startY = e.clientY;
-            startPctX = sticker.x;
-            startPctY = sticker.y;
+            startPctX = dragTarget.x;
+            startPctY = dragTarget.y;
             el.setPointerCapture(e.pointerId);
         });
 
         el.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
+            if (!dragging || !dragTarget) return;
             e.stopPropagation();
             const area = $('#card-portrait-area');
             const rect = area.getBoundingClientRect();
             const dx = (e.clientX - startX) / rect.width * 100;
             const dy = (e.clientY - startY) / rect.height * 100;
-            sticker.x = clamp(startPctX + dx, 0, 100);
-            sticker.y = clamp(startPctY + dy, 0, 100);
-            updateStickerElement(sticker);
+            dragTarget.x = clamp(startPctX + dx, 0, 100);
+            dragTarget.y = clamp(startPctY + dy, 0, 100);
+            updateStickerElement(dragTarget);
         });
 
-        const stop = () => { dragging = false; };
+        const stop = () => {
+            dragging = false;
+            dragTarget = null;
+        };
         el.addEventListener('pointerup', stop);
         el.addEventListener('pointercancel', stop);
     }

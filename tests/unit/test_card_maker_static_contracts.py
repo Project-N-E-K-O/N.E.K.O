@@ -96,8 +96,11 @@ def test_card_maker_registers_variant_stickers():
 def test_card_maker_preview_can_select_stickers_directly():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
 
-    assert "if (selectedStickerId !== sticker.id) {" in script
-    assert "selectSticker(sticker.id);" in script
+    assert "function getStickerDragTarget(hitSticker, event)" in script
+    assert "function isPointerInsideStickerSelectionBox(s, clientX, clientY)" in script
+    assert "dragTarget = getStickerDragTarget(sticker, e);" in script
+    assert "if (dragTarget.id !== selectedStickerId) {" in script
+    assert "selectSticker(dragTarget.id);" in script
     assert "refreshLayerPanel();" in script
     assert "if (selectedStickerId !== sticker.id) return;" not in script
 
