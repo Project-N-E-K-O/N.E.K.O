@@ -31,8 +31,14 @@
     const CARD_BASE_WIDTH = 600;
     const CARD_BASE_HEIGHT = 800;
     const CARD_OUTPUT_SCALE = 2;       // 保存/导出 1200×1600
-    const MODEL_SOURCE_SCALE = 3;       // 隐藏模型源画布 1800×2400
+    const MODEL_PREVIEW_SOURCE_SCALE = 2; // 实时预览源画布 1200×1600，保证流畅
+    const MODEL_EXPORT_SOURCE_SCALE = 3;  // 保存/导出时临时升到 1800×2400
+    const MODEL_PREVIEW_MAX_SOURCE_SCALE = 4;
+    const MODEL_EXPORT_MAX_SOURCE_SCALE = 6;
     const PREVIEW_MIN_PIXEL_RATIO = 2;
+    const PREVIEW_TARGET_FPS = 60;
+    const PREVIEW_FRAME_INTERVAL_MS = 1000 / PREVIEW_TARGET_FPS;
+    let activeModelSourceScale = MODEL_PREVIEW_SOURCE_SCALE;
 
     window.renderQuality = 'high';
 
@@ -154,6 +160,7 @@
         scaleInput.addEventListener('input', () => {
             composition.scale = Number(scaleInput.value);
             scaleVal.textContent = composition.scale + '%';
+            updatePreviewSourceScaleForZoom();
         });
         rotationInput.addEventListener('input', () => {
             composition.rotation = Number(rotationInput.value);
@@ -528,7 +535,7 @@
         if (!window.live2dManager.pixi_app) {
             await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container', {
                 preserveDrawingBuffer: true,
-                resolution: MODEL_SOURCE_SCALE,
+                resolution: MODEL_PREVIEW_SOURCE_SCALE,
                 autoDensity: true
             });
         }
@@ -607,10 +614,11 @@
         viewport.style.height = CARD_BASE_HEIGHT + 'px';
     }
 
-    function resizeModelRendererForCard(type = currentModelType) {
+    function resizeModelRendererForCard(type = currentModelType, sourceScale = MODEL_PREVIEW_SOURCE_SCALE) {
         const w = CARD_BASE_WIDTH;
         const h = CARD_BASE_HEIGHT;
-        const ratio = MODEL_SOURCE_SCALE;
+        const ratio = sourceScale;
+        activeModelSourceScale = sourceScale;
 
         if (type === 'live2d') {
             const mgr = window.live2dManager;
@@ -652,6 +660,36 @@
             mgr.camera.updateProjectionMatrix?.();
         }
         mgr.effect?.setSize?.(w, h);
+    }
+
+    function getZoomFactor(compositionOverride = composition) {
+        const scale = Number(compositionOverride?.scale);
+        return Math.max(1, Number.isFinite(scale) ? scale / 100 : 1);
+    }
+
+    function getPreviewSourceScaleForZoom() {
+        return clamp(
+            Math.ceil(MODEL_PREVIEW_SOURCE_SCALE * getZoomFactor()),
+            MODEL_PREVIEW_SOURCE_SCALE,
+            MODEL_PREVIEW_MAX_SOURCE_SCALE
+        );
+    }
+
+    function getExportSourceScaleForZoom(compositionOverride = composition) {
+        return clamp(
+            Math.ceil(MODEL_EXPORT_SOURCE_SCALE * getZoomFactor(compositionOverride)),
+            MODEL_EXPORT_SOURCE_SCALE,
+            MODEL_EXPORT_MAX_SOURCE_SCALE
+        );
+    }
+
+    function updatePreviewSourceScaleForZoom() {
+        if (!isModelLoaded || !currentModelType) return;
+        const nextScale = getPreviewSourceScaleForZoom();
+        if (nextScale === activeModelSourceScale) return;
+        resizeModelRendererForCard(currentModelType, nextScale);
+        ensureRender();
+        refreshPreview();
     }
 
     /**
@@ -810,7 +848,7 @@
     // ====== 预览循环 ======
 
     /**
-     * 启动持续预览刷新（~15fps，用 requestAnimationFrame 节流）
+     * 启动持续预览刷新（目标 60fps，用 requestAnimationFrame 对齐显示刷新）
      */
     function startPreviewLoop() {
         stopPreviewLoop();
@@ -818,7 +856,8 @@
 
         function loop(timestamp) {
             previewLoopId = requestAnimationFrame(loop);
-            if (timestamp - lastPreviewTime < 66) return;
+            if (document.hidden) return;
+            if (timestamp - lastPreviewTime < PREVIEW_FRAME_INTERVAL_MS) return;
             lastPreviewTime = timestamp;
             refreshPreview();
         }
@@ -834,6 +873,7 @@
 
     function refreshPreview() {
         if (!isModelLoaded) return;
+        updatePreviewSourceScaleForZoom();
 
         const srcCanvas = getModelCanvas();
         if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) return;
@@ -908,6 +948,7 @@
                 composition.scale = clamp(composition.scale + delta, 50, 300);
                 scaleInput.value = composition.scale;
                 scaleVal.textContent = composition.scale + '%';
+                updatePreviewSourceScaleForZoom();
             } else if (activeTab === 'decor-tab') {
                 const s = getSelectedSticker();
                 if (!s) return;
@@ -1109,12 +1150,27 @@
      * 输出尺寸与卡面预览比例一致，内部用 2 倍像素导出，确保所见即所得且更清晰。
      */
     async function renderFinalPortrait(options = {}) {
-        const srcCanvas = getModelCanvas();
-        if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) return null;
+        const outputScale = Number.isFinite(options.outputScale) ? options.outputScale : CARD_OUTPUT_SCALE;
+        const previousSourceScale = activeModelSourceScale;
+        const exportSourceScale = Math.max(
+            outputScale,
+            getExportSourceScaleForZoom(options.composition || composition)
+        );
 
+        if (activeModelSourceScale !== exportSourceScale) {
+            resizeModelRendererForCard(currentModelType, exportSourceScale);
+        }
         ensureRender();
 
-        const outputScale = Number.isFinite(options.outputScale) ? options.outputScale : CARD_OUTPUT_SCALE;
+        const srcCanvas = getModelCanvas();
+        if (!srcCanvas || srcCanvas.width <= 0 || srcCanvas.height <= 0) {
+            if (activeModelSourceScale !== previousSourceScale) {
+                resizeModelRendererForCard(currentModelType, previousSourceScale);
+                ensureRender();
+            }
+            return null;
+        }
+
         const cardW = CARD_BASE_WIDTH * outputScale;
         const cardH = CARD_BASE_HEIGHT * outputScale;
         const outW = cardW;
@@ -1142,19 +1198,27 @@
         const belowStickers = stickerOrder.filter(s => s.layer === 'below');
         const aboveStickers = stickerOrder.filter(s => s.layer === 'above');
 
-        if (belowStickers.length > 0) {
-            await drawStickerList(ctx, belowStickers, outW, outH);
+        try {
+            if (belowStickers.length > 0) {
+                await drawStickerList(ctx, belowStickers, outW, outH);
+            }
+
+            drawModelWithComposition(ctx, srcCanvas, outW, outH, options.composition);
+
+            if (aboveStickers.length > 0) {
+                await drawStickerList(ctx, aboveStickers, outW, outH);
+            }
+
+            return await new Promise((resolve) => {
+                outCanvas.toBlob((blob) => resolve(blob), 'image/png');
+            });
+        } finally {
+            if (activeModelSourceScale !== previousSourceScale) {
+                resizeModelRendererForCard(currentModelType, previousSourceScale);
+                ensureRender();
+                refreshPreview();
+            }
         }
-
-        drawModelWithComposition(ctx, srcCanvas, outW, outH, options.composition);
-
-        if (aboveStickers.length > 0) {
-            await drawStickerList(ctx, aboveStickers, outW, outH);
-        }
-
-        return new Promise((resolve) => {
-            outCanvas.toBlob((blob) => resolve(blob), 'image/png');
-        });
     }
 
     /**

@@ -2964,6 +2964,40 @@ class MssCaptureBackend:
         )
 
 
+def _is_window_on_primary_monitor(
+    rect: tuple[int, int, int, int],
+) -> tuple[bool, str]:
+    """Check whether a window rect lies entirely within the primary monitor.
+
+    On Windows the primary monitor occupies (0, 0, primary_w, primary_h) in
+    virtual-screen coordinates.  pyautogui can only capture the primary
+    monitor, so any window that extends beyond this rectangle will produce
+    a corrupt (black / offset) screenshot.
+
+    The ``import pyautogui`` below is safe because this function is only
+    called from ``capture_frame()``, which is only reached after
+    ``is_available()`` has already confirmed pyautogui can be imported
+    (i.e. we are not headless / WSL / missing-DISPLAY).
+    """
+    import pyautogui
+
+    left, top, right, bottom = rect
+    primary_w, primary_h = pyautogui.size()
+
+    if left >= primary_w:
+        return False, "window_entirely_in_right_secondary_monitor"
+    if right <= 0:
+        return False, "window_entirely_in_left_secondary_monitor"
+    if top >= primary_h:
+        return False, "window_entirely_in_bottom_secondary_monitor"
+    if bottom <= 0:
+        return False, "window_entirely_in_top_secondary_monitor"
+    if left < 0 or top < 0 or right > primary_w or bottom > primary_h:
+        return False, "window_spans_across_primary_and_secondary_monitor"
+
+    return True, ""
+
+
 class PyAutoGuiCaptureBackend:
     """Cross-platform fallback in the spirit of pyautogui's screenshot path.
 
@@ -2971,13 +3005,11 @@ class PyAutoGuiCaptureBackend:
     kept as a defense-in-depth fallback in case mss fails (e.g. handle
     exhaustion).
 
-    Internally we call PIL ImageGrab.grab() directly with all_screens=True
-    instead of pyautogui.screenshot(), because pyautogui 0.9.54 wraps
-    ImageGrab without exposing all_screens — its capture silently truncates
-    to the primary monitor on multi-display setups, which would corrupt
-    OCR for any galgame window placed on a secondary screen or at negative
-    coordinates. The is_available() probe still gates on `import pyautogui`
-    so the backend's lifecycle still tracks the user-facing PyAutoGUI label.
+    The backend intentionally uses pyautogui.screenshot() so the user-facing
+    backend label matches the actual capture mechanism. pyautogui 0.9.54 only
+    captures the primary monitor on Windows, so capture_frame() rejects windows
+    outside the primary monitor and lets auto/smart mode fall through to dxcam
+    or mss.
     """
 
     kind = _CAPTURE_BACKEND_PYAUTOGUI
@@ -3002,17 +3034,23 @@ class PyAutoGuiCaptureBackend:
         return f"{target.process_name}({target.pid}) {target.title}"
 
     def capture_frame(self, target: DetectedGameWindow, profile: OcrCaptureProfile) -> Any:
-        from PIL import ImageGrab
+        import pyautogui
 
         _require_visible_capture_target(target, backend_kind=self.kind)
         rect = _target_screen_capture_rect(target)
         left, top, right, bottom = rect
-        # all_screens=True is Windows-only in Pillow but harmlessly ignored
-        # on macOS/Linux — covers multi-monitor layouts including secondary
-        # displays at negative coordinates relative to the primary screen.
-        image = ImageGrab.grab(
-            bbox=(int(left), int(top), int(right), int(bottom)),
-            all_screens=True,
+        # Reject windows that pyautogui cannot capture (not on primary monitor).
+        on_primary, reason = _is_window_on_primary_monitor(rect)
+        if not on_primary:
+            primary_w, primary_h = pyautogui.size()
+            raise RuntimeError(
+                f"pyautogui: {reason}"
+                f" rect=({left},{top},{right},{bottom})"
+                f" primary=({primary_w},{primary_h})"
+                f" -- switch to dxcam or mss backend for multi-monitor support"
+            )
+        image = pyautogui.screenshot(
+            region=(int(left), int(top), int(right - left), int(bottom - top))
         )
         if image.mode != "RGB":
             image = image.convert("RGB")

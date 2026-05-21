@@ -56,7 +56,7 @@
         "message": "다음에 컴퓨터를 켜면 N.E.K.O가 자동으로 준비되어 직접 실행하지 않아도 됩니다.",
         "note": "현재 사용자에게만 적용되며 나중에 언제든지 끌 수 있습니다.",
         "startNow": "자동 실행 켜기",
-        "later": "나중에",
+        "later": "나중에 알려줘",
         "never": "다시 묻지 않기",
         "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요.",
         "requiresApproval": "먼저 시스템 설정에서 자동 실행을 승인해야 합니다. 승인 후 적용됩니다."
@@ -1991,6 +1991,7 @@
         "micRequired": "먼저 마이크를 활성화해 주세요!",
         "micNotOpen": "마이크가 열려 있지 않습니다!",
         "switchingToVoice": "음성 모드로 전환 중...",
+        "waitForReplyBeforeVoice": "답변이 끝난 뒤 음성으로 전환합니다...",
         "initializingVoice": "음성 채팅 초기화 중...",
         "initializingMic": "마이크 초기화 중...",
         "startFailed": "시작 실패: {{error}}",
@@ -2042,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ 화면 녹화 권한이 승인되지 않았습니다. 시스템 설정에서 화면 녹화를 허용해 주세요",
         "repetitionDetected": "높은 반복이 감지되었습니다. {{name}}이(가) 쉴 수 있도록 대화 종료를 제안하세요.",
         "modelSwitched": "모델 전환",
+        "multiScreenDragHint": {
+            "title": "YUI를 다른 화면으로 옮길 수 있어요",
+            "body": "화면 가장자리 쪽으로 계속 드래그한 뒤 놓아 주세요. 가장자리에 너무 가까우면 먼저 자동으로 되돌아와요.",
+            "ack": "알겠어요",
+            "never": "다시 알리지 않기"
+        },
         "screenSource": {
             "notAvailable": "데스크톱 버전에서만 화면 소스 선택 가능",
             "loading": "로드 중...",
@@ -3381,27 +3388,27 @@
     "characterModelNotSet": "현재 캐릭터에 모델이 설정되지 않았습니다",
     "cookiesLogin": {
         "title": "N.E.K.O 자격 증명 제어 센터",
-        "header": "🔐 자격 증명 획득 센터",
-        "bilibili": "📺 빌리빌리 (Bilibili)",
-        "douyin": "🎵 도인 (Douyin)",
-        "kuaishou": "🧡 쾌수 (Kuaishou)",
-        "weibo": "🌏 위보 (Weibo)",
-        "twitter": "🐦 트위터/X (Twitter/X)",
-        "reddit": "👽 레딧 (Reddit)",
-        "netease": "🎶 넷이즈 뮤직 (NetEase)",
+        "header": "자격 증명 획득 센터",
+        "bilibili": "빌리빌리 (Bilibili)",
+        "douyin": "도인 (Douyin)",
+        "kuaishou": "쾌수 (Kuaishou)",
+        "weibo": "위보 (Weibo)",
+        "twitter": "트위터/X (Twitter/X)",
+        "reddit": "레딧 (Reddit)",
+        "netease": "넷이즈 뮤직 (NetEase)",
         "saveConfig": "설정 저장",
         "encryptStorage": "로컬 파일에 안전하게 암호화 저장",
         "localMonitoring": "로컬 상태 모니터링",
         "removeCredentials": "삭제",
         "confirmRemove": "{{platformName}}의 로그인 자격 증명을 정말로 지우시겠습니까?",
-        "credentialsRemoved": "✅ 자격 증명이 성공적으로 삭제되었습니다",
-        "credentialsSaved": "✅ {{platformName}} 자격 증명이 성공적으로 저장되었습니다!",
+        "credentialsRemoved": "자격 증명이 성공적으로 삭제되었습니다",
+        "credentialsSaved": "{{platformName}} 자격 증명이 성공적으로 저장되었습니다!",
         "credentialsRemovedFailed": "삭제 실패",
-        "removeFailed": "❌ 삭제 실패, 네트워크를 확인해주세요",
-        "requiredField": "⚠️ 필수 항목을 입력해주세요: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}]에 유효하지 않은 문자가 포함되어 있습니다...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}]에 앞/뒤 공백이 포함되어 자동으로 제거되었습니다. 확인 후 다시 제출해주세요",
-        "networkError": "❌ 네트워크 오류: 백엔드 서비스에 연결할 수 없습니다",
+        "removeFailed": "삭제 실패, 네트워크를 확인해주세요",
+        "requiredField": "필수 항목을 입력해주세요: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}]에 유효하지 않은 문자가 포함되어 있습니다...",
+        "whitespaceTrimmed": "[{{fieldName}}]에 앞/뒤 공백이 포함되어 자동으로 제거되었습니다. 확인 후 다시 제출해주세요",
+        "networkError": "네트워크 오류: 백엔드 서비스에 연결할 수 없습니다",
         "saveFailed": "저장 실패, 형식이 올바른지 확인해주세요",
         "pasteHere": "여기에 붙여넣기",
         "submitting": "안전하게 암호화하여 전송 중...",
@@ -3409,13 +3416,13 @@
         "statusLoadFailed": "상태 로드 실패",
         "thisPlatform": "이 플랫폼",
         "instructions": {
-            "bilibili": "📌 <b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "douyin": "📌 <b>대상:</b> <b>douyin.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "kuaishou": "📌 <b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "weibo": "📌 <b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "twitter": "📌 <b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "reddit": "📌 <b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
-            "netease": "📌 <b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
+            "bilibili": "<b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "douyin": "<b>대상:</b> <b>douyin.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "kuaishou": "<b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "weibo": "<b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "twitter": "<b>대상:</b> <b>x.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "reddit": "<b>대상:</b> <b>reddit.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "netease": "<b>대상:</b> <b>music.163.com</b>에 접속하여 해당 쿠키를 가져오세요."
         },
         "guide": {
             "title": "초보자를 위한 공통 가이드",
@@ -3513,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "또는... QR 코드 로그인을 시도해 보시겠습니까?",
-            "openQR": "📱 QR 로그인 열기",
+            "openQR": "QR 로그인 열기",
             "loading": "QR 코드 가져오는 중...",
-            "scanTitle": "📱 {{platform}} QR 로그인",
+            "scanTitle": "{{platform}} QR 로그인",
             "qrCodeAlt": "로그인 QR 코드",
             "waiting": "스캔 대기 중...",
             "validFor": "QR 코드 유효 시간: {{seconds}}초",
@@ -3524,9 +3531,9 @@
             "retry": "재시도",
             "networkError": "네트워크 요청 실패, 연결을 확인하세요",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, 새로고침하세요",
-                "scanned": "📱 {{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, 새로고침하세요",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3536,7 +3543,7 @@
                 "waiting": "스캔 대기 중"
             },
             "successAlert": "QR 로그인 성공! 쿠키가 자동으로 입력되었습니다. 설정 저장을 클릭하세요",
-            "extractFailed": "⚠️ QR 로그인은 성공했지만 필드를 자동으로 추출하지 못했습니다. 수동으로 확인해 주세요."
+            "extractFailed": "QR 로그인은 성공했지만 필드를 자동으로 추출하지 못했습니다. 수동으로 확인해 주세요."
         }
     },
     "music": {

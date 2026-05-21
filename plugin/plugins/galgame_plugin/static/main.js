@@ -132,7 +132,7 @@ function getInstallUIConfig() {
       actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
       retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
       runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
-      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会优先从百度云拉取缺失模型文件，失败则回退到 ModelScope，并通过 SSE 推送实时进度。'),
+      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从 ModelScope 拉取缺失模型文件，并通过 SSE 推送实时进度。'),
       successFlash: uiT('ui.install.rapidocr.download_models.success', 'RapidOCR 模型下载完成'),
       failureFlash: uiT('ui.install.rapidocr.download_models.failure', 'RapidOCR 模型下载失败'),
     },
@@ -1889,7 +1889,7 @@ function buildFirstRunSteps(status = {}) {
       const sizeMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
       body = uiTf(
         'ui.first_run.install_ocr.pending_models',
-        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，会优先从百度云拉取约 {size} MB 的模型文件，失败则回退到 ModelScope。',
+        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，会从 ModelScope 拉取约 {size} MB 的模型文件。',
         {
           lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
@@ -5420,6 +5420,11 @@ function renderRapidOcr(status) {
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const manualGuide = status.download_guide?.rapidocr_models || {};
+  const rapidocrJapanV5Note = (
+    rapidocr.ocr_version === 'PP-OCRv5' && rapidocr.lang_type === 'japan'
+      ? uiT('ui.install.rapidocr.v5_japan_note', '日文识别使用 PP-OCRv5 检测/方向模型，并沿用 PP-OCRv4 日文识别模型。')
+      : ''
+  );
   applyRapidOcrModelsGate(rapidocr);
   const lastTask = installRuntime.rapidocr_models.state;
   const modelState = lastTask;
@@ -5463,7 +5468,7 @@ function renderRapidOcr(status) {
     const modelCacheDir = rapidocr.model_cache_dir || uiT('ui.status.unknown', '未知');
     const manualRecoveryBody = uiTf(
       'ui.install.rapidocr.missing_models_manual_body',
-      '当前选择 lang_type={lang} + ocr_version={version}，需要下载缺失模型文件到本地缓存。自动下载会优先使用百度云，失败则回退到备用源/ModelScope；也可按 {source} 提供的信息手动下载并放到 {dir}，再点击“刷新状态”。',
+      '当前选择 lang_type={lang} + ocr_version={version}，需要下载缺失模型文件到本地缓存。自动下载会使用 ModelScope；也可按 {source} 提供的信息手动下载并放到 {dir}，再点击“刷新状态”。',
       {
         lang: langType,
         version: ocrVersion,
@@ -5483,6 +5488,7 @@ function renderRapidOcr(status) {
       manualGuide.url ? `${uiT('ui.install.manual_download_url', '手动下载')}: ${manualGuide.url}` : '',
       manualGuide.code ? `${uiT('ui.install.manual_download_code', '提取码')}: ${manualGuide.code}` : '',
       manualGuide.target_dir ? `${uiT('ui.install.manual_target_dir', '放置目录')}: ${manualGuide.target_dir}` : '',
+      rapidocrJapanV5Note,
       !canDownloadModels ? manualRecoveryBody : '',
       downloadFailed ? `${uiT('ui.install.last_error', '上次错误')}: ${modelState.error || modelState.message || ''}` : '',
     ].filter(Boolean).join('\n');
@@ -5496,6 +5502,7 @@ function renderRapidOcr(status) {
       rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
       usingRapidOcr ? `${uiT('ui.install.model_label', '模型')}: ${runtime.backend_model || rapidocr.selected_model || ''}` : '',
+      rapidocrJapanV5Note,
     ].filter(Boolean).join('\n');
   } else if (rapidocr.detail === 'broken_runtime') {
     cardStatus = 'error';
@@ -5505,7 +5512,7 @@ function renderRapidOcr(status) {
   } else {
     cardStatus = 'warning';
     chipText = uiT('ui.install.status.not_found', '未检测到');
-    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 galgame 插件按需自动下载，默认优先百度云。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group galgame` 后重启。');
+    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 galgame 插件按需从 ModelScope 自动下载。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group galgame` 后重启。');
   }
 
   if (modelState && !isInstallTaskTerminal(modelState)) {
@@ -5523,11 +5530,38 @@ function renderRapidOcr(status) {
   syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
   applyRapidOcrModelsGate(rapidocr);
+  renderRapidOcrVersionBar(rapidocr);
   renderRapidOcrLangBar(rapidocr);
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
   rebindCardButton('rapidocrModelsDownloadBtn', () => startInstall('rapidocr_models', false, { navigate: false }));
   bindRapidOcrLangButtons();
+}
+
+function renderRapidOcrVersionBar(rapidocr) {
+  const bar = document.getElementById('rapidocrVersionBar');
+  if (!bar) {
+    return;
+  }
+  const usable = isRapidOcrUsable(rapidocr) || hasMissingRapidOcrModelFiles(rapidocr);
+  bar.hidden = !usable;
+  if (!usable) {
+    setRapidOcrVersionControlsDisabled(true);
+    return;
+  }
+
+  const ocrVersion = rapidocr.ocr_version || 'PP-OCRv4';
+  const idMap = { 'PP-OCRv4': 'V4', 'PP-OCRv5': 'V5' };
+  Object.entries(idMap).forEach(([version, suffix]) => {
+    const btn = document.getElementById('rapidocrVersion' + suffix + 'Btn');
+    if (!btn) {
+      return;
+    }
+    btn.classList.toggle('active', ocrVersion === version);
+    btn.setAttribute('aria-checked', ocrVersion === version ? 'true' : 'false');
+    btn.setAttribute('tabindex', ocrVersion === version ? '0' : '-1');
+    btn.disabled = rapidOcrLangRequestPending;
+  });
 }
 
 function renderRapidOcrLangBar(rapidocr) {
@@ -5553,7 +5587,7 @@ function renderRapidOcrLangBar(rapidocr) {
     btn.classList.toggle('active', langType === lang);
     btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
     btn.setAttribute('tabindex', langType === lang ? '0' : '-1');
-    btn.disabled = rapidOcrLangRequestPending;
+    btn.disabled = rapidOcrLangRequestPending || autoDetect;
   });
 
   const checkbox = document.getElementById('rapidocrAutoDetectCheck');
@@ -5564,6 +5598,7 @@ function renderRapidOcrLangBar(rapidocr) {
 }
 
 function setRapidOcrLangControlsDisabled(disabled) {
+  setRapidOcrVersionControlsDisabled(disabled);
   ['Ch', 'Japan', 'Korean', 'En'].forEach((suffix) => {
     const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
     if (btn) {
@@ -5576,7 +5611,21 @@ function setRapidOcrLangControlsDisabled(disabled) {
   }
 }
 
+function setRapidOcrVersionControlsDisabled(disabled) {
+  ['V4', 'V5'].forEach((suffix) => {
+    const btn = document.getElementById('rapidocrVersion' + suffix + 'Btn');
+    if (btn) {
+      btn.disabled = Boolean(disabled);
+    }
+  });
+}
+
 function bindRapidOcrLangButtons() {
+  const versionMap = { V4: 'PP-OCRv4', V5: 'PP-OCRv5' };
+  Object.entries(versionMap).forEach(([suffix, version]) => {
+    rebindCardButton('rapidocrVersion' + suffix + 'Btn', () => setRapidOcrLang({ ocr_version: version }));
+  });
+
   const idMap = { Ch: 'ch', Japan: 'japan', Korean: 'korean', En: 'en' };
   Object.entries(idMap).forEach(([suffix, lang]) => {
     rebindCardButton('rapidocrLang' + suffix + 'Btn', () => setRapidOcrLang({ lang_type: lang }));
@@ -6701,7 +6750,14 @@ async function setRapidOcrLang(payload = {}) {
     if (nextPayload) {
       setRapidOcrLang(nextPayload);
     } else {
-      setRapidOcrLangControlsDisabled(false);
+      const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+      const latestRapidOcr = latestStatus && latestStatus.rapidocr ? latestStatus.rapidocr : {};
+      const autoDetect = checkbox ? checkbox.checked : latestRapidOcr.auto_detect_lang !== false;
+      if (latestStatus && latestStatus.rapidocr) {
+        renderRapidOcrLangBar({ ...latestRapidOcr, auto_detect_lang: autoDetect });
+      } else if (!autoDetect && !rapidOcrLangRequestPending) {
+        setRapidOcrLangControlsDisabled(false);
+      }
     }
     if (saved && !nextPayload) {
       await refreshAll({ preserveFlash: true, forceInsights: true });

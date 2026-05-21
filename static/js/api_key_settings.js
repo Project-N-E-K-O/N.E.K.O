@@ -697,6 +697,33 @@ function toggleKeyBook() {
     }
 }
 
+function expandAndScrollToKeyBook(options = {}) {
+    const keyBookOptions = document.getElementById('key-book-options');
+    const keyBookButton = document.getElementById('key-book-toggle-btn');
+    if (keyBookOptions && keyBookOptions.style.display === 'none') {
+        keyBookOptions.style.display = 'block';
+        if (keyBookButton) keyBookButton.classList.add('rotated');
+    }
+
+    const section = document.getElementById('key-book-section');
+    if (section) {
+        section.scrollIntoView({
+            behavior: options.instant ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }
+}
+
+function shouldFocusKeyBookFromLocation() {
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const focus = (params.get('focus') || params.get('target') || '').toLowerCase();
+        if (focus === 'key_book' || focus === 'key-book' || focus === 'keybook') return true;
+    } catch (_) { }
+    const hash = String(window.location.hash || '').toLowerCase();
+    return hash === '#key-book' || hash === '#key_book' || hash === '#keybook';
+}
+
 /**
  * 从 Key Book 读取某个 provider 的 key。
  * 返回 null 表示该 provider 的输入框不存在（如被 restricted 隐藏），
@@ -911,15 +938,7 @@ function ensureKeyBookLink(input) {
     link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
     link.addEventListener('click', (e) => {
         e.preventDefault();
-        // 展开 Key Book 区域并滚动到它
-        const options = document.getElementById('key-book-options');
-        const btn = document.getElementById('key-book-toggle-btn');
-        if (options && options.style.display === 'none') {
-            options.style.display = 'block';
-            if (btn) btn.classList.add('rotated');
-        }
-        const section = document.getElementById('key-book-section');
-        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        expandAndScrollToKeyBook();
     });
     parent.appendChild(link);
 }
@@ -3996,6 +4015,12 @@ async function initializePage() {
             toggleCustomApi(true);
         }, 0);
 
+        if (shouldFocusKeyBookFromLocation()) {
+            setTimeout(() => {
+                expandAndScrollToKeyBook();
+            }, 80);
+        }
+
         // Task 6.3: Auto-test removed per maintainer feedback (Wehos).
         // Manual test buttons are sufficient; auto-test on page load could
         // consume tokens without user consent and /models doesn't reliably
@@ -4017,6 +4042,13 @@ async function initializePage() {
 
 // 页面加载完成后开始初始化
 document.addEventListener('DOMContentLoaded', initializePage);
+
+window.addEventListener('message', event => {
+    if (event.origin !== window.location.origin) return;
+    if (event.data && event.data.type === 'focus_api_key_book') {
+        expandAndScrollToKeyBook();
+    }
+});
 
 // 兼容性：防止在某些情况下DOMContentLoaded不触发
 window.addEventListener('load', () => {

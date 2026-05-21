@@ -56,7 +56,7 @@
         "message": "Ele estará pronto automaticamente na próxima vez que você ligar o computador, portanto não será necessário iniciá-lo manualmente.",
         "note": "Isso só permite a inicialização no login do usuário atual e você pode desativá-lo mais tarde.",
         "startNow": "Ativar inicialização automática",
-        "later": "Talvez mais tarde",
+        "later": "Lembrar mais tarde",
         "never": "Não me lembre",
         "enableFailed": "Não foi possível ativar a inicialização automática no momento. Por favor, tente novamente mais tarde.",
         "requiresApproval": "Aprove primeiro o início automático nas configurações do sistema. Entrará em vigor após aprovação."
@@ -1991,6 +1991,7 @@
         "micRequired": "Ative o microfone primeiro!",
         "micNotOpen": "O microfone não está aberto!",
         "switchingToVoice": "Mudando para o modo de voz...",
+        "waitForReplyBeforeVoice": "Aguardando o término da resposta antes de mudar para voz...",
         "initializingVoice": "Inicializando bate-papo por voz...",
         "initializingMic": "Inicializando microfone...",
         "startFailed": "Falha na inicialização: {{error}}",
@@ -2042,6 +2043,12 @@
         "screenRecordingPermissionDenied": "⚠️ Permissão de gravação de tela negada. Permita a gravação de tela nas configurações do sistema",
         "repetitionDetected": "Alta repetição detectada. Sugira encerrar a conversa para deixar {{name}} descansar.",
         "modelSwitched": "Modelo trocado",
+        "multiScreenDragHint": {
+            "title": "Você pode mover a YUI para outra tela",
+            "body": "Continue arrastando em direção à borda da tela e solte. Se ela ficar perto demais da borda, voltará primeiro.",
+            "ack": "Entendi",
+            "never": "Não me lembre novamente"
+        },
         "screenSource": {
             "notAvailable": "Seleção de fonte de tela disponível apenas na versão desktop",
             "loading": "Carregando...",
@@ -3381,27 +3388,27 @@
     "characterModelNotSet": "O personagem atual não tem modelo definido",
     "cookiesLogin": {
         "title": "Centro de controle de credenciais NEKO",
-        "header": "🔐 Centro de aquisição de credenciais",
-        "bilibili": "📺 Bilíbili",
-        "douyin": "🎵Douyin",
-        "kuaishou": "🧡 Kuaishou",
-        "weibo": "🌏 Weibo",
-        "twitter": "🐦Twitter/X",
-        "reddit": "👽 Reddit",
-        "netease": "🎶 NetEase Cloud Music",
+        "header": "Centro de aquisição de credenciais",
+        "bilibili": "Bilíbili",
+        "douyin": "Douyin",
+        "kuaishou": "Kuaishou",
+        "weibo": "Weibo",
+        "twitter": "Twitter/X",
+        "reddit": "Reddit",
+        "netease": "NetEase Cloud Music",
         "saveConfig": "Salvar configuração",
         "encryptStorage": "Criptografe e armazene com segurança em arquivo local",
         "localMonitoring": "Monitoramento de status local",
         "removeCredentials": "Remover",
         "confirmRemove": "Tem certeza de que deseja limpar as credenciais de login de {{platformName}}?",
-        "credentialsRemoved": "✅ Credenciais removidas com sucesso",
-        "credentialsSaved": "✅ {{platformName}} credenciais salvas com sucesso!",
+        "credentialsRemoved": "Credenciais removidas com sucesso",
+        "credentialsSaved": "{{platformName}} credenciais salvas com sucesso!",
         "credentialsRemovedFailed": "Falha na remoção",
-        "removeFailed": "❌ Falha na remoção, verifique sua rede",
-        "requiredField": "⚠️ Preencha o campo obrigatório: [{{fieldName}}]",
-        "invalidChars": "⚠️ [{{fieldName}}] contém caracteres inválidos...",
-        "whitespaceTrimmed": "⚠️ [{{fieldName}}] contém espaços iniciais/finais, que foram cortados automaticamente. Por favor, confirme e reenvie.",
-        "networkError": "❌ Erro de rede: não é possível conectar-se ao serviço de back-end",
+        "removeFailed": "Falha na remoção, verifique sua rede",
+        "requiredField": "Preencha o campo obrigatório: [{{fieldName}}]",
+        "invalidChars": "[{{fieldName}}] contém caracteres inválidos...",
+        "whitespaceTrimmed": "[{{fieldName}}] contém espaços iniciais/finais, que foram cortados automaticamente. Por favor, confirme e reenvie.",
+        "networkError": "Erro de rede: não é possível conectar-se ao serviço de back-end",
         "saveFailed": "Falha ao salvar, verifique se o formato está correto",
         "pasteHere": "Cole aqui",
         "submitting": "Criptografando e transmitindo com segurança...",
@@ -3409,13 +3416,13 @@
         "statusLoadFailed": "Falha no carregamento do status",
         "thisPlatform": "esta plataforma",
         "instructions": {
-            "bilibili": "📌 <b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
-            "douyin": "📌 <b>Target:</b> Vá para <b>douyin.com</b> para buscar esses cookies.",
-            "kuaishou": "📌 <b>Target:</b> Vá para <b>kuaishou.com</b> para buscar esses cookies.",
-            "weibo": "📌 <b>Target:</b> Vá para <b>weibo.com</b> para buscar esses cookies.",
-            "twitter": "📌 <b>Target:</b> Vá para <b>x.com</b> para buscar esses cookies.",
-            "reddit": "📌 <b>Target:</b> Vá para <b>reddit.com</b> para buscar esses cookies.",
-            "netease": "📌 <b>Target:</b> Vá para <b>music.163.com</b> para buscar esses cookies."
+            "bilibili": "<b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
+            "douyin": "<b>Target:</b> Vá para <b>douyin.com</b> para buscar esses cookies.",
+            "kuaishou": "<b>Target:</b> Vá para <b>kuaishou.com</b> para buscar esses cookies.",
+            "weibo": "<b>Target:</b> Vá para <b>weibo.com</b> para buscar esses cookies.",
+            "twitter": "<b>Target:</b> Vá para <b>x.com</b> para buscar esses cookies.",
+            "reddit": "<b>Target:</b> Vá para <b>reddit.com</b> para buscar esses cookies.",
+            "netease": "<b>Target:</b> Vá para <b>music.163.com</b> para buscar esses cookies."
         },
         "guide": {
             "title": "Guia universal para iniciantes",
@@ -3513,9 +3520,9 @@
         },
         "qrLogin": {
             "tryQR": "Ou... tente fazer login com código QR?",
-            "openQR": "📱 Abrir login QR",
+            "openQR": "Abrir login QR",
             "loading": "Obtendo o código QR...",
-            "scanTitle": "📱 Digitalize para fazer login {{platform}}",
+            "scanTitle": "Digitalize para fazer login {{platform}}",
             "qrCodeAlt": "Código QR de login",
             "waiting": "Aguardando digitalização...",
             "validFor": "Código QR válido para: {{seconds}}s",
@@ -3524,9 +3531,9 @@
             "retry": "Tentar novamente",
             "networkError": "Falha na solicitação de rede. Verifique a conexão",
             "status": {
-                "success": "✅ {{message}}",
-                "expired": "❌ {{message}}, atualize",
-                "scanned": "📱{{message}}",
+                "success": "{{message}}",
+                "expired": "{{message}}, atualize",
+                "scanned": "{{message}}",
                 "waiting": "{{message}}..."
             },
             "statusMessage": {
@@ -3536,7 +3543,7 @@
                 "waiting": "Aguardando digitalização"
             },
             "successAlert": "Login QR bem-sucedido! Os cookies foram preenchidos automaticamente, clique em Salvar configuração",
-            "extractFailed": "⚠️ O login do QR foi bem-sucedido, mas não conseguiu extrair os campos automaticamente. Verifique manualmente."
+            "extractFailed": "O login do QR foi bem-sucedido, mas não conseguiu extrair os campos automaticamente. Verifique manualmente."
         }
     },
     "music": {

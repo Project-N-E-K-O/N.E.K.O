@@ -6,6 +6,21 @@
     const AUTOSTART_STATUS_MAX_AGE_MS = HEARTBEAT_INTERVAL_MS;
     const AUTOSTART_PROMPT_COORDINATION_KEY = 'home-autostart-prompt';
     const AUTOSTART_PROMPT_PRIORITY = 100;
+    const AUTOSTART_PROMPT_VOICE_BASE_URL = '/static/autostart_prompt_voices/';
+    const AUTOSTART_PROMPT_VOICE_LANGUAGES = {
+        'zh': 'zh-CN',
+        'zh-cn': 'zh-CN',
+        'zh-hans': 'zh-CN',
+        'cn': 'zh-CN',
+        'zh-tw': 'zh-TW',
+        'zh-hant': 'zh-TW',
+        'tw': 'zh-TW',
+        'en': 'en',
+        'ko': 'ko',
+        'ko-kr': 'ko',
+        'ru': 'ru',
+        'ru-ru': 'ru',
+    };
 
     const promptShared = window.nekoPromptShared;
     if (!promptShared || typeof promptShared.createPromptTools !== 'function') {
@@ -35,8 +50,8 @@
         pendingWeakHomeInteractions: 0,
         pendingChatTurns: 0,
         pendingVoiceSessions: 0,
-        neverRemind: false,
         deferredUntil: 0,
+        canNeverRemind: false,
         autostartEnabled: false,
         autostartSupported: true,
         autostartStatusLoaded: false,
@@ -45,6 +60,9 @@
         autostartProvider: '',
         autostartStatusUpdatedAt: 0,
         pendingDecisionPayload: null,
+        foregroundTrackingReady: false,
+        foregroundGateStarted: false,
+        foregroundTrackingBlockedHeartbeat: false,
     };
 
     const shortPromptToken = promptTools.shortToken;
@@ -58,8 +76,25 @@
     const isWeakHomeFocusTarget = promptTools.isWeakHomeFocusTarget;
     const isWeakHomeChangeTarget = promptTools.isWeakHomeChangeTarget;
     const foregroundTracker = promptTools.attachForegroundTracker(state);
-    const syncForegroundWindow = foregroundTracker.syncForegroundWindow;
-    const consumeForegroundDelta = foregroundTracker.consumeForegroundDelta;
+    const syncForegroundWindowNow = foregroundTracker.syncForegroundWindow;
+    const consumeForegroundDeltaNow = foregroundTracker.consumeForegroundDelta;
+
+    function syncForegroundWindow() {
+        if (!state.foregroundTrackingReady) {
+            return;
+        }
+        syncForegroundWindowNow();
+    }
+
+    function consumeForegroundDelta() {
+        if (!state.foregroundTrackingReady) {
+            state.pendingForegroundMs = 0;
+            state.foregroundStartedAt = null;
+            state.foregroundTrackingBlockedHeartbeat = true;
+            return 0;
+        }
+        return consumeForegroundDeltaNow();
+    }
 
     function createHeartbeatToken() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -103,30 +138,30 @@
 
         const previous = {
             autostartEnabled: state.autostartEnabled,
-            neverRemind: state.neverRemind,
             deferredUntil: state.deferredUntil,
+            canNeverRemind: state.canNeverRemind,
         };
         const status = serverState.status ? String(serverState.status).toLowerCase() : '';
         const serverAutostartEnabled = serverState.autostart_enabled === true;
         const completedAt = normalizeMs(serverState.completed_at);
 
-        state.neverRemind = serverState.never_remind === true;
         state.deferredUntil = normalizeMs(serverState.deferred_until);
+        state.canNeverRemind = serverState.can_never_remind === true;
         if (!state.autostartStatusAuthoritative) {
             state.autostartEnabled = serverAutostartEnabled || status === 'completed' || completedAt > 0;
         }
 
         const changed = previous.autostartEnabled !== state.autostartEnabled
-            || previous.neverRemind !== state.neverRemind
-            || previous.deferredUntil !== state.deferredUntil;
+            || previous.deferredUntil !== state.deferredUntil
+            || previous.canNeverRemind !== state.canNeverRemind;
 
         if (changed || source === 'initial-state') {
             logFlow('state-sync', {
                 source: source || 'unknown',
                 status: status || null,
                 autostartEnabled: state.autostartEnabled,
-                neverRemind: state.neverRemind,
                 deferredUntil: state.deferredUntil || 0,
+                canNeverRemind: state.canNeverRemind,
             });
         }
     }
@@ -446,7 +481,7 @@
 
             // 只在真有 replay-sensitive delta 时带 heartbeat_token：
             // 断线/超时/响应解析失败时前端会把 delta 加回 pending（Lines 364-367），
-            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被 15 分钟阈值重复计入
+            // 后端按 token 幂等 dedupe，避免同一批 foreground_ms 被阈值重复计入
             // 而误弹自启动提示。和 tutorial heartbeat (app-tutorial-prompt.js) 同构。
             const hasReplaySensitiveDelta = (
                 foregroundDelta > 0
@@ -488,27 +523,9 @@
             });
             if (data && data.should_prompt) {
                 try {
-                    // Gate: 等存档迁移/位置选择 + 初始人设走完再弹自启动提示。
-                    // 心跳间隔 15min，绝大多数情况下 onboarding 早已 settled，此处 await 立即过；
-                    // 拆分 race：超时只兜底"bootstrap 卡死"，overlay 显示中就无限等不超时。
-                    const AUTOSTART_GATE_FALLBACK_MS = 15000;
-                    if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
-                        await window.waitForStorageLocationStartupBarrier();
-                    }
-                    const onboarding = window.CharacterPersonalityOnboarding;
-                    if (onboarding && typeof onboarding.whenSettled === 'function') {
-                        const settled = await Promise.race([
-                            onboarding.whenSettled().then(() => true),
-                            new Promise((resolve) => setTimeout(() => resolve(false), AUTOSTART_GATE_FALLBACK_MS)),
-                        ]);
-                        if (!settled) {
-                            const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
-                                || onboarding.pendingResumeAfterTutorial;
-                            if (overlayActive) {
-                                await onboarding.whenSettled();
-                            }
-                        }
-                    }
+                    await waitForAutostartPromptGate().catch(function (error) {
+                        console.warn('[AutostartPrompt] prompt gate failed, showing prompt anyway:', error);
+                    });
                     await maybeShowPrompt(data.prompt_token);
                 } catch (error) {
                     console.warn('[AutostartPrompt] prompt display failed:', error);
@@ -535,9 +552,61 @@
         FAST_HEARTBEAT_DELAY_MS
     );
 
+    function beginForegroundTrackingAfterGate() {
+        if (state.foregroundTrackingReady) {
+            return;
+        }
+        state.pendingForegroundMs = 0;
+        state.foregroundStartedAt = null;
+        state.foregroundTrackingReady = true;
+        syncForegroundWindowNow();
+        logFlow('foreground-gate-settled', {});
+        if (state.foregroundTrackingBlockedHeartbeat) {
+            state.foregroundTrackingBlockedHeartbeat = false;
+            scheduleFastHeartbeat();
+        }
+    }
+
+    async function waitForAutostartPromptGate() {
+        const AUTOSTART_GATE_FALLBACK_MS = 15000;
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            await window.waitForStorageLocationStartupBarrier();
+        }
+
+        const onboarding = window.CharacterPersonalityOnboarding;
+        if (!onboarding || typeof onboarding.whenSettled !== 'function') {
+            return;
+        }
+
+        const settled = await Promise.race([
+            onboarding.whenSettled().then(() => true),
+            new Promise((resolve) => setTimeout(() => resolve(false), AUTOSTART_GATE_FALLBACK_MS)),
+        ]);
+        if (settled) {
+            return;
+        }
+
+        const overlayActive = (onboarding.overlay && !onboarding.overlay.hidden)
+            || onboarding.pendingResumeAfterTutorial;
+        if (overlayActive) {
+            await onboarding.whenSettled();
+        }
+    }
+
+    function startForegroundTrackingGate() {
+        if (state.foregroundGateStarted) {
+            return;
+        }
+        state.foregroundGateStarted = true;
+        void waitForAutostartPromptGate()
+            .catch(function (error) {
+                console.warn('[AutostartPrompt] foreground gate failed, starting timer anyway:', error);
+            })
+            .finally(beginForegroundTrackingAfterGate);
+    }
+
     function isPromptSuppressedLocally() {
         return state.autostartEnabled
-            || state.neverRemind
             || state.deferredUntil > Date.now();
     }
 
@@ -633,12 +702,119 @@
         return typeof window.showDecisionPrompt === 'function';
     }
 
+    function normalizeAutostartPromptVoiceLanguage(rawLanguage) {
+        const normalized = String(rawLanguage || '').trim().toLowerCase().replace(/_/g, '-');
+        if (!normalized) {
+            return '';
+        }
+        if (AUTOSTART_PROMPT_VOICE_LANGUAGES[normalized]) {
+            return AUTOSTART_PROMPT_VOICE_LANGUAGES[normalized];
+        }
+        const primary = normalized.split('-')[0];
+        return AUTOSTART_PROMPT_VOICE_LANGUAGES[primary] || '';
+    }
+
+    function getAutostartPromptLanguage() {
+        if (window.i18next && typeof window.i18next.language === 'string') {
+            return normalizeAutostartPromptVoiceLanguage(window.i18next.language);
+        }
+        try {
+            const storedLanguage = window.localStorage.getItem('i18nextLng');
+            if (storedLanguage) {
+                return normalizeAutostartPromptVoiceLanguage(storedLanguage);
+            }
+        } catch (_) {
+            // ignore
+        }
+        if (window.navigator && typeof window.navigator.language === 'string') {
+            return normalizeAutostartPromptVoiceLanguage(window.navigator.language);
+        }
+        return '';
+    }
+
+    function getAutostartPromptVoiceUrl() {
+        const language = getAutostartPromptLanguage();
+        if (!language) {
+            return '';
+        }
+        return new URL(
+            AUTOSTART_PROMPT_VOICE_BASE_URL + encodeURIComponent(language) + '.mp3',
+            window.location.origin
+        ).href;
+    }
+
+    function startAutostartPromptVoice() {
+        const voiceUrl = getAutostartPromptVoiceUrl();
+        if (!voiceUrl || typeof window.Audio !== 'function') {
+            return null;
+        }
+
+        let audio = null;
+        let stopped = false;
+        try {
+            audio = new window.Audio(voiceUrl);
+            audio.preload = 'auto';
+            const playResult = audio.play();
+            if (playResult && typeof playResult.catch === 'function') {
+                playResult.catch(() => { });
+            }
+        } catch (_) {
+            return null;
+        }
+
+        return {
+            stop: function () {
+                if (stopped || !audio) {
+                    return;
+                }
+                stopped = true;
+                try {
+                    audio.pause();
+                } catch (_) {
+                    // ignore
+                }
+                try {
+                    audio.currentTime = 0;
+                } catch (_) {
+                    // ignore
+                }
+            }
+        };
+    }
+
     async function showPrompt(promptToken) {
         state.promptOpen = true;
         state.lastPromptTokenSeen = promptToken;
+        let promptVoice = null;
+        const buttons = [
+            {
+                value: 'later',
+                text: translate('autostartPrompt.later', '以后提醒'),
+                variant: 'secondary'
+            },
+            {
+                value: 'accept',
+                text: translate('autostartPrompt.startNow', '开启自启动'),
+                variant: 'primary'
+            }
+        ];
+        if (state.canNeverRemind) {
+            buttons.unshift({
+                value: 'never',
+                text: translate('autostartPrompt.never', '不再提示'),
+                variant: 'secondary'
+            });
+        }
+        const stopPromptVoice = function () {
+            if (promptVoice && typeof promptVoice.stop === 'function') {
+                promptVoice.stop();
+            }
+            promptVoice = null;
+        };
         logFlow('prompt-open', { token: shortPromptToken(promptToken) });
         try {
             const decision = await window.showDecisionPrompt({
+                skin: 'autostart-retention',
                 title: translate('autostartPrompt.title', '要不要让 N.E.K.O 开机自动启动？'),
                 message: translate(
                     'autostartPrompt.message',
@@ -652,25 +828,12 @@
                 closeOnClickOutside: false,
                 closeOnEscape: false,
                 onShown: function () {
+                    stopPromptVoice();
+                    promptVoice = startAutostartPromptVoice();
                     return postShownAck(promptToken);
                 },
-                buttons: [
-                    {
-                        value: 'never',
-                        text: translate('autostartPrompt.never', '不再提示'),
-                        variant: 'secondary'
-                    },
-                    {
-                        value: 'later',
-                        text: translate('autostartPrompt.later', '稍后再说'),
-                        variant: 'secondary'
-                    },
-                    {
-                        value: 'accept',
-                        text: translate('autostartPrompt.startNow', '开启自启动'),
-                        variant: 'primary'
-                    }
-                ]
+                onResolve: stopPromptVoice,
+                buttons: buttons
             });
 
             if (decision === 'never') {
@@ -685,6 +848,7 @@
                 await handlePromptAcceptance(promptToken);
             }
         } finally {
+            stopPromptVoice();
             state.promptOpen = false;
         }
     }
@@ -766,6 +930,7 @@
 
         state.initialized = true;
         syncForegroundWindow();
+        startForegroundTrackingGate();
         bindEvents();
 
         state.heartbeatTimer = setInterval(function () {

@@ -230,6 +230,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = True
                 _fire_task(session_manager[lanlan_name].end_session())
 
+            elif action == "capture_bridge_status":
+                from utils.capture_bridge import mark_capture_client
+                mark_capture_client(lanlan_name, websocket, message)
+
+            elif action == "capture_bridge_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
             elif action == "screenshot_response":
                 raw = message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
@@ -308,6 +316,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
         _ws_disconnect_time[lanlan_name] = time.time()
+        # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
+        # 让 /api/capture/health 立即返回 503。
+        try:
+            from utils.capture_bridge import unmark_capture_client
+            unmark_capture_client(lanlan_name, expected_websocket=websocket)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[capture_bridge] unmark on disconnect failed: %s", exc)
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
         async with _lock:
             session_id = get_session_id()

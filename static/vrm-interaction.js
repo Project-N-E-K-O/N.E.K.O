@@ -340,7 +340,11 @@ class VRMInteraction {
 
                 if (!displaySwitched) {
                     // 拖拽结束后：若超出屏幕范围，执行回弹
-                    await this._snapModelIntoScreen({ animate: true });
+                    const snapped = await this._snapModelIntoScreen({ animate: true });
+                    if (snapped && window.NekoAvatarMultiScreenDragHint &&
+                        typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
+                        window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('vrm');
+                    }
 
                     // 拖动结束后保存位置（包含回弹后的位置）
                     await this._savePositionAfterInteraction();
@@ -1012,6 +1016,10 @@ class VRMInteraction {
 
             await this._snapModelIntoScreen({ animate: true });
             await this._savePositionAfterInteraction();
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
+                window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('vrm');
+            }
 
             return true;
         } catch (error) {

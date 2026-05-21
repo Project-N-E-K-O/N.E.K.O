@@ -97,11 +97,14 @@ from .models import (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_OCR_VERSION,
     STORE_PUSH_NOTIFICATIONS,
     STORE_READER_MODE,
     STORE_SESSION_ID,
     json_copy,
     make_error,
+    normalize_rapidocr_ocr_version,
+    _RAPIDOCR_OCR_VERSIONS,
 )
 from .dependency_status import (
     infer_inspection_failed_dependencies,
@@ -722,6 +725,7 @@ class GalgamePluginConfigService:
         self,
         *,
         lang_type: str | None,
+        ocr_version: str | None = None,
         auto_detect_lang: bool | None = None,
         auto_detect_last_lang: str | None = None,
     ) -> None:
@@ -729,6 +733,11 @@ class GalgamePluginConfigService:
             self._plugin._persist.persist_config_override(
                 STORE_RAPIDOCR_LANG_TYPE,
                 lang_type,
+            )
+        if ocr_version is not None:
+            self._plugin._persist.persist_config_override(
+                STORE_RAPIDOCR_OCR_VERSION,
+                ocr_version,
             )
         if auto_detect_lang is not None:
             self._plugin._persist.persist_config_override(
@@ -3342,6 +3351,10 @@ class GalgamePlugin(NekoPluginBase):
         if value is not None:
             self._cfg.rapidocr.rapidocr_auto_detect_lang = bool(value)
 
+        value = overrides.get(STORE_RAPIDOCR_OCR_VERSION)
+        if value is not None and value in _RAPIDOCR_OCR_VERSIONS:
+            self._cfg.rapidocr.rapidocr_ocr_version = value
+
         value = overrides.get(STORE_RAPIDOCR_LANG_TYPE)
         if value is not None and value in {"ch", "japan", "korean", "en"}:
             self._cfg.rapidocr.rapidocr_lang_type = value
@@ -5153,7 +5166,7 @@ class GalgamePlugin(NekoPluginBase):
     @plugin_entry(
         id="galgame_download_rapidocr_models",
         name=tr("entries.galgame_download_rapidocr_models.name", default='下载 RapidOCR 模型'),
-        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择优先从百度云下载缺失的 RapidOCR 模型文件到插件模型缓存目录，下载失败时自动回退至 ModelScope。bundled 默认（ch+PP-OCRv4）不需要下载。'),
+        description=tr("entries.galgame_download_rapidocr_models.description", default='为当前 (lang_type, ocr_version) 选择从 ModelScope 下载缺失的 RapidOCR 模型文件到插件模型缓存目录。bundled 默认（ch+PP-OCRv4）不需要下载。'),
         input_schema={
             "type": "object",
             "properties": {
@@ -5574,7 +5587,7 @@ class GalgamePlugin(NekoPluginBase):
         name=tr("entries.galgame_set_rapidocr_lang.name", default='切换 OCR 识别语言'),
         description=tr(
             "entries.galgame_set_rapidocr_lang.description",
-            default='切换 RapidOCR 文字识别语言模型；手动切换语言后关闭自动检测。',
+            default='切换 RapidOCR 文字识别语言模型和 OCR 版本；手动切换语言后关闭自动检测。',
         ),
         input_schema={
             "type": "object",
@@ -5582,6 +5595,10 @@ class GalgamePlugin(NekoPluginBase):
                 "lang_type": {
                     "type": "string",
                     "enum": ["ch", "japan", "korean", "en"],
+                },
+                "ocr_version": {
+                    "type": "string",
+                    "enum": ["PP-OCRv4", "PP-OCRv5", "v4", "v5", "4", "5"],
                 },
                 "auto_detect_lang": {
                     "type": "boolean",
@@ -5593,6 +5610,7 @@ class GalgamePlugin(NekoPluginBase):
     async def galgame_set_rapidocr_lang(
         self,
         lang_type: str | None = None,
+        ocr_version: str | None = None,
         auto_detect_lang: bool | None = None,
         **_,
     ):
@@ -5600,14 +5618,62 @@ class GalgamePlugin(NekoPluginBase):
             return Err(SdkError(self._not_configured_message()))
 
         normalized_lang = str(lang_type or "").strip().lower() or None
+        normalized_version = normalize_rapidocr_ocr_version(ocr_version) if ocr_version is not None else None
+        auto_detect_lang_provided = auto_detect_lang is not None
         if normalized_lang is not None and normalized_lang not in {"ch", "japan", "korean", "en"}:
             return Err(SdkError(f"invalid lang_type: {lang_type!r}"))
-        if normalized_lang is None and auto_detect_lang is None:
-            return Err(SdkError("lang_type or auto_detect_lang is required"))
+        if ocr_version is not None and not normalized_version:
+            return Err(SdkError(f"invalid ocr_version: {ocr_version!r}"))
+        if normalized_version is not None and normalized_version == self._cfg.rapidocr_ocr_version:
+            normalized_version = None
+        if (
+            normalized_lang is not None
+            and normalized_lang == self._cfg.rapidocr_lang_type
+            and not self._cfg.rapidocr_auto_detect_lang
+        ):
+            normalized_lang = None
+        if (
+            normalized_lang is None
+            and auto_detect_lang_provided
+            and bool(auto_detect_lang) == bool(self._cfg.rapidocr_auto_detect_lang)
+            and normalized_version is None
+        ):
+            return Ok({
+                "lang_type": self._cfg.rapidocr_lang_type,
+                "ocr_version": self._cfg.rapidocr_ocr_version,
+                "auto_detect_lang": self._cfg.rapidocr_auto_detect_lang,
+                "summary": (
+                    f"RapidOCR lang={self._cfg.rapidocr_lang_type} "
+                    f"ocr_version={self._cfg.rapidocr_ocr_version} "
+                    f"auto_detect={'on' if self._cfg.rapidocr_auto_detect_lang else 'off'}"
+                ),
+                "skipped": True,
+                "already_applied": True,
+                "skip_reason": "already_applied",
+            })
+        if normalized_lang is None and auto_detect_lang is None and normalized_version is None:
+            if lang_type is None and ocr_version is None and not auto_detect_lang_provided:
+                return Err(SdkError("lang_type, ocr_version or auto_detect_lang is required"))
+            return Ok({
+                "lang_type": self._cfg.rapidocr_lang_type,
+                "ocr_version": self._cfg.rapidocr_ocr_version,
+                "auto_detect_lang": self._cfg.rapidocr_auto_detect_lang,
+                "summary": (
+                    f"RapidOCR lang={self._cfg.rapidocr_lang_type} "
+                    f"ocr_version={self._cfg.rapidocr_ocr_version} "
+                    f"auto_detect={'on' if self._cfg.rapidocr_auto_detect_lang else 'off'}"
+                ),
+                "skipped": True,
+                "already_applied": True,
+                "skip_reason": "already_applied",
+            })
 
         old_lang = self._cfg.rapidocr_lang_type
+        old_version = self._cfg.rapidocr_ocr_version
         old_auto = self._cfg.rapidocr_auto_detect_lang
         old_last = self._cfg.rapidocr_auto_detect_last_lang
+        if normalized_version is not None:
+            self._cfg.rapidocr_ocr_version = normalized_version
         if normalized_lang is not None:
             self._cfg.rapidocr_lang_type = normalized_lang
             self._cfg.rapidocr_auto_detect_last_lang = normalized_lang
@@ -5620,6 +5686,7 @@ class GalgamePlugin(NekoPluginBase):
                 self._ocr_reader_manager.update_config(self._cfg)
             except Exception as exc:
                 self._cfg.rapidocr_lang_type = old_lang
+                self._cfg.rapidocr_ocr_version = old_version
                 self._cfg.rapidocr_auto_detect_lang = old_auto
                 self._cfg.rapidocr_auto_detect_last_lang = old_last
                 return Err(SdkError(f"apply rapidocr lang failed: {exc}"))
@@ -5632,6 +5699,7 @@ class GalgamePlugin(NekoPluginBase):
         try:
             self._config_service.persist_rapidocr_lang(
                 lang_type=normalized_lang,
+                ocr_version=normalized_version,
                 auto_detect_lang=(
                     bool(auto_detect_lang)
                     if normalized_lang is None and auto_detect_lang is not None
@@ -5641,6 +5709,7 @@ class GalgamePlugin(NekoPluginBase):
             )
         except Exception as exc:
             self._cfg.rapidocr_lang_type = old_lang
+            self._cfg.rapidocr_ocr_version = old_version
             self._cfg.rapidocr_auto_detect_lang = old_auto
             self._cfg.rapidocr_auto_detect_last_lang = old_last
             if self._ocr_reader_manager is not None:
@@ -5659,9 +5728,11 @@ class GalgamePlugin(NekoPluginBase):
         self._start_background_bridge_poll()
         return Ok({
             "lang_type": self._cfg.rapidocr_lang_type,
+            "ocr_version": self._cfg.rapidocr_ocr_version,
             "auto_detect_lang": self._cfg.rapidocr_auto_detect_lang,
             "summary": (
                 f"RapidOCR lang={self._cfg.rapidocr_lang_type} "
+                f"ocr_version={self._cfg.rapidocr_ocr_version} "
                 f"auto_detect={'on' if self._cfg.rapidocr_auto_detect_lang else 'off'}"
             ),
         })

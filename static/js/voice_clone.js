@@ -7,19 +7,113 @@ let providerTouchedByUser = false;
 let suppressProviderTouchedTracking = false;
 // 防止并发应用音色的可重入守卫
 let isApplyingVoice = false;
+const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
+    cosyvoice: 'qwen',
+    cosyvoice_intl: 'qwen_intl',
+    minimax: 'minimax',
+    minimax_intl: 'minimax_intl',
+    elevenlabs: 'elevenlabs',
+});
+const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
+    ['cosyvoice', 'assistApiKeyQwen'],
+    ['cosyvoice_intl', 'assistApiKeyQwenIntl'],
+    ['minimax', 'assistApiKeyMinimax'],
+    ['minimax_intl', 'assistApiKeyMinimaxIntl'],
+    ['elevenlabs', 'assistApiKeyElevenlabs'],
+]);
+const voiceCloneProviderRestrictionState = {
+    loaded: false,
+    loadingPromise: null,
+    isMainlandChinaUser: false,
+    apiKeyRegistry: {},
+};
+const voiceCloneApiConfigState = {
+    loaded: false,
+    loadingPromise: null,
+    cfg: null,
+    isLocalTts: false,
+};
+const VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS = 5000;
+const VOICE_CLONE_LOADER_FETCH_ATTEMPTS = 3;
+const VOICE_CLONE_LOADER_FETCH_BACKOFF_MS = 250;
+
+function sleepVoiceCloneLoaderRetry(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchVoiceCloneLoaderResponse(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= VOICE_CLONE_LOADER_FETCH_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), VOICE_CLONE_LOADER_FETCH_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+            if (response.ok || response.status < 500 || attempt >= VOICE_CLONE_LOADER_FETCH_ATTEMPTS) {
+                return response;
+            }
+            lastError = new Error(`API returned ${response.status}`);
+        } catch (error) {
+            lastError = error;
+            if (attempt >= VOICE_CLONE_LOADER_FETCH_ATTEMPTS) break;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+        await sleepVoiceCloneLoaderRetry(VOICE_CLONE_LOADER_FETCH_BACKOFF_MS * attempt);
+    }
+    throw lastError || new Error('请求失败');
+}
+
+async function fetchVoiceCloneLoaderJson(url, options = {}) {
+    const response = await fetchVoiceCloneLoaderResponse(url, options);
+    let data = null;
+    try {
+        data = await response.json();
+    } catch (error) {
+        if (response.ok) {
+            throw error;
+        }
+    }
+    if (!response.ok) {
+        throw new Error(`API returned ${response.status}`);
+    }
+    return data;
+}
+
+function notifyApiSettingsKeyBookFocus(win) {
+    if (!win) return;
+    [250, 800, 1500].forEach(delay => {
+        setTimeout(() => {
+            try {
+                win.postMessage({ type: 'focus_api_key_book' }, window.location.origin);
+            } catch (_) { }
+        }, delay);
+    });
+}
 
 // 打开API设置页（带弹窗拦截回退）
-function openApiSettings() {
+function openApiSettings(options = {}) {
+    const focusKeyBook = !!(options && options.focusKeyBook);
+    const url = focusKeyBook ? '/api_key?focus=key_book' : '/api_key';
     const features = 'width=820,height=700,scrollbars=yes,resizable=yes';
     const win = typeof window.openOrFocusWindow === 'function'
-        ? window.openOrFocusWindow('/api_key', 'apiSettings', features)
-        : window.open('/api_key', 'apiSettings', features);
+        ? window.openOrFocusWindow(url, 'apiSettings', features)
+        : window.open(url, 'apiSettings', features);
     if (win) {
         const modal = document.getElementById('noApiModal');
         if (modal) modal.style.display = 'none';
+        if (focusKeyBook) {
+            notifyApiSettingsKeyBookFocus(win);
+        }
     } else {
-        location.href = '/api_key';
+        location.href = url;
     }
+}
+
+function openApiSettingsKeyBook() {
+    openApiSettings({ focusKeyBook: true });
 }
 
 // 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时
@@ -222,7 +316,7 @@ async function getCurrentCharacterVoiceId() {
     const lanlanName = (lanlanInput && lanlanInput.value ? lanlanInput.value : '').trim();
     if (!lanlanName) return '';
 
-    const resp = await fetch('/api/characters?language=zh-CN', { cache: 'no-store' });
+    const resp = await fetchVoiceCloneLoaderResponse('/api/characters?language=zh-CN', { cache: 'no-store' });
     const { data, nonJson, text } = await safeReadResponse(resp);
     if (!resp.ok) {
         if (data && (data.error || data.detail)) {
@@ -331,14 +425,211 @@ function isMiniMaxProvider(provider) {
     return provider === 'minimax' || provider === 'minimax_intl';
 }
 
+function getVoiceCloneProviderKeyField(provider) {
+    const entry = VOICE_CLONE_PROVIDER_KEY_FIELDS.find(([providerKey]) => providerKey === provider);
+    return entry ? entry[1] : '';
+}
+
+function getVoiceCloneProviderRegistryKey(provider) {
+    return VOICE_CLONE_PROVIDER_REGISTRY_KEYS[provider] || provider;
+}
+
+function isLocalVoiceCloneServerConfigured(cfg) {
+    if (!cfg || typeof cfg !== 'object') return false;
+    const ttsUrl = String(cfg.ttsModelUrl || '');
+    return !!(cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://')));
+}
+
+async function loadVoiceCloneApiConfigState(options = {}) {
+    const force = !!(options && options.force);
+    if (voiceCloneApiConfigState.loaded && !force) {
+        return voiceCloneApiConfigState;
+    }
+    if (voiceCloneApiConfigState.loadingPromise && !force) {
+        return voiceCloneApiConfigState.loadingPromise;
+    }
+
+    voiceCloneApiConfigState.loadingPromise = (async () => {
+        const cfg = await fetchVoiceCloneLoaderJson('/api/config/core_api');
+        if (!cfg || cfg.success === false) {
+            throw new Error((cfg && cfg.error) || 'core_api config unavailable');
+        }
+        voiceCloneApiConfigState.cfg = cfg;
+        voiceCloneApiConfigState.isLocalTts = isLocalVoiceCloneServerConfigured(cfg);
+        voiceCloneApiConfigState.loaded = true;
+        return voiceCloneApiConfigState;
+    }).finally(() => {
+        voiceCloneApiConfigState.loadingPromise = null;
+    });
+
+    return voiceCloneApiConfigState.loadingPromise;
+}
+
+async function ensureVoiceCloneApiConfigState(options = {}) {
+    try {
+        await loadVoiceCloneApiConfigState(options);
+    } catch (error) {
+        console.warn('检查克隆API Key失败:', error);
+        voiceCloneApiConfigState.cfg = null;
+        voiceCloneApiConfigState.isLocalTts = false;
+        voiceCloneApiConfigState.loaded = false;
+    }
+    return voiceCloneApiConfigState;
+}
+
+function hasVoiceCloneProviderApi(provider) {
+    if (voiceCloneApiConfigState.isLocalTts) return true;
+    const cfg = voiceCloneApiConfigState.cfg;
+    const fieldName = getVoiceCloneProviderKeyField(provider);
+    return !!(cfg && fieldName && cfg[fieldName]);
+}
+
+async function checkVoiceCloneMainlandChinaUser() {
+    const data = await fetchVoiceCloneLoaderJson('/api/config/steam_language', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    return data && data.is_mainland_china === true;
+}
+
+async function loadVoiceCloneProviderRestrictionState() {
+    if (voiceCloneProviderRestrictionState.loaded) {
+        return voiceCloneProviderRestrictionState;
+    }
+    if (voiceCloneProviderRestrictionState.loadingPromise) {
+        return voiceCloneProviderRestrictionState.loadingPromise;
+    }
+
+    voiceCloneProviderRestrictionState.loadingPromise = (async () => {
+        const [isMainlandChinaUser, providersData] = await Promise.all([
+            checkVoiceCloneMainlandChinaUser(),
+            fetchVoiceCloneLoaderJson('/api/config/api_providers')
+        ]);
+        let apiKeyRegistry = {};
+        if (providersData && providersData.success) {
+            apiKeyRegistry = providersData.api_key_registry || {};
+        } else {
+            throw new Error('api_providers config unavailable');
+        }
+        voiceCloneProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
+        voiceCloneProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
+        voiceCloneProviderRestrictionState.loaded = true;
+        return voiceCloneProviderRestrictionState;
+    }).finally(() => {
+        voiceCloneProviderRestrictionState.loadingPromise = null;
+    });
+
+    return voiceCloneProviderRestrictionState.loadingPromise;
+}
+
+async function ensureVoiceCloneProviderRestrictionsLoaded() {
+    try {
+        await loadVoiceCloneProviderRestrictionState();
+    } catch (error) {
+        console.warn('声音克隆服务商地区配置加载失败，使用默认显示策略:', error);
+    }
+    return voiceCloneProviderRestrictionState;
+}
+
+function isVoiceCloneProviderRestricted(provider) {
+    if (!voiceCloneProviderRestrictionState.isMainlandChinaUser) return false;
+    const registryKey = getVoiceCloneProviderRegistryKey(provider);
+    const entry = voiceCloneProviderRestrictionState.apiKeyRegistry[registryKey];
+    return !!(entry && entry.restricted === true);
+}
+
+function getFirstAvailableVoiceCloneProviderValue(providerSelect) {
+    if (!providerSelect) return '';
+    const options = Array.from(providerSelect.options || []);
+    const availableOption = options.find(option => !option.disabled && !option.hidden && option.style.display !== 'none');
+    return availableOption ? availableOption.value : '';
+}
+
+function applyVoiceCloneProviderRestrictions(providerSelect) {
+    if (!providerSelect) return false;
+    const previousValue = providerSelect.value;
+    Array.from(providerSelect.options || []).forEach(option => {
+        const restricted = isVoiceCloneProviderRestricted(option.value);
+        option.disabled = restricted;
+        option.hidden = restricted;
+        option.style.display = restricted ? 'none' : '';
+    });
+
+    const selectedOption = providerSelect.options[providerSelect.selectedIndex];
+    if (selectedOption && !selectedOption.disabled && !selectedOption.hidden && selectedOption.style.display !== 'none') {
+        return false;
+    }
+
+    const fallbackValue = getFirstAvailableVoiceCloneProviderValue(providerSelect);
+    if (fallbackValue) {
+        providerSelect.value = fallbackValue;
+    }
+    return providerSelect.value !== previousValue;
+}
+
+async function initVoiceCloneProviderRestrictions() {
+    await ensureVoiceCloneProviderRestrictionsLoaded();
+    const providerSelect = document.getElementById('voiceProvider');
+    const changed = applyVoiceCloneProviderRestrictions(providerSelect);
+    if (changed && providerSelect) {
+        suppressProviderTouchedTracking = true;
+        providerSelect.dispatchEvent(new Event('change'));
+        suppressProviderTouchedTracking = false;
+    }
+    return voiceCloneProviderRestrictionState;
+}
+
 function getPreferredCloneProviderFromConfig(cfg) {
     if (!cfg || typeof cfg !== 'object') return '';
-    if (cfg.assistApiKeyQwen) return 'cosyvoice';
-    if (cfg.assistApiKeyQwenIntl) return 'cosyvoice_intl';
-    if (cfg.assistApiKeyMinimax) return 'minimax';
-    if (cfg.assistApiKeyMinimaxIntl) return 'minimax_intl';
-    if (cfg.assistApiKeyElevenlabs) return 'elevenlabs';
+    for (const [provider, fieldName] of VOICE_CLONE_PROVIDER_KEY_FIELDS) {
+        if (cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)) {
+            return provider;
+        }
+    }
     return '';
+}
+
+function hasUsableCloneApiFromConfig(cfg, isLocalTts) {
+    if (isLocalTts) return true;
+    if (!cfg || typeof cfg !== 'object') return false;
+    return VOICE_CLONE_PROVIDER_KEY_FIELDS.some(([provider, fieldName]) => (
+        !!cfg[fieldName] && !isVoiceCloneProviderRestricted(provider)
+    ));
+}
+
+function updateVoiceCloneProviderNoticeText(noticeDiv, provider) {
+    const span = noticeDiv ? noticeDiv.querySelector('span') : null;
+    if (!span) return;
+
+    const keyMap = {
+        'cosyvoice_intl': 'voice.alibabaIntlApiRequired',
+        'minimax': 'voice.minimaxApiRequired',
+        'minimax_intl': 'voice.minimaxIntlApiRequired',
+        'elevenlabs': 'voice.elevenlabsApiRequired',
+    };
+    const fallbackMap = {
+        'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
+        'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
+    };
+    const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
+    span.setAttribute('data-i18n', i18nKey);
+    if (window.t) {
+        const translated = window.t(i18nKey);
+        span.textContent = (translated && translated !== i18nKey) ? translated : (fallbackMap[provider] || translated);
+    } else if (fallbackMap[provider]) {
+        span.textContent = fallbackMap[provider];
+    }
+    // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
+}
+
+async function refreshVoiceCloneProviderNotice(providerSelect, noticeDiv) {
+    if (!providerSelect || !noticeDiv) return;
+    updateVoiceCloneProviderNoticeText(noticeDiv, providerSelect.value);
+    noticeDiv.style.display = 'none';
+    await ensureVoiceCloneApiConfigState();
+    const provider = providerSelect.value || 'cosyvoice';
+    updateVoiceCloneProviderNoticeText(noticeDiv, provider);
+    noticeDiv.style.display = hasVoiceCloneProviderApi(provider) ? 'none' : '';
 }
 
 function sanitizeMiniMaxPrefix(prefix) {
@@ -399,6 +690,7 @@ function applyWorkshopProviderHint(providerHint) {
     const providerSelect = document.getElementById('voiceProvider');
     if (!providerSelect || !providerHint) return;
     if (providerTouchedByUser) return;
+    if (isVoiceCloneProviderRestricted(providerHint)) return;
     if (providerSelect.value !== 'cosyvoice') return;
 
     suppressProviderTouchedTracking = true;
@@ -457,6 +749,9 @@ function updateFileDisplay() {
 
 // 监听文件选择变化
 document.addEventListener('DOMContentLoaded', () => {
+    initVoiceCloneProviderRestrictions().catch(error => {
+        console.warn('初始化声音克隆服务商地区过滤失败:', error);
+    });
     const audioFile = document.getElementById('audioFile');
     if (audioFile) {
         audioFile.addEventListener('change', updateFileDisplay);
@@ -597,11 +892,7 @@ if (window.i18n && window.i18n.isInitialized) {
 
         // 如果 URL 中没有，从 API 获取
         if (!lanlanName) {
-            const response = await fetch('/api/config/page_config');
-            if (!response.ok) {
-                throw new Error(`API returned ${response.status}`);
-            }
-            const data = await response.json();
+            const data = await fetchVoiceCloneLoaderJson('/api/config/page_config');
             if (data.success) {
                 lanlanName = data.lanlan_name || "";
             }
@@ -622,34 +913,28 @@ if (window.i18n && window.i18n.isInitialized) {
         }
     }
 
-    // 检查是否已设置可用于克隆的API Key
-    try {
-        const resp = await fetch('/api/config/core_api');
-        if (resp.ok) {
-            const cfg = await resp.json();
-            if (!cfg || cfg.success === false) {
-                console.warn('获取核心配置失败:', cfg?.error);
-            } else {
-                // 本地TTS服务器(ws/wss协议)不需要云端API Key
-                const ttsUrl = cfg.ttsModelUrl || '';
-                const isLocalTts = cfg.enableCustomApi && (ttsUrl.startsWith('ws://') || ttsUrl.startsWith('wss://'));
-                const hasCloneApi = isLocalTts || !!(cfg.assistApiKeyQwen || cfg.assistApiKeyQwenIntl || cfg.assistApiKeyMinimax || cfg.assistApiKeyMinimaxIntl || cfg.assistApiKeyElevenlabs);
-                const preferredProvider = getPreferredCloneProviderFromConfig(cfg);
-                const providerSelect = document.getElementById('voiceProvider');
-                if (!providerTouchedByUser && preferredProvider && providerSelect && providerSelect.value === 'cosyvoice') {
-                    suppressProviderTouchedTracking = true;
-                    providerSelect.value = preferredProvider;
-                    providerSelect.dispatchEvent(new Event('change'));
-                    suppressProviderTouchedTracking = false;
-                }
-                if (!hasCloneApi) {
-                    const modal = document.getElementById('noApiModal');
-                    if (modal) modal.style.display = 'flex';
-                }
-            }
+    await initVoiceCloneProviderRestrictions();
+
+    const apiConfigState = await ensureVoiceCloneApiConfigState({ force: true });
+    const cfg = apiConfigState.cfg;
+    if (cfg) {
+        const hasCloneApi = hasUsableCloneApiFromConfig(cfg, apiConfigState.isLocalTts);
+        const preferredProvider = getPreferredCloneProviderFromConfig(cfg);
+        const providerSelect = document.getElementById('voiceProvider');
+        if (!providerTouchedByUser && preferredProvider && providerSelect && providerSelect.value === 'cosyvoice') {
+            suppressProviderTouchedTracking = true;
+            providerSelect.value = preferredProvider;
+            providerSelect.dispatchEvent(new Event('change'));
+            suppressProviderTouchedTracking = false;
         }
-    } catch (e) {
-        console.warn('检查克隆API Key失败:', e);
+        if (!hasCloneApi) {
+            const modal = document.getElementById('noApiModal');
+            if (modal) modal.style.display = 'flex';
+        }
+        await refreshVoiceCloneProviderNotice(
+            document.getElementById('voiceProvider'),
+            document.getElementById('provider-notice')
+        );
     }
 
     await initWorkshopVoiceReference();
@@ -662,37 +947,22 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     const prefixInput = document.getElementById('prefix');
     if (!providerSelect || !noticeDiv) return;
 
-    function updateNotice() {
-        const provider = providerSelect.value;
-        const span = noticeDiv.querySelector('span');
-        if (!span) return;
-
-        const keyMap = {
-            'cosyvoice_intl': 'voice.alibabaIntlApiRequired',
-            'minimax': 'voice.minimaxApiRequired',
-            'minimax_intl': 'voice.minimaxIntlApiRequired',
-            'elevenlabs': 'voice.elevenlabsApiRequired',
-        };
-        const fallbackMap = {
-            'cosyvoice_intl': '请先在 API 设置中填写阿里国际版 API Key',
-            'elevenlabs': '请先在 API 设置中填写 ElevenLabs API Key',
-        };
-        const i18nKey = keyMap[provider] || 'voice.alibabaApiRequired';
-        span.setAttribute('data-i18n', i18nKey);
-        if (window.t) {
-            const translated = window.t(i18nKey);
-            span.textContent = (translated && translated !== i18nKey) ? translated : (fallbackMap[provider] || translated);
-        } else if (fallbackMap[provider]) {
-            span.textContent = fallbackMap[provider];
+    noticeDiv.setAttribute('role', 'button');
+    noticeDiv.setAttribute('tabindex', '0');
+    noticeDiv.style.cursor = 'pointer';
+    noticeDiv.addEventListener('click', openApiSettingsKeyBook);
+    noticeDiv.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openApiSettingsKeyBook();
         }
-        // 若 window.t 不可用，保留 HTML 中的原始文本，不覆盖
-    }
+    });
 
     providerSelect.addEventListener('change', () => {
         if (!suppressProviderTouchedTracking) {
             providerTouchedByUser = true;
         }
-        updateNotice();
+        refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
         normalizePrefixInputForProvider();
     });
     if (prefixInput) {
@@ -700,7 +970,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
             normalizePrefixInputForProvider();
         });
     }
-    updateNotice();
+    refreshVoiceCloneProviderNotice(providerSelect, noticeDiv);
     normalizePrefixInputForProvider();
 });
 
@@ -765,7 +1035,7 @@ async function initWorkshopVoiceReference() {
     setWorkshopVoiceSourceStatus(t('voice.workshopSourceLoading', 'Loading workshop reference voice...'));
 
     try {
-        const manifestResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
+        const manifestResponse = await fetchVoiceCloneLoaderResponse(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}`);
         const manifestData = await manifestResponse.json();
         if (!manifestResponse.ok) {
             throw new Error(manifestData.error || `HTTP ${manifestResponse.status}`);
@@ -774,7 +1044,7 @@ async function initWorkshopVoiceReference() {
             throw new Error(t('voice.workshopSourceUnavailable', 'This workshop item has no available reference voice.'));
         }
 
-        const audioResponse = await fetch(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
+        const audioResponse = await fetchVoiceCloneLoaderResponse(`/api/steam/workshop/voice-reference/${encodeURIComponent(workshopItemId)}/audio`);
         if (!audioResponse.ok) {
             const errorData = await audioResponse.json().catch(() => ({}));
             throw new Error(errorData.error || `HTTP ${audioResponse.status}`);
@@ -839,18 +1109,22 @@ function setFormDisabled(disabled) {
     }
 }
 
-function registerVoice() {
+async function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
     const refLanguage = document.getElementById('refLanguage').value;
     const resultDiv = document.getElementById('result');
-    const effectiveAudioFile = getEffectiveAudioFile();
-    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
-    const prefix = normalizePrefixInputForProvider();
 
     // 清空现有内容并重置类名
     resultDiv.textContent = '';
     resultDiv.className = 'result';
+
+    const effectiveAudioFile = getEffectiveAudioFile();
+    const providerSelect = document.getElementById('voiceProvider');
+    await ensureVoiceCloneProviderRestrictionsLoaded();
+    applyVoiceCloneProviderRestrictions(providerSelect);
+    const provider = (providerSelect || {}).value || 'cosyvoice';
+    const prefix = normalizePrefixInputForProvider();
 
     // 根据克隆方式验证输入
     if (currentCloneMethod === 'file') {
@@ -1044,6 +1318,12 @@ window.addEventListener('message', function (event) {
     if (event.data.type === 'api_key_changed') {
         // API Key已更改，可以在这里添加其他需要的处理逻辑
         console.log('API Key已更改，音色注册页面已收到通知');
+        ensureVoiceCloneApiConfigState({ force: true }).then(() => {
+            refreshVoiceCloneProviderNotice(
+                document.getElementById('voiceProvider'),
+                document.getElementById('provider-notice')
+            );
+        });
         // 刷新音色列表
         loadVoices();
     }
@@ -1081,7 +1361,7 @@ async function playPreview(voiceId, btn) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            const response = await fetch(
+            const response = await fetchVoiceCloneLoaderResponse(
                 `/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}&language=${encodeURIComponent(previewLanguage)}`
             );
             const { data, nonJson, text } = await safeReadResponse(response);
@@ -1159,7 +1439,7 @@ async function loadVoices() {
             console.warn('获取当前角色音色失败:', error);
             return '';
         });
-        const response = await fetch('/api/characters/voices');
+        const response = await fetchVoiceCloneLoaderResponse('/api/characters/voices');
         const { data, nonJson, text } = await safeReadResponse(response);
         if (!response.ok) {
             if (data && (data.error || data.detail)) {
