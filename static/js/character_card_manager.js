@@ -10840,6 +10840,15 @@ function _companionApplyActions(state, actions) {
         res.created.forEach(function (k) { createdTags.push(k); });
         res.skipped.forEach(function (k) { skippedTags.push(k); });
     });
+    // 把刚 apply 出来的 4 类结果挂到 state，供 _companionTryAutoSave 在 wait→
+    // rebuild 路径上 replay 时区分"该重写的字段"和"该重新删除的字段" —— snapshot
+    // 自己只记得到值，不记得到"故意删除"这种 intent，必须显式传过去。
+    state._lastApplyResult = {
+        updated: updatedTags.slice(),
+        created: createdTags.slice(),
+        removed: removedTags.slice(),
+        skipped: skippedTags.slice(),
+    };
     const parts = [];
     if (updatedTags.length) parts.push('✎ ' + updatedTags.join(', '));
     if (createdTags.length) parts.push('+ ' + createdTags.join(', '));
@@ -10902,7 +10911,17 @@ async function _companionTryAutoSave(state) {
         // 之前刚 refresh 过、代表 companion 期望的状态）和新 form 的实际字段值，
         // 把丢失/被抹掉的字段 replay 一遍，然后再调 saveCatgirlFromPanel 把
         // companion 的修改真正落盘。
+        // ⚠ snapshot 和 lastApplyResult 必须在 wait/rebind 之前**defensive 拷贝**：
+        // wait loop 里的每次 _companionEnsureLiveForm 在切到新 form 后会调
+        // _companionAttachFormWatchers，那个函数会重写 state.formWatchSnapshot
+        // = _cardAssistCollectCurrentFormData(<新 form>)，把"companion 期望状态"
+        // 直接覆盖成"后端刚 rebuild 出来的旧值"。等下面的 diff 拿到时 snapshot
+        // 已经和当前 form 一模一样、永远比不出差异、replay 哑火 → 数据丢失。
+        // lastApplyResult 同理在某些重入路径上可能被覆盖，也先快照下来。
         const formBeforeWait = state.form;
+        const expectedSnapshot = Object.assign({}, state.formWatchSnapshot || {});
+        const lastApply = state._lastApplyResult || {};
+        const expectedRemovals = (lastApply.removed || []).slice();
         const WAIT_TIMEOUT_MS = 8000;
         const POLL_MS = 100;
         let waited = 0;
@@ -10917,26 +10936,47 @@ async function _companionTryAutoSave(state) {
             console.warn('[card-companion] auto-save waited 8s for in-flight save, giving up');
             return;
         }
-        // form 实例换过 → 把 companion 期望的字段值重新灌回新 form。仅当 snapshot
-        // 里某 key 的值跟当前 form 里不一致时才 apply，避免覆盖 server 端的合法
-        // 数据 / 重复触发 input 事件。
-        if (state.form !== formBeforeWait && state.formWatchSnapshot) {
-            const replayValues = {};
-            const replayKeys = [];
-            Object.keys(state.formWatchSnapshot).forEach(function (k) {
-                const ta = _findFieldTextareaByName(state.form, k);
-                const cur = ((ta && ta.value) || '').trim();
-                const want = (state.formWatchSnapshot[k] || '').trim();
-                if (want && cur !== want) {
-                    replayValues[k] = state.formWatchSnapshot[k];
-                    replayKeys.push(k);
+        // form 实例换过 → 用 BEFORE-WAIT 那份 snapshot + removed 名单把 companion
+        // 期望的状态重新灌进新 form。两条独立通道：
+        //   1) 字段值 replay：跳过那些「companion 故意删除」的 key，避免把刚删
+        //      掉的字段又写回去；只 apply 真正有 diff 的 key（避免误覆盖 server）。
+        //   2) 删除 replay：对 server rebuild 后又冒出来的 removed 字段重新执行
+        //      DOM 删除。snapshot 自己不携带"我删过它"的信息，所以必须靠
+        //      expectedRemovals 显式记下。
+        if (state.form !== formBeforeWait) {
+            const removalSet = expectedRemovals.length
+                ? new Set(expectedRemovals) : null;
+            if (Object.keys(expectedSnapshot).length) {
+                const replayValues = {};
+                const replayKeys = [];
+                Object.keys(expectedSnapshot).forEach(function (k) {
+                    if (removalSet && removalSet.has(k)) return;
+                    const ta = _findFieldTextareaByName(state.form, k);
+                    const cur = ((ta && ta.value) || '').trim();
+                    const want = (expectedSnapshot[k] || '').trim();
+                    if (want && cur !== want) {
+                        replayValues[k] = expectedSnapshot[k];
+                        replayKeys.push(k);
+                    }
+                });
+                if (replayKeys.length) {
+                    _cardAssistApplyToForm(state.form, replayValues, replayKeys,
+                        state.originalName, state.isNew);
                 }
-            });
-            if (replayKeys.length) {
-                _cardAssistApplyToForm(state.form, replayValues, replayKeys,
-                    state.originalName, state.isNew);
             }
+            expectedRemovals.forEach(function (k) {
+                const ta = _findFieldTextareaByName(state.form, k);
+                if (!ta) return;
+                const wrapper = ta.closest('.field-row-wrapper');
+                if (wrapper) wrapper.remove();
+            });
+            // 重新刷一遍 watch snapshot 把 "我们刚 replay 完的状态" 当成新的
+            // baseline，避免后面 form-watch listener 把 replay 误判成"用户手改"
+            // 弹一堆系统气泡。
+            _companionRefreshFormSnapshot(state);
         }
+        // 一次性消耗掉 lastApplyResult，避免下次 tryAutoSave 误用过期数据
+        state._lastApplyResult = null;
         let ok = true;
         try {
             const ret = await saveCatgirlFromPanel(state.form, state.originalName, state.isNew);
