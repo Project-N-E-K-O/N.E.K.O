@@ -226,6 +226,37 @@ async def test_switching_self_created_character_to_workshop_model_marks_current_
     assert get_reserved(saved_catgirl, 'character_origin', 'source_id', default='') == ''
 
 
+@pytest.mark.asyncio
+async def test_current_live2d_model_reports_failure_when_default_fallback_is_missing(monkeypatch):
+    characters = {
+        '当前猫娘': '测试角色',
+        '猫娘': {
+            '测试角色': {
+                '_reserved': {
+                    'avatar': {
+                        'live2d': {
+                            'model_path': '',
+                        },
+                    },
+                },
+            },
+        },
+    }
+    config_manager = DummyConfigManager(characters)
+
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'find_models', lambda: [])
+    monkeypatch.setattr(characters_router_module, 'find_model_directory', lambda _name: (None, ''))
+
+    response = await characters_router_module.get_current_live2d_model('测试角色')
+    body = json.loads(response.body)
+
+    assert body['success'] is False
+    assert body['model_name'] == characters_router_module.DEFAULT_LIVE2D_MODEL_NAME
+    assert body['model_info'] is None
+    assert '默认Live2D模型' in body['error']
+
+
 def test_live3d_sub_type_prefers_persisted_active_sub_type_when_both_paths_exist():
     catgirl = _build_characters_fixture()['猫娘']['测试角色']
 

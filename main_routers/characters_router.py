@@ -1762,6 +1762,17 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
 
+        if not model_info or not model_info.get('path'):
+            error_message = f"默认Live2D模型 {DEFAULT_LIVE2D_MODEL_NAME} 不可用"
+            logger.error(error_message)
+            return JSONResponse(content={
+                'success': False,
+                'catgirl_name': catgirl_name,
+                'model_name': live2d_model_name or DEFAULT_LIVE2D_MODEL_NAME,
+                'model_info': None,
+                'error': error_message,
+            })
+
         return JSONResponse(content={
             'success': True,
             'catgirl_name': catgirl_name,

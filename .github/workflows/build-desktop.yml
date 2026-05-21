@@ -251,6 +251,7 @@ jobs:
         run: |
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             ./build_frontend.sh
+            test -f static/yui-origin/yui-origin.model3.json
             exit 0
           fi
           cd frontend/plugin-manager
