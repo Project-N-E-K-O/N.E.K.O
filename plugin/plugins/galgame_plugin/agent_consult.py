@@ -307,7 +307,7 @@ class AgentConsultMixin:
     ) -> dict[str, Any] | None:
         """Public entry point so the plugin's inbound handler can route a cat
         reply into ``shared['cat_opinions']``. Idempotent on empty input."""
-        opinion_state = {"cat_opinions": json_copy(self._cat_opinions)}
+        opinion_state = {"cat_opinions": self._cat_opinion_snapshot(shared)}
         record = inject_cat_opinion(
             opinion_state, opinion=opinion, scene_id=scene_id, reason=reason
         )

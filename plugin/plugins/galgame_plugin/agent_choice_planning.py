@@ -232,21 +232,34 @@ class AgentChoicePlanningMixin:
             "请在建议中说明是否继续选择。\n"
             + "\n".join(rendered_choices)
         )
-        await self._push_agent_message(
-            shared,
-            kind="choice_advice_request",
-            content=content,
-            scene_id=str(snapshot.get("scene_id") or ""),
-            route_id=str(snapshot.get("route_id") or ""),
-            priority=8,
-            metadata={
-                "choices": json_copy(candidates),
-                "line_id": str(snapshot.get("line_id") or ""),
-                "save_before_choice": True,
-                "pre_choice_save_status": "not_attempted",
-                "pre_choice_save_diagnostic": pre_choice_save_diagnostic,
-            },
-        )
+        try:
+            delivered = await self._push_agent_message(
+                shared,
+                kind="choice_advice_request",
+                content=content,
+                scene_id=str(snapshot.get("scene_id") or ""),
+                route_id=str(snapshot.get("route_id") or ""),
+                priority=8,
+                metadata={
+                    "choices": json_copy(candidates),
+                    "line_id": str(snapshot.get("line_id") or ""),
+                    "save_before_choice": True,
+                    "pre_choice_save_status": "not_attempted",
+                    "pre_choice_save_diagnostic": pre_choice_save_diagnostic,
+                },
+            )
+        except Exception as exc:
+            self._pending_choice_advice = None
+            self._next_actuation_at = now
+            self._logger.warning("galgame choice advice request delivery failed: {}", exc)
+            return
+        if not delivered:
+            self._pending_choice_advice = None
+            self._next_actuation_at = now
+            self._trace_runtime(
+                "choice advice request was not delivered; pending state cleared"
+            )
+            return
         self._trace_runtime(
             "choice advice requested from cat: "
             f"scene={str(snapshot.get('scene_id') or '') or 'none'} choices={len(candidates)}"

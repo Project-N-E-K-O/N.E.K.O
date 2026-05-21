@@ -17,6 +17,7 @@ class AgentMessageRouter:
     def reset(self) -> None:
         self.inbound_messages.clear()
         self.outbound_messages.clear()
+        self.push_delivery_history.clear()
         self.last_interruption = {}
         self.dropped_message_count = 0
 

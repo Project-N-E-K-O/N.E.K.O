@@ -12,10 +12,12 @@ class AgentSummaryMixin:
     @_summary_seen_line_keys.setter
     def _summary_seen_line_keys(self, value: set[str]) -> None:
         self._scene_tracker.summary_seen_line_keys = value
+        self._scene_tracker._summary_seen_line_key_order = list(value or set())
         scene_id = self._scene_tracker.summary_scene_id
         if scene_id:
             state = self._scene_tracker.state_for_scene(scene_id)
             state["seen_line_keys"] = set(value or set())
+            state["seen_line_key_order"] = list(value or set())
 
     @property
     def _summary_lines_since_push(self) -> int:
@@ -94,14 +96,36 @@ class AgentSummaryMixin:
         scheduled_line_count: int,
         reason: str = "",
         delivery_key: str = "",
+        merged_schedule_restore: list[dict[str, Any]] | None = None,
     ) -> None:
-        if scheduled_line_count <= 0:
+        merged_schedule_restore = list(merged_schedule_restore or [])
+        restored_merged: list[dict[str, Any]] = []
+        if scheduled_line_count <= 0 and not merged_schedule_restore:
             return
-        self._scene_tracker.restore_scene_summary_schedule(
-            scene_id,
-            seq=scheduled_seq,
-            lines_since_push=scheduled_line_count,
-        )
+        if scheduled_line_count > 0:
+            self._scene_tracker.restore_scene_summary_schedule(
+                scene_id,
+                seq=scheduled_seq,
+                lines_since_push=scheduled_line_count,
+            )
+        for item in merged_schedule_restore:
+            merged_scene_id = str(item.get("scene_id") or "")
+            merged_line_count = int(item.get("lines_since_push") or 0)
+            if not merged_scene_id or merged_line_count <= 0:
+                continue
+            merged_seq = int(item.get("scheduled_seq") or 0)
+            self._scene_tracker.restore_scene_summary_schedule(
+                merged_scene_id,
+                seq=merged_seq,
+                lines_since_push=merged_line_count,
+            )
+            restored_merged.append(
+                {
+                    "scene_id": merged_scene_id,
+                    "scheduled_seq": merged_seq,
+                    "scheduled_line_count": merged_line_count,
+                }
+            )
         self._record_summary_task_event(
             "restored_schedule",
             {
@@ -110,6 +134,7 @@ class AgentSummaryMixin:
                 "scheduled_seq": scheduled_seq,
                 "scheduled_line_count": scheduled_line_count,
                 "summary_delivery_key": delivery_key,
+                "merged_scenes": json_copy(restored_merged),
             },
         )
 
@@ -120,6 +145,7 @@ class AgentSummaryMixin:
         scene_id: str = "",
         scheduled_seq: int = 0,
         scheduled_line_count: int = 0,
+        merged_schedule_restore: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
     ) -> None:
         self._summary_tasks.add(task)
@@ -138,6 +164,7 @@ class AgentSummaryMixin:
                     scheduled_line_count=scheduled_line_count,
                     reason="task_cancelled",
                     delivery_key=delivery_key,
+                    merged_schedule_restore=merged_schedule_restore,
                 )
                 self._record_summary_task_event("cancelled", done_meta)
                 return
@@ -150,6 +177,7 @@ class AgentSummaryMixin:
                     scheduled_line_count=scheduled_line_count,
                     reason="task_exception",
                     delivery_key=delivery_key,
+                    merged_schedule_restore=merged_schedule_restore,
                 )
                 self._record_summary_task_event(
                     "exception",
@@ -164,6 +192,7 @@ class AgentSummaryMixin:
                     scheduled_line_count=scheduled_line_count,
                     reason="task_returned_false",
                     delivery_key=delivery_key,
+                    merged_schedule_restore=merged_schedule_restore,
                 )
                 self._record_summary_task_event("returned_false", done_meta)
                 return
@@ -213,6 +242,7 @@ class AgentSummaryMixin:
         metadata: dict[str, Any],
         update_scene_memory: bool,
         scheduled_line_count: int = 0,
+        merged_schedule_restore: list[dict[str, Any]] | None = None,
     ) -> None:
         if not session_id or not scene_id:
             return
@@ -265,10 +295,12 @@ class AgentSummaryMixin:
             scene_id=scene_id,
             scheduled_seq=scheduled_seq,
             scheduled_line_count=scheduled_line_count,
+            merged_schedule_restore=merged_schedule_restore,
             meta={
                 "scene_id": scene_id,
                 "scheduled_seq": scheduled_seq,
                 "scheduled_line_count": scheduled_line_count,
+                "merged_schedule_restore": json_copy(merged_schedule_restore or []),
                 "stable_line_count": stable_line_count,
                 "summary_delivery_key": delivery_key,
                 "session_id_at_schedule": session_id,
@@ -744,7 +776,22 @@ class AgentSummaryMixin:
                 )
                 continue
             self._scene_tracker.mark_scene_summary_scheduled(scene_id, seq=scheduled_seq)
+            merged_schedule_restore: list[dict[str, Any]] = []
             for merged_sid in (merge_ids or []):
+                merged_scene_id = str(merged_sid or "")
+                if not merged_scene_id:
+                    continue
+                merged_schedule_restore.append(
+                    {
+                        "scene_id": merged_scene_id,
+                        "scheduled_seq": 0,
+                        "lines_since_push": (
+                            self._scene_tracker.current_scene_lines_since_push(
+                                merged_scene_id
+                            )
+                        ),
+                    }
+                )
                 self._scene_tracker.mark_scene_summary_scheduled(merged_sid, seq=0)
             metadata = {
                 "context_type": "galgame_scene_context",
@@ -755,6 +802,7 @@ class AgentSummaryMixin:
                 "stable_line_count": stable_line_count,
                 "summary_delivery_key": delivery_key,
                 "current_scene_id_at_schedule": current_scene_id,
+                "merged_schedule_restore": json_copy(merged_schedule_restore),
             }
             if scheduled_line_count >= self._scene_summary_push_line_interval:
                 previous = self._summary_debug.get("last_task_restored_schedule")
@@ -774,6 +822,7 @@ class AgentSummaryMixin:
                 metadata=metadata,
                 update_scene_memory=False,
                 scheduled_line_count=scheduled_line_count,
+                merged_schedule_restore=merged_schedule_restore,
             )
             scheduled.append(
                 {
