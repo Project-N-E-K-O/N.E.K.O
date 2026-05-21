@@ -284,7 +284,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             # 提取JSONResponse中的内容
             model_data = model_response.body.decode('utf-8')
             model_json = json.loads(model_data)
-            model_info = model_json.get('model_info', {})
+            model_info = model_json.get('model_info') or {}
             model_path = model_info.get('path', '')
         
         result = {
