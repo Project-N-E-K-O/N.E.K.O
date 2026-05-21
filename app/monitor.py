@@ -274,32 +274,14 @@ async def broadcast_subtitle():
         # 给一个短暂的延迟让清空动画完成
         await asyncio.sleep(0.3)
 
-    clients = subtitle_clients.copy()
-    for client in clients:
-        try:
-            await client.send_json({
-                "type": "subtitle",
-                "text": current_subtitle
-            })
-        except Exception as e:
-            print(f"字幕广播错误: {e}")
-            subtitle_clients.discard(client)
+    await broadcast_subtitle_text(current_subtitle)
 
 
 # 清空字幕
 async def clear_subtitle():
     global current_subtitle
     current_subtitle = ""
-
-    clients = subtitle_clients.copy()
-    for client in clients:
-        try:
-            await client.send_json({
-                "type": "clear"
-            })
-        except Exception as e:
-            print(f"清空字幕错误: {e}")
-            subtitle_clients.discard(client)
+    await _broadcast(subtitle_clients, lambda client: client.send_json({"type": "clear"}), "SUBTITLE")
 
 # 主服务器连接端点
 @app.websocket("/sync/{lanlan_name}")
@@ -334,16 +316,7 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
                             # 翻译未实现/失败时返回 None，保留原文，避免 current_subtitle 被置空后下一轮 += 崩溃
                             if translated_text:
                                 current_subtitle = translated_text
-                                clients = subtitle_clients.copy()
-                                for client in clients:
-                                    try:
-                                        await client.send_json({
-                                            "type": "subtitle",
-                                            "text": translated_text
-                                        })
-                                    except Exception as e:
-                                        print(f"翻译字幕广播错误: {e}")
-                                        subtitle_clients.discard(client)
+                                await broadcast_subtitle_text(translated_text)
 
                     # 清空字幕区域，准备下一条
                     global should_clear_next
@@ -422,8 +395,8 @@ async def _send_to_client(client, sender, label):
         return client, False
 
 
-async def _broadcast(sender, label, success_msg):
-    clients = connected_clients.copy()
+async def _broadcast(client_set, sender, label, success_msg=None):
+    clients = client_set.copy()
     if not clients:
         return
 
@@ -436,22 +409,27 @@ async def _broadcast(sender, label, success_msg):
 
     # 移除所有断开/超时的客户端
     for client in disconnected_clients:
-        connected_clients.discard(client)
+        client_set.discard(client)
         print(f"🗑️ [{label}] 移除断开的客户端: {client.client}")
 
     fail_count = len(disconnected_clients)
-    if success_count > 0:
+    if success_msg and success_count > 0:
         print(success_msg.format(success_count) + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
+
+
+# 广播字幕到字幕客户端（并发，与主广播共用超时 fan-out，避免某个字幕客户端卡住拖住 sync_endpoint）
+async def broadcast_subtitle_text(text):
+    await _broadcast(subtitle_clients, lambda client: client.send_json({"type": "subtitle", "text": text}), "SUBTITLE")
 
 
 # 广播消息到所有客户端
 async def broadcast_message(message):
-    await _broadcast(lambda client: client.send_json(message), "BROADCAST", "✅ [BROADCAST] 成功广播到 {} 个客户端")
+    await _broadcast(connected_clients, lambda client: client.send_json(message), "BROADCAST", "✅ [BROADCAST] 成功广播到 {} 个客户端")
 
 
 # 广播二进制数据到所有客户端
 async def broadcast_binary(data):
-    await _broadcast(lambda client: client.send_bytes(data), "BINARY BROADCAST", "✅ [BINARY BROADCAST] 成功广播音频到 {} 个客户端")
+    await _broadcast(connected_clients, lambda client: client.send_bytes(data), "BINARY BROADCAST", "✅ [BINARY BROADCAST] 成功广播音频到 {} 个客户端")
 
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
