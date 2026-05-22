@@ -335,6 +335,14 @@ class DocExporter:
                             cjk_font_path,
                         )
                     else:
+                        missing_sample = _ttfont_missing_cjk_sample_glyphs(font)
+                        if missing_sample:
+                            _LOGGER.warning(
+                                "STUDY_PDF_CJK_FONT_PATH font from %s is missing "
+                                "_PDF_CJK_SAMPLE glyphs %s; using configured font anyway",
+                                cjk_font_path,
+                                "".join(missing_sample),
+                            )
                         pdfmetrics.registerFont(font)
                         self._registered_pdf_fonts.add(font_name)
                         _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
@@ -522,14 +530,30 @@ def _pdf_user_font_name(font_path: Path) -> str:
 
 
 # ReportLab exposes the TTFont cmap through the non-public font.face.charToGlyph
-# mapping. Guard that access with getattr so missing internals return False,
-# which safely falls back to the built-in PDF fonts instead of accepting a user
-# font that cannot render the _PDF_CJK_SAMPLE glyphs.
-def _ttfont_has_cjk_glyphs(font: object) -> bool:
+# mapping. Guard that access with getattr so missing internals return no sample
+# glyphs, which safely falls back to the built-in PDF fonts. Partial
+# _PDF_CJK_SAMPLE coverage is still allowed for explicit user fonts, with a
+# warning at registration time.
+def _ttfont_supported_cjk_sample_glyphs(font: object) -> tuple[str, ...]:
     cmap = getattr(getattr(font, "face", None), "charToGlyph", None)
     if not isinstance(cmap, dict):
-        return False
-    return all(ord(char) in cmap for char in _PDF_CJK_SAMPLE)
+        return ()
+    supported: list[str] = []
+    for char in _PDF_CJK_SAMPLE:
+        glyph = cmap.get(ord(char))
+        if glyph is None or glyph == 0 or glyph == "0" or glyph == ".notdef":
+            continue
+        supported.append(char)
+    return tuple(supported)
+
+
+def _ttfont_has_cjk_glyphs(font: object) -> bool:
+    return bool(_ttfont_supported_cjk_sample_glyphs(font))
+
+
+def _ttfont_missing_cjk_sample_glyphs(font: object) -> tuple[str, ...]:
+    supported = set(_ttfont_supported_cjk_sample_glyphs(font))
+    return tuple(char for char in _PDF_CJK_SAMPLE if char not in supported)
 
 
 def safe_utf8_truncate(text: str, max_bytes: int) -> str:

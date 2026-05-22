@@ -377,7 +377,7 @@ def test_register_pdf_font_falls_back_when_user_font_lacks_cjk_glyphs(
     assert "does not expose common CJK glyphs" in caplog.text
 
 
-def test_register_pdf_font_falls_back_when_user_font_has_partial_cjk_sample(
+def test_register_pdf_font_reuses_user_font_with_partial_cjk_sample(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -397,6 +397,45 @@ def test_register_pdf_font_falls_back_when_user_font_has_partial_cjk_sample(
             self.face = _Face()
 
     font_path = tmp_path / "partial-cjk.ttf"
+    font_path.write_bytes(b"fake")
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(font_path))
+    monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
+    monkeypatch.setattr(
+        pdfmetrics, "getFont", lambda name: (_ for _ in ()).throw(KeyError(name))
+    )
+    monkeypatch.setattr(
+        pdfmetrics, "registerFont", lambda font: registered.append(font.fontName)
+    )
+
+    font_name = DocExporter(_MinimalStore())._register_pdf_font()
+
+    assert font_name.startswith("CJK-User-")
+    assert registered == [font_name]
+    assert "STUDY_PDF_CJK_FONT_PATH font from" in caplog.text
+    assert "missing _PDF_CJK_SAMPLE glyphs" in caplog.text
+    assert _PDF_CJK_SAMPLE[1:] in caplog.text
+
+
+def test_register_pdf_font_rejects_notdef_cjk_glyphs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    DocExporter._registered_pdf_fonts.clear()
+    registered: list[str] = []
+
+    class _Face:
+        charToGlyph = {ord(char): 0 for char in _PDF_CJK_SAMPLE}
+
+    class _TTFont:
+        def __init__(self, name: str, path: str) -> None:
+            self.fontName = name
+            self.face = _Face()
+
+    font_path = tmp_path / "notdef-cjk.ttf"
     font_path.write_bytes(b"fake")
     monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(font_path))
     monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
