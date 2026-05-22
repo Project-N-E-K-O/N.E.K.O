@@ -10,6 +10,10 @@
 } from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
+import CompactExportHistoryPanel, {
+  COMPACT_EXPORT_SELECTION_LIMIT,
+  isCompactExportMessageSelectable,
+} from './CompactExportHistoryPanel';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -311,6 +315,7 @@ const compactCursorZoneSelector = [
   '.composer-icon-button',
   '.compact-input-tool-fan',
   '.compact-input-tool-toggle',
+  '.compact-export-history-anchor',
   '.send-button-circle',
   '.window-topbar-actions',
   '.topbar-action-btn',
@@ -885,6 +890,10 @@ export default function App({
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
   const [compactInputToolFanStyle, setCompactInputToolFanStyle] = useState<CSSProperties | null>(null);
+  const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(false);
+  const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
+  const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
+  const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1025,11 +1034,103 @@ export default function App({
   const compactChoiceLayerOpen = !isCompactSurface
     ? compactSurfaceChoicesVisible
     : effectiveCompactChatState === 'options';
+  const compactExportSelectedCount = compactExportSelectedIds.size;
+  const compactExportSelectableMessages = useMemo(
+    () => messages.filter(isCompactExportMessageSelectable),
+    [messages],
+  );
+  const compactExportSelectableIds = useMemo(
+    () => new Set(compactExportSelectableMessages.map(message => message.id)),
+    [compactExportSelectableMessages],
+  );
+  const compactExportSelectableCount = compactExportSelectableMessages.length;
   const handleCompactExportConversationClick = useCallback(() => {
     if (!isCompactSurface) {
       onExportConversationClick?.();
+      return;
     }
+    setCompactExportHistoryOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) {
+        setCompactExportAutoScrollToBottom(true);
+      } else {
+        setCompactExportPreviewOpen(false);
+      }
+      return nextOpen;
+    });
   }, [isCompactSurface, onExportConversationClick]);
+  const handleCompactExportToggleMessage = useCallback((messageId: string) => {
+    if (!compactExportSelectableIds.has(messageId)) return;
+    setCompactExportSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        if (next.size >= COMPACT_EXPORT_SELECTION_LIMIT) return prev;
+        next.add(messageId);
+      }
+      return next;
+    });
+  }, [compactExportSelectableIds]);
+  const handleCompactExportSelectAll = useCallback(() => {
+    setCompactExportSelectedIds(new Set(
+      compactExportSelectableMessages
+        .slice(0, COMPACT_EXPORT_SELECTION_LIMIT)
+        .map(message => message.id),
+    ));
+  }, [compactExportSelectableMessages]);
+  const handleCompactExportClearSelection = useCallback(() => {
+    setCompactExportSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
+  }, []);
+  const handleCompactExportInvertSelection = useCallback(() => {
+    setCompactExportSelectedIds((prev) => {
+      const next = new Set<string>();
+      for (const message of compactExportSelectableMessages) {
+        if (prev.has(message.id)) continue;
+        if (next.size >= COMPACT_EXPORT_SELECTION_LIMIT) break;
+        next.add(message.id);
+      }
+      return next;
+    });
+  }, [compactExportSelectableMessages]);
+  const handleCompactExportPreviewRequest = useCallback(() => {
+    if (compactExportSelectedIds.size <= 0) return;
+    setCompactExportPreviewOpen(true);
+  }, [compactExportSelectedIds.size]);
+  const handleCompactExportPreviewClose = useCallback(() => {
+    setCompactExportPreviewOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (isCompactSurface) return;
+    setCompactExportHistoryOpen(false);
+    setCompactExportPreviewOpen(false);
+    setCompactExportSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
+    setCompactExportAutoScrollToBottom(true);
+  }, [isCompactSurface]);
+
+  useEffect(() => {
+    if (!compactExportHistoryOpen) return;
+    if (messages.length > 0) return;
+    setCompactExportPreviewOpen(false);
+    setCompactExportSelectedIds(current => (current.size === 0 ? current : new Set()));
+  }, [compactExportHistoryOpen, messages.length]);
+
+  useEffect(() => {
+    if (compactExportSelectedIds.size === 0) return;
+    let changed = false;
+    const next = new Set<string>();
+    compactExportSelectedIds.forEach((id) => {
+      if (compactExportSelectableIds.has(id)) {
+        next.add(id);
+      } else {
+        changed = true;
+      }
+    });
+    if (changed) {
+      setCompactExportSelectedIds(next);
+    }
+  }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
   const compactMessagePreview = useMemo(() => getCompactMessagePreview(messages), [messages]);
   const compactSpeechModeActive = !!compactMessagePreview?.isAssistant
@@ -1657,18 +1758,25 @@ export default function App({
     if (compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
+    if (!options?.ignoreFocusedShell && compactExportHistoryOpen) return;
     const activeElement = document.activeElement;
     if (
       !options?.ignoreFocusedShell
-      && compactInputShellRef.current
       && activeElement instanceof Node
-      && compactInputShellRef.current.contains(activeElement)
+      && (
+        !!compactInputShellRef.current?.contains(activeElement)
+        || (
+          activeElement instanceof Element
+          && !!activeElement.closest('.compact-export-history-anchor')
+        )
+      )
     ) {
       return;
     }
     requestCompactChatState('default');
   }, [
     compactInputToolFanOpen,
+    compactExportHistoryOpen,
     composerAttachments.length,
     effectiveCompactChatState,
     isCompactSurface,
@@ -1697,6 +1805,10 @@ export default function App({
         !!compactInputShellRef.current?.contains(target)
         || !!compactInputToolFanRef.current?.contains(target)
         || !!compactChoiceLayerRef.current?.contains(target)
+        || (
+          target instanceof Element
+          && !!target.closest('.compact-export-history-anchor')
+        )
       )
     );
 
@@ -2553,6 +2665,12 @@ export default function App({
     clearGlobalToolCursorState();
   }, []);
 
+  function restoreCompactExportHistoryToBottomForOutgoingMessage() {
+    if (compactExportHistoryOpen) {
+      setCompactExportAutoScrollToBottom(true);
+    }
+  }
+
   function submitDraft() {
     if (composerDisabled) return;
     if (submittingRef.current) return;
@@ -2563,6 +2681,7 @@ export default function App({
     try {
       onComposerSubmit?.({ text });
       setDraft('');
+      restoreCompactExportHistoryToBottomForOutgoingMessage();
       requestCompactChatState('default');
     } finally {
       requestAnimationFrame(() => { submittingRef.current = false; });
@@ -2907,16 +3026,16 @@ export default function App({
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
       </button>
       <button
-        className="composer-tool-btn compact-input-tool-item compact-input-tool-item-export"
+        className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportHistoryOpen ? ' is-active' : ''}`}
         type="button"
         aria-label={compactExportHistoryButtonLabel}
-        aria-pressed="false"
+        aria-pressed={compactExportHistoryOpen}
         title={compactExportHistoryButtonLabel}
         disabled={composerDisabled}
         tabIndex={getCompactToolWheelTabIndex(5)}
         aria-hidden={getCompactToolWheelAriaHidden(5)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
-        data-compact-tool-active="false"
+        data-compact-tool-active={compactExportHistoryOpen ? 'true' : 'false'}
         onClick={compactFanCloseOnAction(handleCompactExportConversationClick, { deferDesktopAction: true })}
       >
         <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor" aria-hidden="true">
@@ -3092,6 +3211,7 @@ export default function App({
                       if (submittingRef.current) return;
                       submittingRef.current = true;
                       try {
+                        restoreCompactExportHistoryToBottomForOutgoingMessage();
                         onGalgameOptionSelect?.(option);
                         requestCompactChatState('default');
                       } finally {
@@ -3144,6 +3264,7 @@ export default function App({
                   if (submittingRef.current) return;
                   submittingRef.current = true;
                   try {
+                    restoreCompactExportHistoryToBottomForOutgoingMessage();
                     onChoiceSelect?.(option, choicePrompt.source);
                     requestCompactChatState('default');
                   } finally {
@@ -3173,6 +3294,27 @@ export default function App({
       onAction={onMessageAction}
     />
   );
+  const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
+    <CompactExportHistoryPanel
+      messages={messages}
+      selectedIds={compactExportSelectedIds}
+      selectedCount={compactExportSelectedCount}
+      selectableCount={compactExportSelectableCount}
+      autoScrollToBottom={compactExportAutoScrollToBottom}
+      previewOpen={compactExportPreviewOpen}
+      choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
+      failedStatusLabel={failedStatusLabel}
+      onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
+      onToggleMessage={handleCompactExportToggleMessage}
+      onSelectAll={handleCompactExportSelectAll}
+      onClearSelection={handleCompactExportClearSelection}
+      onInvertSelection={handleCompactExportInvertSelection}
+      onRequestPreview={handleCompactExportPreviewRequest}
+      onClosePreview={handleCompactExportPreviewClose}
+      onAction={onMessageAction}
+    />
+  ) : null;
+  const compactExportHistoryNode = compactExportHistoryElement;
   const chatBodyNode = isCompactSurface ? (
     <section
       className="chat-body chat-body-compact-surface"
@@ -3203,7 +3345,12 @@ export default function App({
       ref={appShellRef}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-chat-state={effectiveCompactChatState}
+      data-compact-export-history-open={isCompactSurface && compactExportHistoryOpen ? 'true' : 'false'}
+      data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
+      data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
+      data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
     >
+      {compactExportHistoryNode}
       {compactChoiceLayerNode}
       {compactInputToolFanPortalNode}
       {floatingFistDrops.map(drop => (

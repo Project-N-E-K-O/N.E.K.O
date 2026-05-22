@@ -623,6 +623,41 @@
             .filter(Boolean));
     }
 
+    function collectCompactCompositeGeometryItems(element, kind) {
+        var parentRect = getCompactGeometryElementRect(element);
+        var items = [];
+        if (parentRect) {
+            items.push({
+                id: kind + ':native',
+                owner: 'surface',
+                kind: kind || 'unknown',
+                visualRect: parentRect,
+                hitRect: null,
+                nativeRect: parentRect,
+                interactive: false
+            });
+        }
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                var interactive = style ? style.pointerEvents !== 'none' : true;
+                if (!interactive) return null;
+                return {
+                    id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index),
+                    owner: 'surface',
+                    kind: kind || 'unknown',
+                    visualRect: rect,
+                    hitRect: rect,
+                    nativeRect: rect,
+                    interactive: true
+                };
+            })
+            .filter(Boolean));
+    }
+
     function collectCompactSurfaceGeometryItems() {
         var root = getRoot();
         if (!root) return [];
@@ -637,6 +672,9 @@
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
             if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (element.getAttribute('data-compact-geometry-hit-scope') === 'children') {
+                return items.concat(collectCompactCompositeGeometryItems(element, compactGeometryItem));
             }
             var rect = getCompactGeometryElementRect(element);
             if (!rect) return items;

@@ -47,6 +47,132 @@ describe('App', () => {
     expect(container.querySelector('[data-compact-geometry-owner="surface"]')).toBeNull();
   });
 
+  it('toggles compact inline history from the export tool without calling the full export path', () => {
+    const onExportConversationClick = vi.fn();
+    const message = parseChatMessage({
+      id: 'assistant-history-1',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'History should open inline.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[message]}
+        onExportConversationClick={onExportConversationClick}
+      />,
+    );
+
+    const exportButton = document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export');
+    expect(exportButton).not.toBeNull();
+    fireEvent.click(exportButton!);
+
+    expect(onExportConversationClick).not.toHaveBeenCalled();
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(exportButton!);
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps compact inline history open as an empty state when there are no messages', () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" messages={[]} />);
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-empty')).toHaveTextContent('There is no conversation to export yet.');
+  });
+
+  it('selects compact history bubbles and reuses the same selection in inline preview', () => {
+    const assistantMessage = parseChatMessage({
+      id: 'assistant-history-select',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Pick this assistant message.' }],
+      status: 'sent',
+    });
+    const userMessage = parseChatMessage({
+      id: 'user-history-select',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'And this user message.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[assistantMessage, userMessage]} />,
+    );
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+    const messages = container.querySelectorAll<HTMLElement>('.compact-export-history-message');
+    fireEvent.click(messages[1]);
+
+    expect(messages[1]).toHaveClass('is-selected');
+    fireEvent.click(screen.getByText('Export'));
+
+    expect(container.querySelector('.compact-export-preview-region')).not.toBeNull();
+    expect(container.querySelector('.compact-export-preview-region')).toHaveTextContent('And this user message.');
+    expect(container.querySelector('.compact-export-preview-region')).not.toHaveTextContent('Pick this assistant message.');
+  });
+
+  it('does not select sending compact history messages', () => {
+    const sendingMessage = parseChatMessage({
+      id: 'user-history-sending',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'Still sending.' }],
+      status: 'sending',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[sendingMessage]} />,
+    );
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message');
+    expect(message).toHaveClass('is-disabled');
+    fireEvent.click(message!);
+
+    expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('closes compact inline history when leaving compact mode', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Close me when full mode returns.' }],
+      status: 'sent',
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+
+    rerender(<App chatSurfaceMode="full" messages={[message]} />);
+
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+  });
+
   it('elevates compact state to options when choices are visible', () => {
     const { container } = render(
       <App
