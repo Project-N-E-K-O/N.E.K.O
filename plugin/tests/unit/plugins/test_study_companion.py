@@ -1673,6 +1673,57 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
 
 
 @pytest.mark.asyncio
+async def test_study_ocr_snapshot_feeds_supervision_activity() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(
+            self, *, ocr_text: str, sensor_available: bool
+        ) -> dict[str, object]:
+            self.calls.append(
+                {"ocr_text": ocr_text, "sensor_available": sensor_available}
+            )
+            return {
+                "sensor_available": sensor_available,
+                "inactivity_detected": False,
+            }
+
+    persisted: list[bool] = []
+
+    async def _persist_state() -> None:
+        persisted.append(True)
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._ocr_pipeline = _FakeStudyOcrPipeline(
+        OcrSnapshot(
+            text="photosynthesis note",
+            status="ok",
+            captured_at="2026-05-11T00:00:00Z",
+        )
+    )
+    plugin._supervision = supervision
+    plugin._lock = threading.RLock()
+    plugin._state = build_initial_state()
+    plugin._persist_state = _persist_state
+    plugin._update_screen_classification = lambda text, update_empty=False: {
+        "screen_type": "reading",
+        "text": text,
+        "update_empty": update_empty,
+    }
+
+    result = await plugin.study_ocr_snapshot()
+
+    assert isinstance(result, Ok)
+    assert result.value["supervision"]["sensor_available"] is True
+    assert supervision.calls == [
+        {"ocr_text": "photosynthesis note", "sensor_available": True}
+    ]
+    assert persisted == [True]
+
+
+@pytest.mark.asyncio
 async def test_study_explain_text_detects_mode_intent_and_continues_when_content_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2516,6 +2567,41 @@ async def test_study_pomodoro_status_offloads_timer_operations(
     assert status.value["state"] == "short_break"
     assert to_thread_calls == ["status", "tick"]
     assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_status_drives_supervision_reminders() -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 120}
+
+        def tick(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 119}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.reminder_count = 0
+
+        def due_reminder(self) -> dict[str, object]:
+            self.reminder_count += 1
+            return {"due": True, "reminder_level": "low_frequency"}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert status.value["supervision_reminder"] == {
+        "due": True,
+        "reminder_level": "low_frequency",
+    }
+    assert supervision.reminder_count == 1
 
 
 @pytest.mark.asyncio

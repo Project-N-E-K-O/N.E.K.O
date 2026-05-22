@@ -882,13 +882,19 @@ class StudyCompanionPlugin(NekoPluginBase):
             before_state = str(before_status.get("state") or "")
             status = await asyncio.to_thread(timer.tick)
             after_state = str(status.get("state") or "")
+            reminder: dict[str, Any] = {}
             if before_state == "focusing" and after_state in {
                 "short_break",
                 "long_break",
                 "completed",
             }:
                 supervision.on_focus_end()
-            return Ok(build_pomodoro_status_payload(status))
+            elif after_state == "focusing":
+                reminder = supervision.due_reminder()
+            payload = build_pomodoro_status_payload(status)
+            if reminder:
+                payload["supervision_reminder"] = reminder
+            return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -1450,6 +1456,12 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError("study OCR pipeline is not initialized"))
         snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
         payload = build_ocr_payload(snapshot)
+        if self._supervision is not None:
+            sensor_available = snapshot.status in {"ok", "empty"}
+            payload["supervision"] = self._supervision.observe_activity(
+                ocr_text=snapshot.text,
+                sensor_available=sensor_available,
+            )
         if snapshot.text.strip():
             with self._lock:
                 self._state.last_ocr_text = snapshot.text
