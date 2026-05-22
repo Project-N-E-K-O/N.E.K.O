@@ -73,8 +73,12 @@ async def _call_update(monkeypatch, payload, characters=None):
     async def _noop_initialize():
         return None
 
+    async def _noop_init_one(name, *, is_new=False):
+        return None
+
     monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
     monkeypatch.setattr(characters_router_module, 'get_initialize_character_data', lambda: _noop_initialize)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
 
     response = await characters_router_module.update_catgirl_l2d(
         '测试角色',
