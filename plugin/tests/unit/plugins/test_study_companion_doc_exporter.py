@@ -407,7 +407,8 @@ def test_register_pdf_font_reuses_user_font_with_partial_cjk_sample(
         pdfmetrics, "registerFont", lambda font: registered.append(font.fontName)
     )
 
-    font_name = DocExporter(_MinimalStore())._register_pdf_font()
+    with caplog.at_level("INFO"):
+        font_name = DocExporter(_MinimalStore())._register_pdf_font()
 
     assert font_name.startswith("CJK-User-")
     assert registered == [font_name]
