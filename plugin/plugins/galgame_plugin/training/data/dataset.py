@@ -58,7 +58,8 @@ class GameScreenDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         sample = self.samples[idx]
         try:
-            image = Image.open(sample["image_path"]).convert("RGB")
+            with Image.open(sample["image_path"]) as image_file:
+                image = image_file.convert("RGB")
         except Exception as exc:
             _LOGGER.warning("failed to load training image %s: %s", sample["image_path"], exc)
             raise

@@ -13,5 +13,7 @@ def write_eval_report(logits: np.ndarray, labels: np.ndarray, output_path: str |
         "top1_accuracy": top1_accuracy(logits, labels),
         "macro_f1": macro_f1(logits, labels, num_classes=int(logits.shape[1] if logits.ndim == 2 else 0)),
     }
-    Path(output_path).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

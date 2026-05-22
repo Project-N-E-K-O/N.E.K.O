@@ -215,9 +215,6 @@ class TextMixin:
         *,
         image: Any | None,
     ) -> ScreenClassification | None:
-        self._vision_classifier_last_label = ""
-        self._vision_classifier_last_confidence = 0.0
-        self._vision_classifier_last_latency_ms = 0.0
         if not bool(getattr(self._config, "vision_classifier_enabled", False)):
             self._vision_classifier_detail = "disabled"
             return None

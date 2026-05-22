@@ -4,6 +4,9 @@ import torch
 from torch import nn
 
 
+FEATURE_DIM = 576
+
+
 def conv_bn(in_ch: int, out_ch: int, stride: int = 1, kernel: int = 3) -> nn.Sequential:
     padding = kernel // 2
     return nn.Sequential(
@@ -53,7 +56,7 @@ class GameScreenCNN(nn.Module):
         self.features = self._build_features()
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.classifier = nn.Sequential(
-            nn.Linear(576, 1024),
+            nn.Linear(FEATURE_DIM, 1024),
             nn.Hardswish(inplace=True),
             nn.Dropout(dropout),
             nn.Linear(1024, num_classes),
@@ -70,7 +73,7 @@ class GameScreenCNN(nn.Module):
             InvertedResidual(24, 40, expand_ratio=3, stride=2),
             InvertedResidual(40, 40, expand_ratio=3, stride=1),
             InvertedResidual(40, 96, expand_ratio=6, stride=2),
-            conv_1x1(96, 576),
+            conv_1x1(96, FEATURE_DIM),
             nn.Hardswish(inplace=True),
         )
 

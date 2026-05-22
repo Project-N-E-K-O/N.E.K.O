@@ -144,3 +144,33 @@ def test_cnn_low_confidence_falls_back_to_ocr_rules(tmp_path, monkeypatch) -> No
     assert classification.debug["reason"] == "test_fallback"
     assert emitted is True
     assert events[-1]["payload"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_TITLE
+
+
+def test_cnn_skipped_interval_preserves_last_successful_status(tmp_path) -> None:
+    manager = _manager(
+        tmp_path,
+        {
+            "label": "dialogue",
+            "screen_type": OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+            "confidence": 0.93,
+            "all_scores": {"dialogue": 0.93},
+            "latency_ms": 1.0,
+        },
+    )
+    manager._config.vision_classifier_tick_interval = 2
+    manager._vision_classifier_tick_count = 1
+    manager._vision_classifier_last_label = "dialogue"
+    manager._vision_classifier_last_confidence = 0.93
+    manager._vision_classifier_last_latency_ms = 1.0
+
+    classification = manager._classify_screen_with_vision(
+        OcrExtractionResult(text=""),
+        image=Image.new("RGB", (320, 180), "black"),
+    )
+
+    assert classification is None
+    assert manager._vision_classifier_detail == "skipped_interval"
+    assert manager._vision_classifier_last_label == "dialogue"
+    assert manager._vision_classifier_last_confidence == 0.93
+    assert manager._vision_classifier_last_latency_ms == 1.0
+    assert manager.vision_classifier.calls == 0

@@ -45,7 +45,14 @@ def build_eval_transform(size: tuple[int, int] = (224, 224)) -> Callable[[object
     def _transform(image: object) -> torch.Tensor:
         if hasattr(image, "resize") and hasattr(image, "convert"):
             image = image.convert("RGB").resize(size)
-        array = np.asarray(image, dtype=np.float32) / 255.0
+        array = np.asarray(image, dtype=np.float32)
+        if array.ndim == 2:
+            array = np.stack([array, array, array], axis=-1)
+        elif array.ndim == 3 and array.shape[2] == 4:
+            array = array[:, :, :3]
+        if array.ndim != 3 or array.shape[2] != 3:
+            raise ValueError(f"expected image shape HxWx3, got {array.shape!r}")
+        array = array / 255.0
         array = (array - IMAGENET_MEAN) / IMAGENET_STD
         array = np.transpose(array, (2, 0, 1))
         return torch.from_numpy(array.astype(np.float32, copy=False))

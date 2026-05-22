@@ -299,8 +299,13 @@ class OcrReaderManager(
         self._start_rapidocr_warmup_if_configured()
 
     def _initialize_vision_classifier(self) -> None:
+        self.vision_classifier = None
+        self._vision_classifier_detail = "disabled"
+        self._vision_classifier_last_label = ""
+        self._vision_classifier_last_confidence = 0.0
+        self._vision_classifier_last_latency_ms = 0.0
+        self._vision_classifier_tick_count = 0
         if not bool(getattr(self._config, "vision_classifier_enabled", False)):
-            self._vision_classifier_detail = "disabled"
             return
         try:
             from .core.vision import VisionModelLoader, VisionScreenClassifier
@@ -344,6 +349,16 @@ class OcrReaderManager(
         except Exception as exc:
             self._vision_classifier_detail = "load_failed"
             self._log_warning("galgame vision classifier failed to load: {}", exc)
+
+    @staticmethod
+    def _vision_classifier_config_key(config: GalgameConfig) -> tuple[bool, str, str, tuple[int, int], float]:
+        return (
+            bool(getattr(config, "vision_classifier_enabled", False)),
+            str(getattr(config, "vision_classifier_model_dir", "") or ""),
+            str(getattr(config, "vision_classifier_model_name", "") or ""),
+            _coerce_vision_input_size(getattr(config, "vision_classifier_input_size", [224, 224])),
+            float(getattr(config, "vision_classifier_inference_timeout_ms", 200.0) or 200.0),
+        )
 
     @staticmethod
     def _resolve_vision_model_dir(raw_path: str) -> Path:
@@ -423,8 +438,11 @@ class OcrReaderManager(
     def update_config(self, config: GalgameConfig) -> None:
         old_backend_plan_key = self._backend_plan_config_key(self._config)
         old_auto_detect_lang = bool(getattr(self._config, "rapidocr_auto_detect_lang", False))
+        old_vision_key = self._vision_classifier_config_key(self._config)
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
+        if old_vision_key != self._vision_classifier_config_key(config):
+            self._initialize_vision_classifier()
         if not bool(config.llm_vision_enabled):
             self._clear_vision_snapshot()
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:

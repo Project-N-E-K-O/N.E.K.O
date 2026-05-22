@@ -20,6 +20,18 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_OUTPUT_DIR = "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
 
 
+def _validate_num_classes(
+    value: int,
+    labels: tuple[str, ...] = GALGAME_SCREEN_LABELS,
+) -> int:
+    num_classes = int(value)
+    if num_classes <= 0 or num_classes > len(labels):
+        raise ValueError(
+            f"num_classes must be in [1, {len(labels)}], got {num_classes}"
+        )
+    return num_classes
+
+
 def _load_imagenet_pretrained_backbone():
     try:
         from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
@@ -52,7 +64,6 @@ def _load_compatible_feature_weights(model: GameScreenCNN, pretrained: dict[str,
 
 
 def train_epoch(model, loader, optimizer, criterion, device, epoch: int) -> float:
-    del epoch
     model.train()
     total_loss = 0.0
     total = 0
@@ -89,10 +100,11 @@ def train(args) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
+    num_classes = _validate_num_classes(args.num_classes)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    train_ds = GameScreenDataset(data_dir, args.num_classes, split="train", augment=True)
-    val_ds = GameScreenDataset(data_dir, args.num_classes, split="val", augment=False)
+    train_ds = GameScreenDataset(data_dir, num_classes, split="train", augment=True)
+    val_ds = GameScreenDataset(data_dir, num_classes, split="val", augment=False)
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -106,7 +118,7 @@ def train(args) -> None:
         num_workers=max(0, args.num_workers // 2),
     )
 
-    model = GameScreenCNN(num_classes=args.num_classes).to(device)
+    model = GameScreenCNN(num_classes=num_classes).to(device)
     pretrained = _load_imagenet_pretrained_backbone()
     if pretrained is not None:
         _load_compatible_feature_weights(model, pretrained)
@@ -118,36 +130,40 @@ def train(args) -> None:
         lr=args.learning_rate_head,
         weight_decay=args.weight_decay,
     )
-    for epoch in range(args.freeze_backbone_epochs):
+    freeze_epochs = min(max(0, int(args.freeze_backbone_epochs)), max(0, int(args.epochs)))
+    for epoch in range(freeze_epochs):
         train_epoch(model, train_loader, optimizer, criterion, device, epoch)
-    validate(model, val_loader, device)
-
-    _set_backbone_trainable(model, True)
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.learning_rate_full,
-        weight_decay=args.weight_decay,
-    )
-    remaining_epochs = max(0, args.epochs - args.freeze_backbone_epochs)
-    scheduler = CosineAnnealingLR(optimizer, T_max=max(1, remaining_epochs))
     best_acc = -1.0
     best_path = output_dir / "best.pth"
-    for epoch in range(remaining_epochs):
-        train_epoch(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            device,
-            epoch + args.freeze_backbone_epochs,
+    best_saved = False
+    remaining_epochs = max(0, int(args.epochs) - freeze_epochs)
+    if remaining_epochs > 0:
+        _set_backbone_trainable(model, True)
+        optimizer = AdamW(
+            model.parameters(),
+            lr=args.learning_rate_full,
+            weight_decay=args.weight_decay,
         )
-        val_acc = validate(model, val_loader, device)
-        scheduler.step()
-        if val_acc >= best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), best_path)
+        scheduler = CosineAnnealingLR(optimizer, T_max=max(1, remaining_epochs))
+        for epoch in range(remaining_epochs):
+            train_epoch(
+                model,
+                train_loader,
+                optimizer,
+                criterion,
+                device,
+                epoch + freeze_epochs,
+            )
+            val_acc = validate(model, val_loader, device)
+            scheduler.step()
+            if val_acc >= best_acc:
+                best_acc = val_acc
+                torch.save(model.state_dict(), best_path)
+                best_saved = True
+    else:
+        best_acc = validate(model, val_loader, device)
 
-    if best_path.exists():
+    if best_saved and best_path.exists():
         model.load_state_dict(torch.load(best_path, map_location=device))
     elif best_acc < 0.0:
         best_acc = validate(model, val_loader, device)
@@ -155,12 +171,12 @@ def train(args) -> None:
     export_onnx(
         model,
         output_dir / "v1_galgame.onnx",
-        num_classes=args.num_classes,
+        num_classes=num_classes,
         device=device,
     )
     _write_model_config(
         output_dir / "v1_config.json",
-        num_classes=args.num_classes,
+        num_classes=num_classes,
         input_size=(224, 224),
         best_val_accuracy=best_acc,
     )

@@ -89,6 +89,34 @@ def test_vision_classifier_degrades_when_session_unavailable() -> None:
     assert classifier.classify(_image()) is None
 
 
+def test_vision_classifier_rejects_logits_label_mismatch() -> None:
+    classifier = VisionScreenClassifier(
+        _FakeLoader(_FakeSession([1.0])),
+        labels=("dialogue", "choice_menu"),
+    )
+
+    classifier.load("v1_galgame")
+
+    assert classifier.classify(_image()) is None
+    assert classifier.last_error == "logits_label_mismatch: logits=1, labels=2"
+
+
+def test_vision_model_loader_keeps_cpu_provider_as_fallback(tmp_path, monkeypatch) -> None:
+    class _FakeOrt:
+        @staticmethod
+        def get_available_providers():
+            return ["DmlExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    monkeypatch.setattr(
+        "plugin.plugins.galgame_plugin.core.vision.vision_model_loader.ort",
+        _FakeOrt,
+    )
+
+    loader = VisionModelLoader(tmp_path)
+
+    assert loader.providers == ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+
 def test_vision_model_loader_caches_and_reloads_sessions(tmp_path, monkeypatch) -> None:
     created: list[str] = []
 

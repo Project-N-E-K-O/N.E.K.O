@@ -39,14 +39,12 @@ class VisionModelLoader:
             return []
         available = list(ort.get_available_providers())
         providers: list[str] = []
-        for preferred in (
-            "DmlExecutionProvider",
-            "CUDAExecutionProvider",
-            "CPUExecutionProvider",
-        ):
+        for preferred in ("DmlExecutionProvider", "CUDAExecutionProvider"):
             if preferred in available:
                 providers.append(preferred)
                 break
+        if "CPUExecutionProvider" in available:
+            providers.append("CPUExecutionProvider")
         return providers or ["CPUExecutionProvider"]
 
     def load(self, model_name: str) -> Any | None:

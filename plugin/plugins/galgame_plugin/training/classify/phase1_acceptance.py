@@ -502,6 +502,17 @@ def run_coverage(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+def _coverage_exit_code(payload: dict[str, Any]) -> int:
+    coverage = payload.get("coverage", {})
+    if not isinstance(coverage, dict):
+        return 1
+    pytest_exit_code = int(coverage.get("pytest_exit_code") or 0)
+    if pytest_exit_code:
+        return pytest_exit_code
+    status = str(coverage.get("status", "") or "")
+    return 0 if status in {"ok", "no_changed_lines"} else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Phase 1 screen classifier acceptance checks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -555,6 +566,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "coverage":
         payload = run_coverage(args)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return _coverage_exit_code(payload)
     else:
         payload = run_acceptance(args)
     print(json.dumps(payload, ensure_ascii=False, indent=2))

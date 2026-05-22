@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 else:
     VisionInput: TypeAlias = object
 
+
 class VisionScreenClassifier:
     """Thin ONNX inference wrapper for galgame screen classification.
 
@@ -119,6 +120,11 @@ class VisionScreenClassifier:
             if logits.ndim == 2:
                 logits = logits[0]
             if logits.ndim != 1 or logits.size <= 0:
+                return None
+            if logits.size != len(labels):
+                self.last_error = (
+                    f"logits_label_mismatch: logits={logits.size}, labels={len(labels)}"
+                )
                 return None
             scores = softmax(logits)
             top_index = int(np.argmax(scores))

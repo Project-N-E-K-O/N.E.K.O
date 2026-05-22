@@ -4670,6 +4670,65 @@ def test_ocr_reader_logs_when_vision_classifier_loads(
     assert logger.infos[0][0] == "galgame vision classifier loaded: model_dir={} model_name={}"
 
 
+def test_ocr_reader_update_config_reloads_vision_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            self.loader = loader
+            self.input_size = input_size
+            self.latency_check_ms = latency_check_ms
+            self.model_name = ""
+
+        def load(self, model_name: str) -> bool:
+            self.model_name = model_name
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True, rapidocr_enabled=False),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+    assert manager.vision_classifier is None
+
+    enabled_config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+    enabled_config.vision_classifier_enabled = True
+    enabled_config.vision_classifier_model_dir = str(tmp_path / "models")
+    enabled_config.vision_classifier_model_name = "v2_galgame"
+    enabled_config.vision_classifier_input_size = [192, 192]
+    enabled_config.vision_classifier_inference_timeout_ms = 123.0
+
+    manager.update_config(enabled_config)
+
+    assert isinstance(manager.vision_classifier, _FakeVisionScreenClassifier)
+    assert manager.vision_classifier.input_size == (192, 192)
+    assert manager.vision_classifier.latency_check_ms == 123.0
+    assert manager.vision_classifier.model_name == "v2_galgame"
+    assert manager._vision_classifier_detail == "loaded"
+
+    manager._vision_classifier_last_label = "dialogue"
+    disabled_config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+
+    manager.update_config(disabled_config)
+
+    assert manager.vision_classifier is None
+    assert manager._vision_classifier_detail == "disabled"
+    assert manager._vision_classifier_last_label == ""
+
+
 @pytest.mark.asyncio
 async def test_ocr_reader_restarts_session_after_initial_capture_failure(
     tmp_path: Path,

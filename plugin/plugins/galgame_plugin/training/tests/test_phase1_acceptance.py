@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from plugin.plugins.galgame_plugin.training.classify import phase1_acceptance
 from plugin.plugins.galgame_plugin.training.classify.phase1_acceptance import (
     Phase1PredictionRecord,
     build_replay_ticks,
@@ -111,3 +112,19 @@ def test_summarize_predictions_reports_accuracy_agreement_and_fallback() -> None
     assert summary["cnn_vs_prototype_stage_agreement"] == 0.5
     assert summary["cnn_high_confidence_rate"] == 0.5
     assert summary["cnn_primary_with_prototype_fallback_stage_accuracy"] == 1.0
+
+
+def test_main_returns_coverage_pytest_failure_exit_code(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        phase1_acceptance,
+        "run_coverage",
+        lambda _args: {
+            "coverage": {
+                "status": "pytest_failed",
+                "pytest_exit_code": 3,
+            }
+        },
+    )
+
+    assert phase1_acceptance.main(["coverage"]) == 3
+    assert "pytest_failed" in capsys.readouterr().out
