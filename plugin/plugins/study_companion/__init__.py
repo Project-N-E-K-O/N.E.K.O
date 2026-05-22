@@ -984,7 +984,7 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_pomodoro_stop(self, **_):
         try:
             _, _, timer, supervision = self._require_habit_components()
-            status = timer.stop()
+            status = await asyncio.to_thread(timer.stop)
             supervision.on_focus_end()
             return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:

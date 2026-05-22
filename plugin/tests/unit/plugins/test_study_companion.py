@@ -2605,6 +2605,46 @@ async def test_study_pomodoro_status_drives_supervision_reminders() -> None:
 
 
 @pytest.mark.asyncio
+async def test_study_pomodoro_stop_offloads_timer_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def stop(self) -> dict[str, object]:
+            return {
+                "state": "cancelled",
+                "current_focus_session": {"id": "focus-1", "status": "cancelled"},
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_stop()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "cancelled"
+    assert to_thread_calls == ["stop"]
+    assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
 async def test_study_pomodoro_start_does_not_restart_supervision_on_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
