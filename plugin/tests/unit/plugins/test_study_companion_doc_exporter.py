@@ -186,14 +186,30 @@ def test_export_pdf_preserves_unicode_text(tmp_path: Path) -> None:
 
 
 def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     pytest.importorskip("reportlab")
+    from reportlab.pdfgen.canvas import Canvas
+
+    DocExporter._registered_pdf_fonts.clear()
+    font_names: list[str] = []
+    original_set_font = Canvas.setFont
+
+    def _set_font_spy(
+        self: Canvas, psfontname: str, size: float, leading: float | None = None
+    ) -> None:
+        font_names.append(psfontname)
+        original_set_font(self, psfontname, size, leading)
+
+    monkeypatch.setattr(Canvas, "setFont", _set_font_spy)
     monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(tmp_path / "missing-font.ttf"))
 
     pdf = DocExporter(_MinimalStore()).export(fmt="pdf", title="中文笔记")
 
     assert pdf.content.startswith(b"%PDF")
+    assert font_names[0] in {"STSong-Light", "Helvetica"}
+    assert not font_names[0].startswith("CJK-User-")
+    assert "STUDY_PDF_CJK_FONT_PATH set but file not found" in caplog.text
     assert _pdf_safe_text("中文笔记") == "中文笔记"
 
 
@@ -202,13 +218,43 @@ def test_register_pdf_font_returns_string_and_env_var_controls_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    DocExporter._registered_pdf_fonts.clear()
     exporter = DocExporter(_MinimalStore())
+    registered: list[str] = []
+    ttfont_paths: list[str] = []
+
+    class _Face:
+        charToGlyph = {ord("中"): 1}
+
+    class _TTFont:
+        def __init__(self, name: str, path: str) -> None:
+            self.fontName = name
+            self.face = _Face()
+            ttfont_paths.append(path)
+
+    def _register_font(font: Any) -> None:
+        registered.append(font.fontName)
+
+    monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
+    monkeypatch.setattr(pdfmetrics, "registerFont", _register_font)
+    monkeypatch.setattr(
+        pdfmetrics, "getFont", lambda name: (_ for _ in ()).throw(KeyError(name))
+    )
 
     monkeypatch.delenv("STUDY_PDF_CJK_FONT_PATH", raising=False)
     assert exporter._register_pdf_font() in {"STSong-Light", "Helvetica"}
 
-    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(tmp_path / "missing-font.ttf"))
-    assert exporter._register_pdf_font() in {"STSong-Light", "Helvetica"}
+    font_path = tmp_path / "env-font.ttf"
+    font_path.write_bytes(b"fake")
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(font_path))
+
+    font_name = exporter._register_pdf_font()
+
+    assert font_name.startswith("CJK-User-")
+    assert ttfont_paths == [str(font_path)]
+    assert registered[-1] == font_name
 
 
 def test_register_pdf_font_uses_distinct_cached_user_font_names(

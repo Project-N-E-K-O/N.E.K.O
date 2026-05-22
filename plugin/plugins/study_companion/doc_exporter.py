@@ -517,9 +517,7 @@ def _pdf_safe_text(value: object) -> str:
 
 
 def _pdf_user_font_name(font_path: Path) -> str:
-    digest = hashlib.blake2s(
-        str(font_path.resolve()).encode("utf-8"), digest_size=6
-    ).hexdigest()
+    digest = hashlib.blake2s(str(font_path).encode("utf-8"), digest_size=6).hexdigest()
     return f"CJK-User-{digest}"
 
 
