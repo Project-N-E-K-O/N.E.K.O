@@ -217,6 +217,47 @@ def test_memory_due_reviews_sort_by_deck_and_retrievability(tmp_path: Path) -> N
         store.close()
 
 
+def test_memory_due_reviews_include_low_retention_future_due_card(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    try:
+        memory = MemoryDeckStore(store)
+        deck = memory.create_deck(name="Retention", deck_type="word")
+        item = memory.add_word(deck_id=deck["id"], word="fade", meaning="lose")[
+            "item"
+        ]
+
+        future_due = "2099-01-01T00:00:00Z"
+        with sqlite3.connect(store.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT card_data FROM memory_fsrs_cards WHERE item_id = ?",
+                (item["id"],),
+            ).fetchone()
+            card = store._json_loads(row["card_data"], {})
+            card["stability"] = 0.1
+            card["last_review"] = "2020-01-01T00:00:00Z"
+            card["due"] = future_due
+            conn.execute(
+                """
+                UPDATE memory_fsrs_cards
+                SET card_data = ?, next_due = ?
+                WHERE item_id = ?
+                """,
+                (store._json_dumps(card), future_due, item["id"]),
+            )
+            conn.commit()
+
+        due = memory.due_reviews(limit=10)
+
+        assert [review["item_id"] for review in due] == [item["id"]]
+        assert due[0]["due"] == future_due
+        assert due[0]["retrievability"] < 0.90
+    finally:
+        store.close()
+
+
 def test_memory_drafts_do_not_create_formal_items(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:

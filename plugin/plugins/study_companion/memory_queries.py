@@ -3,20 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 
-def active_item_card_rows(
-    conn: Any, *, deck_id: str = "", due_candidates_only: bool = True
-) -> list[Any]:
+def active_item_card_rows(conn: Any, *, deck_id: str = "") -> list[Any]:
     params: list[Any] = []
     deck_clause = ""
     if deck_id:
         deck_clause = "AND mi.deck_id = ?"
         params.append(str(deck_id))
-    due_clause = ""
-    if due_candidates_only:
-        due_clause = (
-            "AND (mfc.next_due IS NULL "
-            "OR mfc.next_due <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
-        )
     return (
         conn.execute(
             f"""
@@ -42,7 +34,7 @@ def active_item_card_rows(
             FROM memory_items mi
             JOIN decks d ON d.id = mi.deck_id
             JOIN memory_fsrs_cards mfc ON mfc.item_id = mi.id
-            WHERE mi.status = 'active' {deck_clause} {due_clause}
+            WHERE mi.status = 'active' {deck_clause}
             """,
             params,
         )
