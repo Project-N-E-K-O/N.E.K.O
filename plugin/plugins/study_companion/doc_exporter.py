@@ -529,7 +529,7 @@ def _ttfont_has_cjk_glyphs(font: object) -> bool:
     cmap = getattr(getattr(font, "face", None), "charToGlyph", None)
     if not isinstance(cmap, dict):
         return False
-    return any(ord(char) in cmap for char in _PDF_CJK_SAMPLE)
+    return all(ord(char) in cmap for char in _PDF_CJK_SAMPLE)
 
 
 def safe_utf8_truncate(text: str, max_bytes: int) -> str:

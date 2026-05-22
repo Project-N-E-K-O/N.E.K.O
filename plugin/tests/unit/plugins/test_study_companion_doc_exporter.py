@@ -8,6 +8,7 @@ import pytest
 
 from plugin.plugins.study_companion.doc_exporter import (
     DocExporter,
+    _PDF_CJK_SAMPLE,
     _pdf_safe_text,
     escape_markdown,
     safe_utf8_truncate,
@@ -45,6 +46,10 @@ class _MinimalStore:
         statuses: tuple[str, ...] = ("active", "retrying", "resolved"),
     ) -> list[dict[str, Any]]:
         return []
+
+
+def _sample_cjk_cmap() -> dict[int, int]:
+    return {ord(char): index for index, char in enumerate(_PDF_CJK_SAMPLE, start=1)}
 
 
 def _store(tmp_path: Path) -> StudyStore:
@@ -260,7 +265,7 @@ def test_register_pdf_font_returns_string_and_env_var_controls_path(
     ttfont_paths: list[str] = []
 
     class _Face:
-        charToGlyph = {ord("中"): 1}
+        charToGlyph = _sample_cjk_cmap()
 
     class _TTFont:
         def __init__(self, name: str, path: str) -> None:
@@ -302,7 +307,7 @@ def test_register_pdf_font_uses_distinct_cached_user_font_names(
     registered: list[str] = []
 
     class _Face:
-        charToGlyph = {ord("中"): 1}
+        charToGlyph = _sample_cjk_cmap()
 
     class _TTFont:
         def __init__(self, name: str, path: str) -> None:
@@ -372,6 +377,43 @@ def test_register_pdf_font_falls_back_when_user_font_lacks_cjk_glyphs(
     assert "does not expose common CJK glyphs" in caplog.text
 
 
+def test_register_pdf_font_falls_back_when_user_font_has_partial_cjk_sample(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    DocExporter._registered_pdf_fonts.clear()
+    registered: list[str] = []
+
+    class _Face:
+        charToGlyph = {ord(_PDF_CJK_SAMPLE[0]): 1}
+
+    class _TTFont:
+        def __init__(self, name: str, path: str) -> None:
+            self.fontName = name
+            self.face = _Face()
+
+    font_path = tmp_path / "partial-cjk.ttf"
+    font_path.write_bytes(b"fake")
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(font_path))
+    monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
+    monkeypatch.setattr(
+        pdfmetrics, "getFont", lambda name: (_ for _ in ()).throw(KeyError(name))
+    )
+    monkeypatch.setattr(
+        pdfmetrics, "registerFont", lambda font: registered.append(font.fontName)
+    )
+
+    font_name = DocExporter(_MinimalStore())._register_pdf_font()
+
+    assert font_name == "STSong-Light"
+    assert registered == ["STSong-Light"]
+    assert "does not expose common CJK glyphs" in caplog.text
+
+
 def test_register_pdf_font_does_not_cache_user_font_when_registration_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -383,7 +425,7 @@ def test_register_pdf_font_does_not_cache_user_font_when_registration_fails(
     DocExporter._registered_pdf_fonts.clear()
 
     class _Face:
-        charToGlyph = {ord("中"): 1}
+        charToGlyph = _sample_cjk_cmap()
 
     class _TTFont:
         def __init__(self, name: str, path: str) -> None:
