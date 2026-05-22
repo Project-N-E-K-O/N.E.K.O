@@ -117,7 +117,7 @@ static/neko/*
 static/kemomimi/*
 static/yui/*
 static/react/neko-chat/*
-*说明.txt
+打包说明.txt
 runtime_hook_inflect.py
 backup/
 build*
