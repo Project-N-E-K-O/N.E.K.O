@@ -372,6 +372,49 @@ def test_register_pdf_font_falls_back_when_user_font_lacks_cjk_glyphs(
     assert "does not expose common CJK glyphs" in caplog.text
 
 
+def test_register_pdf_font_does_not_cache_user_font_when_registration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    DocExporter._registered_pdf_fonts.clear()
+
+    class _Face:
+        charToGlyph = {ord("中"): 1}
+
+    class _TTFont:
+        def __init__(self, name: str, path: str) -> None:
+            self.fontName = name
+            self.face = _Face()
+
+    def _get_font(name: str) -> Any:
+        if name == "STSong-Light":
+            return object()
+        raise KeyError(name)
+
+    def _register_font(font: Any) -> None:
+        if str(getattr(font, "fontName", "")).startswith("CJK-User-"):
+            raise RuntimeError("user font registration failed")
+
+    font_path = tmp_path / "cjk.ttf"
+    font_path.write_bytes(b"fake")
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(font_path))
+    monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
+    monkeypatch.setattr(pdfmetrics, "getFont", _get_font)
+    monkeypatch.setattr(pdfmetrics, "registerFont", _register_font)
+
+    with caplog.at_level("INFO"):
+        font_name = DocExporter(_MinimalStore())._register_pdf_font()
+
+    assert font_name == "STSong-Light"
+    assert not any(name.startswith("CJK-User-") for name in DocExporter._registered_pdf_fonts)
+    assert "PDF CJK font registered from" not in caplog.text
+    assert "User CJK font registration failed" in caplog.text
+
+
 def test_register_pdf_font_falls_back_to_helvetica_when_pdfmetrics_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

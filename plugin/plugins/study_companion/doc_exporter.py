@@ -335,9 +335,9 @@ class DocExporter:
                             cjk_font_path,
                         )
                     else:
-                        _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
                         pdfmetrics.registerFont(font)
                         self._registered_pdf_fonts.add(font_name)
+                        _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
                         return font_name
                 except Exception as exc:
                     _LOGGER.warning(
