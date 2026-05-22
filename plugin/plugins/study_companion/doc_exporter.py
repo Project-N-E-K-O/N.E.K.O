@@ -328,17 +328,17 @@ class DocExporter:
                     from reportlab.pdfbase.ttfonts import TTFont
 
                     font = TTFont(font_name, str(font_path))
-                    if _ttfont_has_cjk_glyphs(font):
-                        _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
-                    else:
+                    if not _ttfont_has_cjk_glyphs(font):
                         _LOGGER.warning(
-                            "PDF CJK font registered from %s but does not expose common CJK glyphs; "
-                            "CJK rendering is not guaranteed",
+                            "PDF CJK font from %s does not expose common CJK glyphs; "
+                            "falling back to built-in CJK font",
                             cjk_font_path,
                         )
-                    pdfmetrics.registerFont(font)
-                    self._registered_pdf_fonts.add(font_name)
-                    return font_name
+                    else:
+                        _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
+                        pdfmetrics.registerFont(font)
+                        self._registered_pdf_fonts.add(font_name)
+                        return font_name
                 except Exception as exc:
                     _LOGGER.warning(
                         "User CJK font registration failed (%s): %s", cjk_font_path, exc
