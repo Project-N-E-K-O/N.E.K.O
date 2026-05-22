@@ -415,6 +415,35 @@ def _coerce_string_list(value: object) -> list[str]:
     return result
 
 
+def _coerce_int_pair(
+    value: object,
+    default: list[int],
+    *,
+    minimum: int,
+) -> list[int]:
+    if (
+        isinstance(value, Iterable)
+        and not isinstance(value, (str, bytes, bytearray, dict))
+    ):
+        items = list(value)
+    else:
+        return list(default)
+    if len(items) != 2:
+        return list(default)
+    parsed: list[int] = []
+    for item in items:
+        if isinstance(item, bool):
+            return list(default)
+        try:
+            number = int(item)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return list(default)
+        if number < minimum:
+            return list(default)
+        parsed.append(number)
+    return parsed
+
+
 def _coerce_memory_reader_engine_hook_codes(value: object) -> dict[str, list[str]]:
     if not isinstance(value, dict):
         return {}
@@ -660,6 +689,10 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     ocr_reader_obj = ocr_reader if isinstance(ocr_reader, dict) else {}
     rapidocr = raw_config.get("rapidocr")
     rapidocr_obj = rapidocr if isinstance(rapidocr, dict) else {}
+    vision = raw_config.get("vision")
+    vision_obj = vision if isinstance(vision, dict) else {}
+    vision_classifier = vision_obj.get("classifier")
+    vision_classifier_obj = vision_classifier if isinstance(vision_classifier, dict) else {}
     rapidocr_lang_type_raw = str(rapidocr_obj.get("lang_type") or "").strip()
     if rapidocr_lang_type_raw == "ch":
         _logger.warning(
@@ -963,6 +996,44 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             ocr_reader_obj.get("known_screen_timeout_seconds"),
             5.0,
             minimum=0.0,
+        ),
+        vision_classifier_enabled=_coerce_bool(
+            vision_obj.get("enabled"),
+            False,
+        ),
+        vision_classifier_model_dir=str(
+            vision_obj.get("model_dir") or "models/vision/screen_classifier"
+        ).strip(),
+        vision_classifier_model_name=str(
+            vision_classifier_obj.get("model_name") or "v1_galgame"
+        ).strip(),
+        vision_classifier_threshold=min(
+            0.99,
+            _coerce_float(
+                vision_obj.get("cnn_skip_ocr_threshold"),
+                0.75,
+                minimum=0.0,
+            ),
+        ),
+        vision_classifier_tick_interval=_coerce_int(
+            vision_obj.get("classifier_tick_interval"),
+            1,
+            minimum=1,
+        ),
+        vision_classifier_inference_timeout_ms=_coerce_float(
+            vision_obj.get("inference_timeout_ms"),
+            200.0,
+            minimum=1.0,
+        ),
+        vision_classifier_input_size=_coerce_int_pair(
+            vision_classifier_obj.get("input_size"),
+            [224, 224],
+            minimum=16,
+        ),
+        vision_classifier_input_size_low=_coerce_int_pair(
+            vision_classifier_obj.get("input_size_low"),
+            [160, 160],
+            minimum=16,
         ),
         rapidocr_enabled=_coerce_bool(
             rapidocr_obj.get("enabled"),

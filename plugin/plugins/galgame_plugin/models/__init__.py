@@ -9,6 +9,7 @@ from .config import (
     GalgameOcrReaderConfig,
     GalgameRapidOcrConfig,
     GalgameReaderConfig,
+    GalgameVisionConfig,
     _ConfigFieldProxy,
 )
 from .constants import (
@@ -160,6 +161,7 @@ __all__ = [
     "GalgameOcrReaderConfig",
     "GalgameRapidOcrConfig",
     "GalgameReaderConfig",
+    "GalgameVisionConfig",
     "MENU_PREFIX_RE",
     "MODE_CHOICE_ADVISOR",
     "MODE_COMPANION",

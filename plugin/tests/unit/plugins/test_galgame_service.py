@@ -160,6 +160,34 @@ def test_build_config_defaults_rapidocr_lang_type_to_bundled_ch() -> None:
     assert cfg.rapidocr_lang_type == galgame_service.DEFAULT_RAPIDOCR_LANG_TYPE
 
 
+def test_build_config_reads_vision_classifier_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "vision": {
+                "enabled": True,
+                "model_dir": "models/vision/custom",
+                "cnn_skip_ocr_threshold": 0.82,
+                "classifier_tick_interval": 3,
+                "inference_timeout_ms": 120,
+                "classifier": {
+                    "model_name": "custom_galgame",
+                    "input_size": [192, 192],
+                    "input_size_low": [160, 160],
+                },
+            }
+        }
+    )
+
+    assert cfg.vision_classifier_enabled is True
+    assert cfg.vision_classifier_model_dir == "models/vision/custom"
+    assert cfg.vision_classifier_model_name == "custom_galgame"
+    assert cfg.vision_classifier_threshold == 0.82
+    assert cfg.vision_classifier_tick_interval == 3
+    assert cfg.vision_classifier_inference_timeout_ms == 120.0
+    assert cfg.vision_classifier_input_size == [192, 192]
+    assert cfg.vision_classifier_input_size_low == [160, 160]
+
+
 def test_build_config_reads_context_optimization_fields() -> None:
     cfg = galgame_service.build_config(
         {

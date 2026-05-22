@@ -1005,6 +1005,7 @@ class CaptureMixin:
         ocr_started_at = self._time_fn()
         extraction = self._extract_text_from_image(frame, plan=plan)
         ocr_duration = max(0.0, self._time_fn() - ocr_started_at)
+        extraction.captured_image = frame
         primary_text = str(extraction.text or "").strip()
         primary_text_is_dialogue = bool(
             primary_text and _looks_like_ocr_dialogue_text(primary_text)

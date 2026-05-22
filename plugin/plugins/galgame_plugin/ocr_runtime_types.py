@@ -1696,6 +1696,7 @@ class OcrExtractionResult:
     window_rect: dict[str, float] = field(default_factory=dict)
     capture_backend_kind: str = ""
     capture_backend_detail: str = ""
+    capture_image: Any | None = None
     capture_image_hash: str = ""
     background_hash: str = ""
     timing: dict[str, Any] = field(default_factory=dict)
@@ -1703,6 +1704,14 @@ class OcrExtractionResult:
     screen_visual_features: dict[str, Any] = field(default_factory=dict)
     ocr_confidence: float = 0.0
     text_source: str = "bottom_region"
+
+    @property
+    def captured_image(self) -> Any | None:
+        return self.capture_image
+
+    @captured_image.setter
+    def captured_image(self, value: Any | None) -> None:
+        self.capture_image = value
 
 
 @dataclass(slots=True)
