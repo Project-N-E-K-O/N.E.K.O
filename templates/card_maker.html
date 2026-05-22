@@ -71,6 +71,7 @@
                 <div id="sticker-overlay-below"></div>
                 <canvas id="card-portrait-canvas"></canvas>
                 <div id="sticker-overlay"></div>
+                <div class="sticker-selection-frame" id="sticker-selection-frame"></div>
                 <div class="sticker-rotate-handle" id="sticker-rotate-handle">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
                 </div>
@@ -98,17 +99,17 @@
             <label data-i18n="cardExport.composition">构图调整</label>
             <div class="control-row">
                 <span data-i18n="cardExport.offsetX">水平偏移</span>
-                <input type="range" id="offset-x" min="-500" max="500" value="0" step="1">
+                <input type="range" id="offset-x" min="-800" max="800" value="0" step="1">
                 <span id="offset-x-val" class="range-val">0</span>
             </div>
             <div class="control-row">
                 <span data-i18n="cardExport.offsetY">垂直偏移</span>
-                <input type="range" id="offset-y" min="-500" max="500" value="0" step="1">
+                <input type="range" id="offset-y" min="-1000" max="1000" value="0" step="1">
                 <span id="offset-y-val" class="range-val">0</span>
             </div>
             <div class="control-row">
                 <span data-i18n="cardExport.scale">缩放</span>
-                <input type="range" id="portrait-scale" min="50" max="300" value="100" step="1">
+                <input type="range" id="portrait-scale" min="50" max="600" value="100" step="1">
                 <span id="scale-val" class="range-val">100%</span>
             </div>
             <div class="control-row">
@@ -128,6 +129,7 @@
             <div class="control-section">
                 <label data-i18n="cardExport.stickerPick">选择贴纸</label>
                 <div id="sticker-grid"></div>
+                <div class="sticker-selection-hint" data-i18n="cardExport.stickerOverlapCycleHint">右键重叠贴纸可按图层顺序切换选择</div>
             </div>
             <div class="control-section" id="sticker-controls" style="display:none;">
                 <label data-i18n="cardExport.stickerAdjust">贴纸调整</label>
@@ -153,6 +155,17 @@
                             <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                         </svg>
                         <span data-i18n="cardExport.lockRatio">锁定比例</span>
+                    </button>
+                </div>
+                <div class="control-row" id="sticker-variant-row" style="display:none;">
+                    <button type="button" id="sticker-switch-variant-btn" class="sticker-variant-control-btn" data-i18n-title="cardExport.switchStickerVariant" data-i18n-aria="cardExport.switchStickerVariant" title="切换形态" aria-label="切换形态">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="17 1 21 5 17 9"/>
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                            <polyline points="7 23 3 19 7 15"/>
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                        </svg>
+                        <span data-i18n="cardExport.switchStickerVariant">切换形态</span>
                     </button>
                 </div>
             </div>

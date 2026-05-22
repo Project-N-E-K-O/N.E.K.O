@@ -22,231 +22,36 @@ from .service import (
     build_summarize_degraded_result,
 )
 
-_EXPLAIN_EVIDENCE_TYPES = frozenset({"current_line", "history_line", "choice"})
-_KEY_POINT_TYPES = frozenset({"plot", "emotion", "decision", "reveal", "objective"})
-_LLM_RESPONSE_CACHE_MAX_ITEMS = 50
-_LLM_NEAR_MATCH_CACHE_MAX_ITEMS = 50
-_LLM_PROVIDER_BACKOFF_SECONDS = 2.0
-_LLM_PROVIDER_BACKOFF_CATEGORIES = frozenset({"busy", "gateway_unavailable", "timeout"})
-_LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC = "timeout: llm semaphore acquire timed out"
-_REPEAT_GUARD_MAX_ITEMS = 8
-_NEAR_MATCH_SUPPORTED_OPERATIONS = frozenset(
-    {"explain_line", "summarize_scene", "scene_summary"}
+
+from ._gateway_utils import (
+    _EXPLAIN_EVIDENCE_TYPES,
+    _KEY_POINT_TYPES,
+    _LLM_NEAR_MATCH_CACHE_MAX_ITEMS,
+    _LLM_PROVIDER_BACKOFF_CATEGORIES,
+    _LLM_PROVIDER_BACKOFF_SECONDS,
+    _LLM_RESPONSE_CACHE_MAX_ITEMS,
+    _LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC,
+    _NEAR_MATCH_EXCLUDED_KEYS,
+    _NEAR_MATCH_OBSERVED_SIGNATURE_MAX_CHARS,
+    _NEAR_MATCH_SUPPORTED_OPERATIONS,
+    _OBSERVED_SIMILARITY_THRESHOLD,
+    _REPEAT_GUARD_MAX_ITEMS,
+    _context_lines,
+    _current_line_for_near_match,
+    _hash_line,
+    _hash_stable_lines,
+    _jaccard_similarity,
+    _json_payload_copy,
+    _line_similarity_signature,
+    _near_match_context_value,
+    _ngrams,
+    _normalize_observed_text,
+    _observed_similarity,
+    _response_similarity,
+    _stable_json_fingerprint,
+    _stable_json_value,
 )
-_NEAR_MATCH_OBSERVED_SIGNATURE_MAX_CHARS = 4000
-_NEAR_MATCH_EXCLUDED_KEYS = frozenset(
-    {
-        "current_snapshot",
-        "degraded_reasons",
-        "diagnostic",
-        "input_degraded",
-        "observed_lines",
-        "recent_lines",
-        "screen_context",
-    }
-)
-_OBSERVED_SIMILARITY_THRESHOLD = 0.85
-
-
-class PluginErrorCategory(str, Enum):
-    TIMEOUT = "timeout"
-    BUSY = "busy"
-    PROVIDER_REJECTED = "provider_rejected"
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-    ENTRY_UNAVAILABLE = "entry_unavailable"
-    INTERNAL_ERROR = "internal_error"
-
-
-def _json_payload_copy(value: Any) -> Any:
-    try:
-        return json.loads(json.dumps(value, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return json_copy(value)
-
-
-def _stable_json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {
-            str(key): _stable_json_value(value[key])
-            for key in sorted(value.keys(), key=lambda item: str(item))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_stable_json_value(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        normalized_items = [_stable_json_value(item) for item in value]
-        return sorted(
-            normalized_items,
-            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
-        )
-    return {"__non_json_type__": f"{type(value).__module__}.{type(value).__qualname__}"}
-
-
-def _stable_json_fingerprint(value: Any) -> str:
-    return json.dumps(
-        _stable_json_value(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _normalize_observed_text(value: object) -> str:
-    return " ".join(str(value or "").strip().lower().split())
-
-
-def _line_similarity_signature(line: Any) -> str:
-    if isinstance(line, Mapping):
-        speaker = _normalize_observed_text(line.get("speaker"))
-        text = _normalize_observed_text(line.get("text"))
-        line_id = _normalize_observed_text(line.get("line_id"))
-        return f"{line_id}|{speaker}|{text}"
-    return _normalize_observed_text(line)
-
-
-def _ngrams(value: str, *, n: int = 3) -> set[str]:
-    if not value:
-        return set()
-    if len(value) < n:
-        return {value}
-    return {value[index:index + n] for index in range(len(value) - n + 1)}
-
-
-def _jaccard_similarity(left: str, right: str) -> float:
-    if left == right:
-        return 1.0
-    left_set = _ngrams(left)
-    right_set = _ngrams(right)
-    if not left_set or not right_set:
-        return 0.0
-    return len(left_set & right_set) / len(left_set | right_set)
-
-
-def _observed_similarity(left: list[str], right: list[str]) -> float:
-    if not left and not right:
-        return 1.0
-    if not left or not right:
-        return 0.0
-    left_text = "\n".join(left)[:_NEAR_MATCH_OBSERVED_SIGNATURE_MAX_CHARS]
-    right_text = "\n".join(right)[:_NEAR_MATCH_OBSERVED_SIGNATURE_MAX_CHARS]
-    return _jaccard_similarity(left_text, right_text)
-
-
-def _hash_line(line: Any) -> str:
-    if not isinstance(line, Mapping):
-        return ""
-    return _stable_json_fingerprint(
-        {
-            "line_id": str(line.get("line_id") or ""),
-            "speaker": str(line.get("speaker") or ""),
-            "text": str(line.get("text") or ""),
-            "scene_id": str(line.get("scene_id") or ""),
-            "route_id": str(line.get("route_id") or ""),
-        }
-    )
-
-
-def _hash_stable_lines(lines: Any) -> str:
-    if not isinstance(lines, list):
-        return _stable_json_fingerprint([])
-    return _stable_json_fingerprint([_hash_line(item) for item in lines if isinstance(item, Mapping)])
-
-
-def _context_lines(context: dict[str, Any], key: str) -> list[Any]:
-    value = context.get(key)
-    if isinstance(value, list):
-        return value
-    public_context = context.get("public_context")
-    if isinstance(public_context, Mapping):
-        value = public_context.get(key)
-        if isinstance(value, list):
-            return value
-    return []
-
-
-def _current_line_for_near_match(context: dict[str, Any]) -> dict[str, Any]:
-    if str(context.get("line_id") or "") or str(context.get("text") or ""):
-        return {
-            "line_id": str(context.get("line_id") or ""),
-            "speaker": str(context.get("speaker") or ""),
-            "text": str(context.get("text") or ""),
-            "scene_id": str(context.get("scene_id") or ""),
-            "route_id": str(context.get("route_id") or ""),
-        }
-    for key in ("current_line", "current_snapshot"):
-        value = context.get(key)
-        if isinstance(value, Mapping):
-            return dict(value)
-    public_context = context.get("public_context")
-    if isinstance(public_context, Mapping):
-        value = public_context.get("current_line")
-        if isinstance(value, Mapping):
-            return dict(value)
-    return {}
-
-
-def _near_match_context_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _near_match_context_value(item)
-            for key, item in value.items()
-            if str(key) not in _NEAR_MATCH_EXCLUDED_KEYS
-        }
-    if isinstance(value, (list, tuple)):
-        return [_near_match_context_value(item) for item in value]
-    return value
-
-
-def _response_similarity(left: Any, right: Any) -> float:
-    left_fingerprint = _stable_json_fingerprint(left)
-    right_fingerprint = _stable_json_fingerprint(right)
-    if left_fingerprint == right_fingerprint:
-        return 1.0
-
-    def _response_text(value: Any, fingerprint: str) -> str:
-        if isinstance(value, Mapping):
-            text = str(value.get("reply") or value.get("result") or "").strip()
-            if text:
-                return " ".join(text.lower().split())
-        return " ".join(fingerprint.lower().split())
-
-    left_text = _response_text(left, left_fingerprint)
-    right_text = _response_text(right, right_fingerprint)
-    if not left_text or not right_text:
-        return 0.0
-    return SequenceMatcher(None, left_text, right_text).ratio()
-
-
-class ResponseRepeatGuard:
-    def __init__(self, *, max_items: int = _REPEAT_GUARD_MAX_ITEMS) -> None:
-        self._max_items = max(1, int(max_items))
-        self._recent: list[dict[str, Any]] = []
-
-    def clear(self) -> None:
-        self._recent.clear()
-
-    def is_repeat(self, response: dict[str, Any], *, threshold: float) -> bool:
-        threshold = max(0.0, min(float(threshold), 1.0))
-        fingerprint = _stable_json_fingerprint(response)
-        for item in self._recent:
-            if fingerprint == str(item.get("fingerprint") or ""):
-                return True
-            previous = item.get("response")
-            if _response_similarity(response, previous) >= threshold:
-                return True
-        return False
-
-    def record(self, response: dict[str, Any]) -> None:
-        payload = _json_payload_copy(response)
-        self._recent.append(
-            {
-                "fingerprint": _stable_json_fingerprint(payload),
-                "response": payload,
-            }
-        )
-        if len(self._recent) > self._max_items:
-            del self._recent[: len(self._recent) - self._max_items]
+from ._repeat_guard import PluginErrorCategory, ResponseRepeatGuard
 
 
 class LLMGateway:

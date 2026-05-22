@@ -3751,6 +3751,8 @@
         "stickerWidth": "寬",
         "stickerHeight": "高",
         "lockRatio": "鎖定比例",
+        "switchStickerVariant": "切換形態",
+        "stickerOverlapCycleHint": "右鍵重疊貼紙可按圖層順序切換選擇",
         "stickerRotation": "旋轉",
         "removeSticker": "刪除選中",
         "clearStickers": "清除全部",
