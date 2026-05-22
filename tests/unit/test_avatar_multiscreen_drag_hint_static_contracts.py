@@ -65,7 +65,7 @@ def test_multiscreen_drag_hint_uses_top_center_project_popup_style():
     assert ".avatar-multiscreen-drag-hint-visible" in source
 
 
-def test_model_interactions_report_edge_bounce_and_display_switch_success():
+def test_model_interactions_report_supported_bounces_and_display_switch_success():
     live2d = _source("static/live2d-interaction.js")
     mmd = _source("static/mmd-interaction.js")
     vrm = _source("static/vrm-interaction.js")

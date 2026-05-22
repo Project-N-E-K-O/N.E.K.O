@@ -3751,6 +3751,8 @@
         "stickerWidth": "Ancho",
         "stickerHeight": "Altura",
         "lockRatio": "Relación de bloqueo",
+        "switchStickerVariant": "Cambiar variante",
+        "stickerOverlapCycleHint": "Haz clic derecho en pegatinas superpuestas para alternar la selección por orden de capas",
         "stickerRotation": "Rotación",
         "removeSticker": "Eliminar seleccionado",
         "clearStickers": "Borrar todo",

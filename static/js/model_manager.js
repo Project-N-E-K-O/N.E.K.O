@@ -837,7 +837,7 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
     let channel = null;
     let cachedDefaultCardFaceImage = null;
     let fallbackAbortController = null;
-    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800 - Math.floor(800 / 6))
+    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800)
         .then(image => {
             cachedDefaultCardFaceImage = image;
             if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {

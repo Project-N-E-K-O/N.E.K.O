@@ -4436,7 +4436,7 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only {
-    height: 65vh;
+    height: var(--panel-card-face-height);
     max-height: 80vh;
     border-radius: 12px;
     --panel-card-face-height: clamp(360px, 56vh, 560px);
@@ -4451,7 +4451,7 @@ margin-top: 10px;
 
 .catgirl-panel-wrapper.card-only.phase-center {
     width: var(--panel-card-face-width);
-    height: 65vh;
+    height: var(--panel-card-face-height);
 }
 
 .catgirl-panel-wrapper.phase-expand {
@@ -4475,6 +4475,12 @@ margin-top: 10px;
     height: 80vh;
     flex-shrink: 0;
     overflow-y: auto;
+}
+
+/* 展开动画起点只显示完整卡面，避免卡面下方露出左侧容器空白 */
+.catgirl-panel-wrapper.card-only:not(.phase-expand) .catgirl-panel-left {
+    height: var(--panel-card-face-height);
+    overflow: hidden;
 }
 
 /* phase-expand 后，左侧容器恢复正常对齐；卡面图片尺寸保持原设，
@@ -4517,6 +4523,11 @@ margin-top: 10px;
     .catgirl-panel-wrapper.card-only .catgirl-panel-left,
     .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
         width: 100%;
+        height: auto;
+        max-height: 55vh;
+        overflow-y: visible;
+    }
+    .catgirl-panel-wrapper.card-only:not(.phase-expand) .catgirl-panel-left {
         height: auto;
         max-height: 55vh;
         overflow-y: visible;

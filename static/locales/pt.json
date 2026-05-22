@@ -3751,6 +3751,8 @@
         "stickerWidth": "Largura",
         "stickerHeight": "Altura",
         "lockRatio": "Taxa de bloqueio",
+        "switchStickerVariant": "Trocar variação",
+        "stickerOverlapCycleHint": "Clique com o botão direito em adesivos sobrepostos para alternar a seleção pela ordem das camadas",
         "stickerRotation": "Rotação",
         "removeSticker": "Remover selecionado",
         "clearStickers": "Limpar tudo",

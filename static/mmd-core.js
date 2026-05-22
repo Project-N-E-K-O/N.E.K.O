@@ -1173,6 +1173,10 @@ class MMDCore {
 
     async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
+            // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
+            if (window.isViewerMode) {
+                return false;
+            }
             if (!position || typeof position !== 'object' ||
                 !Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) {
                 console.error('[MMD] 位置值无效:', position);
