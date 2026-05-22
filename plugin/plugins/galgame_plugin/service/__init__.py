@@ -6,7 +6,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import threading
 import time
@@ -58,6 +57,10 @@ from ..models import (
 from ..dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
+)
+from ..context_builder.builder import (
+    _looks_like_game_dialogue_context_line,
+    _looks_like_ocr_overlay_text,
 )
 from ..dxcam_support import inspect_dxcam_installation
 from ..reader import expand_bridge_root, normalize_text, read_session_json
@@ -208,103 +211,6 @@ def _current_process_performance() -> dict[str, Any]:
                 "thread_count": threading.active_count(),
                 "sampled_at": time.time(),
             }
-
-
-_OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
-    ".agent",
-    ".codex",
-    ".codex_tmp",
-    ".codex_pytest_tmp",
-    "__pycache__",
-    "-pycache_",
-    "codex_tmp",
-    "documents\\code\\n.e.k.o",
-    "galgame plugin",
-    "n.e.k.o",
-    "plugin manager",
-    "plugin.plugins.galgame_plugin",
-    "uv run python",
-    "launcher.py",
-    "powershell",
-    "ps c:",
-    "插件设置",
-    "ocr 目标窗口",
-    "截图校准",
-)
-_DIALOGUE_PUNCTUATION_RE = re.compile(r"[。！？!?…]|[.](?:\s|$)|——|「|」|『|』|“|”")
-_DIALOGUE_WEAK_PUNCTUATION_RE = re.compile(r"[，,、：:]")
-_NON_DIALOGUE_CONTEXT_TOKENS = (
-    "agent",
-    "capture_failed",
-    "context_state=",
-    "dxcam:",
-    "galgame_",
-    "gateway_unavailable",
-    "http://",
-    "https://",
-    "last_error=",
-    "ocr_context_unavailable",
-    "plugin/",
-    "plugin\\",
-    "powershell",
-    "status=",
-    "stability",
-    "当前快照",
-    "场景 id",
-    "场景id",
-    "会话 id",
-    "会话id",
-    "游戏 id",
-    "游戏id",
-    "菜单是否打开",
-    "台词 id",
-    "台词id",
-    "路线 id",
-    "路线id",
-    "快照时间",
-    "是否过期",
-    "退出全屏",
-    "收起",
-    "全屏",
-    "ocr 诊断",
-    "recent raw ocr",
-    "最近 raw ocr",
-)
-
-
-def _looks_like_ocr_overlay_text(text: object) -> bool:
-    normalized = normalize_text(str(text or "")).strip().lower()
-    if not normalized:
-        return False
-    return any(token in normalized for token in _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS)
-
-
-def _significant_char_count(text: object) -> int:
-    return sum(1 for ch in str(text or "") if not ch.isspace())
-
-
-def _looks_like_game_dialogue_context_line(line: dict[str, Any]) -> bool:
-    if not isinstance(line, dict) or bool(line.get("is_diagnostic")):
-        return False
-    text = normalize_text(str(line.get("text") or "")).strip()
-    if not text or _looks_like_ocr_overlay_text(text):
-        return False
-    lowered = text.lower()
-    if any(token in lowered for token in _NON_DIALOGUE_CONTEXT_TOKENS):
-        return False
-    if text.startswith("{") or text.startswith("[") or ("{" in text and "}" in text):
-        return False
-    significant_chars = _significant_char_count(text)
-    if significant_chars < 2 or significant_chars > 220:
-        return False
-    has_dialogue_punctuation = bool(_DIALOGUE_PUNCTUATION_RE.search(text))
-    has_weak_dialogue_punctuation = bool(_DIALOGUE_WEAK_PUNCTUATION_RE.search(text))
-    has_speaker = bool(str(line.get("speaker") or "").strip())
-    if has_speaker:
-        return True
-    if has_dialogue_punctuation:
-        return True
-    return has_weak_dialogue_punctuation and significant_chars >= 8
 
 
 def _payload_is_game_dialogue_line(payload_obj: dict[str, Any], *, ts: str = "") -> bool:
@@ -2383,10 +2289,10 @@ def build_status_payload(
             config=config,
             state_is_snapshot=state_is_snapshot,
         )
-    except Exception as exc:
+    except Exception:
         _logger.exception("build_status_payload failed")
         return {
-            "error": str(exc),
+            "error": "status payload construction failed",
             "degraded": True,
             "summary": {
                 "status": "error",
