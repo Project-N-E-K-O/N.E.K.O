@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from plugin.plugins.study_companion.pomodoro_timer import PomodoroConfig, PomodoroTimer
 from plugin.plugins.study_companion.study_habit_store import StudyHabitStore
@@ -22,6 +23,35 @@ class _Clock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+class _FailingHabitStore:
+    def __init__(self, *, fail_on: str) -> None:
+        self.fail_on = fail_on
+        self.focus_session = {
+            "id": "focus-1",
+            "date": "1970-01-01",
+            "status": "active",
+        }
+
+    def create_focus_session(self, **_: Any) -> dict[str, Any]:
+        if self.fail_on == "create_focus_session":
+            raise RuntimeError("create failed")
+        return dict(self.focus_session)
+
+    def finish_focus_session(self, *_: Any, **__: Any) -> dict[str, Any]:
+        if self.fail_on == "finish_focus_session":
+            raise RuntimeError("finish failed")
+        self.focus_session = {**self.focus_session, "status": "completed"}
+        return dict(self.focus_session)
+
+    def record_checkin(self, **_: Any) -> dict[str, Any]:
+        if self.fail_on == "record_checkin":
+            raise RuntimeError("checkin failed")
+        return {"id": "checkin-1"}
+
+    def get_goal(self, goal_id: str) -> dict[str, Any] | None:
+        return None
 
 
 def _habit_store(tmp_path: Path) -> StudyHabitStore:
@@ -115,3 +145,46 @@ def test_pomodoro_timer_uses_long_break_interval_and_supports_cancel(
 
     assert cancelled["state"] == "cancelled"
     assert cancelled["current_focus_session"]["status"] == "completed"
+
+
+def test_pomodoro_start_does_not_mutate_state_when_initial_persistence_fails() -> None:
+    timer = PomodoroTimer(
+        _FailingHabitStore(fail_on="create_focus_session"),  # type: ignore[arg-type]
+        config=PomodoroConfig(focus_minutes=1),
+        clock=lambda: 1_000.0,
+    )
+
+    try:
+        timer.start(focus_minutes=1)
+    except RuntimeError as exc:
+        assert str(exc) == "create failed"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("start should propagate persistence failures")
+
+    status = timer.status()
+    assert status["state"] == "idle"
+    assert status["remaining_seconds"] == 0
+    assert status["current_focus_session"] == {}
+
+
+def test_pomodoro_completion_stays_retryable_when_persistence_fails() -> None:
+    clock = _Clock()
+    timer = PomodoroTimer(
+        _FailingHabitStore(fail_on="finish_focus_session"),  # type: ignore[arg-type]
+        config=PomodoroConfig(focus_minutes=1, short_break_minutes=1),
+        clock=clock.time,
+    )
+    timer.start(focus_minutes=1)
+    clock.advance(60)
+
+    try:
+        timer.tick()
+    except RuntimeError as exc:
+        assert str(exc) == "finish failed"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("tick should propagate persistence failures")
+
+    status = timer.status()
+    assert status["state"] == "focusing"
+    assert status["session_count"] == 0
+    assert status["remaining_seconds"] == 0

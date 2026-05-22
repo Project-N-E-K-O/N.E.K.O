@@ -2277,6 +2277,40 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_study_status_degrades_when_habit_payload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+
+    class _BrokenHabitStore:
+        def list_goals(self, **_kwargs):
+            raise RuntimeError("habit db unavailable")
+
+    plugin._habit_store = _BrokenHabitStore()  # type: ignore[assignment]
+
+    status = await plugin.study_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["status"] == "ready"
+    assert status.value["habit"]["available"] is False
+    assert "habit db unavailable" in status.value["habit"]["error"]
+    await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_shutdown_continues_when_dynamic_entry_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
