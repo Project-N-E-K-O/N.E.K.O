@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from zipfile import ZipFile
 
 import pytest
 
-from plugin.plugins.study_companion.doc_exporter import DocExporter, _pdf_safe_text, escape_markdown, safe_utf8_truncate
-from plugin.plugins.study_companion.models import DocExportConfig, STUDY_EXPORT_FORMATS, STUDY_EXPORT_STYLES
+from plugin.plugins.study_companion.doc_exporter import (
+    DocExporter,
+    _pdf_safe_text,
+    escape_markdown,
+    safe_utf8_truncate,
+)
+from plugin.plugins.study_companion.models import (
+    DocExportConfig,
+    STUDY_EXPORT_FORMATS,
+    STUDY_EXPORT_STYLES,
+)
 from plugin.plugins.study_companion.store import StudyStore
 
 
@@ -16,23 +26,36 @@ class _Logger:
 
 
 class _MinimalStore:
-    def list_interactions(self, limit: int = 20):
+    def list_interactions(self, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
-    def list_topics(self, limit: int = 100, subject: str | None = None):
+    def list_topics(
+        self, limit: int = 100, subject: str | None = None
+    ) -> list[dict[str, Any]]:
         return []
 
-    def list_mastery_overview(self, limit: int = 20):
+    def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
-    def list_wrong_questions(self, *, limit: int = 20, topic_id=None, statuses=("active", "retrying", "resolved")):
+    def list_wrong_questions(
+        self,
+        *,
+        limit: int = 20,
+        topic_id: str | None = None,
+        statuses: tuple[str, ...] = ("active", "retrying", "resolved"),
+    ) -> list[dict[str, Any]]:
         return []
 
 
 def _store(tmp_path: Path) -> StudyStore:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
-    store.ensure_topic(topic_id="photosynthesis", name="Photosynthesis", subject="biology", chapter="plants")
+    store.ensure_topic(
+        topic_id="photosynthesis",
+        name="Photosynthesis",
+        subject="biology",
+        chapter="plants",
+    )
     store.append_mastery_snapshot(
         {
             "topic_id": "photosynthesis",
@@ -59,7 +82,9 @@ def test_markdown_build_escapes_and_truncates_user_text(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         exporter = DocExporter(store)
-        markdown = exporter.build_markdown(title="My *Notes*", style="unknown", recent_limit=5)
+        markdown = exporter.build_markdown(
+            title="My *Notes*", style="unknown", recent_limit=5
+        )
 
         assert "# My \\*Notes\\*" in markdown
         assert "\\*\\*raw\\*\\*" in markdown
@@ -72,7 +97,9 @@ def test_markdown_build_escapes_and_truncates_user_text(tmp_path: Path) -> None:
         store.close()
 
 
-def test_topic_id_export_resolves_topics_outside_style_page_limit(tmp_path: Path) -> None:
+def test_topic_id_export_resolves_topics_outside_style_page_limit(
+    tmp_path: Path,
+) -> None:
     store = StudyStore(tmp_path / "many-topics.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
@@ -96,11 +123,15 @@ def test_topic_id_export_resolves_topics_outside_style_page_limit(tmp_path: Path
         store.close()
 
 
-def test_export_markdown_handles_empty_store_and_declared_constants(tmp_path: Path) -> None:
+def test_export_markdown_handles_empty_store_and_declared_constants(
+    tmp_path: Path,
+) -> None:
     store = StudyStore(tmp_path / "empty.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
-        exported = DocExporter(store).export(fmt="markdown", style="compact", title="Empty")
+        exported = DocExporter(store).export(
+            fmt="markdown", style="compact", title="Empty"
+        )
 
         assert exported.content.startswith(b"# Empty")
         assert exported.filename == "empty.md"
@@ -128,7 +159,9 @@ def test_export_pdf_docx_and_xmind_bytes(tmp_path: Path) -> None:
         archive_path = tmp_path / "notes.xmind"
         archive_path.write_bytes(xmind.content)
         with ZipFile(archive_path) as archive:
-            assert {"content.json", "metadata.json", "manifest.json"}.issubset(set(archive.namelist()))
+            assert {"content.json", "metadata.json", "manifest.json"}.issubset(
+                set(archive.namelist())
+            )
     finally:
         store.close()
 
@@ -138,7 +171,12 @@ def test_export_pdf_preserves_unicode_text(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "unicode.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
-        store.append_interaction(kind="concept_explain", input_text="光合作用", output_text="植物吸收光能", history_limit=10)
+        store.append_interaction(
+            kind="concept_explain",
+            input_text="光合作用",
+            output_text="植物吸收光能",
+            history_limit=10,
+        )
         pdf = DocExporter(store).export(fmt="pdf", title="中文笔记")
 
         assert _pdf_safe_text("中文笔记") == "中文笔记"
@@ -147,7 +185,9 @@ def test_export_pdf_preserves_unicode_text(tmp_path: Path) -> None:
         store.close()
 
 
-def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     pytest.importorskip("reportlab")
     monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(tmp_path / "missing-font.ttf"))
 
@@ -171,6 +211,116 @@ def test_register_pdf_font_returns_string_and_env_var_controls_path(
     assert exporter._register_pdf_font() in {"STSong-Light", "Helvetica"}
 
 
+def test_register_pdf_font_uses_distinct_cached_user_font_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    DocExporter._registered_pdf_fonts.clear()
+    registered: list[str] = []
+
+    class _Face:
+        charToGlyph = {ord("中"): 1}
+
+    class _TTFont:
+        def __init__(self, name: str, path: str) -> None:
+            self.fontName = name
+            self.face = _Face()
+
+    def _register_font(font: Any) -> None:
+        registered.append(font.fontName)
+
+    monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
+    monkeypatch.setattr(pdfmetrics, "registerFont", _register_font)
+    monkeypatch.setattr(
+        pdfmetrics, "getFont", lambda name: (_ for _ in ()).throw(KeyError(name))
+    )
+
+    first_path = tmp_path / "font-a.ttf"
+    second_path = tmp_path / "font-b.ttf"
+    first_path.write_bytes(b"fake")
+    second_path.write_bytes(b"fake")
+    exporter = DocExporter(_MinimalStore())
+
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(first_path))
+    first_name = exporter._register_pdf_font()
+    second_call_name = exporter._register_pdf_font()
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(second_path))
+    second_name = exporter._register_pdf_font()
+
+    assert first_name == second_call_name
+    assert first_name != second_name
+    assert registered == [first_name, second_name]
+
+
+def test_register_pdf_font_warns_when_user_font_lacks_cjk_glyphs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    class _Face:
+        charToGlyph = {ord("A"): 1}
+
+    class _TTFont:
+        def __init__(self, name: str, path: str) -> None:
+            self.fontName = name
+            self.face = _Face()
+
+    font_path = tmp_path / "latin.ttf"
+    font_path.write_bytes(b"fake")
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(font_path))
+    monkeypatch.setattr("reportlab.pdfbase.ttfonts.TTFont", _TTFont)
+    monkeypatch.setattr(pdfmetrics, "registerFont", lambda font: None)
+
+    font_name = DocExporter(_MinimalStore())._register_pdf_font()
+
+    assert font_name.startswith("CJK-User-")
+    assert "does not expose common CJK glyphs" in caplog.text
+
+
+def test_register_pdf_font_falls_back_to_helvetica_when_pdfmetrics_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "reportlab.pdfbase" and args and "pdfmetrics" in (args[2] or ()):
+            raise ImportError("pdfmetrics unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+
+    assert DocExporter(_MinimalStore())._register_pdf_font() == "Helvetica"
+
+
+def test_register_pdf_font_falls_back_to_helvetica_when_cid_font_registration_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
+
+    DocExporter._registered_pdf_fonts.clear()
+    monkeypatch.delenv("STUDY_PDF_CJK_FONT_PATH", raising=False)
+    monkeypatch.setattr(
+        pdfmetrics, "getFont", lambda name: (_ for _ in ()).throw(KeyError(name))
+    )
+    monkeypatch.setattr(
+        pdfmetrics,
+        "registerFont",
+        lambda font: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    assert DocExporter(_MinimalStore())._register_pdf_font() == "Helvetica"
+
+
 def test_doc_exporter_rejects_store_without_required_methods() -> None:
     with pytest.raises(TypeError, match="missing required methods"):
         DocExporter(object())  # type: ignore[arg-type]
@@ -180,15 +330,21 @@ def test_xmind_export_requires_explicit_enable(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         with pytest.raises(ValueError, match="XMind export is disabled"):
-            DocExporter(store, config=DocExportConfig(xmind_enabled=False)).export(fmt="xmind")
+            DocExporter(store, config=DocExportConfig(xmind_enabled=False)).export(
+                fmt="xmind"
+            )
     finally:
         store.close()
 
 
-def test_preview_export_uses_markdown_metadata_for_non_markdown_format(tmp_path: Path) -> None:
+def test_preview_export_uses_markdown_metadata_for_non_markdown_format(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
-        exported = DocExporter(store, config=DocExportConfig(xmind_enabled=True)).export(
+        exported = DocExporter(
+            store, config=DocExportConfig(xmind_enabled=True)
+        ).export(
             fmt="xmind",
             title="Preview Notes",
             preview_only=True,
