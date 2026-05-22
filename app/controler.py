@@ -61,7 +61,7 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")
 
 MONITOR_WS = f"ws://127.0.0.1:{MONITOR_SERVER_PORT}"
-MOTION_DELAY_MS = 1500   # 台词开播后 motion 延迟 1.5s
+MOTION_DELAY_MS = 500    # 台词开播后 motion 延迟 0.5s
 MOTION_INTERVAL_MS = 6000  # 每个 motion 播放 6s
 RANDOM_INDEX_MAX = 4     # 裸动作组随机 index 上限：0..4（再按组内实际数量裁剪）
 
