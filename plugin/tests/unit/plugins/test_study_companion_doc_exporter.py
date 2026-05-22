@@ -203,18 +203,37 @@ def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     pytest.importorskip("reportlab")
+    from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfgen.canvas import Canvas
 
     DocExporter._registered_pdf_fonts.clear()
     font_names: list[str] = []
+    registered_fonts: list[str] = []
+    original_get_font = pdfmetrics.getFont
+    original_register_font = pdfmetrics.registerFont
     original_set_font = Canvas.setFont
+
+    def _get_font(name: str) -> Any:
+        if name == "STSong-Light":
+            raise KeyError(name)
+        return original_get_font(name)
+
+    def _register_font(font: Any) -> None:
+        font_name = getattr(font, "fontName", "")
+        if font_name == "STSong-Light":
+            registered_fonts.append(font_name)
+            return None
+        return original_register_font(font)
 
     def _set_font_spy(
         self: Canvas, psfontname: str, size: float, leading: float | None = None
     ) -> None:
         font_names.append(psfontname)
-        original_set_font(self, psfontname, size, leading)
+        fallback_name = "Helvetica" if psfontname == "STSong-Light" else psfontname
+        original_set_font(self, fallback_name, size, leading)
 
+    monkeypatch.setattr(pdfmetrics, "getFont", _get_font)
+    monkeypatch.setattr(pdfmetrics, "registerFont", _register_font)
     monkeypatch.setattr(Canvas, "setFont", _set_font_spy)
     monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(tmp_path / "missing-font.ttf"))
 
@@ -222,6 +241,7 @@ def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(
 
     assert pdf.content.startswith(b"%PDF")
     assert font_names[0] == "STSong-Light"
+    assert registered_fonts == ["STSong-Light"]
     assert not font_names[0].startswith("CJK-User-")
     assert "STUDY_PDF_CJK_FONT_PATH set but file not found" in caplog.text
     assert _pdf_safe_text("中文笔记") == "中文笔记"
