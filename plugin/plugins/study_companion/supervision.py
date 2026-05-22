@@ -86,6 +86,8 @@ class SupervisionController:
         if text != self._last_ocr_text:
             self._last_ocr_text = text
             self._last_activity_at = current
+            if self._reminder_level == "inactivity":
+                self._reminder_level = "active"
             return {
                 **self.status(now=current),
                 "inactivity_detected": False,

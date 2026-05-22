@@ -120,7 +120,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 makeup_window_days=self._cfg.checkin.makeup_window_days,
             )
             self._pomodoro_timer = PomodoroTimer(
-                self._habit_store, config=self._cfg.pomodoro
+                self._habit_store,
+                config=self._cfg.pomodoro,
+                auto_derive_from_session=self._cfg.checkin.auto_derive_from_session,
             )
             self._supervision = SupervisionController(self._cfg.supervision)
             restored = await asyncio.to_thread(
@@ -629,7 +631,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         metadata: dict[str, Any],
         extra_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._record_tutor_result(operation, reply)
+        self._record_tutor_result(operation, reply, extra=extra_context)
         diagnostic = str(reply.diagnostic or "")
         if diagnostic and reply.degraded:
             with self._lock:
@@ -874,8 +876,17 @@ class StudyCompanionPlugin(NekoPluginBase):
     )
     async def study_pomodoro_status(self, **_):
         try:
-            _, _, timer, _ = self._require_habit_components()
-            return Ok(build_pomodoro_status_payload(timer.tick()))
+            _, _, timer, supervision = self._require_habit_components()
+            before_state = str(timer.status().get("state") or "")
+            status = timer.tick()
+            after_state = str(status.get("state") or "")
+            if before_state == "focusing" and after_state in {
+                "short_break",
+                "long_break",
+                "completed",
+            }:
+                supervision.on_focus_end()
+            return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -1104,7 +1115,13 @@ class StudyCompanionPlugin(NekoPluginBase):
         try:
             _, manager, _, _ = self._require_habit_components()
             target_date = str(date or self._today())[:10]
-            return Ok(manager.checkin_status(date=target_date, today=self._today()))
+            return Ok(
+                await asyncio.to_thread(
+                    manager.checkin_status,
+                    date=target_date,
+                    today=self._today(),
+                )
+            )
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -1151,7 +1168,12 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_session_summary(self, date: str = "", **_):
         try:
             _, manager, _, _ = self._require_habit_components()
-            return Ok(manager.daily_summary(date=str(date or self._today())[:10]))
+            return Ok(
+                await asyncio.to_thread(
+                    manager.daily_summary,
+                    date=str(date or self._today())[:10],
+                )
+            )
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -1183,6 +1205,8 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_supervision_toggle(self, enabled: bool, **_):
         try:
             _, _, _, supervision = self._require_habit_components()
+            if not bool(enabled) and not self._cfg.supervision.allow_disable_by_chat:
+                return Err(SdkError("study supervision disable is blocked by config"))
             return Ok(supervision.set_enabled(bool(enabled)))
         except Exception as exc:
             return Err(SdkError(str(exc)))

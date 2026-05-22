@@ -18,10 +18,37 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
     setPayload({ status, goals: goals.goals || [], checkin, summary, supervision });
   }
 
+  async function act(entryId: string, args: Record<string, unknown> = {}) {
+    try {
+      await callPlugin(entryId, args);
+      await refresh();
+      setError('');
+    } catch (err) {
+      setError(formatError(err));
+    }
+  }
+
   useEffect(() => {
-    refresh().catch((err) => setError(formatError(err)));
-    const id = window.setInterval(() => refresh().catch((err) => setError(formatError(err))), 5000);
-    return () => window.clearInterval(id);
+    let disposed = false;
+    let inFlight = false;
+    const tick = async () => {
+      if (disposed || inFlight) return;
+      inFlight = true;
+      try {
+        await refresh();
+        if (!disposed) setError('');
+      } catch (err) {
+        if (!disposed) setError(formatError(err));
+      } finally {
+        inFlight = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 5000);
+    return () => {
+      disposed = true;
+      window.clearInterval(id);
+    };
   }, []);
 
   const goals = Array.isArray(payload.goals) ? payload.goals : [];
@@ -40,10 +67,10 @@ export default function HabitDashboard(props: PluginSurfaceProps) {
         <div><span>{text(props, 'ui.label.goals', 'Goals')}</span><strong>{goals.length}</strong></div>
       </section>
       <div className="study-panel__actions">
-        <button type="button" onClick={() => callPlugin('study_checkin_manual').then(refresh)}>
+        <button type="button" onClick={() => act('study_checkin_manual')}>
           {text(props, 'ui.button.checkin', 'Check in')}
         </button>
-        <button type="button" onClick={() => callPlugin('study_supervision_toggle', { enabled: !payload.supervision?.enabled }).then(refresh)}>
+        <button type="button" onClick={() => act('study_supervision_toggle', { enabled: !payload.supervision?.enabled })}>
           {payload.supervision?.enabled ? text(props, 'ui.button.quiet', 'Quiet') : text(props, 'ui.button.supervise', 'Supervise')}
         </button>
       </div>

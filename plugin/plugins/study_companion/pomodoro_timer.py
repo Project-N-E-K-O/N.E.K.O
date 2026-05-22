@@ -19,10 +19,12 @@ class PomodoroTimer:
         *,
         config: PomodoroConfig | None = None,
         clock: Callable[[], float] | None = None,
+        auto_derive_from_session: bool = True,
     ) -> None:
         self._habits = habits
         self.config = config or PomodoroConfig()
         self._clock = clock or time.time
+        self.auto_derive_from_session = bool(auto_derive_from_session)
         self._state = "idle"
         self._mode = "focus"
         self._deadline = 0.0
@@ -169,9 +171,10 @@ class PomodoroTimer:
                     delta = 1.0
                 if delta > 0:
                     self._habits.update_goal(self._goal_id, progress_delta=delta)
-        self._habits.record_checkin(
-            date=focus_date, status="checked_in", source="session_derived"
-        )
+        if self.auto_derive_from_session:
+            self._habits.record_checkin(
+                date=focus_date, status="checked_in", source="session_derived"
+            )
 
     def status(self) -> dict[str, Any]:
         now = self._clock()

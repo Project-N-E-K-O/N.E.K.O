@@ -17,13 +17,32 @@ export default function PomodoroPanel(props: PluginSurfaceProps) {
     setStatus(await callPlugin('study_pomodoro_status'));
   }
   async function act(entryId: string) {
-    setStatus(await callPlugin(entryId));
+    try {
+      setStatus(await callPlugin(entryId));
+      setError('');
+    } catch (err) {
+      setError(formatError(err));
+    }
   }
 
   useEffect(() => {
-    refresh().catch((err) => setError(formatError(err)));
-    const id = window.setInterval(() => refresh().catch((err) => setError(formatError(err))), 1000);
-    return () => window.clearInterval(id);
+    let disposed = false;
+    let timeoutId = 0;
+    const tick = async () => {
+      try {
+        await refresh();
+        if (!disposed) setError('');
+      } catch (err) {
+        if (!disposed) setError(formatError(err));
+      } finally {
+        if (!disposed) timeoutId = window.setTimeout(() => void tick(), 1000);
+      }
+    };
+    void tick();
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeoutId);
+    };
   }, []);
 
   return (

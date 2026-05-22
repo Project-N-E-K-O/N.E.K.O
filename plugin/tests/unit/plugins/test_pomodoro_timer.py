@@ -113,8 +113,7 @@ def test_pomodoro_timer_completes_focus_then_short_break_without_counting_break_
         assert updated_goal["progress_amount"] == 1
         assert updated_goal["status"] == "completed"
         assert (
-            habits.list_checkins(date=started["date"])[0]["source"]
-            == "session_derived"
+            habits.list_checkins(date=started["date"])[0]["source"] == "session_derived"
         )
     finally:
         store.close()

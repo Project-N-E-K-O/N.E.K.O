@@ -31,8 +31,8 @@ export async function callPlugin(entryId: string, args: Record<string, unknown> 
       }
       return item.json.data || {};
     }
-    if (['failed', 'canceled', 'timeout'].includes(run.status)) {
-      throw new Error(run.error?.message || run.message || run.status);
+    if (['failed', 'error', 'canceled', 'cancelled', 'timeout', 'timed_out'].includes(run.status)) {
+      throw new Error(run.error?.message || run.error_message || run.message || run.status);
     }
   }
   throw new Error('Plugin call timed out');

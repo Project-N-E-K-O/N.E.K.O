@@ -15,8 +15,23 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
   }
 
   async function createGoal() {
-    await callPlugin('study_goal_create', { target_type: 'subject', subject, target_amount: targetAmount, unit: 'minute' });
-    await refresh();
+    try {
+      await callPlugin('study_goal_create', { target_type: 'subject', subject, target_amount: targetAmount, unit: 'minute' });
+      await refresh();
+      setError('');
+    } catch (err) {
+      setError(formatError(err));
+    }
+  }
+
+  async function deleteGoal(goalId: string) {
+    try {
+      await callPlugin('study_goal_delete', { goal_id: goalId });
+      await refresh();
+      setError('');
+    } catch (err) {
+      setError(formatError(err));
+    }
   }
 
   useEffect(() => {
@@ -45,7 +60,7 @@ export default function DailyGoalEditor(props: PluginSurfaceProps) {
       </section>
       <div className="study-panel__actions">
         {goals.map((goal) => (
-          <button key={goal.id} type="button" onClick={() => callPlugin('study_goal_delete', { goal_id: goal.id }).then(refresh)}>
+          <button key={goal.id} type="button" onClick={() => deleteGoal(goal.id)}>
             {goal.subject || goal.target_type}: {goal.progress_amount}/{goal.target_amount} {goal.unit}
           </button>
         ))}

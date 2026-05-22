@@ -361,20 +361,25 @@ class StudyHabitStore:
             if item is not None
         ]
 
-    def checked_dates(self, *, through_date: str, limit: int = 400) -> set[str]:
+    def checked_dates(self, *, through_date: str, limit: int | None = None) -> set[str]:
+        limit_clause = ""
+        params: list[Any] = [str(through_date)[:10]]
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(max(1, int(limit)))
         with self._store._lock:  # noqa: SLF001
             rows = (
                 self._conn()
                 .execute(
-                    """
+                    f"""
                 SELECT DISTINCT date
                 FROM checkins
                 WHERE date <= ?
                   AND status IN ('checked_in', 'makeup')
                 ORDER BY date DESC
-                LIMIT ?
+                {limit_clause}
                 """,
-                    (str(through_date)[:10], max(1, int(limit))),
+                    tuple(params),
                 )
                 .fetchall()
             )
