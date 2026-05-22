@@ -7,6 +7,7 @@ _EXPECTED_ENTRY_IDS = [
     "galgame_get_status",
     "galgame_install_textractor",
     "galgame_download_rapidocr_models",
+    "galgame_set_rapidocr_lang",
     "galgame_install_dxcam",
     "galgame_get_snapshot",
     "galgame_get_history",

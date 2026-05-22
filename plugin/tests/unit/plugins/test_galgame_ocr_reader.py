@@ -5434,6 +5434,14 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
     legacy_target = local_appdata / "Programs" / "N.E.K.O" / "RapidOCR"
     package_dir = legacy_target / "runtime" / "site-packages" / "rapidocr_onnxruntime"
     package_dir.mkdir(parents=True)
+    models_dir = package_dir / "models"
+    models_dir.mkdir()
+    for model_name in (
+        "ch_PP-OCRv4_det_infer.onnx",
+        "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+        "ch_PP-OCRv4_rec_infer.onnx",
+    ):
+        (models_dir / model_name).write_bytes(b"model")
     (legacy_target / "models").mkdir()
     (legacy_target / "install_state.json").write_text(
         json.dumps({"selected_model": "PP-OCRv5/ch/mobile"}),

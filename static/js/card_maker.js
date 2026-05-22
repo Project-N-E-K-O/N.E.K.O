@@ -26,6 +26,12 @@
 
     // 构图参数
     const composition = { offsetX: 0, offsetY: 0, scale: 100, rotation: 0 };
+    const MODEL_OFFSET_X_MIN = -800;
+    const MODEL_OFFSET_X_MAX = 800;
+    const MODEL_OFFSET_Y_MIN = -1000;
+    const MODEL_OFFSET_Y_MAX = 1000;
+    const MODEL_SCALE_MIN = 50;
+    const MODEL_SCALE_MAX = 600;
 
     // 卡面以 3:4 输出。UI 仍按 CSS 尺寸显示，内部使用更高像素密度避免把模型截图放大后发糊。
     const CARD_BASE_WIDTH = 600;
@@ -33,8 +39,8 @@
     const CARD_OUTPUT_SCALE = 2;       // 保存/导出 1200×1600
     const MODEL_PREVIEW_SOURCE_SCALE = 2; // 实时预览源画布 1200×1600，保证流畅
     const MODEL_EXPORT_SOURCE_SCALE = 3;  // 保存/导出时临时升到 1800×2400
-    const MODEL_PREVIEW_MAX_SOURCE_SCALE = 4;
-    const MODEL_EXPORT_MAX_SOURCE_SCALE = 6;
+    const MODEL_PREVIEW_MAX_SOURCE_SCALE = 5;
+    const MODEL_EXPORT_MAX_SOURCE_SCALE = 8;
     const PREVIEW_MIN_PIXEL_RATIO = 2;
     const PREVIEW_TARGET_FPS = 60;
     const PREVIEW_FRAME_INTERVAL_MS = 1000 / PREVIEW_TARGET_FPS;
@@ -51,15 +57,33 @@
     // 当前激活的标签页: 'model-tab' | 'decor-tab'
     let activeTab = 'model-tab';
 
-    // 可用贴纸列表
-    const STICKER_FILES = [
+    // 可用贴纸列表；带形态数组的条目会在列表和已放置贴纸上提供形态切换。
+    const STICKER_LIBRARY_ITEMS = [
         'add.png', 'angry_cat.png', 'calm_cat.png', 'cat_icon.png',
         'character_icon.png', 'chat_bubble.png', 'chat_icon.png',
         'default_character_card.png', 'emotion_model_icon.png',
         'exclamation.png', 'happy_cat.png', 'icon_systray.ico',
         'paw_ui.png', 'reminder_icon.png', 'sad_cat.png',
-        'send_icon.png', 'send_new_icon.png', 'surprise_cat.png'
+        'send_icon.png', 'send_new_icon.png', 'surprise_cat.png',
+        { file: 'chat_sugar1.png', variants: ['chat_sugar1.png', 'chat_sugar3.png'] },
+        { file: 'chat_hammer1.png', variants: ['chat_hammer1.png', 'chat_hammer2.png'] },
+        'cat_moneny.png',
+        { file: 'cat_claw1.png', variants: ['cat_claw1.png', 'cat_claw2.png'] }
     ];
+    const STICKER_VARIANT_GROUPS = [
+        ['chat_sugar1.png', 'chat_sugar3.png'],
+        ['chat_hammer1.png', 'chat_hammer2.png'],
+        ['cat_claw1.png', 'cat_claw2.png']
+    ].map(group => group.map(file => `/static/icons/${file}`));
+
+    const STICKER_VARIANT_ICON = [
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">',
+        '<polyline points="17 1 21 5 17 9"/>',
+        '<path d="M3 11V9a4 4 0 0 1 4-4h14"/>',
+        '<polyline points="7 23 3 19 7 15"/>',
+        '<path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+        '</svg>'
+    ].join('');
 
     // ====== DOM 缓存 ======
     const $ = (sel) => document.querySelector(sel);
@@ -103,6 +127,7 @@
         showLoading(true);
 
         // 设置标题和按钮（maker 模式与导出模式使用不同文案）
+        syncCompositionControlLimits();
         const titleEl = document.querySelector('.page-title-bar h2');
         if (isMakerMode) {
             document.title = (window.t ? window.t('cardExport.title') : '卡面制作') + ' - Project N.E.K.O.';
@@ -150,15 +175,18 @@
     function bindEvents() {
         // 构图滑块（实时预览由循环驱动，滑块仅更新参数）
         offsetXInput.addEventListener('input', () => {
-            composition.offsetX = Number(offsetXInput.value);
+            composition.offsetX = clamp(Number(offsetXInput.value), MODEL_OFFSET_X_MIN, MODEL_OFFSET_X_MAX);
+            offsetXInput.value = composition.offsetX;
             offsetXVal.textContent = composition.offsetX;
         });
         offsetYInput.addEventListener('input', () => {
-            composition.offsetY = Number(offsetYInput.value);
+            composition.offsetY = clamp(Number(offsetYInput.value), MODEL_OFFSET_Y_MIN, MODEL_OFFSET_Y_MAX);
+            offsetYInput.value = composition.offsetY;
             offsetYVal.textContent = composition.offsetY;
         });
         scaleInput.addEventListener('input', () => {
-            composition.scale = Number(scaleInput.value);
+            composition.scale = clamp(Number(scaleInput.value), MODEL_SCALE_MIN, MODEL_SCALE_MAX);
+            scaleInput.value = composition.scale;
             scaleVal.textContent = composition.scale + '%';
             updatePreviewSourceScaleForZoom();
         });
@@ -216,6 +244,10 @@
             lockRatioBox.addEventListener('click', () => {
                 lockRatioBox.classList.toggle('active');
             });
+        }
+        const switchVariantBtn = $('#sticker-switch-variant-btn');
+        if (switchVariantBtn) {
+            switchVariantBtn.addEventListener('click', () => switchSelectedStickerVariant());
         }
 
         function applyStickerSize(axis, val) {
@@ -914,6 +946,7 @@
 
         previewEl.addEventListener('pointerdown', (e) => {
             if (!isModelLoaded) return;
+            if (e.button !== 0) return;
             if (activeTab !== 'model-tab' && !modelLayerSelected) return;
             dragging = true;
             startX = e.clientX;
@@ -926,8 +959,8 @@
         previewEl.addEventListener('pointermove', (e) => {
             if (!dragging) return;
             const previewScale = $('#card-portrait-area').clientWidth / 450;
-            composition.offsetX = clamp(Math.round(startOX + (e.clientX - startX) / previewScale), -500, 500);
-            composition.offsetY = clamp(Math.round(startOY + (e.clientY - startY) / previewScale), -500, 500);
+            composition.offsetX = clamp(Math.round(startOX + (e.clientX - startX) / previewScale), MODEL_OFFSET_X_MIN, MODEL_OFFSET_X_MAX);
+            composition.offsetY = clamp(Math.round(startOY + (e.clientY - startY) / previewScale), MODEL_OFFSET_Y_MIN, MODEL_OFFSET_Y_MAX);
 
             // 同步滑块
             offsetXInput.value = composition.offsetX;
@@ -945,7 +978,7 @@
             e.preventDefault();
             if (activeTab === 'model-tab' || modelLayerSelected) {
                 const delta = e.deltaY > 0 ? -5 : 5;
-                composition.scale = clamp(composition.scale + delta, 50, 300);
+                composition.scale = clamp(composition.scale + delta, MODEL_SCALE_MIN, MODEL_SCALE_MAX);
                 scaleInput.value = composition.scale;
                 scaleVal.textContent = composition.scale + '%';
                 updatePreviewSourceScaleForZoom();
@@ -959,6 +992,12 @@
                 updateStickerElement(s);
             }
         }, { passive: false });
+
+        previewEl.addEventListener('contextmenu', (e) => {
+            if (activeTab !== 'decor-tab') return;
+            e.preventDefault();
+            cycleStickerSelectionAtPointer(e);
+        });
     }
 
     // ====== 导出 ======
@@ -1186,8 +1225,8 @@
         ctx.fillStyle = '#E8F4F8';
         ctx.fillRect(0, 0, outW, outH);
 
-        // 绘制顺序：模型下方贴纸 → 模型 → 模型上方贴纸
-        // 按 layerOrder 排序确保与预览一致
+        // 绘制顺序：模型下方贴纸 → 模型 → 模型上方贴纸。
+        // layerOrder 是面板从上到下的顺序，canvas 需要从下到上绘制才会与图层面板一致。
         const includeStickers = options.includeStickers !== false;
         const stickerOrder = includeStickers
             ? layerOrder
@@ -1195,8 +1234,8 @@
                 .map(e => stickers.find(s => s.id === e.id))
                 .filter(Boolean)
             : [];
-        const belowStickers = stickerOrder.filter(s => s.layer === 'below');
-        const aboveStickers = stickerOrder.filter(s => s.layer === 'above');
+        const belowStickers = stickerOrder.filter(s => s.layer === 'below').reverse();
+        const aboveStickers = stickerOrder.filter(s => s.layer === 'above').reverse();
 
         try {
             if (belowStickers.length > 0) {
@@ -1239,17 +1278,10 @@
     function initStickerGrid() {
         const grid = $('#sticker-grid');
         if (!grid) return;
-        STICKER_FILES.forEach(file => {
-            const item = document.createElement('div');
-            item.className = 'sticker-item';
-            const img = document.createElement('img');
-            img.src = `/static/icons/${file}`;
-            img.alt = file.replace(/\.\w+$/, '');
-            img.draggable = false;
-            item.appendChild(img);
-            item.addEventListener('click', () => addSticker(`/static/icons/${file}`));
-            grid.appendChild(item);
-        });        // "导入自定义贴纸"按钮
+        STICKER_LIBRARY_ITEMS.forEach(itemConfig => {
+            grid.appendChild(createStickerLibraryItem(itemConfig));
+        });
+        // "导入自定义贴纸"按钮
         const importItem = document.createElement('div');
         importItem.className = 'sticker-item sticker-import-btn';
         importItem.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
@@ -1259,6 +1291,69 @@
 
         // 从 localStorage 恢复已保存的自定义贴纸
         loadCustomStickers();
+    }
+
+    function iconStickerPath(file) {
+        return `/static/icons/${file}`;
+    }
+
+    function getStickerLibraryVariants(itemConfig) {
+        if (typeof itemConfig === 'string') return [iconStickerPath(itemConfig)];
+        const files = Array.isArray(itemConfig?.variants) && itemConfig.variants.length
+            ? itemConfig.variants
+            : [itemConfig?.file].filter(Boolean);
+        return files.map(iconStickerPath);
+    }
+
+    function createStickerLibraryItem(itemConfig) {
+        const variants = getStickerLibraryVariants(itemConfig);
+        let activeVariantIndex = 0;
+        const item = document.createElement('div');
+        item.className = 'sticker-item' + (variants.length > 1 ? ' sticker-variant-item' : '');
+
+        const img = document.createElement('img');
+        img.draggable = false;
+        item.appendChild(img);
+
+        const syncPreview = () => {
+            const src = variants[activeVariantIndex] || variants[0];
+            img.src = src;
+            img.alt = src.split('/').pop().replace(/\.\w+$/, '');
+            item.dataset.stickerSrc = src;
+        };
+        syncPreview();
+
+        item.tabIndex = 0;
+        item.setAttribute('role', 'button');
+        const addActiveVariantSticker = () => addSticker(variants[activeVariantIndex]);
+        item.addEventListener('click', addActiveVariantSticker);
+        item.addEventListener('keydown', (event) => {
+            if (event.target !== item) return;
+            const isEnter = event.key === 'Enter' || event.keyCode === 13;
+            const isSpace = event.key === ' ' || event.keyCode === 32;
+            if (!isEnter && !isSpace) return;
+            if (isSpace) event.preventDefault();
+            addActiveVariantSticker();
+        });
+
+        if (variants.length > 1) {
+            const switchBtn = document.createElement('button');
+            switchBtn.type = 'button';
+            switchBtn.className = 'sticker-variant-toggle-btn';
+            switchBtn.innerHTML = STICKER_VARIANT_ICON;
+            const label = t('cardExport.switchStickerVariant', '切换形态');
+            switchBtn.title = label;
+            switchBtn.setAttribute('aria-label', label);
+            switchBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                activeVariantIndex = (activeVariantIndex + 1) % variants.length;
+                syncPreview();
+            });
+            item.appendChild(switchBtn);
+        }
+
+        return item;
     }
 
     const STICKER_SIZE_LIMIT = 5 * 1024 * 1024; // 5MB
@@ -1442,6 +1537,7 @@
 
         const id = ++stickerIdCounter;
         const sticker = { id, src, x: 50, y: 50, w: 60, h: 60, rotation: 0, layer: 'above', imgEl: null };
+        const layerInsertIndex = getStickerInsertIndexForCurrentLayer();
 
         const el = document.createElement('img');
         el.src = src;
@@ -1453,14 +1549,72 @@
         updateStickerElement(sticker);
         overlay.appendChild(el);
         stickers.push(sticker);
+        layerOrder.splice(layerInsertIndex, 0, { type: 'sticker', id });
 
         // 选中新贴纸
         selectSticker(id);
-        updateStickerOverlayOrder();
+        applyLayerOrderToStickers();
         refreshLayerPanel();
 
         // 贴纸拖拽
         setupStickerDrag(sticker, el);
+    }
+
+    function getStickerInsertIndexForCurrentLayer() {
+        syncLayerOrder();
+        if (modelLayerSelected) {
+            const modelIdx = layerOrder.findIndex(e => e.type === 'model');
+            return modelIdx >= 0 ? modelIdx : 0;
+        }
+        if (selectedStickerId != null) {
+            const selectedIdx = layerOrder.findIndex(e => e.type === 'sticker' && e.id === selectedStickerId);
+            if (selectedIdx >= 0) return selectedIdx;
+        }
+        return 0;
+    }
+
+    function normalizeStickerSrc(src) {
+        if (!src || typeof src !== 'string') return '';
+        try {
+            const url = new URL(src, window.location.origin);
+            if (url.origin === window.location.origin) return url.pathname;
+        } catch (_) {}
+        return src;
+    }
+
+    function getStickerVariantGroup(src) {
+        const normalized = normalizeStickerSrc(src);
+        return STICKER_VARIANT_GROUPS.find(group => group.includes(normalized)) || null;
+    }
+
+    function getNextStickerVariant(src) {
+        const group = getStickerVariantGroup(src);
+        if (!group || group.length < 2) return '';
+        const normalized = normalizeStickerSrc(src);
+        const currentIndex = group.indexOf(normalized);
+        return group[(Math.max(currentIndex, 0) + 1) % group.length];
+    }
+
+    function updateStickerVariantControl(s) {
+        const row = $('#sticker-variant-row');
+        const btn = $('#sticker-switch-variant-btn');
+        if (!row || !btn) return;
+        const canSwitch = !!(s && getNextStickerVariant(s.src));
+        row.style.display = canSwitch ? '' : 'none';
+        btn.disabled = !canSwitch;
+        const label = t('cardExport.switchStickerVariant', '切换形态');
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+    }
+
+    function switchSelectedStickerVariant() {
+        const s = getSelectedSticker();
+        const nextSrc = s ? getNextStickerVariant(s.src) : '';
+        if (!s || !nextSrc) return;
+        s.src = nextSrc;
+        if (s.imgEl) s.imgEl.src = nextSrc;
+        updateStickerVariantControl(s);
+        refreshLayerPanel();
     }
 
     function updateStickerElement(s) {
@@ -1471,7 +1625,25 @@
         el.style.left = `calc(${s.x}% - ${s.w / 2}px)`;
         el.style.top = `calc(${s.y}% - ${s.h / 2}px)`;
         el.style.transform = `rotate(${s.rotation}deg)`;
-        if (s.id === selectedStickerId) updateRotateHandle(s);
+        if (s.id === selectedStickerId) {
+            updateStickerSelectionFrame(s);
+            updateRotateHandle(s);
+        }
+    }
+
+    function updateStickerSelectionFrame(s) {
+        const frame = $('#sticker-selection-frame');
+        if (!frame) return;
+        if (!s || activeTab !== 'decor-tab' || modelLayerSelected) {
+            frame.classList.remove('visible');
+            return;
+        }
+        frame.classList.add('visible');
+        frame.style.width = s.w + 'px';
+        frame.style.height = s.h + 'px';
+        frame.style.left = `calc(${s.x}% - ${s.w / 2}px)`;
+        frame.style.top = `calc(${s.y}% - ${s.h / 2}px)`;
+        frame.style.transform = `rotate(${s.rotation}deg)`;
     }
 
     /** 更新旋转手柄位置 */
@@ -1552,7 +1724,7 @@
     function updateStickerInteractivity() {
         const enabled = (activeTab === 'decor-tab');
         document.querySelectorAll('.sticker-placed').forEach(el => {
-            el.style.pointerEvents = enabled ? 'auto' : 'none';
+            el.style.pointerEvents = (enabled && !modelLayerSelected) ? 'auto' : 'none';
         });
         // 模型模式显示拖拽光标，装饰模式显示默认光标
         const preview = $('#card-preview');
@@ -1562,42 +1734,104 @@
         // 非装饰模式隐藏旋转手柄
         if (!enabled) {
             updateRotateHandle(null);
+            updateStickerSelectionFrame(null);
             modelLayerSelected = false;
             const area = $('#card-portrait-area');
             if (area) area.classList.remove('model-focused');
+        } else if (!modelLayerSelected) {
+            const s = getSelectedSticker();
+            updateStickerSelectionFrame(s);
+            updateRotateHandle(s);
         }
+        updateStickerOverlayOrder();
+    }
+
+    function isPointerInsideStickerSelectionBox(s, clientX, clientY) {
+        const area = $('#card-portrait-area');
+        if (!area || !s) return false;
+        const rect = area.getBoundingClientRect();
+        const centerX = rect.left + (s.x / 100) * rect.width;
+        const centerY = rect.top + (s.y / 100) * rect.height;
+        const dx = clientX - centerX;
+        const dy = clientY - centerY;
+        const rad = s.rotation * Math.PI / 180;
+        const localX = dx * Math.cos(rad) + dy * Math.sin(rad);
+        const localY = -dx * Math.sin(rad) + dy * Math.cos(rad);
+        return Math.abs(localX) <= s.w / 2 && Math.abs(localY) <= s.h / 2;
+    }
+
+    function getStickerDragTarget(hitSticker, event) {
+        const selected = getSelectedSticker();
+        if (
+            selected &&
+            selected.id !== hitSticker.id &&
+            isPointerInsideStickerSelectionBox(selected, event.clientX, event.clientY)
+        ) {
+            return selected;
+        }
+        return hitSticker;
+    }
+
+    function getStickersAtPointer(clientX, clientY) {
+        syncLayerOrder();
+        const ordered = layerOrder
+            .filter(entry => entry.type === 'sticker')
+            .map(entry => stickers.find(s => s.id === entry.id))
+            .filter(Boolean);
+        stickers.forEach(s => {
+            if (!ordered.includes(s)) ordered.push(s);
+        });
+        return ordered.filter(s => isPointerInsideStickerSelectionBox(s, clientX, clientY));
+    }
+
+    function cycleStickerSelectionAtPointer(event) {
+        const candidates = getStickersAtPointer(event.clientX, event.clientY);
+        if (candidates.length === 0) return;
+        const currentIdx = candidates.findIndex(s => s.id === selectedStickerId);
+        const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % candidates.length : 0;
+        selectSticker(candidates[nextIdx].id);
+        refreshLayerPanel();
     }
 
     function setupStickerDrag(sticker, el) {
         let dragging = false;
+        let dragTarget = null;
         let startX, startY, startPctX, startPctY;
 
         el.addEventListener('pointerdown', (e) => {
             if (activeTab !== 'decor-tab') return;
             if (modelLayerSelected) return;
+            if (e.button !== 0) return;
+            dragTarget = getStickerDragTarget(sticker, e);
+            if (dragTarget.id !== selectedStickerId) {
+                selectSticker(dragTarget.id);
+                refreshLayerPanel();
+            }
             e.stopPropagation();
             dragging = true;
             startX = e.clientX;
             startY = e.clientY;
-            startPctX = sticker.x;
-            startPctY = sticker.y;
+            startPctX = dragTarget.x;
+            startPctY = dragTarget.y;
             el.setPointerCapture(e.pointerId);
-            selectSticker(sticker.id);
         });
 
         el.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
+            if (!dragging || !dragTarget) return;
             e.stopPropagation();
             const area = $('#card-portrait-area');
             const rect = area.getBoundingClientRect();
             const dx = (e.clientX - startX) / rect.width * 100;
             const dy = (e.clientY - startY) / rect.height * 100;
-            sticker.x = clamp(startPctX + dx, 0, 100);
-            sticker.y = clamp(startPctY + dy, 0, 100);
-            updateStickerElement(sticker);
+            dragTarget.x = clamp(startPctX + dx, 0, 100);
+            dragTarget.y = clamp(startPctY + dy, 0, 100);
+            updateStickerElement(dragTarget);
         });
 
-        const stop = () => { dragging = false; };
+        const stop = () => {
+            dragging = false;
+            dragTarget = null;
+        };
         el.addEventListener('pointerup', stop);
         el.addEventListener('pointercancel', stop);
     }
@@ -1611,7 +1845,9 @@
         }
         // 更新视觉选中状态
         document.querySelectorAll('.sticker-placed').forEach(el => {
-            el.classList.toggle('selected', Number(el.dataset.stickerId) === id);
+            const isSelected = Number(el.dataset.stickerId) === id;
+            el.classList.toggle('selected', isSelected);
+            el.style.pointerEvents = (activeTab === 'decor-tab' && !modelLayerSelected) ? 'auto' : 'none';
         });
 
         const s = getSelectedSticker();
@@ -1627,11 +1863,16 @@
             if (hv) hv.textContent = s.h + 'px';
             $('#sticker-rotation').value = s.rotation;
             $('#sticker-rotation-val').textContent = s.rotation + '°';
+            updateStickerVariantControl(s);
+            updateStickerSelectionFrame(s);
             updateRotateHandle(s);
         } else if (controls) {
             controls.style.display = 'none';
+            updateStickerVariantControl(null);
+            updateStickerSelectionFrame(null);
             updateRotateHandle(null);
         }
+        updateStickerOverlayOrder();
     }
 
     /**
@@ -1643,14 +1884,14 @@
         const above = $('#sticker-overlay');
         const below = $('#sticker-overlay-below');
         if (!above || !below) return;
-        // 按 layerOrder 顺序排列贴纸到对应容器
+        // layerOrder 是面板从上到下的顺序，DOM 同层叠放要从下到上 append。
         const ordered = layerOrder
             .filter(e => e.type === 'sticker')
             .map(e => stickers.find(s => s.id === e.id))
             .filter(Boolean);
         // 补上不在 layerOrder 中的贴纸（安全兜底）
         stickers.forEach(s => { if (!ordered.includes(s)) ordered.push(s); });
-        ordered.forEach(s => {
+        ordered.slice().reverse().forEach(s => {
             const target = (s.layer === 'below') ? below : above;
             target.appendChild(s.imgEl);
         });
@@ -1660,14 +1901,45 @@
         return stickers.find(s => s.id === selectedStickerId) || null;
     }
 
+    function getStickerSelectionSuccessorId(deletedId) {
+        syncLayerOrder();
+        const deletedIdx = layerOrder.findIndex(e => e.type === 'sticker' && e.id === deletedId);
+        if (deletedIdx >= 0) {
+            for (let i = deletedIdx + 1; i < layerOrder.length; i++) {
+                const entry = layerOrder[i];
+                if (entry.type === 'sticker' && entry.id !== deletedId && stickers.find(s => s.id === entry.id)) {
+                    return entry.id;
+                }
+            }
+            for (let i = deletedIdx - 1; i >= 0; i--) {
+                const entry = layerOrder[i];
+                if (entry.type === 'sticker' && entry.id !== deletedId && stickers.find(s => s.id === entry.id)) {
+                    return entry.id;
+                }
+            }
+        }
+        const fallback = stickers.find(s => s.id !== deletedId);
+        return fallback ? fallback.id : null;
+    }
+
     function removeStickerById(id) {
         const idx = stickers.findIndex(s => s.id === id);
         if (idx === -1) return;
-        stickers[idx].imgEl.remove();
+        const deletingSelectedSticker = selectedStickerId === id;
+        const nextStickerId = deletingSelectedSticker ? getStickerSelectionSuccessorId(id) : null;
+        if (stickers[idx].imgEl) stickers[idx].imgEl.remove();
         stickers.splice(idx, 1);
-        if (selectedStickerId === id) {
-            selectedStickerId = null;
-            selectSticker(null);
+        for (let i = layerOrder.length - 1; i >= 0; i--) {
+            if (layerOrder[i].type === 'sticker' && layerOrder[i].id === id) {
+                layerOrder.splice(i, 1);
+            }
+        }
+        if (deletingSelectedSticker) {
+            if (nextStickerId != null) {
+                selectSticker(nextStickerId);
+            } else {
+                selectModelLayer({ refresh: false });
+            }
         }
         updateStickerOverlayOrder();
         refreshLayerPanel();
@@ -1679,10 +1951,14 @@
     }
 
     function clearAllStickers() {
-        stickers.forEach(s => s.imgEl.remove());
+        stickers.forEach(s => {
+            if (s.imgEl) s.imgEl.remove();
+        });
         stickers.length = 0;
-        selectedStickerId = null;
-        selectSticker(null);
+        for (let i = layerOrder.length - 1; i >= 0; i--) {
+            if (layerOrder[i].type === 'sticker') layerOrder.splice(i, 1);
+        }
+        selectModelLayer({ refresh: false });
         refreshLayerPanel();
     }
 
@@ -1739,6 +2015,21 @@
     function updatePrimaryActionAvailability() {
         if (!exportFullBtn) return;
         exportFullBtn.disabled = primaryActionBusy || isModelLoading || !isModelLoaded;
+    }
+
+    function syncCompositionControlLimits() {
+        if (offsetXInput) {
+            offsetXInput.min = String(MODEL_OFFSET_X_MIN);
+            offsetXInput.max = String(MODEL_OFFSET_X_MAX);
+        }
+        if (offsetYInput) {
+            offsetYInput.min = String(MODEL_OFFSET_Y_MIN);
+            offsetYInput.max = String(MODEL_OFFSET_Y_MAX);
+        }
+        if (scaleInput) {
+            scaleInput.min = String(MODEL_SCALE_MIN);
+            scaleInput.max = String(MODEL_SCALE_MAX);
+        }
     }
 
     function canCloseWhileLoading() {
@@ -1923,11 +2214,10 @@
                 }
             }
         }
-        // 添加不在 layerOrder 中的新贴纸（默认插到模型上方）
-        const modelIdx = layerOrder.findIndex(e => e.type === 'model');
+        // 添加不在 layerOrder 中的新贴纸（安全兜底：默认插到最上层）
         stickers.forEach(s => {
             if (!layerOrder.find(e => e.type === 'sticker' && e.id === s.id)) {
-                layerOrder.splice(modelIdx, 0, { type: 'sticker', id: s.id });
+                layerOrder.splice(0, 0, { type: 'sticker', id: s.id });
             }
         });
     }
@@ -1944,6 +2234,25 @@
         updateStickerOverlayOrder();
     }
 
+    function selectModelLayer(options = {}) {
+        const refresh = options.refresh !== false;
+        modelLayerSelected = true;
+        selectedStickerId = null;
+        document.querySelectorAll('.sticker-placed').forEach(el => {
+            el.classList.remove('selected');
+            el.style.pointerEvents = 'none';
+        });
+        updateRotateHandle(null);
+        updateStickerSelectionFrame(null);
+        updateStickerVariantControl(null);
+        const controls = $('#sticker-controls');
+        if (controls) controls.style.display = 'none';
+        const area = $('#card-portrait-area');
+        if (area) area.classList.add('model-focused');
+        updateStickerOverlayOrder();
+        if (refresh) refreshLayerPanel();
+    }
+
     function createModelLayerItem(orderIdx) {
         const item = document.createElement('div');
         item.className = 'layer-item is-model' + (modelLayerSelected ? ' selected' : '');
@@ -1952,17 +2261,7 @@
         item.innerHTML = `<span class="layer-item-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M6 21v-1a6 6 0 0112 0v1"/></svg></span><span class="layer-item-name">${t('cardExport.modelLayer', '模型')}</span><span class="layer-drag-handle">⠿</span>`;
 
         item.addEventListener('click', () => {
-            modelLayerSelected = true;
-            selectedStickerId = null;
-            // 取消贴纸选中状态
-            document.querySelectorAll('.sticker-placed').forEach(el => el.classList.remove('selected'));
-            updateRotateHandle(null);
-            const controls = $('#sticker-controls');
-            if (controls) controls.style.display = 'none';
-            // 标记模型聚焦，禁用贴纸交互
-            const area = $('#card-portrait-area');
-            if (area) area.classList.add('model-focused');
-            refreshLayerPanel();
+            selectModelLayer();
         });
 
         return item;

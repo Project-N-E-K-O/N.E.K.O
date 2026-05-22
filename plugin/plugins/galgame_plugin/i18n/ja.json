@@ -7,6 +7,8 @@
   "entries.galgame_install_textractor.description": "TextractorCLI.exe を検出・ダウンロード・インストールし、ギャルゲームプラグインのブリッジとメモリリーダー状態を更新する。",
   "entries.galgame_download_rapidocr_models.name": "RapidOCR モデルをダウンロード",
   "entries.galgame_download_rapidocr_models.description": "現在の RapidOCR 言語と OCR バージョンに不足しているモデルファイルをプラグインのモデルキャッシュへダウンロードする。",
+  "entries.galgame_set_rapidocr_lang.name": "RapidOCR 言語を設定",
+  "entries.galgame_set_rapidocr_lang.description": "RapidOCR のテキスト認識言語モデルと OCR バージョンを切り替える。手動で言語を変更すると自動検出は無効になる。",
   "entries.galgame_install_dxcam.name": "DXcam をインストール",
   "entries.galgame_install_dxcam.description": "DXcam スクリーンショット依存を検出・インストールし、ギャルゲームプラグインの OCR キャプチャバックエンド状態を更新する。",
   "entries.galgame_get_snapshot.name": "ギャルゲームスナップショットを取得",

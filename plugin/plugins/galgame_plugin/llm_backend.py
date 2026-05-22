@@ -335,7 +335,7 @@ class GalgameLLMBackend:
             {
                 "role": "user",
                 "content": (
-                    f"JSON 修正请求 {attempt}/{max_attempts}, operation={operation}.\n"
+                    f"JSON correction attempt {attempt}/{max_attempts}, operation={operation}.\n"
                     f"Parse error: {bounded_error}\n"
                     "Your last response was not a valid JSON object. "
                     "Reply with ONLY a valid JSON object — "

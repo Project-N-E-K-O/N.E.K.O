@@ -330,13 +330,21 @@ class MMDInteraction {
                     : false;
 
                 if (!displaySwitched) {
-                    // 拖拽结束后：若超出屏幕范围，执行回弹；否则保存当前位置。
-                    const snapped = await this._snapModelIntoScreen({ animate: true });
-                    if (!snapped) {
+                    const isDesktopPetWindow = Boolean(
+                        window.electronScreen && typeof window.electronScreen.getCurrentDisplay === 'function'
+                    );
+                    if (isDesktopPetWindow) {
+                        // 桌宠窗口需要边缘回弹，避免模型被拖出透明窗口后找不回来。
+                        const snapped = await this._snapModelIntoScreen({ animate: true });
+                        if (!snapped) {
+                            this._savePositionAfterInteraction();
+                        } else if (window.NekoAvatarMultiScreenDragHint &&
+                            typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
+                            window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('mmd');
+                        }
+                    } else {
+                        // 网页端保留普通保存，不做贴边回弹。
                         this._savePositionAfterInteraction();
-                    } else if (window.NekoAvatarMultiScreenDragHint &&
-                        typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
-                        window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('mmd');
                     }
                 }
             }

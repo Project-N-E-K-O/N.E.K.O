@@ -209,6 +209,41 @@ async def test_imported_user_profiles_survive_empty_preset_placeholder(
 
 
 @pytest.mark.asyncio
+async def test_import_character_data_returns_err_when_import_raises(tmp_path) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.bound_game_id = "custom_game"
+    source = tmp_path / "import.json"
+    source.write_text("{}", encoding="utf-8")
+
+    class _Manager:
+        def import_user_profiles(self, *_args):
+            raise OSError("disk failed")
+
+    plugin._character_profile_manager = _Manager()
+
+    result = await plugin.galgame_import_character_data(file_path=str(source))
+
+    assert result.is_err()
+    assert "disk failed" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_fixed_character_mode_rejects_stale_cached_profiles(tmp_path) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._character_profile_manager = CharacterProfileManager(data_dir=tmp_path)
+    plugin._state.character_profiles = {"旧角色": {"identity": "stale"}}
+
+    result = await plugin.galgame_set_character_mode(
+        mode="fixed",
+        character_name="旧角色",
+    )
+
+    assert result.is_err()
+    assert plugin._state.character_mode == "off"
+    assert plugin._state.character_fixed_name == ""
+
+
+@pytest.mark.asyncio
 async def test_available_game_ids_do_not_fallback_match_profiles() -> None:
     plugin = _plugin_with_character_profiles()
     plugin._state.available_game_ids = ["missing_game"]

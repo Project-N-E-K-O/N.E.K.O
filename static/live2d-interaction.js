@@ -4,7 +4,7 @@
 
 // ===== 自动吸附功能配置 =====
 const SNAP_CONFIG = {
-    // 兼容旧配置入口；当前拖拽回弹按 margin 触发，不再等模型绝大部分出屏
+    // 吸附阈值：模型在屏幕内剩余的像素小于此值时触发吸附（即模型绝大部分超出屏幕）
     threshold: 200,
     // 吸附边距：吸附后距离屏幕边缘的最小距离
     margin: 5,
@@ -47,7 +47,7 @@ const EasingFunctions = {
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
  * @param {Object} options - 可选参数
- * @param {boolean} options.afterDisplaySwitch - 兼容旧调用；当前主屏/副屏统一按安全边距吸附
+ * @param {boolean} options.afterDisplaySwitch - 是否为屏幕切换后的吸附（使用更宽松的条件：超出即吸附）
  * @param {number} options.threshold - 可选吸附阈值；初始摆放等旧调用可传入更宽松阈值
  * @returns {Object|null} 返回吸附信息，如果不需要吸附则返回 null
  */
@@ -95,16 +95,34 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         let overflowTop = screenTop - modelTop;          // 上边超出
         let overflowBottom = modelBottom - screenBottom; // 下边超出
 
+        const threshold = customThreshold ?? SNAP_CONFIG.threshold;
         const margin = SNAP_CONFIG.margin;
-        const snapThreshold = typeof customThreshold === 'number'
-            ? Math.max(0, customThreshold)
-            : margin;
+        const isDesktopPetWindow = Boolean(
+            window.electronScreen && typeof window.electronScreen.getCurrentDisplay === 'function'
+        );
 
-        // 与普通窗口一致：主屏/副屏都按安全边距回弹，而不是等模型几乎消失才吸附。
-        const needsSnapLeft = overflowLeft > snapThreshold;
-        const needsSnapRight = overflowRight > snapThreshold;
-        const needsSnapTop = overflowTop > snapThreshold;
-        const needsSnapBottom = overflowBottom > snapThreshold;
+        // 计算模型在屏幕内剩余的像素数
+        const visibleLeft = Math.max(modelLeft, screenLeft);
+        const visibleRight = Math.min(modelRight, screenRight);
+        const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+        const visibleTop = Math.max(modelTop, screenTop);
+        const visibleBottom = Math.min(modelBottom, screenBottom);
+        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+
+        let needsSnapLeft, needsSnapRight, needsSnapTop, needsSnapBottom;
+        if (afterDisplaySwitch || isDesktopPetWindow) {
+            needsSnapLeft = overflowLeft > margin;
+            needsSnapRight = overflowRight > margin;
+            needsSnapTop = overflowTop > margin;
+            needsSnapBottom = overflowBottom > margin;
+        } else {
+            const needsSnapHorizontal = visibleWidth < threshold && (overflowLeft > 0 || overflowRight > 0);
+            const needsSnapVertical = visibleHeight < threshold && (overflowTop > 0 || overflowBottom > 0);
+            needsSnapLeft = overflowLeft > 0 && needsSnapHorizontal;
+            needsSnapRight = overflowRight > 0 && needsSnapHorizontal;
+            needsSnapTop = overflowTop > 0 && needsSnapVertical;
+            needsSnapBottom = overflowBottom > 0 && needsSnapVertical;
+        }
 
         if (!needsSnapLeft && !needsSnapRight && !needsSnapTop && !needsSnapBottom) {
             return null; // 不需要吸附
