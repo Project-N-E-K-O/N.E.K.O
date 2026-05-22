@@ -27,7 +27,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from plugin.logging_config import get_logger
 from plugin.server.application.install_source import (
@@ -78,6 +78,23 @@ _OAUTH_TOKEN_FILE = _NEKO_STATE_DIR / "market_auth.json"
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+
+
+def _normalize_required_sha256(value: str | None) -> str:
+    """Normalize Market package hash; Market installs must never skip it."""
+
+    raw = (value or "").strip().lower()
+    if (
+        not raw
+        or raw == "0" * 64
+        or len(raw) != 64
+        or not all(c in "0123456789abcdef" for c in raw)
+    ):
+        raise ValueError(
+            "package_sha256 is required for Market install and must be a "
+            "64-character lowercase/uppercase hex SHA256 digest"
+        )
+    return raw
 
 
 def get_bridge_token() -> str:
@@ -186,9 +203,9 @@ class MarketInstallRequest(BaseModel):
     语义并把 Market 已知的发布证据透传到 lock entry 上。
     """
     package_url: str = Field(..., description="插件包下载 URL")
-    package_sha256: str | None = Field(
-        default=None,
-        description="包文件 SHA256（可选）。为空或全 0 时跳过校验（仅用于 Market 尚未生成 hash 的场景）。",
+    package_sha256: str = Field(
+        ...,
+        description="包文件 SHA256。Market 一键安装必须提供合法 64 位 hex，客户端会强制校验。",
     )
     payload_hash: str | None = Field(None, description="可选的 payload hash 二次校验")
     plugin_id: str | None = Field(None, description="Market 侧的插件标识")
@@ -218,6 +235,11 @@ class MarketInstallRequest(BaseModel):
     )
     on_conflict: str = Field(default="rename", pattern=r"^(rename|fail)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
+
+    @field_validator("package_sha256", mode="before")
+    @classmethod
+    def _validate_package_sha256(cls, value: object) -> str:
+        return _normalize_required_sha256(str(value) if value is not None else None)
 
 
 class MarketInstallResponse(BaseModel):
@@ -1373,22 +1395,10 @@ def _verify_sha256_file(
     path: Path,
     expected_hash: str | None,
     task: dict[str, Any],
-) -> Literal["passed", "skipped", "mismatch"]:
+) -> Literal["passed", "mismatch"]:
     """Verify sha256 from a downloaded file; raise ValueError on mismatch."""
 
-    raw = (expected_hash or "").strip().lower()
-    skip = (
-        not raw
-        or raw == "0" * 64
-        or len(raw) != 64
-        or not all(c in "0123456789abcdef" for c in raw)
-    )
-    if skip:
-        logger.warning(
-            "Market install skipping SHA256 verification (no hash provided)"
-        )
-        task["message"] = "跳过 SHA256 校验（Market 未提供）"
-        return "skipped"
+    raw = _normalize_required_sha256(expected_hash)
 
     _set_task_stage(
         task,
@@ -1414,25 +1424,13 @@ def _verify_sha256(
     content: bytes,
     expected_hash: str | None,
     task: dict[str, Any],
-) -> Literal["passed", "skipped", "mismatch"]:
-    """Verify sha256 if present; raise ValueError on mismatch.
+) -> Literal["passed", "mismatch"]:
+    """Verify sha256; raise ValueError on missing, invalid, or mismatch.
 
     Returns the structured-log status string for ``log_ctx``.
     """
 
-    raw = (expected_hash or "").strip().lower()
-    skip = (
-        not raw
-        or raw == "0" * 64
-        or len(raw) != 64
-        or not all(c in "0123456789abcdef" for c in raw)
-    )
-    if skip:
-        logger.warning(
-            "Market install skipping SHA256 verification (no hash provided)"
-        )
-        task["message"] = "跳过 SHA256 校验（Market 未提供）"
-        return "skipped"
+    raw = _normalize_required_sha256(expected_hash)
 
     _set_task_stage(
         task,

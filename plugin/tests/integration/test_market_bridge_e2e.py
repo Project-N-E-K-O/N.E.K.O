@@ -24,6 +24,7 @@ import http.server
 import io
 import json
 import socket
+import shutil
 import threading
 import time
 import zipfile
@@ -42,6 +43,12 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.install_source.scanner import (
     PluginDirectoryScanner,
+)
+from plugin.neko_plugin_cli.public import build_plugin
+
+
+FIXTURE_PLUGINS_ROOT = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
 )
 
 
@@ -183,6 +190,11 @@ def bridge_e2e_env(
     monkeypatch.setattr(plugin_cli_service, "_INSTALL_PROFILES_ROOT", profiles_root)
     monkeypatch.setattr(plugin_cli_service, "_TARGET_ROOT", packages_root)
     monkeypatch.setattr(market_bridge_module, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_OAUTH_TOKEN_FILE",
+        tmp_path / "market_auth.json",
+    )
 
     # Seed an ISM rooted in tmp_path and publish it as the global singleton
     # so PluginCliService.upload_and_install can pick it up.
@@ -218,6 +230,7 @@ def bridge_e2e_env(
             "builtin_root": builtin_root,
             "packages_root": packages_root,
             "lock_path": lock_path,
+            "oauth_token_file": tmp_path / "market_auth.json",
             "manager": mgr,
             "service": plugin_cli_pkg,
         }
@@ -390,6 +403,229 @@ async def test_installed_endpoint_projects_latest_install_source(
 
 
 @pytest.mark.asyncio
+async def test_built_market_package_install_surfaces_in_plugin_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """Build package → Market download → bridge install → plugin list source."""
+
+    plugin_id = "simple_plugin"
+    version = "0.1.0"
+    source_dir = tmp_path / "market_source" / plugin_id
+    package_path = tmp_path / "market_packages" / f"{plugin_id}.neko-plugin"
+    package_path.parent.mkdir(parents=True)
+    shutil.copytree(FIXTURE_PLUGINS_ROOT / plugin_id, source_dir)
+
+    build_result = build_plugin(source_dir, package_path)
+    package_bytes = package_path.read_bytes()
+    expected_sha256 = hashlib.sha256(package_bytes).hexdigest()
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    user_root: Path = bridge_e2e_env["user_root"]
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-{version}.neko-plugin", content=package_bytes,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": expected_sha256,
+                "payload_hash": build_result.payload_hash,
+                "plugin_id": plugin_id,
+                "version": version,
+                "channel": "stable",
+                "published_at": "2026-05-21T08:00:00.000000Z",
+                "mode": "install",
+                "on_conflict": "rename",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        task_id = resp.json()["task_id"]
+
+        deadline = time.monotonic() + 30
+        final_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            assert poll.status_code == 200, poll.text
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                final_status = body
+                break
+            await asyncio.sleep(0.05)
+
+    assert final_status is not None, "task did not reach terminal state"
+    assert final_status["status"] == "completed", final_status
+    installed_toml = user_root / plugin_id / "plugin.toml"
+    assert installed_toml.is_file()
+
+    from plugin.server.application.plugins import query_service as query_module
+
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugins_snapshot_cached",
+        lambda timeout=2.0: {
+            plugin_id: {
+                "id": plugin_id,
+                "name": "Simple Plugin",
+                "description": "Minimal fixture plugin.",
+                "version": version,
+                "config_path": str(installed_toml),
+            }
+        },
+    )
+    monkeypatch.setattr(
+        query_module.state,
+        "get_plugin_hosts_snapshot_cached",
+        lambda timeout=2.0: {},
+    )
+    monkeypatch.setattr(
+        query_module.state,
+        "get_event_handlers_snapshot_cached",
+        lambda timeout=2.0: {},
+    )
+
+    [plugin_card] = query_module._build_plugin_list_sync("en")
+    install_source = plugin_card["install_source"]
+    assert install_source["source"] == "market"
+    assert install_source["reason"] == "user_requested"
+    assert install_source["source_detail"]["plugin_market_id"] == plugin_id
+    assert install_source["source_detail"]["version"] == version
+    assert install_source["source_detail"]["package_sha256"] == expected_sha256
+    assert install_source["source_detail"]["payload_hash"] == build_result.payload_hash
+
+
+@pytest.mark.asyncio
+async def test_authenticated_market_install_reports_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """Successful install reports Market DB id + local plugin id."""
+
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    reports: list[dict[str, Any]] = []
+    real_async_client = market_bridge_module.httpx.AsyncClient
+
+    class _RecordingAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self._delegate = real_async_client(*args, **kwargs)
+
+        async def __aenter__(self) -> "_RecordingAsyncClient":
+            await self._delegate.__aenter__()
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            await self._delegate.__aexit__(*args)
+
+        def stream(self, *args: Any, **kwargs: Any) -> Any:
+            return self._delegate.stream(*args, **kwargs)
+
+        async def post(
+            self,
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            json: dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> httpx.Response:
+            if url == "https://market.test/api/v1/me/installs":
+                reports.append({"headers": headers or {}, "json": json or {}})
+                return httpx.Response(
+                    200,
+                    json={"ok": True},
+                    request=httpx.Request("POST", url),
+                )
+            return await self._delegate.post(
+                url,
+                headers=headers,
+                json=json,
+                **kwargs,
+            )
+
+    monkeypatch.setattr(market_bridge_module, "MARKET_URL", "https://market.test")
+    monkeypatch.setattr(
+        market_bridge_module.httpx,
+        "AsyncClient",
+        _RecordingAsyncClient,
+    )
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "market-access-token",
+                "expires_at": time.time() + 3600,
+                "market_url": "https://market.test",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    local_plugin_id = "reported_plugin"
+    version = "2.5.0"
+    zip_bytes, payload_hash = _build_neko_plugin_zip(
+        plugin_id=local_plugin_id,
+        version=version,
+    )
+    expected_sha256 = hashlib.sha256(zip_bytes).hexdigest()
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+
+    with _serve_bytes(
+        filename=f"{local_plugin_id}-{version}.neko-plugin",
+        content=zip_bytes,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": expected_sha256,
+                "payload_hash": payload_hash,
+                "plugin_id": "42",
+                "expected_plugin_toml_id": local_plugin_id,
+                "version": version,
+                "channel": "stable",
+                "published_at": "2026-05-21T08:30:00.000000Z",
+                "mode": "install",
+                "on_conflict": "rename",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        task_id = resp.json()["task_id"]
+
+        deadline = time.monotonic() + 30
+        final_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            assert poll.status_code == 200, poll.text
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                final_status = body
+                break
+            await asyncio.sleep(0.05)
+
+    assert final_status is not None, "task did not reach terminal state"
+    assert final_status["status"] == "completed", final_status
+    assert len(reports) == 1
+
+    report = reports[0]
+    assert report["headers"]["Authorization"] == "Bearer market-access-token"
+    assert report["json"] == {
+        "plugin_id": 42,
+        "version": version,
+        "channel": "stable",
+        "package_sha256": expected_sha256,
+        "payload_hash": payload_hash,
+        "installed_plugin_id": local_plugin_id,
+        "client_id": "neko-desktop",
+    }
+
+
+@pytest.mark.asyncio
 async def test_install_rejects_sha256_mismatch(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
@@ -455,6 +691,31 @@ async def test_install_rejects_sha256_mismatch(
     # And the unpacked dir must have been cleaned up.
     assert not (user_root / plugin_id).exists(), \
         "failed install left unpacked directory"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("package_sha256", [None, "", "0" * 64, "not-a-sha256"])
+async def test_install_requires_valid_sha256_before_creating_task(
+    bridge_e2e_env: dict[str, Any],
+    package_sha256: str | None,
+) -> None:
+    """Market installs require a real package hash before any download starts."""
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    body: dict[str, Any] = {
+        "package_url": "https://example.invalid/plugin.neko-plugin",
+        "plugin_id": "missing_hash_plugin",
+        "version": "0.0.1",
+        "channel": "stable",
+        "mode": "install",
+    }
+    if package_sha256 is not None:
+        body["package_sha256"] = package_sha256
+
+    resp = await client.post(f"/market/install?token={token}", json=body)
+
+    assert resp.status_code == 422, resp.text
 
 
 @pytest.mark.asyncio
