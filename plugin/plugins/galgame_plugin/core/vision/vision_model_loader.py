@@ -38,11 +38,15 @@ class VisionModelLoader:
         if ort is None:
             return []
         available = list(ort.get_available_providers())
-        providers: list[str] = []
-        for preferred in ("DmlExecutionProvider", "CUDAExecutionProvider"):
-            if preferred in available:
-                providers.append(preferred)
-                break
+        accelerator = next(
+            (
+                preferred
+                for preferred in ("DmlExecutionProvider", "CUDAExecutionProvider")
+                if preferred in available
+            ),
+            None,
+        )
+        providers: list[str] = [accelerator] if accelerator else []
         if "CPUExecutionProvider" in available:
             providers.append("CPUExecutionProvider")
         return providers or ["CPUExecutionProvider"]

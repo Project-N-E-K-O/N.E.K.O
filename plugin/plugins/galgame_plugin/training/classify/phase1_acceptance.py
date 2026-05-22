@@ -95,6 +95,13 @@ class OnnxScreenClassifier:
         logits = np.asarray(output, dtype=np.float32)
         if logits.ndim == 2:
             logits = logits[0]
+        if logits.ndim != 1 or logits.size <= 0:
+            raise ValueError(f"invalid_logits_shape: {tuple(logits.shape)}")
+        if logits.size != len(self.labels):
+            raise ValueError(
+                "logits_label_mismatch: "
+                f"shape={tuple(logits.shape)}, logits={logits.size}, labels={len(self.labels)}"
+            )
         scores = softmax(logits)
         top_index = int(np.argmax(scores))
         label = self.labels[top_index]
@@ -347,12 +354,13 @@ def run_changed_line_coverage(
     repo: Path,
     source_paths: list[str],
     pytest_args: list[str],
+    base_ref: str | None = None,
 ) -> dict[str, Any]:
     try:
         import pytest
     except ImportError:
         return {"status": "pytest_unavailable"}
-    raw_changed_lines = _changed_lines(repo, source_paths)
+    raw_changed_lines = _changed_lines(repo, source_paths, base_ref=base_ref)
     changed_lines: dict[str, set[int]] = {}
     ignored_lines: dict[str, list[int]] = {}
     for rel_path, lines in raw_changed_lines.items():
@@ -487,6 +495,7 @@ def run_coverage(args: argparse.Namespace) -> dict[str, Any]:
         repo=repo,
         source_paths=list(args.coverage_source),
         pytest_args=list(args.coverage_pytest_args),
+        base_ref=str(args.coverage_base_ref),
     )
     payload = {
         "report_name": "phase1_changed_line_coverage_v1",
@@ -530,6 +539,14 @@ def build_parser() -> argparse.ArgumentParser:
     coverage = subparsers.add_parser("coverage")
     coverage.add_argument("--repo", default=".")
     coverage.add_argument("--output", default=f"{DEFAULT_MODEL_DIR}/phase1_coverage_v1.json")
+    coverage.add_argument(
+        "--coverage-base-ref",
+        default=os.environ.get("GALGAME_PHASE1_COVERAGE_BASE_REF", "origin/main"),
+        help=(
+            "Git base ref or explicit diff range for changed-line coverage "
+            "(default: origin/main via merge-base)."
+        ),
+    )
     coverage.add_argument(
         "--coverage-source",
         nargs="+",
@@ -625,9 +642,15 @@ def _stage_confusion(records: list[Phase1PredictionRecord]) -> dict[str, Any]:
     }
 
 
-def _changed_lines(repo: Path, source_paths: list[str]) -> dict[str, set[int]]:
+def _changed_lines(
+    repo: Path,
+    source_paths: list[str],
+    *,
+    base_ref: str | None = None,
+) -> dict[str, set[int]]:
+    diff_ref = _resolve_changed_line_diff_ref(repo, base_ref)
     completed = subprocess.run(
-        ["git", "diff", "-U0", "--", *source_paths],
+        ["git", "diff", "-U0", diff_ref, "--", *source_paths],
         cwd=repo,
         text=True,
         stdout=subprocess.PIPE,
@@ -656,6 +679,28 @@ def _changed_lines(repo: Path, source_paths: list[str]) -> dict[str, set[int]]:
             continue
         changed.setdefault(current_path, set()).update(range(start, start + count))
     return changed
+
+
+def _resolve_changed_line_diff_ref(repo: Path, base_ref: str | None) -> str:
+    configured = str(
+        base_ref or os.environ.get("GALGAME_PHASE1_COVERAGE_BASE_REF") or "origin/main"
+    ).strip()
+    if not configured:
+        configured = "origin/main"
+    if ".." in configured:
+        return configured
+    completed = subprocess.run(
+        ["git", "merge-base", configured, "HEAD"],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    merge_base = completed.stdout.strip()
+    if completed.returncode == 0 and merge_base:
+        return f"{merge_base}..HEAD"
+    return f"{configured}..HEAD"
 
 
 def _function_executable_lines(path: Path) -> set[int]:

@@ -6,6 +6,7 @@ tests/api_keys.json
 tests/test_inputs/
 
 # scripts/check_i18n.py 鍋跺皵浼氳浜?redirect 鍒拌繖閲岋紝鍒啀娆″叆搴?/i18n_check_output.txt
+/i18n_check_output.txt
 
 # 蹇界暐鏃ュ織鏂囦欢
 *.log
@@ -115,7 +116,7 @@ static/neko/*
 static/kemomimi/*
 static/yui/*
 static/react/neko-chat/*
-鎵撳寘璇存槑.txt
+*说明.txt
 runtime_hook_inflect.py
 backup/
 build*
@@ -138,6 +139,7 @@ local_server/cosyvoice_server/*wav
 
 
 # 娴嬭瘯鎶ュ憡涓庣粨鏋?tests/reports/
+tests/reports/
 
 # Testbench 杩愯鏃舵暟鎹洰褰曪紙娌欑洅/鏃ュ織/瀛樻。/autosave/瀵煎嚭/鐢ㄦ埛鑷畾涔?schema 鍜?dialog template锛?# 浠ｇ爜鐩綍 tests/testbench/ 浠嶅叆搴? 鏁版嵁鐩綍 tests/testbench_data/ 鍏ㄩ儴蹇界暐
 tests/testbench_data/
@@ -159,6 +161,7 @@ plugin/plugins/galgame_plugin/models/vision/screen_classifier/live_validation_v1
 plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json
 
 # 鎻掍欢鏈嶅姟鍣ㄨ繍琛屾椂鐢熸垚鐨勫嚟璇佹枃浠?plugin/.plugin_server_admin_code
+plugin/.plugin_server_admin_code
 
 # 鎻掍欢鍖呰В鍖呭悗鎻愬彇鍑虹殑 profile 鐩綍锛堣繍琛?瀵煎叆浜х墿锛屼笉鍏ュ簱锛?plugin/.neko-package-profiles/
 

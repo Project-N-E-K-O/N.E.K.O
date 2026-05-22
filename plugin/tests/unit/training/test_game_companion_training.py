@@ -52,7 +52,7 @@ def test_game_screen_dataset_warns_when_image_cannot_be_loaded(tmp_path, caplog)
     )
     dataset = GameScreenDataset(tmp_path, 11, split="train", augment=False)
 
-    with caplog.at_level("WARNING"), pytest.raises(Exception):
+    with caplog.at_level("WARNING"), pytest.raises(OSError):
         dataset[0]
 
     assert "failed to load training image" in caplog.text

@@ -1,7 +1,13 @@
 ﻿from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
+from PIL import Image
+import pytest
+
+from plugin.plugins.galgame_plugin.core.vision.labels import vision_label_to_screen_type
 from plugin.plugins.galgame_plugin.training.classify import phase1_acceptance
 from plugin.plugins.galgame_plugin.training.classify.phase1_acceptance import (
     Phase1PredictionRecord,
@@ -10,7 +16,6 @@ from plugin.plugins.galgame_plugin.training.classify.phase1_acceptance import (
     load_split_samples,
     summarize_predictions,
 )
-from plugin.plugins.galgame_plugin.core.vision.labels import vision_label_to_screen_type
 
 
 def test_label_to_stage_maps_galgame_labels_to_runtime_stages() -> None:
@@ -112,6 +117,66 @@ def test_summarize_predictions_reports_accuracy_agreement_and_fallback() -> None
     assert summary["cnn_vs_prototype_stage_agreement"] == 0.5
     assert summary["cnn_high_confidence_rate"] == 0.5
     assert summary["cnn_primary_with_prototype_fallback_stage_accuracy"] == 1.0
+
+
+def test_onnx_screen_classifier_rejects_logits_label_mismatch(tmp_path) -> None:
+    class _FakeSession:
+        def run(self, _outputs, _feed):
+            return [np.asarray([[1.0, 2.0]], dtype=np.float32)]
+
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (8, 8), "black").save(image_path)
+    classifier = object.__new__(phase1_acceptance.OnnxScreenClassifier)
+    classifier.labels = ("dialogue",)
+    classifier.input_size = (8, 8)
+    classifier.input_name = "input"
+    classifier.threshold = 0.75
+    classifier.session = _FakeSession()
+
+    with pytest.raises(ValueError, match="logits_label_mismatch"):
+        classifier.classify(image_path)
+
+
+def test_changed_lines_uses_merge_base_diff(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        commands.append(list(cmd))
+        if cmd[:3] == ["git", "merge-base", "origin/main"]:
+            return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="+++ b/pkg/foo.py\n@@ -0,0 +10,2 @@\n+one\n+two\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(phase1_acceptance.subprocess, "run", fake_run)
+
+    assert phase1_acceptance._changed_lines(
+        Path("."),
+        ["pkg/foo.py"],
+        base_ref="origin/main",
+    ) == {"pkg/foo.py": {10, 11}}
+    assert commands[0] == ["git", "merge-base", "origin/main", "HEAD"]
+    assert commands[1][:4] == ["git", "diff", "-U0", "abc123..HEAD"]
+
+
+def test_changed_lines_falls_back_to_base_ref_range(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        del kwargs
+        commands.append(list(cmd))
+        if cmd[:2] == ["git", "merge-base"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="shallow clone")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(phase1_acceptance.subprocess, "run", fake_run)
+
+    phase1_acceptance._changed_lines(Path("."), ["pkg/foo.py"], base_ref="origin/main")
+
+    assert commands[1][:4] == ["git", "diff", "-U0", "origin/main..HEAD"]
 
 
 def test_main_returns_coverage_pytest_failure_exit_code(monkeypatch, capsys) -> None:
