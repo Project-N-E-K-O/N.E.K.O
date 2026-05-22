@@ -2,6 +2,9 @@ import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
 type JsonObject = Record<string, unknown>;
 
+const POLL_INTERVAL_MS = 350;
+const POLL_TIMEOUT_MS = 30000;
+
 type RunCreated = {
   id?: string;
   run_id?: string;
@@ -55,7 +58,8 @@ export async function callPlugin<T = JsonObject>(
   if (!runId) {
     throw new Error('Run id missing');
   }
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
     await waitForPoll(signal);
     const run = await readJsonResponse<RunStatus>(await fetch(`/runs/${runId}`, { signal }), 'Run poll');
     if (run.status === 'succeeded') {
@@ -70,7 +74,7 @@ export async function callPlugin<T = JsonObject>(
       if (item.json.success === false || item.json.error) {
         throw new Error(item.json.error?.message || item.json.message || 'Plugin call failed');
       }
-      return (item.json.data || {}) as T;
+      return (item.json.data ?? {}) as T;
     }
     if (['failed', 'canceled', 'timeout'].includes(String(run.status))) {
       throw new Error(run.error?.message || run.message || String(run.status));
@@ -97,7 +101,7 @@ function waitForPoll(signal?: AbortSignal): Promise<void> {
     return Promise.reject(new Error('Plugin call aborted'));
   }
   return new Promise((resolve, reject) => {
-    const timeoutId = window.setTimeout(resolve, 350);
+    const timeoutId = window.setTimeout(resolve, POLL_INTERVAL_MS);
     signal?.addEventListener('abort', () => {
       window.clearTimeout(timeoutId);
       reject(new Error('Plugin call aborted'));

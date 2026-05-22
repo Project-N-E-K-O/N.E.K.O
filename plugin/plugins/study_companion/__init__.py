@@ -95,6 +95,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._store,
             retention_target=self._cfg.fsrs_retention_target,
         )
+        self._knowledge_tracker.set_memory_deck_summary_provider(
+            self._memory_deck_store.status_summary
+        )
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -111,6 +114,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._memory_deck_store = MemoryDeckStore(
                 self._store,
                 retention_target=self._cfg.fsrs_retention_target,
+            )
+            self._knowledge_tracker.set_memory_deck_summary_provider(
+                self._memory_deck_store.status_summary
             )
             restored = await asyncio.to_thread(
                 self._store.load_state, build_initial_state(mode=self._cfg.mode)

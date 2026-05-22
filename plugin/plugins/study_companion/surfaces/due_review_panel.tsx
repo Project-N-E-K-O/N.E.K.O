@@ -24,6 +24,15 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
     setReviews(Array.isArray(payload.due_reviews) ? payload.due_reviews : []);
   }
 
+  async function handleRefresh() {
+    try {
+      await refresh();
+      setStatus('');
+    } catch (error) {
+      setStatus(errorMessage(error));
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     refresh(controller.signal).catch((error) => {
@@ -43,7 +52,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
         </div>
       </header>
       <div className="study-panel__actions">
-        <button type="button" onClick={() => refresh()}>{text(props, 'ui.button.refresh', 'Refresh')}</button>
+        <button type="button" onClick={handleRefresh}>{text(props, 'ui.button.refresh', 'Refresh')}</button>
       </div>
       <pre>{reviews.map((review) => {
         const r = Number.isFinite(Number(review.retrievability)) ? `${Math.round(Number(review.retrievability) * 100)}%` : '-';

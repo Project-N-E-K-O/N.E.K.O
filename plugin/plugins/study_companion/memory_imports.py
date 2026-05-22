@@ -7,6 +7,12 @@ from typing import Any
 AddWord = Callable[..., dict[str, Any]]
 
 
+def normalize_csv_fieldnames(fieldnames: list[str] | None) -> list[str] | None:
+    if not fieldnames:
+        return fieldnames
+    return [str(name or "").strip().lstrip("\ufeff") for name in fieldnames]
+
+
 def import_word_rows(
     add_word: AddWord, *, deck_id: str, rows: list[dict[str, Any]], line_offset: int
 ) -> dict[str, Any]:
@@ -45,4 +51,4 @@ def import_word_rows(
     }
 
 
-__all__ = ["import_word_rows"]
+__all__ = ["import_word_rows", "normalize_csv_fieldnames"]

@@ -13,7 +13,7 @@ from .fsrs_bridge import (
     retrievability,
 )
 from .memory_candidates import upsert_memory_candidate
-from .memory_imports import import_word_rows
+from .memory_imports import import_word_rows, normalize_csv_fieldnames
 from .memory_queries import active_item_card_rows
 from .memory_ratings import (
     normalize_rating,
@@ -160,6 +160,9 @@ class MemoryDeckStore:
         current = self.get_deck(deck_id)
         if current is None:
             raise ValueError("deck not found")
+        next_name = str(name if name is not None else current.get("name") or "").strip()
+        if not next_name:
+            raise ValueError("deck name is required")
         with self.store._lock:
             conn = self.store._require_conn()
             conn.execute(
@@ -169,9 +172,7 @@ class MemoryDeckStore:
                 WHERE id = ?
                 """,
                 (
-                    str(
-                        name if name is not None else current.get("name") or ""
-                    ).strip(),
+                    next_name,
                     str(
                         subject if subject is not None else current.get("subject") or ""
                     ),
@@ -297,8 +298,9 @@ class MemoryDeckStore:
         return {"created": created, "item": item, "fsrs_card": card}
 
     def import_words_csv(self, *, deck_id: str, content: str) -> dict[str, Any]:
-        stream = io.StringIO(str(content or ""))
+        stream = io.StringIO(str(content or "").lstrip("\ufeff"))
         reader = csv.DictReader(stream)
+        reader.fieldnames = normalize_csv_fieldnames(reader.fieldnames)
         if (
             not reader.fieldnames
             or "word" not in reader.fieldnames
@@ -598,6 +600,8 @@ class MemoryDeckStore:
         item = self.get_item(item_id)
         if item is None:
             raise ValueError("memory item not found")
+        if str(item.get("item_type") or "") not in {"sentence", "paragraph"}:
+            raise ValueError("recitation is only supported for passage items")
         expected = str(item.get("answer") or "")[:5000]
         actual = str(user_input_text or "")[:5000]
         diff = diff_recitation(
@@ -740,12 +744,16 @@ class MemoryDeckStore:
         deck = self.get_deck(deck_id)
         if deck is None:
             raise ValueError("deck not found")
+        with self.store._lock:
+            counts = memory_counts(self.store._require_conn(), deck_id=deck_id)
+        item_limit = max(1, int(counts.get("item_count") or 0))
+        due_limit = max(1, self.count_due_reviews(deck_id=deck_id))
         return {
             "deck": deck,
             "items": self.list_items(
-                deck_id=deck_id, limit=5000, include_archived=True
+                deck_id=deck_id, limit=item_limit, include_archived=True
             ),
-            "due_reviews": self.due_reviews(deck_id=deck_id, limit=5000),
+            "due_reviews": self.due_reviews(deck_id=deck_id, limit=due_limit),
         }
 
     def compat_card_payload(self, item: dict[str, Any]) -> dict[str, Any]:

@@ -6,7 +6,7 @@ import hashlib
 import logging
 import math
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .fsrs_bridge import (
     FSRSBridge,
@@ -381,6 +381,12 @@ class KnowledgeTracker:
         self.wrong_store = WrongQuestionStore(store)
         self.fsrs = FSRSBridge(retention_target=retention_target)
         self._logger = logger
+        self._memory_deck_summary_provider: Callable[..., dict[str, Any]] | None = None
+
+    def set_memory_deck_summary_provider(
+        self, provider: Callable[..., dict[str, Any]] | None
+    ) -> None:
+        self._memory_deck_summary_provider = provider
 
     def on_answer(
         self,
@@ -646,6 +652,8 @@ class KnowledgeTracker:
         ]
 
     def get_memory_deck_status(self, *, limit: int = 8) -> dict[str, Any]:
+        if self._memory_deck_summary_provider is not None:
+            return self._memory_deck_summary_provider(limit=limit)
         rows = self._memory_card_rows(include_topic_cards=False)
         due_count = len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
         return {
@@ -739,7 +747,9 @@ class KnowledgeTracker:
             "average_mastery": round(float(self.store.average_latest_mastery()), 4),
             "weak_topic_count": self.count_weak_topics(),
             "due_review_count": self.count_due_reviews(),
-            "memory_card_count": len(self._memory_card_rows(include_topic_cards=False)),
+            "memory_card_count": int(
+                self.get_memory_deck_status(limit=limit).get("card_count") or 0
+            ),
             "last_updated_at": overview[0].get("updated_at") if overview else "",
             "candidate_quality": self.quality.status_summary(limit=limit),
         }

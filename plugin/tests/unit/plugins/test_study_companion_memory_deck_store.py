@@ -41,6 +41,8 @@ def test_memory_deck_crud_review_recitation_and_cascade(tmp_path: Path) -> None:
     try:
         memory = MemoryDeckStore(store)
         deck = memory.create_deck(name="Exam Words", deck_type="word", language="en")
+        with pytest.raises(ValueError, match="deck name is required"):
+            memory.update_deck(deck["id"], name="  ")
         word = memory.add_word(
             deck_id=deck["id"],
             word="abandon",
@@ -63,6 +65,10 @@ def test_memory_deck_crud_review_recitation_and_cascade(tmp_path: Path) -> None:
         )
         assert reviewed["rating"] == 2
         assert reviewed["review_record"]["session_id"] == "memory-session"
+        with pytest.raises(ValueError, match="recitation is only supported"):
+            memory.add_recitation_attempt(
+                item_id=word["id"], user_input_text="abandon", hint_count=0
+            )
 
         passage_deck = memory.create_deck(name="Textbook", deck_type="passage")
         imported = memory.import_passage(
@@ -106,7 +112,7 @@ def test_memory_word_import_skips_bad_rows_and_dedupes_by_word(tmp_path: Path) -
         result = memory.import_words_csv(
             deck_id=deck["id"],
             content=(
-                "word,meaning,example_sentence,tags\n"
+                "\ufeff word , meaning ,example_sentence,tags\n"
                 "cat,猫,A cat sleeps,animal\n"
                 "bad row,,,\n"
                 "cat,猫科动物,A cat runs,animal updated\n"
@@ -274,7 +280,7 @@ def test_memory_drafts_do_not_create_formal_items(tmp_path: Path) -> None:
 
 
 def test_memory_json_import_export_compat_status_and_missing_review(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = _store(tmp_path)
     try:
@@ -297,10 +303,29 @@ def test_memory_json_import_export_compat_status_and_missing_review(
         exported = memory.export_deck_json(deck["id"])
         assert exported["deck"]["id"] == deck["id"]
         assert exported["items"][0]["prompt"] == "dog"
+        memory.add_word(deck_id=deck["id"], word="cat", meaning="猫")
+        limits: dict[str, int] = {}
+        original_list_items = memory.list_items
+        original_due_reviews = memory.due_reviews
+
+        def tracked_list_items(**kwargs):
+            limits["items"] = int(kwargs.get("limit") or 0)
+            return original_list_items(**kwargs)
+
+        def tracked_due_reviews(**kwargs):
+            limits["due_reviews"] = int(kwargs.get("limit") or 0)
+            return original_due_reviews(**kwargs)
+
+        monkeypatch.setattr(memory, "list_items", tracked_list_items)
+        monkeypatch.setattr(memory, "due_reviews", tracked_due_reviews)
+        exported = memory.export_deck_json(deck["id"])
+        assert len(exported["items"]) == 2
+        assert limits["items"] == 2
+        assert limits["due_reviews"] >= 2
 
         summary = memory.status_summary(limit=5)
         assert summary["deck_count"] == 1
-        assert summary["item_count"] == 1
+        assert summary["item_count"] == 2
         assert summary["due_count"] >= 1
 
         with pytest.raises(ValueError, match="memory item not found"):

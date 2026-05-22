@@ -19,6 +19,7 @@ export default function WordReview(props: PluginSurfaceProps) {
   const [reviews, setReviews] = useState<DueReview[]>([]);
   const [showAnswer, setShowAnswer] = useState(false);
   const [status, setStatus] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const current = reviews[0];
 
   async function refresh(signal?: AbortSignal) {
@@ -29,14 +30,17 @@ export default function WordReview(props: PluginSurfaceProps) {
   }
 
   async function rate(rating: string) {
-    if (!current?.item_id) {
+    if (!current?.item_id || submitting) {
       return;
     }
+    setSubmitting(true);
     try {
       await callPlugin('study_memory_review_item', { item_id: current.item_id, rating });
       await refresh();
     } catch (error) {
       setStatus(errorMessage(error));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -60,11 +64,11 @@ export default function WordReview(props: PluginSurfaceProps) {
       </header>
       <pre>{current ? `${current.deck?.name || ''}\n\n${current.item?.prompt || ''}\n\n${showAnswer ? current.item?.answer || '' : ''}` : text(props, 'ui.memory.empty_due', 'No due memory cards')}</pre>
       <div className="study-panel__actions">
-        <button type="button" disabled={!current} onClick={() => setShowAnswer((value) => !value)}>
+        <button type="button" disabled={!current || submitting} onClick={() => setShowAnswer((value) => !value)}>
           {text(props, 'ui.button.flip', 'Flip')}
         </button>
         {['again', 'hard', 'good', 'easy'].map((rating) => (
-          <button key={rating} type="button" disabled={!current} onClick={() => rate(rating)}>
+          <button key={rating} type="button" disabled={!current || submitting} onClick={() => rate(rating)}>
             {rating}
           </button>
         ))}
