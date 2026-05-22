@@ -160,10 +160,11 @@ plugin/plugins/galgame_plugin/models/vision/screen_classifier/best.pth
 plugin/plugins/galgame_plugin/models/vision/screen_classifier/live_validation_v1.json
 plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json
 
-# 鎻掍欢鏈嶅姟鍣ㄨ繍琛屾椂鐢熸垚鐨勫嚟璇佹枃浠?plugin/.plugin_server_admin_code
+# Runtime plugin server admin credential.
 plugin/.plugin_server_admin_code
 
-# 鎻掍欢鍖呰В鍖呭悗鎻愬彇鍑虹殑 profile 鐩綍锛堣繍琛?瀵煎叆浜х墿锛屼笉鍏ュ簱锛?plugin/.neko-package-profiles/
+# Extracted plugin package profiles are runtime artifacts.
+plugin/.neko-package-profiles/
 
 # 鎻掍欢澶囧繕鎻愰啋杩愯鏃舵暟鎹簱
 plugin/plugins/memo_reminder/store.db
