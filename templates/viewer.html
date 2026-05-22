@@ -312,6 +312,18 @@
                 max-width: 85%;
             }
         }
+
+        /* controler 下发的背景覆盖：类选择器(0,1,x) 特异性高于媒体查询里的
+           html/body(0,0,1)，因此在竖屏(手机)下也能压过 #000 !important。 */
+        html.viewer-bg-black,
+        body.viewer-bg-black {
+            background: #000 !important;
+        }
+
+        html.viewer-bg-transparent,
+        body.viewer-bg-transparent {
+            background: transparent !important;
+        }
     </style>
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
@@ -727,6 +739,19 @@
             lipSyncActive = false;
         }
 
+        // 设置 viewer 背景：'black' / 'transparent'（其它值忽略）。
+        // 通过给 html+body 加类来覆盖竖屏媒体查询里的 #000 !important。
+        function setViewerBackground(color) {
+            const c = (color === 'black') ? 'black' : (color === 'transparent' ? 'transparent' : null);
+            if (!c) return;
+            [document.documentElement, document.body].forEach((el) => {
+                if (!el) return;
+                el.classList.remove('viewer-bg-black', 'viewer-bg-transparent');
+                el.classList.add('viewer-bg-' + c);
+            });
+        }
+        window.setViewerBackground = setViewerBackground;
+
         function connectWebSocket() {
             if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
                 return;
@@ -781,6 +806,9 @@
                                 console.warn('未知表情指令:', response.message);
                             }
                         }
+                    } else if (response.type === 'background') {
+                        // controler 下发的背景切换（黑色 / 透明），竖屏也生效
+                        setViewerBackground(response.color);
                     } else if (response.type === 'motion_sequence') {
                         // 剧本驱动的确定性动作序列（controler 下发）
                         if (typeof window.playMotionSequence === 'function') {

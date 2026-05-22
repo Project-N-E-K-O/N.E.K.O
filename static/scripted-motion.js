@@ -14,10 +14,6 @@
     const FORCE_PRIORITY = 3; // pixi-live2d-display MotionPriority.FORCE
     // 朝向屏幕最侧面的头部角度（ParamAngle 单位，约 ±30）；左为负、右为正。
     const LOOKAT_ANGLE = 28;
-    let homeCaptured = false;
-    let homeX = 0;
-    let homeY = 0;
-    let homeAlpha = 1;
 
     let sequenceTimers = [];
     let activeTween = null;
@@ -44,13 +40,25 @@
         return window.innerWidth || 1280;
     }
 
-    // 首次触碰特殊动作前记录"在场"位置，供 enter 归位 / leave 起点使用。
-    function captureHome(model) {
-        if (homeCaptured) return;
-        homeX = model.x;
-        homeY = model.y;
-        homeAlpha = (typeof model.alpha === 'number') ? model.alpha : 1;
-        homeCaptured = true;
+    function currentAlpha(model) {
+        return (typeof model.alpha === 'number') ? model.alpha : 1;
+    }
+
+    // "在场"状态快照存在 window 上（跨 advance/段 持久，且 enter 与 leave 通常
+    // 落在不同段），保证 enter 能精确回到上一次 leave 之前的位置/透明度。
+    // 首次访问时用模型当前（在场）状态初始化。
+    function getOnStage(model) {
+        if (!window.__scriptedAvatarOnStage) {
+            window.__scriptedAvatarOnStage = { x: model.x, y: model.y, alpha: currentAlpha(model) };
+        }
+        return window.__scriptedAvatarOnStage;
+    }
+
+    // 退场前记录此刻在场状态（仅在确实可见时，避免连续 leave 把出场态当在场态）。
+    function snapshotOnStage(model) {
+        if (currentAlpha(model) > 0.01) {
+            window.__scriptedAvatarOnStage = { x: model.x, y: model.y, alpha: currentAlpha(model) };
+        }
     }
 
     function easeInOutQuad(t) {
@@ -112,21 +120,25 @@
     };
 
     function playSpecial(model, def, duration) {
-        captureHome(model);
         const screenW = getScreenWidth();
         if (def.kind === 'leave') {
-            const targetX = def.side === 'left' ? homeX - screenW : homeX + screenW;
+            const home = getOnStage(model);
+            // 退场前快照当前在场状态，供下一次 enter 精确还原
+            snapshotOnStage(model);
+            const targetX = def.side === 'left' ? home.x - screenW : home.x + screenW;
             tweenTransform(model,
-                { x: model.x, alpha: (typeof model.alpha === 'number') ? model.alpha : 1 },
+                { x: model.x, alpha: currentAlpha(model) },
                 { x: targetX, alpha: 0 },
                 duration);
         } else if (def.kind === 'enter') {
-            const startX = def.side === 'left' ? homeX - screenW : homeX + screenW;
+            const home = getOnStage(model); // = 上次 leave 前的快照（或初始在场态）
+            const startX = def.side === 'left' ? home.x - screenW : home.x + screenW;
             model.x = startX;
+            model.y = home.y;
             if (typeof model.alpha === 'number') model.alpha = 0;
             tweenTransform(model,
                 { x: startX, alpha: 0 },
-                { x: homeX, alpha: homeAlpha },
+                { x: home.x, alpha: home.alpha },
                 duration);
         } else if (def.kind === 'lookat') {
             // y 轴中点、x 轴最侧面：头部转到最侧面、视线水平。

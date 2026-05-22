@@ -70,6 +70,7 @@ STATE: dict = {
     "screens": ["0"],
     "segments": {"0": []},
     "cursor": 0,
+    "background": "transparent",  # viewer 背景：transparent / black
 }
 _advance_lock = asyncio.Lock()
 
@@ -98,12 +99,13 @@ class MonitorClient:
             self._session = aiohttp.ClientSession()
         return self._session
 
-    async def _get_ws(self, store, kind: str, name: str, screen: str):
+    async def _get_ws(self, store, kind: str, name: str, screen):
+        # screen=None → 连无序号端点 /{kind}/{name}，monitor 广播给所有屏幕
         ws = store.get(screen)
         if ws is not None and not ws.closed:
             return ws
         session = await self._get_session()
-        url = f"{MONITOR_WS}/{kind}/{name}/{screen}"
+        url = f"{MONITOR_WS}/{kind}/{name}" if screen is None else f"{MONITOR_WS}/{kind}/{name}/{screen}"
         ws = await session.ws_connect(url, heartbeat=10)
         store[screen] = ws
         return ws
@@ -256,6 +258,18 @@ async def advance():
 async def reset_cursor():
     STATE["cursor"] = 0
     return {"success": True, "cursor": 0}
+
+
+@app.post("/api/background")
+async def set_background(payload: dict):
+    """切换 viewer 背景（black / transparent），广播到所有屏幕。"""
+    color = "black" if str(payload.get("color")) == "black" else "transparent"
+    STATE["background"] = color
+    name = STATE["lanlan_name"] or await _default_lanlan_name()
+    STATE["lanlan_name"] = name
+    # screen=None → 走无序号端点，monitor 广播给所有屏幕
+    await _monitor.send_json(name, None, {"type": "background", "color": color})
+    return {"success": True, "background": color}
 
 
 async def _resolve_live2d_model_name(lanlan_name: str) -> str:

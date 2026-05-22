@@ -156,6 +156,7 @@
         <button id="rebuildBtn">应用屏幕数</button>
         <button id="saveBtn" class="primary">保存剧本</button>
         <button id="resetBtn" class="warn">重置进度</button>
+        <button id="bgBtn" title="切换所有 viewer 屏幕背景（黑/透明）">背景：透明</button>
         <span id="status" class="status"></span>
     </header>
 
@@ -191,6 +192,24 @@
     <script>
         const $ = (id) => document.getElementById(id);
         let performing = false;
+        let currentBg = 'transparent';
+
+        function updateBgBtn() {
+            $('bgBtn').textContent = '背景：' + (currentBg === 'black' ? '黑色' : '透明');
+        }
+
+        async function setBackground(color) {
+            const r = await fetch('/api/background', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ color })
+            });
+            const d = await r.json();
+            if (d.success) {
+                currentBg = d.background;
+                updateBgBtn();
+                setStatus('背景已切换为 ' + (currentBg === 'black' ? '黑色' : '透明'));
+            }
+        }
 
         function setStatus(msg) {
             $('status').textContent = msg || '';
@@ -340,6 +359,8 @@
             buildScreens(parseInt($('screenCount').value, 10), st.segments);
             $('cursorBadge').textContent = st.cursor || 0;
             refreshNowPlaying(st.cursor || 0);
+            currentBg = st.background || 'transparent';
+            updateBgBtn();
             loadMotionHints();
         }
 
@@ -351,6 +372,7 @@
         $('resetBtn').onclick = resetCursor;
         $('nextBtn').onclick = advance;
         $('perfBtn').onclick = () => setPerforming(!performing);
+        $('bgBtn').onclick = () => setBackground(currentBg === 'black' ? 'transparent' : 'black');
 
         // 演出模式下，回车推进（避免编辑时误触：仅在 performing 且焦点不在输入框时）
         document.addEventListener('keydown', (e) => {

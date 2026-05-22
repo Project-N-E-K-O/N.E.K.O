@@ -262,6 +262,9 @@ def _client_count() -> int:
 
 current_subtitle = ""
 should_clear_next = False
+# 最近一次 controler 下发的背景设置（黑/透明），新连接的 viewer 连上即补发，
+# 保证后加入的屏幕也同步当前背景。
+last_background = None
 
 def is_japanese(text):
     import re
@@ -368,6 +371,11 @@ async def _run_sync(websocket: WebSocket, lanlan_name: str, screen):
                     global should_clear_next
                     should_clear_next = True
 
+                elif msg_type == "background":
+                    # 记住当前背景，供后续连接的 viewer 补发
+                    global last_background
+                    last_background = data
+
                 if msg_type != "heartbeat":
                     await broadcast_message(data, screen)
             except asyncio.exceptions.TimeoutError:
@@ -422,6 +430,13 @@ async def _run_viewer_client(websocket: WebSocket, lanlan_name: str, screen: str
     await websocket.accept()
     _register_client(websocket, screen)
     print(f"✅ [CLIENT] 查看客户端已连接: {websocket.client} (screen={screen}), 当前总数: {_client_count()}")
+
+    # 补发当前背景，让后加入的屏幕也同步
+    if last_background is not None:
+        try:
+            await websocket.send_json(last_background)
+        except Exception as e:
+            print(f"补发背景失败: {e}")
 
     try:
         # 保持连接直到客户端断开
