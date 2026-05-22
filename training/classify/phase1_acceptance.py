@@ -39,6 +39,7 @@ from plugin.plugins.galgame_plugin.screen_classifier import (
 
 
 _LOGGER = logging.getLogger(__name__)
+DEFAULT_MODEL_DIR = "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
 
 
 @dataclass(slots=True)
@@ -508,16 +509,16 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance = subparsers.add_parser("acceptance")
     acceptance.add_argument("--repo", default=".")
     acceptance.add_argument("--data-dir", default="training/data")
-    acceptance.add_argument("--model-path", default="models/vision/screen_classifier/v1_galgame.onnx")
-    acceptance.add_argument("--config-path", default="models/vision/screen_classifier/v1_config.json")
-    acceptance.add_argument("--output", default="models/vision/screen_classifier/phase1_acceptance_v1.json")
+    acceptance.add_argument("--model-path", default=f"{DEFAULT_MODEL_DIR}/v1_galgame.onnx")
+    acceptance.add_argument("--config-path", default=f"{DEFAULT_MODEL_DIR}/v1_config.json")
+    acceptance.add_argument("--output", default=f"{DEFAULT_MODEL_DIR}/phase1_acceptance_v1.json")
     acceptance.add_argument("--ticks", type=int, default=1000)
     acceptance.add_argument("--splits", nargs="+", default=["val"])
     acceptance.add_argument("--latency-iterations", type=int, default=120)
 
     coverage = subparsers.add_parser("coverage")
     coverage.add_argument("--repo", default=".")
-    coverage.add_argument("--output", default="models/vision/screen_classifier/phase1_coverage_v1.json")
+    coverage.add_argument("--output", default=f"{DEFAULT_MODEL_DIR}/phase1_coverage_v1.json")
     coverage.add_argument(
         "--coverage-source",
         nargs="+",

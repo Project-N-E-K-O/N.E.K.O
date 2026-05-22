@@ -451,22 +451,22 @@
     "max": 0.856
   },
   "artifacts": {
-    "onnx_path": "models/vision/screen_classifier/v1_galgame.onnx",
+    "onnx_path": "plugin/plugins/galgame_plugin/models/vision/screen_classifier/v1_galgame.onnx",
     "onnx_size_bytes": 2882548,
     "onnx_size_mb": 2.749,
-    "config_path": "models/vision/screen_classifier/v1_config.json"
+    "config_path": "plugin/plugins/galgame_plugin/models/vision/screen_classifier/v1_config.json"
   },
   "prototype_comparison": {
     "status": "visual_replay_run",
-    "acceptance_report_path": "models/vision/screen_classifier/phase1_acceptance_v1.json",
+    "acceptance_report_path": "plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_acceptance_v1.json",
     "cnn_stage_accuracy": 1.0,
     "prototype_stage_accuracy": 0.514,
     "absolute_accuracy_delta": 0.486,
     "note": "Deterministic screenshot replay against the legacy visual prototype centroid classifier. Live OCR-rule output stream comparison remains a later QA task."
   },
   "phase1_acceptance": {
-    "acceptance_report_path": "models/vision/screen_classifier/phase1_acceptance_v1.json",
-    "coverage_report_path": "models/vision/screen_classifier/phase1_coverage_v1.json",
+    "acceptance_report_path": "plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_acceptance_v1.json",
+    "coverage_report_path": "plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json",
     "tick_mode": "deterministic_replay",
     "tick_count": 1000,
     "cnn_stage_accuracy": 1.0,

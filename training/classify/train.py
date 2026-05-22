@@ -17,6 +17,7 @@ from training.data.dataset import GALGAME_SCREEN_LABELS, GameScreenDataset
 
 
 _LOGGER = logging.getLogger(__name__)
+DEFAULT_OUTPUT_DIR = "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
 
 
 def _load_imagenet_pretrained_backbone():
@@ -188,7 +189,7 @@ def _write_model_config(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train the galgame screen classifier CNN")
     parser.add_argument("--data-dir", required=True)
-    parser.add_argument("--output-dir", default="models/vision/screen_classifier")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--num-classes", type=int, default=11)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--freeze-backbone-epochs", type=int, default=5)

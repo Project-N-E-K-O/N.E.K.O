@@ -31,6 +31,7 @@ from .models import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     GalgameConfig,
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     OCR_CAPTURE_PROFILE_STAGE_CONFIG,
@@ -346,7 +347,7 @@ class OcrReaderManager(
 
     @staticmethod
     def _resolve_vision_model_dir(raw_path: str) -> Path:
-        path = Path(raw_path or "models/vision/screen_classifier").expanduser()
+        path = Path(raw_path or DEFAULT_VISION_CLASSIFIER_MODEL_DIR).expanduser()
         if path.is_absolute():
             return path
         repo_root = Path(__file__).resolve().parents[3]

@@ -4649,7 +4649,14 @@ def test_ocr_reader_logs_when_vision_classifier_loads(
     manager._vision_classifier_detail = ""
     manager._config = SimpleNamespace(
         vision_classifier_enabled=True,
-        vision_classifier_model_dir=str(Path("models") / "vision" / "screen_classifier"),
+        vision_classifier_model_dir=str(
+            Path("plugin")
+            / "plugins"
+            / "galgame_plugin"
+            / "models"
+            / "vision"
+            / "screen_classifier"
+        ),
         vision_classifier_input_size=[224, 224],
         vision_classifier_inference_timeout_ms=200.0,
         vision_classifier_model_name="v1_galgame",

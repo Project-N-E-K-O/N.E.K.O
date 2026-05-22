@@ -158,9 +158,9 @@ data/browser_use_extensions/
 training/data/train.jsonl
 training/data/val.jsonl
 training/data/raw/
-models/vision/screen_classifier/best.pth
-models/vision/screen_classifier/live_validation_v1.json
-models/vision/screen_classifier/phase1_coverage_v1.json
+plugin/plugins/galgame_plugin/models/vision/screen_classifier/best.pth
+plugin/plugins/galgame_plugin/models/vision/screen_classifier/live_validation_v1.json
+plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json
 
 # 插件服务器运行时生成的凭证文件
 plugin/.plugin_server_admin_code

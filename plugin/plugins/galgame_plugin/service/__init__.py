@@ -23,6 +23,7 @@ from ..models import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
@@ -1002,7 +1003,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             False,
         ),
         vision_classifier_model_dir=str(
-            vision_obj.get("model_dir") or "models/vision/screen_classifier"
+            vision_obj.get("model_dir") or DEFAULT_VISION_CLASSIFIER_MODEL_DIR
         ).strip(),
         vision_classifier_model_name=str(
             vision_classifier_obj.get("model_name") or "v1_galgame"

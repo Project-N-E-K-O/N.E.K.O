@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from .constants import (
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
@@ -146,7 +147,7 @@ class GalgameOcrReaderConfig:
 @dataclass(slots=True)
 class GalgameVisionConfig:
     vision_classifier_enabled: bool = False
-    vision_classifier_model_dir: str = "models/vision/screen_classifier"
+    vision_classifier_model_dir: str = DEFAULT_VISION_CLASSIFIER_MODEL_DIR
     vision_classifier_model_name: str = "v1_galgame"
     vision_classifier_threshold: float = 0.75
     vision_classifier_tick_interval: int = 1

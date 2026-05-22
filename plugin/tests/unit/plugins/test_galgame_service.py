@@ -188,6 +188,15 @@ def test_build_config_reads_vision_classifier_fields() -> None:
     assert cfg.vision_classifier_input_size_low == [160, 160]
 
 
+def test_build_config_defaults_vision_classifier_model_dir_inside_plugin() -> None:
+    cfg = galgame_service.build_config({})
+
+    assert (
+        cfg.vision_classifier_model_dir
+        == "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
+    )
+
+
 def test_build_config_reads_context_optimization_fields() -> None:
     cfg = galgame_service.build_config(
         {
@@ -835,7 +844,7 @@ def test_status_payload_exposes_vision_classifier_runtime(
         {
             "vision": {
                 "enabled": True,
-                "model_dir": "models/vision/screen_classifier",
+                "model_dir": "plugin/plugins/galgame_plugin/models/vision/screen_classifier",
                 "cnn_skip_ocr_threshold": 0.8,
                 "classifier": {"model_name": "v1_galgame"},
             },
