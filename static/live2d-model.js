@@ -971,6 +971,24 @@ Live2DManager.prototype._updateEyeBlink = function(delta) {
 Live2DManager.prototype._updateRandomLookAt = function(delta) {
     const coreModel = this.currentModel?.internalModel?.coreModel;
     if (!coreModel) return;
+    // 剧本驱动的定向注视：覆盖随机/居中逻辑，平滑保持指定朝向（剧场 lookat 用）。
+    // x/y 为 ParamAngle 单位（约 ±30）；置 null 即恢复随机 idle 视线。
+    if (this._scriptedLookAt) {
+        const tx = Number(this._scriptedLookAt.x) || 0;
+        const ty = Number(this._scriptedLookAt.y) || 0;
+        const k = Math.min(1, Math.max(0.05, 6.0 * (Number(delta) || 0)));
+        this._lookAtCurrentX = (Number(this._lookAtCurrentX) || 0) + (tx - (Number(this._lookAtCurrentX) || 0)) * k;
+        this._lookAtCurrentY = (Number(this._lookAtCurrentY) || 0) + (ty - (Number(this._lookAtCurrentY) || 0)) * k;
+        this._lookAtTargetX = tx;
+        this._lookAtTargetY = ty;
+        try {
+            coreModel.setParameterValueById('ParamAngleX', this._lookAtCurrentX);
+            coreModel.setParameterValueById('ParamAngleY', this._lookAtCurrentY);
+            coreModel.setParameterValueById('ParamEyeBallX', this._lookAtCurrentX / 30);
+            coreModel.setParameterValueById('ParamEyeBallY', this._lookAtCurrentY / 30);
+        } catch (_) {}
+        return;
+    }
     if (window.nekoYuiGuideFaceForwardLock === true && window.nekoYuiGuideIntroVoiceLookAtActive !== true) {
         if (this._lookAtTargetX === undefined || !Number.isFinite(this._lookAtTargetX)) {
             this._lookAtTargetX = 0;

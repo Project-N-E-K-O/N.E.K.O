@@ -347,8 +347,15 @@
         window.lanlan_config = lanlan_config;
         let cubism4Model = "";
 
+        // 屏幕序号：viewer/{name}/{screen}，默认 "0"。决定连接哪个 /ws 端点。
+        let screenIndex = "0";
+        window.screenIndex = screenIndex;
+
         // 标记为观看模式，禁用所有交互按钮
         window.isViewerMode = true;
+        // 观看模式关闭鼠标追踪：avatar 不跟随操作者鼠标（idle 随机视线仍保留，
+        // 剧本 lookat 通过 live2dManager._scriptedLookAt 覆盖）。须在 live2d 初始化前设置。
+        window.mouseTrackingEnabled = false;
 
         // 异步获取页面配置
         async function loadPageConfig() {
@@ -357,12 +364,23 @@
                 const urlParams = new URLSearchParams(window.location.search);
                 let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
 
-                // 从路径中提取 lanlan_name (例如 /{lanlan_name})
+                // 从路径中提取 lanlan_name 和屏幕序号 (例如 /{lanlan_name}/{screen})
+                const pathParts = window.location.pathname.split('/').filter(Boolean);
                 if (!lanlanNameFromUrl) {
-                    const pathParts = window.location.pathname.split('/').filter(Boolean);
                     if (pathParts.length > 0 && !['api', 'static', 'subtitle', 'sync', 'sync_binary', 'subtitle_ws', 'ws'].includes(pathParts[0])) {
                         lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
                     }
+                }
+                // 第二段为屏幕序号（若存在）
+                if (pathParts.length > 1) {
+                    screenIndex = decodeURIComponent(pathParts[1]);
+                    window.screenIndex = screenIndex;
+                }
+                // 也允许 ?screen= 覆盖
+                const screenFromQuery = urlParams.get('screen');
+                if (screenFromQuery) {
+                    screenIndex = screenFromQuery;
+                    window.screenIndex = screenIndex;
                 }
 
                 // 从 API 获取配置
@@ -474,7 +492,8 @@
                     '/static/avatar-ui-buttons.js',
                     '/static/live2d-ui-buttons.js',
                     '/static/avatar-ui-drag.js',
-                    '/static/live2d-init.js'
+                    '/static/live2d-init.js',
+                    '/static/scripted-motion.js'
                 ];
 
                 // 按顺序加载脚本的辅助函数
@@ -714,7 +733,7 @@
             }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/${lanlan_config.lanlan_name}`;
+            const wsUrl = `${protocol}//${window.location.host}/ws/${lanlan_config.lanlan_name}/${encodeURIComponent(screenIndex)}`;
 
             console.log('连接到 Monitor Server:', wsUrl);
 
@@ -761,6 +780,15 @@
                             } else {
                                 console.warn('未知表情指令:', response.message);
                             }
+                        }
+                    } else if (response.type === 'motion_sequence') {
+                        // 剧本驱动的确定性动作序列（controler 下发）
+                        if (typeof window.playMotionSequence === 'function') {
+                            window.playMotionSequence(
+                                response.motions || [],
+                                typeof response.delay === 'number' ? response.delay : 1500,
+                                typeof response.interval === 'number' ? response.interval : 6000
+                            );
                         }
                     } else if (response.type === 'turn end') {
                         // Turn ended, could add separator if needed

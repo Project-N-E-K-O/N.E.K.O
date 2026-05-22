@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>主控装置 - 剧本追踪器</title>
+    <style>
+        :root {
+            --bg: #14161b;
+            --panel: #1d2027;
+            --border: #2c313c;
+            --accent: #6c8cff;
+            --accent2: #4ac0a0;
+            --text: #e6e8ee;
+            --muted: #9aa3b2;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            font-size: 14px;
+        }
+
+        header {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+
+        .muted { color: var(--muted); }
+
+        label { color: var(--muted); margin-right: 4px; }
+
+        input, select, button, textarea {
+            font-family: inherit;
+            font-size: 14px;
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 6px 10px;
+        }
+
+        button {
+            cursor: pointer;
+            background: var(--panel);
+            transition: background .15s, border-color .15s;
+        }
+        button:hover { border-color: var(--accent); }
+        button.primary { background: var(--accent); color: #0c0e13; border-color: var(--accent); font-weight: 600; }
+        button.primary:hover { filter: brightness(1.1); }
+        button.warn { border-color: #6a3a3a; }
+
+        main { padding: 18px 20px 60px; }
+
+        .hint {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+        .hint code {
+            background: #0c0e13;
+            padding: 1px 6px;
+            border-radius: 4px;
+            color: var(--accent2);
+        }
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .chip {
+            background: #0c0e13;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 2px 10px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .screens { display: flex; flex-wrap: wrap; gap: 16px; }
+        .screen-card {
+            flex: 1 1 360px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 14px;
+        }
+        .screen-card h3 { margin: 0 0 8px; font-size: 14px; }
+        .screen-card textarea {
+            width: 100%;
+            min-height: 200px;
+            resize: vertical;
+            line-height: 1.7;
+            white-space: pre;
+            overflow-wrap: normal;
+            overflow-x: auto;
+        }
+
+        .stage {
+            position: sticky;
+            bottom: 0;
+            margin-top: 20px;
+            background: linear-gradient(0deg, var(--bg) 70%, transparent);
+            padding-top: 14px;
+        }
+        .stage-inner {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .next-btn { font-size: 16px; padding: 12px 26px; }
+        .cursor-badge {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--accent2);
+            min-width: 40px;
+            text-align: center;
+        }
+        .now-playing { flex: 1 1 320px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+        .now-playing b { color: var(--text); }
+
+        .perf-toggle { display: flex; align-items: center; gap: 8px; }
+        .perf-on { color: var(--accent2); font-weight: 600; }
+        .perf-off { color: var(--muted); }
+        .locked textarea, .locked input, .locked select { opacity: .55; pointer-events: none; }
+        .status { font-size: 12px; color: var(--muted); }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>主控装置 · 剧本追踪器</h1>
+        <span class="muted">|</span>
+        <div><label>角色</label><input id="lanlanName" size="12" placeholder="lanlan_name"></div>
+        <div><label>屏幕数</label>
+            <select id="screenCount">
+                <option>1</option><option>2</option><option>3</option><option>4</option>
+            </select>
+        </div>
+        <button id="rebuildBtn">应用屏幕数</button>
+        <button id="saveBtn" class="primary">保存剧本</button>
+        <button id="resetBtn" class="warn">重置进度</button>
+        <span id="status" class="status"></span>
+    </header>
+
+    <main>
+        <div class="hint">
+            每行一段：<code>台词文本 | motion1, motion2, motion3</code>（竖线右侧为按序播放的动作，可留空）。
+            每个 motion 播放 6 秒，台词开播 1.5 秒后开始动作。普通动作写 motion 组名（可用 <code>组名:序号</code> 指定具体动作）。
+            <div style="margin-top:8px;">
+                <span class="muted">特殊动作（内置，无需模型支持）：</span>
+                <div class="chips" id="specialChips"></div>
+            </div>
+            <div style="margin-top:8px;">
+                <span class="muted">当前模型 <b id="modelName">—</b> 的可用动作组：</span>
+                <div class="chips" id="groupChips"></div>
+            </div>
+        </div>
+
+        <div class="screens" id="screens"></div>
+
+        <div class="stage">
+            <div class="stage-inner" id="stageInner">
+                <div class="perf-toggle">
+                    <button id="perfBtn">进入演出模式</button>
+                    <span id="perfState" class="perf-off">编辑中</span>
+                </div>
+                <span class="cursor-badge" id="cursorBadge">0</span>
+                <button id="nextBtn" class="primary next-btn">下一段 ▶（回车）</button>
+                <div class="now-playing" id="nowPlaying">演出模式下按回车推进所有屏幕。</div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const $ = (id) => document.getElementById(id);
+        let performing = false;
+
+        function setStatus(msg) {
+            $('status').textContent = msg || '';
+            if (msg) setTimeout(() => { if ($('status').textContent === msg) $('status').textContent = ''; }, 3000);
+        }
+
+        function buildScreens(count, segmentsByScreen) {
+            const wrap = $('screens');
+            wrap.innerHTML = '';
+            for (let i = 0; i < count; i++) {
+                const screen = String(i);
+                const card = document.createElement('div');
+                card.className = 'screen-card';
+                const title = document.createElement('h3');
+                title.textContent = `屏幕 ${screen}  (viewer/<角色>/${screen})`;
+                const ta = document.createElement('textarea');
+                ta.id = `seg-${screen}`;
+                ta.spellcheck = false;
+                ta.placeholder = '你好呀 | happy, lookat右\n我先退场咯 | 右leave';
+                if (segmentsByScreen && segmentsByScreen[screen]) {
+                    ta.value = segmentsByScreen[screen].map(seg =>
+                        seg.motions && seg.motions.length
+                            ? `${seg.line} | ${seg.motions.join(', ')}`
+                            : seg.line
+                    ).join('\n');
+                }
+                card.appendChild(title);
+                card.appendChild(ta);
+                wrap.appendChild(card);
+            }
+        }
+
+        function parseScreens() {
+            const count = parseInt($('screenCount').value, 10);
+            const screens = [];
+            const segments = {};
+            for (let i = 0; i < count; i++) {
+                const screen = String(i);
+                screens.push(screen);
+                const raw = ($(`seg-${screen}`) ? $(`seg-${screen}`).value : '') || '';
+                const items = [];
+                raw.split('\n').forEach(rowRaw => {
+                    const row = rowRaw.trim();
+                    if (!row) return;
+                    const pipe = row.indexOf('|');
+                    let line = row, motions = [];
+                    if (pipe >= 0) {
+                        line = row.slice(0, pipe).trim();
+                        motions = row.slice(pipe + 1).split(',').map(s => s.trim()).filter(Boolean);
+                    }
+                    items.push({ line, motions });
+                });
+                segments[screen] = items;
+            }
+            return { screens, segments };
+        }
+
+        async function saveScript() {
+            const { screens, segments } = parseScreens();
+            const body = { lanlan_name: $('lanlanName').value.trim(), screens, segments };
+            const r = await fetch('/api/script', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await r.json();
+            if (data.success) {
+                $('cursorBadge').textContent = '0';
+                setStatus('剧本已保存，进度归零');
+                refreshNowPlaying(0);
+                loadMotionHints();  // 角色可能变化，刷新模型动作组
+            } else {
+                setStatus('保存失败');
+            }
+        }
+
+        function currentSegmentsAt(cursor) {
+            const { screens, segments } = parseScreens();
+            const out = [];
+            screens.forEach(s => {
+                const items = segments[s] || [];
+                if (cursor < items.length) {
+                    const seg = items[cursor];
+                    out.push(`屏${s}: 「${seg.line || '（无台词）'}」 ${seg.motions.length ? '→ ' + seg.motions.join(' · ') : ''}`);
+                }
+            });
+            return out;
+        }
+
+        function refreshNowPlaying(cursor) {
+            const upcoming = currentSegmentsAt(cursor);
+            $('nowPlaying').innerHTML = upcoming.length
+                ? '<b>下一段：</b><br>' + upcoming.join('<br>')
+                : '剧本已播完。';
+        }
+
+        async function advance() {
+            const r = await fetch('/api/advance', { method: 'POST' });
+            const data = await r.json();
+            if (!data.success) { setStatus('推进失败'); return; }
+            $('cursorBadge').textContent = data.cursor;
+            const justPlayed = data.played ? Object.entries(data.played).map(
+                ([s, seg]) => `屏${s}: 「${seg.line || '（无台词）'}」`).join('，') : '';
+            setStatus(justPlayed ? `已播放 ${justPlayed}` : '');
+            refreshNowPlaying(data.cursor);
+            if (data.done) setStatus('已到剧本结尾');
+        }
+
+        async function resetCursor() {
+            await fetch('/api/reset', { method: 'POST' });
+            $('cursorBadge').textContent = '0';
+            refreshNowPlaying(0);
+            setStatus('进度已归零');
+        }
+
+        function setPerforming(on) {
+            performing = on;
+            $('stageInner').parentElement.parentElement.classList.toggle('locked', on);
+            // 锁定的是编辑区，stage 自身不锁
+            $('screens').classList.toggle('locked', on);
+            document.querySelector('header').classList.toggle('locked', on);
+            $('perfBtn').textContent = on ? '退出演出模式' : '进入演出模式';
+            $('perfState').textContent = on ? '演出中 · 回车推进' : '编辑中';
+            $('perfState').className = on ? 'perf-on' : 'perf-off';
+            if (on) refreshNowPlaying(parseInt($('cursorBadge').textContent, 10) || 0);
+        }
+
+        async function loadMotionHints() {
+            try {
+                const r = await fetch('/api/motions');
+                const data = await r.json();
+                $('specialChips').innerHTML = (data.special || []).map(
+                    m => `<span class="chip">${m}</span>`).join('');
+                const groups = data.groups || [];
+                $('groupChips').innerHTML = groups.length
+                    ? groups.map(m => `<span class="chip">${m}</span>`).join('')
+                    : '<span class="muted" style="font-size:12px;">（未读到该模型的动作组）</span>';
+                if ($('modelName')) $('modelName').textContent = data.model_name || '—';
+            } catch (_) {}
+        }
+
+        async function init() {
+            const r = await fetch('/api/state');
+            const st = await r.json();
+            $('lanlanName').value = st.lanlan_name || '';
+            const count = (st.screens && st.screens.length) || 1;
+            $('screenCount').value = String(Math.min(4, Math.max(1, count)));
+            buildScreens(parseInt($('screenCount').value, 10), st.segments);
+            $('cursorBadge').textContent = st.cursor || 0;
+            refreshNowPlaying(st.cursor || 0);
+            loadMotionHints();
+        }
+
+        $('rebuildBtn').onclick = () => {
+            const { segments } = parseScreens();
+            buildScreens(parseInt($('screenCount').value, 10), segments);
+        };
+        $('saveBtn').onclick = saveScript;
+        $('resetBtn').onclick = resetCursor;
+        $('nextBtn').onclick = advance;
+        $('perfBtn').onclick = () => setPerforming(!performing);
+
+        // 演出模式下，回车推进（避免编辑时误触：仅在 performing 且焦点不在输入框时）
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' || !performing) return;
+            const tag = (e.target.tagName || '').toLowerCase();
+            if (tag === 'textarea' || tag === 'input') return;
+            e.preventDefault();
+            advance();
+        });
+
+        init();
+    </script>
+</body>
+
+</html>

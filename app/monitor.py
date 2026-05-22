@@ -214,6 +214,10 @@ def get_emotion_mapping(model_name: str):
         print(f"获取情绪映射配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
+# 默认屏幕序号：viewer/{name} 等价于 viewer/{name}/0
+DEFAULT_SCREEN = "0"
+
+
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
     # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
@@ -222,9 +226,40 @@ async def get_index(request: Request, lanlan_name: str):
     })
 
 
-# 存储所有连接的客户端
-connected_clients = set()
+@app.get("/{lanlan_name}/{screen}", response_class=HTMLResponse)
+async def get_index_screen(request: Request, lanlan_name: str, screen: str):
+    # 多屏端点：屏幕序号由前端从路径中解析，再据此连接对应的 /ws 端点
+    return templates.TemplateResponse("templates/viewer.html", {
+        "request": request
+    })
+
+
+# 存储所有连接的客户端，按屏幕序号分桶
+# screen key -> set(WebSocket)。viewer/{name}（无序号）归入 DEFAULT_SCREEN。
+clients_by_screen: dict[str, set] = {}
 subtitle_clients = set()
+
+
+def _register_client(websocket, screen: str) -> None:
+    clients_by_screen.setdefault(screen, set()).add(websocket)
+
+
+def _discard_client(websocket) -> None:
+    for bucket in clients_by_screen.values():
+        bucket.discard(websocket)
+
+
+def _all_clients() -> set:
+    merged: set = set()
+    for bucket in clients_by_screen.values():
+        merged |= bucket
+    return merged
+
+
+def _client_count() -> int:
+    return len(_all_clients())
+
+
 current_subtitle = ""
 should_clear_next = False
 
@@ -285,9 +320,20 @@ async def clear_subtitle():
 
 # 主服务器连接端点
 @app.websocket("/sync/{lanlan_name}")
-async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
+async def sync_endpoint(websocket: WebSocket, lanlan_name: str):
+    # 无屏幕序号：广播给所有屏幕（main_server 走这条）
+    await _run_sync(websocket, lanlan_name, None)
+
+
+@app.websocket("/sync/{lanlan_name}/{screen}")
+async def sync_endpoint_screen(websocket: WebSocket, lanlan_name: str, screen: str):
+    # 带屏幕序号：仅广播给该屏幕（controler 按屏推送走这条）
+    await _run_sync(websocket, lanlan_name, screen)
+
+
+async def _run_sync(websocket: WebSocket, lanlan_name: str, screen):
     await websocket.accept()
-    print(f"✅ [SYNC] 主服务器已连接: {websocket.client}")
+    print(f"✅ [SYNC] 同步源已连接: {websocket.client} (screen={screen})")
 
     try:
         while True:
@@ -323,43 +369,59 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
                     should_clear_next = True
 
                 if msg_type != "heartbeat":
-                    await broadcast_message(data)
+                    await broadcast_message(data, screen)
             except asyncio.exceptions.TimeoutError:
                 pass
     except WebSocketDisconnect:
-        print(f"❌ [SYNC] 主服务器已断开: {websocket.client}")
+        print(f"❌ [SYNC] 同步源已断开: {websocket.client} (screen={screen})")
     except Exception as e:
         logger.error(f"❌ [SYNC] 同步端点错误: {e}")
 
 
 # 二进制数据同步端点
 @app.websocket("/sync_binary/{lanlan_name}")
-async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
+async def sync_binary_endpoint(websocket: WebSocket, lanlan_name: str):
+    await _run_sync_binary(websocket, lanlan_name, None)
+
+
+@app.websocket("/sync_binary/{lanlan_name}/{screen}")
+async def sync_binary_endpoint_screen(websocket: WebSocket, lanlan_name: str, screen: str):
+    await _run_sync_binary(websocket, lanlan_name, screen)
+
+
+async def _run_sync_binary(websocket: WebSocket, lanlan_name: str, screen):
     await websocket.accept()
-    print(f"✅ [BINARY] 主服务器二进制连接已建立: {websocket.client}")
+    print(f"✅ [BINARY] 二进制同步源已连接: {websocket.client} (screen={screen})")
 
     try:
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_bytes(), timeout=25)
-                if len(data)>4:
-                    await broadcast_binary(data)
+                if len(data) > 4:
+                    await broadcast_binary(data, screen)
             except asyncio.exceptions.TimeoutError:
                 pass
     except WebSocketDisconnect:
-        print(f"❌ [BINARY] 主服务器二进制连接已断开: {websocket.client}")
+        print(f"❌ [BINARY] 二进制同步源已断开: {websocket.client} (screen={screen})")
     except Exception as e:
         logger.error(f"❌ [BINARY] 二进制同步端点错误: {e}")
 
 
 # 客户端连接端点
 @app.websocket("/ws/{lanlan_name}")
-async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
-    await websocket.accept()
-    print(f"✅ [CLIENT] 查看客户端已连接: {websocket.client}, 当前总数: {len(connected_clients) + 1}")
+async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
+    await _run_viewer_client(websocket, lanlan_name, DEFAULT_SCREEN)
 
-    # 添加到连接集合
-    connected_clients.add(websocket)
+
+@app.websocket("/ws/{lanlan_name}/{screen}")
+async def websocket_endpoint_screen(websocket: WebSocket, lanlan_name: str, screen: str):
+    await _run_viewer_client(websocket, lanlan_name, screen)
+
+
+async def _run_viewer_client(websocket: WebSocket, lanlan_name: str, screen: str):
+    await websocket.accept()
+    _register_client(websocket, screen)
+    print(f"✅ [CLIENT] 查看客户端已连接: {websocket.client} (screen={screen}), 当前总数: {_client_count()}")
 
     try:
         # 保持连接直到客户端断开
@@ -380,8 +442,8 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
         print(f"❌ [CLIENT] 客户端连接异常: {e}")
     finally:
         # 安全地移除客户端（即使已经被移除也不会报错）
-        connected_clients.discard(websocket)
-        print(f"🗑️ [CLIENT] 已移除客户端，当前剩余: {len(connected_clients)}")
+        _discard_client(websocket)
+        print(f"🗑️ [CLIENT] 已移除客户端，当前剩余: {_client_count()}")
 
 
 # 单个客户端发送（带超时），供并发广播复用
@@ -407,7 +469,7 @@ async def _broadcast(client_set, sender, label, success_msg=None):
     success_count = sum(1 for _, ok in results if ok)
     disconnected_clients = [client for client, ok in results if not ok]
 
-    # 移除所有断开/超时的客户端
+    # 移除所有断开/超时的客户端（client_set 必须是真实分桶，discard 才能生效）
     for client in disconnected_clients:
         client_set.discard(client)
         print(f"🗑️ [{label}] 移除断开的客户端: {client.client}")
@@ -417,19 +479,31 @@ async def _broadcast(client_set, sender, label, success_msg=None):
         print(success_msg.format(success_count) + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
 
 
+# 按屏幕路由的广播：screen=None 广播所有屏幕（逐桶 fan-out），否则只命中该屏幕。
+# 复用 _broadcast 的并发超时 fan-out，并对真实分桶做断连清理。
+async def _broadcast_by_screen(sender, label, screen, success_msg=None):
+    if screen is None:
+        for bucket in list(clients_by_screen.values()):
+            await _broadcast(bucket, sender, label, success_msg)
+    else:
+        bucket = clients_by_screen.get(screen)
+        if bucket:
+            await _broadcast(bucket, sender, label, success_msg)
+
+
 # 广播字幕到字幕客户端（并发，与主广播共用超时 fan-out，避免某个字幕客户端卡住拖住 sync_endpoint）
 async def broadcast_subtitle_text(text):
     await _broadcast(subtitle_clients, lambda client: client.send_json({"type": "subtitle", "text": text}), "SUBTITLE")
 
 
-# 广播消息到所有客户端
-async def broadcast_message(message):
-    await _broadcast(connected_clients, lambda client: client.send_json(message), "BROADCAST", "✅ [BROADCAST] 成功广播到 {} 个客户端")
+# 广播消息到客户端（screen=None 广播所有屏幕；否则仅命中该屏幕）
+async def broadcast_message(message, screen=None):
+    await _broadcast_by_screen(lambda client: client.send_json(message), "BROADCAST", screen, "✅ [BROADCAST] 成功广播到 {} 个客户端")
 
 
-# 广播二进制数据到所有客户端
-async def broadcast_binary(data):
-    await _broadcast(connected_clients, lambda client: client.send_bytes(data), "BINARY BROADCAST", "✅ [BINARY BROADCAST] 成功广播音频到 {} 个客户端")
+# 广播二进制数据到客户端（screen=None 广播所有屏幕；否则仅命中该屏幕）
+async def broadcast_binary(data, screen=None):
+    await _broadcast_by_screen(lambda client: client.send_bytes(data), "BINARY BROADCAST", screen, "✅ [BINARY BROADCAST] 成功广播音频到 {} 个客户端")
 
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
@@ -454,12 +528,12 @@ async def cleanup_disconnected_clients():
     while True:
         try:
             # 检查并移除已断开的客户端
-            for client in list(connected_clients):
+            for client in list(_all_clients()):
                 try:
                     await client.send_json({"type": "heartbeat"})
                 except Exception as e:
                     print("广播错误:", e)
-                    connected_clients.remove(client)
+                    _discard_client(client)
             await asyncio.sleep(60)  # 每分钟检查一次
         except Exception as e:
             print(f"清理客户端错误: {e}")
