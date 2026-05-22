@@ -7,6 +7,26 @@ export async function readJsonResponse(response: Response, label: string) {
   return await response.json();
 }
 
+function pluginErrorMessage(error: unknown) {
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message) {
+      return message;
+    }
+  }
+  if (error !== undefined && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return 'Plugin call failed';
+}
+
 export async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
   const created = await readJsonResponse(await fetch('/runs', {
     method: 'POST',
@@ -27,7 +47,7 @@ export async function callPlugin(entryId: string, args: Record<string, unknown> 
         throw new Error('Run export missing JSON result');
       }
       if (item.json.success === false || item.json.error) {
-        throw new Error(item.json.error?.message || 'Plugin call failed');
+        throw new Error(pluginErrorMessage(item.json.error));
       }
       return item.json.data || {};
     }

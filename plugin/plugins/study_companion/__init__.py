@@ -877,8 +877,9 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_pomodoro_status(self, **_):
         try:
             _, _, timer, supervision = self._require_habit_components()
-            before_state = str(timer.status().get("state") or "")
-            status = timer.tick()
+            before_status = await asyncio.to_thread(timer.status)
+            before_state = str(before_status.get("state") or "")
+            status = await asyncio.to_thread(timer.tick)
             after_state = str(status.get("state") or "")
             if before_state == "focusing" and after_state in {
                 "short_break",

@@ -2534,36 +2534,37 @@ async def test_study_plugin_starts_and_collects_entries(
     )
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
-
-    assert isinstance(result, Ok)
-    entries = plugin.collect_entries()
-    assert "study_status" in entries
-    assert "study_explain_text" in entries
-    assert "study_ocr_snapshot" in entries
-    assert "study_set_mode" in entries
-    assert "study_detect_mode_intent" in entries
-    assert "study_export_notes" not in entries
-    assert "study_knowledge_map" in entries
-    assert "study_set_knowledge_contribution_opt_in" in entries
-    disabled_export = await plugin._study_export_notes_entry(
-        fmt="markdown", preview_only=True, title="Default Notes"
-    )
-    assert isinstance(disabled_export, Err)
-    status = await plugin.study_status()
-    assert isinstance(status, Ok)
-    assert status.value["status"] == "ready"
-    assert status.value["is_first_run"] is True
-    assert status.value["active_mode"] == MODE_COMPANION
-    assert "mode_started_at" in status.value
-    assert "recent_mode_switches" in status.value
-    assert status.value["knowledge_summary"]["topic_count"] >= 120
-    assert "review_queue" in status.value
-    assert "weak_topics" in status.value
-    assert "mastery_overview" in status.value
-    assert (
-        runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db"
-    ).is_file()
-    await plugin.shutdown()
+    try:
+        assert isinstance(result, Ok)
+        entries = plugin.collect_entries()
+        assert "study_status" in entries
+        assert "study_explain_text" in entries
+        assert "study_ocr_snapshot" in entries
+        assert "study_set_mode" in entries
+        assert "study_detect_mode_intent" in entries
+        assert "study_export_notes" not in entries
+        assert "study_knowledge_map" in entries
+        assert "study_set_knowledge_contribution_opt_in" in entries
+        disabled_export = await plugin._study_export_notes_entry(
+            fmt="markdown", preview_only=True, title="Default Notes"
+        )
+        assert isinstance(disabled_export, Err)
+        status = await plugin.study_status()
+        assert isinstance(status, Ok)
+        assert status.value["status"] == "ready"
+        assert status.value["is_first_run"] is True
+        assert status.value["active_mode"] == MODE_COMPANION
+        assert "mode_started_at" in status.value
+        assert "recent_mode_switches" in status.value
+        assert status.value["knowledge_summary"]["topic_count"] >= 120
+        assert "review_queue" in status.value
+        assert "weak_topics" in status.value
+        assert "mastery_overview" in status.value
+        assert (
+            runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db"
+        ).is_file()
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -2583,21 +2584,23 @@ async def test_study_status_degrades_when_habit_payload_fails(
     )
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
-    assert isinstance(result, Ok)
+    try:
+        assert isinstance(result, Ok)
 
-    class _BrokenHabitStore:
-        def list_goals(self, **_kwargs):
-            raise RuntimeError("habit db unavailable")
+        class _BrokenHabitStore:
+            def list_goals(self, **_kwargs):
+                raise RuntimeError("habit db unavailable")
 
-    plugin._habit_store = _BrokenHabitStore()  # type: ignore[assignment]
+        plugin._habit_store = _BrokenHabitStore()  # type: ignore[assignment]
 
-    status = await plugin.study_status()
+        status = await plugin.study_status()
 
-    assert isinstance(status, Ok)
-    assert status.value["status"] == "ready"
-    assert status.value["habit"]["available"] is False
-    assert "habit db unavailable" in status.value["habit"]["error"]
-    await plugin.shutdown()
+        assert isinstance(status, Ok)
+        assert status.value["status"] == "ready"
+        assert status.value["habit"]["available"] is False
+        assert "habit db unavailable" in status.value["habit"]["error"]
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
