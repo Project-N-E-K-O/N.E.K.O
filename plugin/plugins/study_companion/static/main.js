@@ -11,8 +11,12 @@ const ENTRY_TIMEOUT_MS = {
   study_generate_question: 75000,
   study_evaluate_answer: 75000,
   study_summarize_session: 90000,
+  study_memory_card_upsert: 30000,
+  study_memory_deck: 30000,
+  study_memory_card_review: 30000,
 };
 let currentMode = 'companion';
+let currentMemoryCard = null;
 
 const statusLine = document.getElementById('statusLine');
 const replyText = document.getElementById('replyText');
@@ -28,7 +32,14 @@ const questionText = document.getElementById('questionText');
 const screenType = document.getElementById('screenType');
 const questionStatus = document.getElementById('questionStatus');
 const evaluationStatus = document.getElementById('evaluationStatus');
+const memoryDeckStatus = document.getElementById('memoryDeckStatus');
+const memoryFrontInput = document.getElementById('memoryFrontInput');
+const memoryBackInput = document.getElementById('memoryBackInput');
+const memoryRefreshBtn = document.getElementById('memoryRefreshBtn');
+const memoryAddBtn = document.getElementById('memoryAddBtn');
+const memoryDueCard = document.getElementById('memoryDueCard');
 const modeButtons = Array.from(document.querySelectorAll('[data-mode]'));
+const memoryReviewButtons = Array.from(document.querySelectorAll('[data-memory-rating]'));
 
 function t(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -116,6 +127,38 @@ function setStudyState(data = {}) {
     const score = Number.isFinite(Number(evaluation.score)) ? ` / ${evaluation.score}` : '';
     evaluationStatus.textContent = verdict ? `${verdict}${score}` : '-';
   }
+  setMemoryDeckState(data.memory_deck || {});
+}
+
+function setMemoryDeckState(deck = {}) {
+  const dueCards = Array.isArray(deck.due_cards)
+    ? deck.due_cards
+    : (Array.isArray(deck.cards) ? deck.cards.filter((item) => item && item.is_due) : []);
+  const cards = Array.isArray(deck.cards) ? deck.cards : [];
+  const cardCount = Number.isFinite(Number(deck.card_count)) ? Number(deck.card_count) : cards.length;
+  const dueCount = Number.isFinite(Number(deck.due_count)) ? Number(deck.due_count) : dueCards.length;
+  currentMemoryCard = dueCards[0] || null;
+  if (memoryDeckStatus) {
+    memoryDeckStatus.textContent = tf('ui.memory.status', '{card_count} cards / {due_count} due', {
+      card_count: cardCount,
+      due_count: dueCount,
+    });
+  }
+  if (memoryDueCard) {
+    if (currentMemoryCard) {
+      const front = compactText(currentMemoryCard.front, currentMemoryCard.topic_id || '-');
+      const back = compactText(currentMemoryCard.back, '-');
+      const retention = Number.isFinite(Number(currentMemoryCard.retrievability))
+        ? `R ${(Number(currentMemoryCard.retrievability) * 100).toFixed(0)}%`
+        : '';
+      memoryDueCard.textContent = [front, back, retention].filter(Boolean).join('\n\n');
+    } else {
+      memoryDueCard.textContent = t('ui.memory.empty_due', 'No due memory cards');
+    }
+  }
+  memoryReviewButtons.forEach((button) => {
+    button.disabled = !currentMemoryCard;
+  });
 }
 
 function setStatusLine(data) {
@@ -324,6 +367,53 @@ async function summarizeSession() {
   await refreshStatus({ updateReply: false });
 }
 
+async function refreshMemoryDeck() {
+  setStatus(t('ui.status.refreshing', 'Refreshing...'));
+  const data = await callPlugin('study_memory_deck', { limit: 8 });
+  setMemoryDeckState(data);
+  setStatus(t('ui.status.reply_ready', 'Reply ready'));
+}
+
+async function saveMemoryCard() {
+  const front = memoryFrontInput ? memoryFrontInput.value.trim() : '';
+  const back = memoryBackInput ? memoryBackInput.value.trim() : '';
+  if (!front || !back) {
+    throw new Error(t('ui.memory.error_missing_card', 'Please enter both sides of the card.'));
+  }
+  setStatus(t('ui.memory.saving', 'Saving memory card...'));
+  const data = await callPlugin('study_memory_card_upsert', {
+    front,
+    back,
+    source: 'ui',
+  });
+  if (memoryFrontInput) {
+    memoryFrontInput.value = '';
+  }
+  if (memoryBackInput) {
+    memoryBackInput.value = '';
+  }
+  setReply(data.card ? `${data.card.front}\n\n${data.card.back}` : '');
+  await refreshMemoryDeck();
+}
+
+async function reviewMemoryCard(rating) {
+  if (!currentMemoryCard || !currentMemoryCard.topic_id) {
+    return;
+  }
+  setStatus(t('ui.memory.reviewing', 'Reviewing memory card...'));
+  const data = await callPlugin('study_memory_card_review', {
+    topic_id: currentMemoryCard.topic_id,
+    rating,
+  });
+  const scheduledDays = data.schedule && Number.isFinite(Number(data.schedule.scheduled_days))
+    ? Number(data.schedule.scheduled_days).toFixed(1)
+    : '';
+  setReply(scheduledDays
+    ? tf('ui.memory.review_saved_days', 'Next review in {days} days', { days: scheduledDays })
+    : t('ui.memory.review_saved', 'Review saved'));
+  await refreshMemoryDeck();
+}
+
 async function setMode(mode) {
   if (mode === currentMode) {
     return;
@@ -368,6 +458,28 @@ async function bootstrap() {
   bindButton(explainBtn, explainText);
   bindButton(evaluateAnswerBtn, evaluateAnswer);
   bindButton(summarizeBtn, summarizeSession);
+  bindButton(memoryRefreshBtn, refreshMemoryDeck);
+  bindButton(memoryAddBtn, saveMemoryCard);
+  memoryReviewButtons.forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (button.disabled) {
+        return;
+      }
+      memoryReviewButtons.forEach((candidate) => {
+        candidate.disabled = true;
+      });
+      try {
+        await reviewMemoryCard(button.getAttribute('data-memory-rating') || 'good');
+      } catch (error) {
+        setStatus(t('ui.status.error', 'Error'));
+        setReply(formatPluginError(error));
+      } finally {
+        memoryReviewButtons.forEach((candidate) => {
+          candidate.disabled = !currentMemoryCard;
+        });
+      }
+    });
+  });
   modeButtons.forEach((button) => {
     button.addEventListener('click', async () => {
       if (button.disabled) {

@@ -7,7 +7,16 @@ import threading
 import time
 from typing import Any
 
-from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
+from plugin.sdk.plugin import (
+    Err,
+    NekoPluginBase,
+    Ok,
+    SdkError,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+    tr,
+)
 
 from .constants import (
     LLM_OPERATION_ANSWER_EVALUATE,
@@ -39,7 +48,12 @@ from .service import (
     build_status_payload,
     build_tutor_payload,
 )
-from .mode_manager import ModeManager, build_transition_phrase, handle_user_intent, normalize_mode
+from .mode_manager import (
+    ModeManager,
+    build_transition_phrase,
+    handle_user_intent,
+    normalize_mode,
+)
 from .knowledge_contribution import PublicGraphContributionBuilder
 from .knowledge_tracker import KnowledgeTracker
 from .state import build_initial_state
@@ -89,11 +103,15 @@ class StudyCompanionPlugin(NekoPluginBase):
                 retention_target=self._cfg.fsrs_retention_target,
                 logger=self.logger,
             )
-            restored = await asyncio.to_thread(self._store.load_state, build_initial_state(mode=self._cfg.mode))
+            restored = await asyncio.to_thread(
+                self._store.load_state, build_initial_state(mode=self._cfg.mode)
+            )
             with self._lock:
                 self._state = restored
                 self._state.status = STATUS_READY
-                self._state.active_mode = normalize_mode(self._state.active_mode or self._cfg.mode)
+                self._state.active_mode = normalize_mode(
+                    self._state.active_mode or self._cfg.mode
+                )
                 self._state.mode_started_at = float(self._state.mode_started_at or 0.0)
                 self._state.mode_lock_until = float(self._state.mode_lock_until or 0.0)
                 self._cfg.mode = self._state.active_mode
@@ -108,7 +126,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "session_suggestions": self._state.session_suggestions,
                         "mode_lock_until": self._state.mode_lock_until,
                     }
-            )
+                )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
             await asyncio.to_thread(self._refresh_dependency_status)
@@ -157,7 +175,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             try:
                 await agent.shutdown()
             except Exception as exc:
-                self.logger.warning("study startup cleanup agent shutdown failed: {}", exc)
+                self.logger.warning(
+                    "study startup cleanup agent shutdown failed: {}", exc
+                )
         try:
             await asyncio.to_thread(self._store.close)
         except Exception as exc:
@@ -187,7 +207,9 @@ class StudyCompanionPlugin(NekoPluginBase):
         await asyncio.to_thread(self._store.save_config, self._cfg)
         await asyncio.to_thread(self._store.save_state, self._state)
 
-    async def _apply_mode_switch(self, mode: str, reason: str, *, language: str | None = None) -> dict[str, Any]:
+    async def _apply_mode_switch(
+        self, mode: str, reason: str, *, language: str | None = None
+    ) -> dict[str, Any]:
         with self._lock:
             self._mode_manager.restore(
                 {
@@ -199,14 +221,38 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "mode_lock_until": self._state.mode_lock_until,
                 }
             )
-            result = self._mode_manager.switch_to(mode, reason, language=language or self._cfg.language)
-            checkpoint = result.get("checkpoint") if isinstance(result.get("checkpoint"), dict) else {}
-            self._state.active_mode = str(result.get("new_mode") or self._state.active_mode)
-            self._state.mode_started_at = float(checkpoint.get("mode_started_at") or self._state.mode_started_at or 0.0)
-            self._state.recent_mode_switches = checkpoint.get("recent_mode_switches") if isinstance(checkpoint.get("recent_mode_switches"), list) else self._state.recent_mode_switches
-            self._state.suggestion_cooldowns = checkpoint.get("suggestion_cooldowns") if isinstance(checkpoint.get("suggestion_cooldowns"), dict) else self._state.suggestion_cooldowns
-            self._state.session_suggestions = checkpoint.get("session_suggestions") if isinstance(checkpoint.get("session_suggestions"), list) else self._state.session_suggestions
-            self._state.mode_lock_until = float(checkpoint.get("mode_lock_until") or self._state.mode_lock_until or 0.0)
+            result = self._mode_manager.switch_to(
+                mode, reason, language=language or self._cfg.language
+            )
+            checkpoint = (
+                result.get("checkpoint")
+                if isinstance(result.get("checkpoint"), dict)
+                else {}
+            )
+            self._state.active_mode = str(
+                result.get("new_mode") or self._state.active_mode
+            )
+            self._state.mode_started_at = float(
+                checkpoint.get("mode_started_at") or self._state.mode_started_at or 0.0
+            )
+            self._state.recent_mode_switches = (
+                checkpoint.get("recent_mode_switches")
+                if isinstance(checkpoint.get("recent_mode_switches"), list)
+                else self._state.recent_mode_switches
+            )
+            self._state.suggestion_cooldowns = (
+                checkpoint.get("suggestion_cooldowns")
+                if isinstance(checkpoint.get("suggestion_cooldowns"), dict)
+                else self._state.suggestion_cooldowns
+            )
+            self._state.session_suggestions = (
+                checkpoint.get("session_suggestions")
+                if isinstance(checkpoint.get("session_suggestions"), list)
+                else self._state.session_suggestions
+            )
+            self._state.mode_lock_until = float(
+                checkpoint.get("mode_lock_until") or self._state.mode_lock_until or 0.0
+            )
             self._state.checkpoint = {
                 **checkpoint,
                 "changed": bool(result.get("changed")),
@@ -230,9 +276,12 @@ class StudyCompanionPlugin(NekoPluginBase):
         is_first_run = not bool(self._store.list_interactions(limit=1))
         knowledge = {
             "knowledge_summary": self._knowledge_tracker.get_status_summary(limit=8),
-            "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(limit=8),
+            "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(
+                limit=8
+            ),
             "anonymous_knowledge_stats_summary": self._store.anonymous_knowledge_stats_summary(),
             "review_queue": self._knowledge_tracker.get_review_queue(limit=8),
+            "memory_deck": self._knowledge_tracker.get_memory_deck_status(limit=8),
             "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
             "mastery_overview": self._store.list_mastery_overview(limit=8),
         }
@@ -262,7 +311,11 @@ class StudyCompanionPlugin(NekoPluginBase):
             input_schema={
                 "type": "object",
                 "properties": {
-                    "fmt": {"type": "string", "enum": export_formats, "default": "markdown"},
+                    "fmt": {
+                        "type": "string",
+                        "enum": export_formats,
+                        "default": "markdown",
+                    },
                     "style": {
                         "type": "string",
                         "enum": ["neko", "academic", "compact"],
@@ -272,11 +325,21 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "preview_only": {"type": "boolean", "default": False},
                     "time_range": {"type": "string", "default": "recent"},
                     "recent_limit": {"type": "integer", "default": 30},
-                    "topic_ids": {"type": "array", "items": {"type": "string"}, "default": []},
+                    "topic_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": [],
+                    },
                 },
             },
             timeout=75.0,
-            llm_result_fields=["filename", "content_type", "format", "style", "markdown"],
+            llm_result_fields=[
+                "filename",
+                "content_type",
+                "format",
+                "style",
+                "markdown",
+            ],
         )
 
     async def _study_export_notes_entry(
@@ -292,7 +355,9 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             if not bool(self._cfg.doc_export.enabled):
-                return Err(SdkError("study note export is disabled by doc_export.enabled"))
+                return Err(
+                    SdkError("study note export is disabled by doc_export.enabled")
+                )
             normalize_format(fmt)
             exporter = DocExporter(self._store, config=self._cfg.doc_export)
             exported = await asyncio.to_thread(
@@ -334,7 +399,9 @@ class StudyCompanionPlugin(NekoPluginBase):
         current["event_count"] = int(current.get("event_count") or 0) + 1
         current["last_operation"] = operation
         current["last_updated_at"] = utc_now_iso()
-        screen_type = str(payload.get("screen_type") or current.get("last_screen_type") or "").strip()
+        screen_type = str(
+            payload.get("screen_type") or current.get("last_screen_type") or ""
+        ).strip()
         if screen_type:
             current["last_screen_type"] = screen_type
         if operation == LLM_OPERATION_QUESTION_GENERATE:
@@ -346,7 +413,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 verdict_counts = dict(current.get("verdict_counts") or {})
                 verdict_counts[verdict] = int(verdict_counts.get(verdict) or 0) + 1
                 current["verdict_counts"] = verdict_counts
-            weak_points = [item for item in payload.get("weak_points") or [] if str(item).strip()]
+            weak_points = [
+                item for item in payload.get("weak_points") or [] if str(item).strip()
+            ]
             if weak_points:
                 current["weak_points"] = weak_points[:6]
         elif operation == LLM_OPERATION_CONCEPT_EXPLAIN:
@@ -358,7 +427,9 @@ class StudyCompanionPlugin(NekoPluginBase):
         topic = str(payload.get("topic") or "").strip()
         if topic:
             current["last_topic"] = topic
-        weak_points = [item for item in payload.get("weak_points") or [] if str(item).strip()]
+        weak_points = [
+            item for item in payload.get("weak_points") or [] if str(item).strip()
+        ]
         if weak_points:
             current["weak_points"] = weak_points[:6]
         return current
@@ -367,14 +438,18 @@ class StudyCompanionPlugin(NekoPluginBase):
         with self._lock:
             return dict(self._state.last_screen_classification)
 
-    def _update_screen_classification(self, text: str, *, window_title: str = "", update_empty: bool = True) -> dict[str, Any]:
+    def _update_screen_classification(
+        self, text: str, *, window_title: str = "", update_empty: bool = True
+    ) -> dict[str, Any]:
         normalized = str(text or "").strip()
         if not normalized and not update_empty:
             with self._lock:
                 return dict(self._state.last_screen_classification)
         with self._lock:
             recent = list(self._state.recent_screen_classifications)
-        classification = classify_screen_from_ocr(normalized, window_title=window_title, recent_classifications=recent)
+        classification = classify_screen_from_ocr(
+            normalized, window_title=window_title, recent_classifications=recent
+        )
         payload = classification.to_payload()
         with self._lock:
             if normalized or update_empty:
@@ -405,11 +480,16 @@ class StudyCompanionPlugin(NekoPluginBase):
             "language": self._cfg.language,
             "mode": snapshot.get("active_mode") or self._cfg.mode,
             "screen_classification": snapshot.get("last_screen_classification") or {},
-            "recent_screen_classifications": snapshot.get("recent_screen_classifications") or [],
+            "recent_screen_classifications": snapshot.get(
+                "recent_screen_classifications"
+            )
+            or [],
             "current_question": snapshot.get("current_question") or {},
             "last_answer_evaluation": snapshot.get("last_answer_evaluation") or {},
             "session_summary_seed": snapshot.get("session_summary_seed") or {},
-            "recent_learning_events": (snapshot.get("recent_learning_events") or [])[-8:],
+            "recent_learning_events": (snapshot.get("recent_learning_events") or [])[
+                -8:
+            ],
             "last_ocr_text": snapshot.get("last_ocr_text") or "",
             "last_ocr_at": snapshot.get("last_ocr_at") or "",
             "history": history,
@@ -435,7 +515,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             context.update(extra)
         return context
 
-    def _record_tutor_result(self, operation: str, reply: TutorReply, *, extra: dict[str, Any] | None = None) -> None:
+    def _record_tutor_result(
+        self, operation: str, reply: TutorReply, *, extra: dict[str, Any] | None = None
+    ) -> None:
         payload = dict(reply.payload or {})
         summary = str(reply.reply or "").strip()
         event = {
@@ -447,12 +529,21 @@ class StudyCompanionPlugin(NekoPluginBase):
             "diagnostic": reply.diagnostic,
             "at": time.time(),
             "created_at": reply.created_at or utc_now_iso(),
-            "screen_type": str(payload.get("screen_type") or (extra or {}).get("screen_type") or self._screen_classification_context().get("screen_type") or ""),
+            "screen_type": str(
+                payload.get("screen_type")
+                or (extra or {}).get("screen_type")
+                or self._screen_classification_context().get("screen_type")
+                or ""
+            ),
         }
         with self._lock:
-            seed = self._merge_session_summary_seed(operation, payload=payload, seed=self._state.session_summary_seed)
+            seed = self._merge_session_summary_seed(
+                operation, payload=payload, seed=self._state.session_summary_seed
+            )
             self._state.session_summary_seed = seed
-            self._state.recent_learning_events = (self._state.recent_learning_events + [event])[-16:]
+            self._state.recent_learning_events = (
+                self._state.recent_learning_events + [event]
+            )[-16:]
             if operation != LLM_OPERATION_KNOWLEDGE_TRACK:
                 self._state.last_reply = summary
                 self._state.last_reply_at = reply.created_at or utc_now_iso()
@@ -462,10 +553,16 @@ class StudyCompanionPlugin(NekoPluginBase):
                         self._state.last_question_at = reply.created_at or utc_now_iso()
                 elif operation == LLM_OPERATION_ANSWER_EVALUATE:
                     self._state.last_answer_evaluation = dict(payload)
-                    self._state.last_answer_evaluated_at = reply.created_at or utc_now_iso()
+                    self._state.last_answer_evaluated_at = (
+                        reply.created_at or utc_now_iso()
+                    )
                 elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
-                    self._state.last_session_summary = str(payload.get("summary") or "").strip()
-                    self._state.last_session_summary_at = reply.created_at or utc_now_iso()
+                    self._state.last_session_summary = str(
+                        payload.get("summary") or ""
+                    ).strip()
+                    self._state.last_session_summary_at = (
+                        reply.created_at or utc_now_iso()
+                    )
 
     async def _finalize_tutor_call(
         self,
@@ -516,7 +613,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                     **(extra_context or {}),
                 },
             )
-            track_reply = await self._agent.knowledge_track(mode=self._state.active_mode, context=track_context)
+            track_reply = await self._agent.knowledge_track(
+                mode=self._state.active_mode, context=track_context
+            )
         except Exception as exc:
             self.logger.warning("study knowledge track failed: {}", exc)
             track_reply = TutorReply(
@@ -529,7 +628,10 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "confidence": 0.35,
                     "weak_points": [],
                     "next_steps": [],
-                    "screen_type": self._screen_classification_context().get("screen_type") or "",
+                    "screen_type": self._screen_classification_context().get(
+                        "screen_type"
+                    )
+                    or "",
                 },
                 degraded=True,
                 diagnostic=diagnostic_code_for_exception(exc),
@@ -537,7 +639,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             )
         self._record_tutor_result(LLM_OPERATION_KNOWLEDGE_TRACK, track_reply)
         if operation == LLM_OPERATION_ANSWER_EVALUATE:
-            await self._record_answer_knowledge(reply, track_reply, extra_context=extra_context)
+            await self._record_answer_knowledge(
+                reply, track_reply, extra_context=extra_context
+            )
 
     async def _record_answer_knowledge(
         self,
@@ -551,9 +655,19 @@ class StudyCompanionPlugin(NekoPluginBase):
         eval_payload = dict(eval_reply.payload or {})
         current_question = dict(context.get("current_question") or {})
         question_payload = dict(context.get("question_payload") or current_question)
-        question_text = str(context.get("question") or question_payload.get("question") or current_question.get("question") or "").strip()
+        question_text = str(
+            context.get("question")
+            or question_payload.get("question")
+            or current_question.get("question")
+            or ""
+        ).strip()
         question_payload["question"] = question_text
-        question_payload["answer"] = str(context.get("expected_answer") or question_payload.get("answer") or current_question.get("answer") or "")
+        question_payload["answer"] = str(
+            context.get("expected_answer")
+            or question_payload.get("answer")
+            or current_question.get("answer")
+            or ""
+        )
         topic = str(
             question_payload.get("topic")
             or track_payload.get("topic")
@@ -567,13 +681,16 @@ class StudyCompanionPlugin(NekoPluginBase):
             "topic": topic,
             "track": track_payload,
         }
-        session_id = str(
-            context.get("session_id")
-            or context.get("run_id")
-            or getattr(self._state, "run_id", "")
-            or getattr(self.ctx, "run_id", "")
+        session_id = (
+            str(
+                context.get("session_id")
+                or context.get("run_id")
+                or getattr(self._state, "run_id", "")
+                or getattr(self.ctx, "run_id", "")
+                or "default"
+            ).strip()
             or "default"
-        ).strip() or "default"
+        )
         try:
             await asyncio.to_thread(
                 self._knowledge_tracker.on_answer,
@@ -594,7 +711,9 @@ class StudyCompanionPlugin(NekoPluginBase):
         if topic:
             return topic
         text = str(reply.input_text or "").strip()
-        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        first_line = next(
+            (line.strip() for line in text.splitlines() if line.strip()), ""
+        )
         return first_line[:48] or "general"
 
     def _resolve_current_run_id(self, extra_args: dict[str, Any] | None = None) -> str:
@@ -638,19 +757,36 @@ class StudyCompanionPlugin(NekoPluginBase):
     @plugin_entry(
         id="study_open_ui",
         name=tr("entries.open_ui.name", default="Open Study Companion UI"),
-        description=tr("entries.open_ui.description", default="Return the static UI path for study_companion."),
+        description=tr(
+            "entries.open_ui.description",
+            default="Return the static UI path for study_companion.",
+        ),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["available", "path", "message_key"],
     )
     async def study_open_ui(self, **_):
-        return Ok(build_open_ui_payload(plugin_id=self.plugin_id, available=self.get_static_ui_config() is not None))
+        return Ok(
+            build_open_ui_payload(
+                plugin_id=self.plugin_id,
+                available=self.get_static_ui_config() is not None,
+            )
+        )
 
     @plugin_entry(
         id="study_status",
         name=tr("entries.status.name", default="Study Companion Status"),
-        description=tr("entries.status.description", default="Return runtime status, dependencies, and recent study interactions."),
+        description=tr(
+            "entries.status.description",
+            default="Return runtime status, dependencies, and recent study interactions.",
+        ),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["status", "active_mode", "screen_classification", "current_question", "last_answer_evaluation"],
+        llm_result_fields=[
+            "status",
+            "active_mode",
+            "screen_classification",
+            "current_question",
+            "last_answer_evaluation",
+        ],
     )
     async def study_status(self, **_):
         payload = await asyncio.to_thread(self._status_payload)
@@ -658,26 +794,49 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_knowledge_quality_status",
-        name=tr("entries.knowledge_quality_status.name", default="Study Knowledge Quality Status"),
-        description=tr("entries.knowledge_quality_status.description", default="Return candidate knowledge quality counts and recent evidence."),
-        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}},
+        name=tr(
+            "entries.knowledge_quality_status.name",
+            default="Study Knowledge Quality Status",
+        ),
+        description=tr(
+            "entries.knowledge_quality_status.description",
+            default="Return candidate knowledge quality counts and recent evidence.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 20}},
+        },
         llm_result_fields=["total", "by_status", "recent_evidence"],
     )
     async def study_knowledge_quality_status(self, limit: int = 20, **_):
-        payload = await asyncio.to_thread(self._knowledge_tracker.quality.status_summary, limit=max(1, int(limit or 20)))
+        payload = await asyncio.to_thread(
+            self._knowledge_tracker.quality.status_summary,
+            limit=max(1, int(limit or 20)),
+        )
         return Ok(payload)
 
     @plugin_entry(
         id="study_anonymous_knowledge_preview",
-        name=tr("entries.anonymous_knowledge_preview.name", default="Study Anonymous Knowledge Preview"),
-        description=tr("entries.anonymous_knowledge_preview.description", default="Build and return a local anonymized knowledge contribution preview. Phase 4 does not upload it."),
-        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 100}}},
+        name=tr(
+            "entries.anonymous_knowledge_preview.name",
+            default="Study Anonymous Knowledge Preview",
+        ),
+        description=tr(
+            "entries.anonymous_knowledge_preview.description",
+            default="Build and return a local anonymized knowledge contribution preview. Phase 4 does not upload it.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 100}},
+        },
         llm_result_fields=["summary", "stats", "opt_in"],
     )
     async def study_anonymous_knowledge_preview(self, limit: int = 100, **_):
         try:
             builder = PublicGraphContributionBuilder(self._store, self._cfg)
-            payload = await asyncio.to_thread(builder.preview, limit=max(1, int(limit or 100)))
+            payload = await asyncio.to_thread(
+                builder.preview, limit=max(1, int(limit or 100))
+            )
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
@@ -685,8 +844,14 @@ class StudyCompanionPlugin(NekoPluginBase):
     @plugin_entry(
         id="study_knowledge_map",
         name=tr("entries.knowledge_map.name", default="Study Knowledge Map"),
-        description=tr("entries.knowledge_map.description", default="Return topics, relationships, mastery, weak topics, and wrong-question summaries for the study knowledge map."),
-        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 200}}},
+        description=tr(
+            "entries.knowledge_map.description",
+            default="Return topics, relationships, mastery, weak topics, and wrong-question summaries for the study knowledge map.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 200}},
+        },
         llm_result_fields=["summary", "nodes", "edges"],
     )
     async def study_knowledge_map(self, limit: int = 200, **_):
@@ -695,8 +860,12 @@ class StudyCompanionPlugin(NekoPluginBase):
             topics, mastery, weak_topics, wrong_questions = await asyncio.gather(
                 asyncio.to_thread(self._store.list_topics, safe_limit),
                 asyncio.to_thread(self._store.list_mastery_overview, safe_limit),
-                asyncio.to_thread(self._knowledge_tracker.get_weak_topics, limit=min(50, safe_limit)),
-                asyncio.to_thread(self._store.list_wrong_questions, limit=min(50, safe_limit)),
+                asyncio.to_thread(
+                    self._knowledge_tracker.get_weak_topics, limit=min(50, safe_limit)
+                ),
+                asyncio.to_thread(
+                    self._store.list_wrong_questions, limit=min(50, safe_limit)
+                ),
             )
             return Ok(
                 build_knowledge_map_payload(
@@ -710,9 +879,153 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError(str(exc)))
 
     @plugin_entry(
+        id="study_memory_card_upsert",
+        name=tr("entries.memory_card_upsert.name", default="Upsert Study Memory Card"),
+        description=tr(
+            "entries.memory_card_upsert.description",
+            default="Create or update a spaced-repetition memory card in the study deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "front": {"type": "string", "default": ""},
+                "back": {"type": "string", "default": ""},
+                "topic_id": {"type": "string", "default": ""},
+                "subject": {"type": "string", "default": "memory"},
+                "chapter": {"type": "string", "default": "memory_deck"},
+                "difficulty": {"type": "number", "default": 0.5},
+                "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+                "source": {"type": "string", "default": "manual"},
+            },
+            "required": ["front", "back"],
+        },
+        llm_result_fields=["created", "card"],
+    )
+    async def study_memory_card_upsert(
+        self,
+        front: str = "",
+        back: str = "",
+        topic_id: str = "",
+        subject: str = "memory",
+        chapter: str = "memory_deck",
+        difficulty: float = 0.5,
+        tags: list[str] | None = None,
+        source: str = "manual",
+        **_,
+    ):
+        try:
+            payload = await asyncio.to_thread(
+                self._knowledge_tracker.upsert_memory_card,
+                front=front,
+                back=back,
+                topic_id=topic_id,
+                subject=subject,
+                chapter=chapter,
+                difficulty=difficulty,
+                tags=tags if isinstance(tags, list) else [],
+                source=source,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_deck",
+        name=tr("entries.memory_deck.name", default="Study Memory Deck"),
+        description=tr(
+            "entries.memory_deck.description",
+            default="Return memory cards and due spaced-repetition cards for the study deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 20},
+                "due_only": {"type": "boolean", "default": False},
+                "include_topic_cards": {"type": "boolean", "default": False},
+            },
+        },
+        llm_result_fields=["card_count", "due_count", "cards"],
+    )
+    async def study_memory_deck(
+        self,
+        limit: int = 20,
+        due_only: bool = False,
+        include_topic_cards: bool = False,
+        **_,
+    ):
+        try:
+            safe_limit = max(1, min(200, int(limit or 20)))
+            if bool(include_topic_cards):
+                cards = await asyncio.to_thread(
+                    self._knowledge_tracker.list_memory_cards,
+                    limit=safe_limit,
+                    due_only=bool(due_only),
+                    include_topic_cards=bool(include_topic_cards),
+                )
+                return Ok(
+                    {
+                        "card_count": len(cards),
+                        "due_count": len(
+                            [item for item in cards if item.get("is_due")]
+                        ),
+                        "cards": cards,
+                    }
+                )
+            payload = await asyncio.to_thread(
+                self._knowledge_tracker.get_memory_deck_status, limit=safe_limit
+            )
+            if bool(due_only):
+                payload = {**payload, "cards": payload.get("due_cards") or []}
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_card_review",
+        name=tr("entries.memory_card_review.name", default="Review Study Memory Card"),
+        description=tr(
+            "entries.memory_card_review.description",
+            default="Grade a study memory card with FSRS ratings: again, hard, good, or easy.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "topic_id": {"type": "string", "default": ""},
+                "rating": {
+                    "type": "string",
+                    "enum": ["again", "hard", "good", "easy"],
+                    "default": "good",
+                },
+                "answer": {"type": "string", "default": ""},
+            },
+            "required": ["topic_id", "rating"],
+        },
+        llm_result_fields=["topic_id", "rating", "schedule", "card"],
+    )
+    async def study_memory_card_review(
+        self, topic_id: str = "", rating: str = "good", answer: str = "", **_
+    ):
+        try:
+            payload = await asyncio.to_thread(
+                self._knowledge_tracker.review_memory_card,
+                topic_id=topic_id,
+                rating=rating,
+                answer=answer,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
         id="study_set_knowledge_contribution_opt_in",
-        name=tr("entries.set_knowledge_contribution_opt_in.name", default="Set Study Knowledge Contribution Opt-In"),
-        description=tr("entries.set_knowledge_contribution_opt_in.description", default="Enable or disable local opt-in for anonymous study knowledge contribution queueing."),
+        name=tr(
+            "entries.set_knowledge_contribution_opt_in.name",
+            default="Set Study Knowledge Contribution Opt-In",
+        ),
+        description=tr(
+            "entries.set_knowledge_contribution_opt_in.description",
+            default="Enable or disable local opt-in for anonymous study knowledge contribution queueing.",
+        ),
         input_schema={
             "type": "object",
             "properties": {"opt_in": {"type": "boolean", "default": False}},
@@ -729,14 +1042,24 @@ class StudyCompanionPlugin(NekoPluginBase):
             preview = await asyncio.to_thread(builder.preview, limit=100)
             self._cfg.knowledge_contribution_opt_in = desired_opt_in
             await self._persist_state()
-            return Ok(build_contribution_settings_payload(opt_in=desired_opt_in, preview=preview))
+            return Ok(
+                build_contribution_settings_payload(
+                    opt_in=desired_opt_in, preview=preview
+                )
+            )
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
     @plugin_entry(
         id="study_clear_knowledge_contribution_queue",
-        name=tr("entries.clear_knowledge_contribution_queue.name", default="Clear Study Knowledge Contribution Queue"),
-        description=tr("entries.clear_knowledge_contribution_queue.description", default="Clear the local anonymous knowledge contribution queue."),
+        name=tr(
+            "entries.clear_knowledge_contribution_queue.name",
+            default="Clear Study Knowledge Contribution Queue",
+        ),
+        description=tr(
+            "entries.clear_knowledge_contribution_queue.description",
+            default="Clear the local anonymous knowledge contribution queue.",
+        ),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["cleared_count"],
     )
@@ -751,8 +1074,14 @@ class StudyCompanionPlugin(NekoPluginBase):
     @plugin_entry(
         id="study_detect_mode_intent",
         name=tr("entries.detect_mode_intent.name", default="Detect Study Mode Intent"),
-        description=tr("entries.detect_mode_intent.description", default="Detect whether a text snippet contains a study mode switch intent."),
-        input_schema={"type": "object", "properties": {"text": {"type": "string", "default": ""}}},
+        description=tr(
+            "entries.detect_mode_intent.description",
+            default="Detect whether a text snippet contains a study mode switch intent.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string", "default": ""}},
+        },
         llm_result_fields=["mode", "pure_switch", "transition_phrase"],
     )
     async def study_detect_mode_intent(self, text: str = "", **_):
@@ -761,11 +1090,17 @@ class StudyCompanionPlugin(NekoPluginBase):
     @plugin_entry(
         id="study_set_mode",
         name=tr("entries.set_mode.name", default="Set Study Mode"),
-        description=tr("entries.set_mode.description", default="Switch the study companion between companion, interactive, and teaching modes."),
+        description=tr(
+            "entries.set_mode.description",
+            default="Switch the study companion between companion, interactive, and teaching modes.",
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "mode": {"type": "string", "enum": [MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING]},
+                "mode": {
+                    "type": "string",
+                    "enum": [MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING],
+                },
                 "reason": {"type": "string", "default": "ui"},
             },
             "required": ["mode"],
@@ -774,15 +1109,22 @@ class StudyCompanionPlugin(NekoPluginBase):
     )
     async def study_set_mode(self, mode: str, reason: str = "ui", **_):
         try:
-            result = await self._apply_mode_switch(mode, reason, language=self._cfg.language)
+            result = await self._apply_mode_switch(
+                mode, reason, language=self._cfg.language
+            )
         except ValueError as exc:
             return Err(SdkError(str(exc)))
         return Ok(result)
 
     @plugin_entry(
         id="study_dependency_status",
-        name=tr("entries.dependency_status.name", default="Study OCR Dependency Status"),
-        description=tr("entries.dependency_status.description", default="Inspect RapidOCR, Tesseract, and capture dependencies used by study_companion."),
+        name=tr(
+            "entries.dependency_status.name", default="Study OCR Dependency Status"
+        ),
+        description=tr(
+            "entries.dependency_status.description",
+            default="Inspect RapidOCR, Tesseract, and capture dependencies used by study_companion.",
+        ),
         input_schema={"type": "object", "properties": {}},
         llm_result_fields=["missing_installable"],
     )
@@ -794,7 +1136,10 @@ class StudyCompanionPlugin(NekoPluginBase):
     @plugin_entry(
         id="study_ocr_snapshot",
         name=tr("entries.ocr_snapshot.name", default="Study OCR Snapshot"),
-        description=tr("entries.ocr_snapshot.description", default="Run a lightweight OCR snapshot. Phase 1 attempts fullscreen capture and returns diagnostics on failure."),
+        description=tr(
+            "entries.ocr_snapshot.description",
+            default="Run a lightweight OCR snapshot. Phase 1 attempts fullscreen capture and returns diagnostics on failure.",
+        ),
         input_schema={"type": "object", "properties": {}},
         timeout=45.0,
         llm_result_fields=["summary", "status", "diagnostic"],
@@ -808,16 +1153,23 @@ class StudyCompanionPlugin(NekoPluginBase):
             with self._lock:
                 self._state.last_ocr_text = snapshot.text
                 self._state.last_ocr_at = snapshot.captured_at
-            payload["screen_classification"] = self._update_screen_classification(snapshot.text, update_empty=False)
+            payload["screen_classification"] = self._update_screen_classification(
+                snapshot.text, update_empty=False
+            )
         elif snapshot.status == "empty":
-            payload["screen_classification"] = self._update_screen_classification("", update_empty=True)
+            payload["screen_classification"] = self._update_screen_classification(
+                "", update_empty=True
+            )
         await self._persist_state()
         return Ok(payload)
 
     @plugin_entry(
         id="study_explain_text",
         name=tr("entries.explain_text.name", default="Explain Study Text"),
-        description=tr("entries.explain_text.description", default="Explain a concept from supplied text, or use the latest OCR text if text is omitted."),
+        description=tr(
+            "entries.explain_text.description",
+            default="Explain a concept from supplied text, or use the latest OCR text if text is omitted.",
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -832,18 +1184,35 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError("study tutor agent is not initialized"))
         raw_text = str(text or "").strip()
         # Phase 1: detect an explicit mode intent and switch first when present.
-        intent = handle_user_intent(raw_text, language=self._cfg.language) if raw_text else {"matched": False, "pure_switch": False, "mode": "", "remaining_text": ""}
+        intent = (
+            handle_user_intent(raw_text, language=self._cfg.language)
+            if raw_text
+            else {
+                "matched": False,
+                "pure_switch": False,
+                "mode": "",
+                "remaining_text": "",
+            }
+        )
         with self._lock:
             active_mode = self._state.active_mode
         mode_switch: dict[str, Any] = {}
         if intent.get("matched") and intent.get("kind") == "mode_switch":
             try:
-                mode_switch = await self._apply_mode_switch(str(intent.get("mode") or MODE_COMPANION), f"intent:{intent.get('keyword') or 'text'}", language=self._cfg.language)
+                mode_switch = await self._apply_mode_switch(
+                    str(intent.get("mode") or MODE_COMPANION),
+                    f"intent:{intent.get('keyword') or 'text'}",
+                    language=self._cfg.language,
+                )
                 active_mode = str(mode_switch.get("new_mode") or active_mode)
             except ValueError as exc:
                 return Err(SdkError(str(exc)))
             if intent.get("pure_switch"):
-                transition_phrase = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
+                transition_phrase = str(
+                    mode_switch.get("transition_phrase")
+                    or intent.get("transition_phrase")
+                    or ""
+                )
                 return Ok(
                     {
                         **mode_switch,
@@ -869,7 +1238,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             LLM_OPERATION_CONCEPT_EXPLAIN,
             input_text=source_text,
             extra={
-                "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
+                "source": "ocr_snapshot"
+                if used_ocr_fallback or not raw_text
+                else "manual",
                 "mode": active_mode,
                 "mode_switch": bool(mode_switch.get("changed")),
                 "source_text": source_text,
@@ -890,7 +1261,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "mode": active_mode,
                 "mode_switch": mode_switch,
                 "intent": intent,
-                "screen_classification": tutor_context.get("screen_classification") or {},
+                "screen_classification": tutor_context.get("screen_classification")
+                or {},
             },
             extra_context=tutor_context,
         )
@@ -899,13 +1271,20 @@ class StudyCompanionPlugin(NekoPluginBase):
         if intent.get("matched"):
             payload["intent"] = intent
             if intent.get("pure_switch"):
-                payload["transition_phrase"] = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
+                payload["transition_phrase"] = str(
+                    mode_switch.get("transition_phrase")
+                    or intent.get("transition_phrase")
+                    or ""
+                )
         return Ok(payload)
 
     @plugin_entry(
         id="study_generate_question",
         name=tr("entries.generate_question.name", default="Generate Study Question"),
-        description=tr("entries.generate_question.description", default="Generate one study question from supplied text or the latest OCR text."),
+        description=tr(
+            "entries.generate_question.description",
+            default="Generate one study question from supplied text or the latest OCR text.",
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -914,7 +1293,14 @@ class StudyCompanionPlugin(NekoPluginBase):
             },
         },
         timeout=60.0,
-        llm_result_fields=["summary", "question", "answer", "hint", "difficulty", "topic"],
+        llm_result_fields=[
+            "summary",
+            "question",
+            "answer",
+            "hint",
+            "difficulty",
+            "topic",
+        ],
     )
     async def study_generate_question(self, text: str = "", topic: str = "", **_):
         if self._agent is None:
@@ -937,7 +1323,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "mode": active_mode,
             },
         )
-        reply = await self._agent.question_generate(source_text, mode=active_mode, context=tutor_context)
+        reply = await self._agent.question_generate(
+            source_text, mode=active_mode, context=tutor_context
+        )
         payload = await self._finalize_tutor_call(
             LLM_OPERATION_QUESTION_GENERATE,
             reply,
@@ -946,17 +1334,23 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "degraded": reply.degraded,
                 "diagnostic": reply.diagnostic,
                 "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification") or {},
+                "screen_classification": tutor_context.get("screen_classification")
+                or {},
             },
             extra_context=tutor_context,
         )
-        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
+        payload["screen_classification"] = (
+            tutor_context.get("screen_classification") or {}
+        )
         return Ok(payload)
 
     @plugin_entry(
         id="study_evaluate_answer",
         name=tr("entries.evaluate_answer.name", default="Evaluate Study Answer"),
-        description=tr("entries.evaluate_answer.description", default="Evaluate an answer against the current generated question or a supplied question."),
+        description=tr(
+            "entries.evaluate_answer.description",
+            default="Evaluate an answer against the current generated question or a supplied question.",
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -966,9 +1360,18 @@ class StudyCompanionPlugin(NekoPluginBase):
             },
         },
         timeout=60.0,
-        llm_result_fields=["summary", "verdict", "score", "error_type", "feedback", "next_action"],
+        llm_result_fields=[
+            "summary",
+            "verdict",
+            "score",
+            "error_type",
+            "feedback",
+            "next_action",
+        ],
     )
-    async def study_evaluate_answer(self, answer: str = "", question: str = "", expected_answer: str = "", **kwargs):
+    async def study_evaluate_answer(
+        self, answer: str = "", question: str = "", expected_answer: str = "", **kwargs
+    ):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         with self._lock:
@@ -982,10 +1385,14 @@ class StudyCompanionPlugin(NekoPluginBase):
         if not resolved_question:
             return Err(SdkError("study tutor requires a question to evaluate against"))
         resolved_expected = supplied_expected
-        if not resolved_expected and (not supplied_question or supplied_question == state_question):
+        if not resolved_expected and (
+            not supplied_question or supplied_question == state_question
+        ):
             resolved_expected = state_expected
         answer_text = str(answer or "").strip()
-        using_current_question = not supplied_question or supplied_question == state_question
+        using_current_question = (
+            not supplied_question or supplied_question == state_question
+        )
         question_payload = dict(current_question) if using_current_question else {}
         question_payload.update(
             {
@@ -1004,7 +1411,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "answer": answer_text,
                 "current_question": current_question if using_current_question else {},
                 "question_payload": question_payload,
-                "question_source": "current_question" if using_current_question else "supplied",
+                "question_source": "current_question"
+                if using_current_question
+                else "supplied",
                 "run_id": run_id,
                 "session_id": session_id,
                 "mode": active_mode,
@@ -1027,28 +1436,45 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "degraded": reply.degraded,
                 "diagnostic": reply.diagnostic,
                 "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification") or {},
+                "screen_classification": tutor_context.get("screen_classification")
+                or {},
             },
             extra_context=tutor_context,
         )
         payload["question"] = resolved_question
-        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
+        payload["screen_classification"] = (
+            tutor_context.get("screen_classification") or {}
+        )
         return Ok(payload)
 
     @plugin_entry(
         id="study_summarize_session",
         name=tr("entries.summarize_session.name", default="Summarize Study Session"),
-        description=tr("entries.summarize_session.description", default="Summarize recent study interactions into compact study notes."),
-        input_schema={"type": "object", "properties": {"focus": {"type": "string", "default": ""}}},
+        description=tr(
+            "entries.summarize_session.description",
+            default="Summarize recent study interactions into compact study notes.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"focus": {"type": "string", "default": ""}},
+        },
         timeout=75.0,
-        llm_result_fields=["summary", "markdown", "highlights", "weak_points", "next_actions"],
+        llm_result_fields=[
+            "summary",
+            "markdown",
+            "highlights",
+            "weak_points",
+            "next_actions",
+        ],
     )
     async def study_summarize_session(self, focus: str = "", **_):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         with self._lock:
             active_mode = self._state.active_mode
-        history = await asyncio.to_thread(self._store.list_interactions, max(5, min(30, self._cfg.history_limit)))
+        history = await asyncio.to_thread(
+            self._store.list_interactions, max(5, min(30, self._cfg.history_limit))
+        )
         tutor_context = await self._build_learning_context(
             LLM_OPERATION_SUMMARIZE_SESSION,
             input_text="session",
@@ -1058,7 +1484,9 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "mode": active_mode,
             },
         )
-        reply = await self._agent.summarize_session(history, mode=active_mode, context=tutor_context)
+        reply = await self._agent.summarize_session(
+            history, mode=active_mode, context=tutor_context
+        )
         payload = await self._finalize_tutor_call(
             LLM_OPERATION_SUMMARIZE_SESSION,
             reply,
@@ -1067,17 +1495,28 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "degraded": reply.degraded,
                 "diagnostic": reply.diagnostic,
                 "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification") or {},
+                "screen_classification": tutor_context.get("screen_classification")
+                or {},
             },
         )
-        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
+        payload["screen_classification"] = (
+            tutor_context.get("screen_classification") or {}
+        )
         return Ok(payload)
 
     @plugin_entry(
         id="study_install_tesseract",
-        name=tr("entries.install_tesseract.name", default="Install Tesseract for Study OCR"),
-        description=tr("entries.install_tesseract.description", default="Install local Tesseract OCR for study_companion and refresh dependency status."),
-        input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False}}},
+        name=tr(
+            "entries.install_tesseract.name", default="Install Tesseract for Study OCR"
+        ),
+        description=tr(
+            "entries.install_tesseract.description",
+            default="Install local Tesseract OCR for study_companion and refresh dependency status.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"force": {"type": "boolean", "default": False}},
+        },
         timeout=300.0,
         llm_result_fields=["summary"],
     )
@@ -1104,7 +1543,12 @@ class StudyCompanionPlugin(NekoPluginBase):
             )
             self._refresh_dependency_status()
             await self._persist_state()
-            return Ok({"summary": str(result.get("summary") or "Tesseract is ready"), "install_result": result})
+            return Ok(
+                {
+                    "summary": str(result.get("summary") or "Tesseract is ready"),
+                    "install_result": result,
+                }
+            )
         except Exception as exc:
             return Err(SdkError(f"Tesseract install failed: {exc}"))
         finally:
@@ -1113,9 +1557,18 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="study_download_rapidocr_models",
-        name=tr("entries.download_rapidocr_models.name", default="Download RapidOCR Models for Study OCR"),
-        description=tr("entries.download_rapidocr_models.description", default="Download missing RapidOCR model files for the configured study_companion OCR language."),
-        input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False}}},
+        name=tr(
+            "entries.download_rapidocr_models.name",
+            default="Download RapidOCR Models for Study OCR",
+        ),
+        description=tr(
+            "entries.download_rapidocr_models.description",
+            default="Download missing RapidOCR model files for the configured study_companion OCR language.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"force": {"type": "boolean", "default": False}},
+        },
         timeout=600.0,
         llm_result_fields=["summary"],
     )
@@ -1126,7 +1579,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._rapidocr_models_in_progress = True
         run_id = self._resolve_current_run_id(kwargs)
         try:
-            from plugin.plugins.galgame_plugin.rapidocr_support import download_rapidocr_models
+            from plugin.plugins.galgame_plugin.rapidocr_support import (
+                download_rapidocr_models,
+            )
 
             result = await download_rapidocr_models(
                 logger=self.logger,

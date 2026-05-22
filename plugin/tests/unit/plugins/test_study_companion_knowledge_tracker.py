@@ -21,7 +21,13 @@ class _Logger:
 
 
 def _store(tmp_path: Path) -> StudyStore:
-    seed = Path(__file__).resolve().parents[3] / "plugins" / "study_companion" / "static" / "knowledge_graph_seed.json"
+    seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger(), seed)
     store.open()
     return store
@@ -75,7 +81,9 @@ def test_difficulty_integer_levels_are_scaled_from_one_to_five() -> None:
     assert _difficulty_to_level(5) == 5
 
 
-def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(tmp_path: Path) -> None:
+def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
@@ -88,7 +96,11 @@ def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(tmp
                 "difficulty": 3,
             },
             user_answer="y=a(x+h)^2+k",
-            eval_result={"verdict": "wrong", "score": 20, "error_type": "sign_reversal"},
+            eval_result={
+                "verdict": "wrong",
+                "score": 20,
+                "error_type": "sign_reversal",
+            },
             mode="teaching",
         )
 
@@ -96,7 +108,12 @@ def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(tmp
         assert result["wrong_question_id"]
         assert store.get_latest_mastery("quadratic_vertex_form") is not None
         assert store.get_fsrs_card("quadratic_vertex_form") is not None
-        assert store.list_wrong_questions(topic_id="quadratic_vertex_form")[0]["error_type"] == "sign_reversal"
+        assert (
+            store.list_wrong_questions(topic_id="quadratic_vertex_form")[0][
+                "error_type"
+            ]
+            == "sign_reversal"
+        )
         assert tracker.get_review_queue(limit=3)
     finally:
         store.close()
@@ -106,7 +123,11 @@ def test_status_summary_due_review_count_is_not_limited(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
-        due_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+        due_at = (
+            (datetime.now(timezone.utc) - timedelta(days=1))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         for index in range(12):
             topic_id = f"review_topic_{index}"
             store.ensure_topic(topic_id=topic_id, name=f"Review Topic {index}")
@@ -122,13 +143,20 @@ def test_status_summary_due_review_count_is_not_limited(tmp_path: Path) -> None:
         store.close()
 
 
-def test_knowledge_tracker_persists_runtime_topic_before_tracking(tmp_path: Path) -> None:
+def test_knowledge_tracker_persists_runtime_topic_before_tracking(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
         result = tracker.on_answer(
             topic_id="Runtime Algebra",
-            question={"question": "runtime check", "answer": "x", "topic": "Runtime Algebra", "difficulty": 2},
+            question={
+                "question": "runtime check",
+                "answer": "x",
+                "topic": "Runtime Algebra",
+                "difficulty": 2,
+            },
             user_answer="x",
             eval_result={"verdict": "correct", "score": "92/100", "error_type": "none"},
             mode="interactive",
@@ -142,7 +170,9 @@ def test_knowledge_tracker_persists_runtime_topic_before_tracking(tmp_path: Path
         store.close()
 
 
-def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: Path) -> None:
+def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
@@ -155,7 +185,9 @@ def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: 
         store.ensure_topic(topic_id=due_topic_id, name="Due Beyond 1000")
         due_card = tracker.fsrs.new_knowledge_card(due_topic_id).to_dict()
         due_card["due"] = due_at
-        due_card["last_review"] = (now - timedelta(days=10)).isoformat().replace("+00:00", "Z")
+        due_card["last_review"] = (
+            (now - timedelta(days=10)).isoformat().replace("+00:00", "Z")
+        )
         due_card["stability"] = 2.0
         store.upsert_fsrs_card(topic_id=due_topic_id, card=due_card, last_rating=3)
 
@@ -176,11 +208,68 @@ def test_review_queue_considers_due_cards_beyond_first_1000_fsrs_rows(tmp_path: 
         store.close()
 
 
+def test_memory_card_deck_create_list_and_review_cycle(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+
+        created = tracker.upsert_memory_card(
+            topic_id="phase7_memory_card",
+            front="What does spaced repetition optimize?",
+            back="The timing of future reviews.",
+            subject="learning",
+            tags=["phase7", "memory", "phase7"],
+        )
+
+        assert created["created"] is True
+        assert created["card"]["topic_id"] == "phase7_memory_card"
+        assert created["card"]["front"] == "What does spaced repetition optimize?"
+        assert created["card"]["back"] == "The timing of future reviews."
+        assert created["card"]["tags"] == ["phase7", "memory"]
+        assert created["card"]["is_due"] is True
+
+        status = tracker.get_memory_deck_status(limit=5)
+        assert status["card_count"] == 1
+        assert status["due_count"] == 1
+        assert status["due_cards"][0]["topic_id"] == "phase7_memory_card"
+        assert (
+            tracker.get_review_queue(limit=1)[0]["front"]
+            == "What does spaced repetition optimize?"
+        )
+
+        reviewed = tracker.review_memory_card(
+            topic_id="phase7_memory_card",
+            rating="easy",
+            answer="It optimizes review timing.",
+        )
+
+        assert reviewed["rating"] == 4
+        assert reviewed["card"]["front"] == "What does spaced repetition optimize?"
+        assert reviewed["card"]["back"] == "The timing of future reviews."
+        assert reviewed["card"]["reps"] == 1
+        assert tracker.list_memory_cards(limit=5, due_only=True) == []
+        assert store.list_review_log(limit=5)[0]["topic_id"] == "phase7_memory_card"
+    finally:
+        store.close()
+
+
 def test_rating_from_eval_handles_dirty_score_strings() -> None:
-    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92/100"}) == StudyFsrsRating.Easy
-    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92%"}) == StudyFsrsRating.Easy
-    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "A"}) == StudyFsrsRating.Easy
-    assert KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "n/a"}) == StudyFsrsRating.Good
+    assert (
+        KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92/100"})
+        == StudyFsrsRating.Easy
+    )
+    assert (
+        KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "92%"})
+        == StudyFsrsRating.Easy
+    )
+    assert (
+        KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "A"})
+        == StudyFsrsRating.Easy
+    )
+    assert (
+        KnowledgeTracker._rating_from_eval({"verdict": "correct", "score": "n/a"})
+        == StudyFsrsRating.Good
+    )
 
 
 def test_append_only_knowledge_tables_trim_per_key(tmp_path: Path) -> None:
@@ -286,7 +375,10 @@ def test_add_qa_record_trims_unknown_topic_rows(tmp_path: Path) -> None:
 
         questions = [json.loads(row[0])["question"] for row in rows]
         assert questions == ["unknown q1", "unknown q2"]
-        assert [item["question"]["question"] for item in store.list_qa_records_for_topic("", limit=5)] == [
+        assert [
+            item["question"]["question"]
+            for item in store.list_qa_records_for_topic("", limit=5)
+        ] == [
             "unknown q1",
             "unknown q2",
         ]
@@ -308,7 +400,11 @@ def test_runtime_topic_answer_records_are_pruned(tmp_path: Path) -> None:
         for index in range(3):
             tracker.on_answer(
                 topic_id="",
-                question={"topic": "runtime topic", "question": f"q{index}", "answer": "a"},
+                question={
+                    "topic": "runtime topic",
+                    "question": f"q{index}",
+                    "answer": "a",
+                },
                 user_answer="a",
                 eval_result={"verdict": "correct", "score": 90},
                 mode="interactive",
@@ -332,7 +428,9 @@ def test_runtime_topic_answer_records_are_pruned(tmp_path: Path) -> None:
         store.close()
 
 
-def test_wrong_question_resolves_after_three_delayed_correct_variants(tmp_path: Path) -> None:
+def test_wrong_question_resolves_after_three_delayed_correct_variants(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
@@ -340,7 +438,11 @@ def test_wrong_question_resolves_after_three_delayed_correct_variants(tmp_path: 
             topic_id="linear_function_kb",
             question={"question": "k 表示什么？", "answer": "斜率", "difficulty": 3},
             user_answer="截距",
-            eval_result={"verdict": "wrong", "score": 10, "error_type": "misunderstanding"},
+            eval_result={
+                "verdict": "wrong",
+                "score": 10,
+                "error_type": "misunderstanding",
+            },
             mode="interactive",
         )["wrong_question_id"]
         with sqlite3.connect(store.db_path) as conn:
@@ -352,13 +454,19 @@ def test_wrong_question_resolves_after_three_delayed_correct_variants(tmp_path: 
         for _ in range(3):
             tracker.on_answer(
                 topic_id="linear_function_kb",
-                question={"question": "k 的几何意义是什么？", "answer": "斜率", "difficulty": 3},
+                question={
+                    "question": "k 的几何意义是什么？",
+                    "answer": "斜率",
+                    "difficulty": 3,
+                },
                 user_answer="斜率",
                 eval_result={"verdict": "correct", "score": 90, "error_type": "none"},
                 mode="interactive",
             )
 
-        resolved = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",))
+        resolved = store.list_wrong_questions(
+            topic_id="linear_function_kb", statuses=("resolved",)
+        )
         assert resolved and resolved[0]["id"] == wrong_id
         assert resolved[0]["consecutive_correct"] >= 3
     finally:
@@ -373,7 +481,11 @@ def test_wrong_question_resolves_with_default_medium_difficulty(tmp_path: Path) 
             topic_id="linear_function_kb",
             question={"question": "k 表示什么？", "answer": "斜率"},
             user_answer="截距",
-            eval_result={"verdict": "wrong", "score": 10, "error_type": "misunderstanding"},
+            eval_result={
+                "verdict": "wrong",
+                "score": 10,
+                "error_type": "misunderstanding",
+            },
             mode="interactive",
         )["wrong_question_id"]
         with sqlite3.connect(store.db_path) as conn:
@@ -391,14 +503,18 @@ def test_wrong_question_resolves_with_default_medium_difficulty(tmp_path: Path) 
                 mode="interactive",
             )
 
-        resolved = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",))
+        resolved = store.list_wrong_questions(
+            topic_id="linear_function_kb", statuses=("resolved",)
+        )
         assert resolved and resolved[0]["id"] == wrong_id
         assert resolved[0]["max_correct_difficulty"] == 3
     finally:
         store.close()
 
 
-def test_easy_level_difficulty_does_not_resolve_wrong_question_as_hard_evidence(tmp_path: Path) -> None:
+def test_easy_level_difficulty_does_not_resolve_wrong_question_as_hard_evidence(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         tracker = KnowledgeTracker(store)
@@ -406,7 +522,11 @@ def test_easy_level_difficulty_does_not_resolve_wrong_question_as_hard_evidence(
             topic_id="linear_function_kb",
             question={"question": "k 表示什么？", "answer": "斜率", "difficulty": 3},
             user_answer="截距",
-            eval_result={"verdict": "wrong", "score": 10, "error_type": "misunderstanding"},
+            eval_result={
+                "verdict": "wrong",
+                "score": 10,
+                "error_type": "misunderstanding",
+            },
             mode="interactive",
         )["wrong_question_id"]
         with sqlite3.connect(store.db_path) as conn:
@@ -418,21 +538,34 @@ def test_easy_level_difficulty_does_not_resolve_wrong_question_as_hard_evidence(
         for _ in range(3):
             tracker.on_answer(
                 topic_id="linear_function_kb",
-                question={"question": "k 是什么？", "answer": "斜率", "difficulty": 1.0},
+                question={
+                    "question": "k 是什么？",
+                    "answer": "斜率",
+                    "difficulty": 1.0,
+                },
                 user_answer="斜率",
                 eval_result={"verdict": "correct", "score": 90, "error_type": "none"},
                 mode="interactive",
             )
 
-        active = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("retrying",))
+        active = store.list_wrong_questions(
+            topic_id="linear_function_kb", statuses=("retrying",)
+        )
         assert active and active[0]["id"] == wrong_id
         assert active[0]["max_correct_difficulty"] == 1
-        assert store.list_wrong_questions(topic_id="linear_function_kb", statuses=("resolved",)) == []
+        assert (
+            store.list_wrong_questions(
+                topic_id="linear_function_kb", statuses=("resolved",)
+            )
+            == []
+        )
     finally:
         store.close()
 
 
-def test_generic_correct_answer_does_not_advance_unrelated_wrong_questions(tmp_path: Path) -> None:
+def test_generic_correct_answer_does_not_advance_unrelated_wrong_questions(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         first_id = store.add_wrong_question(
@@ -464,7 +597,9 @@ def test_generic_correct_answer_does_not_advance_unrelated_wrong_questions(tmp_p
                 difficulty=3,
             )
 
-        rows = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("active", "retrying", "resolved"))
+        rows = store.list_wrong_questions(
+            topic_id="linear_function_kb", statuses=("active", "retrying", "resolved")
+        )
         by_id = {row["id"]: row for row in rows}
         resolved = [row for row in rows if row["status"] == "resolved"]
         untouched = [row for row in rows if row["consecutive_correct"] == 0]
@@ -476,7 +611,9 @@ def test_generic_correct_answer_does_not_advance_unrelated_wrong_questions(tmp_p
         store.close()
 
 
-def test_correct_answer_advances_only_one_wrong_question_per_error_type(tmp_path: Path) -> None:
+def test_correct_answer_advances_only_one_wrong_question_per_error_type(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         first_id = store.add_wrong_question(
@@ -502,7 +639,9 @@ def test_correct_answer_advances_only_one_wrong_question_per_error_type(tmp_path
             difficulty=3,
         )
 
-        rows = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("active", "retrying"))
+        rows = store.list_wrong_questions(
+            topic_id="linear_function_kb", statuses=("active", "retrying")
+        )
         by_id = {row["id"]: row for row in rows}
         advanced = [row for row in rows if row["consecutive_correct"] == 1]
         untouched = [row for row in rows if row["consecutive_correct"] == 0]
@@ -514,7 +653,9 @@ def test_correct_answer_advances_only_one_wrong_question_per_error_type(tmp_path
         store.close()
 
 
-def test_get_retry_wrong_question_matches_correct_selection_order(tmp_path: Path) -> None:
+def test_get_retry_wrong_question_matches_correct_selection_order(
+    tmp_path: Path,
+) -> None:
     store = _store(tmp_path)
     try:
         retry_id = store.add_wrong_question(
@@ -562,7 +703,9 @@ def test_get_retry_wrong_question_matches_correct_selection_order(tmp_path: Path
             error_type="misunderstanding",
             difficulty=3,
         )
-        rows = store.list_wrong_questions(topic_id="linear_function_kb", statuses=("active", "retrying"))
+        rows = store.list_wrong_questions(
+            topic_id="linear_function_kb", statuses=("active", "retrying")
+        )
         by_id = {row["id"]: row for row in rows}
         assert by_id[retry_id]["consecutive_correct"] == 1
         assert by_id[active_id]["consecutive_correct"] == 0
@@ -582,7 +725,9 @@ def test_knowledge_seed_loads_idempotently(tmp_path: Path) -> None:
         store.close()
 
 
-def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(tmp_path: Path) -> None:
+def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(
+    tmp_path: Path,
+) -> None:
     knowledge_seed = tmp_path / "bad_knowledge_seed.json"
     knowledge_seed.write_text(
         json.dumps(
@@ -600,7 +745,9 @@ def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(tmp_path: P
         ),
         encoding="utf-8",
     )
-    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger(), knowledge_seed)
+    store = StudyStore(
+        tmp_path / "study.db", tmp_path / "seed.json", _Logger(), knowledge_seed
+    )
     store.open()
     try:
         topic = store.get_topic("bad_numeric_topic")
