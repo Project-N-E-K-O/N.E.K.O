@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
+from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.llm_prompts import (
     _compact_prompt_value,
@@ -1100,6 +1101,10 @@ def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_f
 
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
 
     script = r"""
 import { Window } from 'happy-dom';
@@ -1223,6 +1228,18 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_surface_utils_preserves_nonstandard_backend_error_details() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "study_surface_utils.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function pluginErrorMessage" in source
+    assert "typeof error === 'string'" in source
+    assert "JSON.stringify(error)" in source
+    assert "throw new Error(pluginErrorMessage(item.json.error))" in source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
@@ -2459,6 +2476,46 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     assert all("max_completion_tokens" not in item for item in create_kwargs)
     assert "old-key" not in repr(agent._client_cache._cache)
     assert "new-key" not in repr(agent._client_cache._cache)
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_status_offloads_timer_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 1}
+
+        def tick(self) -> dict[str, object]:
+            return {"state": "short_break", "remaining_seconds": 300}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "short_break"
+    assert to_thread_calls == ["status", "tick"]
+    assert supervision.focus_end_count == 1
 
 
 @pytest.mark.asyncio
