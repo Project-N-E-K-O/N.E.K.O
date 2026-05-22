@@ -2490,6 +2490,11 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_memory_card_upsert" in entries
     assert "study_memory_deck" in entries
     assert "study_memory_card_review" in entries
+    assert "study_memory_create_deck" in entries
+    assert "study_memory_import_words" in entries
+    assert "study_memory_import_passage" in entries
+    assert "study_memory_due_reviews" in entries
+    assert "study_memory_recitation_attempt" in entries
     assert "study_set_knowledge_contribution_opt_in" in entries
     disabled_export = await plugin._study_export_notes_entry(
         fmt="markdown", preview_only=True, title="Default Notes"
@@ -2502,13 +2507,12 @@ async def test_study_plugin_starts_and_collects_entries(
         tags=["phase7"],
     )
     assert isinstance(memory_card, Ok)
+    card_item_id = memory_card.value["card"]["item_id"]
     due_deck = await plugin.study_memory_deck(limit=5, due_only=True)
     assert isinstance(due_deck, Ok)
-    assert any(
-        item["topic_id"] == "phase7_plugin_memory" for item in due_deck.value["cards"]
-    )
+    assert any(item["item_id"] == card_item_id for item in due_deck.value["cards"])
     reviewed = await plugin.study_memory_card_review(
-        topic_id="phase7_plugin_memory", rating="good"
+        topic_id=card_item_id, rating="good"
     )
     assert isinstance(reviewed, Ok)
     assert reviewed.value["rating"] == 3

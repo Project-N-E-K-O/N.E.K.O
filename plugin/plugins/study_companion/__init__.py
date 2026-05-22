@@ -56,6 +56,7 @@ from .mode_manager import (
 )
 from .knowledge_contribution import PublicGraphContributionBuilder
 from .knowledge_tracker import KnowledgeTracker
+from .memory_deck_store import MemoryDeckStore
 from .state import build_initial_state
 from .store import StudyStore
 from .study_ocr_pipeline import StudyOcrPipeline
@@ -90,6 +91,10 @@ class StudyCompanionPlugin(NekoPluginBase):
             retention_target=self._cfg.fsrs_retention_target,
             logger=self.logger,
         )
+        self._memory_deck_store = MemoryDeckStore(
+            self._store,
+            retention_target=self._cfg.fsrs_retention_target,
+        )
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -102,6 +107,10 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._store,
                 retention_target=self._cfg.fsrs_retention_target,
                 logger=self.logger,
+            )
+            self._memory_deck_store = MemoryDeckStore(
+                self._store,
+                retention_target=self._cfg.fsrs_retention_target,
             )
             restored = await asyncio.to_thread(
                 self._store.load_state, build_initial_state(mode=self._cfg.mode)
@@ -281,7 +290,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             ),
             "anonymous_knowledge_stats_summary": self._store.anonymous_knowledge_stats_summary(),
             "review_queue": self._knowledge_tracker.get_review_queue(limit=8),
-            "memory_deck": self._knowledge_tracker.get_memory_deck_status(limit=8),
+            "memory_deck": self._memory_deck_store.status_summary(limit=8),
             "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
             "mastery_overview": self._store.list_mastery_overview(limit=8),
         }
@@ -914,18 +923,34 @@ class StudyCompanionPlugin(NekoPluginBase):
         **_,
     ):
         try:
-            payload = await asyncio.to_thread(
-                self._knowledge_tracker.upsert_memory_card,
-                front=front,
-                back=back,
-                topic_id=topic_id,
-                subject=subject,
-                chapter=chapter,
-                difficulty=difficulty,
-                tags=tags if isinstance(tags, list) else [],
-                source=source,
+            deck = await asyncio.to_thread(
+                self._memory_deck_store.get_or_create_default_deck,
+                deck_type="custom",
             )
-            return Ok(payload)
+            result = await asyncio.to_thread(
+                self._memory_deck_store.upsert_item,
+                deck_id=str(deck.get("id") or ""),
+                item_type="custom",
+                prompt=front,
+                answer=back,
+                metadata={
+                    "legacy_topic_id": str(topic_id or ""),
+                    "subject": str(subject or "memory"),
+                    "chapter": str(chapter or "memory_deck"),
+                    "difficulty": float(difficulty or 0.5),
+                    "tags": tags if isinstance(tags, list) else [],
+                    "source": str(source or "manual"),
+                },
+            )
+            item = result.get("item") if isinstance(result, dict) else {}
+            return Ok(
+                {
+                    "created": bool(result.get("created"))
+                    if isinstance(result, dict)
+                    else False,
+                    "card": self._memory_deck_store.compat_card_payload(item),
+                }
+            )
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -956,12 +981,14 @@ class StudyCompanionPlugin(NekoPluginBase):
         try:
             safe_limit = max(1, min(200, int(limit or 20)))
             if bool(include_topic_cards):
-                cards = await asyncio.to_thread(
-                    self._knowledge_tracker.list_memory_cards,
+                items = await asyncio.to_thread(
+                    self._memory_deck_store.list_items,
                     limit=safe_limit,
-                    due_only=bool(due_only),
-                    include_topic_cards=bool(include_topic_cards),
+                    include_archived=False,
                 )
+                cards = [
+                    self._memory_deck_store.compat_card_payload(item) for item in items
+                ]
                 return Ok(
                     {
                         "card_count": len(cards),
@@ -972,8 +999,25 @@ class StudyCompanionPlugin(NekoPluginBase):
                     }
                 )
             payload = await asyncio.to_thread(
-                self._knowledge_tracker.get_memory_deck_status, limit=safe_limit
+                self._memory_deck_store.status_summary, limit=safe_limit
             )
+            all_items = await asyncio.to_thread(
+                self._memory_deck_store.list_items,
+                limit=safe_limit,
+                include_archived=False,
+            )
+            due_reviews = (
+                payload.get("due_reviews") if isinstance(payload, dict) else []
+            )
+            due_cards = [
+                self._memory_deck_store.compat_card_payload(item.get("item") or {})
+                for item in due_reviews
+                if isinstance(item, dict)
+            ]
+            cards = [
+                self._memory_deck_store.compat_card_payload(item) for item in all_items
+            ]
+            payload = {**payload, "cards": cards, "due_cards": due_cards}
             if bool(due_only):
                 payload = {**payload, "cards": payload.get("due_cards") or []}
             return Ok(payload)
@@ -1007,12 +1051,369 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             payload = await asyncio.to_thread(
-                self._knowledge_tracker.review_memory_card,
-                topic_id=topic_id,
+                self._memory_deck_store.review_item,
+                item_id=topic_id,
                 rating=rating,
-                answer=answer,
+            )
+            item = payload.get("item") if isinstance(payload, dict) else {}
+            return Ok(
+                {
+                    "topic_id": str(topic_id or ""),
+                    "rating": int(payload.get("rating") or 0)
+                    if isinstance(payload, dict)
+                    else 0,
+                    "answer": str(answer or ""),
+                    "schedule": payload.get("schedule")
+                    if isinstance(payload, dict)
+                    else {},
+                    "card": self._memory_deck_store.compat_card_payload(item),
+                }
+            )
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_create_deck",
+        name=tr("entries.memory_create_deck.name", default="Create Study Memory Deck"),
+        description=tr(
+            "entries.memory_create_deck.description",
+            default="Create a word, passage, formula, or custom memory deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "default": ""},
+                "deck_type": {
+                    "type": "string",
+                    "enum": ["word", "passage", "formula", "custom"],
+                    "default": "custom",
+                },
+                "subject": {"type": "string", "default": ""},
+                "language": {"type": "string", "default": ""},
+                "source": {"type": "string", "default": "manual"},
+            },
+            "required": ["name"],
+        },
+        llm_result_fields=["id", "name", "deck_type"],
+    )
+    async def study_memory_create_deck(
+        self,
+        name: str = "",
+        deck_type: str = "custom",
+        subject: str = "",
+        language: str = "",
+        source: str = "manual",
+        **_,
+    ):
+        try:
+            deck = await asyncio.to_thread(
+                self._memory_deck_store.create_deck,
+                name=name,
+                deck_type=deck_type,
+                subject=subject,
+                language=language,
+                source=source,
+            )
+            return Ok(deck)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_list_decks",
+        name=tr("entries.memory_list_decks.name", default="List Study Memory Decks"),
+        description=tr(
+            "entries.memory_list_decks.description",
+            default="List local memory decks and item counts.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 100}},
+        },
+        llm_result_fields=["decks"],
+    )
+    async def study_memory_list_decks(self, limit: int = 100, **_):
+        try:
+            decks = await asyncio.to_thread(
+                self._memory_deck_store.list_decks,
+                limit=max(1, min(500, int(limit or 100))),
+            )
+            return Ok({"decks": decks})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_delete_deck",
+        name=tr("entries.memory_delete_deck.name", default="Delete Study Memory Deck"),
+        description=tr(
+            "entries.memory_delete_deck.description",
+            default="Delete a memory deck and cascade its memory items and review data.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"deck_id": {"type": "string", "default": ""}},
+            "required": ["deck_id"],
+        },
+        llm_result_fields=["deleted", "cascade"],
+    )
+    async def study_memory_delete_deck(self, deck_id: str = "", **_):
+        try:
+            payload = await asyncio.to_thread(
+                self._memory_deck_store.delete_deck, deck_id
             )
             return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_import_words",
+        name=tr(
+            "entries.memory_import_words.name", default="Import Study Memory Words"
+        ),
+        description=tr(
+            "entries.memory_import_words.description",
+            default="Import word cards into a memory deck from CSV or JSON.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "string", "default": ""},
+                "content": {"type": "string", "default": ""},
+                "fmt": {"type": "string", "enum": ["csv", "json"], "default": "csv"},
+            },
+            "required": ["deck_id", "content"],
+        },
+        llm_result_fields=[
+            "imported_count",
+            "updated_count",
+            "skipped_rows",
+            "preview",
+        ],
+    )
+    async def study_memory_import_words(
+        self, deck_id: str = "", content: str = "", fmt: str = "csv", **_
+    ):
+        try:
+            payload = await asyncio.to_thread(
+                self._memory_deck_store.import_words,
+                deck_id=deck_id,
+                content=content,
+                fmt=fmt,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_import_passage",
+        name=tr(
+            "entries.memory_import_passage.name", default="Import Study Memory Passage"
+        ),
+        description=tr(
+            "entries.memory_import_passage.description",
+            default="Split passage text into paragraph memory items and FSRS cards.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "string", "default": ""},
+                "text": {"type": "string", "default": ""},
+                "title": {"type": "string", "default": ""},
+            },
+            "required": ["deck_id", "text"],
+        },
+        llm_result_fields=["imported_count", "items"],
+    )
+    async def study_memory_import_passage(
+        self, deck_id: str = "", text: str = "", title: str = "", **_
+    ):
+        try:
+            payload = await asyncio.to_thread(
+                self._memory_deck_store.import_passage,
+                deck_id=deck_id,
+                text=text,
+                title=title,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_due_reviews",
+        name=tr("entries.memory_due_reviews.name", default="Study Memory Due Reviews"),
+        description=tr(
+            "entries.memory_due_reviews.description",
+            default="Return due memory reviews sorted by deck and retrievability.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+        llm_result_fields=["due_reviews"],
+    )
+    async def study_memory_due_reviews(self, deck_id: str = "", limit: int = 50, **_):
+        try:
+            reviews = await asyncio.to_thread(
+                self._memory_deck_store.due_reviews,
+                deck_id=deck_id,
+                limit=max(1, min(500, int(limit or 50))),
+            )
+            return Ok({"due_reviews": reviews})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_review_item",
+        name=tr("entries.memory_review_item.name", default="Review Study Memory Item"),
+        description=tr(
+            "entries.memory_review_item.description",
+            default="Record a memory item review and update its dedicated FSRS card.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "default": ""},
+                "rating": {
+                    "type": "string",
+                    "enum": ["again", "hard", "good", "easy"],
+                    "default": "good",
+                },
+                "correct": {"type": "boolean", "default": True},
+                "error_type": {"type": "string", "default": ""},
+                "elapsed_ms": {"type": "integer", "default": 0},
+                "session_id": {"type": "string", "default": ""},
+            },
+            "required": ["item_id"],
+        },
+        llm_result_fields=["item", "rating", "schedule", "review_record"],
+    )
+    async def study_memory_review_item(
+        self,
+        item_id: str = "",
+        rating: str = "good",
+        correct: bool = True,
+        error_type: str = "",
+        elapsed_ms: int = 0,
+        session_id: str = "",
+        **_,
+    ):
+        try:
+            payload = await asyncio.to_thread(
+                self._memory_deck_store.review_item,
+                item_id=item_id,
+                rating=rating,
+                correct=bool(correct),
+                error_type=error_type,
+                elapsed_ms=int(elapsed_ms or 0) or None,
+                session_id=session_id,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_recitation_attempt",
+        name=tr(
+            "entries.memory_recitation_attempt.name",
+            default="Submit Study Memory Recitation",
+        ),
+        description=tr(
+            "entries.memory_recitation_attempt.description",
+            default="Diff a passage recitation attempt and record the resulting FSRS review.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "default": ""},
+                "user_input_text": {"type": "string", "default": ""},
+                "hint_count": {"type": "integer", "default": 0},
+                "elapsed_ms": {"type": "integer", "default": 0},
+                "session_id": {"type": "string", "default": ""},
+            },
+            "required": ["item_id", "user_input_text"],
+        },
+        llm_result_fields=["attempt", "diff", "review"],
+    )
+    async def study_memory_recitation_attempt(
+        self,
+        item_id: str = "",
+        user_input_text: str = "",
+        hint_count: int = 0,
+        elapsed_ms: int = 0,
+        session_id: str = "",
+        **_,
+    ):
+        try:
+            payload = await asyncio.to_thread(
+                self._memory_deck_store.add_recitation_attempt,
+                item_id=item_id,
+                user_input_text=user_input_text,
+                hint_count=max(0, int(hint_count or 0)),
+                elapsed_ms=int(elapsed_ms or 0) or None,
+                session_id=session_id,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_memory_generate_draft",
+        name=tr(
+            "entries.memory_generate_draft.name", default="Generate Study Memory Draft"
+        ),
+        description=tr(
+            "entries.memory_generate_draft.description",
+            default="Generate a candidate memory draft without saving it to a deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "draft_type": {
+                    "type": "string",
+                    "enum": ["word_example", "sentence_cloze", "recitation_error"],
+                    "default": "word_example",
+                },
+                "word": {"type": "string", "default": ""},
+                "meaning": {"type": "string", "default": ""},
+                "sentence": {"type": "string", "default": ""},
+                "expected": {"type": "string", "default": ""},
+                "actual": {"type": "string", "default": ""},
+            },
+        },
+        llm_result_fields=["id", "payload", "status"],
+    )
+    async def study_memory_generate_draft(
+        self,
+        draft_type: str = "word_example",
+        word: str = "",
+        meaning: str = "",
+        sentence: str = "",
+        expected: str = "",
+        actual: str = "",
+        **_,
+    ):
+        try:
+            normalized = str(draft_type or "word_example")
+            if normalized == "sentence_cloze":
+                candidate = await asyncio.to_thread(
+                    self._memory_deck_store.create_cloze_draft,
+                    sentence=sentence,
+                )
+            elif normalized == "recitation_error":
+                candidate = await asyncio.to_thread(
+                    self._memory_deck_store.create_recitation_error_draft,
+                    expected=expected,
+                    actual=actual,
+                )
+            else:
+                candidate = await asyncio.to_thread(
+                    self._memory_deck_store.create_word_draft,
+                    word=word,
+                    meaning=meaning,
+                )
+            return Ok(candidate)
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
