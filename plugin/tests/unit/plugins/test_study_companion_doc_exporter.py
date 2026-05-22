@@ -15,6 +15,20 @@ class _Logger:
         return None
 
 
+class _MinimalStore:
+    def list_interactions(self, limit: int = 20):
+        return []
+
+    def list_topics(self, limit: int = 100, subject: str | None = None):
+        return []
+
+    def list_mastery_overview(self, limit: int = 20):
+        return []
+
+    def list_wrong_questions(self, *, limit: int = 20, topic_id=None, statuses=("active", "retrying", "resolved")):
+        return []
+
+
 def _store(tmp_path: Path) -> StudyStore:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -131,6 +145,30 @@ def test_export_pdf_preserves_unicode_text(tmp_path: Path) -> None:
         assert pdf.content.startswith(b"%PDF")
     finally:
         store.close()
+
+
+def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("reportlab")
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(tmp_path / "missing-font.ttf"))
+
+    pdf = DocExporter(_MinimalStore()).export(fmt="pdf", title="中文笔记")
+
+    assert pdf.content.startswith(b"%PDF")
+    assert _pdf_safe_text("中文笔记") == "中文笔记"
+
+
+def test_register_pdf_font_returns_string_and_env_var_controls_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("reportlab")
+    exporter = DocExporter(_MinimalStore())
+
+    monkeypatch.delenv("STUDY_PDF_CJK_FONT_PATH", raising=False)
+    assert exporter._register_pdf_font() in {"STSong-Light", "Helvetica"}
+
+    monkeypatch.setenv("STUDY_PDF_CJK_FONT_PATH", str(tmp_path / "missing-font.ttf"))
+    assert exporter._register_pdf_font() in {"STSong-Light", "Helvetica"}
 
 
 def test_doc_exporter_rejects_store_without_required_methods() -> None:
