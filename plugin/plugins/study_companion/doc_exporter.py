@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 import json
 import logging
+import os
 import re
 import textwrap
 from pathlib import Path
@@ -251,6 +252,33 @@ class DocExporter:
             return self._render_xmind(markdown)
         raise ValueError(f"unsupported export format: {fmt}")
 
+    def _register_pdf_font(self) -> str:
+        from reportlab.pdfbase import pdfmetrics
+
+        cjk_font_path = os.environ.get("STUDY_PDF_CJK_FONT_PATH", "")
+        if cjk_font_path:
+            font_path = Path(cjk_font_path)
+            if font_path.is_file():
+                try:
+                    from reportlab.pdfbase.ttfonts import TTFont
+
+                    pdfmetrics.registerFont(TTFont("CJK-User", str(font_path)))
+                    _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
+                    return "CJK-User"
+                except Exception as exc:
+                    _LOGGER.warning("User CJK font registration failed (%s): %s", cjk_font_path, exc)
+            else:
+                _LOGGER.warning("STUDY_PDF_CJK_FONT_PATH set but file not found: %s", cjk_font_path)
+
+        try:
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
+            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+            return "STSong-Light"
+        except Exception as exc:
+            _LOGGER.warning("PDF Unicode font registration failed; Chinese text may render incorrectly: %s", exc)
+            return "Helvetica"
+
     def _render_pdf(self, markdown: str) -> bytes:
         if self._config.pdf_backend != "reportlab":
             raise ValueError(f"unsupported PDF backend: {self._config.pdf_backend}")
@@ -261,17 +289,8 @@ class DocExporter:
             raise RuntimeError("PDF export requires reportlab to be installed") from exc
 
         output = BytesIO()
-        font_name = "Helvetica"
         pdf = canvas.Canvas(output, pagesize=A4)
-        try:
-            from reportlab.pdfbase import pdfmetrics
-            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-
-            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
-            font_name = "STSong-Light"
-        except Exception as exc:
-            _LOGGER.warning("PDF Unicode font registration failed; Chinese text may render incorrectly: %s", exc)
-            font_name = "Helvetica"
+        font_name = self._register_pdf_font()
         width, height = A4
         x = 48
         y = height - 48
