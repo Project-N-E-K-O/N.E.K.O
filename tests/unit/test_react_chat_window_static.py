@@ -3,6 +3,20 @@ from pathlib import Path
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
+CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+COMPACT_EXPORT_HISTORY_PANEL_PATH = (
+    Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
+)
+
+
+def css_block(styles: str, selector: str, next_selector: str) -> str:
+    return styles.split(selector, 1)[1].split(next_selector, 1)[0]
+
+
+def assert_no_layout_transition(block: str) -> None:
+    transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
+    for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
+        assert prop not in transition_section
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
@@ -45,3 +59,176 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     assert "--compact-desktop-workarea-height" in desktop_history_block
     assert "vh" not in desktop_history_block
     assert "vw" not in desktop_history_block
+
+
+def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function intersectCompactRects(a, b)" in script
+
+    composite_block = script.split("function collectCompactCompositeGeometryItems(element, kind)", 1)[1].split(
+        "function collectCompactSurfaceGeometryItems()",
+        1,
+    )[0]
+
+    assert "var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;" in composite_block
+    assert "if (!clippedRect) return null;" in composite_block
+    assert "visualRect: clippedRect" in composite_block
+    assert "hitRect: clippedRect" in composite_block
+    assert "nativeRect: clippedRect" in composite_block
+
+
+def test_electron_compact_chat_root_mask_does_not_clip_history_layer():
+    template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert "#react-chat-window-root {" in template
+    assert (
+        'body.electron-chat-window.subtitle-web-host '
+        '#react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root'
+    ) in template
+
+    compact_override_block = template.split(
+        'body.electron-chat-window.subtitle-web-host '
+        '#react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root',
+        1,
+    )[1].split("@keyframes liquidFlow", 1)[0]
+
+    assert "-webkit-mask-image: none !important;" in compact_override_block
+    assert "mask-image: none !important;" in compact_override_block
+
+
+def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor {",
+        "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
+    )
+    collapsed_anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor.controls-collapsed {",
+        "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
+    )
+    scroll_block = css_block(styles, ".compact-export-history-scroll {", ".compact-export-history-scroll-content")
+    controls_block = css_block(
+        styles,
+        ".compact-export-history-controls {",
+        ".compact-export-history-controls.is-collapsed",
+    )
+    collapsed_block = css_block(
+        styles,
+        ".compact-export-history-controls.is-collapsed {",
+        ".compact-export-history-controls-content",
+    )
+    collapsed_toggle_block = css_block(
+        styles,
+        ".compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle {",
+        ".compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::before",
+    )
+    control_button_block = css_block(styles, ".compact-export-history-control {", ".compact-export-history-control:hover")
+
+    assert "Geometry-critical" in anchor_block
+    assert "--compact-export-controls-padding-y:" in anchor_block
+    assert "--compact-export-controls-action-height:" in anchor_block
+    assert "--compact-export-controls-collapsed-toggle-height:" in anchor_block
+    assert "--compact-export-controls-expanded-block-size: calc(" in anchor_block
+    assert "--compact-export-controls-collapsed-block-size: calc(" in anchor_block
+    assert "--compact-export-controls-collapse-delta: 0px;" in anchor_block
+    assert (
+        "--compact-export-controls-collapse-delta: calc(\n"
+        "    var(--compact-export-controls-expanded-block-size) - "
+        "var(--compact-export-controls-collapsed-block-size)\n"
+        "  );"
+    ) in collapsed_anchor_block
+    assert "24px" not in collapsed_anchor_block
+    assert (
+        "height: calc(var(--compact-export-history-region-height) + "
+        "var(--compact-export-controls-collapse-delta));"
+    ) in scroll_block
+    assert (
+        "max-height: calc(var(--compact-export-history-region-height) + "
+        "var(--compact-export-controls-collapse-delta));"
+    ) in scroll_block
+    assert "height: 40px;" not in controls_block
+    assert "min-height: 40px;" not in controls_block
+    assert "padding: var(--compact-export-controls-padding-y) 6px;" in controls_block
+    assert "padding 0.16s ease" not in controls_block
+    assert "padding: 0;" in collapsed_block
+    assert "width: var(--compact-export-controls-collapsed-width);" in collapsed_block
+    assert "height: var(--compact-export-controls-collapsed-toggle-height);" in collapsed_toggle_block
+    assert "height: var(--compact-export-controls-action-height);" in control_button_block
+
+
+def test_compact_history_layout_contract_avoids_jitter_feedback():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor {",
+        "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
+    )
+    panel_block = css_block(styles, ".compact-export-history-panel {", ".compact-export-history-anchor.under-choice-prompt")
+    scroll_block = css_block(styles, ".compact-export-history-scroll {", ".compact-export-history-scroll-content")
+    controls_block = css_block(
+        styles,
+        ".compact-export-history-controls {",
+        ".compact-export-history-controls.is-collapsed",
+    )
+    preview_block = css_block(
+        styles.split(".compact-export-preview-region[hidden]", 1)[1],
+        ".compact-export-preview-region {",
+        ".compact-export-preview-header",
+    )
+
+    assert "transition:" not in anchor_block
+    assert "transition:" not in panel_block
+    assert "transition:" not in scroll_block
+    assert_no_layout_transition(controls_block)
+    assert "transition:" not in preview_block
+
+    assert "height: calc(var(--compact-export-history-region-height)" in scroll_block
+    assert "max-height: calc(var(--compact-export-history-region-height)" in scroll_block
+    assert "max-height: inherit;" in panel_block
+
+
+def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+
+    anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor {",
+        "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
+    )
+    panel_block = css_block(styles, ".compact-export-history-panel {", ".compact-export-history-anchor.under-choice-prompt")
+    scroll_block = css_block(styles, ".compact-export-history-scroll {", ".compact-export-history-scroll-content")
+    content_block = css_block(
+        styles,
+        ".compact-export-history-scroll-content {",
+        ".compact-export-history-scroll-content > .compact-export-history-message:first-child",
+    )
+    message_block = css_block(styles, ".compact-export-history-message {", ".compact-export-history-message.is-user")
+    bubble_block = css_block(styles, ".compact-export-history-bubble {", ".compact-export-history-message.is-disabled")
+    shared_hit_block = css_block(
+        styles,
+        ".compact-export-history-controls,\n.compact-export-preview-region {",
+        ".compact-export-history-controls {",
+    )
+    scroll_jsx_block = panel_source.split('className="compact-export-history-scroll"', 1)[1].split(
+        'className="compact-export-history-scroll-content"',
+        1,
+    )[0]
+
+    assert "pointer-events: none;" in anchor_block
+    assert "pointer-events: none;" in panel_block
+    assert "pointer-events: none;" in scroll_block
+    assert "pointer-events: none;" in content_block
+    assert "pointer-events: none;" in message_block
+    assert "pointer-events: auto;" in bubble_block
+    assert ".compact-export-history-controls,\n.compact-export-preview-region {" in styles
+    assert "pointer-events: auto;" in shared_hit_block
+    assert "data-compact-hit-region" not in scroll_jsx_block
+    assert 'data-compact-hit-region-id={`history:message:${message.id}`}' in panel_source
+    assert 'data-compact-hit-region-id="history:controls"' in panel_source
+    assert 'data-compact-hit-region-id="history:preview"' in panel_source

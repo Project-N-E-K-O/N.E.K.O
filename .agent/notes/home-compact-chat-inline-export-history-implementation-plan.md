@@ -344,6 +344,14 @@
    - 网页端与桌面端截图中 history 宽度、高度、preview 展开高度、气泡选择态、controls、toolFan 和 choice 覆盖关系一致。
    - 连续观察期间 setBounds / setShape 不重复提交相同或来回切换的 rect。
 
+阶段 3 执行记录（2026-05-22）：
+
+1. 已确认 `desktop-compact-layout.js` 的 bounds / hit 分离链路保持不变：history / preview / toolFan / choice 都只能作为 extra island 扩展 native bounds，不能回流为 base anchor。
+2. 已确认阶段 2 的闪烁根因不在 NEKO-PC 的 focus 或 history 接入方式，而在 NEKO 侧 history 尺寸曾用窗口 `vh/vw` 形成反馈环；阶段 3 不再改动 base surface、输入态主体和保存位置语义。
+3. 已撤回此前错误的 NEKO-PC 无 `setShape` 全局 pointer-ignore 兜底记录；该方向会把“history 透明区域穿透”误扩大成“整个透明 BrowserWindow 都穿透”，不符合当前功能边界。
+4. 当前阶段 3/4 的有效桌面端边界保持为：NEKO 输出真实 geometry，NEKO-PC 只消费 bounds / hitRects / nativeRects；桌面壳不重写 history 业务、不重算网页样式、不改变紧凑输入态主体。
+5. 已在 NEKO-PC 增加 history-only 透明穿透收口：只把 `history:native` 且无 `hitRect` 的 bounds-only 历史外壳作为 passthrough 候选，再用真实 `hitRects` 排除气泡、controls、preview、输入框和拖拽柄；macOS / Windows 等可用 `setIgnoreMouseEvents(..., { forward: true })` 的平台按该最小范围穿透，不能恢复已撤回的整窗 pointer-ignore 轮询方案。
+
 ### 阶段 4：真实运行矩阵
 
 必须同时检查网页端和桌面端：
@@ -387,6 +395,58 @@
 1. 除桌面端毛玻璃外，用户可见表现与网页端一致。
 2. 收口说明必须附网页端截图 / geometry snapshot 和桌面端截图 / geometry snapshot。
 3. 收口说明必须写明是否观察到 setBounds / setShape 抖动；若有抖动，不能标记为完成。
+
+阶段 4 执行记录（2026-05-22）：
+
+1. 已按网页端和桌面端真实运行重新跑 compact 矩阵，截图和 geometry snapshot 产物位于：
+   - `tmp/phase4-compact-history/20260522-154325/summary.json`
+   - `tmp/phase4-compact-history/20260522-154325/web-*.png`
+   - `tmp/phase4-compact-history/20260522-154325/desktop-*.png`
+2. 本轮真实运行发现一个阶段 2 / 3 静态检查没有暴露的根因：长历史滚动到底部后，NEKO 侧 `collectCompactCompositeGeometryItems()` 仍把滚动容器外、已经离屏的气泡原始 `getBoundingClientRect()` 发给桌面端。桌面端按合同 union native rect 后会被这些负数 top / 离屏 rect 撑大窗口；此前可复现为桌面 long history 窗口高度约 `2854px`，超过 `workArea.height=1410`。
+3. 已在 NEKO 侧修正 geometry 输出，而不是让 NEKO-PC 猜测网页结构：
+   - 新增 `intersectCompactRects()`。
+   - `collectCompactCompositeGeometryItems()` 对 `data-compact-hit-region="true"` 子元素先与父级可见 history / preview 容器求交。
+   - 完全离屏的气泡不再输出 hit/native rect；部分露出的气泡只输出可见交集。
+   - `history:native` 仍保持 bounds-only，负责可见外壳窗口 bounds；气泡、controls、preview 才是实际 hit。
+4. 修正后真实桌面 long history 复测：
+   - `desktop-history-long` BrowserWindow / viewport 收敛到 `541x740`，没有再超过 workArea。
+   - `history:native` 为可见区域 `top=11.609375, bottom=567`。
+   - `surfaceNativeRects` 最小 top / 最大 bottom 为 `11.609375 / 637`，不再包含离屏负数 rect。
+   - 透明采样点 `transparentProbeInHit=false`，history 上方 / 气泡外透明区域未进入 hitRects。
+5. setBounds / setShape / pointer passthrough 观察：
+   - macOS 本轮没有 `setShape` 能力；当前不再使用整窗 pointer-ignore 轮询，而是由 NEKO-PC 根据 `historyPassthroughRects` + `hitRects` 做 history-only `setIgnoreMouseEvents(true, { forward: true })`。真实桌面复测中：history 透明区 passthrough=true，气泡 / controls / 输入框 passthrough=false。
+   - Linux patched `setShape` 路径仍由 NEKO-PC 契约测试覆盖；该平台应优先使用 shape input region，不启用 no-setShape pointer passthrough。
+   - Linux Wayland 无 patched `setShape` 时，主进程会拒绝 native ignore mouse，透明穿透能力受平台限制；文档和验收不能把该环境标记为已完整完成。
+   - long history 打开后 `setBounds` 为 `1` 次、`uniqueBounds=1`，稳定在 `x=502,y=338,w=541,h=740`。
+   - 后续复查发现 controls 折叠 / 展开时外层高度变化仍会造成肉眼可见的整体位移，不能再视为可接受过渡；收口方式不是把中间按钮条硬撑高，而是在 `.compact-export-history-anchor.controls-collapsed` 上把折叠省出的实际高度回补给 `.compact-export-history-scroll`，让整体 geometry 稳定，同时让上方历史对话区变长，符合网页端目标表现。回补高度不能写死为单个 `px` 常量，必须由 controls 展开态 block size 与折叠态 block size 的 CSS 变量差值推导；当前默认尺寸下网页端实测 expanded controls 约为 `40px`、collapsed controls 约为 `16px`，差值约 `24px`，后续紧凑框按比例变化时应跟随相关尺寸 token 一起变化。
+   - 已补静态护栏：禁止 history anchor / panel / scroll / preview 引入 layout transition；controls 只允许非布局视觉过渡；透明 anchor / panel / scroll / message wrapper 必须保持 `pointer-events: none`，只有气泡、controls、preview 作为真实 hit region。
+6. 已复测场景：
+   - web / desktop：compact default、compact input、history empty、short、long、streaming、selected、preview、controls collapsed、toolFan、choice layer、minimized ball。
+   - 重点检查通过：history / preview 不裁切，透明区域不进入 hitRects，long history 不再撑爆桌面窗口，preview / controls / toolFan 不回写 base surface。
+7. 仍需后续真实手动补充但不阻塞阶段 5 的项目：
+   - 真实 OS 拖拽保存 compact 位置和模型移动联动的长时间观察。
+   - ChoicePrompt above / below 的双向场景各自截图；本轮自动矩阵覆盖 choice layer 挂载和 geometry 输出，但未强制制造 above / below 两种 workArea 条件。
+   - Linux `setShape` 平台真机确认；当前由契约测试保证输入合同，macOS 真机只验证 history 显示、bounds 收敛和 geometry 输出。
+
+阶段 4 收口结论（2026-05-22）：
+
+1. 阶段 4 的基础矩阵已收口到可以进入阶段 5：网页端和桌面端截图 / geometry snapshot 产物齐全，history empty / short / long / streaming / selected、preview、toolFan、choice layer、minimized ball 均有对应 web / desktop 记录。
+2. 当前有效证据：
+   - `web-*` 场景没有 BrowserWindow bounds 调用，history 场景 `transparentProbeInHit=false`，说明网页端透明采样点没有进入 hit rect。
+   - `desktop-history-empty` / `short` / `long` / `streaming` / `selected` 均为 `boundsCalls=1`、`uniqueBounds=1`，窗口稳定在 `541x740`，没有再次出现长历史把窗口撑到 workArea 外的问题。
+   - `desktop-preview-open` 为 `boundsCalls=2`、`uniqueBounds=2`，属于进入 preview 后真实高度变化；未观察到来回切换的重复 bounds。
+   - `desktop-toolfan-open` 为 `boundsCalls=0`，toolFan 不回写 base surface，也不造成 bounds 抖动。
+   - `desktop-choice-layer` 和 `desktop-minimized-ball` 均只有一次真实 bounds 变化，未改变 history / base anchor 合同。
+3. `desktop-controls-collapsed` 的旧矩阵数据为 `boundsCalls=10`、`uniqueBounds=9`，这是后续复查发现的 controls 折叠抖动问题，不再作为通过证据使用；已由后续修正覆盖：
+   - `.compact-export-history-anchor.controls-collapsed` 不再把中间 controls 条硬撑高，而是把折叠省出的高度回补给 `.compact-export-history-scroll`。
+   - 回补高度由 controls 展开态 / 折叠态 block size 变量差值推导，不能写死为固定 `24px`。
+   - 已补静态护栏，禁止 history anchor / panel / scroll / preview 引入 layout transition，并禁止透明 wrapper 重新成为 hit region。
+4. 当前阶段 4 的剩余项不阻塞阶段 5，但不能在发布前遗忘：
+   - 用当前修正版重新跑一次完整桌面矩阵，尤其是 `desktop-controls-collapsed`，确认 bounds 收敛结果替换旧的 `10 / 9` 记录。
+   - 补 ChoicePrompt above / below 两种 workArea 条件截图。
+   - 补真实 OS 拖拽保存 compact 位置和模型移动联动长时间观察。
+   - Linux patched `setShape` 真机仍需平台确认；macOS / Windows 继续使用 history-only pointer passthrough，不能恢复整窗 pointer-ignore 轮询。
+5. 阶段 4 进入阶段 5 的边界：NEKO 继续作为唯一 UI / geometry 事实源；NEKO-PC 只消费 bounds / hitRects / nativeRects / history passthrough rects；后续导出动作不能把选择、格式化或消息转换逻辑复制到 NEKO-PC。
 
 ### 阶段 5：真实导出动作
 

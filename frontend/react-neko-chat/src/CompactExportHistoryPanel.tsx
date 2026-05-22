@@ -252,6 +252,7 @@ export default function CompactExportHistoryPanel({
       className={clsx('compact-export-history-anchor', {
         'under-choice-prompt': choiceLayerAbove,
         'has-preview': previewOpen,
+        'controls-collapsed': !previewOpen && controlsCollapsed,
       })}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="history"

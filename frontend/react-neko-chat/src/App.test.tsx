@@ -102,6 +102,31 @@ describe('App', () => {
     expect(container).not.toHaveTextContent('There is no conversation to export yet.');
   });
 
+  it('marks compact history as controls-collapsed so the scroll region receives the freed height', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-controls',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Controls collapse should extend history.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+    const anchor = container.querySelector('.compact-export-history-anchor');
+    expect(anchor).not.toHaveClass('controls-collapsed');
+
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-controls-toggle')!);
+    expect(anchor).toHaveClass('controls-collapsed');
+
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-controls-toggle')!);
+    expect(anchor).not.toHaveClass('controls-collapsed');
+  });
+
   it('selects compact history bubbles and reuses the same selection in inline preview', () => {
     const assistantMessage = parseChatMessage({
       id: 'assistant-history-select',

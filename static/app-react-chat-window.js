@@ -566,6 +566,25 @@
         };
     }
 
+    function intersectCompactRects(a, b) {
+        var leftRect = normalizeCompactDomRect(a);
+        var rightRect = normalizeCompactDomRect(b);
+        if (!leftRect || !rightRect) return null;
+        var left = Math.max(leftRect.left, rightRect.left);
+        var top = Math.max(leftRect.top, rightRect.top);
+        var right = Math.min(leftRect.right, rightRect.right);
+        var bottom = Math.min(leftRect.bottom, rightRect.bottom);
+        if (right <= left || bottom <= top) return null;
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
     function shouldIncludeCompactGeometryElement(element) {
         if (!element || typeof element.getBoundingClientRect !== 'function') return false;
         var item = element.getAttribute('data-compact-geometry-item') || '';
@@ -672,6 +691,8 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
+                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                if (!clippedRect) return null;
                 var interactive = style ? style.pointerEvents !== 'none' : true;
                 if (!interactive) return null;
                 var hitRegionKind = child.getAttribute('data-compact-hit-region-kind') || null;
@@ -679,9 +700,9 @@
                     id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index),
                     owner: 'surface',
                     kind: kind || 'unknown',
-                    visualRect: rect,
-                    hitRect: rect,
-                    nativeRect: rect,
+                    visualRect: clippedRect,
+                    hitRect: clippedRect,
+                    nativeRect: clippedRect,
                     interactive: true,
                     hitRegionKind: hitRegionKind
                 };

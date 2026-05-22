@@ -285,6 +285,12 @@
                 linear-gradient(to right, rgba(0,0,0,0.4) 0px, black 8px, black calc(100% - 8px), rgba(0,0,0,0.4) 100%) !important;
             -webkit-mask-composite: source-in !important;
         }
+        body.electron-chat-window.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root {
+            -webkit-mask-image: none !important;
+            mask-image: none !important;
+            -webkit-mask-composite: initial !important;
+            mask-composite: initial !important;
+        }
         @keyframes liquidFlow {
             0%    { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
             12%   { background-position:  50%  15%,  20%  60%,  80%  10%,  40%  80%,  70%   5%,  10%  50%,  55%  35%; }
