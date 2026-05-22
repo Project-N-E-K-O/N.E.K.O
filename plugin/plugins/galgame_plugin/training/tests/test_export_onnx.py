@@ -1,11 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import torch
-
-from training.classify.export_onnx import export_onnx
+import pytest
 
 
 def test_export_onnx_uses_legacy_exporter_for_windows_console(monkeypatch, tmp_path) -> None:
+    torch = pytest.importorskip("torch")
+    from plugin.plugins.galgame_plugin.training.classify.export_onnx import export_onnx
+
     captured: dict[str, object] = {}
 
     def fake_export(*args, **kwargs) -> None:

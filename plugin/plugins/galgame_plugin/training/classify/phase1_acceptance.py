@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import ast
@@ -508,7 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     acceptance = subparsers.add_parser("acceptance")
     acceptance.add_argument("--repo", default=".")
-    acceptance.add_argument("--data-dir", default="training/data")
+    acceptance.add_argument("--data-dir", default="plugin/plugins/galgame_plugin/training/data")
     acceptance.add_argument("--model-path", default=f"{DEFAULT_MODEL_DIR}/v1_galgame.onnx")
     acceptance.add_argument("--config-path", default=f"{DEFAULT_MODEL_DIR}/v1_config.json")
     acceptance.add_argument("--output", default=f"{DEFAULT_MODEL_DIR}/phase1_acceptance_v1.json")

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -11,9 +11,9 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
-from training.classify.export_onnx import export_onnx
-from training.classify.model import GameScreenCNN
-from training.data.dataset import GALGAME_SCREEN_LABELS, GameScreenDataset
+from plugin.plugins.galgame_plugin.training.classify.export_onnx import export_onnx
+from plugin.plugins.galgame_plugin.training.classify.model import GameScreenCNN
+from plugin.plugins.galgame_plugin.training.data.dataset import GALGAME_SCREEN_LABELS, GameScreenDataset
 
 
 _LOGGER = logging.getLogger(__name__)

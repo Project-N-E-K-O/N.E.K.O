@@ -1,4 +1,4 @@
-{
+﻿{
   "report_name": "phase1_acceptance_v1",
   "created_at": "2026-05-22T08:32:22Z",
   "data": {
@@ -149,7 +149,7 @@
   "records_preview": [
     {
       "tick_index": 0,
-      "image_path": "training/data/raw/images/choice_menu/choice_menu_20260522T053155.653013Z_013.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/choice_menu/choice_menu_20260522T053155.653013Z_013.png",
       "expected_label": "choice_menu",
       "expected_stage": "menu_stage",
       "cnn_label": "choice_menu",
@@ -162,7 +162,7 @@
     },
     {
       "tick_index": 1,
-      "image_path": "training/data/raw/images/title_screen/title_screen_20260522T052510.349128Z_004_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/title_screen/title_screen_20260522T052510.349128Z_004_client.png",
       "expected_label": "title_screen",
       "expected_stage": "title_stage",
       "cnn_label": "title_screen",
@@ -175,7 +175,7 @@
     },
     {
       "tick_index": 2,
-      "image_path": "training/data/raw/images/loading/loading_20260522T063455.161866Z_010_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/loading/loading_20260522T063455.161866Z_010_client.png",
       "expected_label": "loading",
       "expected_stage": "transition_stage",
       "cnn_label": "loading",
@@ -188,7 +188,7 @@
     },
     {
       "tick_index": 3,
-      "image_path": "training/data/raw/images/dialogue/dialogue_20260522T054403.989190Z_002_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/dialogue/dialogue_20260522T054403.989190Z_002_client.png",
       "expected_label": "dialogue",
       "expected_stage": "dialogue_stage",
       "cnn_label": "dialogue",
@@ -201,7 +201,7 @@
     },
     {
       "tick_index": 4,
-      "image_path": "training/data/raw/images/loading/loading_20260522T063455.161866Z_019_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/loading/loading_20260522T063455.161866Z_019_client.png",
       "expected_label": "loading",
       "expected_stage": "transition_stage",
       "cnn_label": "loading",
@@ -214,7 +214,7 @@
     },
     {
       "tick_index": 5,
-      "image_path": "training/data/raw/images/save_load/save_load_20260522T052740.720573Z_021_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/save_load/save_load_20260522T052740.720573Z_021_client.png",
       "expected_label": "save_load",
       "expected_stage": "save_load_stage",
       "cnn_label": "save_load",
@@ -227,7 +227,7 @@
     },
     {
       "tick_index": 6,
-      "image_path": "training/data/raw/images/backlog/backlog_20260522T052852.796853Z_027.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/backlog/backlog_20260522T052852.796853Z_027.png",
       "expected_label": "backlog",
       "expected_stage": "gallery_stage",
       "cnn_label": "backlog",
@@ -240,7 +240,7 @@
     },
     {
       "tick_index": 7,
-      "image_path": "training/data/raw/images/gallery/gallery_20260522T053926.259213Z_010.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/gallery/gallery_20260522T053926.259213Z_010.png",
       "expected_label": "gallery",
       "expected_stage": "gallery_stage",
       "cnn_label": "gallery",
@@ -253,7 +253,7 @@
     },
     {
       "tick_index": 8,
-      "image_path": "training/data/raw/images/loading/loading_20260522T063455.161866Z_016_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/loading/loading_20260522T063455.161866Z_016_client.png",
       "expected_label": "loading",
       "expected_stage": "transition_stage",
       "cnn_label": "loading",
@@ -266,7 +266,7 @@
     },
     {
       "tick_index": 9,
-      "image_path": "training/data/raw/images/gallery/gallery_20260522T053920.614886Z_003_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/gallery/gallery_20260522T053920.614886Z_003_client.png",
       "expected_label": "gallery",
       "expected_stage": "gallery_stage",
       "cnn_label": "gallery",
@@ -279,7 +279,7 @@
     },
     {
       "tick_index": 10,
-      "image_path": "training/data/raw/images/dialogue/dialogue_20260522T052314.564651Z_021.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/dialogue/dialogue_20260522T052314.564651Z_021.png",
       "expected_label": "dialogue",
       "expected_stage": "dialogue_stage",
       "cnn_label": "dialogue",
@@ -292,7 +292,7 @@
     },
     {
       "tick_index": 11,
-      "image_path": "training/data/raw/images/dialogue/dialogue_live_20260522T071239.812378Z_002_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/dialogue/dialogue_live_20260522T071239.812378Z_002_client.png",
       "expected_label": "dialogue",
       "expected_stage": "dialogue_stage",
       "cnn_label": "dialogue",
@@ -305,7 +305,7 @@
     },
     {
       "tick_index": 12,
-      "image_path": "training/data/raw/images/dialogue/dialogue_20260522T054427.794049Z_035.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/dialogue/dialogue_20260522T054427.794049Z_035.png",
       "expected_label": "dialogue",
       "expected_stage": "dialogue_stage",
       "cnn_label": "dialogue",
@@ -318,7 +318,7 @@
     },
     {
       "tick_index": 13,
-      "image_path": "training/data/raw/images/loading/loading_20260522T063455.161866Z_026.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/loading/loading_20260522T063455.161866Z_026.png",
       "expected_label": "loading",
       "expected_stage": "transition_stage",
       "cnn_label": "loading",
@@ -331,7 +331,7 @@
     },
     {
       "tick_index": 14,
-      "image_path": "training/data/raw/images/unknown/unknown_20260522T062131.012528Z_001.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/unknown/unknown_20260522T062131.012528Z_001.png",
       "expected_label": "unknown",
       "expected_stage": "default",
       "cnn_label": "unknown",
@@ -344,7 +344,7 @@
     },
     {
       "tick_index": 15,
-      "image_path": "training/data/raw/images/gallery/gallery_20260522T053925.447019Z_009.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/gallery/gallery_20260522T053925.447019Z_009.png",
       "expected_label": "gallery",
       "expected_stage": "gallery_stage",
       "cnn_label": "gallery",
@@ -357,7 +357,7 @@
     },
     {
       "tick_index": 16,
-      "image_path": "training/data/raw/images/title_screen/title_screen_20260522T052527.744517Z_025_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/title_screen/title_screen_20260522T052527.744517Z_025_client.png",
       "expected_label": "title_screen",
       "expected_stage": "title_stage",
       "cnn_label": "title_screen",
@@ -370,7 +370,7 @@
     },
     {
       "tick_index": 17,
-      "image_path": "training/data/raw/images/unknown/unknown_20260522T062131.012528Z_019.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/unknown/unknown_20260522T062131.012528Z_019.png",
       "expected_label": "unknown",
       "expected_stage": "default",
       "cnn_label": "unknown",
@@ -383,7 +383,7 @@
     },
     {
       "tick_index": 18,
-      "image_path": "training/data/raw/images/title_screen/title_screen_20260522T052512.005496Z_006_client.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/title_screen/title_screen_20260522T052512.005496Z_006_client.png",
       "expected_label": "title_screen",
       "expected_stage": "title_stage",
       "cnn_label": "title_screen",
@@ -396,7 +396,7 @@
     },
     {
       "tick_index": 19,
-      "image_path": "training/data/raw/images/dialogue/dialogue_20260522T052322.571357Z_031.png",
+      "image_path": "plugin/plugins/galgame_plugin/training/data/raw/images/dialogue/dialogue_20260522T052322.571357Z_031.png",
       "expected_label": "dialogue",
       "expected_stage": "dialogue_stage",
       "cnn_label": "dialogue",

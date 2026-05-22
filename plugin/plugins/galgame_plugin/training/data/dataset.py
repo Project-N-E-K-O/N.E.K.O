@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import Dataset
 
 from plugin.plugins.galgame_plugin.core.vision.labels import GALGAME_VISION_LABELS
-from training.shared.augment import build_eval_transform, build_train_transform
+from plugin.plugins.galgame_plugin.training.shared.augment import build_eval_transform, build_train_transform
 
 
 _LOGGER = logging.getLogger(__name__)

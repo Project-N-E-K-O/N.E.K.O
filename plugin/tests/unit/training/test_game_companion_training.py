@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import builtins
 import json
@@ -7,12 +7,12 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from training.shared.metrics import macro_f1, top1_accuracy
+from plugin.plugins.galgame_plugin.training.shared.metrics import macro_f1, top1_accuracy
 
 
 def test_game_screen_cnn_forward_shape() -> None:
     torch = pytest.importorskip("torch")
-    from training.classify.model import GameScreenCNN
+    from plugin.plugins.galgame_plugin.training.classify.model import GameScreenCNN
 
     model = GameScreenCNN(num_classes=11)
     output = model(torch.randn(2, 3, 224, 224))
@@ -22,7 +22,7 @@ def test_game_screen_cnn_forward_shape() -> None:
 
 def test_game_screen_dataset_loads_jsonl_and_returns_tensor(tmp_path) -> None:
     pytest.importorskip("torch")
-    from training.data.dataset import GameScreenDataset
+    from plugin.plugins.galgame_plugin.training.data.dataset import GameScreenDataset
 
     image_path = tmp_path / "dialogue.png"
     Image.new("RGB", (32, 32), "black").save(image_path)
@@ -40,7 +40,7 @@ def test_game_screen_dataset_loads_jsonl_and_returns_tensor(tmp_path) -> None:
 
 def test_game_screen_dataset_warns_when_image_cannot_be_loaded(tmp_path, caplog) -> None:
     pytest.importorskip("torch")
-    from training.data.dataset import GameScreenDataset
+    from plugin.plugins.galgame_plugin.training.data.dataset import GameScreenDataset
 
     image_path = tmp_path / "broken.png"
     image_path.write_bytes(b"not an image")
@@ -59,8 +59,8 @@ def test_game_screen_dataset_warns_when_image_cannot_be_loaded(tmp_path, caplog)
 
 def test_pretrained_feature_loader_ignores_incompatible_shapes() -> None:
     torch = pytest.importorskip("torch")
-    from training.classify.model import GameScreenCNN
-    from training.classify.train import _load_compatible_feature_weights
+    from plugin.plugins.galgame_plugin.training.classify.model import GameScreenCNN
+    from plugin.plugins.galgame_plugin.training.classify.train import _load_compatible_feature_weights
 
     model = GameScreenCNN(num_classes=11)
     current = model.features.state_dict()
@@ -79,7 +79,7 @@ def test_pretrained_feature_loader_ignores_incompatible_shapes() -> None:
 
 def test_pretrained_backbone_warning_when_torchvision_load_fails(monkeypatch, caplog) -> None:
     pytest.importorskip("torch")
-    from training.classify import train as train_module
+    from plugin.plugins.galgame_plugin.training.classify import train as train_module
 
     real_import = builtins.__import__
 
@@ -99,7 +99,7 @@ def test_pretrained_backbone_warning_when_torchvision_load_fails(monkeypatch, ca
 
 def test_train_transform_warns_when_albumentations_fails(monkeypatch, caplog) -> None:
     pytest.importorskip("torch")
-    from training.shared import augment
+    from plugin.plugins.galgame_plugin.training.shared import augment
 
     real_import = builtins.__import__
 
@@ -120,7 +120,7 @@ def test_train_transform_warns_when_albumentations_fails(monkeypatch, caplog) ->
 
 def test_train_epoch_rejects_non_finite_loss() -> None:
     torch = pytest.importorskip("torch")
-    from training.classify.train import train_epoch
+    from plugin.plugins.galgame_plugin.training.classify.train import train_epoch
 
     class _BadModel(torch.nn.Module):
         def __init__(self) -> None:
@@ -141,7 +141,7 @@ def test_train_epoch_rejects_non_finite_loss() -> None:
 
 def test_export_onnx_uses_legacy_exporter_for_windows_console(monkeypatch, tmp_path) -> None:
     torch = pytest.importorskip("torch")
-    from training.classify.export_onnx import export_onnx
+    from plugin.plugins.galgame_plugin.training.classify.export_onnx import export_onnx
 
     captured: dict[str, object] = {}
 

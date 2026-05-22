@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
-from training.classify.phase1_acceptance import (
+from plugin.plugins.galgame_plugin.training.classify.phase1_acceptance import (
     Phase1PredictionRecord,
     build_replay_ticks,
     label_to_stage,

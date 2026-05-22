@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
 
-from training.data.dataset import GALGAME_SCREEN_LABELS
+from plugin.plugins.galgame_plugin.training.data.dataset import GALGAME_SCREEN_LABELS
 
 
 def collect_from_filenames(

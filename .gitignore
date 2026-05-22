@@ -1,14 +1,13 @@
-# 忽略敏感配置
+﻿# 蹇界暐鏁忔劅閰嶇疆
 core_config.txt
 test.py
 mcp_server/servers.json
 tests/api_keys.json
 tests/test_inputs/
 
-# scripts/check_i18n.py 偶尔会被人 redirect 到这里，别再次入库
-/i18n_check_output.txt
+# scripts/check_i18n.py 鍋跺皵浼氳浜?redirect 鍒拌繖閲岋紝鍒啀娆″叆搴?/i18n_check_output.txt
 
-# 忽略日志文件
+# 蹇界暐鏃ュ織鏂囦欢
 *.log
 /logs/
 /data/
@@ -25,11 +24,11 @@ debug_audio/*
 *.loT
 *.stackdump
 
-# 忽略 memory/store 下所有内容（含子目录和文件）
+# 蹇界暐 memory/store 涓嬫墍鏈夊唴瀹癸紙鍚瓙鐩綍鍜屾枃浠讹級
 memory/store/*
 !memory/store/.gitkeep
 
-# 忽略缓存目录（根目录及 utils 下）
+# 蹇界暐缂撳瓨鐩綍锛堟牴鐩綍鍙?utils 涓嬶級
 /cache/
 utils/cache/
 config/api.py
@@ -38,15 +37,15 @@ config/*.json
 env/*
 lanlan_frd.exe
 
-# 忽略临时文件
+# 蹇界暐涓存椂鏂囦欢
 *.tmp
 *.bak
 
-# 忽略 Python 缓存文件和字节码
+# 蹇界暐 Python 缂撳瓨鏂囦欢鍜屽瓧鑺傜爜
 __pycache__/
 *.py[cod]
 
-# 忽略 Jupyter Notebook 检查点
+# 蹇界暐 Jupyter Notebook 妫€鏌ョ偣
 .ipynb_checkpoints/
 .vscode/
 .idea/
@@ -58,7 +57,7 @@ __pycache__/
 .venv_monitor/
 .matplotlib/
 .pyinstaller-config/
-# Local Windows Nuitka build script — maintainer-only, not for repo
+# Local Windows Nuitka build script 鈥?maintainer-only, not for repo
 build_nuitka.bat
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
@@ -111,13 +110,12 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 
-# 忽略静态资源
-static/ziraitikuwa/*
+# 蹇界暐闈欐€佽祫婧?static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
 static/yui/*
 static/react/neko-chat/*
-打包说明.txt
+鎵撳寘璇存槑.txt
 runtime_hook_inflect.py
 backup/
 build*
@@ -127,7 +125,7 @@ build*
 metadata.package.json
 version_info.txt
 
-# 复原Steam
+# 澶嶅師Steam
 !steamworks/steam_api64.dll
 !steamworks/steam_api64.lib
 !steamworks/SteamworksPy64.dll
@@ -139,11 +137,9 @@ start.sh
 local_server/cosyvoice_server/*wav
 
 
-# 测试报告与结果
-tests/reports/
+# 娴嬭瘯鎶ュ憡涓庣粨鏋?tests/reports/
 
-# Testbench 运行时数据目录（沙盒/日志/存档/autosave/导出/用户自定义 schema 和 dialog template）
-# 代码目录 tests/testbench/ 仍入库, 数据目录 tests/testbench_data/ 全部忽略
+# Testbench 杩愯鏃舵暟鎹洰褰曪紙娌欑洅/鏃ュ織/瀛樻。/autosave/瀵煎嚭/鐢ㄦ埛鑷畾涔?schema 鍜?dialog template锛?# 浠ｇ爜鐩綍 tests/testbench/ 浠嶅叆搴? 鏁版嵁鐩綍 tests/testbench_data/ 鍏ㄩ儴蹇界暐
 tests/testbench_data/
 latest_report.json
 sendText.js
@@ -155,38 +151,35 @@ data/browser_use_extensions/
 .VSCodeCounter
 
 # Local galgame vision training data/checkpoints. Keep runtime ONNX and reports in git.
-training/data/train.jsonl
-training/data/val.jsonl
-training/data/raw/
+plugin/plugins/galgame_plugin/training/data/train.jsonl
+plugin/plugins/galgame_plugin/training/data/val.jsonl
+plugin/plugins/galgame_plugin/training/data/raw/
 plugin/plugins/galgame_plugin/models/vision/screen_classifier/best.pth
 plugin/plugins/galgame_plugin/models/vision/screen_classifier/live_validation_v1.json
 plugin/plugins/galgame_plugin/models/vision/screen_classifier/phase1_coverage_v1.json
 
-# 插件服务器运行时生成的凭证文件
-plugin/.plugin_server_admin_code
+# 鎻掍欢鏈嶅姟鍣ㄨ繍琛屾椂鐢熸垚鐨勫嚟璇佹枃浠?plugin/.plugin_server_admin_code
 
-# 插件包解包后提取出的 profile 目录（运行/导入产物，不入库）
-plugin/.neko-package-profiles/
+# 鎻掍欢鍖呰В鍖呭悗鎻愬彇鍑虹殑 profile 鐩綍锛堣繍琛?瀵煎叆浜х墿锛屼笉鍏ュ簱锛?plugin/.neko-package-profiles/
 
-# 插件备忘提醒运行时数据库
+# 鎻掍欢澶囧繕鎻愰啋杩愯鏃舵暟鎹簱
 plugin/plugins/memo_reminder/store.db
 
 # Local nested plugin repos (keep them out of the parent repo index)
 plugin/neko-plugin-docs/
 plugin/rust/
 
-# 本地调试/测试用插件
-plugin/plugins/music_tester/
+# 鏈湴璋冭瘯/娴嬭瘯鐢ㄦ彃浠?plugin/plugins/music_tester/
 plugin/plugins/web_radio/
 
-# QQ 自动回复：NapCat.Shell 整个目录不入库，仅保留 .gitkeep 占位
+# QQ 鑷姩鍥炲锛歂apCat.Shell 鏁翠釜鐩綍涓嶅叆搴擄紝浠呬繚鐣?.gitkeep 鍗犱綅
 plugin/plugins/qq_auto_reply/NapCat.Shell/*
 
-# QQ 自动回复 测试数据
+# QQ 鑷姩鍥炲 娴嬭瘯鏁版嵁
 plugin/plugins/qq_auto_reply/static/cache/
 plugin/plugins/qq_auto_reply/data/
 
-# bilibili_danmaku 插件运行时数据（凭据、用户画像），不入库
+# bilibili_danmaku 鎻掍欢杩愯鏃舵暟鎹紙鍑嵁銆佺敤鎴风敾鍍忥級锛屼笉鍏ュ簱
 plugin/plugins/bilibili_danmaku/data/bili_credential.*
 plugin/plugins/bilibili_danmaku/data/user_profiles/
 !plugin/plugins/qq_auto_reply/NapCat.Shell/.gitkeep
@@ -194,7 +187,7 @@ plugin/plugins/bilibili_danmaku/data/user_profiles/
 .tmp_env_*
 .test_neko_write
 
-# Jukebox 二进制资源（音乐、动画），只保留 songs.json 索引
+# Jukebox 浜岃繘鍒惰祫婧愶紙闊充箰銆佸姩鐢伙級锛屽彧淇濈暀 songs.json 绱㈠紩
 static/jukebox/*.mp3
 static/jukebox/*.wav
 static/jukebox/*.ogg
@@ -206,5 +199,5 @@ static/jukebox/*.fbx
 tests/prompt_dump.json
 tests/testbench/docs/dev_note.txt
 
-# yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
+# yui-origin Live2D 妯″瀷婧愮爜鎵撳寘鍦?assets/yui-origin.tar.gz锛沚uild_frontend 瑙ｅ帇鍒版
 /static/yui-origin/
