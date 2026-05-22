@@ -333,6 +333,7 @@ def test_register_pdf_font_falls_back_to_helvetica_when_pdfmetrics_is_unavailabl
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pytest.importorskip("reportlab")
+    DocExporter._registered_pdf_fonts.clear()
     import builtins
 
     real_import = builtins.__import__
