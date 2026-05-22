@@ -179,6 +179,35 @@ def test_changed_lines_falls_back_to_base_ref_range(monkeypatch) -> None:
     assert commands[1][:4] == ["git", "diff", "-U0", "origin/main..HEAD"]
 
 
+def test_benchmark_onnx_provider_reports_provider_runtime_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class _FakeOrt:
+        @staticmethod
+        def get_available_providers():
+            return ["CPUExecutionProvider", "CUDAExecutionProvider"]
+
+    def _raise_classifier(**_kwargs):
+        raise RuntimeError("provider cannot initialize")
+
+    monkeypatch.setitem(__import__("sys").modules, "onnxruntime", _FakeOrt)
+    monkeypatch.setattr(phase1_acceptance, "OnnxScreenClassifier", _raise_classifier)
+
+    result = phase1_acceptance.benchmark_onnx_provider(
+        model_path=tmp_path / "model.onnx",
+        config_path=tmp_path / "config.json",
+        provider="CUDAExecutionProvider",
+        image_path=tmp_path / "sample.png",
+        iterations=1,
+    )
+
+    assert result["status"] == "provider_failed"
+    assert result["provider"] == "CUDAExecutionProvider"
+    assert result["available_providers"] == ["CPUExecutionProvider", "CUDAExecutionProvider"]
+    assert "provider cannot initialize" in result["error"]
+
+
 def test_main_returns_coverage_pytest_failure_exit_code(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         phase1_acceptance,

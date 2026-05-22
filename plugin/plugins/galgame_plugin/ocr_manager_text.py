@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -249,7 +250,15 @@ class TextMixin:
             if last_error:
                 self._log_debug("galgame vision classifier returned no result: {}", last_error)
             return None
-        confidence = max(0.0, min(float(result.get("confidence") or 0.0), 1.0))
+        try:
+            raw_confidence = float(result.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            self._vision_classifier_detail = "invalid_confidence"
+            return None
+        if not math.isfinite(raw_confidence):
+            self._vision_classifier_detail = "invalid_confidence"
+            return None
+        confidence = max(0.0, min(raw_confidence, 1.0))
         self._vision_classifier_last_label = str(result.get("label") or "")
         self._vision_classifier_last_confidence = confidence
         self._vision_classifier_last_latency_ms = max(

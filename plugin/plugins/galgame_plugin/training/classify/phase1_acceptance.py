@@ -330,17 +330,25 @@ def benchmark_onnx_provider(
             "status": "not_available",
             "available_providers": available,
         }
-    classifier = OnnxScreenClassifier(
-        model_path=model_path,
-        config_path=config_path,
-        providers=[provider],
-    )
-    for _ in range(10):
-        classifier.classify(image_path)
-    latencies = [
-        float(classifier.classify(image_path)["latency_ms"])
-        for _ in range(max(1, int(iterations)))
-    ]
+    try:
+        classifier = OnnxScreenClassifier(
+            model_path=model_path,
+            config_path=config_path,
+            providers=[provider],
+        )
+        for _ in range(10):
+            classifier.classify(image_path)
+        latencies = [
+            float(classifier.classify(image_path)["latency_ms"])
+            for _ in range(max(1, int(iterations)))
+        ]
+    except Exception as exc:
+        return {
+            "provider": provider,
+            "status": "provider_failed",
+            "available_providers": available,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     return {
         "provider": provider,
         "status": "ok",

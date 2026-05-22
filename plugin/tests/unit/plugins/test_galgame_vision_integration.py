@@ -146,6 +146,38 @@ def test_cnn_low_confidence_falls_back_to_ocr_rules(tmp_path, monkeypatch) -> No
     assert events[-1]["payload"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_TITLE
 
 
+def test_cnn_non_finite_confidence_falls_back_to_ocr_rules(tmp_path, monkeypatch) -> None:
+    manager = _manager(
+        tmp_path,
+        {
+            "label": "dialogue",
+            "screen_type": OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+            "confidence": float("nan"),
+            "all_scores": {"dialogue": float("nan")},
+            "latency_ms": 1.0,
+        },
+    )
+    fallback = ScreenClassification(
+        screen_type=OCR_CAPTURE_PROFILE_STAGE_TITLE,
+        confidence=0.88,
+        raw_ocr_text=["Start"],
+        debug={"reason": "test_fallback"},
+    )
+    monkeypatch.setattr(text_module, "classify_screen_from_ocr", lambda *_args, **_kwargs: fallback)
+
+    classification, emitted = manager._emit_screen_classification_from_extraction(
+        OcrExtractionResult(text="Start"),
+        target=_window()[0],
+        now=101.0,
+        image=Image.new("RGB", (320, 180), "black"),
+    )
+
+    assert classification.screen_type == OCR_CAPTURE_PROFILE_STAGE_TITLE
+    assert classification.debug["reason"] == "test_fallback"
+    assert emitted is True
+    assert manager._vision_classifier_detail == "invalid_confidence"
+
+
 def test_cnn_skipped_interval_preserves_last_successful_status(tmp_path) -> None:
     manager = _manager(
         tmp_path,
