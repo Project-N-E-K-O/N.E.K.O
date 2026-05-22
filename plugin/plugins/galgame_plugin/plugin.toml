@@ -78,7 +78,7 @@ llm_repeat_detection_enabled = false
 llm_repeat_similarity_threshold = 0.85
 
 [vision]
-enabled = false
+enabled = true
 model_dir = "models/vision/screen_classifier"
 device = "auto"
 cnn_skip_ocr_threshold = 0.75

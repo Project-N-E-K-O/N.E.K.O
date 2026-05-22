@@ -2782,6 +2782,31 @@ def _build_status_payload_unchecked(
         "ocr_screen_awareness_model_min_confidence": (
             config.ocr_reader_screen_awareness_model_min_confidence
         ),
+        "vision_classifier_enabled": config.vision_classifier_enabled,
+        "vision_classifier_model_dir": config.vision_classifier_model_dir,
+        "vision_classifier_model_name": config.vision_classifier_model_name,
+        "vision_classifier_threshold": config.vision_classifier_threshold,
+        "vision_classifier_tick_interval": config.vision_classifier_tick_interval,
+        "vision_classifier_inference_timeout_ms": (
+            config.vision_classifier_inference_timeout_ms
+        ),
+        "vision_classifier_input_size": list(config.vision_classifier_input_size),
+        "vision_classifier_input_size_low": list(config.vision_classifier_input_size_low),
+        "vision_classifier_available": bool(
+            ocr_runtime_obj.get("vision_classifier_available")
+        ),
+        "vision_classifier_detail": str(
+            ocr_runtime_obj.get("vision_classifier_detail") or ""
+        ),
+        "vision_classifier_last_label": str(
+            ocr_runtime_obj.get("vision_classifier_last_label") or ""
+        ),
+        "vision_classifier_last_confidence": _coerce_float(
+            ocr_runtime_obj.get("vision_classifier_last_confidence"), 0.0, minimum=0.0
+        ),
+        "vision_classifier_last_latency_ms": _coerce_float(
+            ocr_runtime_obj.get("vision_classifier_last_latency_ms"), 0.0, minimum=0.0
+        ),
         "rapidocr_enabled": config.rapidocr_enabled,
         "dxcam": dxcam,
         "rapidocr": rapidocr,

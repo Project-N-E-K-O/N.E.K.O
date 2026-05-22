@@ -27,4 +27,5 @@ def export_onnx(
         output_names=["logits"],
         dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
         opset_version=opset,
+        dynamo=False,
     )

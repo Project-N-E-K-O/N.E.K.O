@@ -713,6 +713,22 @@ class RuntimeMixin:
             screen_awareness_model_last_latency_seconds=float(
                 self._screen_awareness_model_last_latency_seconds or 0.0
             ),
+            vision_classifier_enabled=bool(
+                getattr(self._config, "vision_classifier_enabled", False)
+            ),
+            vision_classifier_available=getattr(self, "vision_classifier", None) is not None,
+            vision_classifier_detail=str(
+                getattr(self, "_vision_classifier_detail", "") or ""
+            ),
+            vision_classifier_last_label=str(
+                getattr(self, "_vision_classifier_last_label", "") or ""
+            ),
+            vision_classifier_last_confidence=float(
+                getattr(self, "_vision_classifier_last_confidence", 0.0) or 0.0
+            ),
+            vision_classifier_last_latency_ms=float(
+                getattr(self, "_vision_classifier_last_latency_ms", 0.0) or 0.0
+            ),
         )
 
 

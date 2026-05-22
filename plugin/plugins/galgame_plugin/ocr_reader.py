@@ -325,6 +325,11 @@ class OcrReaderManager(
             if classifier.load(model_name):
                 self.vision_classifier = classifier
                 self._vision_classifier_detail = "loaded"
+                self._log_info(
+                    "galgame vision classifier loaded: model_dir={} model_name={}",
+                    str(model_dir),
+                    model_name,
+                )
             else:
                 self._vision_classifier_detail = "model_unavailable"
                 self._log_warning(
