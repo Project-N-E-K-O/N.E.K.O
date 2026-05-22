@@ -1,66 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
-from ...models import (
-    OCR_CAPTURE_PROFILE_STAGE_CONFIG,
-    OCR_CAPTURE_PROFILE_STAGE_DEFAULT,
-    OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
-    OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-    OCR_CAPTURE_PROFILE_STAGE_MENU,
-    OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
-    OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
-    OCR_CAPTURE_PROFILE_STAGE_TITLE,
-    OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
-)
+from .labels import GALGAME_VISION_LABELS, vision_label_to_screen_type
+from .preprocessing import IMAGENET_MEAN, IMAGENET_STD, softmax
 
+if TYPE_CHECKING:
+    from PIL.Image import Image as PILImage
 
-GALGAME_VISION_LABELS: tuple[str, ...] = (
-    "dialogue",
-    "choice_menu",
-    "backlog",
-    "save_load",
-    "gallery",
-    "title_screen",
-    "config",
-    "gameplay",
-    "menu_main",
-    "loading",
-    "unknown",
-)
+    from .vision_model_loader import VisionModelLoader
 
-_LABEL_TO_SCREEN_TYPE = {
-    "dialogue": OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
-    "choice_menu": OCR_CAPTURE_PROFILE_STAGE_MENU,
-    "backlog": OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-    "save_load": OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
-    "gallery": OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-    "title_screen": OCR_CAPTURE_PROFILE_STAGE_TITLE,
-    "config": OCR_CAPTURE_PROFILE_STAGE_CONFIG,
-    "gameplay": OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
-    "menu_main": OCR_CAPTURE_PROFILE_STAGE_MENU,
-    "loading": OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
-    "unknown": OCR_CAPTURE_PROFILE_STAGE_DEFAULT,
-}
-
-_IMAGENET_MEAN = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
-_IMAGENET_STD = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
-
+    VisionInput: TypeAlias = PILImage | np.ndarray
+else:
+    VisionInput: TypeAlias = object
 
 class VisionScreenClassifier:
-    """Thin ONNX inference wrapper for galgame screen classification."""
+    """Thin ONNX inference wrapper for galgame screen classification.
+
+    The latency threshold is a post-run health check, not a hard cancellation
+    mechanism for a blocked ONNX provider.
+    """
 
     def __init__(
         self,
-        loader: Any,
+        loader: VisionModelLoader,
         *,
         labels: tuple[str, ...] = GALGAME_VISION_LABELS,
         input_size: tuple[int, int] = (224, 224),
-        inference_timeout_ms: float = 200.0,
+        latency_check_ms: float = 200.0,
     ) -> None:
         self._loader = loader
         self._labels = tuple(labels)
@@ -68,7 +40,8 @@ class VisionScreenClassifier:
             max(1, int(input_size[0])),
             max(1, int(input_size[1])),
         )
-        self._inference_timeout_ms = max(0.0, float(inference_timeout_ms))
+        self._latency_check_ms = max(0.0, float(latency_check_ms))
+        self._session_lock = threading.RLock()
         self._session: Any | None = None
         self._input_name = ""
         self._model_name = ""
@@ -76,88 +49,107 @@ class VisionScreenClassifier:
 
     @property
     def loaded(self) -> bool:
-        return self._session is not None and bool(self._input_name)
+        with self._session_lock:
+            return self._session is not None and bool(self._input_name)
 
     def load(self, model_name: str) -> bool:
-        self._model_name = str(model_name or "").strip()
-        if not self._model_name:
+        normalized = str(model_name or "").strip()
+        if not normalized:
             return False
-        session = self._loader.load(self._model_name)
+        session = self._loader.load(normalized)
         if session is None:
-            self._session = None
-            self._input_name = ""
+            with self._session_lock:
+                self._model_name = normalized
+                self._session = None
+                self._input_name = ""
             return False
         inputs = session.get_inputs()
         if not inputs:
-            self._session = None
-            self._input_name = ""
+            with self._session_lock:
+                self._model_name = normalized
+                self._session = None
+                self._input_name = ""
             return False
-        self._session = session
-        self._input_name = str(inputs[0].name)
+        with self._session_lock:
+            self._model_name = normalized
+            self._session = session
+            self._input_name = str(inputs[0].name)
         return True
 
     def reload(self) -> bool:
-        if not self._model_name:
+        with self._session_lock:
+            model_name = self._model_name
+        if not model_name:
             return False
-        session = self._loader.reload(self._model_name)
+        session = self._loader.reload(model_name)
         if session is None:
-            self._session = None
-            self._input_name = ""
+            with self._session_lock:
+                self._session = None
+                self._input_name = ""
             return False
         inputs = session.get_inputs()
         if not inputs:
-            self._session = None
-            self._input_name = ""
+            with self._session_lock:
+                self._session = None
+                self._input_name = ""
             return False
-        self._session = session
-        self._input_name = str(inputs[0].name)
+        with self._session_lock:
+            self._session = session
+            self._input_name = str(inputs[0].name)
         return True
 
-    def classify(self, image: Any) -> dict[str, Any] | None:
+    def classify(self, image: VisionInput) -> dict[str, Any] | None:
         self.last_error = ""
-        if self._session is None or not self._input_name or image is None:
+        with self._session_lock:
+            session = self._session
+            input_name = self._input_name
+            model_name = self._model_name
+            labels = self._labels
+        if session is None or not input_name or image is None:
             return None
         try:
             tensor = self._preprocess(image)
             started_at = time.perf_counter()
-            outputs = self._session.run(None, {self._input_name: tensor})
+            outputs = session.run(None, {input_name: tensor})
             latency_ms = (time.perf_counter() - started_at) * 1000.0
-            if self._inference_timeout_ms and latency_ms > self._inference_timeout_ms:
-                self.last_error = f"timeout:{latency_ms:.3f}ms"
+            if self._latency_check_ms and latency_ms > self._latency_check_ms:
+                self.last_error = f"latency_exceeded:{latency_ms:.3f}ms"
                 return None
             logits = np.asarray(outputs[0], dtype=np.float32)
             if logits.ndim == 2:
                 logits = logits[0]
             if logits.ndim != 1 or logits.size <= 0:
                 return None
-            scores = _softmax(logits)
+            scores = softmax(logits)
             top_index = int(np.argmax(scores))
-            if top_index < 0 or top_index >= len(self._labels):
+            if top_index < 0 or top_index >= len(labels):
                 return None
-            label = self._labels[top_index]
+            label = labels[top_index]
             confidence = float(scores[top_index])
             all_scores = {
-                self._labels[index]: round(float(score), 6)
-                for index, score in enumerate(scores[: len(self._labels)])
+                labels[index]: round(float(score), 6)
+                for index, score in enumerate(scores[: len(labels)])
             }
             return {
                 "label": label,
-                "screen_type": _LABEL_TO_SCREEN_TYPE.get(label, OCR_CAPTURE_PROFILE_STAGE_DEFAULT),
+                "screen_type": vision_label_to_screen_type(label),
                 "confidence": round(max(0.0, min(confidence, 1.0)), 4),
                 "all_scores": all_scores,
                 "latency_ms": round(max(0.0, latency_ms), 3),
-                "model_name": self._model_name,
+                "model_name": model_name,
             }
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return None
 
-    async def classify_async(self, image: Any) -> dict[str, Any] | None:
-        if self._session is None or not self._input_name or image is None:
+    async def classify_async(self, image: VisionInput) -> dict[str, Any] | None:
+        with self._session_lock:
+            loaded = self._session is not None and bool(self._input_name)
+        if not loaded or image is None:
             return None
         return await asyncio.to_thread(self.classify, image)
 
-    def _preprocess(self, image: Any) -> np.ndarray:
+    def _preprocess(self, image: VisionInput) -> np.ndarray:
         image_error: ImportError | None = None
         try:
             from PIL import Image
@@ -200,16 +192,6 @@ class VisionScreenClassifier:
                     dtype=np.float32,
                 )
         array = array / 255.0
-        array = (array - _IMAGENET_MEAN) / _IMAGENET_STD
+        array = (array - IMAGENET_MEAN) / IMAGENET_STD
         array = np.transpose(array, (2, 0, 1))
         return np.expand_dims(array.astype(np.float32, copy=False), axis=0)
-
-
-def _softmax(values: np.ndarray) -> np.ndarray:
-    clipped = values.astype(np.float32, copy=False)
-    shifted = clipped - np.max(clipped)
-    exp = np.exp(shifted)
-    total = float(np.sum(exp))
-    if total <= 0.0:
-        return np.zeros_like(exp)
-    return exp / total

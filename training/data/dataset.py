@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -8,22 +9,12 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
+from plugin.plugins.galgame_plugin.core.vision.labels import GALGAME_VISION_LABELS
 from training.shared.augment import build_eval_transform, build_train_transform
 
 
-GALGAME_SCREEN_LABELS: tuple[str, ...] = (
-    "dialogue",
-    "choice_menu",
-    "backlog",
-    "save_load",
-    "gallery",
-    "title_screen",
-    "config",
-    "gameplay",
-    "menu_main",
-    "loading",
-    "unknown",
-)
+_LOGGER = logging.getLogger(__name__)
+GALGAME_SCREEN_LABELS: tuple[str, ...] = GALGAME_VISION_LABELS
 
 
 class GameScreenDataset(Dataset):
@@ -66,6 +57,10 @@ class GameScreenDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         sample = self.samples[idx]
-        image = Image.open(sample["image_path"]).convert("RGB")
+        try:
+            image = Image.open(sample["image_path"]).convert("RGB")
+        except Exception as exc:
+            _LOGGER.warning("failed to load training image %s: %s", sample["image_path"], exc)
+            raise
         tensor = self.transform(image)
         return tensor, self.label_to_idx[str(sample["label"])]

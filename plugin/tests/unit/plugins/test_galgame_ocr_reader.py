@@ -4630,10 +4630,10 @@ def test_ocr_reader_logs_when_vision_classifier_loads(
             self.model_dir = model_dir
 
     class _FakeVisionScreenClassifier:
-        def __init__(self, loader, *, input_size, inference_timeout_ms) -> None:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
             self.loader = loader
             self.input_size = input_size
-            self.inference_timeout_ms = inference_timeout_ms
+            self.latency_check_ms = latency_check_ms
 
         def load(self, model_name: str) -> bool:
             self.model_name = model_name

@@ -286,7 +286,7 @@ oauthlib==3.3.1
     # via requests-oauthlib
 ollama==0.6.1
     # via browser-use
-onnxruntime==1.25.0
+onnxruntime==1.23.2
     # via n-e-k-o
 openai==2.8.1
     # via

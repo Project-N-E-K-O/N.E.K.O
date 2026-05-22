@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import logging
 import math
 import os
 import statistics
@@ -18,17 +19,15 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image
 
-from plugin.plugins.galgame_plugin.models import (
-    OCR_CAPTURE_PROFILE_STAGE_CONFIG,
-    OCR_CAPTURE_PROFILE_STAGE_DEFAULT,
-    OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
-    OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-    OCR_CAPTURE_PROFILE_STAGE_MENU,
-    OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
-    OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
-    OCR_CAPTURE_PROFILE_STAGE_TITLE,
-    OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
+from plugin.plugins.galgame_plugin.core.vision.labels import (
+    vision_label_to_screen_type,
 )
+from plugin.plugins.galgame_plugin.core.vision.preprocessing import (
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    softmax,
+)
+from plugin.plugins.galgame_plugin.models import OCR_CAPTURE_PROFILE_STAGE_DEFAULT
 from plugin.plugins.galgame_plugin.screen_awareness_training import (
     ScreenAwarenessTrainingSample,
     build_prototype_model,
@@ -39,22 +38,7 @@ from plugin.plugins.galgame_plugin.screen_classifier import (
 )
 
 
-_IMAGENET_MEAN = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
-_IMAGENET_STD = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
-
-_LABEL_TO_STAGE = {
-    "dialogue": OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
-    "choice_menu": OCR_CAPTURE_PROFILE_STAGE_MENU,
-    "backlog": OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-    "save_load": OCR_CAPTURE_PROFILE_STAGE_SAVE_LOAD,
-    "gallery": OCR_CAPTURE_PROFILE_STAGE_GALLERY,
-    "title_screen": OCR_CAPTURE_PROFILE_STAGE_TITLE,
-    "config": OCR_CAPTURE_PROFILE_STAGE_CONFIG,
-    "gameplay": OCR_CAPTURE_PROFILE_STAGE_MINIGAME,
-    "menu_main": OCR_CAPTURE_PROFILE_STAGE_MENU,
-    "loading": OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
-    "unknown": OCR_CAPTURE_PROFILE_STAGE_DEFAULT,
-}
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -110,7 +94,7 @@ class OnnxScreenClassifier:
         logits = np.asarray(output, dtype=np.float32)
         if logits.ndim == 2:
             logits = logits[0]
-        scores = _softmax(logits)
+        scores = softmax(logits)
         top_index = int(np.argmax(scores))
         label = self.labels[top_index]
         confidence = round(float(scores[top_index]), 4)
@@ -129,13 +113,13 @@ class OnnxScreenClassifier:
         with Image.open(image_path) as image:
             image = image.convert("RGB").resize(self.input_size, Image.Resampling.BILINEAR)
             array = np.asarray(image, dtype=np.float32) / 255.0
-        array = (array - _IMAGENET_MEAN) / _IMAGENET_STD
+        array = (array - IMAGENET_MEAN) / IMAGENET_STD
         array = np.transpose(array, (2, 0, 1))
         return np.expand_dims(array.astype(np.float32, copy=False), axis=0)
 
 
 def label_to_stage(label: str) -> str:
-    return _LABEL_TO_STAGE.get(str(label or "").strip(), OCR_CAPTURE_PROFILE_STAGE_DEFAULT)
+    return vision_label_to_screen_type(label)
 
 
 def load_split_samples(data_dir: Path, splits: Iterable[str]) -> list[dict[str, Any]]:
@@ -147,7 +131,11 @@ def load_split_samples(data_dir: Path, splits: Iterable[str]) -> list[dict[str, 
             for line_no, line in enumerate(handle, start=1):
                 if not line.strip():
                     continue
-                record = json.loads(line)
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    _LOGGER.warning("invalid JSONL row skipped: %s:%s: %s", path, line_no, exc)
+                    continue
                 rel_path = str(record.get("image_path") or "")
                 label = str(record.get("label") or "").strip()
                 if not rel_path or not label:
@@ -572,15 +560,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _softmax(values: np.ndarray) -> np.ndarray:
-    shifted = values.astype(np.float32, copy=False) - np.max(values)
-    exp = np.exp(shifted)
-    total = float(np.sum(exp))
-    if total <= 0.0:
-        return np.zeros_like(exp)
-    return exp / total
-
-
 def _rate(numerator: int, denominator: int) -> float:
     return round(float(numerator) / max(1, int(denominator)), 6)
 
@@ -645,7 +624,7 @@ def _changed_lines(repo: Path, source_paths: list[str]) -> dict[str, set[int]]:
     current_path = ""
     for line in completed.stdout.splitlines():
         if line.startswith("+++ b/"):
-            current_path = line.removeprefix("+++ b/")
+            current_path = line[6:] if line.startswith("+++ b/") else line
             continue
         if not current_path or not line.startswith("@@"):
             continue

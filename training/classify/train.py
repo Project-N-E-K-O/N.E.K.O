@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 import torch
@@ -15,13 +16,20 @@ from training.classify.model import GameScreenCNN
 from training.data.dataset import GALGAME_SCREEN_LABELS, GameScreenDataset
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 def _load_imagenet_pretrained_backbone():
     try:
         from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
         full_model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.IMAGENET1K_V1)
         return full_model.features.state_dict()
-    except Exception:
+    except Exception as exc:
+        _LOGGER.warning(
+            "failed to load ImageNet pretrained backbone; training from scratch: %s",
+            exc,
+        )
         return None
 
 
@@ -52,6 +60,8 @@ def train_epoch(model, loader, optimizer, criterion, device, epoch: int) -> floa
         labels = labels.to(device)
         optimizer.zero_grad(set_to_none=True)
         loss = criterion(model(images), labels)
+        if not torch.isfinite(loss).item():
+            raise ValueError(f"non-finite training loss at epoch {epoch}: {float(loss.item())}")
         loss.backward()
         optimizer.step()
         batch_size = int(labels.shape[0])

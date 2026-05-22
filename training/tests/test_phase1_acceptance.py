@@ -6,8 +6,10 @@ from training.classify.phase1_acceptance import (
     Phase1PredictionRecord,
     build_replay_ticks,
     label_to_stage,
+    load_split_samples,
     summarize_predictions,
 )
+from plugin.plugins.galgame_plugin.core.vision.labels import vision_label_to_screen_type
 
 
 def test_label_to_stage_maps_galgame_labels_to_runtime_stages() -> None:
@@ -20,6 +22,33 @@ def test_label_to_stage_maps_galgame_labels_to_runtime_stages() -> None:
     assert label_to_stage("config") == "config_stage"
     assert label_to_stage("loading") == "transition_stage"
     assert label_to_stage("unknown") == "default"
+
+
+def test_label_to_stage_uses_shared_plugin_mapping() -> None:
+    for label in ("dialogue", "choice_menu", "backlog", "save_load", "unknown"):
+        assert label_to_stage(label) == vision_label_to_screen_type(label)
+
+
+def test_load_split_samples_skips_malformed_jsonl_rows(tmp_path, caplog) -> None:
+    image_path = tmp_path / "dialogue.png"
+    image_path.write_text("fake", encoding="utf-8")
+    (tmp_path / "train.jsonl").write_text(
+        "\n".join(
+            [
+                "{not json",
+                '{"image_path":"dialogue.png","label":"dialogue"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING"):
+        samples = load_split_samples(tmp_path, ["train"])
+
+    assert len(samples) == 1
+    assert samples[0]["label"] == "dialogue"
+    assert "invalid JSONL row" in caplog.text
 
 
 def test_build_replay_ticks_repeats_samples_to_requested_count() -> None:

@@ -313,7 +313,7 @@ class OcrReaderManager(
             classifier = VisionScreenClassifier(
                 VisionModelLoader(model_dir),
                 input_size=input_size,
-                inference_timeout_ms=float(
+                latency_check_ms=float(
                     getattr(self._config, "vision_classifier_inference_timeout_ms", 200.0)
                     or 200.0
                 ),

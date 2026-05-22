@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+import re
+import threading
 from typing import Any
 
 import numpy as np
@@ -11,14 +14,21 @@ except ImportError:  # pragma: no cover
     ort = None  # type: ignore[assignment]
 
 
+_LOGGER = logging.getLogger(__name__)
+_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 class VisionModelLoader:
     """ONNX screen-classifier loader with provider detection and session cache."""
 
     def __init__(self, model_dir: str | Path, *, warmup: bool = True) -> None:
         self.model_dir = Path(model_dir)
+        self._lock = threading.RLock()
         self._sessions: dict[str, Any] = {}
         self._providers = self._detect_providers()
         self._warmup_enabled = bool(warmup)
+        self.last_error = ""
+        self.last_warning = ""
 
     @property
     def providers(self) -> list[str]:
@@ -40,25 +50,55 @@ class VisionModelLoader:
         return providers or ["CPUExecutionProvider"]
 
     def load(self, model_name: str) -> Any | None:
+        model_name = str(model_name or "").strip()
+        if not _MODEL_NAME_RE.fullmatch(model_name):
+            self.last_error = f"invalid_model_name:{model_name!r}"
+            return None
         if ort is None:
+            self.last_error = "onnxruntime_unavailable"
             return None
-        if model_name in self._sessions:
-            return self._sessions[model_name]
-        path = self.model_dir / f"{model_name}.onnx"
-        if not path.exists():
-            return None
-        session = ort.InferenceSession(
-            str(path),
-            providers=self._providers or ["CPUExecutionProvider"],
-            sess_options=self._session_options(),
-        )
-        if self._warmup_enabled:
-            self._warmup(session)
-        self._sessions[model_name] = session
-        return session
+        with self._lock:
+            self.last_error = ""
+            if model_name in self._sessions:
+                return self._sessions[model_name]
+            self.last_warning = ""
+            root = self.model_dir.resolve()
+            path = (self.model_dir / f"{model_name}.onnx").resolve()
+            try:
+                path.relative_to(root)
+            except ValueError:
+                self.last_error = f"invalid_model_path:{path}"
+                return None
+            if not path.exists():
+                self.last_error = f"model_not_found:{path}"
+                return None
+            try:
+                session = ort.InferenceSession(
+                    str(path),
+                    providers=self._providers or ["CPUExecutionProvider"],
+                    sess_options=self._session_options(),
+                )
+            except Exception as exc:
+                self.last_error = f"session_load_failed:{path}: {type(exc).__name__}: {exc}"
+                _LOGGER.warning("failed to load vision ONNX session %s: %s", path, exc)
+                return None
+            if self._warmup_enabled:
+                try:
+                    self._warmup(session)
+                except Exception as exc:
+                    self.last_warning = f"warmup_failed:{path}: {type(exc).__name__}: {exc}"
+                    _LOGGER.warning(
+                        "vision ONNX warmup failed for %s; keeping session cached: %s",
+                        path,
+                        exc,
+                    )
+            self._sessions[model_name] = session
+            return session
 
     def reload(self, model_name: str) -> Any | None:
-        self._sessions.pop(model_name, None)
+        model_name = str(model_name or "").strip()
+        with self._lock:
+            self._sessions.pop(model_name, None)
         return self.load(model_name)
 
     def _session_options(self) -> Any:
