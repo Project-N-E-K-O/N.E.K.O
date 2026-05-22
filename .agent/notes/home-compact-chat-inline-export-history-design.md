@@ -32,6 +32,7 @@
    - 导出。
 12. 点击“导出”后，在当前紧凑历史层内展开导出预览界面；导出预览界面的选择状态必须与历史气泡选择状态完全一致。
 13. GalGame / ChoicePrompt 选项打开且实际位于紧凑聊天框上方时，直接盖在历史导出层上方，不推动历史层和聊天框重排；选项位于聊天框下方时，不要求历史层视觉让位。
+14. 桌面端最终用户可见表现必须和网页端一致，包括 history 高度、滚动范围、preview 展开高度、选项覆盖关系、按钮状态、选择态和交互顺序；唯一例外是桌面端暂未实现的紧凑聊天框毛玻璃效果。
 
 ## 非目标
 
@@ -112,6 +113,7 @@
    - 用 `surfaceItems` 的 base item 锚定聊天框本体位置。
    - 非 base item 会进入 bounds / hit region，但不能参与聊天框本体 anchor。
    - 新增 `history` / `preview` / 后续临时 drag item 时必须保持这一边界。
+   - 桌面壳不能为了补齐视觉差异复制网页端业务或重写 history / preview 尺寸公式；跨端一致应通过 NEKO 页面输出真实 geometry、NEKO-PC 正确消费 geometry 达成。
 8. 当前 i18n 已有导出相关 key：
    - `chat.exportSelectAll`
    - `chat.exportSelectNone`
@@ -586,7 +588,7 @@ Inline 导出预览区：
 2. history item 关闭后必须从 `surfaceItems` 移除。
 3. history item 可以扩大 Electron compact window bounds；inline 导出预览展开时也只能通过 history item 扩展 bounds。
 4. history item 不能参与聊天框本体 anchor 计算。
-5. 聊天框本体 anchor 仍只看 `.compact-chat-capsule-shell` / `.compact-chat-input-shell`。
+5. 聊天框本体 anchor 只看 `.compact-chat-surface-frame` 上的 `data-compact-geometry-item="capsule|input"`，不看 history / preview / toolFan / choice，也不再按两套旧 shell 推导。
 6. GalGame / ChoicePrompt 的 `choice` item z-order 高于 `history`。
 7. 选项位于聊天框上方时直接覆盖 history，不让 history 推动选项或聊天框重排；选项位于下方时，history 不需要进入让位态。
 8. 后续阶段中，图片拖拽的拖拽预览不作为长期 geometry item；只有实际可见的图片缩略图和 drop target 进入命中计算。

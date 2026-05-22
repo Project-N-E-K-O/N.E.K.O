@@ -62,8 +62,9 @@
 4. 紧凑态渲染已经走独立分支：
    - `chat-body-compact-surface`
    - `compact-chat-stage`
-   - `compact-chat-capsule-shell`
-   - `compact-chat-input-shell`
+   - `compact-chat-surface-shell`
+   - `compact-chat-surface-frame`
+   - `data-compact-chat-state="default|options|input"`
 5. 当前文字来源是 React `messages`，由 `getCompactMessagePreview(messages)` 提取紧凑预览。
 6. 当前没有正式的 TTS / 字幕逐句事实桥；音频播放状态只可作为显字开闸和限速参考，不能当成文本事实源。
 7. GalGame options 和 ChoicePrompt 复用原选项语义；紧凑态选项层通过 `compactChoiceLayerNode` 独立挂载，不应塞回胶囊内部。
@@ -270,8 +271,8 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 
 ## 输入态合同
 
-1. `.compact-chat-input-shell` 不继承 full composer 的大面板高度。
-2. `.compact-chat-inline-input` 有明确基础高度和最大高度。
+1. `.compact-chat-surface-shell` 不继承 full composer 的大面板高度。
+2. `.compact-chat-surface-frame` 是唯一紧凑框本体，有明确基础高度和最大高度。
 3. `.composer-input` 允许在上限内增长，超出后内部滚动。
 4. 附件预览不能把紧凑输入态撑成 full composer。
 5. 工具转轮通过 portal 浮出，不参与 input 本体高度测量。
