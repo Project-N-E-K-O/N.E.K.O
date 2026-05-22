@@ -61,7 +61,7 @@
 2. 宽度使用比例和上限表达，例如“本体宽度的约 1.15-1.35 倍 + 安全边距”；具体数值通过真实网页端和桌面端截图收口。
 3. 禁止写死当前屏幕下的固定宽度，例如直接固定 `430px`、`510px`。
 4. 加宽后仍受 viewport / workArea 上限保护，不能出屏，不能压住 ChoicePrompt / GalGame 的优先交互。
-5. 内部气泡、图片、buttonGroup、link preview、空状态和 inline preview 都要跟随新容器比例约束，不能保留旧固定 px 宽度导致外层变宽、内容不变。
+5. 内部气泡、图片、buttonGroup、link preview 和 inline preview 都要跟随新容器比例约束，不能保留旧固定 px 宽度导致外层变宽、内容不变；无消息打开状态不新增空状态文案 / 空 pill。
 
 ### Extra Island 边界
 
@@ -132,6 +132,7 @@ Hover 展开不能：
 4. 禁止用父容器 `overflow` / `clip-path` / `mask` 让按钮可见但 hit rect 被裁掉；如果视觉裁切不可避免，geometry 应以实际可点击按钮区域为准。
 5. `toolFan:native` 或 reserve 区只扩展 bounds；每个真实 button hit region 才进入 hitRects。
 6. 视觉 opacity 小于 1 不影响 hit rect。只有完全不可见、disabled 或业务上不可用的 action 才能从 hit region 移除。
+7. 当前代码中 `data-compact-tool-wheel-slot="-2"` 和 `"2"` 更接近视觉预览位：它们有可见 opacity / mask，但没有 `pointer-events: auto`。后续优化前必须先决定这两个边缘位是“可点击 action”还是“不可点击预览”；如果是可点击 action，代码必须补齐 pointer、focus 和 geometry hit；如果只是预览，文档和 aria 语义要明确它们不承诺可点。
 
 ### 常用按钮优先
 
@@ -156,6 +157,7 @@ Hover 展开不能：
 6. 桌面端如果淡出按钮点击失败，优先检查 NEKO 输出的 button hit rect、mask `pointer-events`、NEKO-PC hitRects 和 setShape，而不是改按钮透明度。
 7. History 加宽、hover 展开和 toolFan 打开 / 关闭都不能改变用户保存的 compact surface position。
 8. 最小化小球仍按独立规则显示，不跟 history 加宽或 toolFan bounds 耦合。
+9. History 内部如果继续加宽或错落气泡，后续必须同步处理“非对话透明区域穿透”：不能把整块加宽后的 scroll wrapper 作为唯一 hit region；应输出气泡 / 控件 / 必要滚动区域的真实 hit rect，或明确该阶段仍未实现内部空白穿透。
 
 ## 修改范围
 
@@ -197,7 +199,7 @@ Hover 展开不能：
 网页端：
 
 1. 打开 compact，确认 history 比本体更宽但不出屏。
-2. 长历史、短历史、空状态、preview 展开都保持宽度策略一致。
+2. 长历史、短历史、无消息打开状态、preview 展开都保持宽度策略一致，且无消息时不出现顶部空提示。
 3. 气泡左右身份清楚，边缘不完全齐平但仍可读、可选。
 4. Hover 到右侧展开按钮，工具轮盘自动展开。
 5. Pointer 从展开按钮移动到工具轮盘按钮时不误收起。

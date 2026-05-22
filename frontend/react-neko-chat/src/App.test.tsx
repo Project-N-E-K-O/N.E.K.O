@@ -75,21 +75,31 @@ describe('App', () => {
     expect(onExportConversationClick).not.toHaveBeenCalled();
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
-    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
+    expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
+    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(container.querySelector('.compact-export-history-message')).toHaveAttribute('role', 'listitem');
+    expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
     expect(exportButton).toHaveAttribute('aria-pressed', 'true');
 
     fireEvent.click(exportButton!);
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
     expect(exportButton).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('keeps compact inline history open as an empty state when there are no messages', () => {
+  it('keeps compact inline history open without an empty state when there are no messages', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" messages={[]} />);
 
     fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
 
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(container.querySelector('.compact-export-history-empty')).toHaveTextContent('There is no conversation to export yet.');
+    expect(container.querySelector('.compact-export-history-empty')).toBeNull();
+    expect(container).not.toHaveTextContent('There is no conversation to export yet.');
   });
 
   it('selects compact history bubbles and reuses the same selection in inline preview', () => {
@@ -118,12 +128,16 @@ describe('App', () => {
 
     fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
     const messages = container.querySelectorAll<HTMLElement>('.compact-export-history-message');
-    fireEvent.click(messages[1]);
+    const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
+    fireEvent.click(bubbles[1]);
 
     expect(messages[1]).toHaveClass('is-selected');
     fireEvent.click(screen.getByText('Export'));
 
     expect(container.querySelector('.compact-export-preview-region')).not.toBeNull();
+    expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-id', 'history:preview');
+    expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-kind', 'preview');
     expect(container.querySelector('.compact-export-preview-region')).toHaveTextContent('And this user message.');
     expect(container.querySelector('.compact-export-preview-region')).not.toHaveTextContent('Pick this assistant message.');
   });
@@ -145,8 +159,9 @@ describe('App', () => {
 
     fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
     const message = container.querySelector<HTMLElement>('.compact-export-history-message');
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble');
     expect(message).toHaveClass('is-disabled');
-    fireEvent.click(message!);
+    fireEvent.click(bubble!);
 
     expect(message).not.toHaveClass('is-selected');
   });
@@ -171,6 +186,7 @@ describe('App', () => {
     rerender(<App chatSurfaceMode="full" messages={[message]} />);
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
   });
 
   it('elevates compact state to options when choices are visible', () => {
@@ -1287,10 +1303,13 @@ describe('App', () => {
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(fan).not.toBeNull();
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(fan).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(fan).toHaveAttribute('data-compact-geometry-item', 'toolFan');
     expect(fan?.parentElement).toBe(document.body);
     expect(inlineInput?.contains(fan)).toBe(false);
     expect(shell?.contains(fan)).toBe(false);
     expect(fan?.querySelectorAll('[data-compact-tool-wheel-slot="-2"], [data-compact-tool-wheel-slot="-1"], [data-compact-tool-wheel-slot="0"], [data-compact-tool-wheel-slot="1"], [data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
+    expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="-2"], .compact-input-tool-item[data-compact-tool-wheel-slot="-1"], .compact-input-tool-item[data-compact-tool-wheel-slot="0"], .compact-input-tool-item[data-compact-tool-wheel-slot="1"], .compact-input-tool-item[data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
     expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(3);
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
   });

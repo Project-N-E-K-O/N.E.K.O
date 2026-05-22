@@ -1853,10 +1853,6 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   min-height: 0;
 }
 
-.chat-window.chat-surface-mode-compact .window-topbar {
-  display: none;
-}
-
 .chat-window.chat-surface-mode-compact .compact-chat-stage {
   display: block;
   min-height: 0;
@@ -2071,6 +2067,15 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   -webkit-app-region: no-drag;
 }
 
+body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
+  --compact-export-history-region-height: var(
+    --compact-history-slot-height,
+    min(calc(var(--compact-surface-width, 430px) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
+  );
+  width: min(var(--compact-surface-width, 430px), calc(var(--compact-desktop-workarea-width, 1440px) - 24px));
+  max-height: min(calc(var(--compact-surface-width, 430px) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
+}
+
 .compact-export-history-panel {
   display: flex;
   flex-direction: column;
@@ -2089,6 +2094,11 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   transition: opacity 0.22s ease, filter 0.22s ease;
 }
 
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-empty {
+  pointer-events: none;
+}
+
 .compact-export-history-scroll {
   display: flex;
   flex-direction: column;
@@ -2102,7 +2112,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  pointer-events: auto;
+  pointer-events: none;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2113,6 +2123,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   flex-direction: column;
   gap: 8px;
   min-height: 100%;
+  pointer-events: none;
 }
 
 .compact-export-history-scroll-content > .compact-export-history-message:first-child {
@@ -2161,8 +2172,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   background: transparent;
   color: inherit;
   text-align: left;
-  cursor: pointer;
-  pointer-events: auto;
+  pointer-events: none;
   outline: none;
   transition: opacity 0.16s ease, filter 0.16s ease;
   -webkit-app-region: no-drag;
@@ -2198,7 +2208,13 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   box-shadow: 0 7px 18px rgba(22, 48, 84, 0.08);
   backdrop-filter: blur(8px) saturate(1.08);
   -webkit-backdrop-filter: blur(8px) saturate(1.08);
+  cursor: pointer;
+  pointer-events: auto;
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.compact-export-history-message.is-disabled .compact-export-history-bubble {
+  cursor: default;
 }
 
 .compact-export-history-message.is-user .compact-export-history-bubble {
@@ -2220,7 +2236,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
     0 8px 20px rgba(36, 151, 217, 0.14);
 }
 
-.compact-export-history-message:focus-visible .compact-export-history-bubble {
+.compact-export-history-bubble:focus-visible {
   border-color: rgba(36, 151, 217, 0.72);
   box-shadow:
     0 0 0 3px rgba(36, 151, 217, 0.18),

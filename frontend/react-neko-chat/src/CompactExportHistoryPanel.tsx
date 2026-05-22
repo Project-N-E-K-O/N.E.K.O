@@ -32,7 +32,6 @@ type CompactExportHistoryPanelProps = {
   onInvertSelection: () => void;
   onRequestPreview: () => void;
   onClosePreview: () => void;
-  onInteractivePointerDown?: () => void;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -83,7 +82,6 @@ export default function CompactExportHistoryPanel({
   onInvertSelection,
   onRequestPreview,
   onClosePreview,
-  onInteractivePointerDown,
   onAction,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -172,6 +170,7 @@ export default function CompactExportHistoryPanel({
       className="compact-export-preview-region"
       data-compact-export-preview-open="true"
       data-compact-hit-region="true"
+      data-compact-hit-region-id="history:preview"
       data-compact-hit-region-kind="preview"
     >
       <div className="compact-export-preview-header">
@@ -261,7 +260,6 @@ export default function CompactExportHistoryPanel({
       data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
       data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
       aria-label={i18n('chat.exportConversation', 'Export Conversation')}
-      onPointerDownCapture={onInteractivePointerDown}
       onPointerDown={(event) => event.stopPropagation()}
       onPointerMove={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}
@@ -273,19 +271,13 @@ export default function CompactExportHistoryPanel({
             <div
               ref={scrollRef}
               className="compact-export-history-scroll"
-              data-compact-hit-region="true"
-              data-compact-hit-region-kind="scroll"
               role="list"
               aria-label={i18n('chat.messageListAriaLabel', 'Chat messages')}
               onScroll={handleScroll}
               onWheel={(event) => event.stopPropagation()}
               onTouchMove={(event) => event.stopPropagation()}
             >
-              {messages.length <= 0 ? (
-                <div className="compact-export-history-empty" role="status" aria-live="polite">
-                  {i18n('chat.exportEmpty', 'There is no conversation to export yet.')}
-                </div>
-              ) : (
+              {messages.length > 0 ? (
                 <div className="compact-export-history-scroll-content">
                   {messages.map((message) => {
                     const selectable = isCompactExportMessageSelectable(message);
@@ -296,21 +288,27 @@ export default function CompactExportHistoryPanel({
                       <article
                         key={message.id}
                         className={getCompactHistoryMessageClassName(message, selected, selectable, selectedCount > 0)}
-                        role="button"
-                        aria-pressed={selected}
-                        aria-disabled={!selectable}
-                        tabIndex={selectable ? 0 : -1}
+                        role="listitem"
                         data-compact-export-history-message-id={message.id}
                         data-message-role={message.role}
                         data-message-status={message.status || ''}
-                        onPointerDown={(event) => handlePointerDown(event, message, selectable)}
-                        onPointerMove={handlePointerMove}
-                        onPointerUp={(event) => finishPointer(event, message, selectable)}
-                        onPointerCancel={() => { pointerIntentRef.current = null; }}
-                        onClick={(event) => handleClick(event, message, selectable)}
-                        onKeyDown={(event) => handleKeyDown(event, message, selectable)}
                       >
-                        <div className="compact-export-history-bubble">
+                        <div
+                          className="compact-export-history-bubble"
+                          role="button"
+                          aria-pressed={selected}
+                          aria-disabled={!selectable}
+                          tabIndex={selectable ? 0 : -1}
+                          data-compact-hit-region="true"
+                          data-compact-hit-region-id={`history:message:${message.id}`}
+                          data-compact-hit-region-kind="message"
+                          onPointerDown={(event) => handlePointerDown(event, message, selectable)}
+                          onPointerMove={handlePointerMove}
+                          onPointerUp={(event) => finishPointer(event, message, selectable)}
+                          onPointerCancel={() => { pointerIntentRef.current = null; }}
+                          onClick={(event) => handleClick(event, message, selectable)}
+                          onKeyDown={(event) => handleKeyDown(event, message, selectable)}
+                        >
                           <span className="compact-export-history-check" aria-hidden="true" />
                           <div className="compact-export-history-meta">
                             <span className="compact-export-history-author">{message.author}</span>
@@ -334,7 +332,7 @@ export default function CompactExportHistoryPanel({
                     );
                   })}
                 </div>
-              )}
+              ) : null}
             </div>
             <div
               className={clsx('compact-export-history-controls', {
@@ -344,6 +342,7 @@ export default function CompactExportHistoryPanel({
               aria-label={i18n('chat.exportConversation', 'Export Conversation')}
               data-compact-export-controls-collapsed={controlsCollapsed ? 'true' : 'false'}
               data-compact-hit-region="true"
+              data-compact-hit-region-id="history:controls"
               data-compact-hit-region-kind="controls"
             >
               <button

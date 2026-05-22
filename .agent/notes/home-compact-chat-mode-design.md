@@ -62,9 +62,10 @@
 4. 紧凑态渲染已经走独立分支：
    - `chat-body-compact-surface`
    - `compact-chat-stage`
-   - `compact-chat-surface-shell`
-   - `compact-chat-surface-frame`
+   - `compact-chat-capsule-shell`
+   - `compact-chat-input-shell`
    - `data-compact-chat-state="default|options|input"`
+   - `data-compact-geometry-item="capsule|input|dragHandle"`
 5. 当前文字来源是 React `messages`，由 `getCompactMessagePreview(messages)` 提取紧凑预览。
 6. 当前没有正式的 TTS / 字幕逐句事实桥；音频播放状态只可作为显字开闸和限速参考，不能当成文本事实源。
 7. GalGame options 和 ChoicePrompt 复用原选项语义；紧凑态选项层通过 `compactChoiceLayerNode` 独立挂载，不应塞回胶囊内部。
@@ -271,8 +272,8 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 
 ## 输入态合同
 
-1. `.compact-chat-surface-shell` 不继承 full composer 的大面板高度。
-2. `.compact-chat-surface-frame` 是唯一紧凑框本体，有明确基础高度和最大高度。
+1. 当前代码仍保留 `.compact-chat-capsule-shell` 和 `.compact-chat-input-shell` 两套 DOM；紧凑框本体语义以 `data-compact-geometry-item="capsule|input"` 为准，不以 class 名推断。
+2. `capsule` / `input` 是同一类 base surface anchor；后续如果重构为统一 `.compact-chat-surface-frame`，必须先同步 React、CSS、geometry collector、NEKO-PC preload 和测试。
 3. `.composer-input` 允许在上限内增长，超出后内部滚动。
 4. 附件预览不能把紧凑输入态撑成 full composer。
 5. 工具转轮通过 portal 浮出，不参与 input 本体高度测量。
@@ -308,6 +309,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 8. 历史滚动、气泡点击、多选和后续拖拽必须有明确意图区分。
 9. 后续历史拖拽发送模型属于第二阶段功能，基础历史 / 导出功能完成前不实施。
 10. 历史区域关闭或为空时，不允许留下透明但吃事件的大占位。
+11. 后续需要把“历史记录中的非对话透明区域”纳入穿透目标：气泡、按钮、预览控件和必要滚动命中可以吃事件；气泡之间、气泡左右留白等非对话透明区不应长期作为 native hit region 遮挡后方。
 
 ## 当前文字显示合同
 
@@ -464,6 +466,7 @@ Surface：
 13. 禁止让历史、选项或工具层参与小球定位。
 14. 禁止让视觉浮层依赖未登记的 `overflow: visible` 逃逸父容器。
 15. 禁止把 NEKO-PC 的实现限制反向改成网页端产品目标。
+16. 禁止把当前代码不存在的 `.compact-chat-surface-frame` / `.compact-chat-surface-shell` 当成已完成事实写入实施结论；统一框架只能作为后续重构目标。
 
 ## 当前优先级
 
