@@ -1,11 +1,7 @@
 from __future__ import annotations
-
 import csv
-import difflib
-import hashlib
 import io
 import json
-import re
 import uuid
 from typing import Any
 
@@ -16,348 +12,33 @@ from .fsrs_bridge import (
     rate_answer,
     retrievability,
 )
+from .memory_candidates import upsert_memory_candidate
+from .memory_imports import import_word_rows
+from .memory_queries import active_item_card_rows
+from .memory_ratings import (
+    normalize_rating,
+    rating_from_recitation_score,
+    rating_from_word_result,
+)
+from .memory_rows import (
+    card_from_joined_row,
+    card_from_row,
+    deck_from_row,
+    item_from_joined_row,
+    item_from_row,
+    memory_counts,
+    recitation_from_row,
+    review_from_row,
+    safe_int,
+)
+from .memory_schema import ensure_memory_schema, normalize_deck_type, normalize_item_type
+from .memory_text import (
+    build_cloze_prompt,
+    diff_recitation,
+    normalize_tags,
+    split_passage_text,
+)
 from .models import json_copy
-
-
-DECK_TYPES = {"word", "passage", "formula", "custom"}
-ITEM_TYPES = {"word", "sentence", "paragraph", "cloze", "custom"}
-WORD_ERROR_RATINGS = {
-    "unknown_word": StudyFsrsRating.Again,
-    "spelling": StudyFsrsRating.Hard,
-    "meaning_confused": StudyFsrsRating.Hard,
-    "example_misunderstood": StudyFsrsRating.Good,
-    "correct": StudyFsrsRating.Easy,
-}
-
-
-def safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
-def ensure_memory_schema(conn: Any) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS decks (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            deck_type TEXT NOT NULL,
-            subject TEXT,
-            language TEXT,
-            source TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS memory_items (
-            id TEXT PRIMARY KEY,
-            deck_id TEXT NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
-            item_type TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            metadata_json TEXT,
-            fsrs_card_id INTEGER REFERENCES memory_fsrs_cards(id) ON DELETE SET NULL,
-            status TEXT DEFAULT 'active',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS memory_fsrs_cards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id TEXT NOT NULL UNIQUE REFERENCES memory_items(id) ON DELETE CASCADE,
-            card_data TEXT NOT NULL,
-            fsrs_state TEXT DEFAULT 'new',
-            last_rating INTEGER,
-            updated_at TEXT DEFAULT (datetime('now'))
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS memory_review_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
-            card_id INTEGER REFERENCES memory_fsrs_cards(id),
-            rating INTEGER,
-            scheduled_days INTEGER,
-            actual_days INTEGER,
-            created_at TEXT DEFAULT (datetime('now'))
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS review_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
-            rating INTEGER NOT NULL,
-            correct INTEGER NOT NULL,
-            elapsed_ms INTEGER,
-            error_type TEXT,
-            reviewed_at TEXT DEFAULT (datetime('now')),
-            session_id TEXT REFERENCES sessions(id)
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS recitation_attempts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            passage_item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
-            review_record_id INTEGER REFERENCES review_records(id) ON DELETE SET NULL,
-            user_input_text TEXT NOT NULL,
-            missing_count INTEGER DEFAULT 0,
-            extra_count INTEGER DEFAULT 0,
-            wrong_order_count INTEGER DEFAULT 0,
-            hint_count INTEGER DEFAULT 0,
-            score REAL,
-            reviewed_at TEXT DEFAULT (datetime('now'))
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memory_items_deck ON memory_items(deck_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memory_items_card ON memory_items(fsrs_card_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mem_fsrs_cards_item ON memory_fsrs_cards(item_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mem_review_log_item ON memory_review_log(item_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mem_review_log_card ON memory_review_log(card_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_review_records_item ON review_records(item_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_review_records_session ON review_records(session_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_recitation_attempts_item ON recitation_attempts(passage_item_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_recitation_attempts_review ON recitation_attempts(review_record_id)"
-    )
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_word_dedupe
-        ON memory_items(deck_id, prompt)
-        WHERE item_type = 'word'
-        """
-    )
-
-
-def normalize_deck_type(value: object) -> str:
-    text = str(value or "custom").strip().lower()
-    return text if text in DECK_TYPES else "custom"
-
-
-def normalize_item_type(value: object) -> str:
-    text = str(value or "custom").strip().lower()
-    return text if text in ITEM_TYPES else "custom"
-
-
-def normalize_tags(value: object, *, limit: int = 20) -> list[str]:
-    if isinstance(value, str):
-        raw_items: list[object] = re.split(r"[,，;；\s]+", value)
-    elif isinstance(value, list):
-        raw_items = value
-    else:
-        raw_items = []
-    tags: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_items:
-        tag = str(raw or "").strip()
-        key = tag.lower()
-        if not tag or key in seen:
-            continue
-        seen.add(key)
-        tags.append(tag[:40])
-        if len(tags) >= limit:
-            break
-    return tags
-
-
-def split_passage_text(text: str) -> list[dict[str, Any]]:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return []
-    paragraphs = [
-        item.strip()
-        for item in re.split(r"(?:\r?\n\s*){2,}", normalized)
-        if item.strip()
-    ]
-    if not paragraphs:
-        paragraphs = [normalized]
-    chunks: list[dict[str, Any]] = []
-    for paragraph_index, paragraph in enumerate(paragraphs, start=1):
-        paragraph_chunks = [
-            paragraph[index : index + 5000] for index in range(0, len(paragraph), 5000)
-        ] or [paragraph]
-        for chunk_index, chunk in enumerate(paragraph_chunks, start=1):
-            sentences = [
-                item.strip()
-                for item in re.split(r"(?<=[。！？.!?])\s*", chunk)
-                if item.strip()
-            ]
-            chunks.append(
-                {
-                    "paragraph_index": paragraph_index,
-                    "chunk_index": chunk_index,
-                    "text": chunk,
-                    "sentences": sentences or [chunk],
-                }
-            )
-    return chunks
-
-
-def build_cloze_prompt(sentence: str) -> dict[str, str]:
-    text = str(sentence or "").strip()
-    if not text:
-        return {"prompt": "", "answer": "", "hint": ""}
-    words = re.findall(r"[A-Za-z][A-Za-z'-]{2,}|\S", text)
-    candidate = ""
-    for token in words:
-        if re.fullmatch(r"[A-Za-z][A-Za-z'-]{3,}", token):
-            candidate = token
-            break
-    if not candidate:
-        midpoint = max(1, len(text) // 2)
-        candidate = text[midpoint : midpoint + 1]
-    prompt = text.replace(candidate, "____", 1)
-    return {"prompt": prompt, "answer": candidate, "hint": candidate[:1]}
-
-
-def _count_units(value: str) -> int:
-    return len([char for char in str(value or "") if not char.isspace()])
-
-
-def diff_recitation(
-    expected: str, actual: str, *, hint_count: int = 0
-) -> dict[str, Any]:
-    target = str(expected or "")[:5000]
-    user_input = str(actual or "")[:5000]
-    matcher = difflib.SequenceMatcher(a=target, b=user_input, autojunk=False)
-    operations: list[dict[str, Any]] = []
-    missing_count = 0
-    extra_count = 0
-    wrong_count = 0
-    wrong_order_count = 0
-    for tag, a_start, a_end, b_start, b_end in matcher.get_opcodes():
-        if tag == "equal":
-            continue
-        expected_text = target[a_start:a_end]
-        actual_text = user_input[b_start:b_end]
-        if tag == "delete":
-            missing = _count_units(expected_text)
-            missing_count += missing
-            if expected_text and expected_text in user_input[b_end:]:
-                wrong_order_count += 1
-            operations.append(
-                {
-                    "type": "missing",
-                    "expected": expected_text,
-                    "actual": "",
-                    "count": missing,
-                }
-            )
-        elif tag == "insert":
-            extra = _count_units(actual_text)
-            extra_count += extra
-            if actual_text and actual_text in target[a_end:]:
-                wrong_order_count += 1
-            operations.append(
-                {"type": "extra", "expected": "", "actual": actual_text, "count": extra}
-            )
-        else:
-            missing = _count_units(expected_text)
-            extra = _count_units(actual_text)
-            missing_count += missing
-            extra_count += extra
-            wrong_count += max(missing, extra)
-            operations.append(
-                {
-                    "type": "wrong",
-                    "expected": expected_text,
-                    "actual": actual_text,
-                    "count": max(missing, extra),
-                }
-            )
-    denominator = max(1, _count_units(target))
-    penalty = (
-        missing_count * 0.40
-        + extra_count * 0.20
-        + wrong_order_count * 0.25
-        + max(0, int(hint_count or 0)) * 0.15
-    )
-    score = max(0.0, min(1.0, 1.0 - penalty / denominator))
-    return {
-        "missing_count": missing_count,
-        "extra_count": extra_count,
-        "wrong_count": wrong_count,
-        "wrong_order_count": wrong_order_count,
-        "hint_count": max(0, int(hint_count or 0)),
-        "score": round(score, 4),
-        "operations": operations,
-    }
-
-
-def rating_from_word_result(
-    error_type: str, *, correct: bool | None = None
-) -> StudyFsrsRating:
-    if correct is True:
-        return StudyFsrsRating.Easy
-    normalized = str(error_type or "").strip().lower()
-    return WORD_ERROR_RATINGS.get(
-        normalized, StudyFsrsRating.Good if correct else StudyFsrsRating.Again
-    )
-
-
-def rating_from_recitation_score(score: float) -> StudyFsrsRating:
-    value = max(0.0, min(1.0, float(score or 0.0)))
-    if value >= 0.92:
-        return StudyFsrsRating.Easy
-    if value >= 0.70:
-        return StudyFsrsRating.Good
-    if value >= 0.40:
-        return StudyFsrsRating.Hard
-    return StudyFsrsRating.Again
-
-
-def normalize_rating(value: str | int | StudyFsrsRating) -> StudyFsrsRating:
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        aliases = {
-            "again": StudyFsrsRating.Again,
-            "forgot": StudyFsrsRating.Again,
-            "unknown_word": StudyFsrsRating.Again,
-            "hard": StudyFsrsRating.Hard,
-            "spelling": StudyFsrsRating.Hard,
-            "meaning_confused": StudyFsrsRating.Hard,
-            "good": StudyFsrsRating.Good,
-            "example_misunderstood": StudyFsrsRating.Good,
-            "easy": StudyFsrsRating.Easy,
-            "correct": StudyFsrsRating.Easy,
-        }
-        if normalized in aliases:
-            return aliases[normalized]
-    try:
-        return StudyFsrsRating(int(value))
-    except (TypeError, ValueError):
-        return StudyFsrsRating.Good
-
 
 class MemoryDeckStore:
     def __init__(self, store: Any, *, retention_target: float = 0.90) -> None:
@@ -430,7 +111,7 @@ class MemoryDeckStore:
                 )
                 .fetchone()
             )
-        return self._deck_from_row(row)
+        return deck_from_row(row)
 
     def list_decks(self, *, limit: int = 100) -> list[dict[str, Any]]:
         with self.store._lock:
@@ -452,7 +133,7 @@ class MemoryDeckStore:
             )
         return [
             deck
-            for deck in (self._deck_from_row(row) for row in rows)
+            for deck in (deck_from_row(row) for row in rows)
             if deck is not None
         ]
 
@@ -466,7 +147,7 @@ class MemoryDeckStore:
                 )
                 .fetchone()
             )
-        return self._deck_from_row(row)
+        return deck_from_row(row)
 
     def update_deck(
         self,
@@ -511,7 +192,7 @@ class MemoryDeckStore:
     def delete_deck(self, deck_id: str) -> dict[str, Any]:
         with self.store._lock:
             conn = self.store._require_conn()
-            before = self._memory_counts(conn, deck_id=str(deck_id or ""))
+            before = memory_counts(conn, deck_id=str(deck_id or ""))
             cursor = conn.execute(
                 "DELETE FROM decks WHERE id = ?", (str(deck_id or ""),)
             )
@@ -629,7 +310,9 @@ class MemoryDeckStore:
                 "skipped_rows": [{"line": 1, "reason": "missing word/meaning header"}],
                 "items": [],
             }
-        return self._import_word_rows(deck_id=deck_id, rows=list(reader), line_offset=2)
+        return import_word_rows(
+            self.add_word, deck_id=deck_id, rows=list(reader), line_offset=2
+        )
 
     def import_words_json(
         self, *, deck_id: str, content: str | list[dict[str, Any]]
@@ -660,7 +343,9 @@ class MemoryDeckStore:
                 "items": [],
             }
         rows = [item if isinstance(item, dict) else {} for item in payload]
-        return self._import_word_rows(deck_id=deck_id, rows=rows, line_offset=1)
+        return import_word_rows(
+            self.add_word, deck_id=deck_id, rows=rows, line_offset=1
+        )
 
     def import_words(
         self, *, deck_id: str, content: str, fmt: str = "csv"
@@ -709,7 +394,7 @@ class MemoryDeckStore:
                 )
                 .fetchone()
             )
-        item = self._item_from_row(row)
+        item = item_from_row(row, self.store._json_loads)
         if item is None:
             return None
         card = self.get_fsrs_card(item["id"])
@@ -747,7 +432,7 @@ class MemoryDeckStore:
             )
         return [
             item
-            for item in (self._item_from_row(row) for row in rows)
+            for item in (item_from_row(row, self.store._json_loads) for row in rows)
             if item is not None
         ]
 
@@ -761,12 +446,15 @@ class MemoryDeckStore:
                 )
                 .fetchone()
             )
-        return self._card_from_row(row)
+        return card_from_row(row, self.store._json_loads)
 
     def due_reviews(
         self, *, deck_id: str = "", limit: int = 50
     ) -> list[dict[str, Any]]:
-        rows = self._active_item_card_rows(deck_id=deck_id)
+        with self.store._lock:
+            rows = active_item_card_rows(
+                self.store._require_conn(), deck_id=deck_id
+            )
         due = self.fsrs.get_due_reviews(
             [self.store._json_loads(row["card_data"], {}) for row in rows]
         )
@@ -776,8 +464,8 @@ class MemoryDeckStore:
             due_item = due_by_item.get(str(row["item_id"]))
             if not due_item:
                 continue
-            item = self._item_from_joined_row(row)
-            card = self._card_from_joined_row(row)
+            item = item_from_joined_row(row, self.store._json_loads)
+            card = card_from_joined_row(row, self.store._json_loads)
             result.append(
                 {
                     **due_item,
@@ -845,13 +533,14 @@ class MemoryDeckStore:
             conn.execute(
                 """
                 UPDATE memory_fsrs_cards
-                SET card_data = ?, fsrs_state = ?, last_rating = ?, updated_at = datetime('now')
+                SET card_data = ?, fsrs_state = ?, last_rating = ?, next_due = ?, updated_at = datetime('now')
                 WHERE id = ?
                 """,
                 (
                     self.store._json_dumps(updated.to_dict()),
                     updated.state,
                     int(selected),
+                    str(updated.due or ""),
                     card_id,
                 ),
             )
@@ -963,7 +652,7 @@ class MemoryDeckStore:
                 )
                 .fetchone()
             )
-        return self._review_from_row(row)
+        return review_from_row(row)
 
     def get_recitation_attempt(self, attempt_id: int) -> dict[str, Any] | None:
         with self.store._lock:
@@ -975,7 +664,7 @@ class MemoryDeckStore:
                 )
                 .fetchone()
             )
-        return self._recitation_from_row(row)
+        return recitation_from_row(row)
 
     def create_word_draft(self, *, word: str, meaning: str) -> dict[str, Any]:
         word_text = str(word or "").strip()
@@ -993,7 +682,7 @@ class MemoryDeckStore:
             "confusion_note": f"Check whether {word_text} is confused with a similar spelling or meaning.",
             "status": "candidate",
         }
-        return self._upsert_memory_candidate("word_example", payload)
+        return upsert_memory_candidate(self.store, "word_example", payload)
 
     def create_cloze_draft(self, *, sentence: str) -> dict[str, Any]:
         cloze = build_cloze_prompt(sentence)
@@ -1004,7 +693,7 @@ class MemoryDeckStore:
             **cloze,
             "status": "candidate",
         }
-        return self._upsert_memory_candidate("sentence_cloze", payload)
+        return upsert_memory_candidate(self.store, "sentence_cloze", payload)
 
     def create_recitation_error_draft(
         self, *, expected: str, actual: str
@@ -1023,19 +712,29 @@ class MemoryDeckStore:
             "explanation": explanation,
             "status": "candidate",
         }
-        return self._upsert_memory_candidate("recitation_error", payload)
+        return upsert_memory_candidate(self.store, "recitation_error", payload)
 
     def status_summary(self, *, limit: int = 8) -> dict[str, Any]:
         decks = self.list_decks(limit=limit)
         due = self.due_reviews(limit=limit)
         with self.store._lock:
-            counts = self._memory_counts(self.store._require_conn())
+            counts = memory_counts(self.store._require_conn())
         return {
             **counts,
             "decks": decks,
-            "due_count": len(self.due_reviews(limit=5000)),
+            "due_count": self.count_due_reviews(),
             "due_reviews": due,
         }
+
+    def count_due_reviews(self, *, deck_id: str = "") -> int:
+        with self.store._lock:
+            rows = active_item_card_rows(
+                self.store._require_conn(), deck_id=deck_id
+            )
+        due = self.fsrs.get_due_reviews(
+            [self.store._json_loads(row["card_data"], {}) for row in rows]
+        )
+        return len(due)
 
     def export_deck_json(self, deck_id: str) -> dict[str, Any]:
         deck = self.get_deck(deck_id)
@@ -1054,11 +753,8 @@ class MemoryDeckStore:
             item.get("fsrs_card") or self.get_fsrs_card(str(item.get("id") or "")) or {}
         )
         raw_card = card.get("card") if isinstance(card, dict) else {}
-        due_item = (
-            self.fsrs.get_due_reviews([raw_card])[0]
-            if raw_card and self.fsrs.get_due_reviews([raw_card])
-            else None
-        )
+        due_reviews = self.fsrs.get_due_reviews([raw_card]) if raw_card else []
+        due_item = due_reviews[0] if due_reviews else None
         return {
             "id": str(item.get("id") or ""),
             "topic_id": str(item.get("id") or ""),
@@ -1093,59 +789,20 @@ class MemoryDeckStore:
             "fsrs_card": card,
         }
 
-    def _import_word_rows(
-        self, *, deck_id: str, rows: list[dict[str, Any]], line_offset: int
-    ) -> dict[str, Any]:
-        imported = 0
-        updated = 0
-        skipped: list[dict[str, Any]] = []
-        items: list[dict[str, Any]] = []
-        for index, row in enumerate(rows):
-            line = index + line_offset
-            word = str(row.get("word") or "").strip()
-            meaning = str(row.get("meaning") or "").strip()
-            if not word or not meaning:
-                if not any(str(value or "").strip() for value in row.values()):
-                    continue
-                skipped.append(
-                    {"line": line, "reason": "word and meaning are required"}
-                )
-                continue
-            result = self.add_word(
-                deck_id=deck_id,
-                word=word,
-                meaning=meaning,
-                example_sentence=str(row.get("example_sentence") or ""),
-                pronunciation=str(row.get("pronunciation") or ""),
-                tags=row.get("tags") or [],
-            )
-            if result.get("created"):
-                imported += 1
-            else:
-                updated += 1
-            items.append(result["item"])
-        return {
-            "imported_count": imported,
-            "updated_count": updated,
-            "skipped_rows": skipped,
-            "items": items,
-            "preview": items[:10],
-        }
-
     def _ensure_fsrs_card_locked(self, conn: Any, item_id: str) -> dict[str, Any]:
         existing = conn.execute(
             "SELECT * FROM memory_fsrs_cards WHERE item_id = ?",
             (str(item_id),),
         ).fetchone()
         if existing is not None:
-            return self._card_from_row(existing) or {}
+            return card_from_row(existing, self.store._json_loads) or {}
         card = create_card(str(item_id)).to_dict()
         cursor = conn.execute(
             """
-            INSERT INTO memory_fsrs_cards (item_id, card_data, fsrs_state, last_rating, updated_at)
-            VALUES (?, ?, 'new', NULL, datetime('now'))
+            INSERT INTO memory_fsrs_cards (item_id, card_data, fsrs_state, last_rating, next_due, updated_at)
+            VALUES (?, ?, 'new', NULL, ?, datetime('now'))
             """,
-            (str(item_id), self.store._json_dumps(card)),
+            (str(item_id), self.store._json_dumps(card), str(card.get("due") or "")),
         )
         card_id = int(cursor.lastrowid)
         conn.execute(
@@ -1158,225 +815,6 @@ class MemoryDeckStore:
             "card": card,
             "fsrs_state": "new",
             "last_rating": 0,
+            "next_due": str(card.get("due") or ""),
             "updated_at": "",
         }
-
-    def _active_item_card_rows(self, *, deck_id: str = "") -> list[Any]:
-        params: list[Any] = []
-        deck_clause = ""
-        if deck_id:
-            deck_clause = "AND mi.deck_id = ?"
-            params.append(str(deck_id))
-        with self.store._lock:
-            return (
-                self.store._require_conn()
-                .execute(
-                    f"""
-                SELECT
-                    mi.id AS item_id,
-                    mi.deck_id AS deck_id,
-                    mi.item_type AS item_type,
-                    mi.prompt AS prompt,
-                    mi.answer AS answer,
-                    mi.metadata_json AS metadata_json,
-                    mi.fsrs_card_id AS fsrs_card_id,
-                    mi.status AS status,
-                    mi.created_at AS item_created_at,
-                    mi.updated_at AS item_updated_at,
-                    d.name AS deck_name,
-                    d.deck_type AS deck_type,
-                    mfc.id AS card_id,
-                    mfc.card_data AS card_data,
-                    mfc.fsrs_state AS fsrs_state,
-                    mfc.last_rating AS last_rating,
-                    mfc.updated_at AS card_updated_at
-                FROM memory_items mi
-                JOIN decks d ON d.id = mi.deck_id
-                JOIN memory_fsrs_cards mfc ON mfc.item_id = mi.id
-                WHERE mi.status = 'active' {deck_clause}
-                """,
-                    params,
-                )
-                .fetchall()
-            )
-
-    def _upsert_memory_candidate(
-        self, kind: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        digest = hashlib.sha1(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:16]
-        return self.store.upsert_candidate_item(
-            item_type="memory_draft",
-            payload=payload,
-            source="memory_llm_fallback",
-            dedupe_key=f"{kind}:{digest}",
-            status="candidate",
-        )
-
-    def _memory_counts(self, conn: Any, *, deck_id: str = "") -> dict[str, int]:
-        params: list[Any] = []
-        deck_predicate = ""
-        if deck_id:
-            deck_predicate = "WHERE deck_id = ?"
-            params.append(deck_id)
-        deck_count = conn.execute("SELECT COUNT(*) AS count FROM decks").fetchone()[
-            "count"
-        ]
-        item_count = conn.execute(
-            f"SELECT COUNT(*) AS count FROM memory_items {deck_predicate}",
-            params,
-        ).fetchone()["count"]
-        card_count = conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM memory_fsrs_cards mfc
-            JOIN memory_items mi ON mi.id = mfc.item_id
-            """
-            + ("WHERE mi.deck_id = ?" if deck_id else ""),
-            params,
-        ).fetchone()["count"]
-        review_count = conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM review_records rr
-            JOIN memory_items mi ON mi.id = rr.item_id
-            """
-            + ("WHERE mi.deck_id = ?" if deck_id else ""),
-            params,
-        ).fetchone()["count"]
-        recitation_count = conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM recitation_attempts ra
-            JOIN memory_items mi ON mi.id = ra.passage_item_id
-            """
-            + ("WHERE mi.deck_id = ?" if deck_id else ""),
-            params,
-        ).fetchone()["count"]
-        return {
-            "deck_count": safe_int(deck_count, 0),
-            "item_count": safe_int(item_count, 0),
-            "card_count": safe_int(card_count, 0),
-            "review_count": safe_int(review_count, 0),
-            "recitation_count": safe_int(recitation_count, 0),
-        }
-
-    def _deck_from_row(self, row: Any) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "id": str(row["id"]),
-            "name": str(row["name"] or ""),
-            "deck_type": str(row["deck_type"] or ""),
-            "subject": str(row["subject"] or ""),
-            "language": str(row["language"] or ""),
-            "source": str(row["source"] or ""),
-            "created_at": str(row["created_at"] or ""),
-            "updated_at": str(row["updated_at"] or ""),
-            "item_count": safe_int(row["item_count"], 0)
-            if "item_count" in row.keys()
-            else 0,
-        }
-
-    def _item_from_row(self, row: Any) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "id": str(row["id"]),
-            "deck_id": str(row["deck_id"] or ""),
-            "deck_name": str(row["deck_name"] or "")
-            if "deck_name" in row.keys()
-            else "",
-            "deck_type": str(row["deck_type"] or "")
-            if "deck_type" in row.keys()
-            else "",
-            "item_type": str(row["item_type"] or ""),
-            "prompt": str(row["prompt"] or ""),
-            "answer": str(row["answer"] or ""),
-            "metadata": self.store._json_loads(row["metadata_json"], {}),
-            "fsrs_card_id": safe_int(row["fsrs_card_id"], 0),
-            "status": str(row["status"] or ""),
-            "created_at": str(row["created_at"] or ""),
-            "updated_at": str(row["updated_at"] or ""),
-        }
-
-    def _item_from_joined_row(self, row: Any) -> dict[str, Any]:
-        return {
-            "id": str(row["item_id"]),
-            "deck_id": str(row["deck_id"] or ""),
-            "deck_name": str(row["deck_name"] or ""),
-            "deck_type": str(row["deck_type"] or ""),
-            "item_type": str(row["item_type"] or ""),
-            "prompt": str(row["prompt"] or ""),
-            "answer": str(row["answer"] or ""),
-            "metadata": self.store._json_loads(row["metadata_json"], {}),
-            "fsrs_card_id": safe_int(row["fsrs_card_id"], 0),
-            "status": str(row["status"] or ""),
-            "created_at": str(row["item_created_at"] or ""),
-            "updated_at": str(row["item_updated_at"] or ""),
-        }
-
-    def _card_from_row(self, row: Any) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "id": int(row["id"]),
-            "item_id": str(row["item_id"] or ""),
-            "card": self.store._json_loads(row["card_data"], {}),
-            "fsrs_state": str(row["fsrs_state"] or ""),
-            "last_rating": safe_int(row["last_rating"], 0),
-            "updated_at": str(row["updated_at"] or ""),
-        }
-
-    def _card_from_joined_row(self, row: Any) -> dict[str, Any]:
-        return {
-            "id": int(row["card_id"]),
-            "item_id": str(row["item_id"] or ""),
-            "card": self.store._json_loads(row["card_data"], {}),
-            "fsrs_state": str(row["fsrs_state"] or ""),
-            "last_rating": safe_int(row["last_rating"], 0),
-            "updated_at": str(row["card_updated_at"] or ""),
-        }
-
-    def _review_from_row(self, row: Any) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "id": int(row["id"]),
-            "item_id": str(row["item_id"] or ""),
-            "rating": int(row["rating"] or 0),
-            "correct": bool(row["correct"]),
-            "elapsed_ms": safe_int(row["elapsed_ms"], 0),
-            "error_type": str(row["error_type"] or ""),
-            "reviewed_at": str(row["reviewed_at"] or ""),
-            "session_id": str(row["session_id"] or ""),
-        }
-
-    def _recitation_from_row(self, row: Any) -> dict[str, Any] | None:
-        if row is None:
-            return None
-        return {
-            "id": int(row["id"]),
-            "passage_item_id": str(row["passage_item_id"] or ""),
-            "review_record_id": safe_int(row["review_record_id"], 0),
-            "user_input_text": str(row["user_input_text"] or ""),
-            "missing_count": safe_int(row["missing_count"], 0),
-            "extra_count": safe_int(row["extra_count"], 0),
-            "wrong_order_count": safe_int(row["wrong_order_count"], 0),
-            "hint_count": safe_int(row["hint_count"], 0),
-            "score": float(row["score"] or 0.0),
-            "reviewed_at": str(row["reviewed_at"] or ""),
-        }
-
-
-__all__ = [
-    "MemoryDeckStore",
-    "build_cloze_prompt",
-    "diff_recitation",
-    "ensure_memory_schema",
-    "normalize_rating",
-    "rating_from_recitation_score",
-    "rating_from_word_result",
-    "split_passage_text",
-]

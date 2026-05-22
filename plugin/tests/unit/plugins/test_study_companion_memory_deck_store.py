@@ -3,13 +3,19 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from plugin.plugins.study_companion.memory_deck_store import (
     MemoryDeckStore,
+    build_cloze_prompt,
     diff_recitation,
+    normalize_rating,
     rating_from_word_result,
     split_passage_text,
 )
 from plugin.plugins.study_companion.store import StudyStore
+
+pytestmark = pytest.mark.unit
 
 
 class _Logger:
@@ -136,6 +142,31 @@ def test_memory_passage_split_recitation_diff_and_rating_mapping() -> None:
     assert rating_from_word_result("correct", correct=True).value == 4
 
 
+def test_memory_text_helpers_handle_empty_long_and_cloze_inputs() -> None:
+    assert split_passage_text("") == []
+
+    chunks = split_passage_text("A" * 5101)
+    assert [len(chunk["text"]) for chunk in chunks] == [5000, 101]
+
+    cloze = build_cloze_prompt("Remember important vocabulary.")
+    assert cloze["answer"] == "Remember"
+    assert "____" in cloze["prompt"]
+
+    fallback = build_cloze_prompt("你好世界")
+    assert fallback["answer"]
+    assert "____" in fallback["prompt"]
+
+
+def test_memory_rating_aliases() -> None:
+    assert normalize_rating("again").value == 1
+    assert normalize_rating("forgot").value == 1
+    assert normalize_rating("hard").value == 2
+    assert normalize_rating("good").value == 3
+    assert normalize_rating("easy").value == 4
+    assert normalize_rating(4).value == 4
+    assert normalize_rating("unknown").value == 3
+
+
 def test_memory_due_reviews_sort_by_deck_and_retrievability(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
@@ -197,5 +228,57 @@ def test_memory_drafts_do_not_create_formal_items(tmp_path: Path) -> None:
         assert draft["item_type"] == "memory_draft"
         assert memory.list_items(deck_id=deck["id"], limit=10) == []
         assert store.list_candidate_items(item_type="memory_draft", limit=10)
+    finally:
+        store.close()
+
+
+def test_memory_json_import_export_compat_status_and_missing_review(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    try:
+        memory = MemoryDeckStore(store)
+        deck = memory.create_deck(name="JSON", deck_type="word")
+        imported = memory.import_words_json(
+            deck_id=deck["id"],
+            content='[{"word": "dog", "meaning": "狗", "tags": ["pet", "Pet"]}]',
+        )
+
+        item = imported["items"][0]
+        assert imported["imported_count"] == 1
+        assert item["metadata"]["tags"] == ["pet"]
+
+        compat = memory.compat_card_payload(item)
+        assert compat["front"] == "dog"
+        assert compat["card_type"] == "memory"
+        assert compat["is_due"] is True
+
+        exported = memory.export_deck_json(deck["id"])
+        assert exported["deck"]["id"] == deck["id"]
+        assert exported["items"][0]["prompt"] == "dog"
+
+        summary = memory.status_summary(limit=5)
+        assert summary["deck_count"] == 1
+        assert summary["item_count"] == 1
+        assert summary["due_count"] >= 1
+
+        with pytest.raises(ValueError, match="memory item not found"):
+            memory.review_item(item_id="missing", rating="good")
+    finally:
+        store.close()
+
+
+def test_memory_recitation_error_draft_is_candidate(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        memory = MemoryDeckStore(store)
+        draft = memory.create_recitation_error_draft(
+            expected="Alpha beta.", actual="Alpha zeta."
+        )
+
+        assert draft["status"] == "candidate"
+        assert draft["item_type"] == "memory_draft"
+        assert draft["payload"]["draft_type"] == "recitation_error"
+        assert draft["payload"]["diff"]["wrong_count"] > 0
     finally:
         store.close()

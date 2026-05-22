@@ -22,6 +22,7 @@ from .knowledge_quality import (
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
+from .memory_text import normalize_tags
 from .models import json_copy
 
 
@@ -47,27 +48,6 @@ def _slug(value: str) -> str:
         return asciiish[:80]
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
     return f"topic_{digest}"
-
-
-def _normalize_tags(value: object, *, limit: int = 20) -> list[str]:
-    if isinstance(value, str):
-        raw_items: list[object] = re.split(r"[,，;；\s]+", value)
-    elif isinstance(value, list):
-        raw_items = value
-    else:
-        raw_items = []
-    tags: list[str] = []
-    seen: set[str] = set()
-    for item in raw_items:
-        tag = str(item or "").strip()
-        key = tag.lower()
-        if not tag or key in seen:
-            continue
-        seen.add(key)
-        tags.append(tag[:40])
-        if len(tags) >= limit:
-            break
-    return tags
 
 
 def _difficulty_to_float(value: object, default: float = 0.5) -> float:
@@ -622,7 +602,7 @@ class KnowledgeTracker:
                 "front": front_text,
                 "back": back_text,
                 "source": str(source or "manual").strip() or "manual",
-                "tags": _normalize_tags(tags),
+                "tags": normalize_tags(tags),
             }
         )
         self.store.upsert_fsrs_card(
