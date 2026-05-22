@@ -55,6 +55,7 @@ class PomodoroTimer:
         self._session_count = 0
         self._pause_count = 0
         self._interrupt_count = 0
+        self._progress_applied_session_id = ""
 
     def start(
         self, *, goal_id: str = "", focus_minutes: int | None = None
@@ -86,6 +87,7 @@ class PomodoroTimer:
         self._pause_count = 0
         self._interrupt_count = 0
         self._focus_session = focus_session
+        self._progress_applied_session_id = ""
         return self.status()
 
     def pause(self) -> dict[str, Any]:
@@ -110,6 +112,8 @@ class PomodoroTimer:
     def stop(self) -> dict[str, Any]:
         if self._state not in {"focusing", "paused", "short_break", "long_break"}:
             return self.status()
+        if self._state == "focusing" and self._clock() >= self._deadline:
+            return self._complete_focus()
         if self._state in {"focusing", "paused"} and self._focus_session is not None:
             now = self._clock()
             elapsed_seconds = self._active_elapsed_seconds
@@ -156,7 +160,7 @@ class PomodoroTimer:
         now = self._clock()
         completed_focus: dict[str, Any] | None = None
         if self._focus_session is not None:
-            self._focus_session = self._habits.finish_focus_session(
+            completed_focus = self._habits.finish_focus_session(
                 str(self._focus_session["id"]),
                 ended_at=_iso_from_timestamp(now, self.checkin_timezone),
                 actual_minutes=self._planned_minutes,
@@ -164,7 +168,8 @@ class PomodoroTimer:
                 pause_count=self._pause_count,
                 interrupt_count=self._interrupt_count,
             )
-            completed_focus = self._focus_session
+            self._apply_completed_focus_progress(completed_focus)
+            self._focus_session = completed_focus
         self._session_count += 1
         if self._session_count % self.config.long_break_interval == 0:
             self._state = "long_break"
@@ -174,14 +179,13 @@ class PomodoroTimer:
             self._state = "short_break"
             self._mode = "short_break"
             self._deadline = now + self.config.short_break_minutes * 60
-        if completed_focus is not None:
-            self._apply_completed_focus_progress(completed_focus)
         return self.status()
 
     def _apply_completed_focus_progress(self, focus: dict[str, Any]) -> None:
         focus_date = str(
             focus.get("date") or _date_from_timestamp(self._started_at, self.checkin_timezone)
         )[:10]
+        session_id = str(focus.get("id") or "")
         if self._goal_id:
             goal = self._habits.get_goal(self._goal_id)
             if goal is not None:
@@ -191,8 +195,11 @@ class PomodoroTimer:
                     delta = self._planned_minutes
                 elif unit in {"pomodoro", "task"}:
                     delta = 1.0
-                if delta > 0:
+                if delta > 0 and (
+                    not session_id or session_id != self._progress_applied_session_id
+                ):
                     self._habits.update_goal(self._goal_id, progress_delta=delta)
+                    self._progress_applied_session_id = session_id
         if self.auto_derive_from_session:
             self._habits.record_checkin(
                 date=focus_date, status="checked_in", source="session_derived"

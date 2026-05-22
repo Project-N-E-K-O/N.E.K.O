@@ -56,8 +56,9 @@ class _FailingHabitStore:
 
 
 class _CheckinFailingHabitStore(_FailingHabitStore):
-    def __init__(self) -> None:
+    def __init__(self, *, failures_remaining: int | None = None) -> None:
         super().__init__(fail_on="record_checkin")
+        self.failures_remaining = failures_remaining
         self.progress_delta = 0.0
 
     def get_goal(self, goal_id: str) -> dict[str, Any] | None:
@@ -67,6 +68,14 @@ class _CheckinFailingHabitStore(_FailingHabitStore):
         del goal_id
         self.progress_delta += float(progress_delta or 0.0)
         return {"progress_amount": self.progress_delta}
+
+    def record_checkin(self, **_: Any) -> dict[str, Any]:
+        if self.failures_remaining is None:
+            raise RuntimeError("checkin failed")
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise RuntimeError("checkin failed")
+        return {"id": "checkin-1"}
 
 
 def _habit_store(tmp_path: Path) -> tuple[StudyStore, StudyHabitStore]:
@@ -170,6 +179,38 @@ def test_pomodoro_timer_uses_long_break_interval_and_supports_cancel(
         store.close()
 
 
+def test_pomodoro_stop_completes_expired_focus_before_cancelling(
+    tmp_path: Path,
+) -> None:
+    store, habits = _habit_store(tmp_path)
+    try:
+        clock = _Clock()
+        timer = PomodoroTimer(
+            habits,
+            config=PomodoroConfig(focus_minutes=1, short_break_minutes=1),
+            clock=clock.time,
+        )
+        goal = habits.create_goal(
+            date="1970-01-01",
+            target_type="subject",
+            subject="math",
+            target_amount=1,
+            unit="pomodoro",
+        )
+
+        started = timer.start(goal_id=goal["id"], focus_minutes=1)
+        clock.advance(60)
+        stopped = timer.stop()
+
+        assert stopped["state"] == "short_break"
+        assert stopped["session_count"] == 1
+        assert stopped["current_focus_session"]["status"] == "completed"
+        assert habits.get_goal(goal["id"])["progress_amount"] == 1
+        assert habits.list_checkins(date=started["date"])[0]["source"] == "session_derived"
+    finally:
+        store.close()
+
+
 def test_pomodoro_stop_is_noop_when_timer_is_not_active(tmp_path: Path) -> None:
     store, habits = _habit_store(tmp_path)
     try:
@@ -263,8 +304,8 @@ def test_pomodoro_start_does_not_mutate_state_when_initial_persistence_fails() -
     assert status["current_focus_session"] == {}
 
 
-def test_pomodoro_completion_does_not_duplicate_progress_when_checkin_fails() -> None:
-    habits = _CheckinFailingHabitStore()
+def test_pomodoro_completion_does_not_duplicate_progress_when_checkin_retries() -> None:
+    habits = _CheckinFailingHabitStore(failures_remaining=1)
     clock = _Clock()
     timer = PomodoroTimer(
         habits,  # type: ignore[arg-type]
@@ -281,12 +322,14 @@ def test_pomodoro_completion_does_not_duplicate_progress_when_checkin_fails() ->
     else:  # pragma: no cover - assertion guard
         raise AssertionError("tick should propagate checkin persistence failures")
 
-    assert timer.status()["state"] == "short_break"
-    assert timer.status()["session_count"] == 1
+    assert timer.status()["state"] == "focusing"
+    assert timer.status()["session_count"] == 0
     assert habits.progress_delta == 1.0
 
     timer.tick()
 
+    assert timer.status()["state"] == "short_break"
+    assert timer.status()["session_count"] == 1
     assert habits.progress_delta == 1.0
 
 

@@ -910,11 +910,13 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             habits, _, timer, supervision = self._require_habit_components()
-            before_status = timer.status()
+            before_status = await asyncio.to_thread(timer.status)
             before_session_id = str(
                 before_status.get("current_focus_session", {}).get("id") or ""
             )
-            status = timer.start(goal_id=goal_id, focus_minutes=focus_minutes)
+            status = await asyncio.to_thread(
+                timer.start, goal_id=goal_id, focus_minutes=focus_minutes
+            )
             after_session_id = str(
                 status.get("current_focus_session", {}).get("id") or ""
             )
@@ -923,7 +925,11 @@ class StudyCompanionPlugin(NekoPluginBase):
                 and after_session_id
                 and after_session_id != before_session_id
             ):
-                goal = habits.get_goal(str(goal_id or "")) if goal_id else {}
+                goal = (
+                    await asyncio.to_thread(habits.get_goal, str(goal_id or ""))
+                    if goal_id
+                    else {}
+                )
                 supervision.on_focus_start(
                     goal=goal or {},
                     planned_minutes=float(
