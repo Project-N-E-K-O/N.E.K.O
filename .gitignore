@@ -111,7 +111,8 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 
-# 蹇界暐闈欐€佽祫婧?static/ziraitikuwa/*
+# 蹇界暐闈欐€佽祫婧?
+static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
 static/yui/*
@@ -173,7 +174,8 @@ plugin/plugins/memo_reminder/store.db
 plugin/neko-plugin-docs/
 plugin/rust/
 
-# 鏈湴璋冭瘯/娴嬭瘯鐢ㄦ彃浠?plugin/plugins/music_tester/
+# 鏈湴璋冭瘯/娴嬭瘯鐢ㄦ彃浠?
+plugin/plugins/music_tester/
 plugin/plugins/web_radio/
 
 # QQ 鑷姩鍥炲锛歂apCat.Shell 鏁翠釜鐩綍涓嶅叆搴擄紝浠呬繚鐣?.gitkeep 鍗犱綅
