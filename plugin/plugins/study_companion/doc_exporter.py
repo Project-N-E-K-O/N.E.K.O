@@ -521,6 +521,10 @@ def _pdf_user_font_name(font_path: Path) -> str:
     return f"CJK-User-{digest}"
 
 
+# ReportLab exposes the TTFont cmap through the non-public font.face.charToGlyph
+# mapping. Guard that access with getattr so missing internals return False,
+# which safely falls back to the built-in PDF fonts instead of accepting a user
+# font that cannot render the _PDF_CJK_SAMPLE glyphs.
 def _ttfont_has_cjk_glyphs(font: object) -> bool:
     cmap = getattr(getattr(font, "face", None), "charToGlyph", None)
     if not isinstance(cmap, dict):
