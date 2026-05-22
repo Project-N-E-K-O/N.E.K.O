@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,20 @@ class _FailingHabitStore:
 
     def get_goal(self, goal_id: str) -> dict[str, Any] | None:
         return None
+
+
+class _CheckinFailingHabitStore(_FailingHabitStore):
+    def __init__(self) -> None:
+        super().__init__(fail_on="record_checkin")
+        self.progress_delta = 0.0
+
+    def get_goal(self, goal_id: str) -> dict[str, Any] | None:
+        return {"id": goal_id, "unit": "pomodoro"}
+
+    def update_goal(self, goal_id: str, *, progress_delta: float = 0.0) -> dict[str, Any]:
+        del goal_id
+        self.progress_delta += float(progress_delta or 0.0)
+        return {"progress_amount": self.progress_delta}
 
 
 def _habit_store(tmp_path: Path) -> tuple[StudyStore, StudyHabitStore]:
@@ -155,6 +170,31 @@ def test_pomodoro_timer_uses_long_break_interval_and_supports_cancel(
         store.close()
 
 
+def test_pomodoro_stop_is_noop_when_timer_is_not_active(tmp_path: Path) -> None:
+    store, habits = _habit_store(tmp_path)
+    try:
+        clock = _Clock()
+        timer = PomodoroTimer(
+            habits,
+            config=PomodoroConfig(focus_minutes=1, short_break_minutes=1),
+            clock=clock.time,
+        )
+
+        assert timer.stop()["state"] == "idle"
+
+        timer.start(focus_minutes=1)
+        clock.advance(60)
+        assert timer.tick()["state"] == "short_break"
+        assert timer.skip_break()["state"] == "completed"
+
+        stopped = timer.stop()
+
+        assert stopped["state"] == "completed"
+        assert stopped["current_focus_session"]["status"] == "completed"
+    finally:
+        store.close()
+
+
 def test_pomodoro_timer_respects_disabled_session_derived_checkins(
     tmp_path: Path,
 ) -> None:
@@ -178,6 +218,31 @@ def test_pomodoro_timer_respects_disabled_session_derived_checkins(
         store.close()
 
 
+def test_pomodoro_timer_uses_configured_timezone_for_session_derived_checkins(
+    tmp_path: Path,
+) -> None:
+    store, habits = _habit_store(tmp_path)
+    try:
+        timestamp = datetime(2024, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp()
+        clock = _Clock(timestamp)
+        timer = PomodoroTimer(
+            habits,
+            config=PomodoroConfig(focus_minutes=1, short_break_minutes=1),
+            clock=clock.time,
+            checkin_timezone="America/Los_Angeles",
+        )
+
+        started = timer.start(focus_minutes=1)
+        clock.advance(60)
+        timer.tick()
+
+        assert started["date"] == "2023-12-31"
+        assert habits.list_checkins(date="2023-12-31")
+        assert habits.list_checkins(date="2024-01-01") == []
+    finally:
+        store.close()
+
+
 def test_pomodoro_start_does_not_mutate_state_when_initial_persistence_fails() -> None:
     timer = PomodoroTimer(
         _FailingHabitStore(fail_on="create_focus_session"),  # type: ignore[arg-type]
@@ -196,6 +261,33 @@ def test_pomodoro_start_does_not_mutate_state_when_initial_persistence_fails() -
     assert status["state"] == "idle"
     assert status["remaining_seconds"] == 0
     assert status["current_focus_session"] == {}
+
+
+def test_pomodoro_completion_does_not_duplicate_progress_when_checkin_fails() -> None:
+    habits = _CheckinFailingHabitStore()
+    clock = _Clock()
+    timer = PomodoroTimer(
+        habits,  # type: ignore[arg-type]
+        config=PomodoroConfig(focus_minutes=1, short_break_minutes=1),
+        clock=clock.time,
+    )
+    timer.start(goal_id="goal-1", focus_minutes=1)
+    clock.advance(60)
+
+    try:
+        timer.tick()
+    except RuntimeError as exc:
+        assert str(exc) == "checkin failed"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("tick should propagate checkin persistence failures")
+
+    assert timer.status()["state"] == "short_break"
+    assert timer.status()["session_count"] == 1
+    assert habits.progress_delta == 1.0
+
+    timer.tick()
+
+    assert habits.progress_delta == 1.0
 
 
 def test_pomodoro_completion_stays_retryable_when_persistence_fails() -> None:

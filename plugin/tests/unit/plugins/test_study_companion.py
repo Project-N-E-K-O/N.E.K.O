@@ -2519,6 +2519,71 @@ async def test_study_pomodoro_status_offloads_timer_operations(
 
 
 @pytest.mark.asyncio
+async def test_study_pomodoro_start_does_not_restart_supervision_on_noop() -> None:
+    class _Habits:
+        def get_goal(self, _goal_id: str) -> dict[str, object]:
+            return {"id": "goal-1"}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-1"},
+                "config": {"focus_minutes": 25},
+            }
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return self.status()
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_start_count = 0
+
+        def on_focus_start(self, **_kwargs) -> None:
+            self.focus_start_count += 1
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1")
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert supervision.focus_start_count == 0
+
+
+@pytest.mark.asyncio
+async def test_study_supervision_toggle_respects_disable_guard() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def set_enabled(self, enabled: bool) -> dict[str, object]:
+            self.calls.append(enabled)
+            return {"enabled": enabled}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._cfg.supervision.allow_disable_by_chat = False
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = object()
+    plugin._supervision = supervision
+
+    result = await plugin.study_supervision_toggle(enabled=False)
+
+    assert isinstance(result, Err)
+    assert "blocked by config" in str(result.error)
+    assert supervision.calls == []
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_starts_and_collects_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

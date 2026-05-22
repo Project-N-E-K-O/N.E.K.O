@@ -123,6 +123,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._habit_store,
                 config=self._cfg.pomodoro,
                 auto_derive_from_session=self._cfg.checkin.auto_derive_from_session,
+                checkin_timezone=self._cfg.checkin.streak_timezone,
             )
             self._supervision = SupervisionController(self._cfg.supervision)
             restored = await asyncio.to_thread(
@@ -909,14 +910,26 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             habits, _, timer, supervision = self._require_habit_components()
-            status = timer.start(goal_id=goal_id, focus_minutes=focus_minutes)
-            goal = habits.get_goal(str(goal_id or "")) if goal_id else {}
-            supervision.on_focus_start(
-                goal=goal or {},
-                planned_minutes=float(
-                    status.get("config", {}).get("focus_minutes") or focus_minutes or 0
-                ),
+            before_status = timer.status()
+            before_session_id = str(
+                before_status.get("current_focus_session", {}).get("id") or ""
             )
+            status = timer.start(goal_id=goal_id, focus_minutes=focus_minutes)
+            after_session_id = str(
+                status.get("current_focus_session", {}).get("id") or ""
+            )
+            if (
+                str(status.get("state") or "") == "focusing"
+                and after_session_id
+                and after_session_id != before_session_id
+            ):
+                goal = habits.get_goal(str(goal_id or "")) if goal_id else {}
+                supervision.on_focus_start(
+                    goal=goal or {},
+                    planned_minutes=float(
+                        status.get("config", {}).get("focus_minutes") or focus_minutes or 0
+                    ),
+                )
             return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
             return Err(SdkError(str(exc)))
