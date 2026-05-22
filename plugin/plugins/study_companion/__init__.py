@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugin.sdk.plugin import (
     Err,
@@ -294,21 +295,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         history = self._store.list_interactions(limit=10)
         is_first_run = not bool(self._store.list_interactions(limit=1))
         today = self._today()
-        habit_payload: dict[str, Any] = {}
-        if (
-            self._habit_store is not None
-            and self._checkin_manager is not None
-            and self._pomodoro_timer is not None
-        ):
-            habit_payload = build_habit_dashboard_payload(
-                goals=self._habit_store.list_goals(date=today),
-                checkin=self._checkin_manager.checkin_status(date=today, today=today),
-                pomodoro=self._pomodoro_timer.status(),
-                summary=self._checkin_manager.daily_summary(date=today),
-                supervision=self._supervision.status()
-                if self._supervision is not None
-                else {},
-            )
+        habit_payload = self._habit_status_payload(today)
         knowledge = {
             "knowledge_summary": self._knowledge_tracker.get_status_summary(limit=8),
             "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(
@@ -327,9 +314,40 @@ class StudyCompanionPlugin(NekoPluginBase):
             is_first_run=is_first_run,
         )
 
-    @staticmethod
-    def _today() -> str:
-        return datetime.now().date().isoformat()
+    def _habit_status_payload(self, today: str) -> dict[str, Any]:
+        if (
+            self._habit_store is None
+            or self._checkin_manager is None
+            or self._pomodoro_timer is None
+        ):
+            return {
+                "available": False,
+                "error": "study habit system is not initialized",
+            }
+        try:
+            payload = build_habit_dashboard_payload(
+                goals=self._habit_store.list_goals(date=today),
+                checkin=self._checkin_manager.checkin_status(date=today, today=today),
+                pomodoro=self._pomodoro_timer.status(),
+                summary=self._checkin_manager.daily_summary(date=today),
+                supervision=self._supervision.status()
+                if self._supervision is not None
+                else {},
+            )
+            payload["available"] = True
+            return payload
+        except Exception as exc:
+            self.logger.warning("study habit status payload degraded: {}", exc)
+            return {"available": False, "error": str(exc)}
+
+    def _today(self) -> str:
+        timezone_name = str(self._cfg.checkin.streak_timezone or "local").strip()
+        if timezone_name and timezone_name.lower() != "local":
+            try:
+                return datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+            except ZoneInfoNotFoundError:
+                self.logger.warning("invalid study checkin timezone: {}", timezone_name)
+        return datetime.now().astimezone().date().isoformat()
 
     def _sync_doc_export_entry(self) -> None:
         self.unregister_dynamic_entry("study_export_notes")
@@ -1067,8 +1085,8 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_goal_delete(self, goal_id: str, **_):
         try:
             _, manager, _, _ = self._require_habit_components()
-            await asyncio.to_thread(manager.delete_goal, goal_id)
-            return Ok({"deleted": True, "goal_id": goal_id})
+            deleted = await asyncio.to_thread(manager.delete_goal, goal_id)
+            return Ok({"deleted": bool(deleted), "goal_id": goal_id})
         except Exception as exc:
             return Err(SdkError(str(exc)))
 

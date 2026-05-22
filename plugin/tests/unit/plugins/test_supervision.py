@@ -29,6 +29,11 @@ def test_supervision_reminders_are_low_frequency_and_can_be_disabled() -> None:
     assert disabled["enabled"] is False
     assert controller.due_reminder(now=30 * 60)["due"] is False
 
+    ended = controller.on_focus_end(now=31 * 60)
+
+    assert ended["focus_active"] is False
+    assert ended["reminder_level"] == "end"
+
 
 def test_supervision_inactivity_degrades_when_sensor_unavailable() -> None:
     controller = SupervisionController(

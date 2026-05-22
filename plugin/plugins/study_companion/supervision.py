@@ -1,37 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import time
 from typing import Any, Callable
 
-
-@dataclass(slots=True)
-class SupervisionConfig:
-    enabled: bool = True
-    remind_interval_minutes: int = 10
-    inactivity_timeout_minutes: int = 5
-    allow_disable_by_chat: bool = True
-
-    def __post_init__(self) -> None:
-        self.enabled = bool(self.enabled)
-        self.remind_interval_minutes = _range_or_default(
-            self.remind_interval_minutes, 1, 60, 10
-        )
-        self.inactivity_timeout_minutes = _range_or_default(
-            self.inactivity_timeout_minutes, 1, 30, 5
-        )
-        self.allow_disable_by_chat = bool(self.allow_disable_by_chat)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-def _range_or_default(value: object, minimum: int, maximum: int, default: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return number if minimum <= number <= maximum else default
+from .models import SupervisionConfig
 
 
 class SupervisionController:

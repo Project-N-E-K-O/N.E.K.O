@@ -1,40 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 from datetime import datetime
 import time
 from typing import Any, Callable
 
+from .models import PomodoroConfig, _range_or_default
 from .study_habit_store import StudyHabitStore
-
-
-@dataclass(slots=True)
-class PomodoroConfig:
-    focus_minutes: int = 25
-    short_break_minutes: int = 5
-    long_break_minutes: int = 15
-    long_break_interval: int = 4
-    allow_skip_break: bool = True
-    allow_custom_duration: bool = True
-
-    def __post_init__(self) -> None:
-        self.focus_minutes = _range_or_default(self.focus_minutes, 1, 120, 25)
-        self.short_break_minutes = _range_or_default(self.short_break_minutes, 1, 30, 5)
-        self.long_break_minutes = _range_or_default(self.long_break_minutes, 1, 60, 15)
-        self.long_break_interval = _range_or_default(self.long_break_interval, 1, 10, 4)
-        self.allow_skip_break = bool(self.allow_skip_break)
-        self.allow_custom_duration = bool(self.allow_custom_duration)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-def _range_or_default(value: object, minimum: int, maximum: int, default: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return number if minimum <= number <= maximum else default
 
 
 def _iso_from_timestamp(value: float) -> str:
@@ -77,9 +48,16 @@ class PomodoroTimer:
                 focus_minutes, 1, 120, self.config.focus_minutes
             )
         now = self._clock()
+        goal_key = str(goal_id or "")
+        focus_session = self._habits.create_focus_session(
+            goal_id=goal_key,
+            mode="focus",
+            planned_minutes=minutes,
+            started_at=_iso_from_timestamp(now),
+        )
         self._state = "focusing"
         self._mode = "focus"
-        self._goal_id = str(goal_id or "")
+        self._goal_id = goal_key
         self._started_at = now
         self._active_started_at = now
         self._active_elapsed_seconds = 0.0
@@ -88,12 +66,7 @@ class PomodoroTimer:
         self._remaining_on_pause = 0.0
         self._pause_count = 0
         self._interrupt_count = 0
-        self._focus_session = self._habits.create_focus_session(
-            goal_id=self._goal_id,
-            mode="focus",
-            planned_minutes=minutes,
-            started_at=_iso_from_timestamp(now),
-        )
+        self._focus_session = focus_session
         return self.status()
 
     def pause(self) -> dict[str, Any]:

@@ -286,13 +286,14 @@ class StudyHabitStore:
             raise StudyHabitStoreError("daily goal update failed")
         return updated
 
-    def delete_goal(self, goal_id: str) -> None:
+    def delete_goal(self, goal_id: str) -> bool:
         key = str(goal_id or "")
         with self._store._lock:  # noqa: SLF001
             conn = self._conn()
-            conn.execute("DELETE FROM focus_sessions WHERE goal_id = ?", (key,))
-            conn.execute("DELETE FROM daily_goals WHERE id = ?", (key,))
-            conn.commit()
+            with conn:
+                conn.execute("DELETE FROM focus_sessions WHERE goal_id = ?", (key,))
+                cursor = conn.execute("DELETE FROM daily_goals WHERE id = ?", (key,))
+            return cursor.rowcount > 0
 
     def record_checkin(
         self,

@@ -41,8 +41,8 @@ class CheckinManager:
     def update_goal(self, goal_id: str, **updates: Any) -> dict[str, Any]:
         return self._habits.update_goal(goal_id, **updates)
 
-    def delete_goal(self, goal_id: str) -> None:
-        self._habits.delete_goal(goal_id)
+    def delete_goal(self, goal_id: str) -> bool:
+        return self._habits.delete_goal(goal_id)
 
     def manual_checkin(
         self, *, date: str, today: str, note: str = ""

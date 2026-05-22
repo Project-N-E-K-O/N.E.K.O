@@ -90,6 +90,14 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _range_or_default(value: object, minimum: int, maximum: int, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if minimum <= number <= maximum else default
+
+
 @dataclass(slots=True)
 class DocExportConfig:
     enabled: bool = False
@@ -118,28 +126,12 @@ class PomodoroConfig:
     allow_custom_duration: bool = True
 
     def __post_init__(self) -> None:
-        self.focus_minutes = self._range_or_default(self.focus_minutes, 1, 120, 25)
-        self.short_break_minutes = self._range_or_default(
-            self.short_break_minutes, 1, 30, 5
-        )
-        self.long_break_minutes = self._range_or_default(
-            self.long_break_minutes, 1, 60, 15
-        )
-        self.long_break_interval = self._range_or_default(
-            self.long_break_interval, 1, 10, 4
-        )
+        self.focus_minutes = _range_or_default(self.focus_minutes, 1, 120, 25)
+        self.short_break_minutes = _range_or_default(self.short_break_minutes, 1, 30, 5)
+        self.long_break_minutes = _range_or_default(self.long_break_minutes, 1, 60, 15)
+        self.long_break_interval = _range_or_default(self.long_break_interval, 1, 10, 4)
         self.allow_skip_break = bool(self.allow_skip_break)
         self.allow_custom_duration = bool(self.allow_custom_duration)
-
-    @staticmethod
-    def _range_or_default(
-        value: object, minimum: int, maximum: int, default: int
-    ) -> int:
-        try:
-            number = int(value)
-        except (TypeError, ValueError, OverflowError):
-            return default
-        return number if minimum <= number <= maximum else default
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -154,23 +146,13 @@ class SupervisionConfig:
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
-        self.remind_interval_minutes = self._range_or_default(
+        self.remind_interval_minutes = _range_or_default(
             self.remind_interval_minutes, 1, 60, 10
         )
-        self.inactivity_timeout_minutes = self._range_or_default(
+        self.inactivity_timeout_minutes = _range_or_default(
             self.inactivity_timeout_minutes, 1, 30, 5
         )
         self.allow_disable_by_chat = bool(self.allow_disable_by_chat)
-
-    @staticmethod
-    def _range_or_default(
-        value: object, minimum: int, maximum: int, default: int
-    ) -> int:
-        try:
-            number = int(value)
-        except (TypeError, ValueError, OverflowError):
-            return default
-        return number if minimum <= number <= maximum else default
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -184,20 +166,8 @@ class CheckinConfig:
 
     def __post_init__(self) -> None:
         self.streak_timezone = str(self.streak_timezone or "local").strip() or "local"
-        self.makeup_window_days = self._range_or_default(
-            self.makeup_window_days, 0, 7, 3
-        )
+        self.makeup_window_days = _range_or_default(self.makeup_window_days, 0, 7, 3)
         self.auto_derive_from_session = bool(self.auto_derive_from_session)
-
-    @staticmethod
-    def _range_or_default(
-        value: object, minimum: int, maximum: int, default: int
-    ) -> int:
-        try:
-            number = int(value)
-        except (TypeError, ValueError, OverflowError):
-            return default
-        return number if minimum <= number <= maximum else default
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

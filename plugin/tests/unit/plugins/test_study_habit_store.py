@@ -50,6 +50,7 @@ def test_habit_store_creates_goals_and_cascades_focus_sessions(tmp_path: Path) -
 
         assert habits.list_goals(date="2026-05-22") == []
         assert habits.list_focus_sessions(date="2026-05-22") == []
+        assert habits.delete_goal("missing-goal") is False
     finally:
         store.close()
 
