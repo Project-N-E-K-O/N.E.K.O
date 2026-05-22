@@ -567,18 +567,35 @@
         return unionCompactRects(childRects);
     }
 
+    function expandCompactToolFanNativeRect(rect, element) {
+        if (!rect) return null;
+        var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        var rawButtonSize = style ? parseFloat(style.getPropertyValue('--compact-tool-button-size')) : 0;
+        var buttonSize = Number.isFinite(rawButtonSize) && rawButtonSize > 0 ? rawButtonSize : 38;
+        var previewPad = Math.ceil(buttonSize * 1.7);
+        return {
+            left: rect.left - previewPad,
+            top: rect.top - previewPad,
+            width: rect.width + previewPad,
+            height: rect.height + previewPad,
+            right: rect.right,
+            bottom: rect.bottom
+        };
+    }
+
     function collectCompactToolFanGeometryItems(element) {
         if (!element || element.getAttribute('data-compact-geometry-item') !== 'toolFan') return [];
         var parentRect = getCompactGeometryElementRect(element);
         var items = [];
         if (parentRect) {
+            var nativeRect = expandCompactToolFanNativeRect(parentRect, element) || parentRect;
             items.push({
                 id: 'toolFan:native',
                 owner: 'surface',
                 kind: 'toolFan',
-                visualRect: parentRect,
+                visualRect: nativeRect,
                 hitRect: null,
-                nativeRect: parentRect,
+                nativeRect: nativeRect,
                 interactive: false
             });
         }
@@ -592,62 +609,18 @@
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
                 var interactive = style ? style.pointerEvents !== 'none' : true;
+                if (!interactive) return null;
                 return {
                     id: 'toolFan:' + slot + ':' + index,
                     owner: 'surface',
                     kind: 'toolFan',
                     visualRect: rect,
-                    hitRect: interactive ? rect : null,
+                    hitRect: rect,
                     nativeRect: rect,
-                    interactive: interactive
+                    interactive: true
                 };
             })
             .filter(Boolean));
-    }
-
-    function collectCompactHistoryGeometryItems(element) {
-        if (!element || element.getAttribute('data-compact-geometry-item') !== 'history') return [];
-        var hitScope = element.getAttribute('data-compact-geometry-hit-scope') || '';
-        var hitRegionNodes = Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'));
-        if (!hitRegionNodes.length) {
-            hitRegionNodes = Array.prototype.slice.call(element.querySelectorAll(
-                '.compact-export-history-scroll, .compact-export-history-controls, .compact-export-preview-region:not([hidden])'
-            ));
-        }
-        var children = hitRegionNodes.map(function (child, index) {
-            var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
-            if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
-            if (style && Number(style.opacity) <= 0.01) return null;
-            var rect = normalizeCompactDomRect(child.getBoundingClientRect());
-            if (!rect) return null;
-            var interactive = style ? style.pointerEvents !== 'none' : true;
-            var kind = child.getAttribute('data-compact-hit-region-kind')
-                || (child.classList.contains('compact-export-preview-region') ? 'preview'
-                    : (child.classList.contains('compact-export-history-controls') ? 'controls' : 'scroll'));
-            kind = String(kind || 'region').replace(/[^a-zA-Z0-9_-]/g, '') || 'region';
-            return {
-                id: 'history:' + kind + ':' + index,
-                owner: 'surface',
-                kind: 'history',
-                visualRect: rect,
-                hitRect: interactive ? rect : null,
-                nativeRect: rect,
-                interactive: interactive,
-                hitRegionKind: kind
-            };
-        }).filter(Boolean);
-        var nativeRect = unionCompactRects(children.map(function (item) { return item.nativeRect; }));
-        if (!nativeRect) return [];
-        return [{
-            id: 'history:native',
-            owner: 'surface',
-            kind: 'history',
-            visualRect: nativeRect,
-            hitRect: null,
-            nativeRect: nativeRect,
-            interactive: false,
-            hitScope: hitScope || 'children'
-        }].concat(children);
     }
 
     function collectCompactSurfaceGeometryItems() {
@@ -664,9 +637,6 @@
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
             if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
-            }
-            if (compactGeometryItem === 'history') {
-                return items.concat(collectCompactHistoryGeometryItems(element));
             }
             var rect = getCompactGeometryElementRect(element);
             if (!rect) return items;
@@ -1013,7 +983,7 @@
         var compactStage = root.querySelector('.chat-body-compact-surface');
         var contentNode = messageList;
         if (!contentNode && getCurrentChatSurfaceMode() === 'compact') {
-            contentNode = compactStage || root.querySelector('.compact-chat-stage') || root.querySelector('.compact-chat-input-shell') || root.querySelector('.compact-chat-capsule-shell');
+            contentNode = compactStage || root.querySelector('.compact-chat-stage') || root.querySelector('.compact-chat-surface-shell');
         }
         if (!topbar || !composer || !contentNode) {
             resetMobileContentLayoutState(shell, topbar, composer, messageList || compactStage);
