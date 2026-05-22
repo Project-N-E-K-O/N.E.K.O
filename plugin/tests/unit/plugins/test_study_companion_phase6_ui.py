@@ -73,7 +73,12 @@ def test_phase6_ui_guides_are_registered() -> None:
 
     assert warnings == []
     surface_ids = {surface["id"] for surface in surfaces if surface["available"]}
-    assert {"habit-dashboard", "pomodoro-panel", "daily-goal-editor", "session-summary"}.issubset(surface_ids)
+    assert {
+        "habit-dashboard",
+        "pomodoro-panel",
+        "daily-goal-editor",
+        "session-summary",
+    }.issubset(surface_ids)
 
 
 def test_phase6_ui_payload_builders_shape_dashboard_and_pomodoro_status() -> None:
@@ -81,7 +86,14 @@ def test_phase6_ui_payload_builders_shape_dashboard_and_pomodoro_status() -> Non
         {"state": "focusing", "remaining_seconds": 1200, "session_count": 2},
     )
     dashboard = build_habit_dashboard_payload(
-        goals=[{"id": "g1", "status": "completed", "target_amount": 1, "progress_amount": 1}],
+        goals=[
+            {
+                "id": "g1",
+                "status": "completed",
+                "target_amount": 1,
+                "progress_amount": 1,
+            }
+        ],
         checkin={"checked_in": True, "streak_days": 5},
         pomodoro=pomodoro,
         summary={"total_focus_minutes": 50},

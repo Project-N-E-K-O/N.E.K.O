@@ -54,7 +54,9 @@ def test_habit_store_creates_goals_and_cascades_focus_sessions(tmp_path: Path) -
         store.close()
 
 
-def test_checkin_manager_tracks_streaks_makeups_and_session_derived_progress(tmp_path: Path) -> None:
+def test_checkin_manager_tracks_streaks_makeups_and_session_derived_progress(
+    tmp_path: Path,
+) -> None:
     store = _study_store(tmp_path)
     try:
         habits = StudyHabitStore(store)

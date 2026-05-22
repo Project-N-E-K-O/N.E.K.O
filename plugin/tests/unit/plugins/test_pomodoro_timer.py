@@ -30,7 +30,9 @@ def _habit_store(tmp_path: Path) -> StudyHabitStore:
     return StudyHabitStore(store)
 
 
-def test_pomodoro_timer_completes_focus_then_short_break_without_counting_break_minutes(tmp_path: Path) -> None:
+def test_pomodoro_timer_completes_focus_then_short_break_without_counting_break_minutes(
+    tmp_path: Path,
+) -> None:
     habits = _habit_store(tmp_path)
     clock = _Clock()
     timer = PomodoroTimer(
@@ -43,8 +45,15 @@ def test_pomodoro_timer_completes_focus_then_short_break_without_counting_break_
         ),
         clock=clock.time,
     )
+    goal = habits.create_goal(
+        date="1970-01-01",
+        target_type="subject",
+        subject="math",
+        target_amount=1,
+        unit="pomodoro",
+    )
 
-    started = timer.start(goal_id="", focus_minutes=1)
+    started = timer.start(goal_id=goal["id"], focus_minutes=1)
     assert started["state"] == "focusing"
     assert started["remaining_seconds"] == 60
 
@@ -68,14 +77,26 @@ def test_pomodoro_timer_completes_focus_then_short_break_without_counting_break_
     assert completed["state"] == "completed"
     assert completed["remaining_seconds"] == 0
     assert habits.focus_minutes_for_date(started["date"]) == 1
+    updated_goal = habits.get_goal(goal["id"])
+    assert updated_goal is not None
+    assert updated_goal["progress_amount"] == 1
+    assert updated_goal["status"] == "completed"
+    assert habits.list_checkins(date=started["date"])[0]["source"] == "session_derived"
 
 
-def test_pomodoro_timer_uses_long_break_interval_and_supports_cancel(tmp_path: Path) -> None:
+def test_pomodoro_timer_uses_long_break_interval_and_supports_cancel(
+    tmp_path: Path,
+) -> None:
     habits = _habit_store(tmp_path)
     clock = _Clock()
     timer = PomodoroTimer(
         habits,
-        config=PomodoroConfig(focus_minutes=1, short_break_minutes=1, long_break_minutes=3, long_break_interval=2),
+        config=PomodoroConfig(
+            focus_minutes=1,
+            short_break_minutes=1,
+            long_break_minutes=3,
+            long_break_interval=2,
+        ),
         clock=clock.time,
     )
 
