@@ -168,9 +168,20 @@ def test_export_pdf_docx_and_xmind_bytes(tmp_path: Path) -> None:
 
 def test_export_pdf_preserves_unicode_text(tmp_path: Path) -> None:
     pytest.importorskip("reportlab")
+    from reportlab.pdfgen.canvas import Canvas
+
+    DocExporter._registered_pdf_fonts.clear()
+    drawn_texts: list[str] = []
+    original_draw_string = Canvas.drawString
+
+    def _draw_string_spy(self: Canvas, x: float, y: float, text: str) -> None:
+        drawn_texts.append(text)
+        original_draw_string(self, x, y, text)
+
     store = StudyStore(tmp_path / "unicode.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
+        Canvas.drawString = _draw_string_spy
         store.append_interaction(
             kind="concept_explain",
             input_text="光合作用",
@@ -181,7 +192,10 @@ def test_export_pdf_preserves_unicode_text(tmp_path: Path) -> None:
 
         assert _pdf_safe_text("中文笔记") == "中文笔记"
         assert pdf.content.startswith(b"%PDF")
+        assert any("中文笔记" in text for text in drawn_texts)
+        assert any("光合作用" in text for text in drawn_texts)
     finally:
+        Canvas.drawString = original_draw_string
         store.close()
 
 
@@ -207,7 +221,7 @@ def test_pdf_font_falls_back_when_cjk_env_var_points_to_missing_file(
     pdf = DocExporter(_MinimalStore()).export(fmt="pdf", title="中文笔记")
 
     assert pdf.content.startswith(b"%PDF")
-    assert font_names[0] in {"STSong-Light", "Helvetica"}
+    assert font_names[0] == "STSong-Light"
     assert not font_names[0].startswith("CJK-User-")
     assert "STUDY_PDF_CJK_FONT_PATH set but file not found" in caplog.text
     assert _pdf_safe_text("中文笔记") == "中文笔记"
@@ -244,7 +258,7 @@ def test_register_pdf_font_returns_string_and_env_var_controls_path(
     )
 
     monkeypatch.delenv("STUDY_PDF_CJK_FONT_PATH", raising=False)
-    assert exporter._register_pdf_font() in {"STSong-Light", "Helvetica"}
+    assert exporter._register_pdf_font() == "STSong-Light"
 
     font_path = tmp_path / "env-font.ttf"
     font_path.write_bytes(b"fake")
