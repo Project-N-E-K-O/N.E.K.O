@@ -217,12 +217,12 @@ function _getNekoIdleReturnAssetUrl(tier) {
         : '';
 
     if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
-        return `/static/assets/neko-idle/cat-idle-cat2.png${versionSuffix}`;
+        return `/static/assets/neko-idle/cat-idle-cat2.gif${versionSuffix}`;
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
         return `/static/assets/neko-idle/cat-idle-cat3.gif${versionSuffix}`;
     }
-    return `/static/assets/neko-idle/cat-idle-cat1.png${versionSuffix}`;
+    return `/static/assets/neko-idle/cat-idle-cat1.gif${versionSuffix}`;
 }
 
 function _getNekoIdleReturnClickAssetUrl(tier) {
@@ -232,12 +232,12 @@ function _getNekoIdleReturnClickAssetUrl(tier) {
         : '';
 
     if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
-        return `/static/assets/neko-idle/cat-idle-cat2-click.png${versionSuffix}`;
+        return `/static/assets/neko-idle/cat-idle-cat2-click.gif${versionSuffix}`;
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
-        return `/static/assets/neko-idle/cat-idle-cat3-click.png${versionSuffix}`;
+        return `/static/assets/neko-idle/cat-idle-cat3-click.gif${versionSuffix}`;
     }
-    return `/static/assets/neko-idle/cat-idle-cat1-click.png${versionSuffix}`;
+    return `/static/assets/neko-idle/cat-idle-cat1-click.gif${versionSuffix}`;
 }
 
 function _applyNekoIdleReturnPresentation(button, tier) {
