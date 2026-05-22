@@ -63,3 +63,4 @@ def test_supervision_inactivity_degrades_when_sensor_unavailable() -> None:
     assert inactive["inactivity_detected"] is True
     assert inactive["suggested_action"] == "pause_or_switch"
     assert changed["inactivity_detected"] is False
+    assert changed["reminder_level"] != "inactivity"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 
 from plugin.plugins.study_companion.checkin_manager import CheckinManager
@@ -121,5 +122,27 @@ def test_habit_data_stays_out_of_public_knowledge_export(tmp_path: Path) -> None
         assert "checkins" not in exported
         assert "focus_sessions" not in exported
         assert "personal-plan" not in str(exported)
+    finally:
+        store.close()
+
+
+def test_checkin_streak_is_not_truncated_at_default_checked_dates_limit(
+    tmp_path: Path,
+) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        manager = CheckinManager(habits, makeup_window_days=3)
+        start = date(2025, 1, 1)
+        for offset in range(405):
+            habits.record_checkin(
+                date=(start + timedelta(days=offset)).isoformat(),
+                status="checked_in",
+                source="manual",
+            )
+
+        status = manager.checkin_status(date="2026-02-09", today="2026-02-09")
+
+        assert status["streak_days"] == 405
     finally:
         store.close()

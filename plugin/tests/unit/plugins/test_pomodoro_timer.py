@@ -54,97 +54,129 @@ class _FailingHabitStore:
         return None
 
 
-def _habit_store(tmp_path: Path) -> StudyHabitStore:
+def _habit_store(tmp_path: Path) -> tuple[StudyStore, StudyHabitStore]:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
-    return StudyHabitStore(store)
+    return store, StudyHabitStore(store)
 
 
 def test_pomodoro_timer_completes_focus_then_short_break_without_counting_break_minutes(
     tmp_path: Path,
 ) -> None:
-    habits = _habit_store(tmp_path)
-    clock = _Clock()
-    timer = PomodoroTimer(
-        habits,
-        config=PomodoroConfig(
-            focus_minutes=1,
-            short_break_minutes=1,
-            long_break_minutes=2,
-            long_break_interval=2,
-        ),
-        clock=clock.time,
-    )
-    goal = habits.create_goal(
-        date="1970-01-01",
-        target_type="subject",
-        subject="math",
-        target_amount=1,
-        unit="pomodoro",
-    )
+    store, habits = _habit_store(tmp_path)
+    try:
+        clock = _Clock()
+        timer = PomodoroTimer(
+            habits,
+            config=PomodoroConfig(
+                focus_minutes=1,
+                short_break_minutes=1,
+                long_break_minutes=2,
+                long_break_interval=2,
+            ),
+            clock=clock.time,
+        )
+        goal = habits.create_goal(
+            date="1970-01-01",
+            target_type="subject",
+            subject="math",
+            target_amount=1,
+            unit="pomodoro",
+        )
 
-    started = timer.start(goal_id=goal["id"], focus_minutes=1)
-    assert started["state"] == "focusing"
-    assert started["remaining_seconds"] == 60
+        started = timer.start(goal_id=goal["id"], focus_minutes=1)
+        assert started["state"] == "focusing"
+        assert started["remaining_seconds"] == 60
 
-    timer.pause()
-    clock.advance(30)
-    paused = timer.status()
-    assert paused["state"] == "paused"
-    assert paused["remaining_seconds"] == 60
-    timer.resume()
+        timer.pause()
+        clock.advance(30)
+        paused = timer.status()
+        assert paused["state"] == "paused"
+        assert paused["remaining_seconds"] == 60
+        timer.resume()
 
-    clock.advance(60)
-    transitioned = timer.tick()
+        clock.advance(60)
+        transitioned = timer.tick()
 
-    assert transitioned["state"] == "short_break"
-    assert transitioned["session_count"] == 1
-    assert transitioned["current_focus_session"]["actual_minutes"] == 1
+        assert transitioned["state"] == "short_break"
+        assert transitioned["session_count"] == 1
+        assert transitioned["current_focus_session"]["actual_minutes"] == 1
 
-    clock.advance(60)
-    completed = timer.tick()
+        clock.advance(60)
+        completed = timer.tick()
 
-    assert completed["state"] == "completed"
-    assert completed["remaining_seconds"] == 0
-    assert habits.focus_minutes_for_date(started["date"]) == 1
-    updated_goal = habits.get_goal(goal["id"])
-    assert updated_goal is not None
-    assert updated_goal["progress_amount"] == 1
-    assert updated_goal["status"] == "completed"
-    assert habits.list_checkins(date=started["date"])[0]["source"] == "session_derived"
+        assert completed["state"] == "completed"
+        assert completed["remaining_seconds"] == 0
+        assert habits.focus_minutes_for_date(started["date"]) == 1
+        updated_goal = habits.get_goal(goal["id"])
+        assert updated_goal is not None
+        assert updated_goal["progress_amount"] == 1
+        assert updated_goal["status"] == "completed"
+        assert (
+            habits.list_checkins(date=started["date"])[0]["source"]
+            == "session_derived"
+        )
+    finally:
+        store.close()
 
 
 def test_pomodoro_timer_uses_long_break_interval_and_supports_cancel(
     tmp_path: Path,
 ) -> None:
-    habits = _habit_store(tmp_path)
-    clock = _Clock()
-    timer = PomodoroTimer(
-        habits,
-        config=PomodoroConfig(
-            focus_minutes=1,
-            short_break_minutes=1,
-            long_break_minutes=3,
-            long_break_interval=2,
-        ),
-        clock=clock.time,
-    )
+    store, habits = _habit_store(tmp_path)
+    try:
+        clock = _Clock()
+        timer = PomodoroTimer(
+            habits,
+            config=PomodoroConfig(
+                focus_minutes=1,
+                short_break_minutes=1,
+                long_break_minutes=3,
+                long_break_interval=2,
+            ),
+            clock=clock.time,
+        )
 
-    timer.start(focus_minutes=1)
-    clock.advance(60)
-    assert timer.tick()["state"] == "short_break"
-    assert timer.skip_break()["state"] == "completed"
+        timer.start(focus_minutes=1)
+        clock.advance(60)
+        assert timer.tick()["state"] == "short_break"
+        assert timer.skip_break()["state"] == "completed"
 
-    timer.start(focus_minutes=1)
-    clock.advance(60)
-    long_break = timer.tick()
-    assert long_break["state"] == "long_break"
-    assert long_break["remaining_seconds"] == 180
+        timer.start(focus_minutes=1)
+        clock.advance(60)
+        long_break = timer.tick()
+        assert long_break["state"] == "long_break"
+        assert long_break["remaining_seconds"] == 180
 
-    cancelled = timer.stop()
+        cancelled = timer.stop()
 
-    assert cancelled["state"] == "cancelled"
-    assert cancelled["current_focus_session"]["status"] == "completed"
+        assert cancelled["state"] == "cancelled"
+        assert cancelled["current_focus_session"]["status"] == "completed"
+    finally:
+        store.close()
+
+
+def test_pomodoro_timer_respects_disabled_session_derived_checkins(
+    tmp_path: Path,
+) -> None:
+    store, habits = _habit_store(tmp_path)
+    try:
+        clock = _Clock()
+        timer = PomodoroTimer(
+            habits,
+            config=PomodoroConfig(focus_minutes=1, short_break_minutes=1),
+            clock=clock.time,
+            auto_derive_from_session=False,
+        )
+
+        started = timer.start(focus_minutes=1)
+        clock.advance(60)
+        assert timer.tick()["state"] == "short_break"
+
+        assert habits.focus_minutes_for_date(started["date"]) == 1
+        assert habits.list_checkins(date=started["date"]) == []
+    finally:
+        store.close()
 
 
 def test_pomodoro_start_does_not_mutate_state_when_initial_persistence_fails() -> None:
