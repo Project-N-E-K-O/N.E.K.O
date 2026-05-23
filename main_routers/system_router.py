@@ -62,6 +62,7 @@ from cachetools import TTLCache
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.activity.system_signals import is_remote_backend_deployment
 from config import (
     AUTOSTART_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
@@ -199,21 +200,16 @@ def _is_loopback_request(request: Request) -> bool:
         return False
 
 
-def _is_remote_backend_deployment() -> bool:
-    """``NEKO_ACTIVITY_TRACKER_REMOTE`` / ``ACTIVITY_TRACKER_REMOTE`` 兜底开关。
-
-    /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
-    远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
-    会被反向代理 / 隧道绕过，这条环境变量是运维显式声明"后端不在用户本机"
-    的硬开关，命中就直接拒绝本地截图。
-
-    用法和 PR #1015 的活动追踪器保持一致，避免再发明一套部署变量。
-    """
-    for key in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
-        raw = os.getenv(key, "").strip().lower()
-        if raw in ("1", "true", "yes", "on"):
-            return True
-    return False
+# /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
+# 远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
+# 会被反向代理 / 隧道绕过，``NEKO_ACTIVITY_TRACKER_REMOTE`` 是运维显式
+# 声明"后端不在用户本机"的硬开关，命中就直接拒绝本地截图。
+#
+# 真正的实现在 ``main_logic/activity/system_signals.is_remote_backend_deployment``
+# —— PR #1015 给 activity tracker 用的，这里直接复用避免再发明一套部署变量。
+# 私有别名保留是为了 ``tests/unit/test_system_screenshot_router.py`` 还
+# 在调 ``system_router_module._is_remote_backend_deployment()``。
+_is_remote_backend_deployment = is_remote_backend_deployment
 
 
 def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
