@@ -928,6 +928,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         **_,
     ):
         try:
+            topic_key = str(topic_id or "").strip()
             deck = await asyncio.to_thread(
                 self._memory_deck_store.get_or_create_default_deck,
                 deck_type="custom",
@@ -938,8 +939,11 @@ class StudyCompanionPlugin(NekoPluginBase):
                 item_type="custom",
                 prompt=front,
                 answer=back,
+                dedupe_metadata_key="legacy_topic_id",
+                dedupe_metadata_value=topic_key,
                 metadata={
-                    "legacy_topic_id": str(topic_id or ""),
+                    "topic_id": topic_key,
+                    "legacy_topic_id": topic_key,
                     "subject": str(subject or "memory"),
                     "chapter": str(chapter or "memory_deck"),
                     "difficulty": 0.5 if difficulty is None else float(difficulty),
@@ -994,13 +998,13 @@ class StudyCompanionPlugin(NekoPluginBase):
                 cards = [
                     self._memory_deck_store.compat_card_payload(item) for item in items
                 ]
+                due_cards = [item for item in cards if item.get("is_due")]
                 return Ok(
                     {
                         "card_count": len(cards),
-                        "due_count": len(
-                            [item for item in cards if item.get("is_due")]
-                        ),
-                        "cards": cards,
+                        "due_count": len(due_cards),
+                        "cards": due_cards if bool(due_only) else cards,
+                        "due_cards": due_cards,
                     }
                 )
             payload = await asyncio.to_thread(

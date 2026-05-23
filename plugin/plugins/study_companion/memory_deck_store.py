@@ -217,6 +217,8 @@ class MemoryDeckStore:
         prompt: str,
         answer: str,
         metadata: dict[str, Any] | None = None,
+        dedupe_metadata_key: str = "",
+        dedupe_metadata_value: str = "",
     ) -> dict[str, Any]:
         deck = self.get_deck(deck_id)
         if deck is None:
@@ -242,13 +244,16 @@ class MemoryDeckStore:
                     """,
                     (str(deck_id or ""), prompt_text),
                 ).fetchone()
-            else:
+            elif dedupe_metadata_key or metadata_payload.get("legacy_topic_id"):
+                dedupe_key = str(dedupe_metadata_key or "legacy_topic_id")
                 existing = item_row_by_metadata_value(
                     conn,
                     deck_id=str(deck_id or ""),
                     item_type=item_kind,
-                    key="legacy_topic_id",
-                    value=str(metadata_payload.get("legacy_topic_id") or ""),
+                    key=dedupe_key,
+                    value=str(
+                        dedupe_metadata_value or metadata_payload.get(dedupe_key) or ""
+                    ),
                     json_loads=self.store._json_loads,
                 )
             if existing is None:

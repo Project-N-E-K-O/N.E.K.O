@@ -2524,11 +2524,26 @@ async def test_study_plugin_starts_and_collects_entries(
     assert updated_memory_card.value["card"]["item_id"] == card_item_id
     assert updated_memory_card.value["card"]["front"] == "Updated study memory prompt"
     assert (
+        updated_memory_card.value["card"]["item"]["metadata"]["topic_id"]
+        == "phase7_plugin_memory"
+    )
+    assert (
         updated_memory_card.value["card"]["item"]["metadata"]["difficulty"] == 0.0
     )
     due_deck = await plugin.study_memory_deck(limit=5, due_only=True)
     assert isinstance(due_deck, Ok)
     assert any(item["item_id"] == card_item_id for item in due_deck.value["cards"])
+    topic_due_deck = await plugin.study_memory_deck(
+        limit=5, due_only=True, include_topic_cards=True
+    )
+    assert isinstance(topic_due_deck, Ok)
+    assert all(item["is_due"] for item in topic_due_deck.value["cards"])
+    assert any(
+        item["item_id"] == card_item_id for item in topic_due_deck.value["cards"]
+    )
+    assert topic_due_deck.value["due_count"] == len(
+        topic_due_deck.value["due_cards"]
+    )
     reviewed_again = await plugin.study_memory_review_item(
         item_id=card_item_id, rating="again"
     )
