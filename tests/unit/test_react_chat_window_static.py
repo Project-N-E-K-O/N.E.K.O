@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
+APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
@@ -232,3 +233,49 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert 'data-compact-hit-region-id={`history:message:${message.id}`}' in panel_source
     assert 'data-compact-hit-region-id="history:controls"' in panel_source
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
+
+
+def test_compact_inline_export_uses_windowless_app_chat_export_api():
+    script = APP_CHAT_EXPORT_PATH.read_text(encoding="utf-8")
+
+    translate_block = script.split("function translateText(key, fallback, params)", 1)[1].split(
+        "function translateLabel(key, fallback)",
+        1,
+    )[0]
+
+    assert "typeof translated === 'string' || typeof translated === 'number'" in translate_block
+    assert "return String(translated);" in translate_block
+
+    assert "getCompactInlineOptions: getCompactInlineExportOptions" in script
+    assert "buildCompactInlinePreview: buildCompactInlinePreview" in script
+    assert "copyCompactInlineSelection: copyCompactInlineSelection" in script
+    assert "downloadCompactInlineSelection: downloadCompactInlineSelection" in script
+
+    compact_api_block = script.split("// ======================== Compact inline API ========================", 1)[1].split(
+        "// ======================== Action handlers ========================",
+        1,
+    )[0]
+
+    assert "state.allMessages = getReactMessages();" in compact_api_block
+    assert "state.selectedIds = selectedIds;" in compact_api_block
+    assert "selectedIds.size >= MAX_EXPORT_SELECTION" in compact_api_block
+    assert "normalizeExportFormatId(opts.format)" in compact_api_block
+    assert "normalizeImageExportStyleId(opts.imageStyle)" in compact_api_block
+    assert "normalizeImageExportFormatId(opts.imageFormat)" in compact_api_block
+    assert "function buildCompactInlinePreview(options)" in compact_api_block
+    assert "buildExportDocument(entries, state.exportFormat)" in compact_api_block
+    assert "URL.createObjectURL(exportData.previewBlob)" in compact_api_block
+    assert "buildMarkdownPreviewDocument(exportData.content)" in compact_api_block
+    assert "getOrBuildPreviewPayload" not in compact_api_block
+    assert "clearPreviewCache()" not in compact_api_block
+    assert "function runCompactInlineExportAction(options, action)" in compact_api_block
+    assert "state.exportFormat = previous.exportFormat;" in compact_api_block
+    assert "buildExportDocument(entries, 'image')" in compact_api_block
+    assert "copyImageToClipboard(imgBlob)" in compact_api_block
+    assert "buildExportDocument(entries, 'markdown')" in compact_api_block
+    assert "copyTextToClipboard(mdData.content)" in compact_api_block
+    assert "downloadExportFile(data.fileName, data.content, data.contentType, window)" in compact_api_block
+    assert "handleCopyClick" not in compact_api_block
+    assert "handleDownloadClick" not in compact_api_block
+    assert "openExportPreviewWindow" not in compact_api_block
+    assert "window.open" not in compact_api_block

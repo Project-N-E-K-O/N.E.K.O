@@ -102,6 +102,30 @@ describe('App', () => {
     expect(container).not.toHaveTextContent('There is no conversation to export yet.');
   });
 
+  it('opens compact inline preview with disabled final actions when nothing is selected', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-empty-preview',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Available but not selected.' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-export')!);
+
+    expect(container.querySelector('.compact-export-preview-region')).not.toBeNull();
+    expect(container.querySelector('.compact-export-preview-empty')).toHaveTextContent('Select at least one message to export.');
+    const actions = Array.from(container.querySelectorAll<HTMLButtonElement>('.compact-export-preview-action'));
+    expect(actions).toHaveLength(2);
+    expect(actions.every((button) => button.disabled)).toBe(true);
+  });
+
   it('marks compact history as controls-collapsed so the scroll region receives the freed height', () => {
     const message = parseChatMessage({
       id: 'assistant-history-controls',
@@ -127,7 +151,7 @@ describe('App', () => {
     expect(anchor).not.toHaveClass('controls-collapsed');
   });
 
-  it('selects compact history bubbles and reuses the same selection in inline preview', () => {
+  it('selects compact history bubbles and reuses the same selection in inline preview', async () => {
     const assistantMessage = parseChatMessage({
       id: 'assistant-history-select',
       role: 'assistant',
@@ -147,24 +171,188 @@ describe('App', () => {
       status: 'sent',
     });
 
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[assistantMessage, userMessage]} />,
-    );
+    const exportWindow = window as typeof window & {
+      appChatExport?: {
+        buildCompactInlinePreview?: ReturnType<typeof vi.fn>;
+      };
+    };
+    const previousBridge = exportWindow.appChatExport;
+    exportWindow.appChatExport = {
+      buildCompactInlinePreview: vi.fn().mockResolvedValue({
+        previewKind: 'document',
+        previewDocument: '<!doctype html><html><body>And this user message.</body></html>',
+      }),
+    };
 
-    fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
-    const messages = container.querySelectorAll<HTMLElement>('.compact-export-history-message');
-    const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
-    fireEvent.click(bubbles[1]);
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[assistantMessage, userMessage]} />,
+      );
 
-    expect(messages[1]).toHaveClass('is-selected');
-    fireEvent.click(screen.getByText('Export'));
+      fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+      const messages = container.querySelectorAll<HTMLElement>('.compact-export-history-message');
+      const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
+      fireEvent.click(bubbles[1]);
 
-    expect(container.querySelector('.compact-export-preview-region')).not.toBeNull();
-    expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region', 'true');
-    expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-id', 'history:preview');
-    expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-kind', 'preview');
-    expect(container.querySelector('.compact-export-preview-region')).toHaveTextContent('And this user message.');
-    expect(container.querySelector('.compact-export-preview-region')).not.toHaveTextContent('Pick this assistant message.');
+      expect(messages[1]).toHaveClass('is-selected');
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-export')!);
+
+      expect(container.querySelector('.compact-export-preview-region')).not.toBeNull();
+      expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region', 'true');
+      expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-id', 'history:preview');
+      expect(container.querySelector('.compact-export-preview-region')).toHaveAttribute('data-compact-hit-region-kind', 'preview');
+
+      await waitFor(() => {
+        expect(container.querySelector<HTMLIFrameElement>('.compact-export-preview-frame')).not.toBeNull();
+      });
+      expect(exportWindow.appChatExport?.buildCompactInlinePreview).toHaveBeenCalledWith({
+        messageIds: ['user-history-select'],
+        format: 'markdown',
+        imageStyle: 'neko',
+        imageFormat: 'png',
+      });
+      const frame = container.querySelector<HTMLIFrameElement>('.compact-export-preview-frame');
+      expect(frame?.getAttribute('srcdoc')).toContain('And this user message.');
+      expect(frame?.getAttribute('srcdoc')).not.toContain('Pick this assistant message.');
+    } finally {
+      exportWindow.appChatExport = previousBridge;
+    }
+  });
+
+  it('rebuilds compact inline preview when a selected message updates without changing id', async () => {
+    const buildCompactInlinePreview = vi.fn().mockResolvedValue({
+      previewKind: 'document',
+      previewDocument: '<!doctype html><html><body>Preview</body></html>',
+    });
+    const exportWindow = window as typeof window & {
+      appChatExport?: {
+        buildCompactInlinePreview?: ReturnType<typeof vi.fn>;
+      };
+    };
+    const previousBridge = exportWindow.appChatExport;
+    exportWindow.appChatExport = { buildCompactInlinePreview };
+
+    try {
+      const baseMessage = parseChatMessage({
+        id: 'assistant-history-streaming-preview',
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:00',
+        createdAt: 1,
+        blocks: [{ type: 'text', text: 'First preview text.' }],
+        status: 'streaming',
+      });
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[baseMessage]} />,
+      );
+
+      fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+      fireEvent.click(container.querySelector<HTMLElement>('.compact-export-history-bubble')!);
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-export')!);
+
+      await waitFor(() => {
+        expect(buildCompactInlinePreview).toHaveBeenCalledTimes(1);
+      });
+
+      const updatedMessage = parseChatMessage({
+        ...baseMessage,
+        blocks: [{ type: 'text', text: 'Updated preview text.' }],
+      });
+      rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[updatedMessage]} />);
+
+      await waitFor(() => {
+        expect(buildCompactInlinePreview).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      exportWindow.appChatExport = previousBridge;
+    }
+  });
+
+  it('runs compact inline export actions through the windowless export bridge', async () => {
+    const assistantMessage = parseChatMessage({
+      id: 'assistant-history-export-action',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Export this compact selection.' }],
+      status: 'sent',
+    });
+    const exportWindow = window as typeof window & {
+      appChatExport?: {
+        buildCompactInlinePreview?: ReturnType<typeof vi.fn>;
+        copyCompactInlineSelection?: ReturnType<typeof vi.fn>;
+        downloadCompactInlineSelection?: ReturnType<typeof vi.fn>;
+      };
+    };
+    const previousBridge = exportWindow.appChatExport;
+    const buildCompactInlinePreview = vi.fn().mockResolvedValue({
+      previewKind: 'document',
+      previewDocument: '<!doctype html><html><body>Export this compact selection.</body></html>',
+    });
+    const copyCompactInlineSelection = vi.fn().mockResolvedValue(undefined);
+    const downloadCompactInlineSelection = vi.fn().mockResolvedValue(undefined);
+    exportWindow.appChatExport = {
+      buildCompactInlinePreview,
+      copyCompactInlineSelection,
+      downloadCompactInlineSelection,
+    };
+
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[assistantMessage]} />,
+      );
+
+      fireEvent.click(document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export')!);
+      fireEvent.click(container.querySelector<HTMLElement>('.compact-export-history-bubble')!);
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-export')!);
+
+      const preview = container.querySelector('.compact-export-preview-region');
+      expect(preview).not.toBeNull();
+      expect(preview).not.toHaveTextContent('Open In Window');
+      await waitFor(() => {
+        expect(buildCompactInlinePreview).toHaveBeenCalledWith({
+          messageIds: ['assistant-history-export-action'],
+          format: 'markdown',
+          imageStyle: 'neko',
+          imageFormat: 'png',
+        });
+      });
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-preview-action')!);
+      await waitFor(() => {
+        expect(copyCompactInlineSelection).toHaveBeenCalledWith({
+          messageIds: ['assistant-history-export-action'],
+          format: 'markdown',
+          imageStyle: 'neko',
+          imageFormat: 'png',
+        });
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Image' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Fresh' }));
+      fireEvent.click(screen.getByRole('button', { name: 'WebP' }));
+      await waitFor(() => {
+        expect(buildCompactInlinePreview).toHaveBeenCalledWith({
+          messageIds: ['assistant-history-export-action'],
+          format: 'image',
+          imageStyle: 'poster',
+          imageFormat: 'webp',
+        });
+      });
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-preview-action-primary')!);
+
+      await waitFor(() => {
+        expect(downloadCompactInlineSelection).toHaveBeenCalledWith({
+          messageIds: ['assistant-history-export-action'],
+          format: 'image',
+          imageStyle: 'poster',
+          imageFormat: 'webp',
+        });
+      });
+    } finally {
+      exportWindow.appChatExport = previousBridge;
+    }
   });
 
   it('does not select sending compact history messages', () => {

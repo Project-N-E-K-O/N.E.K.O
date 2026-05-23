@@ -2582,11 +2582,23 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-preview-format-strip,
-.compact-export-preview-actions {
+.compact-export-preview-actions,
+.compact-export-preview-options,
+.compact-export-preview-option-row {
   display: flex;
   flex-wrap: wrap;
   flex: 0 0 auto;
   gap: 6px;
+}
+
+.compact-export-preview-options {
+  flex-direction: column;
+  align-items: flex-start;
+  max-height: 72px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
 }
 
 .compact-export-preview-chip,
@@ -2601,9 +2613,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   font-size: 0.76rem;
   font-weight: 700;
   line-height: 26px;
+  cursor: pointer;
 }
 
 .compact-export-preview-chip.is-active {
+  background: rgba(219, 242, 255, 0.86);
+  color: #1f83bd;
+}
+
+.compact-export-preview-action-primary {
   background: rgba(219, 242, 255, 0.86);
   color: #1f83bd;
 }
@@ -2625,6 +2643,55 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   text-align: center;
 }
 
+.compact-export-preview-placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.34);
+  color: #5d7797;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.compact-export-preview-stage {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+
+.compact-export-preview-stage.is-fallback {
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.compact-export-preview-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.compact-export-preview-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+}
+
 .compact-export-preview-messages {
   display: flex;
   flex-direction: column;
@@ -2640,20 +2707,38 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
 }
 
+.compact-export-preview-fallback {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1px 2px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
 .compact-export-preview-messages:hover,
-.compact-export-preview-messages:focus-within {
+.compact-export-preview-messages:focus-within,
+.compact-export-preview-fallback:hover,
+.compact-export-preview-fallback:focus-within {
   scrollbar-color: rgba(70, 160, 255, 0.42) transparent;
 }
 
-.compact-export-preview-messages::-webkit-scrollbar {
+.compact-export-preview-messages::-webkit-scrollbar,
+.compact-export-preview-fallback::-webkit-scrollbar {
   width: 6px;
 }
 
-.compact-export-preview-messages::-webkit-scrollbar-track {
+.compact-export-preview-messages::-webkit-scrollbar-track,
+.compact-export-preview-fallback::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.compact-export-preview-messages::-webkit-scrollbar-thumb {
+.compact-export-preview-messages::-webkit-scrollbar-thumb,
+.compact-export-preview-fallback::-webkit-scrollbar-thumb {
   border: 1.5px solid transparent;
   border-radius: 999px;
   background: transparent;
@@ -2661,14 +2746,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-preview-messages:hover::-webkit-scrollbar-thumb,
-.compact-export-preview-messages:focus-within::-webkit-scrollbar-thumb {
+.compact-export-preview-messages:focus-within::-webkit-scrollbar-thumb,
+.compact-export-preview-fallback:hover::-webkit-scrollbar-thumb,
+.compact-export-preview-fallback:focus-within::-webkit-scrollbar-thumb {
   background:
     linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42))
     padding-box;
 }
 
 .compact-export-preview-messages:hover::-webkit-scrollbar-thumb:hover,
-.compact-export-preview-messages:focus-within::-webkit-scrollbar-thumb:hover {
+.compact-export-preview-messages:focus-within::-webkit-scrollbar-thumb:hover,
+.compact-export-preview-fallback:hover::-webkit-scrollbar-thumb:hover,
+.compact-export-preview-fallback:focus-within::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, rgba(103, 202, 255, 0.82), rgba(36, 151, 217, 0.62))
     padding-box;
@@ -3602,9 +3691,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 [data-theme="dark"] .compact-export-preview-back,
 [data-theme="dark"] .compact-export-preview-chip,
 [data-theme="dark"] .compact-export-preview-action,
-[data-theme="dark"] .compact-export-preview-empty {
+[data-theme="dark"] .compact-export-preview-empty,
+[data-theme="dark"] .compact-export-preview-placeholder,
+[data-theme="dark"] .compact-export-preview-stage {
   background: rgba(26, 48, 70, 0.72);
   color: #cfe5ff;
+}
+
+[data-theme="dark"] .compact-export-preview-stage {
+  box-shadow: inset 0 0 0 1px rgba(116, 187, 255, 0.14);
 }
 
 [data-theme="dark"] .compact-export-preview-chip.is-active {

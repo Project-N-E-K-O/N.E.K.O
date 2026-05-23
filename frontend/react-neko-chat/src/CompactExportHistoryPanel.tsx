@@ -16,6 +16,28 @@ export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 const COMPACT_EXPORT_BOTTOM_THRESHOLD = 30;
 const COMPACT_EXPORT_CLICK_MOVE_THRESHOLD = 6;
 
+export type CompactExportFormat = 'markdown' | 'image';
+export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
+export type CompactExportImageFormat = 'png' | 'jpeg' | 'webp';
+
+export type CompactExportActionRequest = {
+  messageIds: string[];
+  format: CompactExportFormat;
+  imageStyle: CompactExportImageStyle;
+  imageFormat: CompactExportImageFormat;
+};
+
+export type CompactExportPreviewResult =
+  | { previewKind: 'empty' }
+  | { previewKind: 'document'; previewDocument: string }
+  | { previewKind: 'image'; previewUrl: string };
+
+type CompactExportPreviewState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; result: CompactExportPreviewResult }
+  | { status: 'failed'; message: string };
+
 type CompactExportHistoryPanelProps = {
   messages: ChatMessage[];
   selectedIds: Set<string>;
@@ -32,6 +54,9 @@ type CompactExportHistoryPanelProps = {
   onInvertSelection: () => void;
   onRequestPreview: () => void;
   onClosePreview: () => void;
+  onBuildPreview: (request: CompactExportActionRequest) => Promise<CompactExportPreviewResult> | CompactExportPreviewResult;
+  onCopyExport: (request: CompactExportActionRequest) => Promise<void> | void;
+  onDownloadExport: (request: CompactExportActionRequest) => Promise<void> | void;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
@@ -82,14 +107,40 @@ export default function CompactExportHistoryPanel({
   onInvertSelection,
   onRequestPreview,
   onClosePreview,
+  onBuildPreview,
+  onCopyExport,
+  onDownloadExport,
   onAction,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pointerIntentRef = useRef<PointerIntentState | null>(null);
   const suppressClickMessageIdRef = useRef<string | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
+  const [exportFormat, setExportFormat] = useState<CompactExportFormat>('markdown');
+  const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
+  const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
+  const [pendingAction, setPendingAction] = useState<'copy' | 'download' | null>(null);
+  const [previewState, setPreviewState] = useState<CompactExportPreviewState>({ status: 'idle' });
   const selectedMessages = messages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
+  const selectedMessageIds = selectedMessages.map(message => message.id);
+  const selectedMessageSignature = selectedMessages.map(message => [
+    message.id,
+    message.role,
+    message.author,
+    message.time,
+    message.status || '',
+    JSON.stringify(message.blocks),
+  ].join('\u001e')).join('\u001f');
+  const exportBusy = pendingAction !== null;
+  const exportActionsDisabled = !previewHasSelection || exportBusy;
+
+  function revokeCompactPreviewObjectUrl() {
+    if (!previewObjectUrlRef.current) return;
+    URL.revokeObjectURL(previewObjectUrlRef.current);
+    previewObjectUrlRef.current = null;
+  }
 
   useEffect(() => {
     if (!autoScrollToBottom) return;
@@ -100,6 +151,55 @@ export default function CompactExportHistoryPanel({
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [autoScrollToBottom, messages]);
+
+  useEffect(() => {
+    if (!previewOpen) {
+      revokeCompactPreviewObjectUrl();
+      setPreviewState({ status: 'idle' });
+      return;
+    }
+    if (!previewHasSelection) {
+      revokeCompactPreviewObjectUrl();
+      setPreviewState({ status: 'ready', result: { previewKind: 'empty' } });
+      return;
+    }
+
+    let cancelled = false;
+    const request: CompactExportActionRequest = {
+      messageIds: selectedMessageIds,
+      format: exportFormat,
+      imageStyle,
+      imageFormat,
+    };
+    revokeCompactPreviewObjectUrl();
+    setPreviewState({ status: 'loading' });
+    Promise.resolve(onBuildPreview(request))
+      .then((result) => {
+        if (cancelled) {
+          if (result.previewKind === 'image') {
+            URL.revokeObjectURL(result.previewUrl);
+          }
+          return;
+        }
+        if (result.previewKind === 'image') {
+          previewObjectUrlRef.current = result.previewUrl;
+        }
+        setPreviewState({ status: 'ready', result });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setPreviewState({ status: 'failed', message });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [previewOpen, previewHasSelection, selectedMessageSignature, exportFormat, imageStyle, imageFormat, onBuildPreview]);
+
+  useEffect(() => () => {
+    revokeCompactPreviewObjectUrl();
+  }, []);
 
   function handleScroll() {
     const scrollNode = scrollRef.current;
@@ -165,6 +265,143 @@ export default function CompactExportHistoryPanel({
     onToggleMessage(message.id);
   }
 
+  function buildExportActionRequest(): CompactExportActionRequest {
+    return {
+      messageIds: selectedMessageIds,
+      format: exportFormat,
+      imageStyle,
+      imageFormat,
+    };
+  }
+
+  async function runExportAction(kind: 'copy' | 'download') {
+    if (exportActionsDisabled) return;
+    setPendingAction(kind);
+    try {
+      const request = buildExportActionRequest();
+      if (kind === 'copy') {
+        await onCopyExport(request);
+      } else {
+        await onDownloadExport(request);
+      }
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  const exportFormatOptions: { id: CompactExportFormat; label: string }[] = [
+    { id: 'markdown', label: i18n('chat.exportFormatMarkdown', 'Markdown') },
+    { id: 'image', label: i18n('chat.exportFormatImage', 'Image') },
+  ];
+  const imageStyleOptions: { id: CompactExportImageStyle; label: string }[] = [
+    { id: 'neko', label: i18n('chat.exportImageStyleNeko', 'N.E.K.O') },
+    { id: 'original', label: i18n('chat.exportImageStyleOriginal', 'Original') },
+    { id: 'poster', label: i18n('chat.exportImageStylePoster', 'Fresh') },
+    { id: 'lyrics', label: i18n('chat.exportImageStyleLyrics', 'Lyrics') },
+  ];
+  const imageFormatOptions: { id: CompactExportImageFormat; label: string }[] = [
+    { id: 'png', label: i18n('chat.exportImageFormatPng', 'PNG') },
+    { id: 'jpeg', label: i18n('chat.exportImageFormatJpeg', 'JPEG') },
+    { id: 'webp', label: i18n('chat.exportImageFormatWebp', 'WebP') },
+  ];
+
+  function renderSelectedMessageFallback() {
+    if (!previewHasSelection) return null;
+    return (
+      <div className="compact-export-preview-fallback" role="list" aria-label={i18n('chat.exportPreviewTitle', 'Export Preview')}>
+        {selectedMessages.map((message) => {
+          const streaming = message.status === 'streaming';
+          return (
+            <article
+              key={message.id}
+              className={clsx('compact-export-preview-message', {
+                'is-user': message.role === 'user',
+                'is-assistant': message.role === 'assistant' || message.role === 'tool',
+                'is-system': message.role === 'system',
+              })}
+              role="listitem"
+              data-compact-export-preview-message-id={message.id}
+              data-message-role={message.role}
+            >
+              <div className="compact-export-preview-bubble">
+                <div className="compact-export-preview-meta">
+                  <span>{message.author}</span>
+                  <span>{message.time}</span>
+                </div>
+                <div className="compact-export-preview-content">
+                  {message.blocks.map((block, index) => (
+                    <MessageBlockView
+                      key={`${message.id}-preview-${block.type}-${index}`}
+                      block={block}
+                      message={message}
+                      isStreaming={streaming}
+                      onAction={onAction}
+                    />
+                  ))}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderPreviewStage() {
+    if (!previewHasSelection) {
+      return (
+        <div className="compact-export-preview-empty" role="status" aria-live="polite">
+          {i18n('chat.exportSelectionEmpty', 'Select at least one message to export.')}
+        </div>
+      );
+    }
+    if (previewState.status === 'loading' || previewState.status === 'idle') {
+      return (
+        <div className="compact-export-preview-placeholder" role="status" aria-live="polite">
+          {i18n('chat.exportPreviewLoading', 'Generating preview...')}
+        </div>
+      );
+    }
+    if (previewState.status === 'failed') {
+      return (
+        <div className="compact-export-preview-stage is-fallback">
+          <div className="compact-export-preview-placeholder" role="status" aria-live="polite">
+            {i18n('chat.exportPreviewFailed', 'Failed to build the preview.')}
+          </div>
+          {renderSelectedMessageFallback()}
+        </div>
+      );
+    }
+    if (previewState.result.previewKind === 'empty') {
+      return (
+        <div className="compact-export-preview-empty" role="status" aria-live="polite">
+          {i18n('chat.exportSelectionEmpty', 'Select at least one message to export.')}
+        </div>
+      );
+    }
+    if (previewState.result.previewKind === 'image') {
+      return (
+        <div className="compact-export-preview-stage" data-compact-history-ignore-selection="true">
+          <img
+            className="compact-export-preview-image"
+            src={previewState.result.previewUrl}
+            alt={i18n('chat.exportPreviewTitle', 'Export Preview')}
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="compact-export-preview-stage" data-compact-history-ignore-selection="true">
+        <iframe
+          className="compact-export-preview-frame"
+          title={i18n('chat.exportPreviewTitle', 'Export Preview')}
+          srcDoc={previewState.result.previewDocument}
+          sandbox=""
+        />
+      </div>
+    );
+  }
+
   const previewNode = (
     <div
       className="compact-export-preview-region"
@@ -191,56 +428,70 @@ export default function CompactExportHistoryPanel({
         </div>
       </div>
       <div className="compact-export-preview-format-strip" aria-label={i18n('chat.exportFormatLabel', 'Export Format')}>
-        <span className="compact-export-preview-chip is-active">{i18n('chat.exportFormatMarkdown', 'Markdown')}</span>
-        <span className="compact-export-preview-chip">{i18n('chat.exportFormatImage', 'Image')}</span>
+        {exportFormatOptions.map(option => (
+          <button
+            key={option.id}
+            type="button"
+            className={clsx('compact-export-preview-chip', {
+              'is-active': exportFormat === option.id,
+            })}
+            aria-pressed={exportFormat === option.id}
+            onClick={() => setExportFormat(option.id)}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
-      {previewHasSelection ? (
-        <div className="compact-export-preview-messages" role="list" aria-label={i18n('chat.exportPreviewTitle', 'Export Preview')}>
-          {selectedMessages.map((message) => {
-            const streaming = message.status === 'streaming';
-            return (
-              <article
-                key={message.id}
-                className={clsx('compact-export-preview-message', {
-                  'is-user': message.role === 'user',
-                  'is-assistant': message.role === 'assistant' || message.role === 'tool',
-                  'is-system': message.role === 'system',
+      {exportFormat === 'image' ? (
+        <div className="compact-export-preview-options" aria-label={i18n('chat.exportFormatImage', 'Image')}>
+          <div className="compact-export-preview-option-row">
+            {imageStyleOptions.map(option => (
+              <button
+                key={option.id}
+                type="button"
+                className={clsx('compact-export-preview-chip', {
+                  'is-active': imageStyle === option.id,
                 })}
-                role="listitem"
-                data-compact-export-preview-message-id={message.id}
-                data-message-role={message.role}
+                aria-pressed={imageStyle === option.id}
+                onClick={() => setImageStyle(option.id)}
               >
-                <div className="compact-export-preview-bubble">
-                  <div className="compact-export-preview-meta">
-                    <span>{message.author}</span>
-                    <span>{message.time}</span>
-                  </div>
-                  <div className="compact-export-preview-content">
-                    {message.blocks.map((block, index) => (
-                      <MessageBlockView
-                        key={`${message.id}-preview-${block.type}-${index}`}
-                        block={block}
-                        message={message}
-                        isStreaming={streaming}
-                        onAction={onAction}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </article>
-            );
-          })}
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="compact-export-preview-option-row">
+            {imageFormatOptions.map(option => (
+              <button
+                key={option.id}
+                type="button"
+                className={clsx('compact-export-preview-chip', {
+                  'is-active': imageFormat === option.id,
+                })}
+                aria-pressed={imageFormat === option.id}
+                onClick={() => setImageFormat(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
-      ) : (
-        <div className="compact-export-preview-empty" role="status" aria-live="polite">
-          {i18n('chat.exportSelectionEmpty', 'Select at least one message to export.')}
-        </div>
-      )}
+      ) : null}
+      {renderPreviewStage()}
       <div className="compact-export-preview-actions" role="group" aria-label={i18n('chat.exportAction', 'Export')}>
-        <button type="button" className="compact-export-preview-action" disabled>
+        <button
+          type="button"
+          className="compact-export-preview-action"
+          disabled={exportActionsDisabled}
+          onClick={() => { void runExportAction('copy'); }}
+        >
           {i18n('chat.copyToClipboard', 'Copy to Clipboard')}
         </button>
-        <button type="button" className="compact-export-preview-action" disabled>
+        <button
+          type="button"
+          className="compact-export-preview-action compact-export-preview-action-primary"
+          disabled={exportActionsDisabled}
+          onClick={() => { void runExportAction('download'); }}
+        >
           {i18n('chat.exportAction', 'Export')}
         </button>
       </div>
@@ -376,7 +627,6 @@ export default function CompactExportHistoryPanel({
                 <button
                   type="button"
                   className="compact-export-history-control compact-export-history-export"
-                  disabled={selectedCount <= 0}
                   onClick={onRequestPreview}
                 >
                   {i18n('chat.exportAction', 'Export')}

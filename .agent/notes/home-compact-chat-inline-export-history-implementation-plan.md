@@ -466,6 +466,24 @@
 2. 不打开新窗口。
 3. 不漏点到模型。
 
+阶段 5 执行记录（2026-05-22）：
+
+1. `static/app-chat-export.js` 新增 compact inline 无窗口导出 API：React 只传入已选消息 id、导出格式、图片样式和图片格式；实际 Markdown / Image 预览生成、复制、下载继续复用 full 导出既有实现。
+2. Compact preview 内补齐 Markdown / Image、图片样式、图片格式选择、真实导出预览区域，以及复制 / 导出动作；无选中消息时最终动作保持禁用，不默认导出全部。
+3. Compact preview 不出现 full 导出窗口的大白面板和 `Open In Window`；`window.appChatExport.open()` 仍保留给 full / non-compact 导出窗口。
+4. Compact inline 预览 / 动作执行时临时套用选择和格式，完成后恢复 full 导出全局状态，避免紧凑内联导出污染后续 full 导出窗口。
+5. 阶段 5 未向 NEKO-PC 复制导出业务、选择逻辑、格式化逻辑或 preview 结构；桌面端后续仍只消费 NEKO 输出的 DOM / geometry / hit region。
+6. 已通过 React 单测、TypeScript、静态导出护栏、JS 语法检查、生产构建和网页端运行验证；运行验证确认 Markdown 预览只包含选中消息、Image 预览生成真实 blob、不触发 `window.open`，并且 compact preview 的复制 / 导出按钮通过无窗口 bridge 发起动作。
+
+阶段 5 检查收口记录（2026-05-23）：
+
+1. Compact inline preview / copy / download 均不再调用 full preview modal handler，也不复用 full preview cache；只复用 `buildExportDocument`、Markdown preview document 构建、clipboard 和 download 基础能力。
+2. Compact inline Image preview 生成的 object URL 由 React preview 生命周期回收；切换格式、切换选择、关闭 preview 或组件卸载时不得遗留 blob URL。
+3. Compact inline download 显式使用当前窗口作为下载 host，避免 full preview window 已打开时误把下载锚点挂到 full preview window。
+4. Inline preview 的重建依赖包含选中消息内容签名；同一 message id 的 streaming / status / blocks 更新必须触发真实预览重建。
+5. 历史选择区的“导出”允许在未选中时进入 inline preview；只有 preview 内最终复制 / 导出动作在无选中时禁用。
+6. 导出器翻译入口必须只接受 string / number 作为有效翻译返回值；非字符串 truthy 返回值回落到 fallback，避免 Canvas 样式内 `.toUpperCase()` 等字符串处理在运行态崩溃。
+
 ## UI 优化接入顺序
 
 这些只在基础 history / preview / desktop geometry 稳定后执行：

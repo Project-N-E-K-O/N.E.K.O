@@ -13,6 +13,8 @@ import MessageList from './MessageList';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   isCompactExportMessageSelectable,
+  type CompactExportActionRequest,
+  type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
 import { i18n } from './i18n';
 import {
@@ -46,6 +48,12 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
+};
+
+type CompactInlineExportBridge = {
+  buildCompactInlinePreview?: (request: CompactExportActionRequest) => Promise<CompactExportPreviewResult> | CompactExportPreviewResult;
+  copyCompactInlineSelection?: (request: CompactExportActionRequest) => Promise<void> | void;
+  downloadCompactInlineSelection?: (request: CompactExportActionRequest) => Promise<void> | void;
 };
 
 const defaultMessages: ChatMessage[] = [];
@@ -1094,12 +1102,48 @@ export default function App({
     });
   }, [compactExportSelectableMessages]);
   const handleCompactExportPreviewRequest = useCallback(() => {
-    if (compactExportSelectedIds.size <= 0) return;
     setCompactExportPreviewOpen(true);
-  }, [compactExportSelectedIds.size]);
+  }, []);
   const handleCompactExportPreviewClose = useCallback(() => {
     setCompactExportPreviewOpen(false);
   }, []);
+  const handleCompactInlineBuildPreview = useCallback(async (
+    request: CompactExportActionRequest,
+  ): Promise<CompactExportPreviewResult> => {
+    if (request.messageIds.length <= 0) return { previewKind: 'empty' };
+    const exportBridge = (window as typeof window & {
+      appChatExport?: CompactInlineExportBridge;
+    }).appChatExport;
+    if (typeof exportBridge?.buildCompactInlinePreview !== 'function') {
+      throw new Error(i18n('chat.exportPreviewFailed', 'Failed to build the preview.'));
+    }
+    return exportBridge.buildCompactInlinePreview(request);
+  }, []);
+  const handleCompactInlineExportAction = useCallback(async (
+    request: CompactExportActionRequest,
+    action: 'copy' | 'download',
+  ) => {
+    if (request.messageIds.length <= 0) return;
+    const exportBridge = (window as typeof window & {
+      appChatExport?: CompactInlineExportBridge;
+      showStatusToast?: (message: string, duration?: number) => void;
+    }).appChatExport;
+    const method = action === 'copy'
+      ? exportBridge?.copyCompactInlineSelection
+      : exportBridge?.downloadCompactInlineSelection;
+    if (typeof method !== 'function') {
+      (window as typeof window & { showStatusToast?: (message: string, duration?: number) => void })
+        .showStatusToast?.(i18n('chat.exportPreviewFailed', 'Failed to build the preview.'), 3000);
+      return;
+    }
+    await method(request);
+  }, []);
+  const handleCompactInlineCopyExport = useCallback((request: CompactExportActionRequest) => (
+    handleCompactInlineExportAction(request, 'copy')
+  ), [handleCompactInlineExportAction]);
+  const handleCompactInlineDownloadExport = useCallback((request: CompactExportActionRequest) => (
+    handleCompactInlineExportAction(request, 'download')
+  ), [handleCompactInlineExportAction]);
 
   useEffect(() => {
     if (isCompactSurface) return;
@@ -3311,6 +3355,9 @@ export default function App({
       onInvertSelection={handleCompactExportInvertSelection}
       onRequestPreview={handleCompactExportPreviewRequest}
       onClosePreview={handleCompactExportPreviewClose}
+      onBuildPreview={handleCompactInlineBuildPreview}
+      onCopyExport={handleCompactInlineCopyExport}
+      onDownloadExport={handleCompactInlineDownloadExport}
       onAction={onMessageAction}
     />
   ) : null;

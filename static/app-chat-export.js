@@ -44,7 +44,13 @@
         if (typeof window.t === 'function') {
             try {
                 var translated = params ? window.t(key, params) : window.t(key);
-                if (translated && translated !== key) return translated;
+                if (
+                    translated != null
+                    && (typeof translated === 'string' || typeof translated === 'number')
+                    && String(translated) !== key
+                ) {
+                    return String(translated);
+                }
             } catch (_) {}
         }
         if (params && fallback) {
@@ -360,6 +366,21 @@
     function getCurrentImageExportStyle() {
         var styles = getImageExportStyles();
         return styles.find(function (s) { return s.id === state.imageExportStyle; }) || styles[0];
+    }
+
+    function normalizeExportFormatId(formatId) {
+        var formats = getExportFormats();
+        return (formats.find(function (format) { return format.id === formatId; }) || formats[0]).id;
+    }
+
+    function normalizeImageExportStyleId(styleId) {
+        var styles = getImageExportStyles();
+        return (styles.find(function (style) { return style.id === styleId; }) || styles[0]).id;
+    }
+
+    function normalizeImageExportFormatId(formatId) {
+        var formats = getImageExportFormats();
+        return (formats.find(function (format) { return format.id === formatId; }) || formats[0]).id;
     }
 
     // ======================== Markdown export ========================
@@ -1592,7 +1613,7 @@
 
     // ======================== Download + copy ========================
 
-    function downloadExportFile(fileName, content, contentType) {
+    function downloadExportFile(fileName, content, contentType, preferredHostWindow) {
         var blob = content instanceof Blob
             ? content
             : new Blob([content], { type: contentType });
@@ -1602,13 +1623,15 @@
         // silently drop for image-sized blobs (markdown sometimes slips
         // through). Place the anchor in the popup's realm so the download
         // inherits the same user-activation context as the tap.
-        var hostWindow = window;
-        try {
-            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
-                hostWindow = state.previewWindow;
+        var hostWindow = preferredHostWindow || window;
+        if (!preferredHostWindow) {
+            try {
+                if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                    hostWindow = state.previewWindow;
+                }
+            } catch (_) {
+                hostWindow = window;
             }
-        } catch (_) {
-            hostWindow = window;
         }
         var hostDoc = hostWindow.document;
         var hostURL = hostWindow.URL || hostWindow.webkitURL || URL;
@@ -2416,6 +2439,144 @@
         clearPreviewCache();
     }
 
+    // ======================== Compact inline API ========================
+
+    function getCompactInlineExportOptions() {
+        return {
+            formats: getExportFormats(),
+            imageStyles: getImageExportStyles(),
+            imageFormats: getImageExportFormats(),
+            state: {
+                exportFormat: state.exportFormat,
+                imageExportStyle: state.imageExportStyle,
+                imageExportFormat: state.imageExportFormat,
+                isCopying: state.isCopying,
+                isExporting: state.isExporting
+            }
+        };
+    }
+
+    function applyCompactInlineExportSelection(options) {
+        var opts = options && typeof options === 'object' ? options : {};
+        var messageIds = Array.isArray(opts.messageIds) ? opts.messageIds : [];
+        var selectedIds = new Set();
+        messageIds.map(function (id) { return String(id); }).filter(Boolean).some(function (id) {
+            selectedIds.add(id);
+            return selectedIds.size >= MAX_EXPORT_SELECTION;
+        });
+        state.allMessages = getReactMessages();
+        state.selectedIds = selectedIds;
+        state.exportFormat = normalizeExportFormatId(opts.format);
+        state.imageExportStyle = normalizeImageExportStyleId(opts.imageStyle);
+        state.imageExportFormat = normalizeImageExportFormatId(opts.imageFormat);
+        return getSelectedEntries();
+    }
+
+    function restoreCompactInlineExportState(previous) {
+        state.allMessages = previous.allMessages;
+        state.selectedIds = previous.selectedIds;
+        state.exportFormat = previous.exportFormat;
+        state.imageExportStyle = previous.imageExportStyle;
+        state.imageExportFormat = previous.imageExportFormat;
+    }
+
+    async function buildCompactInlinePreview(options) {
+        var previous = {
+            allMessages: state.allMessages,
+            selectedIds: state.selectedIds,
+            exportFormat: state.exportFormat,
+            imageExportStyle: state.imageExportStyle,
+            imageExportFormat: state.imageExportFormat
+        };
+        try {
+            var entries = applyCompactInlineExportSelection(options);
+            if (!entries.length) {
+                return { previewKind: 'empty' };
+            }
+            var exportData = await buildExportDocument(entries, state.exportFormat);
+            if (state.exportFormat === 'image') {
+                return {
+                    previewKind: 'image',
+                    previewUrl: URL.createObjectURL(exportData.previewBlob)
+                };
+            }
+            return {
+                previewKind: 'document',
+                previewDocument: buildMarkdownPreviewDocument(exportData.content)
+            };
+        } finally {
+            restoreCompactInlineExportState(previous);
+        }
+    }
+
+    async function runCompactInlineExportAction(options, action) {
+        var previous = {
+            allMessages: state.allMessages,
+            selectedIds: state.selectedIds,
+            exportFormat: state.exportFormat,
+            imageExportStyle: state.imageExportStyle,
+            imageExportFormat: state.imageExportFormat
+        };
+        try {
+            var entries = applyCompactInlineExportSelection(options);
+            if (!entries.length) {
+                showToast('chat.exportSelectionEmpty', 'Select at least one message to export.');
+                return;
+            }
+            await action(entries);
+        } finally {
+            restoreCompactInlineExportState(previous);
+        }
+    }
+
+    async function copyCompactInlineSelection(options) {
+        if (state.isCopying) return;
+        var compactFormat = normalizeExportFormatId(options && options.format);
+        state.isCopying = true;
+        try {
+            await runCompactInlineExportAction(options, async function (entries) {
+                if (state.exportFormat === 'image') {
+                    var imgData = await buildExportDocument(entries, 'image');
+                    var imgBlob = imgData.previewBlob || imgData.content;
+                    var imgOk = await copyImageToClipboard(imgBlob);
+                    if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
+                    else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+                } else {
+                    var mdData = await buildExportDocument(entries, 'markdown');
+                    var mdOk = await copyTextToClipboard(mdData.content);
+                    if (mdOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
+                    else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+                }
+            });
+        } catch (error) {
+            logExportError('copyCompactInlineSelection', error);
+            if (compactFormat === 'image') {
+                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            } else {
+                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            }
+        } finally {
+            state.isCopying = false;
+        }
+    }
+
+    async function downloadCompactInlineSelection(options) {
+        if (state.isExporting) return;
+        state.isExporting = true;
+        try {
+            await runCompactInlineExportAction(options, async function (entries) {
+                var data = await buildExportDocument(entries, state.exportFormat);
+                downloadExportFile(data.fileName, data.content, data.contentType, window);
+                showToast('chat.exportSuccess', 'Conversation exported successfully');
+            });
+        } catch (error) {
+            logExportError('downloadCompactInlineSelection', error);
+            showToastMessage(getErrorMessage(error), 4000);
+        } finally {
+            state.isExporting = false;
+        }
+    }
+
     // ======================== Action handlers ========================
 
     async function handleDownloadClick() {
@@ -2640,6 +2801,10 @@
 
     window.appChatExport = {
         open: handleExportButtonClick,
-        close: closePreviewModal
+        close: closePreviewModal,
+        getCompactInlineOptions: getCompactInlineExportOptions,
+        buildCompactInlinePreview: buildCompactInlinePreview,
+        copyCompactInlineSelection: copyCompactInlineSelection,
+        downloadCompactInlineSelection: downloadCompactInlineSelection
     };
 })();
