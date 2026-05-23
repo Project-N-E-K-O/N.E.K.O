@@ -112,7 +112,7 @@ def test_memory_word_import_skips_bad_rows_and_dedupes_by_word(tmp_path: Path) -
         result = memory.import_words_csv(
             deck_id=deck["id"],
             content=(
-                "\ufeff word , meaning ,example_sentence,tags\n"
+                "\ufeff Word , Meaning ,Example_Sentence,Tags\n"
                 "cat,猫,A cat sleeps,animal\n"
                 "bad row,,,\n"
                 "cat,猫科动物,A cat runs,animal updated\n"
@@ -128,6 +128,45 @@ def test_memory_word_import_skips_bad_rows_and_dedupes_by_word(tmp_path: Path) -
         assert len(items) == 1
         assert items[0]["answer"] == "猫科动物"
         assert items[0]["metadata"]["example_sentence"] == "A cat runs"
+    finally:
+        store.close()
+
+
+def test_memory_custom_dedupe_uses_key_value_and_deck_scope(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        memory = MemoryDeckStore(store)
+        first_deck = memory.create_deck(name="First", deck_type="custom")
+        second_deck = memory.create_deck(name="Second", deck_type="custom")
+        first = memory.upsert_item(
+            deck_id=first_deck["id"],
+            item_type="custom",
+            prompt="A",
+            answer="A",
+            metadata={"external_id": "same", "topic_id": "topic"},
+        )
+        updated = memory.upsert_item(
+            deck_id=first_deck["id"],
+            item_type="custom",
+            prompt="B",
+            answer="B",
+            metadata={"external_id": "same"},
+            dedupe_metadata_key="external_id",
+        )
+        other = memory.upsert_item(
+            deck_id=second_deck["id"],
+            item_type="custom",
+            prompt="C",
+            answer="C",
+            metadata={"topic_id": "topic"},
+        )
+
+        assert updated["created"] is False
+        assert updated["item"]["id"] == first["item"]["id"]
+        reviewed = memory.review_item(
+            item_id="topic", rating="good", deck_id=second_deck["id"]
+        )
+        assert reviewed["item"]["id"] == other["item"]["id"]
     finally:
         store.close()
 

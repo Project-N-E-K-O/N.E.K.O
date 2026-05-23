@@ -2544,6 +2544,13 @@ async def test_study_plugin_starts_and_collects_entries(
     assert isinstance(reviewed_fresh, Ok)
     assert reviewed_fresh.value["card"]["item_id"] == fresh_item_id
     assert reviewed_fresh.value["card"]["topic_id"] == "phase7_plugin_recent"
+    plugin._store.ensure_topic(topic_id="phase7_topic_due", name="Phase 7 Topic")
+    topic_card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+        "phase7_topic_due"
+    ).to_dict()
+    plugin._store.upsert_fsrs_card(
+        topic_id="phase7_topic_due", card=topic_card, last_rating=0
+    )
     due_deck = await plugin.study_memory_deck(limit=5, due_only=True)
     assert isinstance(due_deck, Ok)
     assert any(item["item_id"] == card_item_id for item in due_deck.value["cards"])
@@ -2558,9 +2565,14 @@ async def test_study_plugin_starts_and_collects_entries(
     assert all(
         item["item_id"] != fresh_item_id for item in topic_due_deck.value["cards"]
     )
-    assert topic_due_deck.value["due_count"] == len(
+    assert topic_due_deck.value["due_count"] >= len(
         topic_due_deck.value["due_cards"]
     )
+    topic_deck = await plugin.study_memory_deck(
+        limit=5, due_only=True, include_topic_cards=True
+    )
+    assert isinstance(topic_deck, Ok)
+    assert any(item["topic_id"] == "phase7_topic_due" for item in topic_deck.value["cards"])
     loose_card = await plugin.study_memory_card_upsert(front="Loose prompt", back="A")
     loose_card_again = await plugin.study_memory_card_upsert(
         front="Another loose prompt", back="B"

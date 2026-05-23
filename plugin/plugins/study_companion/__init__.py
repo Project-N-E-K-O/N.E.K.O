@@ -990,6 +990,12 @@ class StudyCompanionPlugin(NekoPluginBase):
         try:
             safe_limit = max(1, min(200, int(limit or 20)))
             if bool(include_topic_cards):
+                topic_cards = await asyncio.to_thread(
+                    self._knowledge_tracker.list_memory_cards,
+                    limit=safe_limit,
+                    due_only=bool(due_only),
+                    include_topic_cards=True,
+                )
                 if bool(due_only):
                     payload = await asyncio.to_thread(
                         self._memory_deck_store.status_summary, limit=safe_limit
@@ -1000,14 +1006,20 @@ class StudyCompanionPlugin(NekoPluginBase):
                         for item in due_reviews
                         if isinstance(item, dict)
                     ]
+                    cards = (due_cards + topic_cards)[:safe_limit]
+                    topic_due_count = await asyncio.to_thread(
+                        self._knowledge_tracker.count_due_reviews
+                    )
                     return Ok(
                         {
                             **payload,
                             "card_count": int(
                                 payload.get("item_count") or payload.get("card_count") or 0
                             ),
-                            "cards": due_cards,
-                            "due_cards": due_cards,
+                            "due_count": int(payload.get("due_count") or 0)
+                            + int(topic_due_count or 0),
+                            "cards": cards,
+                            "due_cards": cards,
                         }
                     )
                 items = await asyncio.to_thread(
@@ -1017,7 +1029,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 )
                 cards = [
                     self._memory_deck_store.compat_card_payload(item) for item in items
-                ]
+                ] + topic_cards
                 due_cards = [item for item in cards if item.get("is_due")]
                 return Ok(
                     {
@@ -1080,10 +1092,15 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             topic_key = str(topic_id or "").strip()
+            deck = await asyncio.to_thread(
+                self._memory_deck_store.get_or_create_default_deck,
+                deck_type="custom",
+            )
             payload = await asyncio.to_thread(
                 self._memory_deck_store.review_item,
                 item_id=topic_key,
                 rating=rating,
+                deck_id=str(deck.get("id") or ""),
             )
             item = payload.get("item") if isinstance(payload, dict) else {}
             return Ok(

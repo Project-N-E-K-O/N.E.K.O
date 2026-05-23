@@ -60,7 +60,7 @@ def item_row_by_metadata_value(
         clauses.insert(0, "deck_id = ?")
         params.insert(0, str(deck_id or ""))
     rows = conn.execute(
-        f"SELECT * FROM memory_items WHERE {' AND '.join(clauses)}",
+        f"SELECT * FROM memory_items WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC, created_at DESC",
         params,
     ).fetchall()
     keys = (key,) if isinstance(key, str) else key
