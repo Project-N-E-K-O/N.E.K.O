@@ -1546,12 +1546,25 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._memory_deck_store.get_or_create_default_deck,
                 deck_type="custom",
             )
-            payload = await asyncio.to_thread(
-                self._memory_deck_store.review_item,
-                item_id=topic_key,
-                rating=rating,
-                deck_id=str(deck.get("id") or ""),
-            )
+            try:
+                payload = await asyncio.to_thread(
+                    self._memory_deck_store.review_item,
+                    item_id=topic_key,
+                    rating=rating,
+                    deck_id=str(deck.get("id") or ""),
+                )
+            except ValueError:
+                # Not a memory/custom item: a knowledge-graph topic card surfaced
+                # via study_memory_deck(include_topic_cards=True) is reviewed through
+                # the topic FSRS backend instead.
+                return Ok(
+                    await asyncio.to_thread(
+                        self._knowledge_tracker.review_memory_card,
+                        topic_id=topic_key,
+                        rating=rating,
+                        answer=answer,
+                    )
+                )
             item = payload.get("item") if isinstance(payload, dict) else {}
             return Ok(
                 {

@@ -2916,6 +2916,13 @@ async def test_study_plugin_starts_and_collects_entries(
     )
     assert isinstance(reviewed, Ok)
     assert reviewed.value["rating"] == 3
+    reviewed_topic = await plugin.study_memory_card_review(
+        topic_id="phase7_topic_due", rating="good"
+    )
+    assert isinstance(reviewed_topic, Ok)
+    assert reviewed_topic.value["topic_id"] == "phase7_topic_due"
+    assert reviewed_topic.value["rating"] == 3
+    assert reviewed_topic.value["card"]["topic_id"] == "phase7_topic_due"
     status = await plugin.study_status()
     assert isinstance(status, Ok)
     assert status.value["status"] == "ready"
