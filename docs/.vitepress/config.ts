@@ -182,17 +182,17 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Plugin Development', overview: 'Overview', quick: 'Quick Start',
       sdk: 'SDK Reference', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
-      hosted: 'Hosted UI', best: 'Best Practices',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: 'Best Practices',
     },
     'zh-CN': {
       group: '插件开发', overview: '概览', quick: '快速开始',
       sdk: 'SDK 参考', dec: '装饰器', ex: '示例', adv: '进阶话题',
-      hosted: 'Hosted UI', best: '最佳实践',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: '最佳实践',
     },
     ja: {
       group: 'プラグイン開発', overview: '概要', quick: 'クイックスタート',
       sdk: 'SDK リファレンス', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
-      hosted: 'Hosted UI', best: 'ベストプラクティス',
+      hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', best: 'ベストプラクティス',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -205,6 +205,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
+        { text: t.tool, link: `${p}/plugins/tool-calling` },
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
         { text: t.best, link: `${p}/plugins/best-practices` },

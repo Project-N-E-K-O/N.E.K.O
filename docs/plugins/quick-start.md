@@ -1,121 +1,62 @@
 # Plugin Quick Start
 
-## Step 1: Create plugin directory
+## 1. Create the plugin
 
 ```bash
 mkdir -p plugin/plugins/hello_world
 ```
 
-## Step 2: Create `plugin.toml`
+Create `plugin/plugins/hello_world/plugin.toml`:
 
 ```toml
 [plugin]
 id = "hello_world"
-name = "Hello World Plugin"
-description = "A simple example plugin"
-version = "1.0.0"
-entry = "plugins.hello_world:HelloWorldPlugin"
+name = "Hello World"
+description = "A simple greeting plugin"
+version = "0.1.0"
+entry = "plugin.plugins.hello_world:HelloWorldPlugin"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
 ```
 
-### Configuration fields
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | Yes | Unique plugin identifier |
-| `name` | No | Display name |
-| `description` | No | Plugin description |
-| `version` | No | Plugin version |
-| `entry` | Yes | Entry point: `module_path:ClassName` |
-
-### SDK version fields
-
-| Field | Description |
-|-------|-------------|
-| `recommended` | Recommended SDK version range |
-| `supported` | Minimum supported range (rejected if not met) |
-| `untested` | Allowed but warns on load |
-| `conflicts` | Rejected version ranges |
-
-## Step 3: Create `__init__.py`
+Create `plugin/plugins/hello_world/__init__.py`:
 
 ```python
-from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    Ok, Err,
-)
-from typing import Any
+from plugin.sdk.plugin import NekoPluginBase, neko_plugin, plugin_entry, Ok
+from typing import Annotated
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
-    """Hello World plugin example."""
 
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-        self.counter = 0
-
-    @lifecycle(id="startup")
-    def on_startup(self, **_):
-        self.logger.info("HelloWorldPlugin started!")
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    def on_shutdown(self, **_):
-        self.logger.info("HelloWorldPlugin stopped!")
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="greet",
-        name="Greet",
-        description="Return a greeting message",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Name to greet",
-                    "default": "World"
-                }
-            }
-        }
-    )
-    def greet(self, name: str = "World", **_):
-        self.counter += 1
-        message = f"Hello, {name}! (call #{self.counter})"
-        self.logger.info(f"Greeting: {message}")
-        return Ok({"message": message, "count": self.counter})
+    @plugin_entry(id="greet", name="Greet", description="Say hello")
+    async def greet(self, name: Annotated[str, "Name to greet"] = "World"):
+        return Ok({"message": f"Hello, {name}!"})
 ```
 
-### Key points
+## 2. Run it
 
-- **`@neko_plugin`** — Required class decorator, registers the class as a plugin
-- **`NekoPluginBase`** — Base class all plugins must inherit
-- **`@plugin_entry`** — Defines an externally callable entry point
-- **`@lifecycle`** — Handles lifecycle events (`startup`, `shutdown`, `reload`)
-- **`Ok(...)` / `Err(...)`** — Return Result types for type-safe error handling
-- **`**_`** — Always include in entry point signatures to capture extra parameters
+Start N.E.K.O, open the Plugin Manager panel. Your plugin appears in the list. Click start, open the detail view, and execute the `greet` entry.
 
-## Step 4: Test
+Edit code → click **Reload** in the panel → changes take effect immediately.
 
-After starting the plugin server, call your plugin via HTTP:
+## 3. What's happening
 
-```bash
-curl -X POST http://localhost:48916/plugin/trigger \
-  -H "Content-Type: application/json" \
-  -d '{
-    "plugin_id": "hello_world",
-    "entry_id": "greet",
-    "args": {"name": "N.E.K.O"}
-  }'
-```
+- `@neko_plugin` + `NekoPluginBase` — makes it a plugin
+- `@plugin_entry` — exposes a callable entry point
+- Type annotations — SDK auto-generates input schema from them
+- `Ok(...)` — wraps the return value (use `Err(...)` for errors)
+- The plugin runs in its own process; crashes don't affect N.E.K.O
 
 ## Next steps
 
-- [SDK Reference](./sdk-reference) — Learn about `NekoPluginBase`, Result types, and runtime helpers
-- [Decorators](./decorators) — All available decorator types including hooks
-- [Hosted UI](./hosted-ui) — Add an interactive TSX panel or Markdown guide
-- [Examples](./examples) — Complete working plugin examples
+- [SDK Reference](./sdk-reference) — base class API, Result types, cross-plugin calls
+- [Decorators](./decorators) — lifecycle, timers, hooks, messages
+- [LLM Tool Calling](./tool-calling) — let the AI invoke your plugin
+- [Hosted UI](./hosted-ui) — build interactive panels with TSX
+- [Examples](./examples) — real-world plugin examples
