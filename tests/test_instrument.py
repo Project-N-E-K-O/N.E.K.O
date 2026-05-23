@@ -67,6 +67,17 @@ def test_make_key_pipe_escaped():
     assert _make_key("e", {"k": "a|b"}) == "e|k=a\\|b"
 
 
+def test_make_key_escapes_name_no_collision():
+    # untrusted name 含分隔符不能跟 name+dims 组合碰撞（Codex）
+    assert _make_key("foo|a=1", {}) != _make_key("foo", {"a": "1"})
+
+
+def test_make_key_clean_name_unchanged():
+    # 合法 snake_case name 无分隔符，转义是 no-op，key 不变
+    assert _make_key("session_start", {}) == "session_start"
+    assert _make_key("ws_connect", {"reason": "x"}) == "ws_connect|reason=x"
+
+
 # ---------------------------------------------------------------------------
 # counter
 # ---------------------------------------------------------------------------

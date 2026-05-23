@@ -267,11 +267,15 @@ def _make_key(name: str, dims: dict) -> str:
     _esc_dim 转义分隔符）。没有 dims 时省略 ``|``，保持简单 case 的 key 短。
 
     值会用 ``str()`` 转换 —— 调用方有义务只传可序列化的低基数维度。
+
+    name 也要 _esc_dim 转义：untrusted WS 客户端能发含 ``|`` ``,`` ``=`` 的
+    name（如 ``foo|a=1``）跟合法的 ``name=foo,dims={a:1}`` 碰撞，静默混淆
+    counter/histogram（Codex）。合法 name（snake_case）无分隔符，转义是 no-op。
     """
     if not dims:
-        return name
+        return _esc_dim(name)
     parts = [f"{_esc_dim(k)}={_esc_dim(dims[k])}" for k in sorted(dims.keys())]
-    return f"{name}|{','.join(parts)}"
+    return f"{_esc_dim(name)}|{','.join(parts)}"
 
 
 # ---------------------------------------------------------------------------

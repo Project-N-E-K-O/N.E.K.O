@@ -155,6 +155,13 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
                 val = 1  # 缺失 / 非数字 → 默认 +1（事件发生了）
             elif not math.isfinite(val):
                 return  # NaN / Inf：reject 整条，不污染 counter
+            elif isinstance(val, float):
+                # counter 是整数计数：storage 只收整数（4.0 可、1.5 不可），
+                # 非整数 float 这里不挡的话会先聚合进内存、上传时被静默丢
+                # 整窗（CodeRabbit）。整数值 float 归一化成 int。
+                if not val.is_integer():
+                    return
+                val = int(val)
             _c(name, val, **dims)
         elif kind == "histogram":
             val = message.get("value")
