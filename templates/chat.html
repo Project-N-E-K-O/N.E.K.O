@@ -8,6 +8,8 @@
 
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <!-- 诊断观测：必须最早加载（与 index.html 同序）。详见 static/debug-health.js。 -->
+    <script src="/static/debug-health.js?v={{ static_asset_version }}"></script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
@@ -818,6 +820,16 @@
             if (att) return MIN_H_ATTACHMENTS;
             return MIN_H_BASE;
         }
+        function isReactElectronCollapsed() {
+            var shell = document.getElementById('react-chat-window-shell');
+            return !!(shell && (
+                shell.classList.contains('neko-e-collapsed') ||
+                shell.classList.contains('neko-e-animating') ||
+                shell.classList.contains('is-minimized') ||
+                shell.classList.contains('is-collapsing') ||
+                shell.classList.contains('is-expanding')
+            ));
+        }
         Object.defineProperty(window, '__nekoChatMinH', {
             get: currentMinH,
             configurable: true
@@ -826,11 +838,13 @@
         // GalGame 模式开/关、或附件 0↔N 切换时，若当前窗口高度小于新最小值，
         // 主动 setBounds 撑高，否则切到 ON / 贴上附件后会看到内容被窗口裁掉。
         function syncWindowToMinH() {
-            if (collapsed || resizing || animating) return;
+            if (collapsed || resizing || animating || isReactElectronCollapsed()) return;
             var minH = currentMinH();
             try {
                 W.getBounds().then(function(b) {
                     if (!b) return;
+                    if (isReactElectronCollapsed()) return;
+                    if (b.width <= BALL + 4 && b.height <= BALL + 4) return;
                     if (b.height >= minH) return;
                     W.setBounds(b.x, b.y, b.width, minH);
                 });

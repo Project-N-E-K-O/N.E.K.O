@@ -489,7 +489,6 @@ export default {
     reloadFailed: 'Error al recargar',
     buildFailed: 'Error al empaquetar el plugin',
     deleteFailed: 'Error al eliminar el plugin',
-    pluginDisabled: 'El plugin está deshabilitado. Habilítalo primero.',
     pluginLoadFailed: 'El plugin no se cargó y no puede iniciarse.',
     confirmDisableExt: '¿Deshabilitar esta extensión? Su funcionalidad se descargará del plugin anfitrión.',
     extensionDisabled: 'Extensión deshabilitada',

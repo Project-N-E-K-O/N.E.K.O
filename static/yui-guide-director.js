@@ -2424,6 +2424,7 @@
             this.lastTutorialEndReason = null;
             this.introFlowStarted = false;
             this.introFlowCompleted = false;
+            this.introGreetingChatHighlightCleared = false;
             this.awaitingIntroActivation = false;
             this._introActivationResolve = null;
             this.takeoverFlowStarted = false;
@@ -4332,6 +4333,10 @@
             }
 
             if (stepId === 'intro_basic' && !this.introFlowCompleted) {
+                if (this.introGreetingChatHighlightCleared) {
+                    return fallbackTarget;
+                }
+
                 if (this.awaitingIntroActivation) {
                     return this.getChatInputTarget() || null;
                 }
@@ -4340,11 +4345,15 @@
             }
 
             if (stepId === 'takeover_settings_peek') {
-                return this.getChatWindowTarget() || this.getChatInputTarget() || null;
+                return this.introGreetingChatHighlightCleared
+                    ? fallbackTarget
+                    : (this.getChatWindowTarget() || this.getChatInputTarget() || null);
             }
 
             if (this.shouldNarrateInChat(stepId)) {
-                return this.getChatWindowTarget() || fallbackTarget;
+                return this.introGreetingChatHighlightCleared
+                    ? fallbackTarget
+                    : (this.getChatWindowTarget() || fallbackTarget);
             }
 
             return fallbackTarget;
@@ -4382,6 +4391,10 @@
         }
 
         highlightChatWindow() {
+            if (this.page === 'home' && this.introGreetingChatHighlightCleared) {
+                return;
+            }
+
             if (this.isHomeChatExternalized()) {
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                     this.interactionTakeover.setExternalizedChatSpotlight('window');
@@ -4407,6 +4420,19 @@
             }
 
             this.overlay.setPersistentSpotlight(target);
+        }
+
+        clearIntroGreetingChatHighlight() {
+            this.introGreetingChatHighlightCleared = true;
+
+            if (this.isHomeChatExternalized()) {
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                    this.interactionTakeover.setExternalizedChatSpotlight('');
+                }
+                return;
+            }
+
+            this.overlay.clearPersistentSpotlight();
         }
 
         getChatIntroActivationTarget() {
@@ -6442,7 +6468,6 @@
         }
 
         async runIntroVoiceControlButtonShowcase(voiceKey, fallbackText) {
-            this.highlightChatWindow();
             const voiceControlButton = this.getVoiceControlButtonTarget();
             if (!voiceControlButton) {
                 return;
@@ -8498,6 +8523,7 @@
                 this.runIntroGreetingHugPerformance().catch(() => {}),
                 this.runIntroGiftHeartPerformance().catch(() => {})
             ]);
+            this.clearIntroGreetingChatHighlight();
         }
 
         async runIntroGreetingHugPerformance() {
@@ -10204,6 +10230,68 @@
             postAck();
         }
 
+        isPointInsideScreenRect(point, rect) {
+            if (!point || !rect) {
+                return false;
+            }
+
+            const screenX = Number(point.screenX);
+            const screenY = Number(point.screenY);
+            if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+                return false;
+            }
+
+            return (
+                screenX >= Number(rect.left)
+                && screenX <= Number(rect.right)
+                && screenY >= Number(rect.top)
+                && screenY <= Number(rect.bottom)
+            );
+        }
+
+        async forwardPluginDashboardSkipRequestToButton(detail) {
+            const skipButton = document.getElementById('neko-tutorial-skip-btn');
+            if (!skipButton || typeof skipButton.click !== 'function') {
+                return 'unavailable';
+            }
+
+            if (!detail || typeof detail !== 'object') {
+                return 'rejected';
+            }
+
+            const point = {
+                screenX: Number(detail.screenX),
+                screenY: Number(detail.screenY)
+            };
+            if (!Number.isFinite(point.screenX) || !Number.isFinite(point.screenY)) {
+                return 'rejected';
+            }
+
+            const currentRect = await this.getSkipButtonScreenRect();
+            if (!currentRect || !this.isPointInsideScreenRect(point, currentRect)) {
+                return 'rejected';
+            }
+
+            skipButton.click();
+            return 'forwarded';
+        }
+
+        async handlePluginDashboardSkipRequest(data) {
+            const detail = data && data.detail && typeof data.detail === 'object'
+                ? data.detail
+                : null;
+            const forwardResult = await this.forwardPluginDashboardSkipRequestToButton(detail);
+            if (forwardResult === 'rejected' || forwardResult === 'forwarded') {
+                return;
+            }
+
+            if (this.tutorialManager && typeof this.tutorialManager.handleTutorialSkipRequest === 'function') {
+                await this.tutorialManager.handleTutorialSkipRequest();
+            } else {
+                await this.skip('skip', 'skip');
+            }
+        }
+
         onWindowMessage(event) {
             const data = event && event.data ? event.data : null;
             if (!data || typeof data !== 'object') {
@@ -10232,11 +10320,7 @@
                 if (data.sessionId && handoff.sessionId && data.sessionId !== handoff.sessionId) {
                     return;
                 }
-                if (this.tutorialManager && typeof this.tutorialManager.handleTutorialSkipRequest === 'function') {
-                    void this.tutorialManager.handleTutorialSkipRequest();
-                } else {
-                    this.skip('skip', 'skip');
-                }
+                void this.handlePluginDashboardSkipRequest(data);
                 return;
             }
 

@@ -1,0 +1,66 @@
+{
+  "summary": "legacy smoke summary removed after heuristic-first architecture cleanup"
+}
+  },
+  {
+    "entry": "sts2_set_mode",
+    "args": {
+      "mode": "half-program"
+    },
+    "kind": "ok",
+    "status": "ok",
+    "summary": "���л���ģʽ��half-program��",
+    "error": null
+  },
+  {
+    "entry": "sts2_set_standby",
+    "args": {
+      "standby": true
+    },
+    "kind": "ok",
+    "status": "ok",
+    "summary": "���л��� standby ģʽ��",
+    "error": null
+  },
+  {
+    "entry": "sts2_set_standby",
+    "args": {
+      "standby": false
+    },
+    "kind": "ok",
+    "status": "ok",
+    "summary": "���л��� active ģʽ��",
+    "error": null
+  },
+  {
+    "entry": "sts2_start_autoplay",
+    "args": {},
+    "kind": "ok",
+    "status": "ok",
+    "summary": "�����������Զ����С�",
+    "error": null
+  },
+  {
+    "entry": "sts2_stop_autoplay",
+    "args": {},
+    "kind": "dict",
+    "status": null,
+    "summary": "��ֹͣ�����Զ����С�",
+    "error": null
+  },
+  {
+    "entry": "sts2_upsert_preference",
+    "args": {
+      "domain": "combat_preferences",
+      "key": "live_test",
+      "value": {
+        "preferred_option_index": 0
+      },
+      "source": "live_test"
+    },
+    "kind": "ok",
+    "status": "ok",
+    "summary": "�Ѹ���ƫ�ã�combat_preferences/live_test��",
+    "error": null
+  }
+]

@@ -6,6 +6,7 @@ import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
+import { openExternalUrl } from '@/utils/openExternal'
 
 type PluginListContextPlugin = PluginMeta & {
   status?: string
@@ -28,21 +29,17 @@ const BUILTIN_ACTION_IDS = [
   'open_logs',
 ] as const
 
-function replacePluginTokens(value: string, pluginId: string): string {
-  return value.split('{plugin_id}').join(pluginId)
-}
-
 export function usePluginListContextActions() {
   const router = useRouter()
   const pluginStore = usePluginStore()
   const { t, locale } = useI18n()
 
+  // status === 'disabled' 现在只出现在 extension 上（extension 仍由
+  // enable_extension / disable_extension 两个按钮显式切换）。非 extension
+  // 的 runtime_enabled=false 已不再被前端提升成 disabled 状态，统一显示成
+  // stopped —— 详见 stores/plugin.ts pluginsWithStatus。
   function isRunning(plugin: PluginListContextPlugin): boolean {
     return plugin.status === 'running'
-  }
-
-  function isDisabled(plugin: PluginListContextPlugin): boolean {
-    return plugin.status === 'disabled'
   }
 
   function resolveBuiltinActions(plugin: PluginListContextPlugin): PluginListAction[] {
@@ -72,7 +69,7 @@ export function usePluginListContextActions() {
       return actions
     }
 
-    if (!isRunning(plugin) && !isDisabled(plugin)) {
+    if (!isRunning(plugin)) {
       actions.push({
         id: 'start',
         kind: 'builtin',
@@ -88,7 +85,6 @@ export function usePluginListContextActions() {
     actions.push({
       id: 'reload',
       kind: 'builtin',
-      disabled: isDisabled(plugin),
     })
     actions.push(
       {
@@ -149,9 +145,6 @@ export function usePluginListContextActions() {
       return true
     }
     if (action.requires_running && !isRunning(plugin)) {
-      return true
-    }
-    if (action.id === 'reload' && isDisabled(plugin)) {
       return true
     }
     return false
@@ -351,7 +344,10 @@ export function usePluginListContextActions() {
       return
     }
 
-    const target = typeof action.target === 'string' ? replacePluginTokens(action.target, plugin.id) : ''
+    // 后端 _normalize_plugin_list_action 在 plugin/server/application/plugins/
+    // ui_query_service.py:481 已经把 `{plugin_id}` 占位符替换并 strip 过；
+    // 前端直接消费就行，不再二次替换。
+    const target = typeof action.target === 'string' ? action.target : ''
     if (!target) {
       ElMessage.warning(action.label)
       return
@@ -363,8 +359,14 @@ export function usePluginListContextActions() {
     }
 
     if (action.kind === 'ui' || action.kind === 'url') {
-      const nextTarget = action.open_in === 'same_tab' ? '_self' : '_blank'
-      window.open(target, nextTarget, nextTarget === '_blank' ? 'noopener' : undefined)
+      // _blank 走 openExternalUrl，让 Electron host 把它转发到系统浏览器，
+      // 避免嵌入 webview 没有关闭按钮把用户困住；same_tab 仍是当前窗口
+      // navigation。
+      if (action.open_in === 'same_tab') {
+        window.open(target, '_self')
+      } else {
+        openExternalUrl(target)
+      }
     }
   }
 

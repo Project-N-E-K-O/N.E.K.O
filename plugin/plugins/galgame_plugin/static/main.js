@@ -132,7 +132,7 @@ function getInstallUIConfig() {
       actionText: uiT('ui.install.rapidocr.download_models.action', '立即下载模型'),
       retryText: uiT('ui.install.rapidocr.download_models.retry', '重试下载模型'),
       runningText: uiT('ui.install.rapidocr.download_models.running', '后台下载模型中...'),
-      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会优先从百度云拉取缺失模型文件，失败则回退到 ModelScope，并通过 SSE 推送实时进度。'),
+      queuedFlash: uiT('ui.install.rapidocr.download_models.queued', '已创建模型下载任务，接下来会从 ModelScope 拉取缺失模型文件，并通过 SSE 推送实时进度。'),
       successFlash: uiT('ui.install.rapidocr.download_models.success', 'RapidOCR 模型下载完成'),
       failureFlash: uiT('ui.install.rapidocr.download_models.failure', 'RapidOCR 模型下载失败'),
     },
@@ -490,6 +490,7 @@ const FOCUS_PAUSE_REFRESH_INTERVAL_MS = 1000;
 const ERROR_REFRESH_INTERVAL_MS = 10000;
 const OCR_WINDOW_REFRESH_TTL_MS = 3000;
 const MEMORY_PROCESS_REFRESH_TTL_MS = 3000;
+const CHARACTER_PROFILE_REFRESH_TTL_MS = 3000;
 const FIELD_LABELS_ZH = {
   connection_state: '连接状态',
   active_data_source: '当前数据源',
@@ -825,6 +826,7 @@ let latestStatus = null;
 let latestSnapshotData = null;
 let latestMemoryProcessSnapshot = null;
 let latestOcrWindowSnapshot = null;
+let latestCharacterProfileSnapshot = null;
 let onboardingDismissed = false;
 let forceShowOnboarding = false;
 let lastSavedStepIndex = -1;
@@ -834,8 +836,11 @@ const tutorialProgressPendingSaveKeys = new Set();
 let refreshInFlight = null;
 let memoryProcessRefreshInFlight = null;
 let ocrWindowRefreshInFlight = null;
+let characterProfileRefreshInFlight = null;
 let lastMemoryProcessRefreshAt = 0;
 let lastOcrWindowRefreshAt = 0;
+let lastCharacterProfileRefreshAt = 0;
+let lastCharacterProfileGameId = '';
 let emptyOcrWindowFocusForceRefreshDone = false;
 let autoRefreshTimer = null;
 let autoRefreshIntervalMs = AUTO_REFRESH_INTERVAL_MS;
@@ -1884,7 +1889,7 @@ function buildFirstRunSteps(status = {}) {
       const sizeMb = (Number(rapidocr.missing_model_total_size || 0) / (1024 * 1024)).toFixed(1);
       body = uiTf(
         'ui.first_run.install_ocr.pending_models',
-        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，会优先从百度云拉取约 {size} MB 的模型文件，失败则回退到 ModelScope。',
+        '所选语言模型 ({lang} + {version}) 未下载。点击「立即下载模型」按钮，会从 ModelScope 拉取约 {size} MB 的模型文件。',
         {
           lang: rapidocr.lang_type || 'ch',
           version: rapidocr.ocr_version || 'PP-OCRv4',
@@ -4187,6 +4192,9 @@ function renderStatus(status) {
     { label: 'advance_speed', value: advanceSpeedLabel(status.advance_speed, status.advance_speed || 'medium') },
     { label: 'bound_game_id', value: status.bound_game_id || uiT('ui.common.auto_value', '(auto)') },
     { label: 'available_game_ids', value: (status.available_game_ids || []).join(', ') || uiT('ui.common.none_value', '(none)') },
+    { label: 'character_mode', value: status.character_mode || 'off' },
+    { label: 'character_fixed_name', value: status.character_fixed_name || '' },
+    { label: 'character_profile_count', value: String(status.character_profile_count || 0) },
     { label: 'performance_cpu_percent', value: `${formatFixedNumber(performance.cpu_percent, 1)}%` },
     { label: 'performance_memory_mb', value: `${formatFixedNumber(performance.memory_mb, 1)} MB` },
     { label: 'ocr_reader_enabled', value: String(Boolean(status.ocr_reader_enabled)) },
@@ -4332,6 +4340,7 @@ function renderStatus(status) {
   renderMemoryReaderTargetStatus(status);
   renderOcrWindowTargetStatus(status);
   renderOcrProfile(status);
+  renderCharacterProfilePanel(status);
   renderGameBinding(status);
 }
 
@@ -4425,6 +4434,234 @@ function describeGameBindingId(gameId) {
     title: uiT('ui.game.binding.game_target', '游戏目标'),
     detail: normalized,
   };
+}
+
+function normalizeCharacterProfileSnapshot(payload = {}, status = latestStatus) {
+  const characters = Array.isArray(payload.characters)
+    ? payload.characters
+      .map((item) => ({
+        name: String(item?.name || '').trim(),
+        identity: String(item?.identity || '').trim(),
+      }))
+      .filter((item) => item.name)
+    : [];
+  return {
+    game_id: String(
+      payload.profile_game_id
+      || payload.game_id
+      || status?.character_profile_game_id
+      || status?.bound_game_id
+      || '',
+    ).trim(),
+    profile_game_id: String(payload.profile_game_id || status?.character_profile_game_id || '').trim(),
+    match_reason: String(payload.match_reason || status?.character_profile_match_reason || '').trim(),
+    characters,
+    summary: String(payload.summary || ''),
+    degraded: Boolean(payload.degraded),
+    diagnostic: String(payload.diagnostic || ''),
+  };
+}
+
+function selectedCharacterNameFromPanel(characters) {
+  const select = document.getElementById('characterProfileSelect');
+  if (!select) {
+    return '';
+  }
+  const current = String(select.value || '').trim();
+  return current && characters.some((item) => item.name === current) ? current : '';
+}
+
+function characterProfileRefreshKeyForStatus(status = latestStatus) {
+  const ocrRuntime = status?.ocr_reader_runtime && typeof status.ocr_reader_runtime === 'object'
+    ? status.ocr_reader_runtime
+    : {};
+  const memoryRuntime = status?.memory_reader_runtime && typeof status.memory_reader_runtime === 'object'
+    ? status.memory_reader_runtime
+    : {};
+  return [
+    status?.character_profile_game_id,
+    status?.bound_game_id,
+    status?.active_game_id,
+    ocrRuntime.game_id,
+    ocrRuntime.effective_process_name || ocrRuntime.process_name,
+    ocrRuntime.effective_window_title || ocrRuntime.window_title,
+    memoryRuntime.game_id,
+    memoryRuntime.process_name,
+  ].map((item) => String(item || '').trim()).join('|');
+}
+
+function renderCharacterProfilePanel(status = latestStatus, snapshot = latestCharacterProfileSnapshot) {
+  const statusNode = document.getElementById('characterProfileStatusText');
+  const hintNode = document.getElementById('characterProfileHint');
+  const select = document.getElementById('characterProfileSelect');
+  const fixedButton = document.getElementById('characterProfileFixedBtn');
+  const offButton = document.getElementById('characterProfileOffBtn');
+  const refreshButton = document.getElementById('characterProfileRefreshBtn');
+  if (!statusNode || !hintNode || !select || !fixedButton || !offButton || !refreshButton) {
+    return;
+  }
+
+  const mode = String(status?.character_mode || 'off').trim() || 'off';
+  const fixedName = String(status?.character_fixed_name || '').trim();
+  const boundGameId = String(status?.bound_game_id || '').trim();
+  const profileGameId = String(status?.character_profile_game_id || snapshot?.profile_game_id || '').trim();
+  const targetKey = characterProfileRefreshKeyForStatus(status);
+  const hasRuntimeTarget = targetKey.split('|').some((item) => item.trim());
+  const profileKey = profileGameId || boundGameId;
+  const displayKey = profileKey || (hasRuntimeTarget ? targetKey : '');
+  const matchReason = String(status?.character_profile_match_reason || snapshot?.match_reason || '').trim();
+  const snapshotGameId = String(snapshot?.game_id || '').trim();
+  const characters = profileKey && (!snapshotGameId || snapshotGameId === profileKey) && Array.isArray(snapshot?.characters)
+    ? snapshot.characters
+    : [];
+  const characterCount = characters.length || Number(status?.character_profile_count || 0);
+  const existingSelection = selectedCharacterNameFromPanel(characters);
+  const preferredName = fixedName && characters.some((item) => item.name === fixedName)
+    ? fixedName
+    : existingSelection;
+  const nextSelection = preferredName || (characters[0]?.name || '');
+
+  if (mode === 'fixed' && fixedName) {
+    statusNode.textContent = uiTf('ui.character_profile.status_fixed', '固定角色：{name}', { name: fixedName });
+  } else if (!displayKey || (!characters.length && snapshot && !characterCount)) {
+    statusNode.textContent = uiT('ui.character_profile.status_unavailable', '无可用档案');
+  } else {
+    statusNode.textContent = uiT('ui.character_profile.status_off', '关闭');
+  }
+
+  if (!characters.length) {
+    select.replaceChildren(new Option(
+      displayKey
+        ? uiT('ui.character_profile.select_placeholder', '等待加载角色列表')
+        : uiT('ui.character_profile.no_game_option', '请先绑定游戏'),
+      '',
+    ));
+  } else {
+    const options = characters.map((item) => {
+      const label = item.identity
+        ? uiTf('ui.character_profile.option_with_identity', '{name} - {identity}', {
+          name: item.name,
+          identity: item.identity,
+        })
+        : item.name;
+      return new Option(label, item.name);
+    });
+    select.replaceChildren(...options);
+    select.value = nextSelection;
+  }
+
+  if (!displayKey) {
+    hintNode.textContent = uiT('ui.character_profile.hint_no_game', '请先在“插件识别”里绑定或检测到游戏目标。');
+  } else if (snapshot?.diagnostic) {
+    hintNode.textContent = uiTf('ui.character_profile.hint_load_failed', '角色列表加载失败：{error}', {
+      error: snapshot.diagnostic,
+    });
+  } else if (!snapshot) {
+    hintNode.textContent = uiT('ui.character_profile.status_waiting', '等待状态刷新');
+  } else if (!characters.length) {
+    hintNode.textContent = uiT('ui.character_profile.hint_no_profiles', '当前游戏没有可用角色档案。');
+  } else {
+    const loadedText = uiTf('ui.character_profile.hint_loaded', '已加载 {count} 个角色档案。', {
+      count: characters.length,
+    });
+    hintNode.textContent = profileGameId && matchReason && !boundGameId
+      ? `${loadedText} ${uiTf('ui.character_profile.hint_auto_matched', '已匹配档案：{game}', { game: profileGameId })}`
+      : loadedText;
+  }
+
+  const selectedName = String(select.value || '').trim();
+  fixedButton.disabled = !displayKey || !characters.length || !selectedName;
+  offButton.disabled = mode === 'off' && !fixedName;
+  refreshButton.disabled = Boolean(characterProfileRefreshInFlight);
+}
+
+function shouldRefreshCharacterProfilesForStatus(status) {
+  const profileKey = characterProfileRefreshKeyForStatus(status);
+  if (!latestCharacterProfileSnapshot) {
+    return true;
+  }
+  if (profileKey !== lastCharacterProfileGameId) {
+    return true;
+  }
+  if (latestCharacterProfileSnapshot.degraded) {
+    return true;
+  }
+  if (Date.now() - lastCharacterProfileRefreshAt > CHARACTER_PROFILE_REFRESH_TTL_MS) {
+    return true;
+  }
+  const statusCount = Number(status?.character_profile_count || 0);
+  const snapshotCount = Array.isArray(latestCharacterProfileSnapshot.characters)
+    ? latestCharacterProfileSnapshot.characters.length
+    : 0;
+  return statusCount !== snapshotCount;
+}
+
+function refreshCharacterProfiles({ force = false, silent = true } = {}) {
+  if (characterProfileRefreshInFlight) {
+    return characterProfileRefreshInFlight;
+  }
+
+  const refreshKey = characterProfileRefreshKeyForStatus(latestStatus);
+  const profileKey = String(
+    latestStatus?.character_profile_game_id || latestStatus?.bound_game_id || '',
+  ).trim();
+
+  const now = Date.now();
+  if (
+    !force
+    && refreshKey === lastCharacterProfileGameId
+    && now - lastCharacterProfileRefreshAt < CHARACTER_PROFILE_REFRESH_TTL_MS
+  ) {
+    renderCharacterProfilePanel(latestStatus);
+    return Promise.resolve(false);
+  }
+
+  characterProfileRefreshInFlight = callPlugin('galgame_get_character_list', {}, {
+    timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS,
+  }).then((payload) => {
+    latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot(payload, latestStatus);
+    lastCharacterProfileGameId = refreshKey;
+    lastCharacterProfileRefreshAt = Date.now();
+    renderCharacterProfilePanel(latestStatus);
+    return true;
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    lastCharacterProfileGameId = refreshKey;
+    lastCharacterProfileRefreshAt = Date.now();
+    latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot({
+      game_id: profileKey,
+      characters: [],
+      degraded: true,
+      diagnostic: message,
+    }, latestStatus);
+    renderCharacterProfilePanel(latestStatus);
+    if (!silent) {
+      setFlash(message, 'error');
+    }
+    return false;
+  }).finally(() => {
+    characterProfileRefreshInFlight = null;
+    renderCharacterProfilePanel(latestStatus);
+  });
+  renderCharacterProfilePanel(latestStatus);
+  return characterProfileRefreshInFlight;
+}
+
+async function setCharacterProfileMode(mode) {
+  const normalized = String(mode || '').trim();
+  const select = document.getElementById('characterProfileSelect');
+  const characterName = String(select?.value || '').trim();
+  if (normalized === 'fixed' && !characterName) {
+    throw new Error(uiT('ui.character_profile.error_select_required', '请先选择角色。'));
+  }
+  const args = normalized === 'fixed'
+    ? { mode: 'fixed', character_name: characterName }
+    : { mode: 'off' };
+  setFlash(uiT('ui.flash.saving_character_mode', '正在保存角色档案设置...'), 'info');
+  const payload = await callPlugin('galgame_set_character_mode', args);
+  setFlash(payload.summary || uiT('ui.flash.character_mode_saved', '角色档案设置已保存'), 'success');
+  await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
+  await refreshCharacterProfiles({ force: true, silent: true });
 }
 
 function formatConnectionStateZh(value) {
@@ -5183,6 +5420,11 @@ function renderRapidOcr(status) {
   const selectedBackend = status.ocr_backend_selection || 'auto';
   const usingRapidOcr = runtime.backend_kind === 'rapidocr';
   const manualGuide = status.download_guide?.rapidocr_models || {};
+  const rapidocrJapanV5Note = (
+    rapidocr.ocr_version === 'PP-OCRv5' && rapidocr.lang_type === 'japan'
+      ? uiT('ui.install.rapidocr.v5_japan_note', '日文识别使用 PP-OCRv5 检测/方向模型，并沿用 PP-OCRv4 日文识别模型。')
+      : ''
+  );
   applyRapidOcrModelsGate(rapidocr);
   const lastTask = installRuntime.rapidocr_models.state;
   const modelState = lastTask;
@@ -5226,7 +5468,7 @@ function renderRapidOcr(status) {
     const modelCacheDir = rapidocr.model_cache_dir || uiT('ui.status.unknown', '未知');
     const manualRecoveryBody = uiTf(
       'ui.install.rapidocr.missing_models_manual_body',
-      '当前选择 lang_type={lang} + ocr_version={version}，需要下载缺失模型文件到本地缓存。自动下载会优先使用百度云，失败则回退到备用源/ModelScope；也可按 {source} 提供的信息手动下载并放到 {dir}，再点击“刷新状态”。',
+      '当前选择 lang_type={lang} + ocr_version={version}，需要下载缺失模型文件到本地缓存。自动下载会使用 ModelScope；也可按 {source} 提供的信息手动下载并放到 {dir}，再点击“刷新状态”。',
       {
         lang: langType,
         version: ocrVersion,
@@ -5246,6 +5488,7 @@ function renderRapidOcr(status) {
       manualGuide.url ? `${uiT('ui.install.manual_download_url', '手动下载')}: ${manualGuide.url}` : '',
       manualGuide.code ? `${uiT('ui.install.manual_download_code', '提取码')}: ${manualGuide.code}` : '',
       manualGuide.target_dir ? `${uiT('ui.install.manual_target_dir', '放置目录')}: ${manualGuide.target_dir}` : '',
+      rapidocrJapanV5Note,
       !canDownloadModels ? manualRecoveryBody : '',
       downloadFailed ? `${uiT('ui.install.last_error', '上次错误')}: ${modelState.error || modelState.message || ''}` : '',
     ].filter(Boolean).join('\n');
@@ -5259,6 +5502,7 @@ function renderRapidOcr(status) {
       rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '',
       rapidocr.model_cache_dir ? `${uiT('ui.install.model_dir', '模型目录')}: ${rapidocr.model_cache_dir}` : '',
       usingRapidOcr ? `${uiT('ui.install.model_label', '模型')}: ${runtime.backend_model || rapidocr.selected_model || ''}` : '',
+      rapidocrJapanV5Note,
     ].filter(Boolean).join('\n');
   } else if (rapidocr.detail === 'broken_runtime') {
     cardStatus = 'error';
@@ -5268,7 +5512,7 @@ function renderRapidOcr(status) {
   } else {
     cardStatus = 'warning';
     chipText = uiT('ui.install.status.not_found', '未检测到');
-    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 galgame 插件按需自动下载，默认优先百度云。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group galgame` 后重启。');
+    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 galgame 插件按需从 ModelScope 自动下载。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group galgame` 后重启。');
   }
 
   if (modelState && !isInstallTaskTerminal(modelState)) {
@@ -5286,11 +5530,38 @@ function renderRapidOcr(status) {
   syncActionButtons(actions, buttons.join(''));
   renderInstallTaskState('rapidocr_models');
   applyRapidOcrModelsGate(rapidocr);
+  renderRapidOcrVersionBar(rapidocr);
   renderRapidOcrLangBar(rapidocr);
   rebindCardButton('rapidocrUseBtn', () => setOcrBackendSelection({ backendSelection: 'rapidocr' }));
   rebindCardButton('ocrBackendAutoBtn', () => setOcrBackendSelection({ backendSelection: 'auto' }));
   rebindCardButton('rapidocrModelsDownloadBtn', () => startInstall('rapidocr_models', false, { navigate: false }));
   bindRapidOcrLangButtons();
+}
+
+function renderRapidOcrVersionBar(rapidocr) {
+  const bar = document.getElementById('rapidocrVersionBar');
+  if (!bar) {
+    return;
+  }
+  const usable = isRapidOcrUsable(rapidocr) || hasMissingRapidOcrModelFiles(rapidocr);
+  bar.hidden = !usable;
+  if (!usable) {
+    setRapidOcrVersionControlsDisabled(true);
+    return;
+  }
+
+  const ocrVersion = rapidocr.ocr_version || 'PP-OCRv4';
+  const idMap = { 'PP-OCRv4': 'V4', 'PP-OCRv5': 'V5' };
+  Object.entries(idMap).forEach(([version, suffix]) => {
+    const btn = document.getElementById('rapidocrVersion' + suffix + 'Btn');
+    if (!btn) {
+      return;
+    }
+    btn.classList.toggle('active', ocrVersion === version);
+    btn.setAttribute('aria-checked', ocrVersion === version ? 'true' : 'false');
+    btn.setAttribute('tabindex', ocrVersion === version ? '0' : '-1');
+    btn.disabled = rapidOcrLangRequestPending;
+  });
 }
 
 function renderRapidOcrLangBar(rapidocr) {
@@ -5316,7 +5587,7 @@ function renderRapidOcrLangBar(rapidocr) {
     btn.classList.toggle('active', langType === lang);
     btn.setAttribute('aria-checked', langType === lang ? 'true' : 'false');
     btn.setAttribute('tabindex', langType === lang ? '0' : '-1');
-    btn.disabled = rapidOcrLangRequestPending;
+    btn.disabled = rapidOcrLangRequestPending || autoDetect;
   });
 
   const checkbox = document.getElementById('rapidocrAutoDetectCheck');
@@ -5327,6 +5598,7 @@ function renderRapidOcrLangBar(rapidocr) {
 }
 
 function setRapidOcrLangControlsDisabled(disabled) {
+  setRapidOcrVersionControlsDisabled(disabled);
   ['Ch', 'Japan', 'Korean', 'En'].forEach((suffix) => {
     const btn = document.getElementById('rapidocrLang' + suffix + 'Btn');
     if (btn) {
@@ -5339,7 +5611,21 @@ function setRapidOcrLangControlsDisabled(disabled) {
   }
 }
 
+function setRapidOcrVersionControlsDisabled(disabled) {
+  ['V4', 'V5'].forEach((suffix) => {
+    const btn = document.getElementById('rapidocrVersion' + suffix + 'Btn');
+    if (btn) {
+      btn.disabled = Boolean(disabled);
+    }
+  });
+}
+
 function bindRapidOcrLangButtons() {
+  const versionMap = { V4: 'PP-OCRv4', V5: 'PP-OCRv5' };
+  Object.entries(versionMap).forEach(([suffix, version]) => {
+    rebindCardButton('rapidocrVersion' + suffix + 'Btn', () => setRapidOcrLang({ ocr_version: version }));
+  });
+
   const idMap = { Ch: 'ch', Japan: 'japan', Korean: 'korean', En: 'en' };
   Object.entries(idMap).forEach(([suffix, lang]) => {
     rebindCardButton('rapidocrLang' + suffix + 'Btn', () => setRapidOcrLang({ lang_type: lang }));
@@ -6236,6 +6522,14 @@ async function refreshAll(options = {}) {
           })
         ));
       }
+      if (shouldRefreshCharacterProfilesForStatus(status)) {
+        runBackgroundTask('refresh character profiles after status', () => (
+          refreshCharacterProfiles({
+            reason: 'status_needs_character_profile_refresh',
+            silent: true,
+          })
+        ));
+      }
       if (showInsightPending && !latestInsights.suggestPayload) {
         renderInsightsPending();
       }
@@ -6300,13 +6594,17 @@ async function withButtonPending(buttonOrId, pendingText, fn) {
     return fn();
   }
   const originalText = button.textContent;
+  const originalDisabled = button.disabled;
   button.disabled = true;
   button.textContent = pendingText;
   try {
     return await fn();
   } finally {
-    button.disabled = false;
+    button.disabled = originalDisabled;
     button.textContent = originalText;
+    if (String(button.id || '').startsWith('characterProfile')) {
+      renderCharacterProfilePanel(latestStatus);
+    }
   }
 }
 
@@ -6452,7 +6750,14 @@ async function setRapidOcrLang(payload = {}) {
     if (nextPayload) {
       setRapidOcrLang(nextPayload);
     } else {
-      setRapidOcrLangControlsDisabled(false);
+      const checkbox = document.getElementById('rapidocrAutoDetectCheck');
+      const latestRapidOcr = latestStatus && latestStatus.rapidocr ? latestStatus.rapidocr : {};
+      const autoDetect = checkbox ? checkbox.checked : latestRapidOcr.auto_detect_lang !== false;
+      if (latestStatus && latestStatus.rapidocr) {
+        renderRapidOcrLangBar({ ...latestRapidOcr, auto_detect_lang: autoDetect });
+      } else if (!autoDetect && !rapidOcrLangRequestPending) {
+        setRapidOcrLangControlsDisabled(false);
+      }
     }
     if (saved && !nextPayload) {
       await refreshAll({ preserveFlash: true, forceInsights: true });
@@ -6581,7 +6886,10 @@ async function bindGame(gameId = '') {
     setFlash(normalized
       ? uiTf('ui.flash.game_bound', '已绑定 {gameId}', { gameId: normalized })
       : uiT('ui.flash.auto_select_restored', '已恢复自动选择'), 'success');
+    latestCharacterProfileSnapshot = null;
+    lastCharacterProfileGameId = '';
     await refreshAll({ preserveFlash: true, forceInsights: true });
+    await refreshCharacterProfiles({ force: true, silent: true });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -7296,6 +7604,10 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
         force: true,
         silent: true,
       }).catch((error) => { console.error('[galgame] async action failed', error); });
+      refreshCharacterProfiles({
+        force: true,
+        silent: true,
+      }).catch((error) => { console.error('[galgame] async action failed', error); });
     }
     const windowsLoaded = loaded
       ? await refreshOcrWindowTargetsIfNeeded({
@@ -7405,6 +7717,42 @@ document.getElementById('queryContextBtn')?.addEventListener('click', () => {
 });
 document.getElementById('sendMessageBtn')?.addEventListener('click', () => {
   withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
+});
+document.getElementById('characterProfileFixedBtn')?.addEventListener('click', () => {
+  withButtonPending('characterProfileFixedBtn', uiT('ui.pending.saving', '保存中...'), () => (
+    setCharacterProfileMode('fixed')
+  )).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('characterProfileOffBtn')?.addEventListener('click', () => {
+  withButtonPending('characterProfileOffBtn', uiT('ui.pending.saving', '保存中...'), () => (
+    setCharacterProfileMode('off')
+  )).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('characterProfileRefreshBtn')?.addEventListener('click', () => {
+  refreshCharacterProfiles({
+    force: true,
+    silent: false,
+  }).then((refreshed) => {
+    if (refreshed) {
+      setFlash(uiT('ui.flash.character_profiles_refreshed', '角色档案列表已刷新'), 'success');
+    }
+  }).catch((error) => {
+    setFlash(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+document.getElementById('characterProfileSelect')?.addEventListener('change', () => {
+  renderCharacterProfilePanel(latestStatus);
+});
+document.getElementById('characterProfileSelect')?.addEventListener('focus', () => {
+  if (shouldRefreshCharacterProfilesForStatus(latestStatus)) {
+    refreshCharacterProfiles({ force: true, silent: true }).catch((error) => {
+      console.warn('[galgame_plugin ui] character profile focus refresh failed', error);
+    });
+  }
 });
 document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () => {
   refreshMemoryProcessTargetsIfNeeded({

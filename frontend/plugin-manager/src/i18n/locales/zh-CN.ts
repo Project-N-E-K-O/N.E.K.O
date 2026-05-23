@@ -489,7 +489,6 @@ export default {
     reloadFailed: '重载失败',
     buildFailed: '构建插件失败',
     deleteFailed: '删除插件失败',
-    pluginDisabled: '插件已禁用，请先启用',
     pluginLoadFailed: '插件加载失败，当前不可启动',
     confirmDisableExt: '确认禁用此扩展？宿主插件中的扩展功能将被卸载。',
     extensionDisabled: '扩展已禁用',

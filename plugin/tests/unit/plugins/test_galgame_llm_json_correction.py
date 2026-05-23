@@ -23,8 +23,9 @@ class RecordingBackend(GalgameLLMBackend):
         *,
         operation: str,
         messages: list[dict[str, str]],
+        tier: str | None = None,
     ) -> str:
-        self.calls.append({"operation": operation, "messages": list(messages)})
+        self.calls.append({"operation": operation, "messages": list(messages), "tier": tier})
         if not self._responses:
             raise AssertionError("unexpected extra llm call")
         return self._responses.pop(0)
@@ -116,7 +117,7 @@ async def test_json_correction_prompt_bounds_bad_output_and_succeeds() -> None:
     assert len(assistant_bad_output) < len(bad_output)
     assert "TAIL_SHOULD_NOT_BE_INCLUDED" not in assistant_bad_output
     assert "...[truncated " in assistant_bad_output
-    assert "JSON 修正请求 1/1" in correction_prompt
+    assert "JSON correction attempt 1/1" in correction_prompt
     assert "operation=agent_reply" in correction_prompt
 
 

@@ -20,6 +20,7 @@ from plugin.plugins.galgame_plugin.reader import read_session_json, tail_events_
 from plugin.plugins.galgame_plugin.service import build_config
 from plugin.plugins.galgame_plugin.textractor_support import (
     TextractorInstallError,
+    _candidate_assets,
     _download_file,
     inspect_textractor_installation,
     install_textractor,
@@ -61,6 +62,33 @@ class _CapturingLogger(_Logger):
     def debug(self, *args, **kwargs):
         del kwargs
         self.messages.append(("debug", args))
+
+
+def test_textractor_candidate_assets_keep_renamed_unsigned_zip() -> None:
+    release_payload = {
+        "assets": [
+            {
+                "name": "Source code.zip",
+                "browser_download_url": "https://example.test/source.zip",
+            },
+            {
+                "name": "Textractor-vNext-win-portable.zip",
+                "browser_download_url": "https://example.test/Textractor-vNext-win-portable.zip",
+            },
+            {
+                "name": "notes.txt",
+                "browser_download_url": "https://example.test/notes.txt",
+            },
+        ]
+    }
+
+    assert _candidate_assets(release_payload) == [
+        {
+            "name": "Textractor-vNext-win-portable.zip",
+            "url": "https://example.test/Textractor-vNext-win-portable.zip",
+            "sha256": "",
+        }
+    ]
 
 
 class _FakeTextractorHandle:
@@ -175,7 +203,7 @@ def test_memory_reader_config_reads_textractor_proxy(tmp_path: Path) -> None:
     )
 
     assert config.memory_reader_textractor_proxy == "http://127.0.0.1:7890"
-    assert config.memory_reader_install_timeout_seconds == 300.0
+    assert config.memory_reader_install_timeout_seconds == 600.0
 
 
 @pytest.mark.asyncio
@@ -237,6 +265,19 @@ def test_textractor_job_object_uses_kill_on_close(monkeypatch: pytest.MonkeyPatc
     handle = galgame_memory_reader._create_kill_on_close_job_for_process(process)
     assert handle == 456
     assert [name for name, _args in calls] == ["set_info", "assign"]
+
+
+def test_memory_reader_ctypes_proxy_updates_win32_job_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugin.plugins.galgame_plugin import _win32_job_objects
+
+    original_ctypes = galgame_memory_reader.ctypes
+    fake_ctypes = SimpleNamespace(windll=SimpleNamespace())
+
+    try:
+        monkeypatch.setattr(galgame_memory_reader, "ctypes", fake_ctypes)
+        assert _win32_job_objects.ctypes is fake_ctypes
+    finally:
+        monkeypatch.setattr(galgame_memory_reader, "ctypes", original_ctypes)
 
 
 @pytest.mark.asyncio
@@ -1184,6 +1225,7 @@ async def test_textractor_stdout_reader_logs_regular_exception() -> None:
 @pytest.mark.asyncio
 async def test_memory_reader_manager_marks_attached_without_text_when_only_textractor_logs_exist(
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     bridge_root = tmp_path / "bridge"
     bridge_root.mkdir()
@@ -1231,7 +1273,11 @@ async def test_memory_reader_manager_marks_attached_without_text_when_only_textr
     events_path = bridge_root / game_id / "events.jsonl"
     events = tail_events_jsonl(events_path, offset=0, line_buffer=b"").events
     assert [event["type"] for event in events] == ["session_started"]
-    assert any(level == "debug" and args[0] == "memory_reader Textractor log: {}" for level, args in logger.messages)
+    assert not any(
+        level == "debug" and args[0] == "memory_reader Textractor log: {}"
+        for level, args in logger.messages
+    )
+    assert "memory_reader Textractor log: Textractor: attached to target process" in capsys.readouterr().out
 
     await manager.shutdown()
 
@@ -1283,7 +1329,7 @@ async def test_install_textractor_release_connect_timeout_sets_failed_phase(
             logger=_Logger(),
             configured_path="",
             install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
-            release_api_url="https://example.test/latest",
+            release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
             timeout_seconds=5.0,
             force=True,
             platform_fn=lambda: True,
@@ -1309,12 +1355,13 @@ async def test_install_textractor_asset_download_failure_sets_failed_phase(
             {
                 "name": "Textractor-x64.zip",
                 "browser_download_url": "https://example.test/Textractor-x64.zip",
+                "sha256": "0" * 64,
             }
         ],
     }
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://example.test/latest":
+        if str(request.url) == "https://api.github.com/repos/Artikash/Textractor/releases/latest":
             return httpx.Response(200, json=release_payload)
         if str(request.url) == "https://example.test/Textractor-x64.zip":
             raise httpx.ConnectError("download connection failed", request=request)
@@ -1341,7 +1388,7 @@ async def test_install_textractor_asset_download_failure_sets_failed_phase(
                 logger=_Logger(),
                 configured_path="",
                 install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
-                release_api_url="https://example.test/latest",
+                release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
                 timeout_seconds=5.0,
                 force=True,
                 platform_fn=lambda: True,
@@ -1356,6 +1403,91 @@ async def test_install_textractor_asset_download_failure_sets_failed_phase(
     assert excinfo.value.failed_phase == "downloading"
     assert failed_updates[-1]["failed_phase"] == "downloading"
     assert progress_payloads[-1]["failed_phase"] == "downloading"
+
+
+@pytest.mark.asyncio
+async def test_install_textractor_accepts_renamed_unsigned_release_asset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_root = tmp_path / "TextractorInstalled"
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    archive_path = archive_root / "Textractor.zip"
+    inner_dir = archive_root / "Textractor"
+    inner_dir.mkdir()
+    (inner_dir / "TextractorCLI.exe").write_text("stub", encoding="utf-8")
+
+    import zipfile
+
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.write(inner_dir / "TextractorCLI.exe", arcname="Textractor/TextractorCLI.exe")
+
+    release_payload = {
+        "name": "Textractor v1.0.0",
+        "assets": [
+            {
+                "name": "Textractor-vNext-win-portable.zip",
+                "browser_download_url": "https://example.test/Textractor-vNext-win-portable.zip",
+            }
+        ],
+    }
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://api.github.com/repos/Artikash/Textractor/releases/latest":
+            return httpx.Response(200, json=release_payload)
+        if str(request.url) == "https://example.test/Textractor-vNext-win-portable.zip":
+            return httpx.Response(200, content=archive_path.read_bytes())
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    try:
+        result = await install_textractor(
+            logger=_Logger(),
+            configured_path="",
+            install_target_dir_raw=str(install_root),
+            release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
+            timeout_seconds=5.0,
+            force=True,
+            platform_fn=lambda: True,
+            client_factory=lambda: client,
+        )
+    finally:
+        await client.aclose()
+
+    assert result["installed"] is True
+    assert result["asset_name"] == "Textractor-vNext-win-portable.zip"
+    assert result["detected_path"] == str(install_root / "TextractorCLI.exe")
+    assert (install_root / "TextractorCLI.exe").is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "release_api_url",
+    [
+        "http://api.github.com/repos/Artikash/Textractor/releases/latest",
+        "https://API.GITHUB.COM/repos/Artikash/Textractor/releases/latest",
+        "https://api.github.com:443/repos/Artikash/Textractor/releases/latest",
+        "https://127.0.0.1/repos/Artikash/Textractor/releases/latest",
+        "https://github.com/Artikash/Textractor/releases/latest",
+    ],
+)
+async def test_install_textractor_rejects_non_allowlisted_release_url(
+    tmp_path: Path,
+    release_api_url: str,
+) -> None:
+    with pytest.raises(TextractorInstallError) as excinfo:
+        await install_textractor(
+            logger=_Logger(),
+            configured_path="",
+            install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
+            release_api_url=release_api_url,
+            timeout_seconds=5.0,
+            force=True,
+            platform_fn=lambda: True,
+        )
+
+    assert excinfo.value.failed_phase == "fetch_release"
 
 
 @pytest.mark.asyncio
@@ -1382,7 +1514,7 @@ async def test_install_textractor_invalid_proxy_reports_install_failure(
             logger=_Logger(),
             configured_path="",
             install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
-            release_api_url="https://example.test/latest",
+            release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
             timeout_seconds=5.0,
             textractor_proxy="not-a-url",
             force=True,
@@ -1408,16 +1540,18 @@ async def test_install_textractor_uses_deepest_failed_candidate_phase(
             {
                 "name": "Textractor-a.zip",
                 "browser_download_url": "https://example.test/Textractor-a.zip",
+                "sha256": "0" * 64,
             },
             {
                 "name": "Textractor-b.zip",
                 "browser_download_url": "https://example.test/Textractor-b.zip",
+                "sha256": hashlib.sha256(b"not a zip").hexdigest(),
             },
         ],
     }
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://example.test/latest":
+        if str(request.url) == "https://api.github.com/repos/Artikash/Textractor/releases/latest":
             return httpx.Response(200, json=release_payload)
         if str(request.url) == "https://example.test/Textractor-a.zip":
             raise httpx.ConnectError("download connection failed", request=request)
@@ -1446,7 +1580,7 @@ async def test_install_textractor_uses_deepest_failed_candidate_phase(
                 logger=_Logger(),
                 configured_path="",
                 install_target_dir_raw=str(tmp_path / "TextractorInstalled"),
-                release_api_url="https://example.test/latest",
+                release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
                 timeout_seconds=5.0,
                 force=True,
                 platform_fn=lambda: True,
@@ -1493,12 +1627,13 @@ async def test_install_textractor_downloads_and_extracts_latest_release_zip(
             {
                 "name": "Textractor-x64.zip",
                 "browser_download_url": "https://example.test/Textractor-x64.zip",
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             }
         ],
     }
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url) == "https://example.test/latest":
+        if str(request.url) == "https://api.github.com/repos/Artikash/Textractor/releases/latest":
             return httpx.Response(200, json=release_payload)
         if str(request.url) == "https://example.test/Textractor-x64.zip":
             return httpx.Response(200, content=archive_path.read_bytes())
@@ -1510,7 +1645,7 @@ async def test_install_textractor_downloads_and_extracts_latest_release_zip(
             logger=_Logger(),
             configured_path="",
             install_target_dir_raw=str(install_root),
-            release_api_url="https://example.test/latest",
+            release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
             timeout_seconds=5.0,
             platform_fn=lambda: True,
             client_factory=lambda: client,
@@ -1551,7 +1686,7 @@ async def test_install_textractor_records_preflight_state_before_request(
                 logger=_Logger(),
                 configured_path="",
                 install_target_dir_raw=str(install_root),
-                release_api_url="https://example.test/latest",
+                release_api_url="https://api.github.com/repos/Artikash/Textractor/releases/latest",
                 timeout_seconds=5.0,
                 force=True,
                 task_id="run-1",

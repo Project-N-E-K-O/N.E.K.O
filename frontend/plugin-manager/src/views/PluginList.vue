@@ -782,7 +782,7 @@ async function handleDangerActionConfirm() {
 }
 
 const runningPlugins = computed(() => {
-  return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running' && plugin.enabled !== false)
+  return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
 // ── Import (upload + install) ─────────────────────────────────────────

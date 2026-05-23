@@ -12,6 +12,9 @@
     const S = window.appState;
     const C = window.appConst;
     const U = window.appUtils;
+    const PENDING_IMAGE_MAX_ENCODED_BYTES = 10 * 1024 * 1024;
+    const PENDING_IMAGE_MIN_LONG_SIDE = 320;
+    const PENDING_IMAGE_JPEG_QUALITIES = [0.92, 0.86, 0.78, 0.7, 0.62, 0.52, 0.42, 0.32];
 
     function isHomeTutorialInteractionLocked() {
         try {
@@ -30,6 +33,224 @@
             );
         }
     }
+
+    function getImageNaturalSize(image) {
+        return {
+            width: image.naturalWidth || image.width || 0,
+            height: image.naturalHeight || image.height || 0
+        };
+    }
+
+    function loadImageFromSource(src) {
+        return new Promise(function (resolve, reject) {
+            var image = new Image();
+            var settled = false;
+            var finish = function (callback, value) {
+                if (settled) return;
+                settled = true;
+                callback(value);
+            };
+
+            image.onload = function () {
+                var size = getImageNaturalSize(image);
+                if (!size.width || !size.height) {
+                    finish(reject, new Error('INVALID_IMAGE_SIZE'));
+                    return;
+                }
+                finish(resolve, image);
+            };
+            image.onerror = function () {
+                finish(reject, new Error('INVALID_IMAGE_TYPE'));
+            };
+            image.src = src;
+        });
+    }
+
+    function loadImageFromBlob(blob) {
+        return new Promise(function (resolve, reject) {
+            var objectUrl = URL.createObjectURL(blob);
+            loadImageFromSource(objectUrl)
+                .then(resolve, reject)
+                .finally(function () {
+                    URL.revokeObjectURL(objectUrl);
+                });
+        });
+    }
+
+    function readBlobAsDataUrl(blob, mimeType) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () {
+                resolve(String(reader.result || ''));
+            };
+            reader.onerror = function () {
+                reject(reader.error || new Error('READ_IMAGE_FAILED'));
+            };
+
+            var sourceBlob = mimeType ? new Blob([blob], { type: mimeType }) : blob;
+            reader.readAsDataURL(sourceBlob);
+        });
+    }
+
+    function drawImageToJpegDataUrl(image, width, height, quality) {
+        var canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        var context = canvas.getContext('2d');
+        if (!context) {
+            throw new Error('CANVAS_UNAVAILABLE');
+        }
+
+        // JPEG 没有透明通道，先铺白底，避免透明 PNG/WebP 转换后变成黑底。
+        context.fillStyle = '#fff';
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        var dataUrl = '';
+        try {
+            dataUrl = canvas.toDataURL('image/jpeg', quality);
+        } catch (_) {
+            throw new Error('IMAGE_ENCODE_FAILED');
+        }
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) {
+            throw new Error('IMAGE_ENCODE_FAILED');
+        }
+        return dataUrl;
+    }
+
+    function getDataUrlEncodedBytes(dataUrl) {
+        var text = String(dataUrl || '');
+        var commaIndex = text.indexOf(',');
+        if (commaIndex < 0) {
+            return text.length;
+        }
+
+        var base64Text = text.slice(commaIndex + 1).replace(/\s/g, '');
+        var padding = base64Text.endsWith('==') ? 2 : (base64Text.endsWith('=') ? 1 : 0);
+        return Math.max(0, Math.floor(base64Text.length * 3 / 4) - padding);
+    }
+
+    function compressLoadedImageToPendingDataUrl(image) {
+        var natural = getImageNaturalSize(image);
+        if (!natural.width || !natural.height) {
+            throw new Error('INVALID_IMAGE_SIZE');
+        }
+
+        var width = natural.width;
+        var height = natural.height;
+        var bestDataUrl = '';
+
+        for (var pass = 0; pass < 6; pass += 1) {
+            for (var i = 0; i < PENDING_IMAGE_JPEG_QUALITIES.length; i += 1) {
+                var dataUrl = drawImageToJpegDataUrl(image, width, height, PENDING_IMAGE_JPEG_QUALITIES[i]);
+                bestDataUrl = dataUrl;
+                if (getDataUrlEncodedBytes(dataUrl) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+                    return dataUrl;
+                }
+            }
+
+            var ratio = Math.sqrt(PENDING_IMAGE_MAX_ENCODED_BYTES / Math.max(getDataUrlEncodedBytes(bestDataUrl), 1)) * 0.92;
+            var longSide = Math.max(width, height);
+            var nextLongSide = Math.max(PENDING_IMAGE_MIN_LONG_SIDE, Math.floor(longSide * ratio));
+            var nextScale = nextLongSide / Math.max(longSide, 1);
+            var nextWidth = Math.max(1, Math.floor(width * nextScale));
+            var nextHeight = Math.max(1, Math.floor(height * nextScale));
+            if (nextWidth >= width && nextHeight >= height) {
+                break;
+            }
+            width = nextWidth;
+            height = nextHeight;
+        }
+
+        if (getDataUrlEncodedBytes(bestDataUrl) > PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            throw new Error('IMAGE_TOO_LARGE');
+        }
+        return bestDataUrl;
+    }
+
+    function isLikelyImageFile(file) {
+        if (!file || typeof file !== 'object') return false;
+        if (/^image\//i.test(file.type || '')) return true;
+        var name = String(file.name || '').toLowerCase();
+        return /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|tiff?|webp)$/i.test(name);
+    }
+
+    function isLikelyJpegBlob(blob) {
+        if (!blob || typeof blob !== 'object') return false;
+        if (/^image\/jpe?g$/i.test(blob.type || '')) return true;
+        var name = String(blob.name || '').toLowerCase();
+        return /\.(jpe?g)$/i.test(name);
+    }
+
+    mod.normalizeImageBlobForPendingList = async function normalizeImageBlobForPendingList(blob) {
+        if (!(blob instanceof Blob)) {
+            throw new Error('INVALID_FILE');
+        }
+
+        if (isLikelyJpegBlob(blob) && blob.size <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            var originalDataUrl = await readBlobAsDataUrl(blob, 'image/jpeg');
+            await loadImageFromSource(originalDataUrl);
+            return originalDataUrl;
+        }
+
+        var image = await loadImageFromBlob(blob);
+        return compressLoadedImageToPendingDataUrl(image);
+    };
+
+    mod.normalizeImageDataUrlForPendingList = async function normalizeImageDataUrlForPendingList(dataUrl) {
+        var src = String(dataUrl || '');
+        if (!/^data:image\//i.test(src)) {
+            throw new Error('INVALID_IMAGE_DATA_URL');
+        }
+
+        var image = await loadImageFromSource(src);
+        if (/^data:image\/jpe?g;base64,/i.test(src)
+                && getDataUrlEncodedBytes(src) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+            return src;
+        }
+        return compressLoadedImageToPendingDataUrl(image);
+    };
+
+    mod.normalizePendingAttachmentItem = async function normalizePendingAttachmentItem(item) {
+        if (!item || !item.querySelector) {
+            throw new Error('INVALID_ATTACHMENT_ITEM');
+        }
+
+        var img = item.querySelector('.screenshot-thumbnail');
+        if (!img || !img.src) {
+            throw new Error('INVALID_ATTACHMENT_IMAGE');
+        }
+
+        var normalized = await mod.normalizeImageDataUrlForPendingList(img.src);
+        if (normalized && normalized !== img.src) {
+            img.src = normalized;
+            delete item.dataset.avatarPosition;
+        }
+        return normalized;
+    };
+
+    mod.normalizeAllPendingComposerAttachments = async function normalizeAllPendingComposerAttachments() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+
+        var items = Array.from(screenshotsList.children);
+        var urls = [];
+        var changed = false;
+        for (var i = 0; i < items.length; i += 1) {
+            var img = items[i].querySelector('.screenshot-thumbnail');
+            var before = img && img.src ? img.src : '';
+            var normalized = await mod.normalizePendingAttachmentItem(items[i]);
+            urls.push(normalized);
+            if (before && normalized && before !== normalized) {
+                delete items[i].dataset.avatarPosition;
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            mod.syncPendingComposerAttachments();
+        }
+        return urls;
+    };
 
     // ======================== Screenshot helpers ========================
 
@@ -165,7 +386,7 @@
             input = document.createElement('input');
             input.id = 'reactChatWindowImportImageInput';
             input.type = 'file';
-            input.accept = 'image/*';
+            input.accept = 'image/*,.avif,.bmp,.gif,.heic,.heif,.ico,.jpg,.jpeg,.png,.tif,.tiff,.webp';
             input.multiple = true;
             input.hidden = true;
             document.body.appendChild(input);
@@ -183,10 +404,12 @@
             Promise.allSettled(files.map(mod.importImageFileToPendingList))
                 .then(function (results) {
                     var succeeded = 0;
+                    var failed = 0;
                     for (var i = 0; i < results.length; i++) {
                         if (results[i].status === 'fulfilled') {
                             succeeded++;
                         } else {
+                            failed++;
                             console.error('[导入图片] 单张处理失败:', results[i].reason);
                         }
                     }
@@ -195,7 +418,8 @@
                             window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
                             3000
                         );
-                    } else {
+                    }
+                    if (failed > 0) {
                         window.showStatusToast(
                             window.t ? window.t('app.importImageFailed') : '导入图片失败',
                             4000
@@ -212,31 +436,19 @@
     };
 
     mod.importImageFileToPendingList = function importImageFileToPendingList(file) {
-        return new Promise(function (resolve, reject) {
-            if (!(file instanceof File)) {
-                reject(new Error('INVALID_FILE'));
-                return;
-            }
+        if (!(file instanceof File)) {
+            return Promise.reject(new Error('INVALID_FILE'));
+        }
 
-            if (!/^image\//i.test(file.type || '')) {
-                reject(new Error('INVALID_IMAGE_TYPE'));
-                return;
-            }
+        if (file.type && !/^image\//i.test(file.type) && !isLikelyImageFile(file)) {
+            return Promise.reject(new Error('INVALID_IMAGE_TYPE'));
+        }
 
-            var reader = new FileReader();
-            reader.onload = function () {
-                try {
-                    mod.addScreenshotToList(String(reader.result || ''));
-                    resolve(reader.result);
-                } catch (error) {
-                    reject(error);
-                }
-            };
-            reader.onerror = function () {
-                reject(reader.error || new Error('READ_IMAGE_FAILED'));
-            };
-            reader.readAsDataURL(file);
-        });
+        return mod.normalizeImageBlobForPendingList(file)
+            .then(function (dataUrl) {
+                mod.addScreenshotToList(dataUrl);
+                return dataUrl;
+            });
     };
 
     mod.openImageImportPicker = function openImageImportPicker() {
@@ -969,6 +1181,58 @@
         }, 250);
     }
 
+    // 切语音前若 assistant 文本回复还在路上，等它跑完再 end_session。
+    // 否则 end_session 会把 message_handler_task / LLM 流强行掐断，
+    // omni_offline_client 收到 httpx ReadError → 给前端发 TEXT_GEN_ERROR_AFTER_PARTIAL
+    // → 用户在切语音的瞬间看到一条"Text generation interrupted (ReadError)"。
+    // gal 模式点选项后紧跟着点麦克风时最容易踩。15s 兜底，防止卡死的流永远不结束。
+    function isAssistantTextResponseInFlight() {
+        // 与 _isGreetingCheckBlocked (app-websocket.js:2889) 对齐：turn-end 后
+        // assistantTurnId 不会被清空（要等下一条用户消息或角色切换才清），
+        // 必须靠 assistantTurnCompletedId 区分"已收尾"和"还在跑"。
+        // 否则"回复跑完，用户停顿一会儿再点麦克风"会被误判成在路上，
+        // 干等到 15s timeout 才进语音。
+        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        if (S.assistantTurnAwaitingBubble) return true;
+        if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
+        // 纯截图 / 纯图片这类没有 typed text 的提交，sendTextPayloadInternal
+        // 会把 _lastSubmittedRequestId 故意清成 ''（rollback 对它没意义），
+        // 上面三条都挡不住"已发 WS、还没收到首 chunk"这段空窗。
+        // pendingTextTurnSubmitAt 专门补这段，15s freshness 兜底防漏清。
+        if (S.pendingTextTurnSubmitAt && (Date.now() - S.pendingTextTurnSubmitAt) < 15000) return true;
+        return false;
+    }
+
+    function waitForAssistantTurnEnd(timeoutMs) {
+        // 不监听 neko-assistant-speech-cancel：response_discarded 即使 will_retry=true
+        // 也会 emit speech-cancel，过早 resolve 会让 end_session 掐掉 retry 那次的
+        // LLM 流，复发 ReadError。改成轮询 isAssistantTextResponseInFlight()——
+        // turn-end 事件做主信号、200ms 轮询兜 "无 event 的真完成"（如 final
+        // discard），15s timeout 防卡死。retry 期间由 response_discarded 里
+        // will_retry 分支刷新 pendingTextTurnSubmitAt 保持 in-flight 为真。
+        return new Promise(function (resolve) {
+            if (!isAssistantTextResponseInFlight()) {
+                resolve('not_in_flight');
+                return;
+            }
+            var settled = false;
+            function done(reason) {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('neko-assistant-turn-end', onEnd);
+                clearInterval(pollTimer);
+                clearTimeout(timeoutTimer);
+                resolve(reason);
+            }
+            function onEnd() { done('turn_end'); }
+            window.addEventListener('neko-assistant-turn-end', onEnd, { once: true });
+            var pollTimer = setInterval(function () {
+                if (!isAssistantTextResponseInFlight()) done('not_in_flight_polled');
+            }, 200);
+            var timeoutTimer = setTimeout(function () { done('timeout'); }, timeoutMs);
+        });
+    }
+
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
@@ -1064,6 +1328,13 @@
 
             // If there is an active text session, end it first
             if (S.isTextSessionActive) {
+                // \u89C1\u9876\u90E8 waitForAssistantTurnEnd \u6CE8\u91CA\uFF1Aassistant \u6587\u672C\u8FD8\u5728\u6D41\u5F0F\u8F93\u51FA\u65F6
+                // \u7ACB\u523B end_session \u4F1A\u89E6\u53D1 ReadError \u2192 \u524D\u7AEF\u5F39\u51FA"Text generation interrupted"\u3002
+                // \u7B49\u672C\u8F6E turn-end / speech-cancel \u540E\u518D end_session\uFF0C15s \u515C\u5E95\u9632\u5361\u6B7B\u3002
+                if (isAssistantTextResponseInFlight()) {
+                    window.showVoicePreparingToast(window.t ? window.t('app.waitForReplyBeforeVoice') : '\u7B49\u56DE\u590D\u7ED3\u675F\u540E\u5207\u6362\u5230\u8BED\u97F3\u2026');
+                    await waitForAssistantTurnEnd(15000);
+                }
                 S.isSwitchingMode = true;
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -1572,6 +1843,22 @@
                 showHomeTutorialLockedToast();
                 return false;
             }
+
+            if (hasScreenshots) {
+                try {
+                    await mod.normalizeAllPendingComposerAttachments();
+                    hasScreenshots = screenshotsList.children.length > 0;
+                } catch (error) {
+                    console.error('[Chat] 待发送图片处理失败:', error);
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                    return false;
+                }
+                if (!text && !hasScreenshots) return false;
+            }
+
             var requestId = (typeof options.requestId === 'string' && options.requestId)
                 ? options.requestId
                 : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
@@ -1807,6 +2094,10 @@
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
                         markFirstUserInputForAchievement();
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                        // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
+                        // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
+                        // 同时有 15s freshness ceiling 防止漏清永远卡 true。
+                        S.pendingTextTurnSubmitAt = Date.now();
                     }
 
                     // Reset proactive chat timer
@@ -2479,20 +2770,21 @@
                     e.preventDefault();
                     var blob = items[i].getAsFile();
                     if (!blob) continue;
-                    var reader = new FileReader();
-                    reader.onload = function (ev) {
-                        if (ev.target && ev.target.result) {
-                            mod.addScreenshotToList(ev.target.result);
+                    mod.normalizeImageBlobForPendingList(blob)
+                        .then(function (dataUrl) {
+                            mod.addScreenshotToList(dataUrl);
                             window.showStatusToast(
                                 window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001',
                                 3000
                             );
-                        }
-                    };
-                    reader.onerror = function () {
-                        console.warn('[粘贴] 读取剪贴板图片失败');
-                    };
-                    reader.readAsDataURL(blob);
+                        })
+                        .catch(function (error) {
+                            console.warn('[粘贴] 图片处理失败:', error);
+                            window.showStatusToast(
+                                window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                                4000
+                            );
+                        });
                     break;
                 }
             }

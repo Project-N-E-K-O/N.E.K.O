@@ -116,6 +116,35 @@ class TestKeybookSaveLoad:
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
 
     @pytest.mark.unit
+    def test_qwen_intl_uses_saved_successful_us_url(self, config_manager):
+        """qwen_intl 连通性测试命中美国 URL 后，运行配置应使用该 URL。"""
+        us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen_intl',
+            'assistApi': 'qwen_intl',
+            'resolvedProviderUrls': {
+                'assist:qwen_intl': us_url,
+            },
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['OPENROUTER_URL'] == us_url
+
+    @pytest.mark.unit
+    def test_qwen_intl_ignores_resolved_url_outside_candidates(self, config_manager):
+        """保存的 resolved URL 不属于 provider 候选集时不能污染运行配置。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen_intl',
+            'assistApi': 'qwen_intl',
+            'resolvedProviderUrls': {
+                'assist:qwen_intl': 'https://evil.example.com/v1',
+            },
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['OPENROUTER_URL'] == 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('assist_api', ['minimax', 'minimax_intl'])
     def test_minimax_never_fallbacks(self, config_manager, assist_api):
         """MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
@@ -175,6 +204,25 @@ class TestCustomApiToggle:
         assert cfg['CONVERSATION_MODEL_API_KEY'] == 'sk-custom-conv'
 
     @pytest.mark.unit
+    def test_model_vision_override_marks_custom_model_capability(self, config_manager):
+        """Explicit modelVisionOverrides should win before model-name sniffing."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'conversationModelUrl': 'https://custom.example.com/v1',
+            'conversationModelId': 'local-multimodal',
+            'conversationModelApiKey': 'sk-custom-conv',
+            'modelVisionOverrides': {'local-multimodal': True},
+        })
+
+        cfg = config_manager.get_model_api_config('conversation')
+
+        assert cfg['model'] == 'local-multimodal'
+        assert cfg['supports_vision'] is True
+
+    @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
         """enableCustomApi=true → all 8 model types can be overridden."""
         model_types = [
@@ -231,22 +279,38 @@ class TestCustomApiToggle:
 
 
 # ---------------------------------------------------------------------------
-# 3. Assist follows core when free
+# 3. Assist / Core 独立选择
 # ---------------------------------------------------------------------------
 class TestAssistFollowsCore:
 
     @pytest.mark.unit
-    def test_free_core_forces_free_assist(self, config_manager):
-        """coreApi=free → assistApi forced to free regardless of saved value."""
+    def test_free_core_defaults_assist_to_free_when_empty(self, config_manager):
+        """coreApi=free + assistApi='' → 空值兜底为 free（保持免费版一键到位体验）。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
-            'assistApi': 'qwen',  # User saved qwen, but core is free
+            'assistApi': '',
         })
         cfg = config_manager.get_core_config()
 
-        assert cfg['assistApi'] == 'free', \
-            'When core is free, assist must be forced to free'
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('IS_FREE_VERSION') is True
+
+    @pytest.mark.unit
+    def test_free_core_honors_explicit_assist(self, config_manager):
+        """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'silicon',
+            'assistApiKeySilicon': 'sk-silicon-test',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'silicon', \
+            'core=free 不应强制覆盖用户显式选择的 assist'
+        assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
+        # core profile 仍然给到 IS_FREE_VERSION=True（realtime 是免费的）
         assert cfg.get('IS_FREE_VERSION') is True
 
     @pytest.mark.unit
@@ -360,12 +424,21 @@ class TestProviderExclusion:
 
     @pytest.mark.unit
     def test_restricted_providers(self):
-        """openai, gemini, grok should be restricted; others should not."""
+        """受地区限制的 provider 应标记 restricted；默认显示的 provider 不应标记。"""
         from utils.api_config_loader import get_config
         data = get_config()
         registry = data.get('api_key_registry', {})
 
-        expected_restricted = {'openai', 'gemini', 'grok', 'claude', 'qwen_intl', 'openrouter'}
+        expected_restricted = {
+            'openai',
+            'gemini',
+            'grok',
+            'claude',
+            'openrouter',
+            'elevenlabs',
+            'qwen_intl',
+            'minimax_intl',
+        }
         for pk, entry in registry.items():
             if pk in expected_restricted:
                 assert entry.get('restricted') is True, \
@@ -492,6 +565,26 @@ class TestGetModelApiConfig:
             'tts_custom should prefer qwen key for CosyVoice'
 
     @pytest.mark.unit
+    def test_tts_custom_prefers_active_qwen_intl_for_cosyvoice(self, config_manager):
+        """当前辅助 API 是 qwen_intl 时，CosyVoice 应使用国际版 key 与 URL。"""
+        us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen_intl',
+            'assistApi': 'qwen_intl',
+            'assistApiKeyQwen': 'sk-qwen-cn',
+            'assistApiKeyQwenIntl': 'sk-qwen-intl',
+            'resolvedProviderUrls': {
+                'assist:qwen_intl': us_url,
+            },
+            'enableCustomApi': False,
+        })
+        result = config_manager.get_model_api_config('tts_custom')
+
+        assert result['api_key'] == 'sk-qwen-intl'
+        assert result['base_url'] == us_url
+
+    @pytest.mark.unit
     def test_agent_resolves_custom_when_toggle_on(self, config_manager):
         """Agent model resolves custom config when enableCustomApi=true."""
         _write_core_config(config_manager, {
@@ -590,6 +683,72 @@ class TestVoiceCloneKeyResolution:
         })
         key = config_manager.get_tts_api_key('cosyvoice')
         assert key == 'sk-tts-custom-key'
+
+    @pytest.mark.unit
+    def test_cosyvoice_clone_runtime_stays_domestic_when_active_intl(self, config_manager):
+        """声音克隆显式选国内阿里时，不跟随当前国际版辅助 API。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen_intl',
+            'assistApi': 'qwen_intl',
+            'assistApiKeyQwen': 'sk-qwen-cn',
+            'assistApiKeyQwenIntl': 'sk-qwen-intl',
+            'enableCustomApi': False,
+        })
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice')
+
+        assert runtime['api_key'] == 'sk-qwen-cn'
+        assert runtime['provider'] == 'cosyvoice'
+        assert 'dashscope.aliyuncs.com' in runtime['base_url']
+        assert 'dashscope-intl' not in runtime['base_url']
+
+    @pytest.mark.unit
+    def test_cosyvoice_intl_clone_runtime_uses_saved_region_url(self, config_manager):
+        """声音克隆显式选阿里国际版时，使用国际版 key 和已检测通过的地区 URL。"""
+        us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-cn',
+            'assistApiKeyQwenIntl': 'sk-qwen-intl',
+            'resolvedProviderUrls': {
+                'assist:qwen_intl': us_url,
+            },
+            'enableCustomApi': False,
+        })
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice_intl')
+
+        assert runtime['api_key'] == 'sk-qwen-intl'
+        assert runtime['base_url'] == us_url
+        assert runtime['storage_key'].startswith('__COSYVOICE_INTL__')
+
+    @pytest.mark.unit
+    def test_cosyvoice_intl_md5_dedupe_checks_legacy_raw_key_bucket(self, config_manager):
+        """国际版 MD5 去重必须兼容旧版 raw API Key 分区。"""
+        intl_key = 'sk-qwen-intl-legacy'
+        audio_md5 = 'md5-legacy-audio'
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-qwen-cn',
+            'assistApiKeyQwenIntl': intl_key,
+            'enableCustomApi': False,
+        })
+        runtime = config_manager.get_cosyvoice_clone_runtime('cosyvoice_intl')
+        config_manager.save_voice_for_api_key(intl_key, 'voice-old-intl', {
+            'voice_id': 'voice-old-intl',
+            'provider': 'cosyvoice_intl',
+            'audio_md5': audio_md5,
+            'ref_language': 'en',
+        })
+
+        assert runtime['storage_key'] != intl_key
+        assert config_manager.find_voice_by_audio_md5(runtime['storage_key'], audio_md5, 'en') is None
+        existing = config_manager.find_cosyvoice_voice_by_audio_md5('cosyvoice_intl', audio_md5, 'en')
+        assert existing is not None
+        assert existing[0] == 'voice-old-intl'
 
 
 # ---------------------------------------------------------------------------

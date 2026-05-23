@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import builtins
+import importlib
 import json
 import re
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -19,14 +24,29 @@ STATIC_I18N_JS = (
     / "static"
     / "i18n.js"
 )
+STATIC_INDEX_HTML = (
+    Path(__file__).resolve().parents[3]
+    / "plugins"
+    / "galgame_plugin"
+    / "static"
+    / "index.html"
+)
 
-EXPECTED_LOCALES = ["zh-CN", "en", "ja", "ru", "ko"]
+EXPECTED_BUNDLE_LOCALES = ["zh-CN", "zh-TW", "en", "ja", "ru", "ko"]
+
+
+def _disable_galgame_store_file_locks(monkeypatch, store_cls) -> None:
+    @contextmanager
+    def unlocked_store(self):
+        yield
+
+    monkeypatch.setattr(store_cls, "_locked_store", unlocked_store)
 
 
 def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
     bundles = {
         locale: json.loads((UI_I18N_DIR / f"{locale}.json").read_text(encoding="utf-8"))
-        for locale in EXPECTED_LOCALES
+        for locale in EXPECTED_BUNDLE_LOCALES
     }
     expected_keys = set(bundles["zh-CN"])
 
@@ -41,12 +61,255 @@ def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
         assert all(isinstance(value, str) and value for value in bundle.values())
 
 
+def test_rapidocr_language_buttons_use_full_i18n_keys() -> None:
+    html = STATIC_INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'id="rapidocrLangChBtn"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.ch"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.japan"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.korean"' in html
+    assert 'data-i18n="ui.install.rapidocr.lang.en"' in html
+    assert "ui.install.rapidocr.lang.ch_short" not in html
+    assert "ui.install.rapidocr.lang.japan_short" not in html
+    assert "ui.install.rapidocr.lang.korean_short" not in html
+    assert "ui.install.rapidocr.lang.en_short" not in html
+
+
+def test_galgame_ui_i18n_zh_tw_route_locale_normalization() -> None:
+    from plugin.plugins.galgame_plugin.install_routes import _normalize_ui_locale
+
+    assert _normalize_ui_locale("zh-TW") == "zh-TW"
+    assert _normalize_ui_locale("zh-Hant") == "zh-TW"
+    assert _normalize_ui_locale("zh-HK") == "zh-TW"
+    assert _normalize_ui_locale("zh-MO") == "zh-TW"
+    assert _normalize_ui_locale("zh") == "zh-CN"
+
+
+def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monkeypatch) -> None:
+    module_name = "plugin.plugins.galgame_plugin.install_routes"
+    sys.modules.pop(module_name, None)
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "utils.language_utils":
+            raise ImportError("language utils unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    module = importlib.import_module(module_name)
+    response = asyncio.run(module.get_galgame_ui_locale("galgame_plugin"))
+
+    assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
+
+
+def test_tutorial_store_uses_runtime_data_root(monkeypatch, tmp_path: Path) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == (
+        runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    )
+
+
+def test_tutorial_store_migrates_legacy_source_store(monkeypatch, tmp_path: Path) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = (
+        fake_plugin_dir
+        / "data"
+        / "galgame_store.json"
+    )
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == runtime_path
+    assert store._store_path != legacy_path
+    assert runtime_path.read_text(encoding="utf-8") == legacy_path.read_text(encoding="utf-8")
+
+
+def test_tutorial_store_merges_legacy_progress_into_existing_runtime_store(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        '{"tutorial_progress": {"completed": true, "last_step_index": 4}}',
+        encoding="utf-8",
+    )
+    runtime_path.write_text(
+        '{"ocr_backend_selection": "rapidocr"}',
+        encoding="utf-8",
+    )
+
+    install_routes._tutorial_store()
+
+    runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert runtime_payload["ocr_backend_selection"] == "rapidocr"
+    assert runtime_payload["tutorial_progress"] == {
+        "completed": True,
+        "last_step_index": 4,
+    }
+
+
+def test_tutorial_store_keeps_runtime_store_when_legacy_merge_is_invalid(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("{invalid json", encoding="utf-8")
+    runtime_path.write_text('{"tutorial_progress": {"completed": false}}', encoding="utf-8")
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == runtime_path
+    assert store._store_path != legacy_path
+    assert json.loads(runtime_path.read_text(encoding="utf-8")) == {
+        "tutorial_progress": {"completed": False},
+    }
+
+
+def test_tutorial_store_keeps_runtime_store_when_legacy_merge_read_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+    runtime_path.write_text('{"tutorial_progress": {"completed": false}}', encoding="utf-8")
+
+    original_load_tutorial_progress = install_routes.GalgameStore.load_tutorial_progress
+
+    def load_tutorial_progress(self):
+        if self._store_path == legacy_path:
+            raise OSError("legacy store unavailable")
+        return original_load_tutorial_progress(self)
+
+    monkeypatch.setattr(
+        install_routes.GalgameStore,
+        "load_tutorial_progress",
+        load_tutorial_progress,
+    )
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == runtime_path
+    assert store._store_path != legacy_path
+    assert json.loads(runtime_path.read_text(encoding="utf-8")) == {
+        "tutorial_progress": {"completed": False},
+    }
+
+
+def test_tutorial_store_uses_legacy_store_when_migration_fails(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import install_routes
+
+    runtime_root = tmp_path / "runtime"
+    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
+    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
+
+    original_mkdir = Path.mkdir
+
+    def fail_runtime_mkdir(self, *args, **kwargs):
+        if self == runtime_root / "plugins" / "galgame_plugin" / "data":
+            raise OSError("blocked")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_runtime_mkdir)
+
+    store = install_routes._tutorial_store()
+
+    assert store._store_path == legacy_path
+
+
+def test_galgame_ui_i18n_zh_tw_is_traditional_chinese_not_zh_cn_copy() -> None:
+    zh_cn = json.loads((UI_I18N_DIR / "zh-CN.json").read_text(encoding="utf-8"))
+    zh_tw = json.loads((UI_I18N_DIR / "zh-TW.json").read_text(encoding="utf-8"))
+
+    assert zh_tw != zh_cn
+    assert zh_tw["ui.app.title"] == "Galgame 遊玩助手"
+    assert zh_tw["ui.app.subtitle"] == "讓貓娘陪你一起玩 Galgame"
+
+    simplified_fragments = [
+        "游玩",
+        "让猫娘",
+        "获取",
+        "设置",
+        "窗口",
+        "进程",
+        "识别",
+        "截图",
+        "当前",
+        "状态",
+        "后台",
+        "点击",
+        "发送",
+    ]
+    for key, value in zh_tw.items():
+        assert not any(fragment in value for fragment in simplified_fragments), (key, value)
+
+
 def test_galgame_ui_i18n_has_install_and_static_shell_keys() -> None:
     bundle = json.loads((UI_I18N_DIR / "en.json").read_text(encoding="utf-8"))
 
     assert bundle["ui.app.title"] == "Galgame Play Assistant"
     assert bundle["ui.button.collapse"] == "Collapse"
     assert bundle["ui.install.rapidocr.download_models.action"] == "Download Models Now"
+    assert bundle["ui.install.rapidocr.version_label"] == "Model version"
+    assert bundle["ui.install.rapidocr.version_v5"] == "PP-OCRv5"
+    assert "PP-OCRv4" in bundle["ui.install.rapidocr.v5_japan_note"]
     assert bundle["ui.first_run.action.show_rapidocr_models_guide"] == "View Manual Download Guide"
     assert bundle["ui.flash.plugin_not_started"].startswith("Plugin not started")
 
@@ -64,7 +327,7 @@ def test_galgame_ui_i18n_rapidocr_copy_is_not_left_half_deleted() -> None:
         "откат на. Причина",
         "приоритетом RapidOCR и резервом",
     ]
-    for locale in EXPECTED_LOCALES:
+    for locale in EXPECTED_BUNDLE_LOCALES:
         bundle = json.loads((UI_I18N_DIR / f"{locale}.json").read_text(encoding="utf-8"))
         for key in [
             "ui.install.ocr_desc",
@@ -136,6 +399,18 @@ def test_galgame_ui_first_run_has_manual_rapidocr_model_cta() -> None:
     assert "show_rapidocr_models_guide" in script
     assert "ui.first_run.action.show_rapidocr_models_guide" in script
     assert "ui.flash.rapidocr_manual_guide_revealed" in script
+
+
+def test_galgame_ui_has_rapidocr_version_toggle() -> None:
+    static_root = Path(__file__).resolve().parents[3] / "plugins" / "galgame_plugin" / "static"
+    html = (static_root / "index.html").read_text(encoding="utf-8")
+    script = (static_root / "main.js").read_text(encoding="utf-8")
+
+    assert "rapidocrVersionBar" in html
+    assert "rapidocrVersionV4Btn" in html
+    assert "rapidocrVersionV5Btn" in html
+    assert "renderRapidOcrVersionBar" in script
+    assert re.search(r"setRapidOcrLang\s*\(\s*\{\s*ocr_version\s*:\s*version\s*\}\s*\)", script)
 
 
 def test_galgame_ui_first_run_dxcam_prompt_requires_dxcam_backend() -> None:

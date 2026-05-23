@@ -268,29 +268,191 @@ def detect_total_ram_gb() -> float | None:
         return None
 
 
-def detect_avx_vnni_details() -> tuple[bool, bool]:
-    """Return ``(has_vnni, vnni_absence_confirmed)``.
+# Known-good thresholds for CPU microarchitectures that ship AVX-VNNI.
+# Family/model is a stable hardware identifier readable from
+# ``HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\Identifier`` on
+# Windows and ``/proc/cpuinfo`` on Linux — no executable-page allocation,
+# no inline machine code, no AV heuristic match.
+#
+# Conservative: a "yes" from the table is authoritative (confirmed=True);
+# an "I don't know" falls through to py-cpuinfo / /proc/cpuinfo flags so
+# brand-new microarchitectures aren't false-negatived just because the
+# table predates them.
+_INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
+                                       # Meteor, Arrow, Lunar, Panther
+                                       # Lake; Sapphire/Emerald Rapids.
 
-    When ``vnni_absence_confirmed`` is False we could not read CPU flags
-    (should be rare now that ``py-cpuinfo`` is a required dependency).
-    ``auto`` quantization
-    still selects INT8 in that case — we only skip vectors when we are
-    *confident* the CPU lacks AVX-VNNI (INT8 would be slow and FP32 weights
-    are not shipped).
+# AMD Family 0x19 is shared between Zen 3 (no AVX-VNNI) and Zen 4 (yes), so
+# family alone is not enough — gate on the documented Zen 4 model ranges
+# instead. Zen 5 lives on Family 0x1A and every shipped part has VNNI, so
+# Family >= 0x1A is a straight yes; Family < 0x19 is a straight no
+# (Zen 1 / Zen 2 at 0x17, older microarchitectures at 0x15 / 0x16).
+_AMD_ZEN4_MODEL_RANGES_FAMILY_19 = (
+    (0x10, 0x1F),  # Genoa / Bergamo / Storm Peak (Zen 4 server, EPYC 9004,
+                   # Threadripper 7000)
+    (0x60, 0x6F),  # Raphael / Dragon Range (Zen 4 desktop / mobile HX,
+                   # Ryzen 7000 / 7045)
+    (0x70, 0x7F),  # Phoenix / Phoenix 2 / Hawk Point (Zen 4 mobile,
+                   # Ryzen 7040 / 8040)
+    (0xA0, 0xAF),  # Zen 4c derivatives reserved by AMD's CPUID
+                   # documentation; included for forward compat so a
+                   # future Family-19h Zen-4c part isn't false-negatived.
+)
 
-    Detection priority:
-      1. ``py-cpuinfo``
-      2. ``/proc/cpuinfo`` on Linux
-      3. Otherwise inconclusive → ``(False, False)``
+# Zen 3 model ranges on Family 0x19 — definitively no AVX-VNNI. Listed
+# explicitly so we can answer ``(False, True)`` (confirmed-no) for them
+# rather than ``(False, False)`` (inconclusive), which would let
+# ``auto`` quantization optimistically pick int8 on a CPU that genuinely
+# can not run it well.
+_AMD_ZEN3_MODEL_RANGES_FAMILY_19 = (
+    (0x00, 0x0F),  # Milan EPYC / Vermeer (Ryzen 5000 desktop)
+    (0x20, 0x2F),  # Cezanne / Lucienne / Barceló (Ryzen 5000G/U APU)
+    (0x30, 0x3F),  # Milan-X / Trento (EPYC 7003X)
+    (0x40, 0x4F),  # Rembrandt (Ryzen 6000 mobile, Zen 3+)
+    (0x50, 0x5F),  # Barceló-R refresh
+)
+
+
+def _read_cpu_family_model() -> tuple[str, int, int] | None:
+    """Return ``(vendor, family, model)`` from a non-shellcode source,
+    or None when neither the Windows registry nor ``/proc/cpuinfo``
+    answered.
+
+    Vendor strings are normalised to the CPUID brand strings
+    (``GenuineIntel`` / ``AuthenticAMD``) so the lookup table is indexed
+    identically across OSes.
     """
+    system = platform.system()
+    try:
+        if system == "Windows":
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            ) as k:
+                vendor = winreg.QueryValueEx(k, "VendorIdentifier")[0]
+                ident = winreg.QueryValueEx(k, "Identifier")[0]
+            m = re.search(r"Family (\d+) Model (\d+)", ident)
+            if not m:
+                return None
+            return vendor, int(m.group(1)), int(m.group(2))
+        if system == "Linux":
+            vendor, family, model = None, None, None
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("vendor_id"):
+                        vendor = line.split(":", 1)[1].strip()
+                    elif line.startswith("cpu family"):
+                        try:
+                            family = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            # Malformed numeric field — keep scanning;
+                            # the surrounding ``vendor/family/model``
+                            # presence check below treats a missing
+                            # field as "no answer" and returns None.
+                            pass
+                    # ``model name`` shares the prefix; check ``model`` first
+                    # but skip when the line is actually ``model name``.
+                    elif line.startswith("model") and not line.startswith("model name"):
+                        try:
+                            model = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            # Same fallthrough as above — better to
+                            # answer "I don't know" than to crash CPU
+                            # detection on an exotic /proc/cpuinfo.
+                            pass
+                    if vendor and family is not None and model is not None:
+                        break
+            if vendor is None or family is None or model is None:
+                return None
+            return vendor, family, model
+    except Exception:
+        return None
+    return None
+
+
+def _vnni_via_family_model() -> tuple[bool, bool]:
+    """Authoritative VNNI answer via CPU family/model lookup.
+
+    Returns ``(has_vnni, confirmed)``. ``confirmed=True`` means the
+    family/model fell inside (or strictly below) a known range and the
+    answer is final. ``(False, False)`` means the table doesn't know —
+    let the caller fall through to py-cpuinfo / ``/proc/cpuinfo``.
+
+    Replaces the deleted CPUID shellcode probe. Strictly less precise
+    in one direction (brand-new microarchitectures that ship before the
+    table is updated stay inconclusive instead of authoritative), but
+    the consumer's ``auto`` quantization path treats inconclusive as
+    "pick int8 optimistically" — the same behaviour the CPUID probe
+    produced for sandboxes that refused executable allocation.
+    """
+    info = _read_cpu_family_model()
+    if info is None:
+        return False, False
+    vendor, family, model = info
+    if vendor == "GenuineIntel":
+        # All Intel client microarchitectures shipping AVX-VNNI live in
+        # Family 6 with model >= Alder Lake's 0x97. Earlier Family-6
+        # parts that carry AVX512-VNNI (Ice Lake server, Tiger/Rocket
+        # Lake, Sapphire Rapids) are detected by py-cpuinfo's
+        # ``avx512_vnni`` flag and don't need enumeration here.
+        if family == 6 and model >= _INTEL_VNNI_MIN_MODEL_FAMILY_6:
+            return True, True
+    elif vendor == "AuthenticAMD":
+        # Zen 5 (Family 0x1A, and any later family AMD ships) — every
+        # part has AVX-VNNI.
+        if family >= 0x1A:
+            return True, True
+        # Family 0x19 is shared between Zen 3 (no VNNI) and Zen 4 (yes),
+        # so we have to look at the model. The Zen-4 ranges below are
+        # AMD's documented CPUID model groupings.
+        if family == 0x19:
+            for lo, hi in _AMD_ZEN4_MODEL_RANGES_FAMILY_19:
+                if lo <= model <= hi:
+                    return True, True
+            for lo, hi in _AMD_ZEN3_MODEL_RANGES_FAMILY_19:
+                if lo <= model <= hi:
+                    return False, True
+            # An unmapped Family-19h model (e.g. a future stepping not
+            # yet covered by AMD's published groupings) stays
+            # inconclusive so py-cpuinfo's flag list can have a try
+            # instead of silently picking the wrong path.
+            return False, False
+        # Family < 0x19 covers Zen 1 / Zen 2 (0x17), Excavator (0x15) and
+        # earlier — none have AVX-VNNI, so the answer is definitive.
+        return False, True
+    return False, False
+
+
+def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
+    """x86 INT8 fast path = AVX-VNNI (or AVX512-VNNI).
+
+    Detection order (no-shellcode):
+      1. CPU family/model lookup (:func:`_vnni_via_family_model`) — the
+         only path that authoritatively answers for Alder-Lake+ Intel
+         client CPUs on Windows, where py-cpuinfo's backend silently
+         omits ``avx_vnni`` from its flag list.
+      2. ``py-cpuinfo`` flags — primary path on Linux / macOS and the
+         fallback on Windows for AVX512-VNNI parts (Cascade / Ice
+         Lake-server / Sapphire Rapids) which py-cpuinfo handles
+         correctly.
+      3. ``/proc/cpuinfo`` on Linux — text parse if py-cpuinfo failed.
+
+    Returns ``(has_vnni, absence_confirmed)``. ``absence_confirmed=False``
+    means no path could read CPU flags — the caller stays optimistic and
+    picks INT8 in that case (consistent with the ARM branch).
+    """
+    has_vnni, confirmed = _vnni_via_family_model()
+    if confirmed:
+        return has_vnni, True
+
     try:
         import cpuinfo  # type: ignore
         flags = cpuinfo.get_cpu_info().get("flags", []) or []
         # Empty flags (e.g. some virtualised hosts) is *not* a confirmed
         # absence — fall through so /proc/cpuinfo can have a try.
         if flags:
-            has = any("vnni" in f for f in flags)
-            return has, True
+            return any("vnni" in f for f in flags), True
     except Exception:
         pass
 
@@ -305,6 +467,145 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
             return False, False
 
     return False, False
+
+
+def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
+    """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
+
+    Per-OS strategy:
+
+      * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
+        never shipped an ARM Mac without it, so we short-circuit to
+        ``(True, True)``.
+      * Windows — use the canonical
+        ``IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE)``
+        kernel API. Modern Snapdragon X / 8cx have dotprod, but first-gen
+        Windows-on-ARM (Snapdragon 835, ~2017) is ARMv8-A and lacks it —
+        assuming support there would silently enable a slow INT8 path.
+      * Linux — check the ``asimddp`` / ``dotprod`` feature flag (cpuinfo
+        first, ``/proc/cpuinfo`` ``Features`` line as fallback). The ARM
+        SBC ecosystem still includes plenty of Cortex-A53 / A57 / A72
+        cores that predate dotprod (Raspberry Pi 3 class).
+
+    Returns ``(has_dotprod, absence_confirmed)``. Inconclusive cases let
+    ``auto`` quantization still pick int8 without claiming a definitive
+    answer.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        return True, True
+
+    if system == "Windows":
+        try:
+            import ctypes
+            # PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43 — the canonical
+            # Win32 feature constant for ARMv8.2 dotprod instructions.
+            if ctypes.windll.kernel32.IsProcessorFeaturePresent(43):
+                return True, True
+            # 0 from this API is ambiguous: the CPU truly lacks dotprod
+            # OR the running Windows build predates feature 43 and
+            # returns 0 for every unrecognised constant. Stay
+            # inconclusive so we don't false-disable embeddings on a
+            # capable Snapdragon X running an older Win10 ARM build
+            # (Codex P1 review on PR #1394).
+            return False, False
+        except Exception:
+            # ctypes call failed on a non-standard runtime — be
+            # inconclusive rather than wrong in either direction.
+            return True, False
+
+    if system == "Linux":
+        try:
+            import cpuinfo  # type: ignore
+            flags = cpuinfo.get_cpu_info().get("flags", []) or []
+            if flags:
+                # py-cpuinfo surfaces ARM features under the same "flags" key.
+                return any(f in ("asimddp", "dotprod") for f in flags), True
+        except Exception:
+            # py-cpuinfo not installed / failed on this ARM host — fall
+            # through to the /proc/cpuinfo probe below.
+            pass
+        try:
+            # ARM Linux /proc/cpuinfo uses "Features" (capital F), not "flags".
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("Features") and (
+                        "asimddp" in line or "dotprod" in line
+                    ):
+                        return True, True
+            return False, True
+        except Exception:
+            return False, False
+
+    # Unknown OS on ARM64 — modern ARM64 almost certainly has dotprod,
+    # but we can't confirm.
+    return True, False
+
+
+# Per-process one-shot flag so we log the "no INT8 fast path" outcome
+# exactly once at startup, with the vendor/family/model that drove the
+# decision. Reset by :func:`reset_embedding_service_for_tests` so unit
+# tests can re-trigger the log under monkeypatched detection.
+_VNNI_DECISION_LOGGED = False
+
+
+def _log_int8_fast_path_decision(has_vnni: bool, confirmed: bool) -> None:
+    """Emit one warning per process when no INT8 fast path is detected.
+
+    Triaging "why are my vectors disabled?" needs to know whether
+    detection was authoritative (the family/model table or a CPU that
+    truly lacks VNNI) or just inconclusive (sandboxed host, missing
+    py-cpuinfo, exotic arch). Including the vendor/family/model in the
+    log lets us extend the lookup table for future microarchitectures
+    based on real reports instead of guesses.
+
+    We stay silent on the positive path — every successful boot would
+    just add noise to the log."""
+    global _VNNI_DECISION_LOGGED
+    if _VNNI_DECISION_LOGGED:
+        return
+    _VNNI_DECISION_LOGGED = True
+    if has_vnni:
+        return
+    info = _read_cpu_family_model()
+    if info is None:
+        vendor, family_str, model_str = "?", "?", "?"
+    else:
+        vendor, family, model = info
+        family_str = f"0x{family:X}"
+        model_str = f"0x{model:X}"
+    logger.warning(
+        "EmbeddingService: no INT8 fast path detected on this CPU "
+        "(vendor=%s family=%s model=%s arch=%s confirmed=%s). "
+        "`auto` quantization will %s; set VECTORS_QUANTIZATION=int8 or =fp32 "
+        "to override after consulting docs/embedding-quantization.md.",
+        vendor, family_str, model_str, platform.machine() or "?", confirmed,
+        "disable local vectors" if confirmed else "optimistically pick int8",
+    )
+
+
+def detect_avx_vnni_details() -> tuple[bool, bool]:
+    """Return ``(has_int8_fast_path, absence_confirmed)``.
+
+    The name keeps the historical ``vnni`` spelling for backward compat,
+    but semantically this answers "does the CPU have a fast INT8 dot
+    product?" — what the quantization picker actually needs. The fast
+    path is architecture-specific:
+
+      * x86 → AVX-VNNI / AVX512-VNNI
+      * ARM64 → ARMv8.2-A NEON sdot/udot (``asimddp`` feature)
+
+    ``absence_confirmed=False`` means detection was inconclusive. For
+    ``auto`` quantization, INT8 is still selected in that case — we only
+    skip vectors when we are *confident* the CPU lacks the fast path
+    (INT8 would be slow and FP32 weights are not shipped).
+    """
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        result = _detect_int8_fast_path_arm()
+    else:
+        result = _detect_int8_fast_path_x86()
+    _log_int8_fast_path_decision(*result)
+    return result
 
 
 def detect_avx_vnni() -> bool:
@@ -880,9 +1181,14 @@ def get_embedding_service() -> EmbeddingService:
 
 def reset_embedding_service_for_tests() -> None:
     """Test-only: drop the singleton so the next ``get_embedding_service``
-    call rebuilds with whatever monkeypatched config / RAM the test set up."""
-    global _SERVICE
+    call rebuilds with whatever monkeypatched config / RAM the test set up.
+
+    Also clears :data:`_VNNI_DECISION_LOGGED` so a test that monkeypatches
+    detection can verify the warning is emitted on its synthetic boot.
+    """
+    global _SERVICE, _VNNI_DECISION_LOGGED
     _SERVICE = None
+    _VNNI_DECISION_LOGGED = False
 
 
 def _build_default_service() -> EmbeddingService:

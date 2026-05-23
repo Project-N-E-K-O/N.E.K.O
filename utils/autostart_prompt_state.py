@@ -45,13 +45,17 @@ AUTOSTART_PROMPT_CONFIG_FILENAME = "autostart_prompt_config.json"
 AUTOSTART_PROMPT_STATE_FILENAME = "autostart_prompt_state.json"
 AUTOSTART_PROMPT_LEGACY_STATE_FILENAME = "autostart_prompt.json"
 AUTOSTART_PROMPT_STATE_KIND = "autostart_prompt"
-AUTOSTART_MIN_PROMPT_FOREGROUND_MS = 15 * 60 * 1000
-AUTOSTART_LATER_COOLDOWN_MS = 24 * 60 * 60 * 1000
+AUTOSTART_MIN_PROMPT_FOREGROUND_MS = 30 * 60 * 1000
+AUTOSTART_LATER_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000
+AUTOSTART_NEVER_AFTER_LATER_COUNT = 3
+AUTOSTART_MAX_PROMPT_SHOWS_AFTER_NEVER_ELIGIBLE = 10
 AUTOSTART_MAX_RECENT_HEARTBEAT_TOKENS = 16
 
 AUTOSTART_PROMPT_EXTRA_FIELDS = (
     "autostart_enabled",
     "enabled_at",
+    "can_never_remind",
+    "funnel_counts",
 )
 
 DEFAULT_AUTOSTART_PROMPT_STATE = {
@@ -147,15 +151,19 @@ def _normalize_autostart_prompt_state(raw_state: Any) -> dict[str, Any]:
         state["recent_heartbeat_tokens"] = _normalize_recent_heartbeat_tokens(
             state.get("recent_heartbeat_tokens")
         )
+        # 不再提示按钮自首次弹窗起即可见，避免给用户"被推着走"的压迫感；
+        # AUTOSTART_NEVER_AFTER_LATER_COUNT 现仅用于展示上限的渐进抬升逻辑。
+        state["can_never_remind"] = True
 
     def _resolve_status(state: dict[str, Any]) -> None:
-        if state["never_remind"]:
-            state["status"] = "never"
         if state["autostart_enabled"] or state["completed_at"] > 0:
             state["autostart_enabled"] = True
             if state["enabled_at"] <= 0 and state["completed_at"] > 0:
                 state["enabled_at"] = state["completed_at"]
             state["status"] = "completed"
+        elif state["never_remind"] or state["status"] == "never":
+            state["never_remind"] = True
+            state["status"] = "never"
         elif state["started_at"] > 0:
             state["status"] = "started"
 
@@ -238,6 +246,22 @@ def build_public_autostart_prompt_snapshot(state: dict[str, Any]) -> dict[str, A
     )
 
 
+def _get_effective_autostart_max_prompt_shows(
+    state: dict[str, Any],
+    configured_max_prompt_shows: int,
+) -> int:
+    later_count = clamp_int(state.get("funnel_counts", {}).get("later"))
+    effective_max_prompt_shows = configured_max_prompt_shows
+    if later_count >= AUTOSTART_NEVER_AFTER_LATER_COUNT:
+        return max(
+            effective_max_prompt_shows,
+            AUTOSTART_MAX_PROMPT_SHOWS_AFTER_NEVER_ELIGIBLE,
+        )
+    if later_count > 0:
+        return max(effective_max_prompt_shows, later_count + 1)
+    return effective_max_prompt_shows
+
+
 def _compute_autostart_prompt_eligibility(
     state: dict[str, Any],
     *,
@@ -251,7 +275,11 @@ def _compute_autostart_prompt_eligibility(
         return False, "autostart_pending"
     if state["never_remind"] or state["status"] == "never":
         return False, "never_remind"
-    if state["shown_count"] >= max_prompt_shows:
+    effective_max_prompt_shows = _get_effective_autostart_max_prompt_shows(
+        state,
+        max_prompt_shows,
+    )
+    if state["shown_count"] >= effective_max_prompt_shows:
         return False, "show_limit_reached"
     if (
         state["status"] == "prompted"
@@ -525,12 +553,16 @@ def record_autostart_prompt_shown(
 
     with _AUTOSTART_STATE_LOCK:
         state = load_autostart_prompt_state(config_manager)
+        max_prompt_shows = _get_effective_autostart_max_prompt_shows(
+            state,
+            runtime_config["max_prompt_shows"],
+        )
         state, changed, already_acknowledged = ack_prompt_token_if_needed(
             state,
             prompt_token,
             now_ms_value,
             normalizer=_normalize_autostart_prompt_state,
-            max_prompt_shows=runtime_config["max_prompt_shows"],
+            max_prompt_shows=max_prompt_shows,
         )
         if changed:
             state = save_autostart_prompt_state(state, config_manager)
@@ -572,12 +604,16 @@ def record_autostart_prompt_decision(
                 "ok": True,
                 "state": build_autostart_prompt_snapshot(state),
             }
+        max_prompt_shows = _get_effective_autostart_max_prompt_shows(
+            state,
+            runtime_config["max_prompt_shows"],
+        )
         state, changed, _ = ack_prompt_token_if_needed(
             state,
             prompt_token,
             now_ms_value,
             normalizer=_normalize_autostart_prompt_state,
-            max_prompt_shows=runtime_config["max_prompt_shows"],
+            max_prompt_shows=max_prompt_shows,
         )
 
         if decision == "never":

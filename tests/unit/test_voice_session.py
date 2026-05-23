@@ -143,6 +143,40 @@ async def test_stream_audio(realtime_client):
 
 
 @pytest.mark.unit
+async def test_clear_audio_buffer_sends_websocket_clear_event():
+    client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        sent.append(json.loads(payload))
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+
+    await client.clear_audio_buffer()
+
+    assert [event["type"] for event in sent] == ["input_audio_buffer.clear"]
+
+
+@pytest.mark.unit
+async def test_silence_reset_flushes_buffer_before_next_audio_append():
+    client = _make_manual_client(model="qwen-omni-turbo-realtime", api_type="qwen")
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        sent.append(json.loads(payload))
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+    client._silence_reset_pending = True
+
+    await client.stream_audio(DUMMY_AUDIO_CHUNK)
+
+    types_sent = [event["type"] for event in sent]
+    assert types_sent[:2] == ["input_audio_buffer.clear", "input_audio_buffer.append"]
+
+
+@pytest.mark.unit
 async def test_receive_text_delta(realtime_client):
     """Test handling of incoming text delta events via handle_messages."""
     # Simulate a sequence of WebSocket messages that includes text deltas

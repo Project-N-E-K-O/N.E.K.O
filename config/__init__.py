@@ -13,7 +13,7 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
@@ -660,6 +660,10 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
         'CORE_MODEL': "qwen3-omni-flash-realtime",
     },
+    'qwen_intl': {
+        'CORE_URL': "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+        'CORE_MODEL': "qwen3-omni-flash-realtime",
+    },
     'glm': {
         'CORE_URL': "wss://open.bigmodel.cn/api/paas/v4/realtime",
         'CORE_MODEL': "glm-realtime-air",
@@ -697,6 +701,19 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
+        'EMOTION_MODEL': "qwen3.6-flash-2026-04-16",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
+    },
+    'qwen_intl': {
+        'OPENROUTER_URL': "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        'OPENROUTER_URLS': [
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        ],
         'CONVERSATION_MODEL' : "qwen3.6-plus",
         'SUMMARY_MODEL': "qwen3.6-plus",
         'CORRECTION_MODEL': "qwen3.6-plus",
@@ -881,6 +898,29 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
+# ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
+# 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
+# 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
+# 节奏：A 跑完后 b_tick_counter++，达到 N 就跑 B；窗口下游边界用 A 实际处理过
+# 的最晚 msg ts（不是 wall-clock now）保证 B 看的消息严格被 A 看过。
+EVIDENCE_AI_AWARE_EVERY_N_A_TICKS = 3
+"""Path B 每 N 次 A tick 触发一次（piggyback 在 A 循环里，不维护独立 wall-clock cadence）。
+- 选 3：A 平均 5 min 一次 tick → B 平均 15 min 一次。tempo 跟着对话强度自适应——
+  用户聊得越多 B 越频繁，符合"对话量大才需要补抓 AI fact"的直觉
+- B cold start lookback 自动 = N × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 15 min"""
+
+MAX_AI_AWARE_WINDOW_MSGS = 200
+"""Path B 单次窗口 SQL LIMIT 上限。挂机后重启 / 长 idle 突发 burst 可能让
+[last_b_check_ts, last_a_msg_ts] 窗口跨越数小时百余条消息——cap 住防 prompt
+爆炸。LIMIT 在 SQL 层执行（aretrieve_original_by_timeframe 的 limit_rows 参数），
+ORDER BY ts ASC 取最早 N 条而不是最新（保 cursor 单调推进）。"""
+
+MAX_KNOWN_POOL_FACTS = 30
+"""Path B prompt 里塞的"已知 fact 池"上限（按 importance DESC 取前 N）。
+- 30 × ~30 tok = ~900 tok overhead，控制在 prompt 总 budget 的 ~20%
+- 作用：让 path B 的 LLM 知道哪些 fact 已被 path A 抽出，主动避免重抽 user 段
+  内容；命中的 fact 通常带 source='user_observation'"""
+
 # §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
 # 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
 # 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
@@ -892,6 +932,33 @@ EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 PERSONA_RENDER_TOKEN_BUDGET = 2000       # 非-protected persona 预算
 REFLECTION_RENDER_TOKEN_BUDGET = 2000    # reflection 渲染预算（pending+confirmed 总和）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
+# 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
+# cosine 召回，两路各自阈值过滤 + 限 top-K，RRF 融合后整体再限 N 条返回。
+#
+# 候选范围：
+#   - BM25 池：     facts.json + reflections.json + facts_archive.json
+#                  （BM25 对大池子廉价，archive 也能搜到罕见关键词命中）
+#   - Embedding 池: facts.json + reflections.json
+#                  （embedding 计算贵 + archive 已经超出常态记忆窗口；
+#                   persona 整段不入池——它已经被常态渲染进 system prompt，
+#                   再检索就是冗余）
+#
+# 阈值是经验值，跑起来再调；cosine 用 sentence-embedding 常见的相关性下限
+# 0.3；BM25 用 0.1 接近 "any meaningful overlap"（零 overlap 早就被
+# _bm25_rank 的 score > 0 卡掉了，0.1 主要挡偶发高频词碰瓷）。
+#
+# ⚠️ BM25 阈值不能定高：Okapi 公式在小 pool 下 IDF 系数自然就矮，
+# 单 doc pool 即使 exact match 最高也就 ~0.72（``log((1-1+0.5)/(1+0.5)
+# + 1) × (k1+1)``）；2-doc pool 两条都有词时 IDF 跌到 ~0.18。最初拍
+# 1.0 是用大语料经验值，结果新用户 / 小语料 / 高频词查询全部被阈值
+# 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
+HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
+HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
+HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
+HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
+HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
 
 # ========================================================================
 # §3.7 LLM Context & Output Budget
@@ -971,6 +1038,50 @@ REFLECTION_SYNTHESIS_FACTS_MAX = 20
   当前没数量限制，所以这层是唯一保护。
 - 设计依据：30 条 × 平均 50 token = 1500 token，留给 LLM 综合处理够用。"""
 
+MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS = 180
+"""``_periodic_reflection_synthesis_loop`` 每轮轮询间隔（秒）。
+- 用途：后端定期对每个角色调 ``reflection_engine.synthesize_reflections``。
+- 设计依据：synthesize_reflections 内部对"同批 source_fact_ids → 同 rid"做
+  幂等 short-circuit，无新 unabsorbed fact 时 LLM 不会被调，所以这层只是
+  调度频率上限。**真 LLM 调用频率约等于"用户在 N 秒内新积了 ≥5 条 unabsorbed
+  fact 的次数"**，与 SignalLoop 实际产出速率绑死、与本常量解耦——把间隔从
+  600s 缩到 180s 不会按比例加 LLM 成本。
+- 选 180s：对齐 ``AUTO_PROMOTE_CHECK_INTERVAL = 180s``。两条 loop 一个产
+  pending、一个把 pending 推 confirmed，节奏对齐让 user-visible 状态机延迟
+  最短（合成 → 下一 tick 内就能被 promote 看到）。也跟
+  ``EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES * 60 = 300s`` 错峰，让 SignalLoop 抽
+  完一批 fact 后 1-2 个 reflection tick 内能消化掉。
+- 历史：以前 reflection 合成挂在 ``/api/proactive_chat`` handler 里（PR #1015
+  顺手塞的，见 main_routers/system_router.py 历史 blame），整套合成链路与
+  前端 setTimeout 强耦合——前端不开 / proactive 不触发 → reflection 永远不
+  增长。本常量配套的后端 loop 把合成从 HTTP/前端解耦，与其他 9 条 periodic
+  loop（rebuttal / auto_promote / idle_maint / signal_extraction / archive /
+  refine 等）对偶。"""
+
+REFLECTION_RELATED_PER_QUERY_K = 3
+"""Reflection synthesis 时，每条 unabsorbed fact 单独 query 召回的 absorbed
+fact 数量上限。
+- 上游：synthesize_reflections 调 ``MemoryRecallReranker.aretrieve_per_query_topk``
+  时按本常量给每条 query 配独立预算。
+- 设计依据（PR #1401 thread 拍板）：原先用 max-pool top-K (=6 全局预算)，
+  20 条 unabsorbed 主题分散时冷门主题会被高频主题挤掉冷板凳。改成 per-query
+  K=3 + 全局 cap，保证每条 unabsorbed 至少能拿到自己的 top-3 锚（除非这条
+  query embed 失败 / 候选池没语义匹配）。
+- 单条 query 拿 3 条而不是 1 条：考虑到主题边界模糊（用户聊 MC 同时聊到
+  红石和挖矿，cosine top-1 可能只命中其中一条），多给两条让 LLM 能看出
+  "主题群"的轮廓。"""
+
+REFLECTION_RELATED_TOTAL_CAP = 20
+"""``aretrieve_per_query_topk`` 跨 query union+dedup 后的最终上限。
+- 设计依据：与 ``REFLECTION_SYNTHESIS_FACTS_MAX`` (=20) 同档，让 anchor 集
+  最坏也能跟 source 集等量——但实际命中通常远小于此（query 间 nearest
+  neighbor 大量重叠 + dedup）。典型 batch 10 条 unabsorbed × per_query=3
+  = 30 候选 → dedup 后落在 ~10-15 anchor。
+- 上界用于防御性截断：极端"20 条全主题不重叠"假设下，per_query=3 × 20 = 60
+  候选，dedup 不能去重时砍到 20，避免 prompt token 爆。
+- prompt 实际成本：20 × ~50 tok ≈ 1000 tok anchor + 20 × ~50 tok ≈ 1000 tok
+  source = 2k 上限，summary tier 模型完全吃得下。"""
+
 # ---- Memory: temporal scope (memory/temporal.py) ─────────────────────
 # Reflection 用 4 档 temporal_scope（pattern / state / episode / past）做时间
 # 衰减。state 与 episode 各有 TTL，超期自动进过时 block。pattern 永不过时。
@@ -1016,6 +1127,18 @@ MEMORY_RECHECK_MAX_ATTEMPTS = 5
 - 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
   排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
 
+MEMORY_LIVENESS_MAX_ATTEMPTS = 5
+"""LLM 终态失败 N 次后强推 progress marker / dead-letter 的统一上限。
+- 适用场景：所有"同点 input + 无 counter + LLM 永久失败 → 永久卡死"的后台
+  路径。包括 signal extraction path A/B、rebuttal feedback、persona
+  corrections resolve、fact dedup resolve、refine cluster、outbox handler。
+- 治理思路：参考 `MEMORY_RECHECK_MAX_ATTEMPTS` (schema 重判 dead-letter) 的
+  套路，把"同一 cursor / 队头 / cluster_hash / op 反复打 LLM"收敛掉，避免
+  毒窗口 / 毒 payload 让整条 pipeline 哑火。
+- 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
+- 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
+  跨过偶发 transient failure 够用；再多就属于真正 poison。"""
+
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
 """主动搭话 followup 候选采样是否按 evidence_score 加权随机。
@@ -1053,6 +1176,52 @@ PERSONA_CORRECTION_BATCH_LIMIT = 10
 - 用途：_resolve_corrections_locked 从 pending_corrections 队列取前 N
   条丢给 LLM 做对错判断，剩下的下一轮再处理。
 - 上游：pending_corrections 队列。"""
+
+PERSONA_VERSION_HISTORY_MAX = 5
+"""单条 persona entry 的 version_history 保留上限（Phase B-1）。
+- 用途：每次 resolve_corrections 的 replace/merge 或 apply_refine_actions
+  的 merge/modify append 后裁到最近 K 个，防长期运行无限累积。
+- 老版本直接丢；version_history 是审计而非数据，超过 5 条价值极低。"""
+
+MEMORY_LLM_HARD_TIMEOUT_SECONDS = 110
+"""所有 memory 后台 LLM 调用的硬上限 timeout（秒）。
+- 上游转发服务器 hard timeout 120s；client 必须留 ≥10s margin，否则会被
+  转发层先 timeout 截断，连 response 都拿不到。**不能超过 110**。
+- 覆盖：reflection synthesis / persona correction / memory_refine /
+  recent review_history 等所有后台跑的 LLM 调用。
+- 不适用：用户面前的 chat / realtime 路径有独立的更严 timeout 控制。"""
+
+# ---- Memory: refine (Phase A-3) — MemoryRefineEngine 的 cron 参数 ----
+# 通用 cosine 聚类 + LLM 决议管道，复用在 PERSONA_REFINE 和
+# REFLECTION_REFINE 两条 cron 上。fact 不可变（只能作 merge/modify
+# 的信息源，不能被 split/discard）。
+
+MEMORY_REFINE_COSINE_THRESHOLD = 0.82
+"""refine cluster 的 cosine 阈值。比 FACT_DEDUP 的 0.85 略松——persona
+和 reflection 文本通常更长，cosine 难拉到 0.85+；同时这里是聚类找
+"相关"而非 dedup 找"等价"，松一点更合适。"""
+
+MEMORY_REFINE_TOPK_PER_ENTRY = 5
+"""单个 entry 在邻接图上最多保留的近邻数（双 cap 的第二条）。防止某条
+被高度引用的 hub entry 把一大坨弱相关条目都拉进同一 cluster。"""
+
+MEMORY_REFINE_CLUSTER_SIZE_MAX = 6
+"""单 cluster 内最多成员数。超过 6 LLM 难以一致处理；溢出的 cluster
+按 cosine 强度截到前 6 条。"""
+
+MEMORY_REFINE_REVISIT_AFTER_DAYS = 30
+"""同一 cluster_hash 多久后允许重审（即使 hash 全员命中也不 skip）。
+LLM 行为月级别可能漂移，1 个月重审一次成本可控。"""
+
+MEMORY_REFINE_CLUSTERS_PER_PASS = 3
+"""单次 cron 触发最多送 LLM 的 cluster 数。按饥饿度（cluster 内
+min(last_refine_at)）升序取前 N。约 3 次 LLM call ≈ 60-90s 阻塞。"""
+
+MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
+"""PERSONA_REFINE / REFLECTION_REFINE cron 的轮询间隔（秒）。
+- 30 分钟一次；engine 内 cluster_hash skip 让"刚审过"的 cluster
+  零成本跳过，所以高频触发也不会浪费 LLM token。
+- 两条 cron 用同一间隔，靠 _INITIAL_DELAY_* 错峰起始。"""
 
 # ---- Memory: recall ----
 RECALL_COARSE_OVERSAMPLE = 3
@@ -1460,13 +1629,20 @@ MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.12
 - 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
 - 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
 
-MINI_GAME_INVITE_COOLDOWN_SECONDS = 3600
-"""一次邀请被回应后的最小静默秒数（默认 1h）。
+MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS = 2 * 3600
+"""accept 后的最小静默秒数（默认 2h）。
 - 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
-- 上游：_mini_game_invite_in_cooldown 时间侧判定。
-- 历史：原 24h，PR follow-up #1 改成 1h —— 24h 太长、用户日常重启或重新打开
-  app 都可能跨进过该窗口又被首次打开计数器骗回 force-trigger，体感邀请密度
-  反而抖动；1h 是「一次会话内不重复打扰」的合理平衡。"""
+- 上游：_mini_game_invite_in_cooldown 时间侧判定（state.last_response_choice='accept'）。
+- 历史：原统一 1h（PR follow-up #1 从 24h 降下来），后再拆成 accept/decline 双
+  阈值——accept 体感"刚玩完一局"短一些（2h），decline 表达"不感兴趣"延长到 5h
+  避免短期复扰；之间没有 chats 门差异，10 条仍共用。"""
+
+MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS = 5 * 3600
+"""decline 后的最小静默秒数（默认 5h）。
+- 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
+- 上游：_mini_game_invite_in_cooldown 时间侧判定（state.last_response_choice='decline'）。
+- 比 accept 长是因为 decline 是明确"不想玩"信号，短期复扰体感差；5h 跨过一般
+  的"刚拒绝完几分钟又问"窗口，又不至于一整天彻底沉默。"""
 
 MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
 """新用户在第 N 次「成功投递的主动搭话」时强制触发 mini-game 邀请。
@@ -1488,7 +1664,8 @@ MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
 """一次邀请被回应后，需要再经过的"成功投递的主动搭话"次数。
-- 与 MINI_GAME_INVITE_COOLDOWN_SECONDS 同时满足才解禁；任一不满足都继续抑制。
+- 与 MINI_GAME_INVITE_COOLDOWN_AFTER_{ACCEPT,DECLINE}_SECONDS 同时满足才解禁；
+  任一不满足都继续抑制。chats 门 accept/decline 共用，不按 choice 拆。
 - 上游：_mini_game_invite_in_cooldown 计数侧判定。"""
 
 MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
@@ -1753,6 +1930,9 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_ENABLED',
     'EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS',
     'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
+    'EVIDENCE_AI_AWARE_EVERY_N_A_TICKS',
+    'MAX_AI_AWARE_WINDOW_MSGS',
+    'MAX_KNOWN_POOL_FACTS',
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
@@ -1767,8 +1947,19 @@ __all__ = [
     'REFLECTION_TEXT_MAX_TOKENS',
     'REFLECTION_SURFACE_TOP_K',
     'REFLECTION_SYNTHESIS_FACTS_MAX',
+    'MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS',
+    'REFLECTION_RELATED_PER_QUERY_K',
+    'REFLECTION_RELATED_TOTAL_CAP',
     'PERSONA_MERGE_POOL_MAX_TOKENS',
     'PERSONA_CORRECTION_BATCH_LIMIT',
+    'PERSONA_VERSION_HISTORY_MAX',
+    'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'MEMORY_REFINE_COSINE_THRESHOLD',
+    'MEMORY_REFINE_TOPK_PER_ENTRY',
+    'MEMORY_REFINE_CLUSTER_SIZE_MAX',
+    'MEMORY_REFINE_REVISIT_AFTER_DAYS',
+    'MEMORY_REFINE_CLUSTERS_PER_PASS',
+    'MEMORY_REFINE_CRON_INTERVAL_SECONDS',
     'RECALL_COARSE_OVERSAMPLE',
     'RECALL_PER_CANDIDATE_MAX_TOKENS',
     'RECALL_CANDIDATES_TOTAL_MAX_TOKENS',
@@ -1821,7 +2012,8 @@ __all__ = [
     'PROACTIVE_CHAT_HISTORY_MAX',
     'MINI_GAME_INVITE_ENABLED',
     'MINI_GAME_INVITE_TRIGGER_PROBABILITY',
-    'MINI_GAME_INVITE_COOLDOWN_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS',
     'MINI_GAME_INVITE_COOLDOWN_CHATS',
     'MINI_GAME_INVITE_NEW_USER_FORCE_AT',
     'MINI_GAME_INVITE_AVAILABLE_GAMES',

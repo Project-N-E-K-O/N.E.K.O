@@ -20,7 +20,7 @@ locales_dir = "i18n"
 
 [plugin_runtime]
 enabled = true
-auto_start = true
+auto_start = false
 
 [proactive_controller]
 default_mode_on_first_run = "off"

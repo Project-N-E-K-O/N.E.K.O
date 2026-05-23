@@ -330,8 +330,22 @@ class MMDInteraction {
                     : false;
 
                 if (!displaySwitched) {
-                    // 拖拽结束后保存位置/旋转/缩放
-                    this._savePositionAfterInteraction();
+                    const isDesktopPetWindow = Boolean(
+                        window.electronScreen && typeof window.electronScreen.getCurrentDisplay === 'function'
+                    );
+                    if (isDesktopPetWindow) {
+                        // 桌宠窗口需要边缘回弹，避免模型被拖出透明窗口后找不回来。
+                        const snapped = await this._snapModelIntoScreen({ animate: true });
+                        if (!snapped) {
+                            this._savePositionAfterInteraction();
+                        } else if (window.NekoAvatarMultiScreenDragHint &&
+                            typeof window.NekoAvatarMultiScreenDragHint.recordEdgeBounce === 'function') {
+                            window.NekoAvatarMultiScreenDragHint.recordEdgeBounce('mmd');
+                        }
+                    } else {
+                        // 网页端保留普通保存，不做贴边回弹。
+                        this._savePositionAfterInteraction();
+                    }
                 }
             }
         };
@@ -572,10 +586,18 @@ class MMDInteraction {
                 mesh.position.add(up.clone().multiplyScalar(-deltaPxY * pixelToWorldY));
             }
 
-            // 6. 等待一帧让新窗口尺寸生效，再保存位置
+            // 6. 等待新窗口尺寸生效，再执行回弹与保存
+            await new Promise(resolve => requestAnimationFrame(resolve));
             await new Promise(resolve => requestAnimationFrame(resolve));
 
-            await this._savePositionAfterInteraction();
+            const snapped = await this._snapModelIntoScreen({ animate: true });
+            if (!snapped) {
+                await this._savePositionAfterInteraction();
+            }
+            if (window.NekoAvatarMultiScreenDragHint &&
+                typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
+                window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('mmd');
+            }
 
             return true;
         } catch (error) {

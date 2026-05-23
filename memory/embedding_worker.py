@@ -38,12 +38,27 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from memory.embeddings import (
-    clear_embedding_fields,
-    get_embedding_service,
-    is_cached_embedding_valid,
-    stamp_embedding_fields,
-)
+try:
+    from memory.embeddings import (
+        clear_embedding_fields,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        stamp_embedding_fields,
+    )
+except ImportError:
+    # ``memory/embeddings.py`` is missing (typically because an antivirus
+    # quarantined it — historically as ``Trojan/Python.ShellLoader.i``).
+    # Fall back to disabled stubs so the warmup/backfill loop still
+    # imports; the loop's own ``is_available()`` short-circuit then
+    # turns the whole worker into a one-shot no-op.
+    from memory.embeddings_fallback import (
+        clear_embedding_fields,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        stamp_embedding_fields,
+        _warn_once,
+    )
+    _warn_once(__name__)
 
 # Type annotations on `__init__` use string forward refs — keeping the
 # TYPE_CHECKING imports earned a lint warning for "unused" because the

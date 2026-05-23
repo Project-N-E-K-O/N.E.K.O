@@ -17,7 +17,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .shared_state import get_config_manager, get_initialize_character_data, get_role_state, get_session_manager, get_steamworks
+from .shared_state import ensure_steamworks, get_config_manager, get_initialize_character_data, get_role_state, get_session_manager
 from .characters_router import (
     notify_memory_server_reload,
     release_memory_server_character,
@@ -67,7 +67,7 @@ CLOUDSAVE_ERROR_I18N_KEYS = {
 def _build_steam_autocloud_payload(config_manager) -> dict:
     return build_steam_autocloud_status(
         config_manager,
-        steamworks=get_steamworks(),
+        steamworks=ensure_steamworks(),
     )
 
 

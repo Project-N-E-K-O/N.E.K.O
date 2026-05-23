@@ -60,7 +60,7 @@ from PIL import Image
 #     the cold-start case where the first thread hop can take much longer.
 from cachetools import TTLCache
 
-from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
+from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import (
     AUTOSTART_ALLOWED_ORIGINS,
@@ -81,7 +81,8 @@ from config import (
     MINI_GAME_INVITE_ENABLED,
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
     MINI_GAME_INVITE_TRIGGER_PROBABILITY,
-    MINI_GAME_INVITE_COOLDOWN_SECONDS,
+    MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS,
+    MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS,
     MINI_GAME_INVITE_COOLDOWN_CHATS,
     MINI_GAME_INVITE_NEW_USER_FORCE_AT,
     MINI_GAME_INVITE_AVAILABLE_GAMES,
@@ -250,6 +251,21 @@ def _is_interactive_screenshot_canceled(platform_name: str, returncode: int, std
     if platform_name == "darwin":
         return returncode == 1
     return returncode == 1 and not normalized_stderr
+
+
+def _format_backend_screenshot_error(exc: Exception) -> str:
+    text = str(exc or "").strip()
+    lower = text.lower()
+    if sys.platform.startswith("linux") and "gnome-screenshot" in lower and not shutil.which("gnome-screenshot"):
+        return "gnome-screenshot not installed; install it with: sudo apt install gnome-screenshot"
+    if "pillow" in lower:
+        try:
+            Image.new("RGB", (1, 1))
+            if "gnome-screenshot" in lower:
+                return "gnome-screenshot not installed; install it with: sudo apt install gnome-screenshot"
+        except Exception:
+            pass
+    return text or type(exc).__name__
 
 
 def _json_no_store_response(content: dict, status_code: int = 200) -> JSONResponse:
@@ -1262,18 +1278,22 @@ _proactive_chat_history: dict[str, deque] = {}
 # {lanlan_name: {'delivered_at': float|None,
 #                'responded_at': float|None,
 #                'chats_since_response': int,
-#                'last_game_type': str|None}}
+#                'last_game_type': str|None,
+#                'last_response_choice': 'accept'|'decline'|None}}
 # - delivered_at: 上次成功投递邀请的时间戳。None=从未发过。
 # - responded_at: 投递后被用户回应（任何用户消息时间戳 > delivered_at）的时间。
 #   pending（delivered_at!=None and responded_at=None）期间一律抑制掷骰，避免
 #   邀请挂着不响应又再发第二次。
 # - chats_since_response: responded_at 设上后成功投递的"普通主动搭话"次数。
-#   两条件（>= COOLDOWN_SECONDS 且 >= COOLDOWN_CHATS）都跨过才允许下次掷骰。
-#   冷却跨 game_type 共享——每角色一个全局冷却，一次邀请 → 1h 内全部 mini-game
+#   两条件（time-by-choice 且 >= COOLDOWN_CHATS）都跨过才允许下次掷骰。
+#   冷却跨 game_type 共享——每角色一个全局冷却，一次邀请 → 冷却窗内全部 mini-game
 #   静默；spec 没说邀请要密集，多游戏只是丰富选项不是加密。
 # - last_game_type: 上次邀请发的是哪个游戏（从 MINI_GAME_INVITE_AVAILABLE_GAMES
 #   里 random.choice 出来的）；用于 PR-B 按钮判断"打开哪个游戏"。
-# 进程内 dict，重启清零——1h+10 chats 是软冷却，重启后多发一次邀请的代价远小
+# - last_response_choice: 上次回应是 accept 还是 decline；用于 cooldown 函数按
+#   choice 取不同 SECONDS 阈值（accept=2h、decline=5h）。later/隐式 dismiss 走
+#   reset 路径不会落到这里。None = 从未回应过（pending or 全新）。
+# 进程内 dict，重启清零——时间+10 chats 是软冷却，重启后多发一次邀请的代价远小
 # 于持久化存储引依赖的代价；与 _proactive_chat_history 同样是内存。
 _mini_game_invite_state: dict[str, dict[str, Any]] = {}
 
@@ -1835,7 +1855,9 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
 # restricted_screen_only 几道门之后调 _maybe_deliver_mini_game_invite。命中
 # 即静态 i18n 模板 → feed_tts_chunk + finish_proactive_delivery 直投递；不走
 # Phase 1/2 LLM。冷却语义：一次邀请被回应后，必须同时跨过
-#   ``time.time() - responded_at >= MINI_GAME_INVITE_COOLDOWN_SECONDS``
+#   ``time.time() - responded_at >= threshold_by_choice``
+#     其中 threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS (2h) 若
+#     last_response_choice='accept'，否则 ..._AFTER_DECLINE_SECONDS (5h)；
 # 与
 #   ``chats_since_response >= MINI_GAME_INVITE_COOLDOWN_CHATS``
 # 才允许下次掷骰。pending（投递了但还没被回应）期间一律抑制，避免邀请挂着
@@ -1856,6 +1878,10 @@ def _mini_game_invite_get_state(lanlan_name: str) -> dict[str, Any]:
             # D2「回头再说」短期抑制：reset 后不允许下一次 proactive 立刻又掷骰。
             # _in_cooldown 多查一道这个 gate。秒级 epoch；None = 不抑制。
             'suppressed_until': None,
+            # accept/decline 走不同 cooldown 阈值。later/隐式 dismiss reset 时
+            # 清回 None。pending 期间也是 None；cooldown 函数只在 responded_at
+            # !=None 时读它。
+            'last_response_choice': None,
         }
         _mini_game_invite_state[lanlan_name] = state
     return state
@@ -2037,8 +2063,11 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     覆盖：
       - D2「回头再说」短期抑制（suppressed_until > now）→ True
       - pending（投递了但 responded_at=None）→ True
-      - 已回应但 1h 或 10 chats 任一未跨过 → True
+      - 已回应但 时间(by choice) 或 10 chats 任一未跨过 → True
       - 从未投递 / 已完整跨过两道 → False
+
+    时间阈值按 last_response_choice 分：accept=2h、decline=5h。fallback 取 accept
+    阈值（短），避免遗留 state 没该字段时把用户卡到长 cooldown。
     """
     state = _mini_game_invite_state.get(lanlan_name)
     if not state:
@@ -2051,8 +2080,12 @@ def _mini_game_invite_in_cooldown(lanlan_name: str) -> bool:
     if state['responded_at'] is None:
         return True
     elapsed = time.time() - state['responded_at']
+    if state.get('last_response_choice') == 'decline':
+        time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS
+    else:
+        time_threshold = MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS
     return (
-        elapsed < MINI_GAME_INVITE_COOLDOWN_SECONDS
+        elapsed < time_threshold
         or state['chats_since_response'] < MINI_GAME_INVITE_COOLDOWN_CHATS
     )
 
@@ -2068,6 +2101,7 @@ def _mini_game_invite_record_delivered(lanlan_name: str, session_id: str) -> Non
     state['responded_at'] = None
     state['chats_since_response'] = 0
     state['pending_session_id'] = session_id
+    state['last_response_choice'] = None
     # 新邀请投递清掉 D2 的 short-suppression：本来是「上次回头再说」的窗口，
     # 既然现在又投了新邀请说明那个窗口已过期，没必要保留。
     state['suppressed_until'] = None
@@ -4000,8 +4034,9 @@ async def backend_screenshot(request: Request):
         data_url = f"data:image/jpeg;base64,{b64}"
         return _json_no_store_response({"success": True, "data": data_url, "size": len(jpg_bytes)})
     except Exception as e:
-        logger.error(f"后端截图失败: {e}")
-        return _json_no_store_response({"success": False, "error": str(e)}, status_code=500)
+        error_message = _format_backend_screenshot_error(e)
+        logger.error(f"后端截图失败: {error_message}")
+        return _json_no_store_response({"success": False, "error": error_message}, status_code=500)
 
 
 @router.post('/screenshot/interactive')
@@ -5022,24 +5057,18 @@ async def proactive_chat(request: Request):
         )
         if not _allow_reminiscence:
             print(f"[{lanlan_name}] propensity=restricted_screen_only, 跳过反思/回忆话题获取")
-        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径
+        # 复用 internal_http_client 单例：proactive_chat 每次主动搭话都走此路径。
+        # 仅 read：取 followup_topics 候选用于本轮 prompt 注入。
+        # 历史上这一段还前置调过 POST /reflect/{name}（"自动状态迁移 + 反思合成"），
+        # 已删除——合成迁到 ``_periodic_reflection_synthesis_loop`` 后端循环、
+        # auto_promote 早就由 ``_periodic_auto_promote_loop`` 每 180s 跑。把
+        # mutation 留在 proactive 关键路径上既拖延 ~15s response、又让整个
+        # reflection 生命周期跟前端 setTimeout 强耦合（前端不开 → 永不合成）。
         if _allow_reminiscence:
             try:
                 from utils.internal_http_client import get_internal_http_client
                 _mem_base = f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
                 _mem_client = get_internal_http_client()
-                # 1. 自动状态迁移 + 反思合成（集中在 memory_server 进程内执行）
-                _reflect_resp = await _mem_client.post(
-                    f"{_mem_base}/reflect/{lanlan_name}", timeout=15.0,
-                )
-                if _reflect_resp.status_code == 200:
-                    _reflect_data = _reflect_resp.json()
-                    if _reflect_data.get('auto_transitions'):
-                        print(f"[{lanlan_name}] 自动迁移 {_reflect_data['auto_transitions']} 条反思状态")
-                    if _reflect_data.get('reflection'):
-                        print(f"[{lanlan_name}] 反思完成(pending): {_reflect_data['reflection']['text'][:50]}...")
-
-                # 2. 获取回调话题候选
                 _topics_resp = await _mem_client.get(
                     f"{_mem_base}/followup_topics/{lanlan_name}", timeout=5.0,
                 )
@@ -5053,11 +5082,11 @@ async def proactive_chat(request: Request):
                                 _surfaced_reflection_ids.append(topic['id'])
                         print(f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条")
             except Exception as e:
-                logger.debug(f"[{lanlan_name}] 反思/回调话题获取失败（不影响主流程）: {e}")
+                logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
 
-        # Phase 1 preempt check：reflection POST(15s) + followup GET(5s) 是又一段
-        # 可能拖很久的 await 串，整段裸跑会让用户打断后继续跑完 LLM 配置和
-        # 后续步骤，再到 pre-LLM check 才识破。这里补一刀。
+        # Phase 1 preempt check：followup GET(5s) 是一段可能拖久的 await，
+        # 整段裸跑会让用户打断后继续跑完 LLM 配置和后续步骤，再到 pre-LLM
+        # check 才识破。这里补一刀。
         if mgr.state.is_proactive_preempted():
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
 
@@ -6488,8 +6517,8 @@ def _apply_mini_game_invite_choice(
     """处理 mini-game 邀请的三选项 state 转换。返回结构化结果给 endpoint /
     keyword matcher 共用。
 
-    - accept：mark responded（启动 1h+10 chats 冷却）+ 返回 game_url
-    - decline：mark responded（同上冷却，但不开游戏）
+    - accept：mark responded（启动 2h+10 chats 冷却）+ 返回 game_url
+    - decline：mark responded（启动 5h+10 chats 冷却，但不开游戏）
     - later (D2)：reset state（delivered_at=None，让 force-first / 普通 10% 都
       恢复正常）+ 加 ``suppressed_until = now + 5min`` 防止下一次 proactive
       立刻又掷骰
@@ -6506,6 +6535,7 @@ def _apply_mini_game_invite_choice(
     if choice == 'accept':
         state['responded_at'] = now
         state['chats_since_response'] = 0
+        state['last_response_choice'] = 'accept'
         # session_id 既进 game_url query，又作为 result 顶层字段返回——keyword 路径
         # core.py 要把它放进 mini_game_launch WS payload，前端 dedupe 才能跨路径
         # 共享 key（codex P2 review 指出：缺这个 dedupe 就失效，同 invite 多路径
@@ -6541,6 +6571,7 @@ def _apply_mini_game_invite_choice(
         decline_session_id = state.get('pending_session_id') or ''
         state['responded_at'] = now
         state['chats_since_response'] = 0
+        state['last_response_choice'] = 'decline'
         logger.info(
             "[%s] mini-game invite declined via %s; cooldown started",
             lanlan_name, source,
@@ -6555,6 +6586,7 @@ def _apply_mini_game_invite_choice(
         state['responded_at'] = None
         state['chats_since_response'] = 0
         state['pending_session_id'] = None
+        state['last_response_choice'] = None
         state['suppressed_until'] = now + MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS
         logger.info(
             "[%s] mini-game invite deferred via %s; suppressed for %.0fs",
