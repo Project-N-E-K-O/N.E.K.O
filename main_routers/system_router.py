@@ -4175,6 +4175,14 @@ def _activity_signal_validate_float(
     raw = data.get(key)
     if raw is None:
         return None, None
+    # Reject booleans before float coercion (Codex F8 on PR #1477).
+    # ``bool`` is a subclass of ``int`` in Python, so ``float(True)``
+    # silently returns ``1.0`` and ``float(False)`` returns ``0.0``,
+    # which would slip past the range checks below as legitimate signal
+    # values. ``isinstance(raw, bool)`` catches both before the int
+    # / float fast paths in ``float()``.
+    if isinstance(raw, bool):
+        return None, f"{key} must be a number"
     try:
         val = float(raw)
     except (TypeError, ValueError):

@@ -451,6 +451,32 @@ def test_unparseable_origin_treated_as_absent(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("field", ["idle_seconds", "cpu_avg_30s", "gpu_utilization"])
+@pytest.mark.parametrize("bool_value", [True, False])
+def test_boolean_rejected_in_numeric_fields(monkeypatch, field, bool_value):
+    """Booleans must be 400'd before ``float()`` coerces them to 0.0/1.0.
+
+    Codex F8 on PR #1477: Python's ``bool`` is a subclass of ``int``,
+    so ``float(True) == 1.0`` and ``float(False) == 0.0`` silently
+    succeed and pass the range checks. A payload like
+    ``{"idle_seconds": true}`` would otherwise spoof a "user just
+    acted" signal; ``{"cpu_avg_30s": true}`` would spoof 1% utilisation.
+    Both are fabricated telemetry that biases activity classification.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+    payload = {"lanlan_name": "Aria", field: bool_value}
+
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json=payload)
+
+    assert resp.status_code == 400, resp.text
+    err = resp.json()["error"]
+    assert field in err, f"error should name the offending field, got: {err!r}"
+    assert "number" in err.lower()
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["idle_seconds", "cpu_avg_30s", "gpu_utilization"])
 @pytest.mark.parametrize("bad_token", ["NaN", "Infinity", "-Infinity"])
 def test_nan_and_infinity_rejected(monkeypatch, field, bad_token):
     """``NaN`` / ``±Infinity`` must be 400'd before they reach the tracker.
