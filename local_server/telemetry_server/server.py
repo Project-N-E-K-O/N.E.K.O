@@ -53,6 +53,12 @@ Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 storage = TelemetryStorage(DB_PATH)
 rate_limiter = RateLimiter(max_requests=120, window=3600.0)
 
+# 串行化 canonical 边构建 + 重算：部署是单 worker（Dockerfile --workers 1 /
+# systemd 单进程），但手动 /admin/canonical/rebuild 仍可能与后台
+# _periodic_canonical_rebuild 在同一进程并发跑，两个 build_edges 抢同一游标会
+# 重复处理、把 observe_count 翻倍。进程内 asyncio.Lock 即可消除这条真实路径。
+_canonical_lock = asyncio.Lock()
+
 app = FastAPI(
     title="N.E.K.O Telemetry",
     version="1.0.0",
@@ -222,18 +228,21 @@ async def admin_canonical_metrics(days: int = 30):
 async def admin_canonical_rebuild():
     """手动触发：扫 events 产边（drain 到追平）+ 重算 canonical 连通分量。"""
     # 同步 SQLite/union-find 丢线程池，别卡住事件循环（拖慢公开上报接口）。
-    processed = await asyncio.to_thread(storage.build_all_pending_edges)
-    canonicals = await asyncio.to_thread(storage.recompute_canonical)
+    # _canonical_lock 串行化，避免与后台周期任务并发抢游标重复处理。
+    async with _canonical_lock:
+        processed = await asyncio.to_thread(storage.build_all_pending_edges)
+        canonicals = await asyncio.to_thread(storage.recompute_canonical)
     return {"events_processed": processed, "canonical_count": canonicals}
 
 
 @app.post("/api/v1/admin/canonical/denylist", dependencies=[Depends(require_admin)])
 async def admin_canonical_denylist(steam_user_id: str):
     """删号：Steam64 入 denylist（防复活）+ 脱敏源数据 + 删边 + 重算。"""
-    sid = await asyncio.to_thread(storage.add_steam_id_to_denylist, steam_user_id)
-    if not sid:
-        raise HTTPException(400, "invalid steam_user_id")
-    await asyncio.to_thread(storage.recompute_canonical)
+    async with _canonical_lock:
+        sid = await asyncio.to_thread(storage.add_steam_id_to_denylist, steam_user_id)
+        if not sid:
+            raise HTTPException(400, "invalid steam_user_id")
+        await asyncio.to_thread(storage.recompute_canonical)
     return {"denylisted": sid}
 
 
@@ -264,11 +273,12 @@ async def _periodic_canonical_rebuild():
     while True:
         await asyncio.sleep(300)
         try:
-            if await asyncio.to_thread(storage.build_all_pending_edges):
-                need_recompute = True
-            if need_recompute:
-                await asyncio.to_thread(storage.recompute_canonical)
-                need_recompute = False  # 仅成功后清脏；异常时保持，下 tick 重试
+            async with _canonical_lock:  # 与手动 /rebuild、/denylist 互斥，串行化重算
+                if await asyncio.to_thread(storage.build_all_pending_edges):
+                    need_recompute = True
+                if need_recompute:
+                    await asyncio.to_thread(storage.recompute_canonical)
+                    need_recompute = False  # 仅成功后清脏；异常时保持，下 tick 重试
         except Exception:
             logger.exception("canonical rebuild failed")
 
