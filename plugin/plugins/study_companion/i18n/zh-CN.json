@@ -147,6 +147,7 @@
     "ui.memory.reviewing":  "正在记录复习...",
     "ui.memory.review_saved_days":  "下次复习在 {days} 天后",
     "ui.memory.review_saved":  "复习已保存",
+    "ui.memory.ratings_aria":  "记忆复习评分",
     "ui.memory.deck_type":  "卡组类型",
     "ui.memory.deck":  "卡组",
     "ui.memory.item_id":  "条目 ID",
@@ -183,5 +184,9 @@
     "ui.button.import":  "导入",
     "ui.button.refresh_deck":  "刷新卡组",
     "ui.button.save_card":  "保存卡片",
+    "ui.button.rating.again":  "重来",
+    "ui.button.rating.hard":  "困难",
+    "ui.button.rating.good":  "良好",
+    "ui.button.rating.easy":  "简单",
     "ui.label.name":  "名称"
 }

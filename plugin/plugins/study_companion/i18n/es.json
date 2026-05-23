@@ -147,6 +147,7 @@
     "ui.memory.reviewing":  "Revisando tarjeta...",
     "ui.memory.review_saved_days":  "Próxima revisión en {days} días",
     "ui.memory.review_saved":  "Revisión guardada",
+    "ui.memory.ratings_aria":  "Calificaciones de repaso de memoria",
     "ui.memory.deck_type":  "Tipo de mazo",
     "ui.memory.deck":  "Mazo",
     "ui.memory.item_id":  "ID de elemento",
@@ -183,5 +184,9 @@
     "ui.button.import":  "Importar",
     "ui.button.refresh_deck":  "Actualizar mazo",
     "ui.button.save_card":  "Guardar tarjeta",
+    "ui.button.rating.again":  "De nuevo",
+    "ui.button.rating.hard":  "Difícil",
+    "ui.button.rating.good":  "Bien",
+    "ui.button.rating.easy":  "Fácil",
     "ui.label.name":  "Nombre"
 }

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .fsrs_bridge import FSRSBridge, retrievability
+from .memory_text import normalize_tags
 
 
 def compat_card_payload(
@@ -26,7 +27,7 @@ def compat_card_payload(
         "deck_id": str(item.get("deck_id") or ""),
         "front": str(item.get("prompt") or ""),
         "back": str(item.get("answer") or ""),
-        "tags": list(metadata.get("tags") or []),
+        "tags": normalize_tags(metadata.get("tags")),
         "source": str(metadata.get("source") or ""),
         "card_type": "memory",
         "due": str(raw_card.get("due") or ""),

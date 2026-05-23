@@ -33,13 +33,14 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   }
 
   async function createDeck() {
-    if (!name.trim()) {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
       setStatus(text(props, 'ui.memory.error_missing_deck_name', 'Deck name is required'));
       return;
     }
     setBusy(true);
     try {
-      await callPlugin('study_memory_create_deck', { name, deck_type: deckType });
+      await callPlugin('study_memory_create_deck', { name: trimmedName, deck_type: deckType });
       setName('');
       await refresh();
       setStatus(text(props, 'ui.status.reply_ready', 'Reply ready'));

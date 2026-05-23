@@ -147,6 +147,7 @@
     "ui.memory.reviewing":  "Revisando cartão...",
     "ui.memory.review_saved_days":  "Próxima revisão em {days} dias",
     "ui.memory.review_saved":  "Revisão salva",
+    "ui.memory.ratings_aria":  "Avaliações de revisão de memória",
     "ui.memory.deck_type":  "Tipo de deck",
     "ui.memory.deck":  "Deck",
     "ui.memory.item_id":  "ID do item",
@@ -183,5 +184,9 @@
     "ui.button.import":  "Importar",
     "ui.button.refresh_deck":  "Atualizar Deck",
     "ui.button.save_card":  "Salvar Cartão",
+    "ui.button.rating.again":  "De novo",
+    "ui.button.rating.hard":  "Difícil",
+    "ui.button.rating.good":  "Bom",
+    "ui.button.rating.easy":  "Fácil",
     "ui.label.name":  "Nome"
 }

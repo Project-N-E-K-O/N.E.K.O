@@ -54,3 +54,13 @@ def test_compat_card_payload_handles_missing_card_and_metadata() -> None:
     assert payload["is_due"] is False
     assert payload["retrievability"] == 0.0
     assert payload["tags"] == []
+
+
+def test_compat_card_payload_normalizes_string_tags() -> None:
+    payload = compat_card_payload(
+        {"id": "item-3", "metadata": {"tags": "math, science math"}},
+        get_fsrs_card=lambda item_id: None,
+        fsrs=FSRSBridge(),
+    )
+
+    assert payload["tags"] == ["math", "science"]

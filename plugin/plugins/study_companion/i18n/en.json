@@ -147,6 +147,7 @@
     "ui.memory.reviewing":  "Reviewing memory card...",
     "ui.memory.review_saved_days":  "Next review in {days} days",
     "ui.memory.review_saved":  "Review saved",
+    "ui.memory.ratings_aria":  "Memory review ratings",
     "ui.memory.deck_type":  "Deck Type",
     "ui.memory.deck":  "Deck",
     "ui.memory.item_id":  "Item ID",
@@ -183,5 +184,9 @@
     "ui.button.import":  "Import",
     "ui.button.refresh_deck":  "Refresh Deck",
     "ui.button.save_card":  "Save Card",
+    "ui.button.rating.again":  "Again",
+    "ui.button.rating.hard":  "Hard",
+    "ui.button.rating.good":  "Good",
+    "ui.button.rating.easy":  "Easy",
     "ui.label.name":  "Name"
 }

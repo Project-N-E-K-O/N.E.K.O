@@ -21,6 +21,8 @@ type ReviewResult = {
   };
 };
 
+const REVIEW_RATINGS = ['again', 'hard', 'good', 'easy'] as const;
+
 export default function WordReview(props: PluginSurfaceProps) {
   const [reviews, setReviews] = useState<DueReview[]>([]);
   const [showAnswer, setShowAnswer] = useState(false);
@@ -36,7 +38,7 @@ export default function WordReview(props: PluginSurfaceProps) {
     setStatus('');
   }
 
-  async function rate(rating: string) {
+  async function rate(rating: (typeof REVIEW_RATINGS)[number]) {
     if (!current?.item_id || submitting) {
       return;
     }
@@ -77,9 +79,9 @@ export default function WordReview(props: PluginSurfaceProps) {
         <button type="button" disabled={!current || submitting} onClick={() => setShowAnswer((value) => !value)}>
           {text(props, 'ui.button.flip', 'Flip')}
         </button>
-        {['again', 'hard', 'good', 'easy'].map((rating) => (
+        {REVIEW_RATINGS.map((rating) => (
           <button key={rating} type="button" disabled={!current || submitting} onClick={() => rate(rating)}>
-            {text(props, `ui.memory.rating.${rating}`, rating)}
+            {text(props, `ui.button.rating.${rating}`, rating)}
           </button>
         ))}
       </div>
