@@ -118,6 +118,62 @@ def test_lanlan_name_only_payload_rejected_400(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("blank_payload", [
+    {"window_title": ""},
+    {"window_title": "   "},
+    {"process_name": ""},
+    {"process_name": "\t\n  "},
+    {"window_title": "", "process_name": ""},
+    {"window_title": "  ", "process_name": "\t"},
+])
+def test_blank_string_payload_rejected_400(monkeypatch, blank_payload):
+    """Blank / whitespace-only strings count as absent for the empty-signal guard.
+
+    CodeRabbit F7 (PR #1477): the original F6 fix only treated ``None``
+    as absent. ``{"window_title": ""}`` (or whitespace-only) would pass
+    the validator, slip through the all-None check, and still pollute
+    tracker state because the tracker treats them as "saw the desktop,
+    no foreground window" while every numeric defaults to 0.0. Same
+    poisoning as the empty payload, just with extra noise.
+
+    Carrying a blank string + no numerics tells the tracker literally
+    nothing, so reject for the same reason a fully-empty payload is
+    rejected.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+    full_payload = {"lanlan_name": "Aria", **blank_payload}
+
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json=full_payload)
+
+    assert resp.status_code == 400, resp.text
+    assert "signal field" in resp.json()["error"]
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("blank_payload", [
+    # Blank string PAIRED with a real numeric → not "empty payload",
+    # the numeric carries the signal. Validator-level normalisation of
+    # blank → None is deliberately NOT applied so downstream tracker
+    # logic can still distinguish "" ("saw desktop, no title") from
+    # None ("no observation") if it ever wants to.
+    {"window_title": "", "idle_seconds": 5},
+    {"process_name": "  ", "cpu_avg_30s": 25.0},
+])
+def test_blank_string_paired_with_signal_accepted(monkeypatch, blank_payload):
+    """Blank strings are OK as long as at least one real signal is present."""
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+    full_payload = {"lanlan_name": "Aria", **blank_payload}
+
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json=full_payload)
+
+    assert resp.status_code == 200, resp.text
+    tracker.push_external_system_signal.assert_called_once()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("single_field,value", [
     ("window_title", "Finder"),
     ("process_name", "Code.exe"),

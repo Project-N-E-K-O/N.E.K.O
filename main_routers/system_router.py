@@ -4333,7 +4333,7 @@ async def push_activity_signal(request: Request):
             {"success": False, "error": err}, status_code=400,
         )
 
-    # ── Empty-signal guard (Codex F6 on PR #1477, defence-in-depth) ──
+    # ── Empty-signal guard (Codex F6 + CodeRabbit F7 on PR #1477) ──
     # If every signal field is absent, the tracker's
     # ``push_external_system_signal`` would still mark
     # ``os_signals_available=True`` and default missing numerics to
@@ -4342,10 +4342,21 @@ async def push_activity_signal(request: Request):
     # no window". The frontend client already skips empty bridge
     # snapshots, but a malicious or buggy native caller could still
     # POST an empty payload, so we reject server-side too.
-    if all(v is None for v in (
-        idle_seconds, cpu_avg_30s, gpu_utilization,
-        window_title, process_name,
-    )):
+    #
+    # Blank-string handling (CodeRabbit F7): ``"window_title": ""`` or
+    # whitespace-only strings carry no information and have the same
+    # poisoning effect as ``None``. Treat them as absent for the
+    # all-empty check; non-blank strings (legit "no foreground window
+    # right now" semantics with explicit ``""``) would still trip the
+    # check if every other field is also None — which is the right
+    # outcome, that payload tells the tracker literally nothing.
+    if all(
+        v is None or (isinstance(v, str) and not v.strip())
+        for v in (
+            idle_seconds, cpu_avg_30s, gpu_utilization,
+            window_title, process_name,
+        )
+    ):
         return _json_no_store_response(
             {
                 "success": False,
