@@ -217,7 +217,7 @@ class MemoryDeckStore:
         prompt: str,
         answer: str,
         metadata: dict[str, Any] | None = None,
-        dedupe_metadata_key: str = "",
+        dedupe_metadata_key: str | tuple[str, ...] = "",
         dedupe_metadata_value: str = "",
     ) -> dict[str, Any]:
         deck = self.get_deck(deck_id)
@@ -244,18 +244,20 @@ class MemoryDeckStore:
                     """,
                     (str(deck_id or ""), prompt_text),
                 ).fetchone()
-            elif dedupe_metadata_key or metadata_payload.get("legacy_topic_id"):
-                dedupe_key = str(dedupe_metadata_key or "legacy_topic_id")
-                existing = item_row_by_metadata_value(
-                    conn,
-                    deck_id=str(deck_id or ""),
-                    item_type=item_kind,
-                    key=dedupe_key,
-                    value=str(
-                        dedupe_metadata_value or metadata_payload.get(dedupe_key) or ""
-                    ),
-                    json_loads=self.store._json_loads,
-                )
+            else:
+                fallback_key = "legacy_topic_id" if metadata_payload.get("legacy_topic_id") else ""
+                dedupe_key = dedupe_metadata_key or fallback_key
+                fallback_value = metadata_payload.get("topic_id") or metadata_payload.get("legacy_topic_id")
+                dedupe_value = str(dedupe_metadata_value or fallback_value or "").strip()
+                if dedupe_key and dedupe_value:
+                    existing = item_row_by_metadata_value(
+                        conn,
+                        deck_id=str(deck_id or ""),
+                        item_type=item_kind,
+                        key=dedupe_key,
+                        value=dedupe_value,
+                        json_loads=self.store._json_loads,
+                    )
             if existing is None:
                 item_id = str(uuid.uuid4())
                 conn.execute(

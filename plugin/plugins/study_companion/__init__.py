@@ -939,7 +939,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 item_type="custom",
                 prompt=front,
                 answer=back,
-                dedupe_metadata_key="legacy_topic_id",
+                dedupe_metadata_key=("topic_id", "legacy_topic_id") if topic_key else "",
                 dedupe_metadata_value=topic_key,
                 metadata={
                     "topic_id": topic_key,
@@ -990,6 +990,26 @@ class StudyCompanionPlugin(NekoPluginBase):
         try:
             safe_limit = max(1, min(200, int(limit or 20)))
             if bool(include_topic_cards):
+                if bool(due_only):
+                    payload = await asyncio.to_thread(
+                        self._memory_deck_store.status_summary, limit=safe_limit
+                    )
+                    due_reviews = payload.get("due_reviews") if isinstance(payload, dict) else []
+                    due_cards = [
+                        self._memory_deck_store.compat_card_payload(item.get("item") or {})
+                        for item in due_reviews
+                        if isinstance(item, dict)
+                    ]
+                    return Ok(
+                        {
+                            **payload,
+                            "card_count": int(
+                                payload.get("item_count") or payload.get("card_count") or 0
+                            ),
+                            "cards": due_cards,
+                            "due_cards": due_cards,
+                        }
+                    )
                 items = await asyncio.to_thread(
                     self._memory_deck_store.list_items,
                     limit=safe_limit,
@@ -1059,15 +1079,34 @@ class StudyCompanionPlugin(NekoPluginBase):
         self, topic_id: str = "", rating: str = "good", answer: str = "", **_
     ):
         try:
+            topic_key = str(topic_id or "").strip()
+            item_id = topic_key
+            item = await asyncio.to_thread(self._memory_deck_store.get_item, item_id)
+            if item is None and topic_key:
+                deck = await asyncio.to_thread(
+                    self._memory_deck_store.get_or_create_default_deck,
+                    deck_type="custom",
+                )
+                exported = await asyncio.to_thread(
+                    self._memory_deck_store.export_deck_json,
+                    str(deck.get("id") or ""),
+                )
+                for candidate in exported.get("items") or []:
+                    metadata = candidate.get("metadata") or {}
+                    if str(
+                        metadata.get("topic_id") or metadata.get("legacy_topic_id") or ""
+                    ).strip() == topic_key:
+                        item_id = str(candidate.get("id") or "")
+                        break
             payload = await asyncio.to_thread(
                 self._memory_deck_store.review_item,
-                item_id=topic_id,
+                item_id=item_id,
                 rating=rating,
             )
             item = payload.get("item") if isinstance(payload, dict) else {}
             return Ok(
                 {
-                    "topic_id": str(topic_id or ""),
+                    "topic_id": topic_key,
                     "rating": int(payload.get("rating") or 0)
                     if isinstance(payload, dict)
                     else 0,

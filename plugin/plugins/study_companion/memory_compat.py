@@ -13,18 +13,20 @@ def compat_card_payload(
     fsrs: FSRSBridge,
 ) -> dict[str, Any]:
     card = item.get("fsrs_card") or get_fsrs_card(str(item.get("id") or "")) or {}
+    metadata = item.get("metadata") or {}
+    topic_id = str(metadata.get("topic_id") or metadata.get("legacy_topic_id") or item.get("id") or "")
     raw_card = card.get("card") if isinstance(card, dict) else {}
     due_reviews = fsrs.get_due_reviews([raw_card]) if raw_card else []
     due_item = due_reviews[0] if due_reviews else None
     return {
         "id": str(item.get("id") or ""),
-        "topic_id": str(item.get("id") or ""),
+        "topic_id": topic_id,
         "item_id": str(item.get("id") or ""),
         "deck_id": str(item.get("deck_id") or ""),
         "front": str(item.get("prompt") or ""),
         "back": str(item.get("answer") or ""),
-        "tags": list((item.get("metadata") or {}).get("tags") or []),
-        "source": str((item.get("metadata") or {}).get("source") or ""),
+        "tags": list(metadata.get("tags") or []),
+        "source": str(metadata.get("source") or ""),
         "card_type": "memory",
         "due": str(raw_card.get("due") or ""),
         "is_due": due_item is not None,

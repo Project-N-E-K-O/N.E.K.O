@@ -47,7 +47,7 @@ def item_row_by_metadata_value(
     *,
     deck_id: str,
     item_type: str,
-    key: str,
+    key: str | tuple[str, ...],
     value: str,
     json_loads: Any,
 ) -> Any | None:
@@ -62,9 +62,10 @@ def item_row_by_metadata_value(
         """,
         (str(deck_id or ""), str(item_type or "")),
     ).fetchall()
+    keys = (key,) if isinstance(key, str) else key
     for row in rows:
         metadata = json_loads(row["metadata_json"], {}) or {}
-        if str(metadata.get(key) or "").strip() == target:
+        if any(str(metadata.get(candidate) or "").strip() == target for candidate in keys):
             return row
     return None
 
