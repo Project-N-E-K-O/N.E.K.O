@@ -15,6 +15,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
+import math
 import uuid
 import asyncio
 import time
@@ -143,14 +144,22 @@ def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
 
         from utils.instrument import counter as _c, histogram as _h, event as _e
 
+        # 前端是 untrusted 输入：Python JSON 解析接受 NaN/Infinity token，
+        # 必须在这里挡掉非有限值。否则 NaN 会毒化 client 端 in-memory counter
+        # （nan + n = nan），上传时被 storage 的 isfinite 守卫整条丢弃 → 静默
+        # 丢掉该 counter 的整个窗口（Codex）。与 storage 端守卫对称。
         if kind == "counter":
             dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
             val = message.get("value", 1)
-            val = val if isinstance(val, (int, float)) else 1
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                val = 1  # 缺失 / 非数字 → 默认 +1（事件发生了）
+            elif not math.isfinite(val):
+                return  # NaN / Inf：reject 整条，不污染 counter
             _c(name, val, **dims)
         elif kind == "histogram":
             val = message.get("value")
-            if not isinstance(val, (int, float)):
+            if (not isinstance(val, (int, float)) or isinstance(val, bool)
+                    or not math.isfinite(val)):
                 return
             dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
             _h(name, val, **dims)
