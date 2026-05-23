@@ -678,9 +678,11 @@ def main():
         # D1 漏斗
         tracker_k.note_first_user_message("text")
         tracker_k.note_core_loop_completed()
-        # settings + proactive + D1 错误（直接走 instrument，模拟各 hook 点）
-        counter("settings_state", 1, proactive="on", interval="10-30s",
-                privacy="off", vision_chat="on")
+        # settings_state 走**真正的** record_settings_state（读 preferences +
+        # 分桶 + privacy 取反逻辑），而不是手写 counter——否则分桶/取反/读盘
+        # 逻辑坏了 smoke 也发现不了（CodeRabbit 指出）。
+        tt_mod.record_settings_state()
+        # proactive + D1 错误（直接走 instrument，模拟各 hook 点）
         counter("proactive_fired", 1, channel="vision")
         counter("llm_error", 1, error_class="TimeoutError")
         counter("api_key_invalid", 1)

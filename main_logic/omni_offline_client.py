@@ -1325,6 +1325,7 @@ class OmniOfflineClient:
                                     from utils.instrument import histogram as _instr_h
                                     _instr_h("llm_ttft_ms", max(0.0, (time.time() - _ttft_start) * 1000.0))
                                 except Exception:
+                                    # 埋点 best-effort，绝不打断流式响应主路径。
                                     pass
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
@@ -1723,6 +1724,7 @@ class OmniOfflineClient:
                         if is_api_key_rejected:
                             _instr_counter("api_key_invalid")
                     except Exception:
+                        # 埋点 best-effort，绝不掩盖/打断原始 LLM 错误的处理路径。
                         pass
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}

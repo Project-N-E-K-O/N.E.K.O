@@ -234,4 +234,6 @@ def test_snapshot_empty_still_advances_window():
     import time
     time.sleep(0.01)
     inst.snapshot()  # 空
-    assert inst._window_start >= w0
+    # 严格 > ：空 snapshot 也必须推进 window_start，否则空窗口会一直挂着。
+    # 用 >= 的话即使实现完全不更新也会通过，兜不住回归。
+    assert inst._window_start > w0

@@ -1952,6 +1952,7 @@ class LLMSessionManager:
                     from utils.token_tracker import TokenTracker as _TT
                     _TT.get_instance().note_first_user_message("voice")
                 except Exception:
+                    # 埋点 best-effort，绝不阻塞语音转录消息处理（同文本路径）。
                     pass
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
@@ -6031,6 +6032,8 @@ class LLMSessionManager:
                         from utils.token_tracker import TokenTracker as _TT
                         _TT.get_instance().note_first_user_message("text")
                     except Exception:
+                        # 埋点 best-effort，绝不阻塞用户消息处理；note_first_user_message
+                        # 自身幂等，丢一次也不影响 D1 漏斗统计。
                         pass
                     # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                     # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
@@ -6781,6 +6784,7 @@ class LLMSessionManager:
                             from utils.instrument import counter as _instr_counter
                             _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32])
                         except Exception:
+                            # 埋点 best-effort，绝不影响 TTS 错误的重试/上报主流程。
                             pass
                         # 可重试的错误：前2次静默重试，第3次失败时上报前端
                         if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
@@ -6801,6 +6805,8 @@ class LLMSessionManager:
                             from utils.token_tracker import TokenTracker as _TT
                             _TT.get_instance().note_core_loop_completed()
                         except Exception:
+                            # 埋点 best-effort，绝不影响音频投递主流程；
+                            # note_core_loop_completed 自身幂等。
                             pass
                     else:
                         self._discard_pending_ai_voice_echo()

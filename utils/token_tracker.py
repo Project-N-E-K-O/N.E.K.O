@@ -686,9 +686,18 @@ def _bucket_proactive_interval(seconds) -> str:
 def record_settings_state() -> None:
     """读当前主动搭话 / 隐私模式设置，打一个 settings_state counter。
 
-    触发时机：
-    - app 启动（record_app_start，仅 main_server 进程）
-    - 用户改设置（preferences.save_global_conversation_settings 成功后）
+    触发时机：**仅** app 启动（record_app_start，仅 main_server 进程）。
+
+    语义说明（CodeRabbit 反馈后定型）：server 端 instrument_counters 按
+    (stat_date, device_id, metric_key) 累加 UPSERT。本函数只在启动打点，
+    所以一条记录 = "用户本次启动时的设置组合"。每天每设备启动几次就 +几，
+    是**观测次数**而非 gauge 式"当前最终状态"——但对"深度用户惯用什么档"
+    的分析够用：按 device 取计数最高的 combo 即其惯用档。
+
+    刻意**不**在 save_global_conversation_settings 里打点：那样用户一天内
+    每切一次设置就给一个新 combo +1，把分布污染成"切换轨迹"。要精确的
+    per-device-per-day 最终状态需要 server 端 gauge/overwrite 语义，当前
+    instrument 管道不支持，且对本分析非必要。
 
     用途：server 端按 device 活跃天数 / event_count 切出深度用户，再看他们
     settings_state 各 dim 组合的分布 —— 即"深度用户把主动搭话 / 隐私模式
@@ -1232,6 +1241,8 @@ class TokenTracker:
             from utils.instrument import counter as _c
             _c("core_loop_completed")
         except Exception:
+            # 埋点 best-effort；前面已置位 _core_loop_recorded，丢一次计数
+            # 不影响幂等，也不该影响调用方（音频投递路径）。
             pass
 
     # ---- 持久化 ----
