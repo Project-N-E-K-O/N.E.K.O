@@ -63,6 +63,7 @@ from cachetools import TTLCache
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.activity.system_signals import is_remote_backend_deployment
+from main_logic.activity.tracker import _EXTERNAL_SIGNAL_MIN_INTERVAL
 from config import (
     AUTOSTART_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
@@ -4138,6 +4139,220 @@ async def backend_interactive_screenshot(request: Request):
                 os.remove(tmp_path)
         except Exception:
             logger.debug("清理交互截图临时文件失败: %s", tmp_path, exc_info=True)
+
+
+# ── Frontend-pushed activity signals (cross-platform OS signal channel) ──
+#
+# Per-lanlan throttle for ``/api/activity_signal``. Keyed by lanlan_name,
+# value is the timestamp of the last accepted push. Bounded — see
+# ``_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES`` — to defend against an
+# attacker spraying lanlan_names; in practice the dict has 1-3 entries.
+# Concurrent access from FastAPI's worker pool is safe because Python
+# dict ops are atomic under the GIL and we tolerate occasional rate-limit
+# slippage (worst case: an extra push slips through).
+_ACTIVITY_SIGNAL_THROTTLE: dict[str, float] = {}
+_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES = 64
+
+
+def _activity_signal_validate_float(
+    data: dict, key: str, lo: float | None, hi: float | None,
+) -> tuple[float | None, str | None]:
+    """Coerce ``data[key]`` to a bounded float; ``None`` means absent.
+
+    Tracker treats absent fields as neutral defaults (see
+    ``UserActivityTracker.push_external_system_signal`` docstring), so
+    we keep ``None`` distinct from a present-but-invalid value — the
+    latter is a 400 with a specific error.
+    """
+    raw = data.get(key)
+    if raw is None:
+        return None, None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None, f"{key} must be a number"
+    if lo is not None and val < lo:
+        return None, f"{key} must be >= {lo}"
+    if hi is not None and val > hi:
+        return None, f"{key} must be <= {hi}"
+    return val, None
+
+
+def _activity_signal_validate_str(
+    data: dict, key: str,
+) -> tuple[str | None, str | None]:
+    raw = data.get(key)
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str):
+        return None, f"{key} must be a string"
+    return raw, None
+
+
+@router.post('/activity_signal')
+async def push_activity_signal(request: Request):
+    """Accept OS-activity signals pushed by the frontend on a heartbeat.
+
+    Companion to ``UserActivityTracker.push_external_system_signal()``
+    (PR #1015 ``main_logic/activity/tracker.py:347``), exposing the
+    push channel as HTTP for the "backend doesn't run on the user's
+    machine" deployments. The frontend (Electron preload reading
+    ``powerMonitor.getSystemIdleTime`` + npm ``active-win`` +
+    ``os.cpus()`` + ``nvidia-smi``) POSTs here every ``~5s``; the
+    tracker treats anything fresher than ``_EXTERNAL_SIGNAL_TTL_SECONDS``
+    (30s) as the authoritative OS view, falling back to the local
+    collector when the heartbeat stops. Same fresh-then-fallback path
+    feeds both the async ``get_snapshot`` and the sync variant — see
+    ``tracker._select_system_snapshot``.
+
+    Why not loopback-only / CSRF guarded: in remote deployments the
+    frontend is intentionally not on loopback. CSRF/Origin would be
+    the right hardening, but adding it requires updating frontend
+    agent fetch sites to send ``X-CSRF-Token`` (out of PR B scope —
+    see issue #1023 audit). For PR B we accept anonymous pushes; the
+    per-lanlan rate limit below + the tracker's per-character lookup
+    are the practical defenses.
+
+    Body fields (all optional except ``lanlan_name``):
+      * ``lanlan_name`` (required) — which character's tracker to update
+      * ``window_title`` — string, raw active-window title
+      * ``process_name`` — string, owning process exe name (e.g. ``"Code.exe"``)
+      * ``idle_seconds`` — float ≥ 0, OS-wide keyboard/mouse idle
+      * ``cpu_avg_30s`` — float in ``[0, 100]``, rolling CPU average
+      * ``gpu_utilization`` — float in ``[0, 100]``, primary GPU utilisation
+
+    Returns 200 on success, 400 on malformed payload, 404 if
+    ``lanlan_name`` isn't registered, 429 if pushed faster than
+    ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
+    tracker hasn't initialised yet.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return _json_no_store_response(
+            {"success": False, "error": "invalid JSON body"},
+            status_code=400,
+        )
+    if not isinstance(data, dict):
+        return _json_no_store_response(
+            {"success": False, "error": "body must be a JSON object"},
+            status_code=400,
+        )
+
+    lanlan_name = data.get("lanlan_name")
+    if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+        return _json_no_store_response(
+            {"success": False, "error": "lanlan_name required"},
+            status_code=400,
+        )
+    lanlan_name = lanlan_name.strip()
+
+    idle_seconds, err = _activity_signal_validate_float(
+        data, "idle_seconds", 0.0, None,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    cpu_avg_30s, err = _activity_signal_validate_float(
+        data, "cpu_avg_30s", 0.0, 100.0,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    gpu_utilization, err = _activity_signal_validate_float(
+        data, "gpu_utilization", 0.0, 100.0,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+
+    window_title, err = _activity_signal_validate_str(data, "window_title")
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    process_name, err = _activity_signal_validate_str(data, "process_name")
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+
+    # Per-lanlan throttle — matches the frontend's 5s heartbeat. TTL
+    # is 30s so even if 5 of every 6 pushes get rate-limited the
+    # tracker stays inside its freshness window. Spam control, not
+    # auth — the character lookup below is the real integrity check.
+    now = time.time()
+    last_push = _ACTIVITY_SIGNAL_THROTTLE.get(lanlan_name)
+    if last_push is not None and (now - last_push) < _EXTERNAL_SIGNAL_MIN_INTERVAL:
+        retry_after = max(
+            0.0, _EXTERNAL_SIGNAL_MIN_INTERVAL - (now - last_push),
+        )
+        resp = _json_no_store_response(
+            {
+                "success": False,
+                "error": "rate limited",
+                "retry_after_seconds": round(retry_after, 3),
+            },
+            status_code=429,
+        )
+        # Header is integer seconds per RFC 9110; round up so clients
+        # don't retry into the same window.
+        resp.headers["Retry-After"] = str(int(retry_after) + 1)
+        return resp
+
+    session_manager = get_session_manager()
+    mgr = session_manager.get(lanlan_name)
+    if not mgr:
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": f"lanlan_name {lanlan_name!r} not registered",
+            },
+            status_code=404,
+        )
+    tracker = getattr(mgr, "_activity_tracker", None)
+    if tracker is None:
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "activity tracker not initialised for this character",
+            },
+            status_code=503,
+        )
+
+    try:
+        tracker.push_external_system_signal(
+            window_title=window_title,
+            process_name=process_name,
+            idle_seconds=idle_seconds,
+            cpu_avg_30s=cpu_avg_30s,
+            gpu_utilization=gpu_utilization,
+            now=now,
+        )
+    except Exception as e:
+        logger.exception(
+            "push_external_system_signal failed for %s", lanlan_name,
+        )
+        return _json_no_store_response(
+            {"success": False, "error": f"tracker rejected push: {e}"},
+            status_code=500,
+        )
+
+    _ACTIVITY_SIGNAL_THROTTLE[lanlan_name] = now
+    # Bound the dict: in practice lanlan_names are 1-3, but if an
+    # attacker sprays unique names we trim oldest. Sorted ascending by
+    # timestamp; keep the freshest MAX entries.
+    if len(_ACTIVITY_SIGNAL_THROTTLE) > _ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES:
+        excess = sorted(
+            _ACTIVITY_SIGNAL_THROTTLE.items(), key=lambda kv: kv[1],
+        )[:-_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES]
+        for key, _ in excess:
+            _ACTIVITY_SIGNAL_THROTTLE.pop(key, None)
+
+    return _json_no_store_response({"success": True})
 
 
 # ================================================================

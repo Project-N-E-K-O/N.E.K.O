@@ -74,6 +74,19 @@ _ACTIVITY_GUESS_MIN_REFRESH_SECONDS = 30.0
 # advertise "no signal" than to keep using stale window data.
 _EXTERNAL_SIGNAL_TTL_SECONDS = 30.0
 
+# Minimum interval between accepted external-signal pushes for a given
+# lanlan_name. Tuned together with the frontend heartbeat: the Electron
+# preload pushes every ~5s, so anything more frequent is either a buggy
+# client (re-entering the heartbeat) or spam. Enforced by the
+# ``/api/activity_signal`` endpoint, not the tracker itself — the
+# tracker is happily idempotent and just overwrites the last push.
+#
+# Pairs with TTL above: TTL is the "data freshness" window, this is the
+# "request frequency" cap. TTL ≫ interval so even when 5 of every 6
+# pushes get rate-limited the tracker still has data within the freshness
+# window.
+_EXTERNAL_SIGNAL_MIN_INTERVAL = 5.0
+
 
 # ── Break-reminder defaults ─────────────────────────────────────────
 # Override per-character via ``user_preferences.json::__global_conversation__::activity::thresholds``.
