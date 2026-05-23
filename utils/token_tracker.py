@@ -1651,6 +1651,9 @@ class TokenTracker:
 _stream_options_blocklist: set = set()
 _blocklist_lock = threading.Lock()
 
+# install_hooks() 单次安装守卫（见 install_hooks 文档）
+_hooks_install_lock = threading.Lock()
+
 
 def _get_base_url(self_obj) -> str:
     """从 OpenAI client 实例提取 base_url。"""
@@ -1880,6 +1883,15 @@ def install_hooks():
     同时覆盖 LangChain 底层调用（因为 LangChain ChatOpenAI 底层调用 OpenAI SDK）。
 
     顺便：装 sys.excepthook 抓 unhandled exception 打 crash 事件。
+
+    幂等：合并单进程模式（打包 / Steam 版，见 launcher 的 _run_merged）把
+    main / memory / agent 三个 uvicorn app 跑在同一进程，三个 app 的 startup
+    都会调本函数，打在同一个进程级 ``Completions.create`` 上。没有守卫时 wrapper
+    会逐层叠加 —— 每个 chat.completions 调用被 record 多次，conversation /
+    emotion / proactive / galgame_options 等走 hook 的 call_type 在遥测里精确翻
+    N 倍（线上 Steam 版三 app 实测 ×3）。走 ``TokenTracker.record()`` 直接记账的
+    tts / conversation_realtime / agent_cua 绕开 hook 不受影响；app_start 由
+    ``_has_recorded_app_start`` 单例锁兜住 —— 本守卫是它在 hook 侧的对偶。
     """
     # crash hook 跟 openai 库无关，独立装；幂等。
     _install_crash_excepthook()
@@ -1888,6 +1900,10 @@ def install_hooks():
         from openai.resources.chat.completions import Completions, AsyncCompletions
     except ImportError:
         logger.warning("Token tracker: openai package not found, hooks not installed")
+        return
+
+    # 已装则直接返回（cheap path），避免叠加 wrapper。真正的安装走下面的双检锁。
+    if getattr(Completions.create, "_neko_token_tracker_hooked", False):
         return
 
     _original_create = Completions.create
@@ -1933,8 +1949,19 @@ def install_hooks():
             )
             raise
 
-    Completions.create = patched_create
-    AsyncCompletions.create = patched_async_create
+    # 标记 wrapper，供幂等守卫识别"已装"。functools.wraps 不会复制这个自定义属性，
+    # 所以原始 SDK 方法上不会有它，只有我们包过的才有。
+    patched_create._neko_token_tracker_hooked = True
+    patched_async_create._neko_token_tracker_hooked = True
+
+    # 双检锁：合并模式下三个 startup 协程在同一 event loop 串行跑，cheap path 已能
+    # 挡住；锁是为多线程初始化路径（agent / memory watchdog 线程）兜底，确保
+    # "检测已装 → 赋值"这段不被并发穿插成叠加安装。
+    with _hooks_install_lock:
+        if getattr(Completions.create, "_neko_token_tracker_hooked", False):
+            return
+        Completions.create = patched_create
+        AsyncCompletions.create = patched_async_create
     logger.info("Token tracker: OpenAI SDK hooks installed")
 
 
