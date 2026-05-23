@@ -330,10 +330,19 @@ class TelemetryStorage:
         #   3) fallback_stat_date（一般是 today.isoformat()）— 兜底。
         stat_date = fallback_stat_date or date.today().isoformat()
         client_date = instruments.get("stat_date")
-        if (isinstance(client_date, str)
-                and len(client_date) == 10
-                and client_date[4] == "-"
-                and client_date[7] == "-"):
+        # 真 ISO 校验，不能只看长度+dash 位置：HMAC 密钥在开源客户端里可读，
+        # 伪造 payload 可塞 "9999-99-99" / "abcd-ef-gh"——这类坏值长度和 dash
+        # 位置都过，但落库后 retention 的字典序比较（stat_date < cutoff）永远
+        # prune 不掉，还会在 dashboard 凭空多出垃圾分区。date.fromisoformat
+        # 解析失败就走 window_end / fallback 回退（Codex 指出）。
+        valid_client_date = False
+        if isinstance(client_date, str) and len(client_date) == 10:
+            try:
+                date.fromisoformat(client_date)
+                valid_client_date = True
+            except ValueError:
+                valid_client_date = False
+        if valid_client_date:
             stat_date = client_date
         else:
             try:

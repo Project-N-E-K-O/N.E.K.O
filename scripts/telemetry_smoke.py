@@ -717,6 +717,44 @@ def main():
         print("  ✓ all new D1 + settings + proactive telemetry reached server")
 
         # --------------------------------------------------------------
+        # [4j] Regression: Codex P2 — 伪造坏 stat_date 不能落成垃圾分区
+        #
+        # HMAC 密钥在开源客户端可读，伪造 payload 能塞 "9999-99-99" 这类长度
+        # 和 dash 位置都过、但非法的日期。server 必须 date.fromisoformat 校验，
+        # 坏值回退到 window_end/今天，否则字典序 retention 永远 prune 不掉。
+        # --------------------------------------------------------------
+        print("\n[4j] Regression: malformed stat_date rejected...")
+        bad_payload = {
+            "device_id": "j" * 64, "app_version": "2.0.0", "branch": "main",
+            "locale": "en-US", "timezone": "UTC", "distribution": "source",
+            "steam_user_id": "", "daily_stats": {}, "recent_records": [],
+            "instruments": {
+                "window_start": time.time() - 60, "window_end": time.time(),
+                "stat_date": "9999-99-99",  # 伪造的非法日期
+                "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+                "counters": {"forged_stat_date_counter": 1},
+                "histograms": {},
+            },
+        }
+        s_bad, _ = _sign_and_submit(bad_payload, gzip_it=False, batch_id="smoke-baddate-1")
+        assert s_bad == 200, f"bad-date payload should still be accepted (HTTP {s_bad})"
+        time.sleep(0.3)
+        conn_bad = sqlite3.connect(db_path)
+        bad_rows = conn_bad.execute(
+            "SELECT stat_date FROM instrument_counters "
+            "WHERE metric_key = 'forged_stat_date_counter'"
+        ).fetchall()
+        conn_bad.close()
+        landed_dates = [r[0] for r in bad_rows]
+        print(f"  forged counter landed under stat_date(s): {landed_dates}")
+        assert landed_dates, "forged counter should still be stored (under fallback date)"
+        assert "9999-99-99" not in landed_dates, (
+            "Codex P2 regression: malformed stat_date '9999-99-99' was persisted "
+            "as a real partition key — date.fromisoformat validation not working"
+        )
+        print("  ✓ malformed stat_date rejected, fell back to a valid date")
+
+        # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
         # --------------------------------------------------------------
         print("\n[5/5] Fetching dashboard HTML...")
