@@ -112,6 +112,8 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 **合并不可避免的 churn 要可追溯**：两个分量因新边并成一个时，survivor 的 `canonical_id` 取并集后的最小 steam 节点，败方成员被重指。这是"两个身份被发现是同一人"的语义必然，但下游外部引用需要能跟随——加一张 `canonical_alias(old_canonical_id, new_canonical_id, merged_at)` 历史表，重指时写一条，外部引用可顺着 alias 链解析到当前 canonical。
 
+> 实施注意：反复合并会形成长链（A→B→C→D），解析旧 ID 要多跳。每次重指时顺手 **path compression**——把所有指向旧 survivor 的 alias 行直接改指最终 canonical（`UPDATE canonical_alias SET new_canonical_id = <最终> WHERE new_canonical_id = <旧 survivor>`），保持 alias 表恒为一跳。当前量级多跳成本可忽略，但写进规格免得将来踩。
+
 物化策略见 §6.1（已定：落表定期重算）。
 
 ### 3.3 distribution 派生
