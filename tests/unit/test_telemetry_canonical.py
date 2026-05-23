@@ -266,21 +266,23 @@ def test_denylist_atomic_guard_on_insert(store):
 
 
 def test_device_legacy_length_validated(store):
-    """device_id_legacy 绕过 Pydantic，超长/超短串不得进 device_alias_edges。"""
-    dev = "deviceMAINXXXXXXX"
-    # 超长 legacy（>128）应被拒
-    _report(store, dev, legacy="x" * 200)
-    # 太短 legacy（<16）应被拒
+    """device_id_legacy 绕过 Pydantic，长度须在 16..128 内才建 device_alias_edges。"""
+    # 拒：超长（>128）/ 太短（<16）
+    _report(store, "deviceMAINXXXXXXX", legacy="x" * 200)
     _report(store, "deviceMAIN2XXXXXX", legacy="short")
-    # 合法长度 legacy 应建边
+    # 准：合法长度
     _report(store, "deviceMAIN3XXXXXX", legacy="deviceLEGACYOKXXX")
+    # 边界值：正好 16（最小合法）/ 正好 128（最大合法）—— 防 off-by-one
+    _report(store, "deviceMAIN4XXXXXX", legacy="a" * 16)
+    _report(store, "deviceMAIN5XXXXXX", legacy="b" * 128)
     store.build_edges_from_events()
-    rows = store._get_conn().execute(
-        "SELECT dev_lo, dev_hi FROM device_alias_edges"
-    ).fetchall()
-    pairs = [(r["dev_lo"], r["dev_hi"]) for r in rows]
-    # 只有合法那条建了边
-    assert pairs == [tuple(sorted(("deviceMAIN3XXXXXX", "deviceLEGACYOKXXX")))]
+    rows = store._get_conn().execute("SELECT dev_lo, dev_hi FROM device_alias_edges").fetchall()
+    pairs = {(r["dev_lo"], r["dev_hi"]) for r in rows}
+    assert pairs == {
+        tuple(sorted(("deviceMAIN3XXXXXX", "deviceLEGACYOKXXX"))),
+        tuple(sorted(("deviceMAIN4XXXXXX", "a" * 16))),
+        tuple(sorted(("deviceMAIN5XXXXXX", "b" * 128))),
+    }
 
 
 def test_alias_repointed_when_canonical_removed(store):
