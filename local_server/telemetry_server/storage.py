@@ -185,6 +185,7 @@ class TelemetryStorage:
                     timezone      TEXT    NOT NULL DEFAULT 'unknown',
                     distribution  TEXT    NOT NULL DEFAULT 'unknown',
                     steam_user_id TEXT    NOT NULL DEFAULT '',
+                    device_hw     TEXT    NOT NULL DEFAULT '',
                     first_seen    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     last_seen     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours')),
                     event_count   INTEGER NOT NULL DEFAULT 0
@@ -306,6 +307,7 @@ class TelemetryStorage:
                 ("timezone", "unknown"),
                 ("distribution", "unknown"),
                 ("steam_user_id", ""),
+                ("device_hw", ""),
             )
             for col_name, default in _new_cols:
                 if col_name in existing_cols:
@@ -335,7 +337,7 @@ class TelemetryStorage:
                     daily_stats: dict, batch_id: str | None = None,
                     branch: str = "unknown", locale: str = "unknown",
                     timezone: str = "unknown", distribution: str = "unknown",
-                    steam_user_id: str = "",
+                    steam_user_id: str = "", device_hw: str = "",
                     instruments: dict | None = None):
         today = date.today().isoformat()
         with self._transaction() as conn:
@@ -396,9 +398,9 @@ class TelemetryStorage:
             # 被下游 join 当成合法 ID）。两种 sentinel 都走 preserve-known：
             # incoming 是 sentinel 时不覆写历史。
             conn.execute("""
-                INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution, steam_user_id,
+                INSERT INTO devices (device_id, app_version, branch, locale, timezone, distribution, steam_user_id, device_hw,
                                      first_seen, last_seen, event_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
                         strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                         strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'), 1)
                 ON CONFLICT(device_id) DO UPDATE SET
@@ -408,9 +410,10 @@ class TelemetryStorage:
                     timezone      = CASE WHEN excluded.timezone      = 'unknown' THEN devices.timezone      ELSE excluded.timezone      END,
                     distribution  = CASE WHEN excluded.distribution  = 'unknown' THEN devices.distribution  ELSE excluded.distribution  END,
                     steam_user_id = CASE WHEN excluded.steam_user_id = ''        THEN devices.steam_user_id ELSE excluded.steam_user_id END,
+                    device_hw     = CASE WHEN excluded.device_hw     = ''        THEN devices.device_hw     ELSE excluded.device_hw     END,
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
-            """, (device_id, app_version, branch, locale, timezone, distribution, steam_user_id))
+            """, (device_id, app_version, branch, locale, timezone, distribution, steam_user_id, device_hw))
 
             # Instrument 累加（同事务内）：失败回滚整批，daily_stats 不会
             # 在 instruments 失败时半截入库。

@@ -640,6 +640,71 @@ def _get_telemetry_timezone() -> str:
     return "unknown"
 
 
+_DEVICE_HW_CACHE: Optional[str] = None
+
+
+def _get_device_hw() -> str:
+    """设备硬件画像（低基数 enum 复合串），复用 embedding 侧检测，进程内只算一次。
+
+    形如 ``win|x86_64|16to32|avx2|9to16``。作为 devices 表的**设备属性**（非计数）
+    上报，用来 JOIN 留存做"低配设备首日流失率"——区分"跑不动而走"与"不喜欢而走"。
+
+    所有维度都是分桶 enum，**绝不发原始值**（RAM 字节 / GPU 型号 / 机器名）——
+    守 dim 低基数 + 零 PII（同 #1426 T3）。复用 memory.embeddings 的检测（其顶层
+    import 很轻，detect 函数内部才 lazy 加载重依赖，所以这里 import 成本可忽略）。
+    任一维度失败回退 'unknown'，整体绝不抛（埋点不能挡上报）。
+    """
+    global _DEVICE_HW_CACHE
+    if _DEVICE_HW_CACHE is not None:
+        return _DEVICE_HW_CACHE
+    import platform as _plat
+
+    sysname = (_plat.system() or "").lower()
+    os_tag = {"windows": "win", "darwin": "mac", "linux": "linux"}.get(sysname, "other")
+
+    mach = (_plat.machine() or "").lower()
+    if mach in ("x86_64", "amd64", "x64"):
+        arch = "x86_64"
+    elif mach in ("arm64", "aarch64"):
+        arch = "arm64"
+    else:
+        arch = "other"
+
+    ram_tag = "unknown"
+    try:
+        from memory.embeddings import detect_total_ram_gb
+        gb = detect_total_ram_gb()
+        if gb is not None:
+            ram_tag = ("lt8" if gb < 8 else "8to16" if gb < 16
+                       else "16to32" if gb < 32 else "ge32")
+    except Exception:
+        pass
+
+    simd = "unknown"
+    try:
+        from memory.embeddings import detect_avx_vnni, detect_avx2_details
+        if detect_avx_vnni():
+            simd = "vnni"
+        elif detect_avx2_details()[0]:
+            simd = "avx2"
+        else:
+            simd = "baseline"
+    except Exception:
+        pass
+
+    cpu_tag = "unknown"
+    try:
+        n = os.cpu_count() or 0
+        if n > 0:
+            cpu_tag = ("le4" if n <= 4 else "5to8" if n <= 8
+                       else "9to16" if n <= 16 else "gt16")
+    except Exception:
+        pass
+
+    _DEVICE_HW_CACHE = f"{os_tag}|{arch}|{ram_tag}|{simd}|{cpu_tag}"
+    return _DEVICE_HW_CACHE
+
+
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
     """计算遥测上报的 HMAC-SHA256 签名。"""
     body_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
@@ -1463,6 +1528,7 @@ class TokenTracker:
             # 杜绝原本两次独立 GetSteamID() 跨 SDK ready 边界产生的
             # release + 非空 Steam64 矛盾态。
             telemetry_distribution, telemetry_steam_user_id = _get_telemetry_metadata()
+            telemetry_device_hw = _get_device_hw()
 
             payload = {
                 "device_id": self._device_id,
@@ -1480,6 +1546,9 @@ class TokenTracker:
                 # 仅在 Steamworks SDK 起来 + 拿到 Steam64 时填值，其它情况为
                 # 空 string。server 端按 preserve-known 处理：空值不覆写历史。
                 "steam_user_id": telemetry_steam_user_id,
+                # 设备硬件画像（低基数 enum 复合串）。设备属性，server preserve-known
+                # UPSERT；用来 JOIN 留存做"低配设备首日流失"分析。
+                "device_hw": telemetry_device_hw,
                 "daily_stats": send_daily,
                 "recent_records": send_records,
             }

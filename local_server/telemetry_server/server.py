@@ -192,6 +192,7 @@ async def submit_telemetry(request: Request):
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
             steam_user_id=steam_user_id,
+            device_hw=submission.payload.device_hw,
             instruments=instruments_dict,
         )
     except Exception as e:
