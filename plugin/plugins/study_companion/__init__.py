@@ -60,7 +60,7 @@ from .mode_manager import (
 )
 from .knowledge_contribution import PublicGraphContributionBuilder
 from .knowledge_tracker import KnowledgeTracker
-from .memory_deck_store import MemoryDeckStore
+from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
 from .state import build_initial_state
 from .store import StudyStore
 from .study_habit_store import StudyHabitStore
@@ -1553,7 +1553,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     rating=rating,
                     deck_id=str(deck.get("id") or ""),
                 )
-            except ValueError:
+            except MemoryItemNotFoundError:
                 # Not a memory/custom item: a knowledge-graph topic card surfaced
                 # via study_memory_deck(include_topic_cards=True) is reviewed through
                 # the topic FSRS backend instead.

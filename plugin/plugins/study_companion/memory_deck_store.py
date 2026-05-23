@@ -26,6 +26,11 @@ from .memory_schema import ensure_memory_schema, normalize_deck_type, normalize_
 from .memory_text import build_cloze_prompt, diff_recitation, normalize_tags, split_passage_text
 from .models import json_copy
 
+
+class MemoryItemNotFoundError(ValueError):
+    """Raised when a review target is not a memory/custom item in this store."""
+
+
 class MemoryDeckStore:
     def __init__(self, store: Any, *, retention_target: float = 0.90) -> None:
         self.store = store
@@ -511,7 +516,7 @@ class MemoryDeckStore:
             if item is not None:
                 item_id = str(item["id"])
         if item is None:
-            raise ValueError("memory item not found")
+            raise MemoryItemNotFoundError("memory item not found")
         selected = (
             normalize_rating(rating)
             if rating is not None
