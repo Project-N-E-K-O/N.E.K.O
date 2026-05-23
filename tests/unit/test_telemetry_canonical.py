@@ -265,6 +265,24 @@ def test_denylist_atomic_guard_on_insert(store):
     assert "76561198000000002" in sids
 
 
+def test_device_legacy_length_validated(store):
+    """device_id_legacy 绕过 Pydantic，超长/超短串不得进 device_alias_edges。"""
+    dev = "deviceMAINXXXXXXX"
+    # 超长 legacy（>128）应被拒
+    _report(store, dev, legacy="x" * 200)
+    # 太短 legacy（<16）应被拒
+    _report(store, "deviceMAIN2XXXXXX", legacy="short")
+    # 合法长度 legacy 应建边
+    _report(store, "deviceMAIN3XXXXXX", legacy="deviceLEGACYOKXXX")
+    store.build_edges_from_events()
+    rows = store._get_conn().execute(
+        "SELECT dev_lo, dev_hi FROM device_alias_edges"
+    ).fetchall()
+    pairs = [(r["dev_lo"], r["dev_hi"]) for r in rows]
+    # 只有合法那条建了边
+    assert pairs == [tuple(sorted(("deviceMAIN3XXXXXX", "deviceLEGACYOKXXX")))]
+
+
 def test_alias_repointed_when_canonical_removed(store):
     """删号删掉某 canonical 后，指向它的旧 alias 不得悬空，要重指/删除。
 

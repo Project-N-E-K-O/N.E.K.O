@@ -644,7 +644,11 @@ class TelemetryStorage:
                             observe_count = device_steam_edges.observe_count + 1
                     """, (dev, sid, ts, ts, sid))
                 legacy = payload.get("device_id_legacy")
-                if isinstance(legacy, str) and legacy and legacy != dev:
+                # device_id_legacy 来自未经 Pydantic 校验的 payload extras（model 不声明
+                # 此字段），必须套用与 device_id 相同的长度约束（models.py: min 16 / max
+                # 128），否则伪造请求可塞超长串进 device_alias_edges，撑大边表、把超大
+                # 节点喂进 recompute 的 union-find 拖垮内存/CPU。
+                if isinstance(legacy, str) and 16 <= len(legacy) <= 128 and legacy != dev:
                     lo, hi = sorted((dev, legacy))
                     c.execute("""
                         INSERT INTO device_alias_edges (dev_lo, dev_hi, first_seen, last_seen, observe_count)

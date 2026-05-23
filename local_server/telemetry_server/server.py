@@ -289,6 +289,16 @@ async def _periodic_canonical_rebuild():
 @app.on_event("startup")
 async def on_startup():
     rate_limiter.cleanup_stale()
+    # 启动先同步对齐一次 canonical_map（只跑 recompute，毫秒级、只对现有边做
+    # union-find，不扫事件）——重启后首个 /canonical/metrics 即读到与现有边一致的
+    # 结果。故意**不**在这里同步跑 build_all_pending_edges：那是全量事件 drain，
+    # 首次部署/长停机后可能耗时数分钟，会阻塞启动、拖垮 healthcheck 与 ingest。
+    # 昂贵的事件建边留给下面的后台任务；建边完成前 metrics 由 COALESCE 回退到
+    # device 口径（合理降级，非错误数据）。
+    try:
+        await asyncio.to_thread(storage.recompute_canonical)
+    except Exception:
+        logger.exception("startup canonical recompute failed")
     asyncio.create_task(_periodic_rate_limiter_cleanup())
     asyncio.create_task(_periodic_canonical_rebuild())
     logger.info(f"Telemetry server started. DB={DB_PATH}")
