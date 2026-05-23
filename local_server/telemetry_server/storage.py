@@ -728,6 +728,9 @@ class TelemetryStorage:
         old_canon = {
             r["canonical_id"] for r in conn.execute("SELECT DISTINCT canonical_id FROM canonical_map")
         }
+        existing_alias_olds = {
+            r["old_canonical_id"] for r in conn.execute("SELECT old_canonical_id FROM canonical_alias")
+        }
         new_canon_ids = set(root_canon.values())
 
         with self._transaction() as c:
@@ -739,18 +742,28 @@ class TelemetryStorage:
                     for node, canon in new_map.items()
                 ],
             )
-            # alias 维护：曾是 canonical、现已被并入别处的 ID 记一条，并 path-compress
-            for x in old_canon - new_canon_ids:
-                y = new_map.get(x)
-                if y and y != x:
+            # alias reconciliation：对每个"曾被发出去过的 canonical_id"（old_canon）和每条
+            # 已有 alias 的 key，重新解析到它此刻所属的 live canonical。candidates 覆盖了所有
+            # 可能被外部 resolve_canonical 调用的旧 ID（外部只可能持有曾经的 canonical_id）。
+            #   succ 非空且 != 自己 → 被合并到 succ，写/更新 old→succ；succ 必是 live 代表元，
+            #     天然一跳，不会形成 alias 链。
+            #   succ == 自己       → 它又是 live canonical（如删号后分量炸开、旧 device 复活），
+            #     删掉任何把它指走的陈旧 alias，resolve 回落到自身。
+            #   succ 为 None       → 实体随删号离开图（steam 节点边被删光），旧引用无继承者，
+            #     删 alias；resolve 回落自身、查 canonical_map 得空集，即 GDPR "身份已移除"。
+            # 关键：这同时清理了"指向已删 canonical 的入边 alias"——它们的 key 在 candidates
+            # 里会被重新指到当前 live canonical 或删除，不再悬空指向死节点。
+            for old_id in old_canon | existing_alias_olds:
+                succ = new_map.get(old_id)
+                if succ is not None and succ != old_id:
                     c.execute(
                         "INSERT INTO canonical_alias (old_canonical_id, new_canonical_id) VALUES (?, ?) "
                         "ON CONFLICT(old_canonical_id) DO UPDATE SET new_canonical_id = excluded.new_canonical_id",
-                        (x, y),
+                        (old_id, succ),
                     )
+                else:
                     c.execute(
-                        "UPDATE canonical_alias SET new_canonical_id = ? WHERE new_canonical_id = ?",
-                        (y, x),
+                        "DELETE FROM canonical_alias WHERE old_canonical_id = ?", (old_id,)
                     )
         return len(new_canon_ids)
 

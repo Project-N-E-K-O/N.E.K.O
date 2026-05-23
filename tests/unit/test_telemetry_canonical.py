@@ -265,6 +265,37 @@ def test_denylist_atomic_guard_on_insert(store):
     assert "76561198000000002" in sids
 
 
+def test_alias_repointed_when_canonical_removed(store):
+    """删号删掉某 canonical 后，指向它的旧 alias 不得悬空，要重指/删除。
+
+    Codex 序列：d1、d2 先各自成 canonical，再都登 S 合并到 s:S（产生 alias
+    d:d1->s:S、d:d2->s:S）；denylist S 后 d1/d2 退回各自 canonical，
+    resolve_canonical('d:d1') 必须回到 d:d1，绝不能返回已死的 s:S。
+    """
+    # 阶段 1：d1、d2 各自先成独立 canonical
+    _report(store, "deviceD1XXXXXXXXX")
+    _report(store, "deviceD2XXXXXXXXX")
+    store.build_edges_from_events()
+    store.recompute_canonical()
+    # 阶段 2：都登 S → 合并到 s:S，旧 device canonical 写 alias 指向 s:S
+    _report(store, "deviceD1XXXXXXXXX", steam="76561198000000001")
+    _report(store, "deviceD2XXXXXXXXX", steam="76561198000000001")
+    store.build_edges_from_events()
+    store.recompute_canonical()
+    assert store.resolve_canonical("d:deviceD1XXXXXXXXX") == "s:76561198000000001"
+    # 阶段 3：删号 S → 分量炸开，d1/d2 复活为各自 canonical
+    store.add_steam_id_to_denylist("76561198000000001")
+    store.recompute_canonical()
+    assert store.resolve_canonical("d:deviceD1XXXXXXXXX") == "d:deviceD1XXXXXXXXX"
+    assert store.resolve_canonical("d:deviceD2XXXXXXXXX") == "d:deviceD2XXXXXXXXX"
+    assert _canon_of(store, "deviceD1XXXXXXXXX") == "d:deviceD1XXXXXXXXX"
+    # 不应残留任何指向已删 s:S 的 alias
+    dangling = store._get_conn().execute(
+        "SELECT COUNT(*) c FROM canonical_alias WHERE new_canonical_id='s:76561198000000001'"
+    ).fetchone()["c"]
+    assert dangling == 0
+
+
 def test_edge_uses_event_time_not_now(store):
     """边 first_seen 取 events.received_at，不是 job 墙上时间。"""
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")
