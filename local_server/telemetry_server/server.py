@@ -254,14 +254,21 @@ async def _periodic_rate_limiter_cleanup():
 async def _periodic_canonical_rebuild():
     """每 5 分钟增量扫 events 产边 + 重算 canonical 落表。
 
-    阻塞 SQLite 调用丢线程池跑，避免占着事件循环。只有真产了新边才重算。
+    阻塞 SQLite 调用丢线程池跑，避免占着事件循环。用 need_recompute 脏标记保证
+    "边产出后必须落到一次成功的 recompute"：build_all_pending_edges 已推进游标，
+    若紧接着 recompute 抛异常（如瞬时 SQLite 锁），脏标记保持 True，下个 tick
+    即便没有新事件也会重试——不会让 canonical_map 永久停在 build 已推进、recompute
+    没跟上的不一致态。
     """
+    need_recompute = False
     while True:
         await asyncio.sleep(300)
         try:
-            processed = await asyncio.to_thread(storage.build_all_pending_edges)
-            if processed:
+            if await asyncio.to_thread(storage.build_all_pending_edges):
+                need_recompute = True
+            if need_recompute:
                 await asyncio.to_thread(storage.recompute_canonical)
+                need_recompute = False  # 仅成功后清脏；异常时保持，下 tick 重试
         except Exception:
             logger.exception("canonical rebuild failed")
 
