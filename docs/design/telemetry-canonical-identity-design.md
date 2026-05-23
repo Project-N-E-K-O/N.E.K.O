@@ -1,6 +1,10 @@
 # Telemetry canonical identity — device ⟷ steam_id 多对多聚合设计
 
-**状态：design doc / 征求决策。** 本文只定模型与开放问题，代码待 reviewer 拍板后另推 server PR。客户端无需改动（见 §3）。
+**状态：定稿 / 交接运维实现。** 决策已拍板（见 §6），实现与后续归属交由运维。本文是实现规格，不含代码。客户端无需改动（见 §2）。
+
+**两条边界先讲清楚：**
+- **公开 repo 只保留"收数据"那一段**（上报接收 + 数据模型 + "我们收什么"的透明说明）。canonical 归并、看板、指标这些是**内部分析**，不进公开 repo —— 它们是已收数据的纯消费方，没有暴露给用户的必要。
+- **归并不碰 ingest**：边由**内部 job 事后扫 `events` 产出**，不在上报路径里产边。公开的收数据代码一行都不用动。
 
 ## TL;DR
 
@@ -46,7 +50,8 @@
 
 **非目标**
 
-- **不改客户端**。客户端每次上报本来就带 `device_id` + 本 session 当前登录的 `steam_user_id`，这就是一条边的来源。改的全在 server。
+- **不改客户端**。客户端每次上报本来就带 `device_id` + 本 session 当前登录的 `steam_user_id`，这条配对已落进 `events.payload`，是边的来源。改的全在内部分析侧。
+- **不改公开 repo 的收数据代码**。ingest / models 不动。边由内部 job 扫 `events` 产出（见 §3.1），归并、指标、看板全在内部分析侧，不进公开 repo。
 - 不删现有 device 级查询。canonical 是叠加层，device 维度保留（"这台机器这次怎么启动"仍有意义）。
 - 不引入 PII / 实名。仍只存 Steam64（Steam 公开 ID，非实名）+ 匿名 device_id。
 
@@ -66,10 +71,10 @@ CREATE TABLE IF NOT EXISTS device_steam_edges (
 CREATE INDEX IF NOT EXISTS idx_edge_steam ON device_steam_edges(steam_user_id);
 ```
 
-ingest 时（在 `store_event` 内、`steam_user_id` 归一化之后）：
+**边由内部 job 扫 `events` 产出，不在 ingest 路径里产边。** 这样公开 repo 的收数据代码完全不动，归并逻辑全在内部分析侧。job 增量处理新 `events`（按 `received_at` / `id` 游标推进），对每条 payload 里的 `steam_user_id` 跑归一化 + denylist 过滤（见附录），合法才 UPSERT：
 
 ```sql
--- 仅当本次上报 steam_user_id 非空才产边；空值不携带新关联信息，不插
+-- 仅当归一化后非空且不在 denylist 才产边；空值不携带新关联信息，跳过
 INSERT INTO device_steam_edges (device_id, steam_user_id)
 VALUES (?, ?)
 ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
@@ -78,7 +83,8 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 ```
 
 - 观测事实表，不删（除 §7 GDPR 删号）
-- `devices.steam_user_id` 单列**保留不动**（不破坏现有写路径），但 canonical 解析不再依赖它，改读边表
+- 首次跑 = 全量扫历史 `events`（即回填）；之后增量扫新 `events`。**回填和实时产边是同一份代码**，不存在两套规则漂移。
+- `devices.steam_user_id` 单列**保留不动**（公开 repo 写路径不变），canonical 解析不依赖它，改读边表
 
 ### 3.2 canonical 解析
 
@@ -100,7 +106,7 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 **合并不可避免的 churn 要可追溯**：两个分量因新边并成一个时，survivor 的 `canonical_id` 取并集后的最小 steam 节点，败方成员被重指。这是"两个身份被发现是同一人"的语义必然，但下游外部引用需要能跟随——加一张 `canonical_alias(old_canonical_id, new_canonical_id, merged_at)` 历史表，重指时写一条，外部引用可顺着 alias 链解析到当前 canonical。
 
-两种物化策略见 §6 决策点 1。
+物化策略见 §6.1（已定：落表定期重算）。
 
 ### 3.3 distribution 派生
 
@@ -118,29 +124,27 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 这直接修正 §1.2 的高估/低估：多设备真人折叠成一个 canonical 后 DAU/MAU 下修、留存上修。
 
-## 5. 与 device_id legacy fold 的关系
+## 5. 与 device_id legacy fold 的关系（已定：合一套）
 
-`device_id_legacy`（算法升级导致同一台机器有新旧两个 device_id）本质也是身份归并 —— 是一条 **device⟷device 边**。两种收编方式见 §6 决策点 2。核心是：legacy fold 不该独立于 canonical 另搞一套，否则两套身份图会打架。需跟运维对齐这条线归属与时序。
+`device_id_legacy`（算法升级导致同一台机器有新旧两个 device_id）本质也是身份归并 —— 是一条 **device⟷device 边**。**决定：两条线合成一套**，不各搞一套（否则两套身份图会打架）。
 
-## 6. 决策点（请 reviewer 拍板）
+- 加一张 `device_alias_edges(device_id_a, device_id_b, first_seen, last_seen)`，边源 = `events.payload.device_id_legacy`（同样内部 job 扫 events 产出）。
+- canonical 解析的 union-find **同时吃两类边**：`device_steam_edges`（device⟷steam）+ `device_alias_edges`（device⟷device）。一个连通分量里可以同时有新旧 device_id 和多个 steam 账号，全归一个 canonical。
+- 运维原来单独搞的 legacy fold 不再需要独立逻辑，变成喂给统一框架的一类边。
 
-> 以下为待定项，本文不预设结论，定了再写代码。
+归属与上线时序由运维定（本文是交接规格）。
 
-1. **canonical 物化策略**
-   - A. 落表 `canonical_map(entity_type, entity_id, canonical_id)`，轻量 union-find job 定期/增量重算。查询快，但有 staleness + 需调度。
-   - B. 查询期递归 CTE 现算。实时无 staleness，但每次指标查询都要跑图遍历。
-   - **倾向 A**：规模小（边数千），全量重算毫秒级，落表后所有指标查询变成普通 JOIN，dashboard 不背图遍历成本。可在每次 ingest 批后或定时（如每 5 分钟）重算。
+## 6. 决策（已拍板）
 
-2. **device_id legacy fold 收编**
-   - A. 统一进 `device_steam_edges` 之外再加一张 `device_alias_edges(device_id_a, device_id_b)`，canonical 解析同时吃两类边。
-   - B. legacy fold 作为 canonical 解析**前**的 device_id 规整（pre-merge 成规范 device_id），再在规范 device 上跑 steam 边。
-   - 需运维确认这条线现在归谁、时序如何。
+1. **canonical 物化 = 落表定期重算（A）**。建 `canonical_map(entity_type, entity_id, canonical_id)`，轻量 union-find job 定期重算（规模就几千边，全量重算毫秒级）。落表后所有指标查询变普通 JOIN，不背图遍历成本。不走查询期递归 CTE。
 
-3. **指标默认口径**：dashboard 默认展示 device 级、canonical 级、还是并列双栏？
+2. **legacy fold 合进同一套（见 §5）**。`device_alias_edges` + `device_steam_edges` 两类边喂同一个 union-find，运维原 legacy fold 收编为一类边，不另搞身份图。
 
-4. **回填范围**：edge 表从历史回填，但 `events` 表只留 180 天（`prune_old_events`），更早的边已随事件清理丢失。可接受吗？还是先从 `devices.steam_user_id` 现有非空值兜一批底（虽只剩每 device 最后一个 ID）？
+3. **看板不进公开 repo**。公开 repo 只对用户透明"收什么数据、怎么收"；DAU/MAU/canonical/留存这些是内部分析工具，放内部，不暴露细节。内部看板里 device 口径（装机量）和 canonical 口径（真实用户）并列，呈现方式由运维定。
 
-5. **edge 是否记 distribution-at-observation**：边只管"谁和谁关联过"，还是顺便记每次观测时的 distribution（便于审计渠道判定历史）？倾向只管关联，渠道历史已在 `events.payload`。
+4. **回填认栽，但当前可全量覆盖**。原则上 `events` 只留 180 天（`prune_old_events`），更早的边随事件清理丢失、不硬补。**但 telemetry 上线至今仅 90 天 < 180 天 retention，一条都没被 prune**，所以现在回填能覆盖全部历史，无缺口。"补不回"的限制是为将来超 180 天后准备的。
+
+5. **edge 不记 distribution-at-observation**。边只管"谁和谁关联过"。渠道历史已在 `events.payload`，要审计去那查，不在边表冗余。
 
 ## 7. 隐私
 
@@ -149,23 +153,25 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 **GDPR / 删号必须防"删后复活"**：只删边 + 重算不够 —— 源数据里还有两处会让被删 Steam 标识重新产边：`devices.steam_user_id` 单列、以及 `events.payload` JSON（180 天内）。任一回填 / 重建任务都会把它捞回来。完整流程：
 
-1. **tombstone / denylist**：被删的 `steam_user_id` 进一张 `steam_id_denylist` 表。ingest 产边和所有回填脚本都先查 denylist，命中即跳过，绝不产边。
+1. **tombstone / denylist**：被删的 `steam_user_id` 进一张 `steam_id_denylist` 表。边构建 job（无论全量回填还是增量）都先查 denylist，命中即跳过，绝不产边。
 2. **源数据脱敏**：清掉 `devices.steam_user_id`（置空）；`events.payload` 里的字段按 events 表 180 天 retention 自然过期，或对该 Steam64 主动 scrub（JSON 改写）。
 3. **重算**：删边后重跑受影响连通分量的 union-find。
 
 denylist 是防复活的硬约束，retention 过期是兜底，两者都要，不能只靠其一。
 
-## 8. 实施阶段（拍板后）
+## 8. 实施阶段（运维执行）
 
-1. `device_steam_edges` 表 + ingest 产边（纯增量，不动现有写/读路径）
-2. 历史回填 job（范围见决策点 4）
-3. canonical 解析（物化策略见决策点 1）
-4. canonical 口径指标 + dashboard 口径切换
-5. device_id legacy fold 收编（跟运维对齐后，见决策点 2）
+1. `device_steam_edges` 表 + 边构建 job（扫 `events` 产边；首跑即全量回填，之后增量）
+2. union-find 重算 + `canonical_map` / `canonical_alias` 落表（§3.2、§6.1）
+3. canonical 口径指标（内部看板，device + canonical 并列，§4、§6.3）
+4. `device_alias_edges` + legacy fold 收编进同一 union-find（§5、§6.2）
+5. `steam_id_denylist` + GDPR 删号流程（§7）
 
-每阶段独立可上线，前一阶段不阻塞客户端、不改现有指标语义（canonical 是叠加，不是替换）。
+阶段 1 的边构建 job 本身就是回填（同一份代码全量扫一遍历史），无单独回填阶段。全程不碰公开 repo 的收数据代码、不改现有 device 级指标语义（canonical 是叠加，不是替换）。
 
-## 附：回填 SQL 草稿（决策点 4 定了再用）
+## 附：边构建 / 回填参考（归一化是关键）
+
+边构建 job 的主路径是**源 2**（扫 `events`）；源 1（`devices` 单列）只是补充兜底。两者归一化状态不同，务必注意：
 
 > ⚠️ **两个数据源的归一化状态不同**：`devices.steam_user_id` 是 ingest 时**已归一化**写入的（`server.py` 137-146：纯数字 + `len<=20` + `0 < int < 2^64` + `str(int())` 去前导零、排除 `0`/`00` 哨兵），可直接产边。但 `events.payload` 存的是**原始客户端 payload**（`server.py:112` 为 HMAC 验签保留原文），其中 `steam_user_id` **未经归一化**——`"00076561198..."`、超 u64 界值、`"0"` 哨兵都可能在里面。直接 `json_extract` 回填会把同一身份拆成多个节点、或把哨兵/垃圾混进图，污染连通分量。
 
@@ -192,4 +198,4 @@ def _normalize_steam_id(raw: str) -> str:
 # first_seen/last_seen 取 received_at 的 MIN/MAX、observe_count 累加。
 ```
 
-> 回填和实时 ingest 必须共用同一个 `_normalize_steam_id`（抽成共享函数），否则两条写路径规则漂移又会拆裂身份。denylist 过滤也要在这一步生效。
+> 因为边构建 job 全量首跑 = 回填、之后增量用同一份代码，归一化只有一处实现，天然没有规则漂移。`_normalize_steam_id` 与公开 repo `server.py` ingest 的归一化规则保持一致（值校验口径相同），denylist 过滤在同一步生效。
