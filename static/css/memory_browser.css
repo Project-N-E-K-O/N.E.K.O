@@ -1115,6 +1115,26 @@ html.neko-window-maximized .chat-item + .chat-item:hover::before {
     box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.1);
 }
 
+/* "较久前"尾段：视觉上比主体降一档，让阅读时第一眼就能看出这是 LLM 已归档的旧
+ * 事件。前置 label + 缩小字号 + 轻量背景；编辑功能保持完整。 */
+.memo-older-label {
+    display: block;
+    margin-top: 14px;
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+    color: #7fb8d4;
+    letter-spacing: 0.02em;
+}
+
+.memo-textarea--older {
+    min-height: 80px;
+    font-size: 0.92rem;
+    color: #5a9fbf;
+    background: #f6fbff;
+    border-style: dashed;
+    border-color: #cfe6f3;
+}
+
 .chat-bubble {
     background: #f0f9ff;
     color: #40C5F1;

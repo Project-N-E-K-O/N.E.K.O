@@ -1,9 +1,6 @@
 (function () {
     'use strict';
 
-    // 最近一次触控事件时间戳，用于识别触控衍生的合成鼠标/点击事件
-    var lastTouchTime = 0;
-
     function translateGuideText(textKey, fallbackText) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
@@ -29,7 +26,9 @@
 
         if (current.indexOf('ja') === 0) return 'ja';
         if (current.indexOf('en') === 0) return 'en';
+        if (current.indexOf('es') === 0) return 'es';
         if (current.indexOf('ko') === 0) return 'ko';
+        if (current.indexOf('pt') === 0) return 'pt';
         if (current.indexOf('ru') === 0) return 'ru';
         return 'zh';
     }
@@ -165,9 +164,38 @@
         const locale = resolveGuideLocale();
         if (locale === 'ja') return 'ja-JP';
         if (locale === 'en') return 'en-US';
+        if (locale === 'es') return 'es-ES';
         if (locale === 'ko') return 'ko-KR';
+        if (locale === 'pt') return 'pt-PT';
         if (locale === 'ru') return 'ru-RU';
         return 'zh-CN';
+    }
+
+    function resolveGuideAudioLocale(locale) {
+        const candidates = locale
+            ? [locale]
+            : [
+                window.i18n && window.i18n.language,
+                window.localStorage && window.localStorage.getItem('i18nextLng'),
+                document && document.documentElement && document.documentElement.lang,
+                navigator && navigator.language,
+                window.localStorage && window.localStorage.getItem('locale')
+            ];
+
+        for (let index = 0; index < candidates.length; index += 1) {
+            const candidate = String(candidates[index] || '').trim().toLowerCase();
+            if (!candidate || candidate === 'auto') {
+                continue;
+            }
+            if (candidate.indexOf('ja') === 0) return 'ja';
+            if (candidate.indexOf('en') === 0) return 'en';
+            if (candidate.indexOf('ko') === 0) return 'ko';
+            if (candidate.indexOf('ru') === 0) return 'ru';
+            if (candidate.indexOf('zh') === 0) return 'zh';
+            return 'en';
+        }
+
+        return 'en';
     }
 
     const DEFAULT_INTERRUPT_DISTANCE = 32;
@@ -208,6 +236,10 @@
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
+    const RETURN_PETAL_SEQUENCE_URL = '/static/assets/tutorial/petals/yui-guide-petal-transition.webp';
+    const RETURN_PETAL_ANIMATION_EXTRA_MS = 1000;
+    const RETURN_PETAL_SEQUENCE_DURATION_MS = 6200;
+    const RETURN_PETAL_FINAL_OPACITY = 0.6;
     const GUIDE_AUDIO_FILE_NAMES = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
@@ -325,7 +357,7 @@
 
         // 当前 locale 没有对应语音文件时（如 es / pt 等未提供录音的语言），
         // 默认 fallback 是英文，避免回退到中文给非中文用户带来违和感。
-        const locale = resolveGuideLocale();
+        const locale = resolveGuideAudioLocale();
         const fileName = files[locale] || files.en || '';
         const fileLocale = files[locale] ? locale : 'en';
         return fileName ? (GUIDE_AUDIO_BASE_URL + fileLocale + '/' + encodeURIComponent(fileName)) : '';
@@ -403,6 +435,13 @@
 
     function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    function easeInOutCubic(value) {
+        const t = clamp(value, 0, 1);
+        return t < 0.5
+            ? 4 * t * t * t
+            : 1 - Math.pow(-2 * t + 2, 3) / 2;
     }
 
     const HOME_TUTORIAL_PLATFORM_PROFILES = Object.freeze({
@@ -597,6 +636,21 @@
     window.homeTutorialExperienceMetrics = window.homeTutorialExperienceMetrics || createHomeTutorialExperienceMetrics();
 
     const GUIDE_NARRATION_TIMELINES_BY_KEY = Object.freeze({
+        intro_greeting_reply: Object.freeze({
+            fallbackDurationMs: 15020,
+            cues: Object.freeze({
+                showIntroGiftHeart: Object.freeze({
+                    at: 57 / 78,
+                    atByLocale: Object.freeze({
+                        zh: 57 / 78,
+                        ja: 88 / 117,
+                        en: 211 / 283,
+                        ko: 88 / 127,
+                        ru: 188 / 270
+                    })
+                })
+            })
+        }),
         takeover_settings_peek_intro: Object.freeze({
             fallbackDurationMs: 11877,
             cues: Object.freeze({
@@ -607,6 +661,12 @@
             fallbackDurationMs: 13923,
             cues: Object.freeze({
                 showSecondLine: Object.freeze({ at: 7450 / 13923 })
+            })
+        }),
+        takeover_return_control: Object.freeze({
+            fallbackDurationMs: 11938,
+            cues: Object.freeze({
+                returnPetalTransition: Object.freeze({ at: 0.7 })
             })
         })
     });
@@ -965,6 +1025,10 @@
 
         startGuideMouthMotion(voiceKey, options) {
             if (!shouldGuideAudioDriveMouth(voiceKey)) {
+                return null;
+            }
+
+            if (this.guideInterruptPresentationActive) {
                 return null;
             }
 
@@ -1646,6 +1710,14 @@
     }
 
     class YuiGuideEmotionBridge {
+        constructor() {
+            this.live2dApplySequence = Promise.resolve();
+            this.live2dExpressionSequence = Promise.resolve();
+            this.pendingLive2DEmotion = '';
+            this.pendingLive2DExpressionFile = '';
+            this.activeLive2DExpressionFile = '';
+        }
+
         normalizeModelType(modelType) {
             const normalizedType = String(modelType || '').toLowerCase();
             if (normalizedType === 'vrm' || normalizedType === 'mmd') {
@@ -1723,6 +1795,257 @@
             }
         }
 
+        async waitForLive2DMotionTail(manager, timeoutMs) {
+            const maxWaitMs = Math.max(0, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 0));
+            if (!manager || typeof manager.hasActiveMotionPlayback !== 'function' || maxWaitMs <= 0) {
+                return;
+            }
+
+            const startedAt = Date.now();
+            while ((Date.now() - startedAt) < maxWaitMs) {
+                if (!manager.currentModel) {
+                    return;
+                }
+                if (!manager.hasActiveMotionPlayback()) {
+                    return;
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, 48));
+            }
+        }
+
+        async waitForLive2DMotionCompletion(manager, timeoutMs) {
+            const maxWaitMs = Math.max(0, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 0));
+            if (!manager || typeof manager.hasActiveMotionPlayback !== 'function' || maxWaitMs <= 0) {
+                return;
+            }
+
+            const startedAt = Date.now();
+            while ((Date.now() - startedAt) < maxWaitMs) {
+                if (!manager.currentModel) {
+                    return;
+                }
+                if (!manager.hasActiveMotionPlayback()) {
+                    return;
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, 48));
+            }
+        }
+
+        queueLive2DEmotionApply(emotion) {
+            const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
+            if (!normalizedEmotion) {
+                return Promise.resolve();
+            }
+
+            this.pendingLive2DEmotion = normalizedEmotion;
+            const run = async () => {
+                const targetEmotion = this.pendingLive2DEmotion;
+                const manager = window.live2dManager;
+                if (!manager || !manager.currentModel) {
+                    return;
+                }
+
+                if (this.activeLive2DExpressionFile) {
+                    this.clearLive2DGuideExpression(manager);
+                }
+
+                await this.waitForLive2DMotionCompletion(manager, 2200);
+                if (this.pendingLive2DEmotion !== targetEmotion) {
+                    return;
+                }
+
+                if (typeof manager.setEmotion === 'function') {
+                    await manager.setEmotion(targetEmotion);
+                    return;
+                }
+                if (typeof manager.playMotion === 'function') {
+                    await manager.playMotion(targetEmotion);
+                }
+            };
+
+            this.live2dApplySequence = this.live2dApplySequence
+                .catch(() => {})
+                .then(run);
+            return this.live2dApplySequence;
+        }
+
+        getActiveGuideExpressionFile() {
+            return this.activeLive2DExpressionFile || '';
+        }
+
+        clearLive2DGuideExpression(managerOverride) {
+            const manager = managerOverride || window.live2dManager;
+            this.pendingLive2DExpressionFile = '';
+            this.activeLive2DExpressionFile = '';
+
+            if (!manager) {
+                return false;
+            }
+
+            let handled = false;
+            if (typeof manager._removeManualExpressionOverride === 'function') {
+                try {
+                    manager._removeManualExpressionOverride();
+                    handled = true;
+                } catch (error) {
+                    console.warn('[YuiGuide] 清理教程临时表情失败:', error);
+                }
+            }
+
+            if (Object.prototype.hasOwnProperty.call(manager, '_activeExpressionParamIds')) {
+                manager._activeExpressionParamIds = null;
+                handled = true;
+            }
+
+            return handled;
+        }
+
+        buildLive2DExpressionCandidates(manager, expressionFile) {
+            const normalizedExpressionFile = typeof expressionFile === 'string'
+                ? expressionFile.trim()
+                : '';
+            if (!manager || !normalizedExpressionFile) {
+                return [];
+            }
+
+            const candidateFiles = [];
+            const pushCandidate = (filePath) => {
+                if (!filePath || typeof filePath !== 'string') {
+                    return;
+                }
+                const normalizedPath = filePath.replace(/\\/g, '/').trim();
+                if (normalizedPath && !candidateFiles.includes(normalizedPath)) {
+                    candidateFiles.push(normalizedPath);
+                }
+            };
+
+            pushCandidate(normalizedExpressionFile);
+            const resolvedRef = typeof manager.resolveExpressionReferenceByFile === 'function'
+                ? manager.resolveExpressionReferenceByFile(normalizedExpressionFile)
+                : null;
+            if (resolvedRef && resolvedRef.file) {
+                pushCandidate(resolvedRef.file);
+            }
+
+            const baseName = normalizedExpressionFile.split('/').pop() || '';
+            if (baseName) {
+                pushCandidate(baseName);
+                pushCandidate('expressions/' + baseName);
+            }
+
+            return candidateFiles;
+        }
+
+        async loadLive2DExpressionData(manager, expressionFile) {
+            const candidateFiles = this.buildLive2DExpressionCandidates(manager, expressionFile);
+            if (candidateFiles.length === 0) {
+                return null;
+            }
+
+            let lastFetchError = null;
+            for (const candidateFile of candidateFiles) {
+                try {
+                    const response = await fetch(manager.resolveAssetPath(candidateFile));
+                    if (!response.ok) {
+                        lastFetchError = new Error('Failed to load expression: ' + response.statusText);
+                        continue;
+                    }
+
+                    return {
+                        expressionData: await response.json(),
+                        loadedExpressionFile: candidateFile
+                    };
+                } catch (error) {
+                    lastFetchError = error;
+                }
+            }
+
+            if (typeof manager.markExpressionFileMissing === 'function') {
+                candidateFiles.forEach((candidateFile) => {
+                    manager.markExpressionFileMissing(candidateFile);
+                });
+            }
+
+            if (lastFetchError) {
+                throw lastFetchError;
+            }
+            return null;
+        }
+
+        queueLive2DExpressionApply(expressionFile, options) {
+            const normalizedExpressionFile = typeof expressionFile === 'string'
+                ? expressionFile.trim()
+                : '';
+            if (!normalizedExpressionFile) {
+                return Promise.resolve(false);
+            }
+
+            const normalizedOptions = options || {};
+            const fadeInMs = Math.max(
+                60,
+                Math.min(
+                    1600,
+                    Math.round(Number.isFinite(normalizedOptions.fadeInMs) ? normalizedOptions.fadeInMs : 220)
+                )
+            );
+            this.pendingLive2DExpressionFile = normalizedExpressionFile;
+
+            const previousEmotionSequence = this.live2dApplySequence;
+            const previousExpressionSequence = this.live2dExpressionSequence;
+            const run = async () => {
+                const targetExpressionFile = this.pendingLive2DExpressionFile;
+                const manager = window.live2dManager;
+                if (!manager || !manager.currentModel || targetExpressionFile !== normalizedExpressionFile) {
+                    return false;
+                }
+
+                const loadedExpression = await this.loadLive2DExpressionData(manager, targetExpressionFile);
+                if (!loadedExpression || this.pendingLive2DExpressionFile !== targetExpressionFile) {
+                    return false;
+                }
+
+                const expressionParams = Array.isArray(loadedExpression.expressionData && loadedExpression.expressionData.Parameters)
+                    ? loadedExpression.expressionData.Parameters
+                    : [];
+                if (expressionParams.length === 0 || typeof manager._installManualExpressionOverride !== 'function') {
+                    return false;
+                }
+
+                manager._activeExpressionParamIds = new Set(
+                    expressionParams
+                        .map((param) => param && param.Id)
+                        .filter(Boolean)
+                );
+                manager._installManualExpressionOverride(expressionParams, fadeInMs);
+                this.activeLive2DExpressionFile = loadedExpression.loadedExpressionFile;
+                return true;
+            };
+
+            this.live2dExpressionSequence = Promise.all([
+                previousEmotionSequence.catch(() => {}),
+                previousExpressionSequence.catch(() => {})
+            ]).then(run);
+            return this.live2dExpressionSequence;
+        }
+
+        applyExpressionFile(expressionFile, options) {
+            const activeModelType = this.getActiveModelType();
+            if (activeModelType !== 'live2d') {
+                return;
+            }
+
+            if (!window.live2dManager || !window.live2dManager.currentModel) {
+                return;
+            }
+
+            try {
+                const applyPromise = this.queueLive2DExpressionApply(expressionFile, options);
+                this.handleAsyncFailure(applyPromise, '[YuiGuide] 播放教程临时表情失败:', expressionFile);
+            } catch (error) {
+                console.warn('[YuiGuide] 播放教程临时表情失败:', expressionFile, error);
+            }
+        }
+
         apply(emotion) {
             if (!emotion) {
                 return;
@@ -1730,13 +2053,13 @@
 
             const activeModelType = this.getActiveModelType();
             if (activeModelType === 'live2d') {
-                if (!window.live2dManager || !window.live2dManager.currentModel || typeof window.live2dManager.playMotion !== 'function') {
+                if (!window.live2dManager || !window.live2dManager.currentModel) {
                     return;
                 }
 
                 try {
-                    const motionPromise = window.live2dManager.playMotion(emotion);
-                    this.handleAsyncFailure(motionPromise, '[YuiGuide] 播放教程动作失败:', emotion);
+                    const applyPromise = this.queueLive2DEmotionApply(emotion);
+                    this.handleAsyncFailure(applyPromise, '[YuiGuide] 播放教程动作失败:', emotion);
                 } catch (error) {
                     console.warn('[YuiGuide] 播放教程动作失败:', emotion, error);
                 }
@@ -1780,9 +2103,17 @@
                 return false;
             }
 
-            let handled = false;
+            let handled = this.clearLive2DGuideExpression(manager);
 
-            if (typeof manager.clearEmotionEffects === 'function') {
+            if (typeof manager.softClearEmotionEffects === 'function') {
+                this.handleAsyncFailure(
+                    manager.softClearEmotionEffects({
+                        preserveExpression: true
+                    }),
+                    '[YuiGuide] 平滑清理 Live2D 教程动作失败:'
+                );
+                handled = true;
+            } else if (typeof manager.clearEmotionEffects === 'function') {
                 this.handleAsyncFailure(
                     manager.clearEmotionEffects(),
                     '[YuiGuide] 清理 Live2D 教程动作失败:'
@@ -1790,19 +2121,17 @@
                 handled = true;
             }
 
-            if (typeof manager.clearExpression === 'function') {
+            if (typeof manager.smoothResetToInitialState === 'function') {
+                this.handleAsyncFailure(
+                    manager.smoothResetToInitialState(220),
+                    '[YuiGuide] 平滑清理 Live2D 表情失败:'
+                );
+                handled = true;
+            } else if (typeof manager.clearExpression === 'function') {
                 this.handleAsyncFailure(
                     manager.clearExpression(),
                     '[YuiGuide] 清理 Live2D 表情失败:'
                 );
-                handled = true;
-            }
-
-            const motionManager = manager.currentModel
-                && manager.currentModel.internalModel
-                && manager.currentModel.internalModel.motionManager;
-            if (motionManager && typeof motionManager.stopAllMotions === 'function') {
-                motionManager.stopAllMotions();
                 handled = true;
             }
 
@@ -2113,6 +2442,7 @@
             this.retainedExtraSpotlightElements = [];
             this.sceneExtraSpotlightElements = [];
             this.activeGuideEmotion = '';
+            this.guideInterruptPresentationActive = false;
             this.pluginDashboardHandoff = null;
             this.pluginDashboardLastInterruptRequestId = '';
             this.pluginDashboardWindowCreatedByGuide = false;
@@ -2121,6 +2451,12 @@
             this.manualPluginDashboardOpenUserClicked = false;
             this.takeoverOriginalAgentSwitches = null;
             this.customSecondarySpotlightTarget = null;
+            this.persistentGhostCursorLookAtHandle = null;
+            this.preTakeoverGhostCursorLookAtHandle = null;
+            this.guideIdleSwayHandle = null;
+            this.takeoverTopPeekHandle = null;
+            this.returnPetalTransitionActive = false;
+            this.returnPetalTransitionOpacityRestores = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
@@ -2134,9 +2470,6 @@
             this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
             this.remoteTerminationRequestHandler = this.onRemoteTerminationRequest.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
-            this.skipButtonClickHandler = this.onSkipButtonClick.bind(this);
-            this.interactionGuardHandler = this.onInteractionGuard.bind(this);
-            this.externalizedChatSpotlightKind = '';
             const capabilityApi = window.homeTutorialPlatformCapabilities;
             this.platformCapabilities = capabilityApi && typeof capabilityApi.create === 'function'
                 ? capabilityApi.create()
@@ -2147,12 +2480,42 @@
                     metrics: this.experienceMetrics
                 })
                 : null;
-            this.tutorialFaceForwardLockSnapshot = null;
-            this.enableTutorialFaceForwardLock();
+            this.interactionTakeover = window.TutorialInteractionTakeover
+                && typeof window.TutorialInteractionTakeover.createController === 'function'
+                ? window.TutorialInteractionTakeover.createController({
+                    page: this.page,
+                    overlay: this.overlay,
+                    allowTarget: (target, event) => this.isAllowedTutorialInteractionTarget(target, event),
+                    isSystemDialogTarget: (target, event) => this.isSystemDialogInteractionTarget(target, event),
+                    allowWindowPassthrough: true,
+                    allowTouchPassthrough: (event, controller) => {
+                        return !!(
+                            this.mobileTouchInteractionPassthrough
+                            && controller
+                            && typeof controller.isTouchInteractionEvent === 'function'
+                            && controller.isTouchInteractionEvent(event)
+                            && !this.awaitingIntroActivation
+                            && !this.manualPluginDashboardOpenAllowed
+                        );
+                    },
+                    isDestroyed: () => this.destroyed,
+                    externalizedChatDetector: () => this.isHomeChatExternalized(),
+                    externalChatChannelProvider: () => {
+                        return window.appInterpage && window.appInterpage.nekoBroadcastChannel
+                            ? window.appInterpage.nekoBroadcastChannel
+                            : null;
+                    }
+                })
+                : null;
+            if (this.interactionTakeover && typeof this.interactionTakeover.enableFaceForwardLock === 'function') {
+                this.interactionTakeover.enableFaceForwardLock();
+            }
 
             if (this.page === 'home') {
                 document.body.classList.add('yui-guide-home-driver-hidden');
-                this.setExternalizedChatButtonsDisabled(true);
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatButtonsDisabled === 'function') {
+                    this.interactionTakeover.setExternalizedChatButtonsDisabled(true);
+                }
             }
 
             window.addEventListener('keydown', this.keydownHandler, true);
@@ -2161,23 +2524,29 @@
             window.addEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
-            document.addEventListener('pointerdown', this.interactionGuardHandler, true);
-            document.addEventListener('pointerup', this.interactionGuardHandler, true);
-            document.addEventListener('mousedown', this.interactionGuardHandler, true);
-            document.addEventListener('mouseup', this.interactionGuardHandler, true);
-            document.addEventListener('touchstart', this.interactionGuardHandler, true);
-            document.addEventListener('touchend', this.interactionGuardHandler, true);
-            document.addEventListener('click', this.interactionGuardHandler, true);
-            document.addEventListener('dblclick', this.interactionGuardHandler, true);
-            document.addEventListener('contextmenu', this.interactionGuardHandler, true);
-            document.addEventListener('pointerdown', this.skipButtonClickHandler, true);
-            document.addEventListener('mousedown', this.skipButtonClickHandler, true);
-            document.addEventListener('touchstart', this.skipButtonClickHandler, true);
-            document.addEventListener('click', this.skipButtonClickHandler, true);
         }
 
         isStopping() {
             return !!(this.destroyed || this.angryExitTriggered || this.terminationRequested);
+        }
+
+        setTutorialTakingOver(active) {
+            if (this.interactionTakeover && typeof this.interactionTakeover.setActive === 'function') {
+                this.interactionTakeover.setActive(active === true);
+                return;
+            }
+            this.overlay.setTakingOver(active === true);
+        }
+
+        shouldReduceTutorialMotion() {
+            try {
+                return !!(
+                    window.matchMedia
+                    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                );
+            } catch (_) {
+                return false;
+            }
         }
 
         getPreludeSceneIds() {
@@ -2193,131 +2562,6 @@
             return pageOrder.filter(function (sceneId) {
                 return typeof sceneId === 'string' && sceneId.indexOf('intro_') === 0;
             });
-        }
-
-        enableTutorialFaceForwardLock() {
-            if (this.tutorialFaceForwardLockSnapshot) {
-                this.applyTutorialFaceForwardLock();
-                return;
-            }
-
-            const live2dManager = window.live2dManager || null;
-            const vrmManager = window.vrmManager || null;
-            const mmdManager = window.mmdManager || null;
-            this.tutorialFaceForwardLockSnapshot = {
-                hadWindowMouseTrackingEnabled: typeof window.mouseTrackingEnabled !== 'undefined',
-                windowMouseTrackingEnabled: window.mouseTrackingEnabled,
-                live2dMouseTrackingEnabled: live2dManager && typeof live2dManager.isMouseTrackingEnabled === 'function'
-                    ? live2dManager.isMouseTrackingEnabled()
-                    : null,
-                vrmMouseTrackingEnabled: vrmManager && typeof vrmManager.isMouseTrackingEnabled === 'function'
-                    ? vrmManager.isMouseTrackingEnabled()
-                    : null,
-                mmdCursorFollowEnabled: mmdManager && mmdManager.cursorFollow
-                    ? mmdManager.cursorFollow.enabled !== false
-                    : null
-            };
-            window.nekoYuiGuideFaceForwardLock = true;
-            window.mouseTrackingEnabled = false;
-            this.applyTutorialFaceForwardLock();
-        }
-
-        applyTutorialFaceForwardLock() {
-            window.nekoYuiGuideFaceForwardLock = true;
-            window.mouseTrackingEnabled = false;
-
-            const live2dManager = window.live2dManager || null;
-            if (live2dManager && typeof live2dManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    live2dManager.setMouseTrackingEnabled(false);
-                } catch (error) {
-                    console.warn('[YuiGuide] 锁定 Live2D 正脸失败:', error);
-                }
-            }
-
-            const vrmManager = window.vrmManager || null;
-            if (vrmManager && typeof vrmManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    vrmManager.setMouseTrackingEnabled(false);
-                    if (vrmManager._cursorFollow && typeof vrmManager._cursorFollow._completeDisable === 'function') {
-                        vrmManager._cursorFollow._completeDisable();
-                    }
-                } catch (error) {
-                    console.warn('[YuiGuide] 锁定 VRM 正脸失败:', error);
-                }
-            }
-
-            const mmdCursorFollow = window.mmdManager && window.mmdManager.cursorFollow
-                ? window.mmdManager.cursorFollow
-                : null;
-            if (mmdCursorFollow && typeof mmdCursorFollow.setEnabled === 'function') {
-                try {
-                    mmdCursorFollow.setEnabled(false);
-                } catch (error) {
-                    console.warn('[YuiGuide] 锁定 MMD 正脸失败:', error);
-                }
-            }
-        }
-
-        releaseTutorialFaceForwardLock() {
-            const snapshot = this.tutorialFaceForwardLockSnapshot;
-            if (!snapshot) {
-                return;
-            }
-
-            this.tutorialFaceForwardLockSnapshot = null;
-            window.nekoYuiGuideFaceForwardLock = false;
-            if (snapshot.hadWindowMouseTrackingEnabled) {
-                window.mouseTrackingEnabled = snapshot.windowMouseTrackingEnabled;
-            } else {
-                try {
-                    delete window.mouseTrackingEnabled;
-                } catch (_) {
-                    window.mouseTrackingEnabled = undefined;
-                }
-            }
-            const restoredMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
-
-            const live2dManager = window.live2dManager || null;
-            if (live2dManager && typeof live2dManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    live2dManager.setMouseTrackingEnabled(
-                        snapshot.live2dMouseTrackingEnabled !== null
-                            ? snapshot.live2dMouseTrackingEnabled
-                            : restoredMouseTrackingEnabled
-                    );
-                } catch (error) {
-                    console.warn('[YuiGuide] 恢复 Live2D 鼠标跟踪失败:', error);
-                }
-            }
-
-            const vrmManager = window.vrmManager || null;
-            if (vrmManager && typeof vrmManager.setMouseTrackingEnabled === 'function') {
-                try {
-                    vrmManager.setMouseTrackingEnabled(
-                        snapshot.vrmMouseTrackingEnabled !== null
-                            ? snapshot.vrmMouseTrackingEnabled
-                            : restoredMouseTrackingEnabled
-                    );
-                } catch (error) {
-                    console.warn('[YuiGuide] 恢复 VRM 鼠标跟踪失败:', error);
-                }
-            }
-
-            const mmdCursorFollow = window.mmdManager && window.mmdManager.cursorFollow
-                ? window.mmdManager.cursorFollow
-                : null;
-            if (mmdCursorFollow && typeof mmdCursorFollow.setEnabled === 'function') {
-                try {
-                    mmdCursorFollow.setEnabled(
-                        snapshot.mmdCursorFollowEnabled !== null
-                            ? snapshot.mmdCursorFollowEnabled
-                            : restoredMouseTrackingEnabled
-                    );
-                } catch (error) {
-                    console.warn('[YuiGuide] 恢复 MMD 鼠标跟踪失败:', error);
-                }
-            }
         }
 
         getStep(stepId) {
@@ -2493,13 +2737,495 @@
             };
         }
 
+        getReturnPetalTransitionOrigin() {
+            const prefix = this.resolveModelPrefix();
+            const manager = prefix === 'live2d'
+                ? window.live2dManager
+                : (prefix === 'vrm' ? window.vrmManager : window.mmdManager);
+            try {
+                if (manager && typeof manager.getModelScreenBounds === 'function') {
+                    const bounds = manager.getModelScreenBounds();
+                    if (
+                        bounds
+                        && Number.isFinite(Number(bounds.centerX))
+                        && Number.isFinite(Number(bounds.centerY))
+                    ) {
+                        return {
+                            x: Number(bounds.centerX),
+                            y: Number(bounds.centerY)
+                        };
+                    }
+                }
+            } catch (_) {}
+
+            const modelRect = this.resolveRect('#' + prefix + '-container');
+            if (modelRect) {
+                return {
+                    x: modelRect.left + modelRect.width / 2,
+                    y: modelRect.top + modelRect.height / 2
+                };
+            }
+
+            return this.getViewportCenter();
+        }
+
+        getReturnPetalTransitionModel() {
+            const candidates = [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager
+            ];
+            for (let index = 0; index < candidates.length; index += 1) {
+                const manager = candidates[index];
+                if (!manager) {
+                    continue;
+                }
+                try {
+                    if (typeof manager.getCurrentModel === 'function') {
+                        const model = manager.getCurrentModel();
+                        if (model && Number.isFinite(Number(model.alpha))) {
+                            return model;
+                        }
+                    }
+                    if (manager.currentModel && Number.isFinite(Number(manager.currentModel.alpha))) {
+                        return manager.currentModel;
+                    }
+                } catch (_) {}
+            }
+            return null;
+        }
+
+        collectReturnPetalTransitionManagers() {
+            return [
+                window.live2dManager,
+                window.vrmManager,
+                window.mmdManager
+            ].filter(Boolean);
+        }
+
+        getReturnPetalTransitionOpacityElements() {
+            const prefix = this.resolveModelPrefix();
+            const selectors = [
+                '#' + prefix + '-container',
+                '#' + prefix + '-canvas',
+                '#live2d-container',
+                '#live2d-canvas',
+                '#vrm-container',
+                '#vrm-canvas',
+                '#mmd-container',
+                '#mmd-canvas'
+            ];
+            const elements = [];
+            for (let index = 0; index < selectors.length; index += 1) {
+                const selector = selectors[index];
+                const element = document.querySelector(selector);
+                if (element && typeof element.getBoundingClientRect === 'function') {
+                    const rect = element.getBoundingClientRect();
+                    if (rect && rect.width > 0 && rect.height > 0) {
+                        elements.push(element);
+                    }
+                }
+            }
+            this.collectReturnPetalTransitionManagers().forEach((manager) => {
+                if (manager.pixi_app && manager.pixi_app.view) {
+                    elements.push(manager.pixi_app.view);
+                }
+                if (manager.renderer && manager.renderer.domElement) {
+                    elements.push(manager.renderer.domElement);
+                }
+                if (manager.canvas) {
+                    elements.push(manager.canvas);
+                }
+                if (manager.container) {
+                    elements.push(manager.container);
+                }
+            });
+            return elements.filter((element, index) => elements.indexOf(element) === index);
+        }
+
+        prepareReturnPetalTransitionOpacityTargets(model) {
+            const elements = this.getReturnPetalTransitionOpacityElements();
+            const targets = [];
+
+            this.collectReturnPetalTransitionManagers().forEach((manager) => {
+                if (manager && manager._canvasRevealTimer) {
+                    clearTimeout(manager._canvasRevealTimer);
+                    manager._canvasRevealTimer = null;
+                }
+            });
+
+            if (elements.length > 0) {
+                elements.forEach((element) => {
+                    const computedOpacity = parseFloat(window.getComputedStyle(element).opacity);
+                    const fromOpacity = Number.isFinite(computedOpacity) ? computedOpacity : 1;
+                    const originalInlineOpacity = element.style.opacity;
+                    const originalInlineTransition = element.style.transition;
+                    targets.push({
+                        apply: (opacity) => {
+                            element.style.setProperty('transition', 'none', 'important');
+                            element.style.setProperty('opacity', String(clamp(opacity, 0, 1)), 'important');
+                        },
+                        restore: () => {
+                            if (originalInlineTransition) {
+                                element.style.setProperty('transition', originalInlineTransition);
+                            } else {
+                                element.style.removeProperty('transition');
+                            }
+                            if (originalInlineOpacity) {
+                                element.style.setProperty('opacity', originalInlineOpacity);
+                            } else {
+                                element.style.removeProperty('opacity');
+                            }
+                        },
+                        from: fromOpacity
+                    });
+                });
+            }
+
+            if (model && Number.isFinite(Number(model.alpha))) {
+                const fromAlpha = Number(model.alpha);
+                targets.push({
+                    apply: (opacity) => {
+                        try {
+                            model.alpha = opacity;
+                        } catch (_) {}
+                    },
+                    restore: () => {
+                        try {
+                            model.alpha = fromAlpha;
+                        } catch (_) {}
+                    },
+                    from: fromAlpha
+                });
+            }
+
+            this.returnPetalTransitionOpacityRestores = targets.map((target) => target.restore);
+            return targets;
+        }
+
+        restoreReturnPetalTransitionOpacityTargets() {
+            const restores = Array.isArray(this.returnPetalTransitionOpacityRestores)
+                ? this.returnPetalTransitionOpacityRestores
+                : [];
+            this.returnPetalTransitionOpacityRestores = null;
+            document.body.classList.remove('yui-guide-return-petal-fade');
+            document.body.style.removeProperty('--yui-guide-return-avatar-opacity');
+            restores.forEach((restore) => {
+                try {
+                    restore();
+                } catch (_) {}
+            });
+        }
+
+        loadReturnPetalSequence() {
+            if (this.returnPetalSequencePromise) {
+                return this.returnPetalSequencePromise;
+            }
+
+            this.returnPetalSequencePromise = new Promise((resolve) => {
+                const image = new Image();
+                image.decoding = 'async';
+                image.onload = () => {
+                    resolve({
+                        url: RETURN_PETAL_SEQUENCE_URL,
+                        image: image,
+                        width: image.naturalWidth || image.width || 0,
+                        height: image.naturalHeight || image.height || 0
+                    });
+                };
+                image.onerror = () => {
+                    console.warn('[YuiGuide] 花瓣 animated WebP 加载失败:', RETURN_PETAL_SEQUENCE_URL);
+                    resolve(null);
+                };
+                image.src = RETURN_PETAL_SEQUENCE_URL;
+            });
+
+            return this.returnPetalSequencePromise;
+        }
+
+        getReturnPetalTransitionRemainingMs(voiceKey, fallbackText) {
+            const playbackSnapshot = this.voiceQueue && typeof this.voiceQueue.capturePlaybackSnapshot === 'function'
+                ? this.voiceQueue.capturePlaybackSnapshot()
+                : null;
+            if (
+                playbackSnapshot
+                && playbackSnapshot.voiceKey === voiceKey
+                && Number.isFinite(playbackSnapshot.durationMs)
+                && playbackSnapshot.durationMs > 0
+            ) {
+                return Math.max(
+                    0,
+                    Math.round(playbackSnapshot.durationMs - Math.max(0, playbackSnapshot.currentTimeMs || 0))
+                );
+            }
+
+            const fullDurationMs = this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(fallbackText || '')
+                || 0;
+            const cueMs = this.resolveGuideVoiceCueTargetMs(
+                voiceKey,
+                'returnPetalTransition',
+                fullDurationMs,
+                fallbackText || ''
+            );
+            return Math.max(0, Math.round(fullDurationMs - cueMs));
+        }
+
+        fadeReturnPetalTransitionModelOut(durationMs) {
+            const model = this.getReturnPetalTransitionModel();
+            const targets = this.prepareReturnPetalTransitionOpacityTargets(model);
+            if (targets.length <= 0 || typeof window.requestAnimationFrame !== 'function') {
+                return Promise.resolve(false);
+            }
+
+            const duration = this.shouldReduceTutorialMotion()
+                ? Math.min(320, Math.max(160, Number(durationMs) || 260))
+                : Math.max(240, Number(durationMs) || 920);
+            const startedAt = performance.now();
+            document.body.classList.add('yui-guide-return-petal-fade');
+            document.body.style.setProperty('--yui-guide-return-avatar-opacity', '1');
+            return new Promise((resolve) => {
+                const tick = (now) => {
+                    if (this.destroyed) {
+                        resolve(false);
+                        return;
+                    }
+                    const progress = duration > 0 ? clamp((now - startedAt) / duration, 0, 1) : 1;
+                    const opacity = 1 - easeInOutCubic(progress);
+                    document.body.style.setProperty('--yui-guide-return-avatar-opacity', String(clamp(opacity, 0, 1)));
+                    targets.forEach((target) => target.apply(target.from * opacity));
+                    if (progress >= 1) {
+                        resolve(true);
+                        return;
+                    }
+                    window.requestAnimationFrame(tick);
+                };
+                window.requestAnimationFrame(tick);
+            });
+        }
+
+        createReturnPetalTransition(origin, options) {
+            const root = this.overlay && typeof this.overlay.ensureRoot === 'function'
+                ? this.overlay.ensureRoot()
+                : null;
+            const stage = root ? root.querySelector('.yui-guide-stage') : null;
+            if (!stage) {
+                return null;
+            }
+
+            const oldLayer = stage.querySelector('.yui-guide-petal-transition');
+            if (oldLayer && oldLayer.parentNode) {
+                oldLayer.parentNode.removeChild(oldLayer);
+            }
+
+            const layer = document.createElement('div');
+            layer.className = 'yui-guide-petal-transition';
+            layer.setAttribute('aria-hidden', 'true');
+            const width = Math.max(1, window.innerWidth || 1);
+            const height = Math.max(1, window.innerHeight || 1);
+            const start = origin || this.getViewportCenter();
+            const reducedMotion = this.shouldReduceTutorialMotion();
+            const normalizedOptions = options || {};
+            const sequence = normalizedOptions.sequence || null;
+            if (!sequence || !sequence.url) {
+                return null;
+            }
+
+            const transitionMs = reducedMotion
+                ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
+                : clamp(Math.round(Number(normalizedOptions.durationMs) || 1600), 900, 8600);
+            const finalPetalOpacity = Number.isFinite(Number(normalizedOptions.finalOpacity))
+                ? clamp(Number(normalizedOptions.finalOpacity), 0, 1)
+                : RETURN_PETAL_FINAL_OPACITY;
+            const playback = document.createElement('img');
+            playback.className = 'yui-guide-petal-sequence';
+            playback.alt = '';
+            playback.decoding = 'async';
+            playback.draggable = false;
+            playback.src = sequence.url;
+            playback.style.animationDuration = transitionMs + 'ms';
+            playback.style.setProperty('--yui-guide-petal-origin-x', clamp(start.x, -width, width * 2) + 'px');
+            playback.style.setProperty('--yui-guide-petal-origin-y', clamp(start.y, -height, height * 2) + 'px');
+            playback.style.setProperty('--yui-guide-petal-final-opacity', String(finalPetalOpacity));
+            layer.appendChild(playback);
+
+            let doneTimer = 0;
+            let playbackStopTimer = 0;
+            let doneResolved = false;
+            let playbackStopped = false;
+            let resolveDone = null;
+            const playbackStopMs = reducedMotion
+                ? transitionMs
+                : Math.min(transitionMs, RETURN_PETAL_SEQUENCE_DURATION_MS);
+            const stopPlayback = () => {
+                if (playbackStopped) {
+                    return;
+                }
+                playbackStopped = true;
+                playback.style.animationPlayState = 'paused';
+                playback.removeAttribute('src');
+                playback.style.display = 'none';
+            };
+            const donePromise = new Promise((resolve) => {
+                resolveDone = resolve;
+                if (playbackStopMs < transitionMs) {
+                    playbackStopTimer = window.setTimeout(() => {
+                        playbackStopTimer = 0;
+                        stopPlayback();
+                    }, playbackStopMs);
+                }
+                doneTimer = window.setTimeout(() => {
+                    doneResolved = true;
+                    doneTimer = 0;
+                    if (playbackStopTimer) {
+                        window.clearTimeout(playbackStopTimer);
+                        playbackStopTimer = 0;
+                    }
+                    stopPlayback();
+                    resolve();
+                }, transitionMs);
+            });
+            const settleDone = () => {
+                if (doneResolved) {
+                    return;
+                }
+                doneResolved = true;
+                if (doneTimer) {
+                    window.clearTimeout(doneTimer);
+                    doneTimer = 0;
+                }
+                if (playbackStopTimer) {
+                    window.clearTimeout(playbackStopTimer);
+                    playbackStopTimer = 0;
+                }
+                stopPlayback();
+                if (typeof resolveDone === 'function') {
+                    resolveDone();
+                }
+            };
+
+            stage.appendChild(layer);
+            window.requestAnimationFrame(() => {
+                layer.classList.add('is-active');
+            });
+
+            return {
+                done: () => donePromise,
+                finish: () => new Promise((resolve) => {
+                    settleDone();
+                    layer.classList.add('is-exiting');
+                    window.setTimeout(() => {
+                        if (layer.parentNode) {
+                            layer.parentNode.removeChild(layer);
+                        }
+                        resolve();
+                    }, reducedMotion ? 220 : 520);
+                })
+            };
+        }
+
+        async restoreTutorialAvatarForReturnPetalTransition() {
+            if (
+                !this.tutorialManager
+                || typeof this.tutorialManager.restoreTutorialAvatarOverride !== 'function'
+            ) {
+                return false;
+            }
+
+            try {
+                await this.tutorialManager.restoreTutorialAvatarOverride();
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] 花瓣转场期间恢复新手教程前模型失败:', error);
+                return false;
+            }
+        }
+
+        async playReturnPetalTransition(options) {
+            if (this.returnPetalTransitionActive || this.destroyed) {
+                return;
+            }
+
+            this.returnPetalTransitionActive = true;
+            const normalizedOptions = options || {};
+            const loadedPetalSequence = await this.loadReturnPetalSequence();
+            if (this.destroyed) {
+                this.returnPetalTransitionActive = false;
+                return;
+            }
+            const reducedMotion = this.shouldReduceTutorialMotion();
+            const explicitDurationMs = Number(normalizedOptions.durationMs);
+            const hasExplicitDuration = Number.isFinite(explicitDurationMs) && explicitDurationMs >= 0;
+            const baseTransitionDurationMs = hasExplicitDuration
+                ? Math.round(explicitDurationMs)
+                : (reducedMotion
+                    ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
+                    : clamp(Math.round(Number(normalizedOptions.durationMs) || 4800), 2600, 7600));
+            const transitionDurationMs = reducedMotion
+                ? baseTransitionDurationMs
+                : Math.max(
+                    baseTransitionDurationMs + RETURN_PETAL_ANIMATION_EXTRA_MS,
+                    RETURN_PETAL_SEQUENCE_DURATION_MS
+                );
+            const waitForNarrationEnd = () => new Promise((resolve) => {
+                window.setTimeout(resolve, Math.max(0, baseTransitionDurationMs));
+            });
+            const transition = this.createReturnPetalTransition(
+                this.getReturnPetalTransitionOrigin(),
+                {
+                    durationMs: transitionDurationMs,
+                    finalOpacity: RETURN_PETAL_FINAL_OPACITY,
+                    sequence: loadedPetalSequence
+                }
+            );
+            if (!transition) {
+                await Promise.all([
+                    waitForNarrationEnd(),
+                    this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
+                ]);
+                await this.restoreTutorialAvatarForReturnPetalTransition();
+                this.restoreReturnPetalTransitionOpacityTargets();
+                this.returnPetalTransitionActive = false;
+                return;
+            }
+
+            try {
+                await Promise.all([
+                    waitForNarrationEnd(),
+                    this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
+                ]);
+                if (this.destroyed) {
+                    return;
+                }
+                await this.restoreTutorialAvatarForReturnPetalTransition();
+                if (this.destroyed) {
+                    return;
+                }
+                this.restoreReturnPetalTransitionOpacityTargets();
+                if (transition && typeof transition.done === 'function') {
+                    await transition.done();
+                }
+                await transition.finish();
+            } finally {
+                this.restoreReturnPetalTransitionOpacityTargets();
+                this.returnPetalTransitionActive = false;
+            }
+        }
+
         resolveGuideCopy(textKey, fallbackText) {
             return translateGuideText(textKey, fallbackText);
         }
 
-        applyGuideEmotion(emotion) {
+        applyGuideEmotion(emotion, options) {
             const normalizedEmotion = typeof emotion === 'string' ? emotion.trim() : '';
             if (!normalizedEmotion) {
+                return;
+            }
+
+            const normalizedOptions = options || {};
+            const allowDuringInterrupt = !!normalizedOptions.allowDuringInterrupt;
+
+            if (this.guideInterruptPresentationActive && !allowDuringInterrupt) {
                 return;
             }
 
@@ -2508,14 +3234,33 @@
         }
 
         clearGuidePresentation() {
+            if (this.guideInterruptPresentationActive) {
+                return;
+            }
             this.activeGuideEmotion = '';
             this.emotionBridge.clear();
         }
 
+        beginGuideInterruptPresentation() {
+            this.guideInterruptPresentationActive = true;
+            this.voiceQueue.stopGuideMouthMotion();
+            this.activeGuideEmotion = '';
+            this.emotionBridge.clear();
+        }
+
+        endGuideInterruptPresentation() {
+            this.guideInterruptPresentationActive = false;
+        }
+
         captureCurrentGuidePresentationSnapshot() {
-            if (this.activeGuideEmotion) {
+            const activeExpressionFile = this.emotionBridge && typeof this.emotionBridge.getActiveGuideExpressionFile === 'function'
+                ? this.emotionBridge.getActiveGuideExpressionFile()
+                : '';
+
+            if (this.activeGuideEmotion || activeExpressionFile) {
                 return {
-                    emotion: this.activeGuideEmotion
+                    emotion: this.activeGuideEmotion,
+                    expressionFile: activeExpressionFile
                 };
             }
 
@@ -2527,8 +3272,18 @@
                 return false;
             }
 
+            let restored = false;
             if (snapshot.emotion) {
                 this.applyGuideEmotion(snapshot.emotion);
+                restored = true;
+            }
+
+            if (snapshot.expressionFile && this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile(snapshot.expressionFile);
+                restored = true;
+            }
+
+            if (restored) {
                 return true;
             }
 
@@ -3557,63 +4312,13 @@
             return overlay.style.display === 'none';
         }
 
-        setExternalizedChatButtonsDisabled(disabled) {
-            if (this.page !== 'home' || !this.isHomeChatExternalized()) {
-                return;
-            }
-
-            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-            if (!channel || typeof channel.postMessage !== 'function') {
-                return;
-            }
-
-            try {
-                channel.postMessage({
-                    action: 'yui_guide_set_chat_buttons_disabled',
-                    disabled: disabled !== false,
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.warn('[YuiGuide] 同步独立聊天窗按钮禁用状态失败:', error);
-            }
-        }
-
-        setExternalizedChatSpotlight(kind) {
-            if (this.page !== 'home' || !this.isHomeChatExternalized()) {
-                return;
-            }
-
-            this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
-
-            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-            if (!channel || typeof channel.postMessage !== 'function') {
-                return;
-            }
-
-            try {
-                channel.postMessage({
-                    action: 'yui_guide_set_chat_spotlight',
-                    kind: typeof kind === 'string' ? kind : '',
-                    timestamp: Date.now()
-                });
-            } catch (error) {
-                console.warn('[YuiGuide] 同步独立聊天窗高亮失败:', error);
-            }
-        }
-
-        clearExternalizedChatFx() {
-            this.externalizedChatSpotlightKind = '';
-            this.setExternalizedChatSpotlight('');
-        }
-
         onExternalChatReady() {
-            if (this.destroyed || this.page !== 'home' || !this.isHomeChatExternalized()) {
+            if (this.destroyed) {
                 return;
             }
 
-            this.setExternalizedChatButtonsDisabled(true);
-            if (this.externalizedChatSpotlightKind) {
-                this.setExternalizedChatSpotlight(this.externalizedChatSpotlightKind);
+            if (this.interactionTakeover && typeof this.interactionTakeover.onExternalChatReady === 'function') {
+                this.interactionTakeover.onExternalChatReady();
             }
         }
 
@@ -3678,7 +4383,9 @@
 
         highlightChatWindow() {
             if (this.isHomeChatExternalized()) {
-                this.setExternalizedChatSpotlight('window');
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                }
                 return;
             }
 
@@ -3776,6 +4483,7 @@
             this.scenePausedForResistance = true;
             this.scenePausedAt = Date.now();
             this.cursor.cancel();
+            this.beginGuideInterruptPresentation();
         }
 
         resumeCurrentSceneAfterResistance() {
@@ -3785,6 +4493,7 @@
 
             this.scenePausedForResistance = false;
             this.scenePausedAt = 0;
+            this.endGuideInterruptPresentation();
             const resolvers = this.scenePauseResolvers.slice();
             this.scenePauseResolvers = [];
             resolvers.forEach((resolve) => {
@@ -3880,9 +4589,13 @@
             if (!fallbackCue || !Number.isFinite(fallbackCue.at)) {
                 return null;
             }
+            const fallbackCueLocale = resolveGuideAudioLocale();
+            const localeCueAt = fallbackCue.atByLocale && Number.isFinite(fallbackCue.atByLocale[fallbackCueLocale])
+                ? fallbackCue.atByLocale[fallbackCueLocale]
+                : fallbackCue.at;
 
             return {
-                at: clamp(fallbackCue.at, 0, 1),
+                at: clamp(localeCueAt, 0, 1),
                 fallbackDurationMs: Number.isFinite(fallbackConfig.fallbackDurationMs)
                     ? Math.max(1, fallbackConfig.fallbackDurationMs)
                     : 0
@@ -4000,7 +4713,7 @@
                 return 0;
             }
 
-            const normalizedLocale = normalizeGuideLocale(locale || resolveGuideLocale());
+            const normalizedLocale = resolveGuideAudioLocale(locale || resolveGuideLocale());
             const exactDurationMs = Number.isFinite(durationConfig[normalizedLocale])
                 ? durationConfig[normalizedLocale]
                 : 0;
@@ -4008,7 +4721,9 @@
                 return exactDurationMs;
             }
 
-            const fallbackDurationMs = Number.isFinite(durationConfig.zh) ? durationConfig.zh : 0;
+            const fallbackDurationMs = Number.isFinite(durationConfig.en)
+                ? durationConfig.en
+                : (Number.isFinite(durationConfig.zh) ? durationConfig.zh : 0);
             return fallbackDurationMs > 0 ? fallbackDurationMs : 0;
         }
 
@@ -4253,6 +4968,10 @@
                 return;
             }
 
+            if (this.guideInterruptPresentationActive) {
+                return;
+            }
+
             const performance = this.currentStep.performance || {};
             const bubbleText = this.resolvePerformanceBubbleText(performance);
             const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);
@@ -4291,10 +5010,39 @@
             if (!(options && options.skipEmotion)) {
                 if (performance.emotion) {
                     this.applyGuideEmotion(performance.emotion);
-                } else if (this.activeGuideEmotion) {
-                    this.clearGuidePresentation();
                 }
             }
+        }
+
+        shouldUsePersistentGhostCursorLookAt(stepId) {
+            return (
+                stepId === 'takeover_capture_cursor'
+                || stepId === 'takeover_plugin_preview'
+                || stepId === 'takeover_settings_peek'
+                || stepId === 'takeover_return_control'
+            );
+        }
+
+        async syncPersistentGhostCursorLookAtForScene(stepId, runId) {
+            if (this.shouldUsePersistentGhostCursorLookAt(stepId)) {
+                this.adoptPreTakeoverGhostCursorLookAtHandle();
+                return this.ensurePersistentGhostCursorLookAtPerformance({
+                    isCancelled: () => this.isStopping()
+                });
+            }
+            const stopReason = stepId === 'takeover_return_control'
+                ? 'handoff'
+                : 'scene_follow_not_required';
+            if (this.preTakeoverGhostCursorLookAtHandle) {
+                await this.stopIntroVoiceCursorLookAtPerformance(
+                    this.preTakeoverGhostCursorLookAtHandle,
+                    stopReason
+                );
+            }
+            await this.stopPersistentGhostCursorLookAtPerformance(
+                stopReason
+            );
+            return null;
         }
 
         async playManagedScene(stepId, meta) {
@@ -5145,6 +5893,9 @@
             this.manualPluginDashboardOpenAllowed = true;
             this.manualPluginDashboardOpenTarget = managementButton;
             this.manualPluginDashboardOpenUserClicked = false;
+            if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
+                this.overlay.setInteractionShieldEnabled(false);
+            }
             this.recordExperienceMetric('plugin_dashboard_popup_blocked_prompt', {
                 targetPage: 'plugin_dashboard'
             });
@@ -5201,6 +5952,11 @@
                 this.manualPluginDashboardOpenAllowed = false;
                 this.manualPluginDashboardOpenTarget = null;
                 this.manualPluginDashboardOpenUserClicked = false;
+                if (this.overlay && typeof this.overlay.setInteractionShieldEnabled === 'function') {
+                    this.overlay.setInteractionShieldEnabled(
+                        !!(document.body && document.body.classList.contains('yui-taking-over'))
+                    );
+                }
                 if (runId === this.sceneRunId && !this.isStopping()) {
                     this.overlay.hideBubble();
                 }
@@ -5749,7 +6505,6 @@
                     radius: 18
                 });
             };
-
             const catPawButton = await this.waitForVisibleTarget([
                 () => this.getFloatingButtonShell(this.getFallbackFloatingButton('agent')),
                 () => this.getFloatingButtonShell(this.resolveElement((performance && performance.cursorTarget) || '')),
@@ -5773,6 +6528,10 @@
             });
             if (!openedAgentPanel || guardFailed()) {
                 return false;
+            }
+
+            if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile('expressions/xxy.exp3.json');
             }
 
             const agentMasterToggle = await this.waitForElement(() => {
@@ -5830,6 +6589,28 @@
             });
             if (!enabledKeyboardControl || guardFailed()) {
                 return false;
+            }
+
+            const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
+                isCancelled: () => guardFailed()
+            });
+            await this.stopIntroVoiceCursorLookAtPerformance(
+                    ghostCursorLookAtHandle,
+                    'takeover_keyboard_control_complete'
+                );
+            await this.stopPersistentGhostCursorLookAtPerformance('takeover_top_peek');
+            if (guardFailed()) {
+                return false;
+            }
+            this.takeoverTopPeekHandle = await this.startPluginDashboardCornerPeekPerformance(runId, {
+                targetPreset: 'top_flipped'
+            });
+            if (guardFailed()) {
+                return false;
+            }
+
+            if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile('expressions/slh.exp3.json');
             }
 
             await this.waitForSceneDelay(scaleSceneMs(180, 80, 420));
@@ -6586,20 +7367,11 @@
             };
         }
 
-        setPluginDashboardSkipBypassEnabled(enabled) {
-            if (this.page !== 'home') {
-                return;
-            }
-
-            window.dispatchEvent(new CustomEvent('neko:yui-guide:plugin-dashboard-skip-bypass', {
-                detail: {
-                    enabled: enabled === true
-                }
-            }));
-        }
-
         async runPluginDashboardPreviewScene(step, runId) {
             this.highlightChatWindow();
+            if (this.emotionBridge && typeof this.emotionBridge.applyExpressionFile === 'function') {
+                this.emotionBridge.applyExpressionFile('expressions/xxy.exp3.json');
+            }
             const stepBubbleText = this.resolvePerformanceBubbleText(step && step.performance);
             let homeNarrationPromise = Promise.resolve();
             if (stepBubbleText) {
@@ -6643,6 +7415,7 @@
                 return restoredAll;
             };
 
+            let pluginDashboardCornerHandle = null;
             try {
                 let launchResult = await this.runPluginDashboardLaunchSequence(
                     step,
@@ -6657,7 +7430,8 @@
                     return;
                 }
                 let dashboardWindow = launchResult.pluginDashboardWindow;
-                this.setPluginDashboardSkipBypassEnabled(true);
+                await this.stopPersistentGhostCursorLookAtPerformance('plugin_dashboard_corner_peek');
+                pluginDashboardCornerHandle = await this.startPluginDashboardCornerPeekPerformance(runId);
 
                 this.overlay.clearActionSpotlight();
                 this.overlay.clearPersistentSpotlight();
@@ -6715,6 +7489,8 @@
                 await dashboardNarrationPromise;
                 const pluginDashboardCompleted = await pluginDashboardPerformancePromise;
                 await this.closePluginDashboardWindowIfCreatedByGuide('插件面板预览完成');
+                await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_closed');
+                pluginDashboardCornerHandle = null;
                 if (this.pluginDashboardHandoff && this.pluginDashboardHandoff.windowRef === dashboardWindow && typeof this.pluginDashboardHandoff.resolve === 'function') {
                     this.pluginDashboardHandoff.resolve(!!pluginDashboardCompleted);
                 }
@@ -6739,7 +7515,7 @@
                 }
                 this.overlay.clearActionSpotlight();
             } finally {
-                this.setPluginDashboardSkipBypassEnabled(false);
+                await this.stopPluginDashboardCornerPeekPerformance(pluginDashboardCornerHandle, 'plugin_dashboard_cleanup');
                 await rollbackAgentSwitches();
             }
         }
@@ -6762,362 +7538,395 @@
             this.overlay.clearActionSpotlight();
             this.highlightChatWindow();
 
-            if (introText) {
-                const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
-                this.appendGuideChatMessage(introText, {
-                    textKey: performance.bubbleTextKey || '',
-                    voiceKey: introVoiceKey
-                });
-            }
-            if (performance.emotion) {
-                this.applyGuideEmotion(performance.emotion);
-            }
-
-            const waitWithWallClockTimeout = async (promise, timeoutMs, label) => {
-                let timedOut = false;
-                const normalizedTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 1000));
-                let timeoutId = 0;
-                const timeoutPromise = new Promise((resolve) => {
-                    timeoutId = window.setTimeout(() => {
-                        timeoutId = 0;
-                        timedOut = true;
-                        console.warn('[YuiGuide] settings peek 等待超时，继续后续流程:', label || 'unknown');
-                        resolve(null);
-                    }, normalizedTimeoutMs);
-                });
-                try {
-                    const result = await Promise.race([
-                        Promise.resolve(promise).catch((error) => {
-                            console.warn('[YuiGuide] settings peek 等待失败，继续后续流程:', label || 'unknown', error);
-                            return null;
-                        }),
-                        timeoutPromise
-                    ]);
-                    return timedOut ? null : result;
-                } finally {
-                    if (timeoutId) {
-                        window.clearTimeout(timeoutId);
-                    }
+                if (introText) {
+                    const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
+                    this.appendGuideChatMessage(introText, {
+                        textKey: performance.bubbleTextKey || '',
+                        voiceKey: introVoiceKey
+                    });
                 }
-            };
-            const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
-            const introVoiceDurationMs = this.getGuideVoiceDurationMs(introVoiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(introText || '');
-            const introNarrationPromise = this.speakGuideLine(introText || '', {
-                voiceKey: introVoiceKey
-            }).catch((error) => {
-                console.warn('[YuiGuide] 设置一瞥首句旁白失败，继续流程:', error);
-            });
-            if (!(await this.waitForNarrationCue(
-                introVoiceKey,
-                'openSettingsPanel'
-            ))) {
-                this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
-                this.overlay.clearActionSpotlight();
-                this.highlightChatWindow();
-                return;
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
+                if (performance.emotion) {
+                    this.applyGuideEmotion(performance.emotion);
+                }
+                const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
+                    isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                });
 
-            const openedSettings = settingsButton
-                ? await this.performHighlightedApiClick({
-                    target: settingsButton,
-                    durationMs: 900,
-                    runId: runId,
-                    action: () => this.openSettingsPanel()
-                })
-                : await this.openSettingsPanel();
-            if (!openedSettings || runId !== this.sceneRunId || this.isStopping()) {
-                if (!openedSettings) {
+                try {
+                const waitWithWallClockTimeout = async (promise, timeoutMs, label) => {
+                    let timedOut = false;
+                    const normalizedTimeoutMs = Math.max(1000, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 1000));
+                    let timeoutId = 0;
+                    const timeoutPromise = new Promise((resolve) => {
+                        timeoutId = window.setTimeout(() => {
+                            timeoutId = 0;
+                            timedOut = true;
+                            console.warn('[YuiGuide] settings peek 等待超时，继续后续流程:', label || 'unknown');
+                            resolve(null);
+                        }, normalizedTimeoutMs);
+                    });
+                    try {
+                        const result = await Promise.race([
+                            Promise.resolve(promise).catch((error) => {
+                                console.warn('[YuiGuide] settings peek 等待失败，继续后续流程:', label || 'unknown', error);
+                                return null;
+                            }),
+                            timeoutPromise
+                        ]);
+                        return timedOut ? null : result;
+                    } finally {
+                        if (timeoutId) {
+                            window.clearTimeout(timeoutId);
+                        }
+                    }
+                };
+                const introVoiceKey = performance.voiceKey || 'takeover_settings_peek_intro';
+                const introVoiceDurationMs = this.getGuideVoiceDurationMs(introVoiceKey, resolveGuideLocale())
+                    || estimateSpeechDurationMs(introText || '');
+                const introNarrationPromise = this.speakGuideLine(introText || '', {
+                    voiceKey: introVoiceKey
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 设置一瞥首句旁白失败，继续流程:', error);
+                });
+                if (!(await this.waitForNarrationCue(
+                    introVoiceKey,
+                    'openSettingsPanel'
+                ))) {
                     this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
                     this.overlay.clearActionSpotlight();
                     this.highlightChatWindow();
+                    return;
                 }
-                return;
-            }
-
-            const characterMenuReadyPromise = this.waitForVisibleTarget([
-                () => this.getSettingsPeekTargets().characterMenu
-            ], 1000);
-            await waitWithWallClockTimeout(
-                introNarrationPromise,
-                Math.max(4200, introVoiceDurationMs + 1400),
-                'settings_intro_narration'
-            );
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            let settingsPeekHighlightsCleared = false;
-            let settingsPanelClosed = false;
-            const clearSettingsPeekHighlights = () => {
-                if (settingsPeekHighlightsCleared) {
+                if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
-                settingsPeekHighlightsCleared = true;
-                this.clearSceneExtraSpotlights();
-                this.clearVirtualSpotlight('settings-character-children-bundle');
-                this.clearVirtualSpotlight('settings-entry-bundle');
-                this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
-                this.clearPreciseHighlights();
-                this.customSecondarySpotlightTarget = null;
-                this.overlay.clearActionSpotlight();
-                if (!this.isStopping()) {
-                    this.highlightChatWindow();
-                }
-            };
-            const closeSettingsPeekPanel = async () => {
-                if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                const openedSettings = settingsButton
+                    ? await this.performHighlightedApiClick({
+                        target: settingsButton,
+                        durationMs: 900,
+                        runId: runId,
+                        action: () => this.openSettingsPanel()
+                    })
+                    : await this.openSettingsPanel();
+                if (!openedSettings || runId !== this.sceneRunId || this.isStopping()) {
+                    if (!openedSettings) {
+                        this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
+                        this.overlay.clearActionSpotlight();
+                        this.highlightChatWindow();
+                    }
                     return;
                 }
 
-                settingsPanelClosed = true;
-                this.collapseCharacterSettingsSidePanel();
-                await this.closeSettingsPanel().catch(() => {});
-                this.forceHideManagedPanel('settings');
-            };
-
-            let characterMenu = await characterMenuReadyPromise;
-            if (!characterMenu) {
-                characterMenu = await this.waitForVisibleTarget([
+                const characterMenuReadyPromise = this.waitForVisibleTarget([
                     () => this.getSettingsPeekTargets().characterMenu
-                ], 400);
-            }
-            if (!characterMenu) {
-                console.warn('[YuiGuide] 设置一瞥未找到角色设置入口，跳过细节展示');
-                clearSettingsPeekHighlights();
-                await closeSettingsPeekPanel();
-                return;
-            }
-
-            const sidePanelReady = await this.ensureCharacterSettingsSidePanelVisible();
-
-            let appearanceItem = null;
-            let voiceCloneItem = null;
-            const detailTargetTimeoutMs = sidePanelReady ? 900 : 1200;
-            [appearanceItem, voiceCloneItem] = await Promise.all([
-                this.waitForVisibleTarget([
-                    () => this.getSettingsPeekTargets().appearanceItem
-                ], detailTargetTimeoutMs),
-                this.waitForVisibleTarget([
-                    () => this.getSettingsPeekTargets().voiceCloneItem
-                ], detailTargetTimeoutMs)
-            ]);
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            const detailText = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT
-            );
-            const detailTextPart1 = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1
-            );
-            const detailTextPart2 = this.resolveGuideCopy(
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
-                TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
-            );
-            const detailVoiceKey = 'takeover_settings_peek_detail';
-            const detailVoiceDurationMs = this.getGuideVoiceDurationMs(detailVoiceKey, resolveGuideLocale())
-                || estimateSpeechDurationMs(detailText || '');
-            const detailCueConfig = getGuideAudioCueConfig(detailVoiceKey);
-            const secondLineCue = detailCueConfig && detailCueConfig.showSecondLine
-                && Number.isFinite(detailCueConfig.showSecondLine.at)
-                ? clamp(detailCueConfig.showSecondLine.at, 0.1, 0.9)
-                : 0.54;
-            const detailPart1StreamDurationMs = detailTextPart2
-                ? Math.max(900, Math.round(detailVoiceDurationMs * secondLineCue))
-                : detailVoiceDurationMs;
-            const detailPart2StreamDurationMs = detailTextPart2
-                ? Math.max(900, Math.round(detailVoiceDurationMs * (1 - secondLineCue)))
-                : 0;
-            this.appendGuideChatMessage(detailTextPart1 || detailText, {
-                textKey: detailTextPart1
-                    ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
-                    : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
-                voiceKey: detailVoiceKey,
-                streamDurationMs: detailPart1StreamDurationMs
-            });
-
-            let settingsDetailSecondLineDisplayed = false;
-            const appendSettingsDetailSecondLine = () => {
-                if (
-                    settingsDetailSecondLineDisplayed
-                    || runId !== this.sceneRunId
-                    || this.isStopping()
-                    || !detailTextPart2
-                ) {
-                    return;
-                }
-
-                settingsDetailSecondLineDisplayed = true;
-                this.appendGuideChatMessage(detailTextPart2, {
-                    textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
-                    voiceKey: detailVoiceKey,
-                    streamDurationMs: detailPart2StreamDurationMs
-                });
-            };
-            const narrationPromise = this.speakGuideLine(detailText, {
-                voiceKey: detailVoiceKey
-            }).catch((error) => {
-                console.warn('[YuiGuide] 设置一瞥细节旁白失败，继续流程:', error);
-            }).finally(() => {
-                appendSettingsDetailSecondLine();
+                ], 1000);
+                await waitWithWallClockTimeout(
+                    introNarrationPromise,
+                    Math.max(4200, introVoiceDurationMs + 1400),
+                    'settings_intro_narration'
+                );
                 if (runId !== this.sceneRunId || this.isStopping()) {
                     return;
                 }
 
-                this.collapseCharacterSettingsSidePanel();
-                clearSettingsPeekHighlights();
-                return closeSettingsPeekPanel();
-            });
-            const guardedNarrationPromise = waitWithWallClockTimeout(
-                narrationPromise,
-                Math.max(5000, detailVoiceDurationMs + 1800),
-                'settings_detail_narration'
-            ).finally(() => {
-                appendSettingsDetailSecondLine();
-                if (runId !== this.sceneRunId || this.isStopping()) {
-                    return;
-                }
-
-                this.collapseCharacterSettingsSidePanel();
-                clearSettingsPeekHighlights();
-                return closeSettingsPeekPanel();
-            });
-            const secondLineDisplayPromise = (async () => {
-                if (!(await this.waitForNarrationCue(
-                    detailVoiceKey,
-                    'showSecondLine'
-                ))) {
-                    return;
-                }
-
-                appendSettingsDetailSecondLine();
-            })();
-            const guardedSecondLineDisplayPromise = waitWithWallClockTimeout(
-                secondLineDisplayPromise,
-                Math.max(1800, Math.round(detailVoiceDurationMs * secondLineCue) + 1400),
-                'settings_detail_second_line'
-            );
-
-            this.overlay.clearActionSpotlight();
-
-            if (characterMenu) {
-                this.applyGuideHighlights({ primary: characterMenu });
-            }
-
-            if (characterMenu && runId === this.sceneRunId && !this.isStopping()) {
-                await this.moveCursorToElement(characterMenu, 900);
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            let settingsButtonTarget = null;
-            let characterChildrenBundle = null;
-            ({
-                settingsButton: settingsButtonTarget,
-                characterMenu,
-                appearanceItem,
-                voiceCloneItem,
-                characterChildrenBundle
-            } = this.refreshSettingsPeekSpotlights(settingsButton));
-            if (!characterMenu) {
-                console.warn('[YuiGuide] 设置一瞥角色入口消失，跳过细节展示');
-                clearSettingsPeekHighlights();
-                await closeSettingsPeekPanel();
-                return;
-            }
-
-            const sidePanel = this.getCharacterSettingsSidePanel();
-            const panelRect = sidePanel && this.isElementVisible(sidePanel) ? this.getElementRect(sidePanel) : null;
-            const itemUnionRect = unionRects([
-                this.getElementRect(appearanceItem),
-                this.getElementRect(voiceCloneItem)
-            ]);
-            const fallbackRect = this.getElementRect(characterChildrenBundle)
-                || this.getElementRect(characterMenu)
-                || this.getElementRect(settingsButtonTarget);
-            const motionRect = panelRect || itemUnionRect || fallbackRect;
-            const centerX = motionRect
-                ? motionRect.left + motionRect.width / 2
-                : window.innerWidth / 2;
-            const centerY = motionRect
-                ? motionRect.top + motionRect.height / 2
-                : window.innerHeight / 2;
-            const radiusX = panelRect
-                ? panelRect.width / 2 * 1.4
-                : (itemUnionRect ? Math.max(90, itemUnionRect.width / 2 * 1.3) : 90);
-            const radiusY = panelRect
-                ? panelRect.height / 2 * 1.4
-                : (itemUnionRect ? Math.max(60, itemUnionRect.height / 2 * 1.3) : 60);
-            if (motionRect) {
-                while (!this.isStopping()) {
-                    const movedToCenter = await this.cursor.moveToPoint(centerX, centerY, {
-                        durationMs: 700,
-                        pauseCheck: () => this.scenePausedForResistance,
-                        cancelCheck: () => this.isStopping()
-                    });
-                    if (movedToCenter) {
-                        break;
-                    }
-                    if (!this.scenePausedForResistance) {
-                        break;
-                    }
-                    await this.waitUntilSceneResumed();
-                }
-            }
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-
-            const cycleMs = 5600;
-            const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
-            const actionPromise = (async () => {
-                while (runId === this.sceneRunId && !ellipseAbortCheck()) {
-                    const moved = await this.cursor.runPauseAwareEllipse(
-                        centerX,
-                        centerY,
-                        radiusX,
-                        radiusY,
-                        cycleMs,
-                        ellipseAbortCheck,
-                        () => this.scenePausedForResistance,
-                        () => this.isStopping()
-                    );
-                    if (!moved && this.isStopping()) {
+                let settingsPeekHighlightsCleared = false;
+                let settingsPanelClosed = false;
+                const clearSettingsPeekHighlights = () => {
+                    if (settingsPeekHighlightsCleared) {
                         return;
                     }
-                    if (!moved) {
-                        if (ellipseAbortCheck()) {
-                            return;
+
+                    settingsPeekHighlightsCleared = true;
+                    this.clearSceneExtraSpotlights();
+                    this.clearVirtualSpotlight('settings-character-children-bundle');
+                    this.clearVirtualSpotlight('settings-entry-bundle');
+                    this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
+                    this.clearPreciseHighlights();
+                    this.customSecondarySpotlightTarget = null;
+                    this.overlay.clearActionSpotlight();
+                    if (!this.isStopping()) {
+                        this.highlightChatWindow();
+                    }
+                };
+                const closeSettingsPeekPanel = async () => {
+                    if (settingsPanelClosed || runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
+
+                    settingsPanelClosed = true;
+                    this.collapseCharacterSettingsSidePanel();
+                    await this.closeSettingsPanel().catch(() => {});
+                    this.forceHideManagedPanel('settings');
+                };
+
+                let characterMenu = await characterMenuReadyPromise;
+                if (!characterMenu) {
+                    characterMenu = await this.waitForVisibleTarget([
+                        () => this.getSettingsPeekTargets().characterMenu
+                    ], 400);
+                }
+                if (!characterMenu) {
+                    console.warn('[YuiGuide] 设置一瞥未找到角色设置入口，跳过细节展示');
+                    clearSettingsPeekHighlights();
+                    await closeSettingsPeekPanel();
+                    return;
+                }
+
+                const sidePanelReady = await this.ensureCharacterSettingsSidePanelVisible();
+
+                let appearanceItem = null;
+                let voiceCloneItem = null;
+                const detailTargetTimeoutMs = sidePanelReady ? 900 : 1200;
+                [appearanceItem, voiceCloneItem] = await Promise.all([
+                    this.waitForVisibleTarget([
+                        () => this.getSettingsPeekTargets().appearanceItem
+                    ], detailTargetTimeoutMs),
+                    this.waitForVisibleTarget([
+                        () => this.getSettingsPeekTargets().voiceCloneItem
+                    ], detailTargetTimeoutMs)
+                ]);
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                const detailText = this.resolveGuideCopy(
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
+                    TAKEOVER_SETTINGS_DETAIL_TEXT
+                );
+                const detailTextPart1 = this.resolveGuideCopy(
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY,
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1
+                );
+                const detailTextPart2 = this.resolveGuideCopy(
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
+                    TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2
+                );
+                const detailVoiceKey = 'takeover_settings_peek_detail';
+                const detailVoiceDurationMs = this.getGuideVoiceDurationMs(detailVoiceKey, resolveGuideLocale())
+                    || estimateSpeechDurationMs(detailText || '');
+                const detailCueConfig = getGuideAudioCueConfig(detailVoiceKey);
+                const secondLineCue = detailCueConfig && detailCueConfig.showSecondLine
+                    && Number.isFinite(detailCueConfig.showSecondLine.at)
+                    ? clamp(detailCueConfig.showSecondLine.at, 0.1, 0.9)
+                    : 0.54;
+                const detailPart1StreamDurationMs = detailTextPart2
+                    ? Math.max(900, Math.round(detailVoiceDurationMs * secondLineCue))
+                    : detailVoiceDurationMs;
+                const detailPart2StreamDurationMs = detailTextPart2
+                    ? Math.max(900, Math.round(detailVoiceDurationMs * (1 - secondLineCue)))
+                    : 0;
+                this.appendGuideChatMessage(detailTextPart1 || detailText, {
+                    textKey: detailTextPart1
+                        ? TAKEOVER_SETTINGS_DETAIL_TEXT_PART_1_KEY
+                        : TAKEOVER_SETTINGS_DETAIL_TEXT_KEY,
+                    voiceKey: detailVoiceKey,
+                    streamDurationMs: detailPart1StreamDurationMs
+                });
+
+                let settingsDetailSecondLineDisplayed = false;
+                let settingsPeekPanicMotionTargetRect = null;
+                let settingsPeekPanicPromise = Promise.resolve();
+                const appendSettingsDetailSecondLine = () => {
+                    if (
+                        settingsDetailSecondLineDisplayed
+                        || runId !== this.sceneRunId
+                        || this.isStopping()
+                        || !detailTextPart2
+                    ) {
+                        return;
+                    }
+
+                    settingsDetailSecondLineDisplayed = true;
+                    this.appendGuideChatMessage(detailTextPart2, {
+                        textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
+                        voiceKey: detailVoiceKey,
+                        streamDurationMs: detailPart2StreamDurationMs
+                    });
+                    settingsPeekPanicPromise = this.runSettingsPeekPanicPerformance({
+                        runId: runId,
+                        targetRect: settingsPeekPanicMotionTargetRect,
+                        totalDurationMs: detailPart2StreamDurationMs
+                    }).catch(() => null);
+                };
+                const narrationPromise = this.speakGuideLine(detailText, {
+                    voiceKey: detailVoiceKey
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 设置一瞥细节旁白失败，继续流程:', error);
+                }).finally(() => {
+                    appendSettingsDetailSecondLine();
+                    if (runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
+
+                    this.collapseCharacterSettingsSidePanel();
+                    clearSettingsPeekHighlights();
+                    return closeSettingsPeekPanel();
+                });
+                const guardedNarrationPromise = waitWithWallClockTimeout(
+                    narrationPromise,
+                    Math.max(5000, detailVoiceDurationMs + 1800),
+                    'settings_detail_narration'
+                ).finally(() => {
+                    appendSettingsDetailSecondLine();
+                    if (runId !== this.sceneRunId || this.isStopping()) {
+                        return;
+                    }
+
+                    this.collapseCharacterSettingsSidePanel();
+                    clearSettingsPeekHighlights();
+                    return closeSettingsPeekPanel();
+                });
+                const secondLineDisplayPromise = (async () => {
+                    if (!(await this.waitForNarrationCue(
+                        detailVoiceKey,
+                        'showSecondLine'
+                    ))) {
+                        return;
+                    }
+
+                    appendSettingsDetailSecondLine();
+                })();
+                const guardedSecondLineDisplayPromise = waitWithWallClockTimeout(
+                    secondLineDisplayPromise,
+                    Math.max(1800, Math.round(detailVoiceDurationMs * secondLineCue) + 1400),
+                    'settings_detail_second_line'
+                );
+
+                this.overlay.clearActionSpotlight();
+
+                if (characterMenu) {
+                    this.applyGuideHighlights({ primary: characterMenu });
+                }
+
+                if (characterMenu && runId === this.sceneRunId && !this.isStopping()) {
+                    await this.moveCursorToElement(characterMenu, 900);
+                }
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+
+                let settingsButtonTarget = null;
+                let characterChildrenBundle = null;
+                ({
+                    settingsButton: settingsButtonTarget,
+                    characterMenu,
+                    appearanceItem,
+                    voiceCloneItem,
+                    characterChildrenBundle
+                } = this.refreshSettingsPeekSpotlights(settingsButton));
+                if (!characterMenu) {
+                    console.warn('[YuiGuide] 设置一瞥角色入口消失，跳过细节展示');
+                    clearSettingsPeekHighlights();
+                    await closeSettingsPeekPanel();
+                    return;
+                }
+
+                const sidePanel = this.getCharacterSettingsSidePanel();
+                const panelRect = sidePanel && this.isElementVisible(sidePanel) ? this.getElementRect(sidePanel) : null;
+                const itemUnionRect = unionRects([
+                    this.getElementRect(appearanceItem),
+                    this.getElementRect(voiceCloneItem)
+                ]);
+                const fallbackRect = this.getElementRect(characterChildrenBundle)
+                    || this.getElementRect(characterMenu)
+                    || this.getElementRect(settingsButtonTarget);
+                const motionRect = panelRect || itemUnionRect || fallbackRect;
+                settingsPeekPanicMotionTargetRect = motionRect || null;
+                const centerX = motionRect
+                    ? motionRect.left + motionRect.width / 2
+                    : window.innerWidth / 2;
+                const centerY = motionRect
+                    ? motionRect.top + motionRect.height / 2
+                    : window.innerHeight / 2;
+                const radiusX = panelRect
+                    ? panelRect.width / 2 * 1.4
+                    : (itemUnionRect ? Math.max(90, itemUnionRect.width / 2 * 1.3) : 90);
+                const radiusY = panelRect
+                    ? panelRect.height / 2 * 1.4
+                    : (itemUnionRect ? Math.max(60, itemUnionRect.height / 2 * 1.3) : 60);
+                if (motionRect) {
+                    while (!this.isStopping()) {
+                        const movedToCenter = await this.cursor.moveToPoint(centerX, centerY, {
+                            durationMs: 700,
+                            pauseCheck: () => this.scenePausedForResistance,
+                            cancelCheck: () => this.isStopping()
+                        });
+                        if (movedToCenter) {
+                            break;
                         }
                         if (!this.scenePausedForResistance) {
-                            return;
+                            break;
                         }
                         await this.waitUntilSceneResumed();
                     }
                 }
-            })();
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
 
-            await Promise.all([guardedNarrationPromise, actionPromise, guardedSecondLineDisplayPromise]);
-            if (runId !== this.sceneRunId || this.isStopping()) {
-                return;
-            }
-            this.cleanupTutorialReturnButtons();
-            clearSettingsPeekHighlights();
-            // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
-            await closeSettingsPeekPanel();
+                const cycleMs = 5600;
+                const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
+                const actionPromise = (async () => {
+                    while (runId === this.sceneRunId && !ellipseAbortCheck()) {
+                        const moved = await this.cursor.runPauseAwareEllipse(
+                            centerX,
+                            centerY,
+                            radiusX,
+                            radiusY,
+                            cycleMs,
+                            ellipseAbortCheck,
+                            () => this.scenePausedForResistance,
+                            () => this.isStopping()
+                        );
+                        if (!moved && this.isStopping()) {
+                            return;
+                        }
+                        if (!moved) {
+                            if (ellipseAbortCheck()) {
+                                return;
+                            }
+                            if (!this.scenePausedForResistance) {
+                                return;
+                            }
+                            await this.waitUntilSceneResumed();
+                        }
+                    }
+                })();
+
+                await Promise.all([
+                    guardedNarrationPromise,
+                    actionPromise,
+                    guardedSecondLineDisplayPromise,
+                    settingsPeekPanicPromise
+                ]);
+                if (runId !== this.sceneRunId || this.isStopping()) {
+                    return;
+                }
+                this.cleanupTutorialReturnButtons();
+                clearSettingsPeekHighlights();
+                // 恢复隐藏角色设置侧面板（通用设置 / 角色外形 / 声音克隆）
+                await closeSettingsPeekPanel();
+                } finally {
+                    await this.stopIntroVoiceCursorLookAtPerformance(
+                    ghostCursorLookAtHandle,
+                    'settings_peek_complete'
+                );
+                }
         }
 
         beginTerminationVisualCleanup() {
             this.sceneRunId += 1;
+            this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'termination_cleanup').catch(() => {});
+            this.takeoverTopPeekHandle = null;
+            this.stopGuideIdleSwayPerformance('termination_cleanup').catch(() => {});
+            if (this.preTakeoverGhostCursorLookAtHandle) {
+                this.stopIntroVoiceCursorLookAtPerformance(
+                    this.preTakeoverGhostCursorLookAtHandle,
+                    'termination_cleanup'
+                ).catch(() => {});
+            }
+            this.stopPersistentGhostCursorLookAtPerformance('termination_cleanup').catch(() => {});
             this.resumeCurrentSceneAfterResistance();
             this.setCurrentScene(null, null);
             this.clearSceneTimers();
@@ -7152,7 +7961,7 @@
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
             this.overlay.setAngry(false);
-            this.overlay.setTakingOver(false);
+            this.setTutorialTakingOver(false);
             this.overlay.clearSpotlight();
             this.collapseCharacterSettingsSidePanel();
             this.closeManagedPanels().catch((error) => {
@@ -7195,7 +8004,7 @@
                     return;
                 }
 
-                await wait(120);
+                await wait(380);
                 if (this.isStopping()) {
                     return;
                 }
@@ -7633,7 +8442,9 @@
                 || this.resolveElement('#textInputBox');
 
             if (this.isHomeChatExternalized()) {
-                this.setExternalizedChatSpotlight('window');
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                }
                 return;
             }
 
@@ -7680,9 +8491,307 @@
                 textKey: INTRO_GREETING_REPLY_TEXT_KEY,
                 voiceKey: 'intro_greeting_reply'
             });
-            await this.speakGuideLine(greetingReplyText, {
-                voiceKey: 'intro_greeting_reply'
+            await Promise.all([
+                this.speakGuideLine(greetingReplyText, {
+                    voiceKey: 'intro_greeting_reply'
+                }),
+                this.runIntroGreetingHugPerformance().catch(() => {}),
+                this.runIntroGiftHeartPerformance().catch(() => {})
+            ]);
+        }
+
+        async runIntroGreetingHugPerformance() {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playIntroGreetingHug !== 'function') {
+                return null;
+            }
+            return api.playIntroGreetingHug({
+                approachMs: 2200,
+                settleMs: 1250,
+                reducedMotion: this.shouldReduceTutorialMotion(),
+                isCancelled: () => this.isStopping()
             });
+        }
+
+        async runIntroGiftHeartPerformance() {
+            if (!(await this.waitForNarrationCue(
+                'intro_greeting_reply',
+                'showIntroGiftHeart'
+            ))) {
+                return null;
+            }
+            if (this.isStopping()) {
+                return null;
+            }
+
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playIntroGiftHeart !== 'function') {
+                return null;
+            }
+            return api.playIntroGiftHeart({
+                durationMs: 2600,
+                releaseMs: 420,
+                reducedMotion: this.shouldReduceTutorialMotion(),
+                isCancelled: () => this.isStopping()
+            });
+        }
+
+        async runReturnControlCueWavePerformance() {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playReturnControlCueWave !== 'function') {
+                return null;
+            }
+            return api.playReturnControlCueWave({
+                durationMs: 4200,
+                reducedMotion: this.shouldReduceTutorialMotion(),
+                isCancelled: () => this.isStopping()
+            });
+        }
+
+        async startIntroVoiceCursorLookAtPerformance() {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startIntroVoiceCursorLookAt !== 'function') {
+                return null;
+            }
+            try {
+                return await api.startIntroVoiceCursorLookAt({
+                    getPoint: () => this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                        ? this.overlay.getCursorPosition()
+                        : null,
+                    isCancelled: () => this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 语音入口目光跟随动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async startGhostCursorLookAtPerformance(options) {
+            const normalizedOptions = options || {};
+            if (normalizedOptions.preferExistingHandle !== false) {
+                const existingHandle = this.persistentGhostCursorLookAtHandle || this.preTakeoverGhostCursorLookAtHandle;
+                if (existingHandle && typeof existingHandle.stop === 'function') {
+                    return existingHandle;
+                }
+            }
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startIntroVoiceCursorLookAt !== 'function') {
+                return null;
+            }
+            const cancelCheck = typeof normalizedOptions.isCancelled === 'function'
+                ? normalizedOptions.isCancelled
+                : () => this.isStopping();
+            try {
+                return await api.startIntroVoiceCursorLookAt({
+                    getPoint: () => this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                        ? this.overlay.getCursorPosition()
+                        : null,
+                    isCancelled: cancelCheck
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] Ghost cursor 目光跟随动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async ensurePreTakeoverGhostCursorLookAtPerformance(options) {
+            const existingHandle = this.preTakeoverGhostCursorLookAtHandle;
+            if (existingHandle && typeof existingHandle.stop === 'function') {
+                return existingHandle;
+            }
+
+            const createdHandle = await this.startGhostCursorLookAtPerformance(options || {});
+            if (createdHandle && typeof createdHandle.stop === 'function') {
+                this.preTakeoverGhostCursorLookAtHandle = createdHandle;
+            }
+            return this.preTakeoverGhostCursorLookAtHandle;
+        }
+
+        async ensurePersistentGhostCursorLookAtPerformance(options) {
+            const existingHandle = this.persistentGhostCursorLookAtHandle;
+            if (existingHandle && typeof existingHandle.stop === 'function') {
+                return existingHandle;
+            }
+
+            const createdHandle = await this.startGhostCursorLookAtPerformance(options || {});
+            if (createdHandle && typeof createdHandle.stop === 'function') {
+                this.persistentGhostCursorLookAtHandle = createdHandle;
+            }
+            return this.persistentGhostCursorLookAtHandle;
+        }
+
+        async stopIntroVoiceCursorLookAtPerformance(handle, reason) {
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            if (this.preTakeoverGhostCursorLookAtHandle === handle) {
+                this.preTakeoverGhostCursorLookAtHandle = null;
+            }
+            if (this.persistentGhostCursorLookAtHandle === handle) {
+                this.persistentGhostCursorLookAtHandle = null;
+            }
+            try {
+                await handle.stop(reason || 'intro_voice_showcase_complete');
+            } catch (_) {}
+        }
+
+        adoptPreTakeoverGhostCursorLookAtHandle() {
+            if (
+                !this.persistentGhostCursorLookAtHandle
+                && this.preTakeoverGhostCursorLookAtHandle
+                && typeof this.preTakeoverGhostCursorLookAtHandle.stop === 'function'
+            ) {
+                this.persistentGhostCursorLookAtHandle = this.preTakeoverGhostCursorLookAtHandle;
+            }
+            this.preTakeoverGhostCursorLookAtHandle = null;
+        }
+
+        async stopPersistentGhostCursorLookAtPerformance(reason) {
+            const handle = this.persistentGhostCursorLookAtHandle;
+            this.persistentGhostCursorLookAtHandle = null;
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'ghost_cursor_look_at_complete');
+            } catch (_) {}
+        }
+
+        async ensureGuideIdleSwayPerformance() {
+            const existingHandle = this.guideIdleSwayHandle;
+            if (existingHandle && typeof existingHandle.stop === 'function') {
+                return existingHandle;
+            }
+
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startGuideIdleSway !== 'function') {
+                return null;
+            }
+            try {
+                const handle = await api.startGuideIdleSway({
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => this.isStopping()
+                });
+                if (handle && typeof handle.stop === 'function') {
+                    this.guideIdleSwayHandle = handle;
+                }
+                return this.guideIdleSwayHandle;
+            } catch (error) {
+                console.warn('[YuiGuide] 教程常驻轻微晃动启动失败:', error);
+                return null;
+            }
+        }
+
+        async stopGuideIdleSwayPerformance(reason) {
+            const handle = this.guideIdleSwayHandle;
+            this.guideIdleSwayHandle = null;
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'guide_idle_sway_complete');
+            } catch (_) {}
+        }
+
+        async startPluginDashboardCornerPeekPerformance(runId, options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.startPluginDashboardCornerPeek !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            try {
+                return await api.startPluginDashboardCornerPeek({
+                    targetPreset: normalizedOptions.targetPreset,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async runSettingsPeekPanicPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playSettingsPeekPanic !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            try {
+                return await api.playSettingsPeekPanic({
+                    targetRect: normalizedOptions.targetRect || null,
+                    totalDurationMs: normalizedOptions.totalDurationMs,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => (
+                        (Number.isFinite(normalizedOptions.runId) && normalizedOptions.runId !== this.sceneRunId)
+                        || this.isStopping()
+                    )
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 设置一瞥慌乱动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async runInterruptResistPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playInterruptResist !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const voiceDurationMs = normalizedOptions.voiceKey
+                ? this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
+                : 0;
+            const totalDurationMs = Number.isFinite(normalizedOptions.totalDurationMs)
+                ? Math.max(0, Math.round(normalizedOptions.totalDurationMs))
+                : (voiceDurationMs > 0 ? clamp(Math.round(voiceDurationMs), 960, 7600) : undefined);
+            try {
+                return await api.playInterruptResist({
+                    pointerX: normalizedOptions.x,
+                    pointerY: normalizedOptions.y,
+                    totalDurationMs: totalDurationMs,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 轻微打断动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async runAngryExitPerformance(options) {
+            const api = window.YuiGuideAvatarStage;
+            if (!api || typeof api.playAngryExit !== 'function') {
+                return null;
+            }
+            const normalizedOptions = options || {};
+            const voiceDurationMs = normalizedOptions.voiceKey
+                ? this.getGuideVoiceDurationMs(normalizedOptions.voiceKey, resolveGuideLocale())
+                : 0;
+            const totalDurationMs = Number.isFinite(normalizedOptions.totalDurationMs)
+                ? Math.max(0, Math.round(normalizedOptions.totalDurationMs))
+                : (voiceDurationMs > 0 ? clamp(Math.round(voiceDurationMs), 1200, 16000) : undefined);
+            try {
+                return await api.playAngryExit({
+                    pointerX: normalizedOptions.x,
+                    pointerY: normalizedOptions.y,
+                    totalDurationMs: totalDurationMs,
+                    reducedMotion: this.shouldReduceTutorialMotion(),
+                    isCancelled: () => this.isStopping()
+                });
+            } catch (error) {
+                console.warn('[YuiGuide] 生气退出动作启动失败:', error);
+                return null;
+            }
+        }
+
+        async stopPluginDashboardCornerPeekPerformance(handle, reason) {
+            if (!handle || typeof handle.stop !== 'function') {
+                return;
+            }
+            try {
+                await handle.stop(reason || 'plugin_dashboard_closed');
+            } catch (_) {}
         }
 
         async playRemainingIntroPreludeScenes(completedSceneId) {
@@ -7717,10 +8826,13 @@
                 if (typeof document !== 'undefined' && document.body) {
                     document.body.classList.remove('yui-guide-live2d-preparing');
                 }
+                await this.ensureGuideIdleSwayPerformance();
                 return;
             }
 
-            this.applyTutorialFaceForwardLock();
+            if (this.interactionTakeover && typeof this.interactionTakeover.applyFaceForwardLock === 'function') {
+                this.interactionTakeover.applyFaceForwardLock();
+            }
             try {
                 const result = await this.wakeup.run();
                 this.recordExperienceMetric('wakeup_result', {
@@ -7734,6 +8846,7 @@
                     reason: 'exception'
                 });
             }
+            await this.ensureGuideIdleSwayPerformance();
         }
 
         async runChatIntroPrelude() {
@@ -7754,6 +8867,7 @@
             }
 
             this.introFlowStarted = true;
+            await this.ensureGuideIdleSwayPerformance();
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
@@ -7798,10 +8912,15 @@
                     return;
                 }
                 this.overlay.hideBubble();
-                this.overlay.setTakingOver(true);
+                this.setTutorialTakingOver(true);
                 this.cursor.wobble();
-                await wait(200);
+                await wait(280);
             }
+            if (this.isStopping()) {
+                return;
+            }
+
+            await this.waitForSceneDelay(140);
             if (this.isStopping()) {
                 return;
             }
@@ -7820,16 +8939,30 @@
             if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
-            await Promise.all([
-                this.speakGuideLine(introText, {
-                    voiceKey: introStep.performance.voiceKey,
-                    minDurationMs: 4200
-                }),
-                this.runIntroVoiceControlButtonShowcase(
-                    introStep.performance.voiceKey,
-                    introText
-                ).catch(() => {})
-            ]);
+            const introVoiceLookAtHandle = await this.ensurePreTakeoverGhostCursorLookAtPerformance({
+                isCancelled: () => this.isStopping()
+            });
+            try {
+                await Promise.all([
+                    this.speakGuideLine(introText, {
+                        voiceKey: introStep.performance.voiceKey,
+                        minDurationMs: 4200
+                    }),
+                    this.runIntroVoiceControlButtonShowcase(
+                        introStep.performance.voiceKey,
+                        introText
+                    ).catch(() => {})
+                ]);
+            } finally {
+                if (this.isStopping()) {
+                    await this.stopIntroVoiceCursorLookAtPerformance(
+                        introVoiceLookAtHandle,
+                        'intro_voice_showcase_complete'
+                    );
+                } else {
+                    this.adoptPreTakeoverGhostCursorLookAtHandle();
+                }
+            }
             if (this.isStopping()) {
                 return;
             }
@@ -7852,10 +8985,13 @@
         // 因此跳过首页点击激活，但后续旁白与高亮演示照常执行。
         async runChatIntroPreludeExternalized(introStep) {
             this.introFlowStarted = true;
+            await this.ensureGuideIdleSwayPerformance();
             this.setCurrentScene('intro_basic', null);
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
-            this.setExternalizedChatSpotlight('window');
+            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
+                this.interactionTakeover.setExternalizedChatSpotlight('window');
+            }
 
             this.enableInterrupts(introStep);
             await this.playIntroGreetingReply();
@@ -7873,16 +9009,30 @@
             if (introStep.performance.emotion) {
                 this.applyGuideEmotion(introStep.performance.emotion);
             }
-            await Promise.all([
-                this.speakGuideLine(introText || '', {
-                    voiceKey: introStep.performance.voiceKey,
-                    minDurationMs: 4200
-                }),
-                this.runIntroVoiceControlButtonShowcase(
-                    introStep.performance.voiceKey,
-                    introText || ''
-                ).catch(() => {})
-            ]);
+            const introVoiceLookAtHandle = await this.ensurePreTakeoverGhostCursorLookAtPerformance({
+                isCancelled: () => this.isStopping()
+            });
+            try {
+                await Promise.all([
+                    this.speakGuideLine(introText || '', {
+                        voiceKey: introStep.performance.voiceKey,
+                        minDurationMs: 4200
+                    }),
+                    this.runIntroVoiceControlButtonShowcase(
+                        introStep.performance.voiceKey,
+                        introText || ''
+                    ).catch(() => {})
+                ]);
+            } finally {
+                if (this.isStopping()) {
+                    await this.stopIntroVoiceCursorLookAtPerformance(
+                        introVoiceLookAtHandle,
+                        'intro_voice_showcase_complete'
+                    );
+                } else {
+                    this.adoptPreTakeoverGhostCursorLookAtHandle();
+                }
+            }
             if (this.isStopping()) {
                 return;
             }
@@ -7974,6 +9124,10 @@
             }
 
             const runId = ++this.sceneRunId;
+            await this.syncPersistentGhostCursorLookAtForScene(stepId, runId);
+            if (runId !== this.sceneRunId || this.isStopping()) {
+                return;
+            }
             const performance = step.performance || {};
             const bubbleText = this.resolvePerformanceBubbleText(performance);
             const anchorRect = this.resolveRect(step.anchor);
@@ -8007,7 +9161,7 @@
             }
 
             if (isTakeoverScene) {
-                this.overlay.setTakingOver(true);
+                this.setTutorialTakingOver(true);
             }
 
             const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);
@@ -8057,6 +9211,8 @@
                     }).catch(() => {}),
                     this.runTakeoverKeyboardControlSequence(step, performance, runId)
                 ]);
+                await this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'takeover_capture_cursor_complete');
+                this.takeoverTopPeekHandle = null;
                 this.clearRetainedExtraSpotlights();
                 this.clearVirtualSpotlight('takeover-agent-master-toggle');
                 this.clearVirtualSpotlight('takeover-keyboard-toggle');
@@ -8215,6 +9371,7 @@
                 this.applyGuideEmotion(performance.emotion);
             }
 
+            let returnControlPetalTransitionPromise = null;
             if (!shouldNarrateDuringMove) {
                 if (bubbleText && shouldNarrateInChat) {
                     this.appendGuideChatMessage(bubbleText, {
@@ -8223,9 +9380,39 @@
                     });
                     this.overlay.hideBubble();
                 }
-                await this.speakGuideLine(bubbleText || '', {
-                    voiceKey: performance.voiceKey
-                });
+                if (stepId === 'takeover_return_control') {
+                    const voiceKey = performance.voiceKey || '';
+                    const narrationPromise = this.speakGuideLine(bubbleText || '', {
+                        voiceKey: voiceKey
+                    });
+                    returnControlPetalTransitionPromise = (async () => {
+                        await this.waitForNarrationCue(voiceKey, 'returnPetalTransition');
+                        if (runId !== this.sceneRunId || this.destroyed || this.isStopping()) {
+                            return;
+                        }
+                        this.runReturnControlCueWavePerformance().catch((error) => {
+                            console.warn('[YuiGuide] 归还控制权挥手动作播放失败:', error);
+                        });
+                        this.cursor.hide();
+                        this.overlay.clearPersistentSpotlight();
+                        this.overlay.clearActionSpotlight();
+                        this.disableInterrupts();
+                        this.closeManagedPanels().catch((error) => {
+                            console.warn('[YuiGuide] 第6段花瓣转场时关闭面板失败:', error);
+                        });
+                        const remainingMs = this.getReturnPetalTransitionRemainingMs(voiceKey, bubbleText || '');
+                        await this.playReturnPetalTransition({
+                            durationMs: remainingMs
+                        });
+                    })().catch((error) => {
+                        console.warn('[YuiGuide] 第6段花瓣转场失败:', error);
+                    });
+                    await narrationPromise;
+                } else {
+                    await this.speakGuideLine(bubbleText || '', {
+                        voiceKey: performance.voiceKey
+                    });
+                }
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
                 }
@@ -8241,6 +9428,22 @@
             }
 
             if (stepId === 'takeover_return_control') {
+                if (returnControlPetalTransitionPromise) {
+                    await this.closeManagedPanels();
+                    if (runId !== this.sceneRunId || this.destroyed) {
+                        return;
+                    }
+                    this.overlay.clearPersistentSpotlight();
+                    this.overlay.clearActionSpotlight();
+                    this.cursor.hide();
+                    this.disableInterrupts();
+                    await returnControlPetalTransitionPromise;
+                    if (runId !== this.sceneRunId || this.destroyed) {
+                        return;
+                    }
+                    this.setTutorialTakingOver(false);
+                    return;
+                }
                 await this.closeManagedPanels();
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
@@ -8278,7 +9481,11 @@
                 this.cursor.hide();
                 this.overlay.clearActionSpotlight();
                 this.disableInterrupts();
-                this.overlay.setTakingOver(false);
+                await this.playReturnPetalTransition();
+                if (runId !== this.sceneRunId || this.destroyed) {
+                    return;
+                }
+                this.setTutorialTakingOver(false);
             }
 
             if (!shouldKeepInterruptsEnabled) {
@@ -8573,16 +9780,24 @@
                 voiceKey: resistanceVoiceKeys[resistanceVoiceIndex] || '',
                 streamPauseWithScene: false
             });
-            this.applyGuideEmotion(performance.emotion || 'surprised');
+            this.applyGuideEmotion(performance.emotion || 'surprised', {
+                allowDuringInterrupt: true
+            });
             const cursorResistancePromise = suppressCursorReaction
                 ? Promise.resolve()
                 : this.cursor.resistTo(x, y);
             const resistanceVoiceKey = resistanceVoiceKeys[resistanceVoiceIndex] || '';
+            const interruptPerformancePromise = this.runInterruptResistPerformance({
+                x: x,
+                y: y,
+                voiceKey: resistanceVoiceKey
+            }).catch(() => null);
             return Promise.all([
                 this.voiceQueue.speak(message, {
                     voiceKey: resistanceVoiceKey
                 }),
-                cursorResistancePromise
+                cursorResistancePromise,
+                interruptPerformancePromise
             ]).finally(() => {
                 this.resumeCurrentSceneAfterResistance();
                 const didRestorePresentationSnapshot = this.restoreGuidePresentationSnapshot(presentationSnapshot);
@@ -8614,12 +9829,16 @@
             this.clearSceneTimers();
             this.disableInterrupts();
             this.cancelActiveNarration();
+            this.beginGuideInterruptPresentation();
 
             const angryStep = this.getStep('interrupt_angry_exit');
             const performance = (angryStep && angryStep.performance) || {};
             const bubbleText = this.resolvePerformanceBubbleText(performance);
+            const lastPointerPoint = this.lastPointerPoint && Number.isFinite(this.lastPointerPoint.x) && Number.isFinite(this.lastPointerPoint.y)
+                ? this.lastPointerPoint
+                : null;
 
-            this.overlay.setTakingOver(true);
+            this.setTutorialTakingOver(true);
             this.overlay.setAngry(true);
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
@@ -8629,10 +9848,20 @@
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
-            this.applyGuideEmotion(performance.emotion || 'angry');
-            await this.speakGuideLine(bubbleText || '', {
-                voiceKey: performance.voiceKey
+            this.applyGuideEmotion(performance.emotion || 'angry', {
+                allowDuringInterrupt: true
             });
+            const angryExitPerformancePromise = this.runAngryExitPerformance({
+                x: lastPointerPoint ? lastPointerPoint.x : null,
+                y: lastPointerPoint ? lastPointerPoint.y : null,
+                voiceKey: performance.voiceKey
+            }).catch(() => null);
+            await Promise.all([
+                this.speakGuideLine(bubbleText || '', {
+                    voiceKey: performance.voiceKey
+                }),
+                angryExitPerformancePromise
+            ]);
             this.notifyPluginDashboardNarrationFinished();
             if (this.destroyed) {
                 return;
@@ -8675,10 +9904,26 @@
 
             this.destroyed = true;
             this.terminationRequested = true;
-            this.releaseTutorialFaceForwardLock();
+            this.stopPluginDashboardCornerPeekPerformance(this.takeoverTopPeekHandle, 'destroy').catch(() => {});
+            this.takeoverTopPeekHandle = null;
+            this.stopGuideIdleSwayPerformance('destroy').catch(() => {});
+            if (this.preTakeoverGhostCursorLookAtHandle) {
+                this.stopIntroVoiceCursorLookAtPerformance(
+                    this.preTakeoverGhostCursorLookAtHandle,
+                    'destroy'
+                ).catch(() => {});
+            }
+            this.stopPersistentGhostCursorLookAtPerformance('destroy').catch(() => {});
+            if (this.interactionTakeover && typeof this.interactionTakeover.releaseFaceForwardLock === 'function') {
+                this.interactionTakeover.releaseFaceForwardLock();
+            }
             this.resumeCurrentSceneAfterResistance();
-            this.clearExternalizedChatFx();
-            this.setExternalizedChatButtonsDisabled(false);
+            if (this.interactionTakeover && typeof this.interactionTakeover.clearExternalizedChatFx === 'function') {
+                this.interactionTakeover.clearExternalizedChatFx();
+            }
+            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatButtonsDisabled === 'function') {
+                this.interactionTakeover.setExternalizedChatButtonsDisabled(false);
+            }
             if (this.page === 'home') {
                 document.body.classList.remove('yui-guide-home-driver-hidden');
             }
@@ -8727,7 +9972,10 @@
             this.overlay.hidePluginPreview();
             this.overlay.hideBubble();
             this.overlay.setAngry(false);
-            this.overlay.setTakingOver(false);
+            this.setTutorialTakingOver(false);
+            if (this.interactionTakeover && typeof this.interactionTakeover.destroy === 'function') {
+                this.interactionTakeover.destroy();
+            }
             this.overlay.destroy();
             window.removeEventListener('keydown', this.keydownHandler, true);
             window.removeEventListener('pagehide', this.pageHideHandler, true);
@@ -8735,19 +9983,6 @@
             window.removeEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
-            document.removeEventListener('pointerdown', this.interactionGuardHandler, true);
-            document.removeEventListener('pointerup', this.interactionGuardHandler, true);
-            document.removeEventListener('mousedown', this.interactionGuardHandler, true);
-            document.removeEventListener('mouseup', this.interactionGuardHandler, true);
-            document.removeEventListener('touchstart', this.interactionGuardHandler, true);
-            document.removeEventListener('touchend', this.interactionGuardHandler, true);
-            document.removeEventListener('click', this.interactionGuardHandler, true);
-            document.removeEventListener('dblclick', this.interactionGuardHandler, true);
-            document.removeEventListener('contextmenu', this.interactionGuardHandler, true);
-            document.removeEventListener('pointerdown', this.skipButtonClickHandler, true);
-            document.removeEventListener('mousedown', this.skipButtonClickHandler, true);
-            document.removeEventListener('touchstart', this.skipButtonClickHandler, true);
-            document.removeEventListener('click', this.skipButtonClickHandler, true);
         }
 
         onKeyDown(event) {
@@ -8787,29 +10022,6 @@
 
             // 移动触控端没有幽灵鼠标接管语义，不能用全局捕获守卫吞掉页面点击。
             return !!((coarsePointer || touchCapable) && narrowViewport);
-        }
-
-        isTouchInteractionEvent(event) {
-            if (!event || typeof event.type !== 'string') {
-                return false;
-            }
-
-            if (event.type.indexOf('touch') === 0) {
-                lastTouchTime = Date.now();
-                return true;
-            }
-
-            if (event.pointerType === 'touch') {
-                lastTouchTime = Date.now();
-                return true;
-            }
-
-            // 触控衍生的合成鼠标/点击事件：在触控后的短时间窗口内视为触控交互
-            if (/^(click|mousedown|mouseup)$/.test(event.type) && Date.now() - lastTouchTime < 500) {
-                return true;
-            }
-
-            return false;
         }
 
         isAllowedTutorialInteractionTarget(target) {
@@ -8874,58 +10086,6 @@
                 '.storage-location-completion-card:not([hidden])',
                 '#storage-location-overlay:not([hidden])'
             ].join(', '));
-        }
-
-        onInteractionGuard(event) {
-            if (this.destroyed || this.page !== 'home' || !event || event.isTrusted === false) {
-                return;
-            }
-
-            const isAllowedTarget = this.isAllowedTutorialInteractionTarget(event.target);
-            if (
-                isAllowedTarget
-                || this.isSystemDialogInteractionTarget(event.target)
-            ) {
-                return;
-            }
-
-            // 等待特定目标点击期间不得放行触控事件，否则会破坏 awaitIntroActivation / manualPluginDashboard 的守卫语义
-            if (
-                this.mobileTouchInteractionPassthrough
-                && this.isTouchInteractionEvent(event)
-                && !this.awaitingIntroActivation
-                && !this.manualPluginDashboardOpenAllowed
-            ) {
-                return;
-            }
-
-            if (typeof event.preventDefault === 'function') {
-                event.preventDefault();
-            }
-            if (typeof event.stopImmediatePropagation === 'function') {
-                event.stopImmediatePropagation();
-            }
-            event.stopPropagation();
-        }
-
-        onSkipButtonClick(event) {
-            if (this.destroyed || !event || !event.target || typeof event.target.closest !== 'function') {
-                return;
-            }
-
-            const skipButton = event.target.closest('#neko-tutorial-skip-btn');
-            if (!skipButton) {
-                return;
-            }
-
-            if (typeof event.preventDefault === 'function') {
-                event.preventDefault();
-            }
-            if (typeof event.stopImmediatePropagation === 'function') {
-                event.stopImmediatePropagation();
-            }
-            event.stopPropagation();
-            this.skip('skip', 'skip');
         }
 
         onTutorialEndEvent(event) {
@@ -9072,7 +10232,11 @@
                 if (data.sessionId && handoff.sessionId && data.sessionId !== handoff.sessionId) {
                     return;
                 }
-                this.skip('skip', 'skip');
+                if (this.tutorialManager && typeof this.tutorialManager.handleTutorialSkipRequest === 'function') {
+                    void this.tutorialManager.handleTutorialSkipRequest();
+                } else {
+                    this.skip('skip', 'skip');
+                }
                 return;
             }
 

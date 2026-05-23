@@ -1,28 +1,34 @@
 """
-Bilibili 弹幕插件 (Bilibili-Danmaku) - 增强版（集成背景LLM系统）
+Bilibili 弹幕插件 (Bilibili-Danmaku) - 增强版（集成背景LLM + 事件通知系统）
 
-功能：
-- 监听 B站直播间弹幕，通过 TimeWindowAggregator 按时间窗口聚合弹幕
-- 到达窗口期限时自动回调 GuidanceOrchestrator 调用 LLM 生成引导词
-- LLM 失败时自动降级为简单统计摘要
-- SC、高价值礼物即时推送通知给AI，触发语音感谢
-- AI 可通过 send_danmaku 发送弹幕到直播间（需登录）
-- 自动读取 NEKO 项目已保存的 B站 Cookie（无需重复登录）
+功能概览：
+┌─ 弹幕姬 ─────────────────────────────────────────────┐
+│ 监听 B站直播间弹幕，经 TimeWindowAggregator 聚合后     │
+│ 调用 LLM 生成引导词推送给 AI；LLM 失败时降级统计摘要    │
+└──────────────────────────────────────────────────────┘
+┌─ 答谢姬 ─────────────────────────────────────────────┐
+│ 进场欢迎、关注感谢、开播/下播通知，带冷却控制           │
+│ SC / 礼物即时推送（高价值礼物单独触发）                │
+└──────────────────────────────────────────────────────┘
+┌─ 弹幕发送 ───────────────────────────────────────────┐
+│ AI 可通过 send_danmaku 发送弹幕到直播间（需登录）       │
+└──────────────────────────────────────────────────────┘
 
 入口：
-- set_room_id      更改监听的直播间
-- set_interval     更改推送给 AI 的弹幕间隔（5s ~ 180s）
-- send_danmaku     发送弹幕到直播间（需登录）
-- get_danmaku      获取最新弹幕
-- get_status       获取插件状态
-- save_credential  保存 B站登录凭据
-- clear_credential 清除 B站登录凭据
-- reload_credential 重新加载凭据
-- connect / disconnect 开始/停止监听
+- set_room_id          更改监听的直播间
+- set_interval         更改推送给 AI 的推送间隔
+- send_danmaku         发送弹幕到直播间（需登录）
+- get_danmaku          获取最新弹幕
+- get_status           获取插件状态
+- save_credential      保存 B站登录凭据
+- clear_credential     清除 B站登录凭据
+- reload_credential    重新加载凭据
+- connect/disconnect   开始/停止监听
 
 背景LLM系统API：
-- get_guidance_config     获取背景LLM配置与统计
-- update_guidance_config  更新配置
+- get_bg_llm_config       获取完整背景LLM配置
+- get_guidance_config     获取聚合器/LLM调用统计
+- update_guidance_config  更新配置并持久化
 - test_guidance           测试引导词生成
 """
 
@@ -33,6 +39,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -151,7 +158,14 @@ try:
     from .aggregator import TimeWindowAggregator, BatchedDanmaku, GiftAggregator
     from .llm_client import LLMClient
     from .orchestrator import GuidanceOrchestrator
-    from .user_profile import UserProfileTracker
+    from .user_profile import UserRecordManager
+    from .background_llm_agent import DanmakuBackgroundAgent
+    from .danmaku_memory import DanmakuMemory
+    from .danmaku_analyzer import DanmakuAnalyzer
+
+    from .intelligence_card import (
+        IntelligenceCard, CARD_TYPE_IMPORTANT_EVENT,
+    )
     BACKGROUND_LLM_AVAILABLE = True
 except ImportError as e:
     _logger.warning("背景LLM模块导入失败: %s, 将使用原始模式", e)
@@ -170,6 +184,49 @@ def _open_url_in_browser(url: str) -> None:
         subprocess.run(["open", url])
     else:
         subprocess.run(["xdg-open", url])
+
+
+# ── 事件冷却跟踪器（MagicalDanmaku 风格 CD 频道）────────────────────
+class _CooldownTracker:
+    """轻量冷却跟踪器，按 key 检查是否冷却已过"""
+
+    def __init__(self):
+        self._timestamps: Dict[str, float] = {}
+
+    def check_and_set(self, key: str, cd_seconds: float) -> bool:
+        """检查并标记冷却。
+        返回 True = 允许触发（冷却已过或从未触发）；
+        返回 False = 冷却中，阻止触发。
+        """
+        now = time.time()
+        last = self._timestamps.get(key, 0.0)
+        if now - last < cd_seconds:
+            return False
+        self._timestamps[key] = now
+        return True
+
+    def clear(self, key: str = "") -> None:
+        """清除指定 key 或全部"""
+        if key:
+            self._timestamps.pop(key, None)
+        else:
+            self._timestamps.clear()
+
+
+def _format_gift_price(total_coin: int, coin_type: str) -> str:
+    """格式化礼物价格显示
+    规则（参考 神奇弹幕 MagicalDanmaku）：
+    - 金瓜子: 1000 金瓜子 = 1 元，显示为 ¥xx
+    - 银瓜子: 免费道具，不显示价格
+    """
+    if total_coin <= 0:
+        return ""
+    if coin_type == "gold":
+        rmb = total_coin / 1000.0
+        if rmb == int(rmb):
+            return f"（¥{int(rmb)}）"
+        return f"（¥{rmb:.1f}）"
+    return ""
 
 
 @neko_plugin
@@ -215,7 +272,22 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._gift_aggregator = None  # GiftAggregator
         self._llm_client = None  # LLMClient
         self._orchestrator = None  # GuidanceOrchestrator
-        self._tracker = None  # UserProfileTracker
+        self._tracker = None  # UserRecordManager
+
+        # 背景LLM健康状态（供超时检测 + 前端状态展示）
+        self._bg_llm_health = "unknown"  # healthy / degraded / timeout / connection_error
+        self._bg_llm_fail_streak = 0     # 连续 LLM 失败次数
+        self._bg_llm_last_llm_success_ts = 0.0  # 最后一次 LLM 成功生成的时间戳
+
+        # 事件通知系统（MagicalDanmaku 答谢姬）
+        self._cooldown_tracker = _CooldownTracker()
+        self._event_notify_cfg = {}  # merged event_notify config, loaded in _load_config
+
+        # 背景情报 Agent 系统（桌面版移植）
+        self._bg_agent: Optional[DanmakuBackgroundAgent] = None
+        self._bg_memory: Optional[DanmakuMemory] = None
+        self._bg_analyzer: Optional[DanmakuAnalyzer] = None
+
         
         # UI展示队列
         self._ui_danmaku_queue: deque = deque(maxlen=500)
@@ -225,10 +297,14 @@ class BiliDanmakuPlugin(NekoPluginBase):
         # 统计
         self._total_received = 0
         self._total_filtered = 0
-        self._last_push_ts: float = 0.0
-        self._push_cooldown: float = 5.0
-        self._push_sc_threshold: int = 1
-        self._push_gift_threshold: float = 1.0
+
+        # 弹幕速率追踪（动态推送间隔用）
+        self._danmaku_timestamps: deque = deque(maxlen=300)  # 保留最近300条的时间戳
+
+        # 推送聚合缓冲
+        self._push_buffer: list[tuple[str, str, int]] = []  # (content, description, priority)
+        self._push_flush_handle: asyncio.TimerHandle | None = None
+        self._push_aggregation_window = 2.0  # 聚合窗口（秒）
         
         # 主人账号
         self._master_display_name: str = "主人"
@@ -271,7 +347,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _load_plugin_config(self):
         """从插件 data/config.json 加载配置"""
-        config_path = self.data_path("config.json")
+        config_path = Path(__file__).parent / "data" / "config.json"
         if config_path.exists():
             try:
                 cfg = await asyncio.to_thread(self._read_json, config_path)
@@ -291,7 +367,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _save_plugin_config(self):
         """保存配置到 data/config.json"""
-        config_path = self.data_path("config.json")
+        config_path = Path(__file__).parent / "data" / "config.json"
         await asyncio.to_thread(config_path.parent.mkdir, parents=True, exist_ok=True)
         cfg = {
             "room_id": self._room_id,
@@ -452,6 +528,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
                     "on_danmaku": self._process_danmaku_event,
                     "on_gift": self._process_gift_event,
                     "on_sc": self._process_sc_event,
+                    "on_entry": self._process_entry_event,
+                    "on_follow": self._process_follow_event,
+                    "on_live": self._process_live_event,
+                    "on_preparing": self._process_preparing_event,
+                    "on_event": self._process_event,  # 增强协议事件
                 },
             )
             self._listen_task = asyncio.create_task(self._listener.start())
@@ -463,6 +544,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
     async def _drain_background_tasks(self) -> None:
         """等待所有后台任务完成"""
+        # 刷新推送缓冲
+        if self._push_flush_handle is not None:
+            self._push_flush_handle.cancel()
+            self._push_flush_handle = None
+        self._flush_push_buffer()
         pending = [task for task in self._pending_push_tasks if not task.done()]
         self._pending_push_tasks.clear()
         if pending:
@@ -505,8 +591,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if gift_items:
             lines.append("礼物：")
             for gift in gift_items:
-                price = gift.get("price_rmb", 0)
-                price_text = f"≈¥{price}" if price else ""
+                price_text = _format_gift_price(gift.get("total_coin", 0), gift.get("coin_type", "silver"))
                 lines.append(f"- {gift.get('user_name', '')} 送了 {gift.get('num', 1)}个 {gift.get('gift_name', '')} {price_text}".strip())
         if danmaku_items:
             lines.append("弹幕：")
@@ -772,15 +857,51 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def on_shutdown(self, **_):
         """插件关闭时调用"""
         self.logger.info("Bilibili弹幕插件关闭中...")
-        
-        # 停止聚合器
-        if self._aggregator:
-            await self._aggregator.stop()
-        
-        # 保存用户画像
+
+        # 1. 断开弹幕监听（WebSocket + 心跳）
+        await self._stop_listening()
+
+        # 2. 停止背景LLM相关组件
+        if self._background_llm_enabled:
+            await self._stop_background_llm()
+        else:
+            # 降级模式下也清理聚合器/编排器
+            if self._aggregator:
+                await self._aggregator.stop()
+                self._aggregator = None
+            if self._gift_aggregator:
+                await self._gift_aggregator.stop()
+                self._gift_aggregator = None
+            if self._orchestrator:
+                await self._orchestrator.stop()
+                self._orchestrator = None
+            self._llm_client = None
+
+        # 3. 刷新推送缓冲
+        if self._push_flush_handle is not None:
+            self._push_flush_handle.cancel()
+            self._push_flush_handle = None
+        self._flush_push_buffer()
+
+        # 4. 等待所有后台任务完成
+        pending = [task for task in self._pending_push_tasks if not task.done()]
+        self._pending_push_tasks.clear()
+        if pending:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self._pending_restart_task and not self._pending_restart_task.done():
+            self._pending_restart_task.cancel()
+            await asyncio.gather(self._pending_restart_task, return_exceptions=True)
+            self._pending_restart_task = None
+
+        # 5. 保存用户记录
         if self._tracker:
             await self._tracker.save()
-        
+        if self._bg_memory:
+            await self._bg_memory.save()
+
+        self.logger.info("Bilibili弹幕插件已完全关闭")
         return Ok({"status": "shutdown"})
 
     # ==========================================
@@ -788,45 +909,51 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # ==========================================
 
     async def _init_background_llm(self):
-        """初始化背景LLM系统（新体系：LLMClient + GuidanceOrchestrator + TimeWindowAggregator）"""
+        """初始化背景LLM系统（新体系：含 BackgroundAgent 情报分析）"""
+        if self._background_llm_enabled:
+            self.logger.warning("背景LLM系统已启用，跳过重复初始化")
+            return
+
         self.logger.info(f"_init_background_llm 进入, _config keys={list(self._config.keys()) if self._config else '空'}")
         try:
-            # 从 self._config 读取，如果 background_llm 不存在则从 config_enhanced.json 直接读取
             config = self._config.get("background_llm", {})
             if not config:
-                try:
-                    enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
-                    if enhanced_path.exists():
-                        with open(enhanced_path, "r", encoding="utf-8") as f:
-                            enhanced = json.load(f)
-                        config = enhanced.get("background_llm", {})
-                        self.logger.info(f"从 config_enhanced.json 直接读取 background_llm 配置: enabled={config.get('enabled')}")
-                except Exception as e:
-                    self.logger.warning(f"读取 config_enhanced.json 失败: {e}")
-            
-            enabled = config.get("enabled", False)
-            
-            if not enabled:
-                self.logger.info(f"背景LLM系统未启用: config_background_llm={'有' if config else '无'}, enabled={enabled}")
+                self.logger.info("背景LLM配置为空，跳过初始化")
                 return
-            
-            self.logger.info("初始化背景LLM系统（新体系）...")
-            
-            # 1. LLM客户端
+            enabled = config.get("enabled", False)
+
+            if not enabled:
+                self.logger.info("背景LLM系统未启用")
+                return
+
+            self.logger.info("初始化背景LLM系统...")
+
+            # 1. LLM客户端（两个体系共享）
             llm_config = config.get("cloud", {})
             self._llm_client = LLMClient.from_config(llm_config)
-            self.logger.info(f"LLMClient 初始化完成: url={self._llm_client.api_url}")
-            
-            # 2. 用户画像追踪器
-            profiles_dir = Path(__file__).parent / "data" / "user_profiles"
-            self._tracker = UserProfileTracker(data_dir=profiles_dir)
+
+            # 连通性验证
+            test_result = await self._llm_client.test_connection()
+            if not test_result.get("success"):
+                self.logger.warning(
+                    f"背景LLM连通性验证失败: "
+                    f"error_code={test_result.get('error_code', 'unknown')}"
+                )
+                self._bg_llm_health = "connection_error"
+                self._llm_client = None
+                return
+
+            # 统一时间窗口
+            window_size = float(config.get("window_size", self._interval))
+            max_samples = int(config.get("max_samples", 30))
+
+            # 2. 统一用户记录 + 编排器（经典体系 fallback）
+            records_dir = Path(__file__).parent / "data" / "user_records"
+            self._tracker = UserRecordManager(data_dir=records_dir)
             await self._tracker.load()
-            self.logger.info(f"UserProfileTracker 初始化完成: {self._tracker.get_stats()}")
-            
-            # 3. 引导词编排器
+
             knowledge_context = config.get("knowledge_context", "")
             prompt_template = config.get("prompt_template", "")
-            # neko_name：优先用 config 里显式保存的，兜底用 _target_lanlan
             neko_name = config.get("neko_name", "") or self._target_lanlan
             self._orchestrator = GuidanceOrchestrator(
                 llm_client=self._llm_client,
@@ -835,13 +962,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 neko_name=neko_name,
                 prompt_template=prompt_template,
             )
-            self.logger.info(f"GuidanceOrchestrator 初始化完成")
-            
-            # 4. 弹幕聚合器（使用 _interval 作为窗口大小基准）
-            agg_config = config.get("aggregation", {})
-            window_size = float(agg_config.get("window_size", self._interval))
-            max_samples = int(agg_config.get("max_samples", 30))
-            
+
+            # 3. 弹幕聚合器（统一时间窗口）
             self._aggregator = TimeWindowAggregator(
                 callback=self._on_batch_ready,
                 window_size=window_size,
@@ -849,9 +971,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
             )
             await self._aggregator.start()
 
-            # 5. 礼物聚合器
-            gift_window = float(agg_config.get("gift_window_size", 5.0))
-            gift_cooldown = float(agg_config.get("gift_cooldown", 15.0))
+            # 4. 礼物聚合器
+            gift_window = float(config.get("gift_window_size", 5.0))
+            gift_cooldown = float(config.get("gift_cooldown", 15.0))
             self._gift_aggregator = GiftAggregator(
                 callback=self._on_gift_batch_ready,
                 window_size=gift_window,
@@ -859,16 +981,94 @@ class BiliDanmakuPlugin(NekoPluginBase):
             )
             await self._gift_aggregator.start()
 
+            # 5. BackgroundAgent 增强体系
+            agent_enabled = config.get("agent", {}).get("enabled", True)
+            if agent_enabled:
+                try:
+                    await self._init_background_agent(config, window_size, max_samples)
+                except Exception as e:
+                    self.logger.error(f"BackgroundAgent 初始化失败，使用经典体系: {e}")
+
             self._background_llm_enabled = True
-            self.logger.info(f"背景LLM系统初始化完成: window={window_size}s, max_samples={max_samples}, gift_window={gift_window}s, gift_cooldown={gift_cooldown}s")
+            self._bg_llm_health = "healthy"
+            self._bg_llm_fail_streak = 0
+            self._bg_llm_last_llm_success_ts = time.time()
+            self.logger.info(
+                f"背景LLM系统初始化完成: window={window_size}s, "
+                f"agent={'启用' if self._bg_agent else '未启用'}"
+            )
 
         except Exception as e:
             self.logger.error(f"背景LLM系统初始化失败: {e}")
             self._background_llm_enabled = False
 
+    async def _init_background_agent(self, config: dict, window_size: float, max_samples: int):
+        """初始化 BackgroundAgent 增强体系"""
+        agent_cfg = config.get("agent", {})
+
+        # DanmakuMemory
+        memory_dir = Path(__file__).parent / "data" / "agent_memory"
+        self._bg_memory = DanmakuMemory(data_dir=str(memory_dir))
+        await self._bg_memory.load()
+
+        # DanmakuAnalyzer
+        self._bg_analyzer = DanmakuAnalyzer(
+            memory=self._bg_memory,
+            llm_call=self._make_analyzer_llm_call(),
+        )
+
+        # DanmakuBackgroundAgent
+        push_cooldown = float(agent_cfg.get("push_cooldown", 12))
+        silent_push_after = float(agent_cfg.get("silent_push_after", 300))
+        standby_threshold = int(agent_cfg.get("standby_threshold", 5))
+        recovery_interval = float(agent_cfg.get("recovery_interval", 30))
+        llm_pool_threshold = int(agent_cfg.get("llm_pool_threshold", 20))
+
+        self._bg_agent = DanmakuBackgroundAgent(
+            memory=self._bg_memory,
+            user_records=self._tracker,
+            analyzer=self._bg_analyzer,
+            push_func=self._on_agent_ready_to_push,
+            push_text_func=self._on_agent_ready_to_push_text,
+            room_id=self._room_id,
+            tick_interval=2.0,
+            push_cooldown=push_cooldown,
+            silent_push_after=silent_push_after,
+            standby_threshold=standby_threshold,
+            recovery_interval=recovery_interval,
+            llm_client=self._llm_client,
+            knowledge_context=config.get("knowledge_context", ""),
+            llm_pool_threshold=llm_pool_threshold,
+        )
+        await self._bg_agent.start()
+
+        # 修改聚合器 callback：优先走 agent
+        async def _agent_batch_ready(batch: BatchedDanmaku):
+            if self._bg_agent and self._bg_agent.is_running:
+                await self._bg_agent.feed_batch(batch)
+            elif self._orchestrator:
+                await self._on_batch_ready(batch)
+
+        self._aggregator.callback = _agent_batch_ready
+        self.logger.info("BackgroundAgent 增强体系初始化完成")
+
     async def _stop_background_llm(self):
         """停用背景LLM系统：停止聚合器、清理组件"""
         self._background_llm_enabled = False
+        self._bg_llm_fail_streak = 0
+        self._bg_llm_last_llm_success_ts = 0.0
+        # 刷新推送缓冲
+        if self._push_flush_handle is not None:
+            self._push_flush_handle.cancel()
+            self._push_flush_handle = None
+        self._flush_push_buffer()
+        if self._bg_agent:
+            await self._bg_agent.stop()
+            self._bg_agent = None
+        if self._bg_memory:
+            await self._bg_memory.save()
+            self._bg_memory = None
+        self._bg_analyzer = None
         if self._aggregator:
             await self._aggregator.stop()
             self._aggregator = None
@@ -880,6 +1080,37 @@ class BiliDanmakuPlugin(NekoPluginBase):
         self._orchestrator = None
         self._llm_client = None
         self.logger.info("背景LLM系统已停用")
+
+    # ── BackgroundAgent 回调辅助 ──────────────────────────────
+
+    def _make_analyzer_llm_call(self):
+        """创建 LLM 调用回调（供 DanmakuAnalyzer 注入）"""
+        async def _call(system_prompt: str, messages: list[dict]) -> str | None:
+            if not self._llm_client:
+                return None
+            full_messages = [{"role": "system", "content": system_prompt}] + messages
+            return await self._llm_client.call(full_messages)
+        return _call
+
+    def _on_agent_ready_to_push(self, card):
+        """Agent 推送回调：IntelligenceCard → push_message"""
+        from .intelligence_card import IntelligenceCard as _Card
+        text = _Card.format_for_catgirl(card)
+        self._bg_llm_last_llm_success_ts = time.time()
+        self._bg_llm_fail_streak = 0
+        if self._bg_llm_health != "healthy":
+            self.logger.info("背景LLM恢复健康（Agent推送成功）")
+            self._bg_llm_health = "healthy"
+        self._push_to_ai(text, f"情报: {card.card_type}", priority=card.priority)
+
+    def _on_agent_ready_to_push_text(self, text: str, description: str, priority: int):
+        """Agent 直接文本推送回调"""
+        self._bg_llm_last_llm_success_ts = time.time()
+        self._bg_llm_fail_streak = 0
+        if self._bg_llm_health != "healthy":
+            self.logger.info("背景LLM恢复健康（Agent文本推送成功）")
+            self._bg_llm_health = "healthy"
+        self._push_to_ai(text, description, priority=priority)
 
     async def _on_batch_ready(self, batch: BatchedDanmaku):
         """聚合器回调：批次就绪后生成引导词并推送（礼物优先）"""
@@ -906,14 +1137,27 @@ class BiliDanmakuPlugin(NekoPluginBase):
             if guidance:
                 await self._push_guidance_to_ai(guidance, batch)
                 self._last_push_time = datetime.now().timestamp()
+                # 健康追踪
+                if self._orchestrator.last_was_llm:
+                    self._bg_llm_fail_streak = 0
+                    self._bg_llm_last_llm_success_ts = time.time()
+                    if self._bg_llm_health != "healthy":
+                        self.logger.info("背景LLM恢复健康（LLM生成成功）")
+                        self._bg_llm_health = "healthy"
+                else:
+                    self._bg_llm_fail_streak += 1
+                    self._bg_llm_health = "degraded"
+                    self.logger.warning(f"背景LLM降级: 连续失败 {self._bg_llm_fail_streak} 次")
             else:
                 self.logger.warning(f"引导词生成为空")
 
         except Exception as e:
             self.logger.error(f"引导词生成失败: {e}", exc_info=True)
+            self._bg_llm_fail_streak += 1
+            self._bg_llm_health = "degraded"
 
     async def _on_gift_batch_ready(self, aggregated_gifts: list[dict]):
-        """礼物聚合批次就绪，推送给 AI"""
+        """礼物聚合批次就绪，推送给 AI + HUD 展示"""
         if not aggregated_gifts:
             return
 
@@ -923,11 +1167,216 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 msg = g.get("sc_message", "")
                 lines.append(f"  💰 {g['user_name']} 发送了 Super Chat: {msg}")
             else:
-                coin_str = f"（{g['total_coin']}金瓜子）" if g.get('total_coin', 0) > 0 else ""
-                lines.append(f"  🎁 {g['user_name']} 送了 {g['total_num']}个 {g['gift_name']}{coin_str}")
+                price_str = _format_gift_price(g.get("total_coin", 0), g.get("coin_type", "silver"))
+                lines.append(f"  🎁 {g['user_name']} 送了 {g['total_num']}个 {g['gift_name']}{price_str}")
         content = "\n".join(lines)
         self.logger.info(f"_on_gift_batch_ready 推送: {len(aggregated_gifts)} 类礼物")
-        self._push_to_ai(content, f"礼物通知（{len(aggregated_gifts)} 类）", priority=9)
+        result = self.push_message(
+            source=self.name,
+            visibility=["hud"],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": content}],
+            priority=9,
+            target_lanlan=self._target_lanlan or None,
+            metadata={
+                "room_id": self._room_id,
+                "plugin": self.name,
+                "description": f"礼物通知（{len(aggregated_gifts)} 类）",
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        if result is not None and asyncio.iscoroutine(result):
+            asyncio.create_task(result)
+
+    # ==========================================
+    # 事件通知系统（MagicalDanmaku 答谢姬）
+    # ==========================================
+
+    async def _process_entry_event(self, user_name: str, uid: int = 0):
+        """用户进入直播间事件"""
+        # 记录来访（参考 C++: come count / come time）
+        if self._tracker:
+            self._tracker.record_entry(uid=uid, uname=user_name)
+
+        if not self._get_event_notify_cfg("enabled", True):
+            return
+        if not self._get_event_notify_cfg("welcome_enabled", True):
+            return
+        cd = float(self._get_event_notify_cfg("cooldowns.welcome", 10))
+        if not self._cooldown_tracker.check_and_set(f"welcome:{user_name}", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.welcome", 2))
+        content = self._render_template("welcome", user_name=user_name)
+        self._push_to_ai(content, f"观众 {user_name} 进入直播间", priority=priority)
+
+    async def _process_follow_event(self, user_name: str):
+        """用户关注主播事件"""
+        if not self._get_event_notify_cfg("enabled", True):
+            return
+        if not self._get_event_notify_cfg("follow_enabled", True):
+            return
+        cd = float(self._get_event_notify_cfg("cooldowns.follow", 30))
+        if not self._cooldown_tracker.check_and_set(f"follow:{user_name}", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.follow", 3))
+        content = self._render_template("follow", user_name=user_name)
+        self._push_to_ai(content, f"观众 {user_name} 关注主播", priority=priority)
+
+    async def _process_live_event(self):
+        """主播开播事件"""
+        if not self._get_event_notify_cfg("enabled", True):
+            return
+        if not self._get_event_notify_cfg("live_enabled", True):
+            return
+        cd = float(self._get_event_notify_cfg("cooldowns.live_status", 60))
+        if not self._cooldown_tracker.check_and_set("live", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.live", 6))
+        content = self._render_template("live_start")
+        self._push_to_ai(content, "主播开播", priority=priority)
+
+    async def _process_preparing_event(self):
+        """主播下播事件"""
+        if not self._get_event_notify_cfg("enabled", True):
+            return
+        if not self._get_event_notify_cfg("live_enabled", True):
+            return
+        cd = float(self._get_event_notify_cfg("cooldowns.live_status", 60))
+        if not self._cooldown_tracker.check_and_set("live", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.live", 6))
+        content = self._render_template("live_end")
+        self._push_to_ai(content, "主播下播", priority=priority)
+
+    # ==========================================
+    # 增强协议事件分发（MagicalDanmaku LiveDanmaku）
+    # ==========================================
+
+    async def _process_event(self, cmd: str, ld):
+        """增强协议事件分发入口"""
+        try:
+            handler_map = {
+                "GUARD_BUY": self._process_guard_buy_event,
+                "ENTRY_EFFECT": self._process_entry_effect_event,
+                "LIKE_INFO_V3_CLICK": self._process_like_event,
+                "ONLINE_RANK_V2": self._process_ranking_event,
+                "ONLINE_RANK_TOP3": self._process_ranking_event,
+                "NOTICE_MSG": self._process_notice_event,
+                "ANCHOR_LOT_START": self._process_lottery_event,
+                "ANCHOR_LOT_END": self._process_lottery_event,
+                "ROOM_BLOCK_MSG": self._process_block_event,
+                "WATCHED_CHANGE": self._process_watched_change_event,
+                "ROOM_CHANGE": self._process_room_change_event,
+                "SUPER_CHAT_MESSAGE_JPN": self._process_sc_jpn_event,
+            }
+            handler = handler_map.get(cmd)
+            if handler:
+                await handler(ld)
+        except Exception as e:
+            self.logger.debug(f"_process_event({cmd}) 异常: {e}")
+
+    async def _process_guard_buy_event(self, ld):
+        """上舰事件（直推 HUD + AI 回复）"""
+        cd = float(self._get_event_notify_cfg("cooldowns.guard_buy", 30))
+        if not self._cooldown_tracker.check_and_set(f"guard_buy:{ld.uid}", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.guard_buy", 8))
+        guard_names = {1: "总督", 2: "提督", 3: "舰长"}
+        guard_name = guard_names.get(ld.guard_level, "大航海")
+        content = f"🎉 {ld.nickname} 上了{guard_name}！感谢支持！"
+        result = self.push_message(
+            source=self.name,
+            visibility=["hud"],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": content}],
+            priority=priority,
+            target_lanlan=self._target_lanlan or None,
+            metadata={
+                "room_id": self._room_id,
+                "plugin": self.name,
+                "description": f"上舰: {ld.nickname} {guard_name}",
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        if result is not None and asyncio.iscoroutine(result):
+            asyncio.create_task(result)
+
+    async def _process_entry_effect_event(self, ld):
+        """高能用户进场"""
+        cd = float(self._get_event_notify_cfg("cooldowns.entry_effect", 10))
+        if not self._cooldown_tracker.check_and_set(f"entry_effect:{ld.uid}", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.entry_effect", 4))
+        content = f"👑 {ld.text}"
+        self._push_to_ai(content, f"高能进场: {ld.nickname}", priority=priority)
+
+    async def _process_like_event(self, ld):
+        """点赞事件（默认关闭）"""
+        if not self._get_event_notify_cfg("like_enabled", False):
+            return
+        cd = float(self._get_event_notify_cfg("cooldowns.like", 60))
+        if not self._cooldown_tracker.check_and_set("like", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.like", 1))
+        content = f"❤️ {ld.nickname} 点赞了直播间"
+        self._push_to_ai(content, "点赞通知", priority=priority)
+
+    async def _process_ranking_event(self, ld):
+        """高能榜更新（默认关闭）"""
+        if not self._get_event_notify_cfg("ranking_enabled", False):
+            return
+        cd = float(self._get_event_notify_cfg("cooldowns.ranking", 120))
+        if not self._cooldown_tracker.check_and_set("ranking", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.ranking", 3))
+        self._push_to_ai(ld.text, "高能榜更新", priority=priority)
+
+    async def _process_lottery_event(self, ld):
+        """天选抽奖"""
+        cd = float(self._get_event_notify_cfg("cooldowns.lottery", 10))
+        if not self._cooldown_tracker.check_and_set("lottery", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.lottery", 5))
+        self._push_to_ai(ld.text, "天选抽奖", priority=priority)
+
+    async def _process_block_event(self, ld):
+        """禁言事件（默认关闭）"""
+        if not self._get_event_notify_cfg("block_enabled", False):
+            return
+        priority = int(self._get_event_notify_cfg("priority.block", 4))
+        self._push_to_ai(ld.text, "禁言通知", priority=priority)
+
+    async def _process_notice_event(self, ld):
+        """公告事件"""
+        cd = float(self._get_event_notify_cfg("cooldowns.notice", 30))
+        if not self._cooldown_tracker.check_and_set("notice", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.notice", 3))
+        self._push_to_ai(ld.text, "直播间公告", priority=priority)
+
+    async def _process_watched_change_event(self, ld):
+        """看过人数变化（默认关闭）"""
+        if not self._get_event_notify_cfg("watched_enabled", False):
+            return
+        priority = int(self._get_event_notify_cfg("priority.watched", 1))
+        self._push_to_ai(ld.text, "看过人数", priority=priority)
+
+    async def _process_room_change_event(self, ld):
+        """直播间信息变更"""
+        cd = float(self._get_event_notify_cfg("cooldowns.room_change", 60))
+        if not self._cooldown_tracker.check_and_set("room_change", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.room_change", 3))
+        self._push_to_ai(ld.text, "直播间变更", priority=priority)
+
+    async def _process_sc_jpn_event(self, ld):
+        """日文 SC（复用 SC 处理逻辑）"""
+        cd = float(self._get_event_notify_cfg("cooldowns.sc", 10))
+        if not self._cooldown_tracker.check_and_set(f"sc_jpn:{ld.uid}", cd):
+            return
+        priority = int(self._get_event_notify_cfg("priority.sc", 7))
+        content = f"💰 {ld.nickname} 发送了 {ld.price}元日文SC:\n{ld.text}"
+        self._push_to_ai(content, "日文SC", priority=priority)
 
     # ==========================================
     # 弹幕处理流程（集成背景LLM）
@@ -942,9 +1391,11 @@ class BiliDanmakuPlugin(NekoPluginBase):
         
         # 统计
         self._total_received += 1
-        
-        # 添加到AI推送队列（定时器 push_danmaku_tick → _push_danmaku_legacy 读 _danmaku_queue）
-        self._danmaku_queue.append({
+        self._danmaku_timestamps.append(time.time())
+
+        # 降级模式（背景LLM未启用）时添加到 AI 推送队列
+        if not self._background_llm_enabled:
+            self._danmaku_queue.append({
             "user_name": event.get("user_name", "未知用户"),
             "content": content,
             "user_level": event.get("user_level", 0),
@@ -965,15 +1416,18 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if self._background_llm_enabled and self._aggregator:
             try:
                 await self._aggregator.add(
-                    uid=event.get("uid", 0),
+                    uid=event.get("user_id", 0),
                     uname=event.get("user_name", "未知用户"),
                     level=event.get("user_level", 0),
                     text=content,
+                    medal_level=event.get("medal_level", 0),
+                    guard=0,
+                    admin=False,
                 )
                 # 更新用户画像
                 if self._tracker:
                     self._tracker.record(
-                        uid=event.get("uid", 0),
+                        uid=event.get("user_id", 0),
                         uname=event.get("user_name", "未知用户"),
                         text=content,
                     )
@@ -999,33 +1453,39 @@ class BiliDanmakuPlugin(NekoPluginBase):
         })
 
     async def _process_gift_event(self, event: Dict[str, Any]):
-        """处理礼物事件"""
+        """处理礼物事件
+        根据 神奇弹幕(MagicalDanmaku) 的定价规则：
+        - 金瓜子: 1000 金瓜子 = 1 元
+        - 银瓜子: 免费道具，无实际货币价值
+        """
+        coin_type = event.get("coin_type", "silver")
+        total_coin = event.get("total_coin", 0)          # B站原始单位：金瓜子/银瓜子
+        price_rmb = total_coin / 1000.0 if coin_type == "gold" else 0  # 金瓜子→元
+
         gift_info = {
             "user_name": event.get("user_name", "未知用户"),
             "gift_name": event.get("gift_name", "未知礼物"),
             "num": event.get("num", 1),
-            "price_rmb": event.get("price", 0),
-            "total_coin": event.get("total_coin", 0),
-            "coin_type": event.get("coin_type", "silver"),
+            "price_rmb": price_rmb,
+            "total_coin": total_coin,
+            "coin_type": coin_type,
             "timestamp": datetime.now().isoformat()
         }
 
-        self._gift_queue.append(gift_info)
         self._ui_gift_queue.append(gift_info)
 
         # 更新用户画像（送礼）
         if self._tracker:
             self._tracker.record_gift(
                 uname=event.get("user_name", "未知用户"),
-                price=gift_info["price_rmb"],
+                price=price_rmb,
             )
 
-        # 背景LLM模式：走礼物聚合器
+        # 背景LLM模式：走礼物聚合器；降级模式：入 Legacy 队列（由 _flush_legacy_gifts 聚合推送）
         if self._background_llm_enabled and self._gift_aggregator:
             await self._gift_aggregator.add(gift_info)
-        elif gift_info["price_rmb"] >= 10:
-            # 降级模式：高价值礼物立即推送
-            await self._push_immediate_event(gift_info, "高价值礼物")
+        else:
+            self._gift_queue.append(gift_info)
 
     async def _process_sc_event(self, event: Dict[str, Any]):
         """处理SC事件"""
@@ -1036,7 +1496,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "timestamp": datetime.now().isoformat()
         }
 
-        self._sc_queue.append(sc_info)
         self._ui_sc_queue.append(sc_info)
 
         # 更新用户画像（SC 也算送礼）
@@ -1046,7 +1505,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 price=sc_info["price"],
             )
 
-        # 背景LLM模式：SC 当礼物走聚合器
+        # 背景LLM模式：SC 当礼物走聚合器；降级模式：入 Legacy 队列
         if self._background_llm_enabled and self._gift_aggregator:
             gift_like = {
                 "user_name": sc_info["user_name"],
@@ -1061,31 +1520,61 @@ class BiliDanmakuPlugin(NekoPluginBase):
             }
             await self._gift_aggregator.add(gift_like)
         else:
+            self._sc_queue.append(sc_info)
             await self._push_immediate_event(sc_info, "Super Chat")
 
     async def _push_immediate_event(self, event: Dict[str, Any], event_type: str):
-        """立即推送事件给AI"""
+        """立即推送事件给AI（直推 HUD + AI 回复）"""
         content = f"🚨【{event_type}】\n"
-        
+
         if event_type == "Super Chat":
             content += f"💰 {event['user_name']} 发送了 {event['price']}元SC:\n{event['message']}"
         elif event_type == "高价值礼物":
-            content += f"🎁 {event['user_name']} 送了 {event['num']}个 {event['gift_name']} (约¥{event['price_rmb']})"
+            content += f"🎁 {event['user_name']} 送了 {event['num']}个 {event['gift_name']} {_format_gift_price(event.get('total_coin', 0), event.get('coin_type', 'silver'))}"
         else:
             content += f"💬 {event['user_name']}: {event.get('content', '')}"
-        
-        self._push_to_ai(content, f"{event_type}通知", priority=9)
+
+        result = self.push_message(
+            source=self.name,
+            visibility=["hud"],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": content}],
+            priority=9,
+            target_lanlan=self._target_lanlan or None,
+            metadata={
+                "room_id": self._room_id,
+                "plugin": self.name,
+                "description": f"{event_type}通知",
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        if result is not None and asyncio.iscoroutine(result):
+            asyncio.create_task(result)
 
     async def _push_guidance_to_ai(self, guidance: str, batch: BatchedDanmaku):
         """推送引导词给AI"""
         sample_note = f"（基于 {batch.total_count} 条弹幕" + (f"，采样 {len(batch.entries)} 条" if batch.sampled else "）") + ""
-        
+
         content = f"📊【弹幕引导词】\n\n{guidance}\n\n{sample_note}"
-        
-        # 引导词原文（基于真实弹幕内容生成）不写 logger
+
         self.logger.info(f"_push_guidance_to_ai 推送: content_len={len(content)}")
-        print(f"_push_guidance_to_ai preview: {content[:80]}")
-        self._push_to_ai(content, "弹幕引导词", priority=5)
+        print(f"_push_guidance_to_ai preview:\n{content[:500]}")
+        result = self.push_message(
+            source=self.name,
+            visibility=[],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": content}],
+            priority=8,
+            target_lanlan=self._target_lanlan or None,
+            metadata={
+                "room_id": self._room_id,
+                "plugin": self.name,
+                "description": "弹幕引导词",
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        if result is not None and asyncio.iscoroutine(result):
+            asyncio.create_task(result)
 
     # ==========================================
     # 定时器：智能推送（集成背景LLM）
@@ -1102,100 +1591,252 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if not is_listening and not self._connecting:
             return Ok({"skipped": True, "reason": "not_listening"})
 
-        now = datetime.now().timestamp()
+        # 每 tick 强制刷新推送缓冲区（替代 loop.call_later，更可靠）
+        if self._push_flush_handle is not None:
+            self._push_flush_handle.cancel()
+            self._push_flush_handle = None
+        self._flush_push_buffer()
+
+        # 降级模式：每 tick 刷新聚合礼物（独立于弹幕推送间隔）
+        if not self._background_llm_enabled:
+            await self._flush_legacy_gifts()
+
+        now = time.time()
         if now - self._last_push_time < self._interval:
             return Ok({"skipped": True})
 
-        # 背景LLM模式：强制刷新聚合器
-        if self._background_llm_enabled and self._aggregator:
-            try:
-                batch = await self._aggregator.force_flush()
-                if batch and batch.entries:
-                    self._last_push_time = now
-                    self.logger.info(f"push_danmaku_tick 强制刷新聚合器: {len(batch.entries)}条")
-                    return Ok({"pushed": True, "mode": "background_llm"})
-            except Exception as e:
-                self.logger.error(f"push_danmaku_tick 强制刷新异常: {e}")
-        
+        # 背景LLM模式：超时检测 + 强制刷新聚合器
+        if self._background_llm_enabled:
+            # 超时检测：连续失败 ≥3 次 或 超过 interval*3 无 LLM 成功推送
+            timeout_sec = self._interval * 3
+            elapsed_since_llm = now - self._bg_llm_last_llm_success_ts if self._bg_llm_last_llm_success_ts else 0
+            if self._bg_llm_fail_streak >= 3 or (self._bg_llm_last_llm_success_ts > 0 and elapsed_since_llm > timeout_sec):
+                self.logger.warning(
+                    f"背景LLM超时: fail_streak={self._bg_llm_fail_streak}, "
+                    f"elapsed_since_llm={elapsed_since_llm:.0f}s, timeout={timeout_sec}s → 自动降级到 Legacy 模式"
+                )
+                self._bg_llm_health = "timeout"
+                # 回收聚合器中未处理的弹幕到 legacy 队列（避免数据丢失）
+                if self._aggregator:
+                    try:
+                        pending_batch = await self._aggregator.flush()
+                        if pending_batch and pending_batch.entries:
+                            for entry in pending_batch.entries:
+                                self._danmaku_queue.append({
+                                    "user_name": entry.uname,
+                                    "content": entry.text,
+                                    "user_level": entry.level,
+                                    "medal": f"粉丝牌{entry.medal_level}级" if entry.medal_level else "",
+                                })
+                            self.logger.info(
+                                f"超时降级: 从聚合器回收 {len(pending_batch.entries)} 条弹幕到 legacy 队列"
+                            )
+                    except Exception as e:
+                        self.logger.error(f"超时降级回收聚合器数据失败: {e}")
+                # 注：礼物聚合器在 _stop_background_llm() 中通过 stop()→_on_gift_batch_ready
+                # 直接推送（不检查 _background_llm_enabled），无需额外回收
+                await self._stop_background_llm()
+                # 清除健康追踪 + 重置推送时钟（解除后续 tick 的时间锁）
+                self._bg_llm_fail_streak = 0
+                self._bg_llm_last_llm_success_ts = 0.0
+                self._last_push_time = 0.0
+                # 进入降级模式：重置间隔为 5s，确保下一 tick 能立即推送
+                self._interval = 5
+                # 清空 push_buffer（避免 BG LLM 残留与 legacy 重复推送）
+                self._push_buffer.clear()
+                await self._flush_legacy_gifts()
+                return await self._push_danmaku_legacy()
+            if self._aggregator:
+                try:
+                    await self._aggregator.force_flush()
+                except Exception as e:
+                    self.logger.error(f"push_danmaku_tick 强制刷新异常: {e}")
+            return Ok({"skipped": True, "reason": "background_llm"})
+
         # 降级模式：原始弹幕列表推送
         return await self._push_danmaku_legacy()
 
+    def _score_danmaku_text(self, text: str) -> int:
+        """本地评分：弹幕的互动价值"""
+        score = 0
+        lower = text.lower()
+        # 疑问 → 高互动
+        if any(q in text for q in ("吗", "？", "什么", "怎么", "为啥", "为什么", "啥", "哪", "?")):
+            score += 4
+        # 情绪词
+        if any(w in lower for w in ("可爱", "好看", "好听", "喜欢", "好棒", "哈哈", "hhh", "笑死")):
+            score += 2
+        if any(w in lower for w in ("感谢", "求", "教程", "怎么", "教", "棒", "厉害", "牛")):
+            score += 3
+        # 长度 → 有内容
+        if len(text) > 8:
+            score += 1
+        if len(text) > 15:
+            score += 1
+        return score
+
+    def _is_light_interaction(self, texts: list[str]) -> bool:
+        """检测是否全是轻互动（无实质内容）"""
+        light_patterns = {"哈哈", "哈哈哈", "hhhh", "hhh", "hahaha", "666", "6666",
+                          "233", "2333", "来了", "签到", "打卡", "1", "111",
+                          "啊啊啊", "awsl", "好", "加油", "路过"}
+        meaningful = 0
+        for t in texts:
+            t = t.strip()
+            if not t:
+                continue
+            # 纯表情或纯轻词
+            if t in light_patterns:
+                continue
+            meaningful += 1
+        return meaningful < 2  # 最多1条有实质内容就算轻互动
+
+    async def _flush_legacy_gifts(self):
+        """降级模式：聚合礼物 + 价值筛选 + 统一推送（priority=8）"""
+        if not self._gift_queue:
+            return
+        gifts = []
+        while self._gift_queue:
+            gifts.append(self._gift_queue.popleft())
+
+        # 用户设定的最低价值筛选
+        min_rmb = float(self._get_event_notify_cfg("gift_min_rmb", 0))
+        if min_rmb > 0:
+            before = len(gifts)
+            gifts = [g for g in gifts if g.get("price_rmb", 0) >= min_rmb]
+            filtered = before - len(gifts)
+            if filtered:
+                self.logger.info(f"_flush_legacy_gifts 价值过滤: {filtered} 条低于 ¥{min_rmb} 已跳过")
+        if not gifts:
+            return
+
+        # 按 (用户名, 礼物名) 聚合
+        aggregated: dict = {}
+        for g in gifts:
+            key = (g["user_name"], g["gift_name"])
+            if key not in aggregated:
+                aggregated[key] = {**g, "total_num": g.get("num", 1)}
+            else:
+                aggregated[key]["total_num"] += g.get("num", 1)
+
+        lines = [f"礼物：{g['user_name']} 送了 {g['total_num']}个 {g['gift_name']}" for g in aggregated.values()]
+        content = "\n".join(lines)
+
+        self.logger.info(f"_flush_legacy_gifts 推送: 原始{len(gifts)}条 → 聚合{len(aggregated)}类")
+        self._push_to_ai(content, "礼物通知", priority=8)
+
     async def _push_danmaku_legacy(self):
-        """原始弹幕推送逻辑（降级模式）"""
+        """智能降级推送（动态截断 + 折叠 + 轻互动检测）"""
         self.logger.info(f"_push_danmaku_legacy 执行: danmaku_queue={len(self._danmaku_queue)}, sc_queue={len(self._sc_queue)}, gift_queue={len(self._gift_queue)}")
-        # 收集待推送内容
+
+        # 收集
         danmaku_batch = []
         while self._danmaku_queue:
             danmaku_batch.append(self._danmaku_queue.popleft())
-        if len(danmaku_batch) > 10:
-            danmaku_batch = danmaku_batch[-10:]
 
         sc_batch = []
         while self._sc_queue:
             sc_batch.append(self._sc_queue.popleft())
 
-        gift_batch = []
-        while self._gift_queue and len(gift_batch) < 5:
-            gift_batch.append(self._gift_queue.popleft())
-
-        if not danmaku_batch and not sc_batch and not gift_batch:
-            self.logger.info(f"_push_danmaku_legacy 跳过: 无数据 (danmaku_queue 已消费)")
+        if not danmaku_batch and not sc_batch:
+            self.logger.info("_push_danmaku_legacy 跳过: 无数据")
             return Ok({"pushed": False, "reason": "no_data"})
 
-        # 更新推送时间
-        self._last_push_time = datetime.now().timestamp()
-        self._total_pushed += len(danmaku_batch) + len(sc_batch) + len(gift_batch)
+        self._last_push_time = time.time()
+        total_items = len(danmaku_batch) + len(sc_batch)
+        self._total_pushed += total_items
 
-        # 构建AI消息内容
-        lines = [
-            "======[直播间互动] 你现在正在直播，观众发来了弹幕/礼物/SC，请用语音自然回复他们！======",
-            "",
-            f"📺 直播间ID: {self._room_id}",
-            ""
-        ]
+        lines = []
 
+        # ── SC / 醒目留言 ──
         if sc_batch:
-            lines.append(f"💰 Super Chat（{len(sc_batch)} 条）- 请感谢并回应：")
-            for sc in sc_batch:
-                lines.append(f"  ¥{sc['price']} | {sc['user_name']}: {sc['message']}")
-            lines.append("")
+            sc_shown = sc_batch[:3]
+            sc_hidden = len(sc_batch) - 3
+            for sc in sc_shown:
+                lines.append(f"醒目留言：{sc['user_name']}：{sc['message']}")
+            if sc_hidden > 0:
+                lines.append(f"... 还有 {sc_hidden} 条醒目留言")
 
-        if gift_batch:
-            lines.append(f"🎁 礼物（{len(gift_batch)} 条）- 请感谢送礼物的人：")
-            for g in gift_batch:
-                price_str = f"≈¥{g['price_rmb']}" if g['price_rmb'] > 0 else ""
-                lines.append(f"  {g['user_name']} 送了 {g['num']}个 {g['gift_name']} {price_str}")
-            lines.append("")
-
+        # ── 弹幕智能处理 ──
+        selected = []
         if danmaku_batch:
-            lines.append(f"💬 弹幕（{len(danmaku_batch)} 条）- 请回复观众的弹幕内容：")
-            for d in danmaku_batch:
-                medal = d.get("medal", "")
-                level_info = f"LV{d['user_level']}" if d.get("user_level") else ""
-                prefix = " ".join(x for x in [medal, level_info] if x)
-                prefix_str = f"[{prefix}]" if prefix else ""
-                lines.append(f"  {prefix_str}{d['user_name']}: {d['content']}")
+            # 轻互动检测（不额外加提示，避免AI重复套话）
+            all_texts = [d.get("content", "") for d in danmaku_batch]
+            if not self._is_light_interaction(all_texts):
+                # 重复合并：按内容分组
+                merged: dict[str, list] = {}
+                for d in danmaku_batch:
+                    content = d.get("content", "")
+                    key = content.strip().lower()
+                    if key not in merged:
+                        merged[key] = {"items": [], "best": d}
+                    merged[key]["items"].append(d)
+
+                # 有重复的合并，无重复的保留原样
+                deduped = []
+                dup_count = 0
+                for key, group in merged.items():
+                    if len(group["items"]) > 1:
+                        # 重复弹幕：用等级最高的那条
+                        best = max(group["items"], key=lambda x: x.get("user_level", 0))
+                        best["_dup_count"] = len(group["items"])
+                        deduped.append(best)
+                        dup_count += len(group["items"]) - 1
+                    else:
+                        deduped.append(group["items"][0])
+
+                # 评分排序，取前2（降级模式精简推送，避免AI回不过来）
+                for d in deduped:
+                    d["_score"] = self._score_danmaku_text(d.get("content", "")) + d.get("user_level", 0) * 0.5
+                deduped.sort(key=lambda x: x["_score"], reverse=True)
+                selected = deduped[:2]
+                hidden_count = max(0, len(deduped) - 2)
+
+                for d in selected:
+                    dup = d.get("_dup_count", 0)
+                    dup_str = f" x{dup}" if dup > 1 else ""
+                    lines.append(f"弹幕：{d['user_name']}{dup_str}：{d['content']}")
+
+        # 轻互动且无 SC：跳过推送（全是表情/笑声，没必要喂给 AI）
+        if sc_batch:
+            pass  # SC 始终推送
+        elif not selected:
+            self.logger.info("_push_danmaku_legacy 跳过: 轻互动无实质内容")
+            return Ok({"pushed": False, "reason": "light_interaction"})
 
         content = "\n".join(lines)
         summary_parts = []
         if sc_batch:
             summary_parts.append(f"SC {len(sc_batch)}条")
-        if gift_batch:
-            summary_parts.append(f"礼物 {len(gift_batch)}条")
         if danmaku_batch:
             summary_parts.append(f"弹幕 {len(danmaku_batch)}条")
         summary = f"直播间 {self._room_id}: " + ", ".join(summary_parts)
 
-        self.logger.info(f"_push_danmaku_legacy 推送: danmaku={len(danmaku_batch)}, sc={len(sc_batch)}, gift={len(gift_batch)}")
-        self._push_to_ai(content, summary, priority=5)
+        self.logger.info(f"_push_danmaku_legacy 推送: danmaku={len(danmaku_batch)}, sc={len(sc_batch)}")
+        self._push_to_ai(content, summary, priority=8)
 
         return Ok({
             "pushed": True,
-            "mode": "legacy",
-            "danmaku": len(danmaku_batch),
+            "mode": "legacy_smart",
+            "danmaku_original": len(danmaku_batch),
+            "danmaku_selected": len(selected),
             "superchat": len(sc_batch),
-            "gifts": len(gift_batch),
+            "interval": self._interval,
         })
+
+    # ==========================================
+    # 定时器：BackgroundAgent tick（情报分析驱动）
+    # ==========================================
+
+    @timer_interval(id="bg_agent", seconds=2, auto_start=True)
+    async def bg_agent_tick(self, **_):
+        """每2秒驱动 BackgroundAgent 运行循环"""
+        if self._bg_agent and self._background_llm_enabled:
+            try:
+                await self._bg_agent.tick()
+            except Exception as e:
+                self.logger.error(f"bg_agent_tick 异常: {e}")
+        return Ok({"skipped": self._bg_agent is None})
 
     # ==========================================
     # Hosted UI 上下文
@@ -1219,12 +1860,14 @@ class BiliDanmakuPlugin(NekoPluginBase):
             }
             connection["state_desc"] = state_map.get(connection.get("state", ""), connection.get("state", ""))
         else:
-            connection = {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id, "state_desc": "未初始化"}
+            connection = {"state": "disconnected", "server": "", "room_id": self._room_id, "state_desc": "未初始化"}
 
         # 背景LLM状态
         bg_llm = {
             "enabled": self._background_llm_enabled,
-            "window_size": self._config.get("background_llm", {}).get("window_size", 15),
+            "health": self._bg_llm_health,
+            "fail_streak": self._bg_llm_fail_streak,
+            "window_size": self._config.get("background_llm", {}).get("window_size", self._interval),
             "max_samples": self._config.get("background_llm", {}).get("max_samples", 30),
         }
         if self._llm_client:
@@ -1233,7 +1876,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
             bg_llm["aggregator_stats"] = self._aggregator.get_stats()
         if self._gift_aggregator:
             bg_llm["gift_aggregator_stats"] = self._gift_aggregator.get_stats()
-
+        if self._bg_agent:
+            bg_llm["agent"] = {
+                "running": self._bg_agent.is_running,
+                "standby": self._bg_agent.is_standby,
+                "stats": self._bg_agent.get_stats(),
+            }
         return {
             "room_id": self._room_id,
             "listening": is_listening,
@@ -1253,6 +1901,16 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 "pushed": self._total_pushed,
             },
             "background_llm": bg_llm,
+            "event_notify": {
+                "enabled": self._get_event_notify_cfg("enabled", True),
+                "welcome_enabled": self._get_event_notify_cfg("welcome_enabled", True),
+                "follow_enabled": self._get_event_notify_cfg("follow_enabled", True),
+                "live_enabled": self._get_event_notify_cfg("live_enabled", True),
+                "like_enabled": self._get_event_notify_cfg("like_enabled", False),
+                "ranking_enabled": self._get_event_notify_cfg("ranking_enabled", False),
+                "block_enabled": self._get_event_notify_cfg("block_enabled", False),
+                "watched_enabled": self._get_event_notify_cfg("watched_enabled", False),
+            },
         }
 
     # ==========================================
@@ -1266,7 +1924,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @plugin_entry(
         id="get_bg_llm_config",
         name=tr("entries.get_bg_llm_config.name", default="获取背景LLM完整配置"),
-        description=tr("entries.get_bg_llm_config.description", default="从 config_enhanced.json 读取完整背景LLM配置（含 cloud/api_key/model 等），不受 enabled 状态影响"),
+        description=tr("entries.get_bg_llm_config.description", default="读取完整背景LLM配置（含 cloud/api_key/model 等），不受 enabled 状态影响"),
         input_schema={
             "type": "object",
             "properties": {},
@@ -1277,15 +1935,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
     async def get_bg_llm_config(self, **_) -> dict:
         """获取背景LLM完整配置（始终可用，即使未启用）"""
         config = self._config.get("background_llm", {})
-        if not config:
-            try:
-                enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
-                if enhanced_path.exists():
-                    with open(enhanced_path, "r", encoding="utf-8") as f:
-                        enhanced = json.load(f)
-                    config = enhanced.get("background_llm", {})
-            except Exception as e:
-                self.logger.warning(f"读取 config_enhanced.json 失败: {e}")
         # 遮蔽 api_key（只显示前4后4）
         safe_config = json.loads(json.dumps(config))
         cloud = safe_config.get("cloud", {})
@@ -1322,6 +1971,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "gift_aggregator": self._gift_aggregator.get_stats() if self._gift_aggregator else {},
             "orchestrator": self._orchestrator.get_stats() if self._orchestrator else {},
             "llm_client": self._llm_client.get_stats() if self._llm_client else {},
+            "agent": self._bg_agent.get_stats() if self._bg_agent else {},
         }
         
         return Ok(config)
@@ -1329,7 +1979,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
     @plugin_entry(
         id="update_guidance_config",
         name=tr("entries.update_guidance_config.name", default="更新背景LLM配置"),
-        description=tr("entries.update_guidance_config.description", default="更新背景LLM系统的配置参数"),
+        description=tr("entries.update_guidance_config.description", default="更新背景LLM系统的配置参数（持久化到 config.json）"),
         input_schema={
             "type": "object",
             "properties": {
@@ -1343,26 +1993,27 @@ class BiliDanmakuPlugin(NekoPluginBase):
         llm_result_fields=["updated", "config"]
     )
     async def update_guidance_config(self, **kwargs) -> dict:
-        """更新背景LLM配置并持久化到 config_enhanced.json"""
+        """更新背景LLM配置并持久化到 config.json"""
         # 过滤框架注入的 _ctx 等内置参数，只保留业务字段
         config = {k: v for k, v in kwargs.items() if not k.startswith('_')}
-        enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
+        config_path = Path(__file__).parent / "data" / "config.json"
         try:
-            # 读取现有文件（保留未修改的字段）
-            if enhanced_path.exists():
-                with open(enhanced_path, "r", encoding="utf-8") as f:
-                    enhanced = json.load(f)
+            # 读取当前配置（保留未修改的字段）
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    current = json.load(f)
             else:
-                enhanced = {}
+                current = {}
             # 合并 background_llm 子树
-            current_bg = enhanced.get("background_llm", {})
+            current_bg = current.get("background_llm", {})
             merged_bg = {**current_bg, **config}
-            enhanced["background_llm"] = merged_bg
+            current["background_llm"] = merged_bg
             # 原子写入
-            tmp_path = enhanced_path.with_suffix(".json.tmp")
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = config_path.with_suffix(".json.tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(enhanced, f, ensure_ascii=False, indent=2)
-            tmp_path.replace(enhanced_path)
+                json.dump(current, f, ensure_ascii=False, indent=2)
+            tmp_path.replace(config_path)
             # 同步到内存
             if "background_llm" not in self._config:
                 self._config["background_llm"] = {}
@@ -1378,13 +2029,28 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 if "neko_name" in config:
                     self._orchestrator.neko_name = config["neko_name"]
 
+            # 运行时热更新聚合器窗口
+            if "window_size" in config and self._aggregator:
+                new_window = float(config["window_size"])
+                self._aggregator.window_size = new_window
+                self._interval = int(new_window)
+
+            # 运行时热更新事件通知配置
+            if "event_notify" in config:
+                bg = self._config.get("background_llm", {})
+                bg["event_notify"] = config["event_notify"]
+                self._event_notify_cfg = bg.get("event_notify", {})
+
             # 运行时启停
             if "enabled" in config:
                 target_enabled = bool(config["enabled"])
-                if target_enabled and not self._background_llm_enabled:
+                if target_enabled:
+                    if self._background_llm_enabled:
+                        self.logger.info("背景LLM重载请求：先停用旧系统...")
+                        await self._stop_background_llm()
                     self.logger.info("背景LLM启用请求：运行时启动...")
                     await self._init_background_llm()
-                    merged_bg["_runtime_status"] = "已启用"
+                    merged_bg["_runtime_status"] = "已启用" if self._background_llm_enabled else "启用失败"
                 elif not target_enabled and self._background_llm_enabled:
                     self.logger.info("背景LLM停用请求：运行时停止...")
                     await self._stop_background_llm()
@@ -1502,12 +2168,15 @@ class BiliDanmakuPlugin(NekoPluginBase):
 
         old_interval = self._interval
         self._interval = seconds
-        await self._save_plugin_config()
 
-        # 同步更新聚合器窗口大小
+        # 同步更新聚合器窗口大小和配置
         if self._background_llm_enabled and self._aggregator:
             self._aggregator.window_size = seconds
-            self.logger.info(f"聚合器窗口已同步: window={seconds}s")
+        # 持久化 window_size 到 background_llm 配置
+        if "background_llm" in self._config:
+            self._config["background_llm"]["window_size"] = seconds
+        await self._save_plugin_config()
+        self.logger.info(f"聚合器窗口已同步: window={seconds}s")
 
         return Ok({
             "success": True,
@@ -1667,7 +2336,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if gift_list:
             lines.append(f"🎁 礼物（{len(gift_list)} 条）：")
             for g in gift_list:
-                price_str = f"≈¥{g['price_rmb']}" if g['price_rmb'] > 0 else ""
+                price_str = _format_gift_price(g.get("total_coin", 0), g.get("coin_type", "silver"))
                 lines.append(f"  {g['user_name']} 送了 {g['num']}个 {g['gift_name']} {price_str}")
             lines.append("")
 
@@ -1739,7 +2408,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
             }
             conn_state["state_desc"] = state_map.get(conn_state.get("state", ""), conn_state.get("state", ""))
         else:
-            conn_state = {"state": "disconnected", "server": "", "viewer_count": 0, "room_id": self._room_id, "state_desc": "🔴 未初始化"}
+            conn_state = {"state": "disconnected", "server": "", "room_id": self._room_id, "state_desc": "🔴 未初始化"}
 
         lines = [
             "📡 B站弹幕插件状态",
@@ -1748,7 +2417,6 @@ class BiliDanmakuPlugin(NekoPluginBase):
             f"监听状态: {listen_status}",
             f"连接状态: {conn_state.get('state_desc', '未知')}",
             f"弹幕服务器: {conn_state.get('server', 'N/A')}",
-            f"当前人气: {conn_state.get('viewer_count', 0):,}",
             f"账号状态: {'🔐 已登录' if self._is_logged_in else '👤 游客模式'}",
             f"当前登录UID: {self._logged_in_bili_uid or '(未登录)'}",
             f"主人账号冲突: {'⚠️ 当前登录账号就是主人账号' if self._logged_in_matches_master else '无'}",
@@ -1757,6 +2425,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
             f"目标AI: {self._target_lanlan or '(未指定)'}",
             f"主人B站账号: UID {self._master_bili_uid or '(未设置)'} / {self._master_bili_name or '(未设置)'}",
             f"弹幕最大长度: {self._danmaku_max_length} 字符",
+            f"事件通知: {'🟢 开' if self._get_event_notify_cfg('enabled', True) else '🔴 关'} "
+            f"(欢迎={'开' if self._get_event_notify_cfg('welcome_enabled', True) else '关'}, "
+            f"关注={'开' if self._get_event_notify_cfg('follow_enabled', True) else '关'}, "
+            f"直播={'开' if self._get_event_notify_cfg('live_enabled', True) else '关'})",
             "",
             f"弹幕缓冲: {len(self._danmaku_queue)} 条",
             f"SC缓冲: {len(self._sc_queue)} 条",
@@ -1770,6 +2442,7 @@ class BiliDanmakuPlugin(NekoPluginBase):
         # 背景LLM状态
         bg_llm_status = {
             "enabled": self._background_llm_enabled,
+            "health": self._bg_llm_health,
             "window_size": self._config.get("background_llm", {}).get("window_size", 15),
             "max_samples": self._config.get("background_llm", {}).get("max_samples", 30),
         }
@@ -1796,6 +2469,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
             "queue_size": len(self._danmaku_queue),
             "connection": conn_state,
             "background_llm": bg_llm_status,
+            "event_notify": {
+                "enabled": self._get_event_notify_cfg("enabled", True),
+                "welcome_enabled": self._get_event_notify_cfg("welcome_enabled", True),
+                "follow_enabled": self._get_event_notify_cfg("follow_enabled", True),
+                "live_enabled": self._get_event_notify_cfg("live_enabled", True),
+            },
             "stats": {
                 "received": self._total_received,
                 "filtered": self._total_filtered,
@@ -2620,39 +3299,47 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # ==========================================
 
     def _load_config(self):
-        """加载配置（合并 config.json + config_enhanced.json）"""
+        """加载配置（单一 config.json）"""
         config_path = Path(__file__).parent / "data" / "config.json"
-        enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
         try:
             if config_path.exists():
                 with open(config_path, "r", encoding="utf-8") as f:
                     self._config = json.load(f)
-                    
+
                 self._room_id = self._config.get("room_id", self._room_id)
                 self._interval = self._config.get("interval_seconds", self._interval)
+                # 统一时间窗口：优先使用 background_llm.window_size
+                bg_window = self._config.get("background_llm", {}).get("window_size", 0)
+                if bg_window:
+                    self._interval = int(float(bg_window))
                 self._target_lanlan = self._config.get("target_lanlan", self._target_lanlan)
                 self._danmaku_max_length = self._config.get("danmaku_max_length", self._danmaku_max_length)
                 self._master_bili_uid = self._config.get("master_bili_uid", self._master_bili_uid)
                 self._master_bili_name = self._config.get("master_bili_name", self._master_bili_name)
-                
-                # 合并增强配置（background_llm 等）
-                if enhanced_path.exists():
+
+                bg = self._config.get("background_llm", {})
+                self._event_notify_cfg = bg.get("event_notify", {})
+
+                # 从旧版 config_enhanced.json 迁移 background_llm 配置
+                enhanced_path = Path(__file__).parent / "data" / "config_enhanced.json"
+                if enhanced_path.exists() and not bg.get("cloud"):
                     try:
                         with open(enhanced_path, "r", encoding="utf-8") as f:
                             enhanced = json.load(f)
-                        # 只合并 _config 中没有的顶层字段
-                        for k, v in enhanced.items():
-                            if k not in self._config and not k.startswith("_"):
-                                self._config[k] = v
-                        self.logger.info(f"增强配置已合并: background_llm={'已启用' if self._config.get('background_llm', {}).get('enabled') else '未启用'}")
-                    except Exception as e:
-                        self.logger.warning(f"增强配置加载失败: {e}")
-                
-                self.logger.info(f"配置加载成功: room_id={self._room_id}, interval={self._interval}")
+                        legacy_bg = enhanced.get("background_llm", {})
+                        if legacy_bg.get("cloud") or legacy_bg.get("enabled"):
+                            self._config["background_llm"] = legacy_bg
+                            bg = legacy_bg
+                            self._event_notify_cfg = bg.get("event_notify", {})
+                            self.logger.info("已从 config_enhanced.json 迁移 background_llm 配置")
+                    except Exception as exc:
+                        self.logger.warning("config_enhanced.json 读取失败: %s", exc)
+
+                self.logger.info(f"配置加载成功: room_id={self._room_id}, interval={self._interval}, background_llm={'已启用' if bg.get('enabled') else '未启用'}")
             else:
                 self._config = {}
                 self.logger.warning("配置文件不存在，使用默认配置")
-                
+
         except Exception as e:
             self.logger.error(f"配置加载失败: {e}")
             self._config = {}
@@ -2668,9 +3355,9 @@ class BiliDanmakuPlugin(NekoPluginBase):
                 "danmaku_max_length": self._danmaku_max_length,
                 "master_bili_uid": self._master_bili_uid,
                 "master_bili_name": self._master_bili_name,
-                **self._config  # 保留其他配置
+                "background_llm": self._config.get("background_llm", {}),
             }
-            
+
             config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
@@ -2685,29 +3372,118 @@ class BiliDanmakuPlugin(NekoPluginBase):
     # ==========================================
 
     def _push_to_ai(self, content: str, description: str, priority: int = 5):
-        """推送消息给AI（同步方法，push_message 不是协程）"""
+        """推送消息给AI（缓冲聚合，非立即发送）"""
+        self.logger.info(
+            "_push_to_ai 缓冲: description=%s priority=%d content_len=%d",
+            description, priority, len(content),
+        )
         try:
-            self.logger.info(f"_push_to_ai 调用: description={description}, priority={priority}, content_len={len(content)}")
-            self.push_message(
+            self._push_buffer.append((content, description, priority))
+            self._schedule_push_flush()
+        except Exception as e:
+            self.logger.error(f"缓冲推送消息失败: {e}")
+
+    def _schedule_push_flush(self):
+        """schedule/reschedule flush timer"""
+        if self._push_flush_handle is not None:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # no event loop — flush inline
+            self._flush_push_buffer()
+            return
+        self._push_flush_handle = loop.call_later(
+            self._push_aggregation_window,
+            self._flush_push_buffer,
+        )
+
+    def _flush_push_buffer(self):
+        """flush push buffer: merge + send with correct ai_behavior"""
+        self._push_flush_handle = None
+        if not self._push_buffer:
+            return
+
+        items = list(self._push_buffer)
+        self._push_buffer.clear()
+
+        # Take max priority from all buffered items
+        max_prio = max(p for _, _, p in items)
+
+        # Merge items by description group key
+        groups: dict[str, list[str]] = {}
+        for c, d, p in items:
+            key = d.split(":")[0] if ":" in d else d
+            groups.setdefault(key, []).append(c)
+
+        merged_text = "\n".join(
+            "\n".join(group_contents)
+            for group_contents in groups.values()
+        )
+
+        if not merged_text.strip():
+            return
+
+        # 降级模式：加入互动引导，让 AI 直接和观众互动而不是做汇报
+        if not self._background_llm_enabled:
+            merged_text = "请直播姬直接和观众互动，不要汇报\n" + merged_text
+
+        # _push_to_ai 是专门推给 AI 的通道，统一用 "respond"（旧版行为）
+        # 各调用方通过 priority 控制紧急程度，不影响是否进 LLM
+        ai_behavior = "respond"
+
+        desc = " + ".join(groups.keys())
+        try:
+            self.logger.info(
+                "_flush_push_buffer 推送: ai_behavior=%s priority=%d groups=%s merged_len=%d",
+                ai_behavior, max_prio, desc, len(merged_text),
+            )
+            print(f"[PUSH TO AI] behavior={ai_behavior} priority={max_prio}\n{merged_text[:800]}")
+            result = self.push_message(
                 source=self.name,
                 visibility=[],
-                ai_behavior="respond",
-                parts=[{"type": "text", "text": content}],
-                priority=priority,
+                ai_behavior=ai_behavior,
+                parts=[{"type": "text", "text": merged_text}],
+                priority=max_prio,
                 target_lanlan=self._target_lanlan or None,
                 metadata={
                     "room_id": self._room_id,
                     "plugin": self.name,
-                    # TODO(v0.9): remove — `description` is a v1 leftover
-                    # log label with no v2 consumer; safe to drop once the
-                    # legacy wire field goes away.
-                    "description": description,
+                    "description": desc,
                     "timestamp": datetime.now().isoformat(),
                 },
             )
-            self.logger.info(f"_push_to_ai 成功: {description}")
+            if result is not None and asyncio.iscoroutine(result):
+                asyncio.create_task(result)
         except Exception as e:
-            self.logger.error(f"推送消息给AI失败: {e}")
+            self.logger.error(f"聚合推送消息给AI失败: {e}")
+
+    def _get_event_notify_cfg(self, key: str, default=None):
+        """读取事件通知配置项，支持点式路径如 cooldowns.welcome"""
+        parts = key.split(".")
+        val = self._event_notify_cfg
+        for p in parts:
+            if isinstance(val, dict):
+                val = val.get(p)
+            else:
+                return default
+        return val if val is not None else default
+
+    def _render_template(self, template_key: str, **kwargs) -> str:
+        """从 event_notify.templates 读取模板并替换占位符"""
+        template = self._get_event_notify_cfg(f"templates.{template_key}", "")
+        if not template:
+            # 硬编码兜底
+            fallbacks = {
+                "welcome": "欢迎 {user_name} 进入直播间！",
+                "follow": "感谢 {user_name} 关注主播！",
+                "live_start": "主播开播啦！",
+                "live_end": "主播下播了。",
+            }
+            template = fallbacks.get(template_key, "")
+        for k, v in kwargs.items():
+            template = template.replace("{" + k + "}", str(v))
+        return template
 
     def _get_connection_info(self) -> dict:
         """获取连接详情"""

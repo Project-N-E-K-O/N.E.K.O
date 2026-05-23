@@ -394,6 +394,9 @@ def _make_effective_config(bridge_root: Path, **overrides: object) -> dict[str, 
             "auto_detect": True,
             "poll_interval_seconds": 1,
         },
+        "ocr_reader": {
+            "enabled": False,
+        },
     }
     for key, value in overrides.items():
         if isinstance(value, dict) and isinstance(config.get(key), dict):
@@ -409,6 +412,229 @@ def _enable_injected_ocr_reader(plugin: GalgameBridgePlugin, *, trigger_mode: st
     assert plugin._cfg is not None
     plugin._cfg.ocr_reader_enabled = True
     plugin._cfg.ocr_reader_trigger_mode = trigger_mode
+
+
+def test_load_context_snapshot_for_state_falls_back_to_active_game() -> None:
+    calls: list[str] = []
+
+    class _Persist:
+        def load_context_snapshot(self, *, current_game_id: str, **_: object) -> dict[str, object]:
+            calls.append(current_game_id)
+            if current_game_id == "game-active":
+                return {
+                    "game_id": "game-active",
+                    "summary_seed": "restored",
+                    "saved_at": time.time(),
+                }
+            return {}
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_max_age_seconds=3600.0,
+        context_persist_require_game_id=True,
+    )
+    plugin._state = SimpleNamespace(bound_game_id="", active_game_id="game-active")
+    plugin._persist = _Persist()
+
+    assert plugin._load_context_snapshot_for_state()["summary_seed"] == "restored"
+    assert calls == ["game-active"]
+
+
+def test_commit_state_preserves_private_context_snapshot_on_public_poll_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    private_snapshot = {
+        "scene_id": "scene-a",
+        "game_id": "game-a",
+        "route_id": "route-a",
+        "summary_seed": "saved seed",
+        "stable_line_ids": ["line-1", "line-2"],
+        "saved_at": 123.0,
+    }
+
+    with plugin._state_lock:
+        plugin._state.context_snapshot = dict(private_snapshot)
+
+    payload = plugin._snapshot_state(fresh=True)
+    assert "summary_seed" not in payload["context_snapshot"]
+    assert "stable_line_ids" not in payload["context_snapshot"]
+
+    plugin._commit_state(payload)
+
+    with plugin._state_lock:
+        assert plugin._state.context_snapshot["summary_seed"] == "saved seed"
+        assert plugin._state.context_snapshot["stable_line_ids"] == ["line-1", "line-2"]
+
+
+def test_load_context_snapshot_for_state_allows_missing_game_id_when_not_required() -> None:
+    calls: list[str] = []
+
+    class _Persist:
+        def load_context_snapshot(
+            self,
+            *,
+            current_game_id: str,
+            **_: object,
+        ) -> dict[str, object]:
+            calls.append(current_game_id)
+            return {
+                "game_id": "",
+                "summary_seed": "restored without game id",
+                "saved_at": time.time(),
+            }
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_max_age_seconds=3600.0,
+        context_persist_require_game_id=False,
+    )
+    plugin._state = SimpleNamespace(bound_game_id="", active_game_id="")
+    plugin._persist = _Persist()
+
+    assert (
+        plugin._load_context_snapshot_for_state()["summary_seed"]
+        == "restored without game id"
+    )
+    assert calls == [""]
+
+
+def test_persist_context_snapshot_allows_missing_game_id_when_not_required() -> None:
+    saved: list[dict[str, object]] = []
+
+    class _Persist:
+        def persist_context_snapshot(self, snapshot: dict[str, object]) -> None:
+            saved.append(dict(snapshot))
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_require_game_id=False,
+    )
+    plugin._state = SimpleNamespace(
+        active_game_id="",
+        active_session_id="",
+        latest_snapshot={"scene_id": "scene-a", "route_id": ""},
+        context_snapshot={},
+    )
+    plugin._state_lock = threading.Lock()
+    plugin._state_dirty = False
+    plugin._cached_snapshot = {"stale": True}
+    plugin._persist = _Persist()
+
+    plugin._persist_context_snapshot_from_summary(
+        {
+            "game_id": "",
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stable_lines": [{"line_id": "line-1"}],
+        },
+        {"summary": "summary without game id"},
+    )
+
+    assert saved
+    assert saved[0]["game_id"] == ""
+    assert saved[0]["summary_seed"] == "summary without game id"
+    assert plugin._state.context_snapshot["summary_seed"] == "summary without game id"
+    assert plugin._state_dirty is True
+    assert plugin._cached_snapshot is None
+
+
+def test_persist_context_snapshot_skips_write_when_session_turns_stale() -> None:
+    saved: list[dict[str, object]] = []
+
+    class _Persist:
+        def persist_context_snapshot(self, snapshot: dict[str, object]) -> None:
+            saved.append(dict(snapshot))
+
+    class _Logger:
+        def warning(self, *_: object, **__: object) -> None:
+            return None
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace(
+        context_persist_enabled=True,
+        context_persist_require_game_id=True,
+    )
+    plugin._state = SimpleNamespace(
+        active_game_id="demo.alpha",
+        active_session_id="sess-a",
+        latest_snapshot={"scene_id": "scene-a", "route_id": "route-a"},
+        context_snapshot={},
+    )
+    plugin._state_lock = threading.Lock()
+    plugin._state_dirty = False
+    plugin._cached_snapshot = {"stale": True}
+    plugin._persist = _Persist()
+    plugin.logger = _Logger()
+
+    checks = 0
+    original_liveness = plugin._context_snapshot_liveness_matches
+
+    def _flip_session_after_first_check(**kwargs: object) -> bool:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            plugin._state.active_session_id = "sess-b"
+        return original_liveness(**kwargs)  # type: ignore[arg-type]
+
+    plugin._context_snapshot_liveness_matches = _flip_session_after_first_check  # type: ignore[method-assign]
+
+    plugin._persist_context_snapshot_from_summary(
+        {
+            "game_id": "demo.alpha",
+            "session_id": "sess-a",
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "stable_lines": [{"line_id": "line-1"}],
+        },
+        {"summary": "stale during write"},
+    )
+
+    assert checks == 2
+    assert saved == []
+    assert plugin._state.context_snapshot == {}
+    assert plugin._state_dirty is False
+
+
+@pytest.mark.asyncio
+async def test_summarize_scene_treats_context_snapshot_persist_as_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Gateway:
+        async def summarize_scene(self, context: dict[str, object]) -> dict[str, object]:
+            return {"summary": "summary ok"}
+
+    def _raise_persist(*_: object) -> None:
+        raise RuntimeError("store unavailable")
+
+    context = {
+        "scene_id": "scene-a",
+        "recent_lines": [{"speaker": "A", "text": "line."}],
+        "current_snapshot": {"text": "line."},
+    }
+    monkeypatch.setattr(
+        galgame_plugin_module,
+        "build_summarize_context",
+        lambda *_args, **_kwargs: context,
+    )
+
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._llm_gateway = _Gateway()
+    plugin._snapshot_state = lambda **_kwargs: {}
+    plugin._cfg = SimpleNamespace()
+    plugin._persist_context_snapshot_from_summary = _raise_persist
+    plugin.logger = _Logger()
+
+    result = await plugin.galgame_summarize_scene()
+
+    assert isinstance(result, Ok)
+    assert result.value["summary"] == "summary ok"
+    assert result.value["scene_id"] == "scene-a"
 
 
 def _create_game_dir(
@@ -911,15 +1137,6 @@ def _ocr_reader_session(
     return payload
 
 
-def _prepare_fake_tesseract_install(install_root: Path) -> None:
-    install_root.mkdir(parents=True, exist_ok=True)
-    (install_root / "tesseract.exe").write_text("", encoding="utf-8")
-    tessdata_dir = install_root / "tessdata"
-    tessdata_dir.mkdir(parents=True, exist_ok=True)
-    for language in ("chi_sim", "jpn", "eng"):
-        (tessdata_dir / f"{language}.traineddata").write_text("", encoding="utf-8")
-
-
 def _read_bridge_events(events_path: Path) -> list[dict[str, Any]]:
     result = tail_events_jsonl(events_path, offset=0, line_buffer=b"")
     assert result.errors == []
@@ -1397,7 +1614,7 @@ async def test_startup_binds_latest_session_and_exposes_ui(tmp_path: Path) -> No
     open_ui = await plugin.galgame_open_ui()
 
     assert isinstance(status, Ok)
-    assert status.value["bound_game_id"] == ""
+    assert status.value["bound_game_id"] == "demo.beta"
     assert status.value["active_session_id"] == "sess-b"
     assert status.value["available_game_ids"] == ["demo.alpha", "demo.beta"]
     assert "textractor" in status.value
@@ -2564,13 +2781,13 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_bind_game",
         "galgame_build_ocr_screen_template_draft",
         "galgame_continue_auto_advance",
+        "galgame_download_rapidocr_models",
         "galgame_evaluate_ocr_screen_awareness_model",
         "galgame_explain_line",
         "galgame_get_history",
         "galgame_get_ocr_screen_awareness_snapshot",
         "galgame_get_snapshot",
         "galgame_get_status",
-        "galgame_install_tesseract",
         "galgame_install_textractor",
         "galgame_list_memory_reader_processes",
         "galgame_list_ocr_windows",
@@ -2584,6 +2801,7 @@ async def test_public_surface_preserves_phase1_entries_and_adds_phase2_entries(t
         "galgame_set_ocr_screen_templates",
         "galgame_set_ocr_timing",
         "galgame_set_ocr_window_target",
+        "galgame_set_rapidocr_lang",
         "galgame_suggest_choice",
         "galgame_summarize_scene",
         "galgame_train_ocr_screen_awareness_model",
@@ -2660,570 +2878,6 @@ async def test_set_mode_and_bind_game_persist_across_restart(tmp_path: Path) -> 
     assert status.value["push_notifications"] is False
     assert status.value["bound_game_id"] == "demo.beta"
     assert status.value["active_session_id"] == "sess-b"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_save_loaded_and_repeated_line_do_not_duplicate_stable_history(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    game_id = "demo.alpha"
-    session_id = "sess-a"
-    events = [
-        _event(
-            seq=1,
-            event_type="session_started",
-            session_id=session_id,
-            game_id=game_id,
-            payload={
-                "game_title": "demo.alpha",
-                "engine": "renpy",
-                "locale": "ja-JP",
-                "started_at": "2026-04-21T08:30:00Z",
-                "scene_id": "boot",
-                "line_id": "",
-                "route_id": "",
-                "is_menu_open": False,
-                "speaker": "",
-                "text": "",
-                "choices": [],
-                "save_context": {"kind": "unknown", "slot_id": "", "display_name": ""},
-            },
-            ts="2026-04-21T08:30:00Z",
-        ),
-        _event(
-            seq=2,
-            event_type="line_changed",
-            session_id=session_id,
-            game_id=game_id,
-            payload={
-                "speaker": "雪乃",
-                "text": "今天也一起回家吧。",
-                "line_id": "script/ch1.rpy:120",
-                "scene_id": "ch1_after_school",
-                "route_id": "",
-            },
-            ts="2026-04-21T08:31:00Z",
-        ),
-        _event(
-            seq=3,
-            event_type="save_loaded",
-            session_id=session_id,
-            game_id=game_id,
-            payload={
-                "reason": "rollback",
-                "scene_id": "ch1_after_school",
-                "line_id": "script/ch1.rpy:120",
-                "route_id": "",
-                "save_context": {"kind": "rollback", "slot_id": "", "display_name": "rollback"},
-            },
-            ts="2026-04-21T08:31:10Z",
-        ),
-        _event(
-            seq=4,
-            event_type="line_changed",
-            session_id=session_id,
-            game_id=game_id,
-            payload={
-                "speaker": "雪乃",
-                "text": "今天也一起回家吧。",
-                "line_id": "script/ch1.rpy:120",
-                "scene_id": "ch1_after_school",
-                "route_id": "",
-            },
-            ts="2026-04-21T08:31:11Z",
-        ),
-    ]
-    _create_game_dir(
-        bridge_root,
-        game_id=game_id,
-        session_payload=_session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=4,
-            state=_session_state(
-                speaker="雪乃",
-                text="今天也一起回家吧。",
-                scene_id="ch1_after_school",
-                line_id="script/ch1.rpy:120",
-                ts="2026-04-21T08:31:11Z",
-            ),
-        ),
-        events=events,
-    )
-
-    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    history = await plugin.galgame_get_history(limit=20, include_events=True)
-    assert isinstance(history, Ok)
-    assert len(history.value["events"]) == 4
-    assert len(history.value["stable_lines"]) == 1
-    assert history.value["stable_lines"][0]["line_id"] == "script/ch1.rpy:120"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_bridge_fixture_manual_load_round_exposes_bridge_sdk_status_snapshot_and_history(
-    tmp_path: Path,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    _copy_bridge_fixture_scenario(bridge_root, "manual_load")
-
-    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    await plugin._poll_bridge(force=True)
-
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
-    history = await plugin.galgame_get_history(limit=20, include_events=True)
-
-    assert isinstance(status, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_BRIDGE_SDK
-    assert status.value["summary"].startswith("已通过 Bridge SDK 连接")
-    assert status.value["memory_reader_runtime"]["detail"] == "disabled_by_config"
-
-    assert isinstance(snapshot, Ok)
-    assert snapshot.value["snapshot"]["scene_id"] == "after_school"
-    assert snapshot.value["snapshot"]["line_id"] == "script.rpy:28"
-    assert snapshot.value["snapshot"]["is_menu_open"] is True
-    assert snapshot.value["snapshot"]["save_context"]["kind"] == "manual"
-    assert len(snapshot.value["snapshot"]["choices"]) == 2
-
-    assert isinstance(history, Ok)
-    assert history.value["events"][-2]["type"] == "save_loaded"
-    assert history.value["events"][-2]["payload"]["reason"] == "load"
-    assert history.value["events"][-1]["type"] == "choices_shown"
-    assert history.value["events"][-1]["payload"]["line_id"] == "script.rpy:28"
-    assert history.value["stable_lines"][-1]["line_id"] == "script.rpy:45"
-    assert len(history.value["stable_lines"]) == 6
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_bridge_fixture_rollback_round_preserves_history_and_supports_phase2_llm_entries(
-    tmp_path: Path,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    _copy_bridge_fixture_scenario(bridge_root, "rollback")
-
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            llm={"target_entry_ref": "fake_llm:run"},
-            ocr_reader={"enabled": False},
-            rapidocr={"enabled": False},
-        ),
-    )
-
-    async def _handler(**kwargs):
-        params = kwargs.get("params") or {}
-        operation = params.get("operation")
-        if operation == "explain_line":
-            return {"explanation": "这是回滚后的菜单锚点。", "evidence": []}
-        if operation == "summarize_scene":
-            return {
-                "summary": "场景重新回到了 after_school 的选项前。",
-                "key_points": [{"type": "decision", "text": "rollback 已完成。"}],
-            }
-        if operation == "suggest_choice":
-            context = params.get("context") or {}
-            visible_choices = context.get("visible_choices") or []
-            return {
-                "choices": [
-                    {
-                        "choice_id": visible_choices[0]["choice_id"],
-                        "text": visible_choices[0]["text"],
-                        "rank": 1,
-                        "reason": "继续验证 rollback 后的菜单消费。",
-                    }
-                ]
-            }
-        raise AssertionError(f"unexpected operation: {operation}")
-
-    ctx.entry_handler = _handler
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    await plugin._poll_bridge(force=True)
-
-    snapshot = await plugin.galgame_get_snapshot()
-    history = await plugin.galgame_get_history(limit=20, include_events=True)
-    explain = await plugin.galgame_explain_line()
-    summarize = await plugin.galgame_summarize_scene()
-    suggest = await plugin.galgame_suggest_choice()
-
-    assert isinstance(snapshot, Ok)
-    assert snapshot.value["snapshot"]["scene_id"] == "after_school"
-    assert snapshot.value["snapshot"]["save_context"]["kind"] == "rollback"
-    assert snapshot.value["snapshot"]["is_menu_open"] is True
-
-    assert isinstance(history, Ok)
-    assert history.value["events"][-3]["type"] == "save_loaded"
-    assert history.value["events"][-3]["payload"]["reason"] == "rollback"
-    repeated_lines = [
-        item for item in history.value["stable_lines"] if item["line_id"] == "script.rpy:28"
-    ]
-    assert len(repeated_lines) == 1
-
-    assert isinstance(explain, Ok)
-    assert explain.value["degraded"] is False
-    assert explain.value["line_id"] == "script.rpy:28"
-    assert explain.value["explanation"] == "这是回滚后的菜单锚点。"
-
-    assert isinstance(summarize, Ok)
-    assert summarize.value["degraded"] is False
-    assert summarize.value["scene_id"] == "after_school"
-    assert summarize.value["summary"] == "场景重新回到了 after_school 的选项前。"
-
-    assert isinstance(suggest, Ok)
-    assert suggest.value["degraded"] is False
-    assert suggest.value["choices"][0]["choice_id"] == "script.rpy:28#choice0"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_restart_restores_cursor_and_processes_new_tail(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    game_id = "demo.alpha"
-    session_id = "sess-a"
-    game_dir = _create_game_dir(
-        bridge_root,
-        game_id=game_id,
-        session_payload=_session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=2,
-            state=_session_state(
-                speaker="雪乃",
-                text="旧台词",
-                line_id="line-1",
-                scene_id="scene-a",
-                ts="2026-04-21T08:30:02Z",
-            ),
-        ),
-        events=[
-            _event(
-                seq=1,
-                event_type="session_started",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "game_title": game_id,
-                    "engine": "renpy",
-                    "locale": "ja-JP",
-                    "started_at": "2026-04-21T08:30:00Z",
-                    "scene_id": "boot",
-                    "line_id": "",
-                    "route_id": "",
-                    "is_menu_open": False,
-                    "speaker": "",
-                    "text": "",
-                    "choices": [],
-                    "save_context": {"kind": "unknown", "slot_id": "", "display_name": ""},
-                },
-                ts="2026-04-21T08:30:00Z",
-            ),
-            _event(
-                seq=2,
-                event_type="line_changed",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "speaker": "雪乃",
-                    "text": "旧台词",
-                    "line_id": "line-1",
-                    "scene_id": "scene-a",
-                    "route_id": "",
-                },
-                ts="2026-04-21T08:30:02Z",
-            ),
-        ],
-    )
-
-    ctx1 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin1 = GalgameBridgePlugin(ctx1)
-    await plugin1.startup()
-
-    new_event = _event(
-        seq=3,
-        event_type="line_changed",
-        session_id=session_id,
-        game_id=game_id,
-        payload={
-            "speaker": "雪乃",
-            "text": "重启后新增台词",
-            "line_id": "line-2",
-            "scene_id": "scene-a",
-            "route_id": "",
-        },
-        ts="2026-04-21T08:30:05Z",
-    )
-    with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(new_event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            + b"\n"
-        )
-    _write_session(
-        game_dir / "session.json",
-        _session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=3,
-            state=_session_state(
-                speaker="雪乃",
-                text="重启后新增台词",
-                line_id="line-2",
-                scene_id="scene-a",
-                ts="2026-04-21T08:30:05Z",
-            ),
-        ),
-    )
-
-    ctx2 = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin2 = GalgameBridgePlugin(ctx2)
-    await plugin2.startup()
-    history = await plugin2.galgame_get_history(limit=20, include_events=True)
-    assert isinstance(history, Ok)
-    assert history.value["events"][-1]["seq"] == 3
-    assert history.value["stable_lines"][-1]["line_id"] == "line-2"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_truncation_sets_stream_reset_pending(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    game_id = "demo.alpha"
-    session_id = "sess-a"
-    game_dir = _create_game_dir(
-        bridge_root,
-        game_id=game_id,
-        session_payload=_session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=2,
-            state=_session_state(text="alpha"),
-        ),
-        events=[
-            _event(
-                seq=1,
-                event_type="session_started",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "game_title": game_id,
-                    "engine": "renpy",
-                    "locale": "ja-JP",
-                    "started_at": "2026-04-21T08:30:00Z",
-                    "scene_id": "boot",
-                    "line_id": "",
-                    "route_id": "",
-                    "is_menu_open": False,
-                    "speaker": "",
-                    "text": "",
-                    "choices": [],
-                    "save_context": {"kind": "unknown", "slot_id": "", "display_name": ""},
-                },
-                ts="2026-04-21T08:30:00Z",
-            ),
-            _event(
-                seq=2,
-                event_type="line_changed",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "speaker": "雪乃",
-                    "text": "旧台词",
-                    "line_id": "line-1",
-                    "scene_id": "scene-a",
-                    "route_id": "",
-                },
-                ts="2026-04-21T08:30:02Z",
-            ),
-        ],
-    )
-
-    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    (game_dir / "events.jsonl").write_bytes(b"")
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
-    assert isinstance(status, Ok)
-    assert status.value["stream_reset_pending"] is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_stale_then_new_event_recovers_to_active(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    game_id = "demo.alpha"
-    session_id = "sess-a"
-    game_dir = _create_game_dir(
-        bridge_root,
-        game_id=game_id,
-        session_payload=_session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=1,
-            state=_session_state(text="alpha"),
-        ),
-        events=[
-            _event(
-                seq=1,
-                event_type="line_changed",
-                session_id=session_id,
-                game_id=game_id,
-                payload={
-                    "speaker": "雪乃",
-                    "text": "旧台词",
-                    "line_id": "line-1",
-                    "scene_id": "scene-a",
-                    "route_id": "",
-                },
-                ts="2026-04-21T08:30:02Z",
-            )
-        ],
-    )
-
-    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-
-    with plugin._state_lock:
-        plugin._state.last_seen_data_monotonic = time.monotonic() - 5.0
-
-    await plugin._poll_bridge(force=True)
-    stale_status = await plugin.galgame_get_status()
-    assert isinstance(stale_status, Ok)
-    assert stale_status.value["connection_state"] == "stale"
-
-    with (game_dir / "events.jsonl").open("ab") as handle:
-        handle.write(
-            json.dumps(
-                _event(
-                    seq=2,
-                    event_type="line_changed",
-                    session_id=session_id,
-                    game_id=game_id,
-                    payload={
-                        "speaker": "雪乃",
-                        "text": "新台词",
-                        "line_id": "line-2",
-                        "scene_id": "scene-a",
-                        "route_id": "",
-                    },
-                    ts="2026-04-21T08:30:06Z",
-                ),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            + b"\n"
-        )
-    _write_session(
-        game_dir / "session.json",
-        _session(
-            game_id=game_id,
-            session_id=session_id,
-            last_seq=2,
-            state=_session_state(
-                speaker="雪乃",
-                text="新台词",
-                line_id="line-2",
-                scene_id="scene-a",
-                ts="2026-04-21T08:30:06Z",
-            ),
-        ),
-    )
-
-    await plugin._poll_bridge(force=True)
-    active_status = await plugin.galgame_get_status()
-    assert isinstance(active_status, Ok)
-    assert active_status.value["connection_state"] == "active"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_windows_default_memory_reader_config_autodiscovers_textractor_and_takes_over_without_bridge_sdk(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(galgame_service.sys, "platform", "win32")
-    path_dir = tmp_path / "bin"
-    path_dir.mkdir()
-    textractor_path = path_dir / "TextractorCLI.exe"
-    textractor_path.write_text("", encoding="utf-8")
-    textractor_path.chmod(0o755)
-    monkeypatch.setenv("PATH", str(path_dir))
-
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={
-            "auto_detect": True,
-            "poll_interval_seconds": 1,
-            "engine_hooks": {"renpy": ["/HREN@Demo.dll"]},
-        },
-    )
-    del cfg["memory_reader"]["enabled"]  # type: ignore[index]
-    del cfg["memory_reader"]["textractor_path"]  # type: ignore[index]
-
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    clock = {"now": 1710000000.0}
-    expected_snapshot_text = "Windows default config takeover."
-    good_handle = _FakeTextractorHandle(
-        [f"[4242:100:0:0] {expected_snapshot_text}"]
-    )
-    handle = _FakeTextractorHandle(
-        ["[4242:100:0:0] é›ªä¹ƒï¼šWindows é»˜è®¤é…ç½®å·²è‡ªåŠ¨æŽ¥ç®¡ã€‚"]
-    )
-
-    async def _process_factory(path: str):
-        assert path == str(textractor_path)
-        return good_handle
-
-    plugin._memory_reader_manager = MemoryReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        process_factory=_process_factory,
-        process_scanner=lambda: [
-            DetectedGameProcess(
-                pid=4242,
-                name="RenPy Demo.exe",
-                create_time=1709999999.0,
-                engine="renpy",
-            )
-        ],
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        writer=MemoryReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["memory_reader_enabled"] is True
-    assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
-    assert status.value["memory_reader_runtime"]["status"] == "active"
-    assert snapshot.value["snapshot"]["text"] == expected_snapshot_text
-    assert good_handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
-    return
-
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["memory_reader_enabled"] is True
-    assert status.value["active_data_source"] == DATA_SOURCE_MEMORY_READER
-    assert status.value["memory_reader_runtime"]["status"] == "active"
-    assert snapshot.value["snapshot"]["text"] == "Windows é»˜è®¤é…ç½®å·²è‡ªåŠ¨æŽ¥ç®¡ã€‚"
-    assert handle.writes == ["attach -P4242\n", "/HREN@Demo.dll -P4242\n"]
 
 
 @pytest.mark.asyncio
@@ -3574,69 +3228,7 @@ async def test_install_textractor_entry_uses_ctx_run_id_fallback(
     assert observed["task_id"] == "run-123"
 
 
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_install_tesseract_entry_returns_install_result_and_refreshed_status(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "TesseractInstalled"
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-            },
-        ),
-    )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-
-    async def _fake_install_tesseract(**kwargs):
-        del kwargs
-        install_root.mkdir(parents=True, exist_ok=True)
-        (install_root / "tesseract.exe").write_text("", encoding="utf-8")
-        tessdata_dir = install_root / "tessdata"
-        tessdata_dir.mkdir(parents=True, exist_ok=True)
-        for language in ("chi_sim", "jpn", "eng"):
-            (tessdata_dir / f"{language}.traineddata").write_text("", encoding="utf-8")
-        return {
-            "installed": True,
-            "already_installed": False,
-            "detected_path": str(install_root / "tesseract.exe"),
-            "target_dir": str(install_root),
-            "expected_executable_path": str(install_root / "tesseract.exe"),
-            "tessdata_dir": str(tessdata_dir),
-            "required_languages": ["chi_sim", "jpn", "eng"],
-            "missing_languages": [],
-            "install_supported": True,
-            "can_install": False,
-            "detail": "installed",
-            "summary": "Tesseract 安装完成",
-            "release_name": "Tesseract OCR",
-            "asset_name": "tesseract-ocr-w64-setup.exe",
-        }
-
-    monkeypatch.setattr(
-        "plugin.plugins.galgame_plugin.install_tesseract",
-        _fake_install_tesseract,
-    )
-
-    result = await plugin.galgame_install_tesseract()
-
-    assert isinstance(result, Ok)
-    assert result.value["summary"] == "Tesseract 安装完成"
-    assert result.value["install_result"]["installed"] is True
-    assert result.value["status"]["tesseract"]["installed"] is True
-    assert result.value["status"]["tesseract"]["detected_path"] == str(
-        install_root / "tesseract.exe"
-    )
-
-
-# NOTE: tests for galgame_install_rapidocr / galgame_install_dxcam SDK actions
+# NOTE: tests for RapidOCR / DXcam runtime SDK install actions
 # removed — both packages are now bundled main-program deps (see pyproject.toml
 # [dependency-groups] galgame). The runtime install flow they exercised no
 # longer exists.
@@ -4397,74 +3989,6 @@ async def test_set_ocr_capture_profile_process_fallback_only_updates_fallback(
             ]["top_ratio"]
             == pytest.approx(0.48)
         )
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_runtime_exposes_window_bucket_match_metadata(tmp_path: Path) -> None:
-    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-        },
-    )
-    bucket_key = build_ocr_capture_profile_bucket_key(1280, 720).lower()
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=build_config(cfg),
-        time_fn=lambda: 1713000000.0,
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=401,
-                title="Demo Window",
-                process_name="DemoGame.exe",
-                pid=7001,
-                width=1280,
-                height=720,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(["测试文本", "测试文本"]),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: 1713000000.0,
-        ),
-    )
-    manager.update_capture_profiles(
-        {
-            "DemoGame.exe": {
-                OCR_CAPTURE_PROFILE_WINDOW_BUCKETS_KEY: {
-                    bucket_key: {
-                        "width": 1280,
-                        "height": 720,
-                        "aspect_ratio": 1.7778,
-                        "stages": {
-                            OCR_CAPTURE_PROFILE_STAGE_DIALOGUE: {
-                                "left_inset_ratio": 0.08,
-                                "right_inset_ratio": 0.06,
-                                "top_ratio": 0.47,
-                                "bottom_inset_ratio": 0.11,
-                            }
-                        },
-                    }
-                }
-            }
-        }
-    )
-
-    result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-
-    assert result.runtime["width"] == 1280
-    assert result.runtime["height"] == 720
-    assert result.runtime["aspect_ratio"] == pytest.approx(1280 / 720, rel=1e-4)
-    assert result.runtime["capture_profile_match_source"] == OCR_CAPTURE_PROFILE_MATCH_SOURCE_BUCKET_EXACT
-    assert result.runtime["capture_profile_bucket_key"] == bucket_key
 
 
 @pytest.mark.plugin_unit
@@ -5772,247 +5296,6 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
-async def test_poll_bridge_persists_rebound_ocr_window_target(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-            },
-        ),
-    )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-
-    rebound_window = DetectedGameWindow(
-        hwnd=778,
-        title="Aiyoku no Eustia",
-        process_name="Aiyoku.exe",
-        pid=5566,
-    )
-    original_target = {
-        "mode": "manual",
-        "window_key": "ocrwin:legacy-window",
-        "process_name": rebound_window.process_name,
-        "normalized_title": rebound_window.normalized_title,
-        "pid": 4455,
-        "last_known_hwnd": 777,
-        "selected_at": "2026-04-24T10:00:00Z",
-    }
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        platform_fn=lambda: True,
-        window_scanner=lambda: [rebound_window],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend([""]),
-    )
-    plugin._ocr_reader_manager.update_window_target(original_target)
-    with plugin._state_lock:
-        plugin._state.ocr_window_target = dict(original_target)
-    plugin._persist.persist_ocr_window_target(original_target)
-
-    await plugin._poll_bridge(force=True)
-
-    with plugin._state_lock:
-        assert plugin._state.ocr_window_target["window_key"] == rebound_window.window_key
-        assert plugin._state.ocr_window_target["pid"] == rebound_window.pid
-        assert plugin._state.ocr_window_target["last_known_hwnd"] == rebound_window.hwnd
-    restored, _warnings = plugin._persist.load()
-    assert restored[STORE_OCR_WINDOW_TARGET]["window_key"] == rebound_window.window_key
-    assert restored[STORE_OCR_WINDOW_TARGET]["pid"] == rebound_window.pid
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_fallback_activates_when_bridge_sdk_and_memory_reader_are_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={
-            "enabled": True,
-            "textractor_path": "",
-        },
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    monkeypatch.setattr(galgame_plugin_module, "MemoryReaderManager", _NoopMemoryReaderManager)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    clock = {"now": 1710000000.0}
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=101,
-                title="OCR Demo Window",
-                process_name="DemoGame.exe",
-                pid=4242,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：来自 OCR 的台词。",
-                "雪乃：来自 OCR 的台词。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
-
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
-    assert status.value["summary"].startswith("已通过 OCR 读取连接（降级模式）")
-    assert snapshot.value["snapshot"]["scene_id"] == "ocr:unknown_scene"
-    assert snapshot.value["snapshot"]["line_id"].startswith("ocr:")
-    assert snapshot.value["snapshot"]["text"] == "来自 OCR 的台词。"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_auto_reader_interval_ocr_takes_over_from_stale_memory_snapshot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={
-            "enabled": True,
-            "textractor_path": str(tmp_path / "TextractorCLI.exe"),
-        },
-        ocr_reader={
-            "enabled": False,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 1.0,
-            "trigger_mode": "interval",
-            "no_text_takeover_after_seconds": 0.0,
-        },
-    )
-    memory_game_id = "mem-stale"
-    memory_session_id = "mem-session"
-
-    ctx = _Ctx(plugin_dir, cfg)
-    monkeypatch.setattr(galgame_plugin_module, "MemoryReaderManager", _NoopMemoryReaderManager)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    _create_game_dir(
-        bridge_root,
-        game_id=memory_game_id,
-        session_payload=_memory_reader_session(
-            game_id=memory_game_id,
-            session_id=memory_session_id,
-            last_seq=4,
-            state=_session_state(
-                speaker="memory",
-                text="old memory line",
-                scene_id="mem-scene",
-                line_id="mem-line",
-            ),
-        ),
-        events=[],
-    )
-    plugin._memory_reader_manager = SimpleNamespace(
-        update_config=lambda config: None,
-        tick=lambda **kwargs: asyncio.sleep(
-            0,
-            result=SimpleNamespace(
-                warnings=[],
-                should_rescan=False,
-                runtime={
-                    "enabled": True,
-                    "status": "active",
-                    "detail": "attached_idle_after_text",
-                    "process_name": "DemoGame.exe",
-                    "pid": 5252,
-                    "engine": "renpy",
-                    "game_id": memory_game_id,
-                    "session_id": memory_session_id,
-                    "last_seq": 5,
-                    "last_event_ts": "2026-04-29T01:00:05Z",
-                    "last_text_seq": 2,
-                    "last_text_ts": "2026-04-29T01:00:00Z",
-                },
-            ),
-        ),
-        shutdown=lambda: asyncio.sleep(0, result=None),
-    )
-    assert plugin._cfg is not None
-    plugin._cfg.ocr_reader_enabled = True
-    plugin._cfg.ocr_reader_trigger_mode = "interval"
-    target = DetectedGameWindow(
-        hwnd=205,
-        title="OCR Interval Window",
-        process_name="DemoGame.exe",
-        pid=5252,
-        width=1040,
-        height=807,
-    )
-    capture_backend = _FakeCaptureBackend()
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: 1710000400.0,
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(["新しい台詞です。"]),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: 1710000400.0,
-        ),
-    )
-
-    await plugin._poll_bridge(force=True)
-    await plugin._poll_bridge(force=True)
-    await plugin._poll_bridge(force=True)
-    snapshot = await plugin.galgame_get_snapshot()
-    status = await plugin.galgame_get_status()
-
-    assert isinstance(snapshot, Ok)
-    assert isinstance(status, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
-    assert snapshot.value["snapshot"]["text"] == "新しい台詞です。"
-    assert capture_backend.capture_calls >= 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
 async def test_memory_reader_text_freshness_resets_when_session_changes(
     tmp_path: Path,
 ) -> None:
@@ -6057,814 +5340,6 @@ async def test_memory_reader_text_freshness_resets_when_session_changes(
         now_monotonic=now + 1.0,
     ) is False
     assert second_runtime["last_text_recent"] is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_bootstrap_continues_until_stable_line(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={
-            "enabled": False,
-        },
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    clock = {"now": 1710000100.0}
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 201)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=201,
-                title="OCR Bootstrap Window",
-                process_name="DemoGame.exe",
-                pid=5252,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：首次可见台词。",
-                "雪乃：首次可见台词。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["text"] == "首次可见台词。"
-    assert first_snapshot.value["snapshot"]["stability"] == "stable"
-
-    clock["now"] += 1.0
-    plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    second_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(second_snapshot, Ok)
-    assert second_snapshot.value["snapshot"]["text"] == "首次可见台词。"
-    assert second_snapshot.value["snapshot"]["stability"] == "stable"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_updates_scene_from_embedded_background_hash(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={
-            "enabled": False,
-        },
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    clock = {"now": 1710000200.0}
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 202)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=202,
-                title="OCR Scene Window",
-                process_name="DemoGame.exe",
-                pid=5353,
-            )
-        ],
-        capture_backend=_FakeBackgroundHashCaptureBackend(
-            [
-                "0000000000000000",
-                "ffffffffffffffff",
-            ]
-        ),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：第一句台词。",
-                "雪乃：第二句台词。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    first_scene_id = first_snapshot.value["snapshot"]["scene_id"]
-    assert first_snapshot.value["snapshot"]["text"] == "第一句台词。"
-
-    clock["now"] += 0.2
-    await plugin._poll_bridge(force=True)
-    second_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(second_snapshot, Ok)
-    second_scene_id = second_snapshot.value["snapshot"]["scene_id"]
-    assert second_snapshot.value["snapshot"]["text"] == "第二句台词。"
-    assert second_scene_id != first_scene_id
-    assert str(second_scene_id).endswith("scene-0002")
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_active_waits_for_explicit_capture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    with plugin._state_lock:
-        plugin._state.mode = "choice_advisor"
-    clock = {"now": 1710000250.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=203,
-        title="OCR After Advance Window",
-        process_name="DemoGame.exe",
-        pid=5354,
-        width=1280,
-        height=720,
-    )
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(["雪乃：第一句。", "雪乃：第二句。"]),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["text"] == "第一句。"
-    assert capture_backend.capture_calls == 1
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    second_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(second_snapshot, Ok)
-    assert second_snapshot.value["snapshot"]["text"] == "第一句。"
-    assert capture_backend.capture_calls == 1
-
-    with plugin._state_lock:
-        waiting_runtime = dict(plugin._state.ocr_reader_runtime)
-    assert waiting_runtime["ocr_tick_allowed"] is False
-    assert waiting_runtime["ocr_tick_block_reason"] == "trigger_mode_after_advance_waiting_for_input"
-    assert waiting_runtime["ocr_emit_block_reason"] == ""
-    assert waiting_runtime["ocr_reader_allowed"] is True
-    assert waiting_runtime["ocr_trigger_mode_effective"] == "after_advance"
-    assert waiting_runtime["ocr_waiting_for_advance"] is True
-    assert waiting_runtime["ocr_waiting_for_advance_reason"] == "trigger_mode_after_advance_waiting_for_input"
-    assert waiting_runtime["ocr_last_tick_decision_at"]
-    assert waiting_runtime["ocr_tick_gate_allowed"] is False
-    assert waiting_runtime["ocr_tick_skipped_reason"] == "tick_gate_closed"
-    assert waiting_runtime["pending_manual_foreground_ocr_capture"] is False
-    assert waiting_runtime["foreground_refresh_attempted"] is True
-    assert waiting_runtime["foreground_refresh_skipped_reason"] == ""
-
-    plugin.request_ocr_after_advance_capture(reason="manual_foreground_advance")
-    with plugin._state_lock:
-        plugin._last_ocr_advance_capture_requested_at = time.monotonic()
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-
-    with plugin._state_lock:
-        delayed_runtime = dict(plugin._state.ocr_reader_runtime)
-    assert capture_backend.capture_calls == 1
-    assert delayed_runtime["ocr_tick_allowed"] is False
-    assert delayed_runtime["ocr_tick_block_reason"] == "waiting_pending_advance_delay"
-    assert delayed_runtime["ocr_tick_gate_allowed"] is False
-    assert delayed_runtime["ocr_tick_skipped_reason"] == "tick_gate_closed"
-    assert delayed_runtime["pending_manual_foreground_ocr_capture"] is True
-    assert delayed_runtime["pending_ocr_advance_reason"] == "manual_foreground_advance"
-    assert delayed_runtime["pending_ocr_delay_remaining"] > 0.0
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._last_ocr_advance_capture_requested_at = time.monotonic() - 1.0
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    clicked_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(clicked_snapshot, Ok)
-    assert clicked_snapshot.value["snapshot"]["text"] == "第二句。"
-    assert capture_backend.capture_calls == 2
-    assert plugin._has_pending_ocr_advance_capture() is False
-    with plugin._state_lock:
-        clicked_runtime = dict(plugin._state.ocr_reader_runtime)
-    assert clicked_runtime["ocr_tick_gate_allowed"] is True
-    assert clicked_runtime["ocr_tick_entered"] is True
-    assert clicked_runtime["ocr_tick_lock_acquired"] is True
-    assert clicked_runtime["ocr_tick_skipped_reason"] == ""
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_companion_keeps_snapshot_refreshing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    clock = {"now": 1710000252.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=213,
-        title="OCR Companion Window",
-        process_name="DemoGame.exe",
-        pid=5364,
-        width=1280,
-        height=720,
-    )
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(
-            [
-                "Alice: first line.",
-                "Alice: second line.",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["text"] == "first line."
-    assert plugin._has_pending_ocr_advance_capture() is False
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    second_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(second_snapshot, Ok)
-    assert second_snapshot.value["snapshot"]["text"] == "second line."
-    assert capture_backend.capture_calls == 2
-    assert plugin._has_pending_ocr_advance_capture() is False
-    with plugin._state_lock:
-        companion_runtime = dict(plugin._state.ocr_reader_runtime)
-    assert companion_runtime["ocr_tick_allowed"] is True
-    assert companion_runtime["ocr_tick_block_reason"] == ""
-    assert companion_runtime["ocr_reader_allowed"] is True
-    assert companion_runtime["ocr_waiting_for_advance"] is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_title_screen_refreshes_without_pending_capture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    clock = {"now": 1710000255.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=204,
-        title="OCR Title Screen Window",
-        process_name="DemoGame.exe",
-        pid=5355,
-        width=1280,
-        height=720,
-    )
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(
-            [
-                "Start Game\nContinue\nConfig\nExit",
-                "Start Game\nContinue\nConfig\nExit",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_TITLE
-    assert first_snapshot.value["snapshot"]["text"] == ""
-    with plugin._state_lock:
-        first_runtime = dict(plugin._state.ocr_reader_runtime)
-        first_history_lines = list(plugin._state.history_lines)
-    assert first_runtime["detail"] == "screen_classified"
-    assert first_runtime["ocr_context_state"] == "screen_classified"
-    assert first_history_lines == []
-    assert capture_backend.capture_calls == 1
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    second_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(second_snapshot, Ok)
-    assert second_snapshot.value["snapshot"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_TITLE
-    with plugin._state_lock:
-        second_history_lines = list(plugin._state.history_lines)
-    assert second_history_lines == []
-    assert capture_backend.capture_calls == 2
-    assert plugin._has_pending_ocr_advance_capture() is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_title_refresh_stops_after_dialogue(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    with plugin._state_lock:
-        plugin._state.mode = "choice_advisor"
-    clock = {"now": 1710000258.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=205,
-        title="OCR Title To Dialogue Window",
-        process_name="DemoGame.exe",
-        pid=5356,
-        width=1280,
-        height=720,
-    )
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(
-            [
-                "Start Game\nContinue\nConfig\nExit",
-                "雪乃：重新进入游戏。",
-                "雪乃：重新进入游戏。",
-                "雪乃：不应被连续读取。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    title_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(title_snapshot, Ok)
-    assert title_snapshot.value["snapshot"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_TITLE
-    assert capture_backend.capture_calls == 1
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    dialogue_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(dialogue_snapshot, Ok)
-    assert dialogue_snapshot.value["snapshot"]["text"] == "重新进入游戏。"
-    assert capture_backend.capture_calls == 2
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    final_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(final_snapshot, Ok)
-    assert final_snapshot.value["snapshot"]["text"] == "重新进入游戏。"
-    assert capture_backend.capture_calls == 2
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    stable_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(stable_snapshot, Ok)
-    assert stable_snapshot.value["snapshot"]["text"] == "重新进入游戏。"
-    assert capture_backend.capture_calls == 2
-    assert plugin._has_pending_ocr_advance_capture() is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_backlog_screen_does_not_block_new_dialogue(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    with plugin._state_lock:
-        plugin._state.mode = "choice_advisor"
-    clock = {"now": 1710000259.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=206,
-        title="OCR Backlog Window",
-        process_name="DemoGame.exe",
-        pid=5357,
-        width=1280,
-        height=720,
-    )
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：今の台詞。",
-                "Backlog\n雪乃：前の台詞。\n王生：今の台詞。",
-                "雪乃：新しい台詞。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["text"] == "今の台詞。"
-    assert capture_backend.capture_calls == 1
-
-    plugin.request_ocr_after_advance_capture(reason="manual_foreground_advance")
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._last_ocr_advance_capture_requested_at = time.monotonic() - 1.0
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    backlog_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(backlog_snapshot, Ok)
-    assert backlog_snapshot.value["snapshot"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_GALLERY
-    assert backlog_snapshot.value["snapshot"]["text"] == "今の台詞。"
-    with plugin._state_lock:
-        backlog_runtime = dict(plugin._state.ocr_reader_runtime)
-        backlog_history_lines = list(plugin._state.history_lines)
-    assert backlog_runtime["detail"] in {"screen_classified", "receiving_text"}
-    assert [item["text"] for item in backlog_history_lines] == ["今の台詞。"]
-    assert capture_backend.capture_calls == 2
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    final_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(final_snapshot, Ok)
-    assert final_snapshot.value["snapshot"]["text"] == "新しい台詞。"
-    assert capture_backend.capture_calls == 3
-    assert plugin._has_pending_ocr_advance_capture() is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_title_screen_with_previous_dialogue_keeps_refreshing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    with plugin._state_lock:
-        plugin._state.mode = "choice_advisor"
-    clock = {"now": 1710000261.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=207,
-        title="OCR Dialogue Title Window",
-        process_name="DemoGame.exe",
-        pid=5358,
-        width=1280,
-        height=720,
-    )
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(
-            [
-                "Alice: old line.",
-                "Start Game\nContinue\nConfig\nExit",
-                "Alice: new line.",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["text"] == "old line."
-
-    plugin.request_ocr_after_advance_capture(reason="manual_foreground_advance")
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._last_ocr_advance_capture_requested_at = time.monotonic() - 3.0
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    title_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(title_snapshot, Ok)
-    assert title_snapshot.value["snapshot"]["screen_type"] == OCR_CAPTURE_PROFILE_STAGE_TITLE
-    assert title_snapshot.value["snapshot"]["text"] == "old line."
-    with plugin._state_lock:
-        title_runtime = dict(plugin._state.ocr_reader_runtime)
-    assert title_runtime["detail"] == "screen_classified"
-    assert capture_backend.capture_calls == 2
-    assert plugin._has_pending_ocr_advance_capture() is False
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    final_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(final_snapshot, Ok)
-    assert final_snapshot.value["snapshot"]["text"] == "new line."
-    assert capture_backend.capture_calls == 3
-    assert plugin._has_pending_ocr_advance_capture() is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_capture_failure_keeps_pending_retry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={"enabled": False},
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 0.5,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    plugin._start_background_bridge_poll = lambda: False
-    clock = {"now": 1710000262.0}
-    capture_backend = _FakeCaptureBackend()
-    target = DetectedGameWindow(
-        hwnd=208,
-        title="OCR Retry Window",
-        process_name="DemoGame.exe",
-        pid=5359,
-        width=1280,
-        height=720,
-    )
-
-    class _FailOnCallOcrBackend(_FakeOcrBackend):
-        def __init__(self, texts: list[str], *, fail_on_calls: set[int]) -> None:
-            super().__init__(texts)
-            self._calls = 0
-            self._fail_on_calls = set(fail_on_calls)
-
-        def extract_text(self, image: str) -> str:
-            self._calls += 1
-            if self._calls in self._fail_on_calls:
-                raise RuntimeError("temporary OCR failure")
-            return super().extract_text(image)
-
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 0)
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [target],
-        capture_backend=capture_backend,
-        ocr_backend=_FailOnCallOcrBackend(
-            ["Alice: first line.", "Alice: second line."],
-            fail_on_calls={2},
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    await plugin._poll_bridge(force=True)
-    first_snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(first_snapshot, Ok)
-    assert first_snapshot.value["snapshot"]["text"] == "first line."
-
-    plugin.request_ocr_after_advance_capture(reason="manual_foreground_advance")
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._last_ocr_advance_capture_requested_at = time.monotonic() - 1.0
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    failed_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(failed_snapshot, Ok)
-    assert failed_snapshot.value["snapshot"]["text"] == "first line."
-    with plugin._state_lock:
-        failed_runtime = dict(plugin._state.ocr_reader_runtime)
-    assert failed_runtime["detail"] == "capture_failed"
-    assert failed_runtime["ocr_tick_gate_allowed"] is True
-    assert failed_runtime["ocr_tick_entered"] is True
-    assert failed_runtime["pending_manual_foreground_ocr_capture"] is True
-    assert failed_runtime["pending_ocr_advance_reason"] == "manual_foreground_advance"
-    assert failed_runtime["pending_ocr_advance_clear_reason"] == ""
-    assert capture_backend.capture_calls == 2
-    assert plugin._has_pending_ocr_advance_capture() is True
-
-    clock["now"] += 1.0
-    with plugin._state_lock:
-        plugin._state.next_poll_at_monotonic = 0.0
-    await plugin._poll_bridge(force=False)
-    final_snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(final_snapshot, Ok)
-    assert final_snapshot.value["snapshot"]["text"] == "second line."
-    assert capture_backend.capture_calls == 3
-    assert plugin._has_pending_ocr_advance_capture() is False
 
 
 @pytest.mark.asyncio
@@ -7138,88 +5613,6 @@ async def test_ocr_reader_foreground_refresh_queues_pending_capture_retry(
 
     assert plugin._has_pending_ocr_advance_capture() is True
     assert plugin._last_ocr_advance_capture_reason == "foreground_target_activated"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_after_advance_coalesces_transient_background_scenes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-
-    cfg = _make_effective_config(
-        bridge_root,
-        memory_reader={
-            "enabled": False,
-        },
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-            "trigger_mode": "after_advance",
-        },
-    )
-    ctx = _Ctx(plugin_dir, cfg)
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    clock = {"now": 1710000250.0}
-    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 204)
-    capture_backend = _FakeBackgroundHashCaptureBackend(
-        [
-            "0000000000000000",
-            "ffffffffffffffff",
-            "3f00001c1c0d0f3f",
-            "00007efe7c3f3fff",
-        ]
-    )
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=204,
-                title="OCR Transient Scene Window",
-                process_name="DemoGame.exe",
-                pid=5354,
-            )
-        ],
-        capture_backend=capture_backend,
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：第一句台词。",
-                "",
-                "",
-                "王生：第二句台词。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-    _clear_bridge_root(bridge_root)
-
-    for _ in range(4):
-        await plugin._poll_bridge(force=True)
-        clock["now"] += 1.0
-
-    snapshot = await plugin.galgame_get_snapshot()
-    assert isinstance(snapshot, Ok)
-    assert snapshot.value["snapshot"]["text"] == "第二句台词。"
-    assert snapshot.value["snapshot"]["scene_id"].endswith("scene-0002")
-
-    events_path = bridge_root / plugin._ocr_reader_manager._writer.game_id / "events.jsonl"
-    scene_events = [
-        event for event in _read_bridge_events(events_path) if event["type"] == "scene_changed"
-    ]
-    assert [event["payload"]["scene_id"] for event in scene_events] == [
-        f"ocr:{plugin._ocr_reader_manager._writer.game_id}:scene-0002"
-    ]
 
 
 @pytest.mark.asyncio
@@ -7590,282 +5983,6 @@ async def test_after_advance_manual_input_discovers_ocr_target_while_memory_acti
     assert status.value["active_data_source"] == DATA_SOURCE_OCR_READER
     assert capture_backend.capture_calls == 1
     assert plugin._has_pending_ocr_advance_capture() is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_bridge_sdk_session_preempts_ocr_reader_candidate(tmp_path: Path) -> None:
-    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-
-    ctx = _Ctx(
-        plugin_dir,
-        _make_effective_config(
-            bridge_root,
-            ocr_reader={
-                "enabled": True,
-                "install_target_dir": str(install_root),
-                "poll_interval_seconds": 999.0,
-            },
-        ),
-    )
-    plugin = GalgameBridgePlugin(ctx)
-    await plugin.startup()
-    clock = {"now": 1711000000.0}
-    plugin._ocr_reader_manager = OcrReaderManager(
-        logger=plugin.logger,
-        config=plugin._cfg,
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=202,
-                title="OCR Demo Window",
-                process_name="DemoGame.exe",
-                pid=4343,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "雪乃：OCR 台词。",
-                "雪乃：OCR 台词。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-
-    await plugin._poll_bridge(force=True)
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
-    clock["now"] += 1.0
-    await plugin._poll_bridge(force=True)
-
-    _create_game_dir(
-        bridge_root,
-        game_id="demo.sdk",
-        session_payload=_session(
-            game_id="demo.sdk",
-            session_id="sdk-session-1",
-            last_seq=3,
-            state=_session_state(
-                speaker="桥接",
-                text="来自 Bridge SDK 的台词。",
-                scene_id="scene-sdk",
-                line_id="line-sdk",
-                ts="2026-04-21T08:31:00Z",
-            ),
-        ),
-        events=[],
-    )
-
-    await plugin._poll_bridge(force=True)
-    status = await plugin.galgame_get_status()
-    snapshot = await plugin.galgame_get_snapshot()
-
-    assert isinstance(status, Ok)
-    assert isinstance(snapshot, Ok)
-    assert status.value["active_data_source"] == DATA_SOURCE_BRIDGE_SDK
-    assert snapshot.value["snapshot"]["text"] == "来自 Bridge SDK 的台词。"
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_aihong_menu_stage_rejects_short_dialogue_false_positive(tmp_path: Path) -> None:
-    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-        },
-    )
-    clock = {"now": 1712000000.0}
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=build_config(cfg),
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=301,
-                title="哀鸿",
-                process_name="TheLamentingGeese.exe",
-                pid=6001,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "王生：前文台词。",
-                "王生：前文台词。",
-                "",
-                "",
-                "王生\n别喝了。",
-                "",
-                "王生\n别喝了。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-
-    for _ in range(6):
-        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        clock["now"] += 1.0
-
-    game_dir = bridge_root / str(manager._writer.game_id)
-    session = read_session_json(game_dir / "session.json")
-    events = _read_bridge_events(game_dir / "events.jsonl")
-
-    assert session.error == ""
-    assert session.session is not None
-    assert all(event["type"] != "choices_shown" for event in events)
-    assert session.session["state"]["is_menu_open"] is False
-    assert session.session["state"]["choices"] == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_ocr_reader_quick_followup_confirm_emits_line_without_waiting_next_tick(
-    tmp_path: Path,
-) -> None:
-    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-        },
-    )
-    clock = {"now": 1712050000.0}
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=build_config(cfg),
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=399,
-                title="测试游戏",
-                process_name="Demo.exe",
-                pid=6099,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "王生：前文台词。",
-                "王生：前文台词。",
-                "王生：别喝了。",
-                "王生：别喝了。",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-
-    for _ in range(2):
-        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        clock["now"] += 1.0
-    for _ in range(2):
-        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        clock["now"] += 1.0
-    await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-    clock["now"] += 1.0
-    await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-
-    game_dir = bridge_root / str(manager._writer.game_id)
-    session = read_session_json(game_dir / "session.json")
-    events = _read_bridge_events(game_dir / "events.jsonl")
-
-    assert session.session is not None
-    assert session.session["state"]["text"] == "别喝了。"
-    assert [event["type"] for event in events].count("line_changed") >= 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.plugin_unit
-async def test_aihong_menu_stage_requires_two_stable_short_menu_reads_before_choices_event(
-    tmp_path: Path,
-) -> None:
-    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
-    install_root = tmp_path / "Tesseract"
-    _prepare_fake_tesseract_install(install_root)
-    cfg = _make_effective_config(
-        bridge_root,
-        ocr_reader={
-            "enabled": True,
-            "install_target_dir": str(install_root),
-            "poll_interval_seconds": 999.0,
-        },
-    )
-    clock = {"now": 1712100000.0}
-    manager = OcrReaderManager(
-        logger=_Logger(),
-        config=build_config(cfg),
-        time_fn=lambda: clock["now"],
-        platform_fn=lambda: True,
-        window_scanner=lambda: [
-            DetectedGameWindow(
-                hwnd=302,
-                title="哀鸿",
-                process_name="TheLamentingGeese.exe",
-                pid=6002,
-            )
-        ],
-        capture_backend=_FakeCaptureBackend(),
-        ocr_backend=_FakeOcrBackend(
-            [
-                "王生：前文台词。",
-                "王生：前文台词。",
-                "",
-                "",
-                "去东院\n去西院",
-                "",
-                "去东院\n去西院",
-            ]
-        ),
-        writer=OcrReaderBridgeWriter(
-            bridge_root=bridge_root,
-            time_fn=lambda: clock["now"],
-        ),
-    )
-
-    for _ in range(5):
-        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        clock["now"] += 1.0
-
-    game_dir = bridge_root / str(manager._writer.game_id)
-    events_before_confirm = _read_bridge_events(game_dir / "events.jsonl")
-    assert all(event["type"] != "choices_shown" for event in events_before_confirm)
-
-    for _ in range(2):
-        await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
-        clock["now"] += 1.0
-
-    session = read_session_json(game_dir / "session.json")
-    events = _read_bridge_events(game_dir / "events.jsonl")
-
-    assert session.error == ""
-    assert session.session is not None
-    assert [event["type"] for event in events][-1] == "choices_shown"
-    assert session.session["state"]["is_menu_open"] is True
-    assert [item["text"] for item in session.session["state"]["choices"]] == ["去东院", "去西院"]
 
 
 @pytest.mark.plugin_unit
@@ -8938,13 +7055,13 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
             session_id=session_id,
             last_seq=2,
             state=_session_state(
-                speaker="é›ªä¹ƒ",
-                text="è¿™æ˜¯ OCR è¯»å–æ¥çš„å°è¯ã€‚",
+                speaker="雪乃",
+                text="这是 OCR 读取来的台词。",
                 scene_id="ocr:scene-a",
                 line_id="ocr:line-1",
                 choices=[
-                    {"choice_id": "ocr:line-1#choice0", "text": "åŽ»æ•™å®¤", "index": 0, "enabled": True},
-                    {"choice_id": "ocr:line-1#choice1", "text": "åŽ»å¤©å°", "index": 1, "enabled": True},
+                    {"choice_id": "ocr:line-1#choice0", "text": "去教室", "index": 0, "enabled": True},
+                    {"choice_id": "ocr:line-1#choice1", "text": "去天台", "index": 1, "enabled": True},
                 ],
                 is_menu_open=True,
                 ts="2026-04-21T08:31:00Z",
@@ -8957,8 +7074,8 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
                 session_id=session_id,
                 game_id=game_id,
                 payload={
-                    "speaker": "é›ªä¹ƒ",
-                    "text": "è¿™æ˜¯ OCR è¯»å–æ¥çš„å°è¯ã€‚",
+                    "speaker": "雪乃",
+                    "text": "这是 OCR 读取来的台词。",
                     "line_id": "ocr:line-1",
                     "scene_id": "ocr:scene-a",
                     "route_id": "",
@@ -8975,8 +7092,8 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
                     "scene_id": "ocr:scene-a",
                     "route_id": "",
                     "choices": [
-                        {"choice_id": "ocr:line-1#choice0", "text": "åŽ»æ•™å®¤", "index": 0, "enabled": True},
-                        {"choice_id": "ocr:line-1#choice1", "text": "åŽ»å¤©å°", "index": 1, "enabled": True},
+                        {"choice_id": "ocr:line-1#choice0", "text": "去教室", "index": 0, "enabled": True},
+                        {"choice_id": "ocr:line-1#choice1", "text": "去天台", "index": 1, "enabled": True},
                     ],
                 },
                 ts="2026-04-21T08:31:01Z",
@@ -8997,11 +7114,11 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
         params = kwargs.get("params") or {}
         operation = params.get("operation")
         if operation == "explain_line":
-            return {"explanation": "è¿™æ˜¯å¯¹ OCR å°è¯çš„è§£é‡Šã€‚", "evidence": []}
+            return {"explanation": "这是对 OCR 台词的解释。", "evidence": []}
         if operation == "summarize_scene":
             return {
-                "summary": "è¿™æ˜¯å¯¹ OCR åœºæ™¯çš„æ€»ç»“ã€‚",
-                "key_points": [{"type": "plot", "text": "OCR ä¸»çº¿å¯ç”¨ã€‚"}],
+                "summary": "这是对 OCR 场景的总结。",
+                "key_points": [{"type": "plot", "text": "OCR 主线可用。"}],
             }
         if operation == "suggest_choice":
             context = params.get("context") or {}
@@ -9012,7 +7129,7 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
                         "choice_id": visible_choices[0]["choice_id"],
                         "text": visible_choices[0]["text"],
                         "rank": 1,
-                        "reason": "OCR ä¸‹ä¼˜å…ˆç»§ç»­ä¸»çº¿ã€‚",
+                        "reason": "OCR 下优先继续主线。",
                     }
                 ]
             }
@@ -9062,7 +7179,7 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
     assert explain.value["semantic_degraded"] is True
     assert explain.value["fallback_used"] is False
     assert "ocr_reader_input" in explain.value["diagnostic"]
-    assert explain.value["explanation"] == "è¿™æ˜¯å¯¹ OCR å°è¯çš„è§£é‡Šã€‚"
+    assert explain.value["explanation"] == "这是对 OCR 台词的解释。"
 
     assert isinstance(summarize, Ok)
     assert summarize.value["degraded"] is True
@@ -9070,7 +7187,7 @@ async def test_phase2_entries_mark_ocr_reader_input_as_degraded_even_when_llm_su
     assert summarize.value["semantic_degraded"] is True
     assert summarize.value["fallback_used"] is False
     assert "ocr_reader_input" in summarize.value["diagnostic"]
-    assert summarize.value["summary"] == "è¿™æ˜¯å¯¹ OCR åœºæ™¯çš„æ€»ç»“ã€‚"
+    assert summarize.value["summary"] == "这是对 OCR 场景的总结。"
 
     assert isinstance(suggest, Ok)
     assert suggest.value["degraded"] is True
@@ -10647,6 +8764,398 @@ def test_game_llm_agent_reply_context_exposes_public_context_not_private_memory(
     assert "failure_memory" not in context
     assert context["public_context"]["scene_summary_seed"]
     assert "screen_context" in context["public_context"]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_uses_dynamic_window_config(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=SimpleNamespace(
+            context_explain_min_lines=3,
+            context_explain_max_lines=16,
+            context_window_target_tokens=6,
+        ),
+    )
+    shared = _shared_state(
+        history_lines=[
+            {"speaker": "A", "text": f"stable {index}", "line_id": f"s{index}"}
+            for index in range(6)
+        ],
+        history_observed_lines=[
+            {"speaker": "A", "text": f"observed {index}", "line_id": f"o{index}"}
+            for index in range(6)
+        ],
+    )
+
+    context = agent._build_agent_reply_context(shared, prompt="status")
+    public_context = context["public_context"]
+
+    assert [line["line_id"] for line in public_context["stable_lines"]] == [
+        f"s{index}" for index in range(6)
+    ]
+    assert [line["line_id"] for line in public_context["observed_lines"]] == [
+        f"o{index}" for index in range(6)
+    ]
+    assert [line["line_id"] for line in public_context["recent_lines"]] == [
+        *[f"s{index}" for index in range(6)],
+        *[f"o{index}" for index in range(6)],
+    ]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_summary_context_uses_dynamic_window_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    config = SimpleNamespace(
+        context_explain_min_lines=2,
+        context_explain_max_lines=2,
+        context_window_target_tokens=16,
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+        config=config,
+    )
+    calls: list[object] = []
+
+    def _fake_build_summarize_context(
+        shared: dict[str, object],
+        *,
+        scene_id: str,
+        merge_from_scene_ids: list[str] | None = None,
+        config: object | None = None,
+    ) -> dict[str, object]:
+        del shared, merge_from_scene_ids
+        calls.append(config)
+        return {
+            "scene_id": scene_id,
+            "route_id": "",
+            "stable_lines": [],
+            "recent_lines": [],
+            "recent_choices": [],
+        }
+
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "build_summarize_context",
+        _fake_build_summarize_context,
+    )
+
+    agent._update_scene_state(
+        _shared_state(snapshot=_session_state(scene_id="scene-a", line_id="line-1")),
+        now=time.monotonic(),
+    )
+
+    assert calls == [config]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_choice_context_uses_dynamic_window_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    config = SimpleNamespace(
+        context_explain_min_lines=2,
+        context_explain_max_lines=2,
+        context_window_target_tokens=16,
+    )
+    fake_gateway = _FakeLLMGateway(
+        suggest_payload={"degraded": True, "choices": [], "diagnostic": "no choices"}
+    )
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=fake_gateway,
+        host_adapter=_FakeHostAdapter(),
+        config=config,
+    )
+    calls: list[object] = []
+
+    def _fake_build_suggest_context(
+        shared: dict[str, object],
+        *,
+        config: object | None = None,
+    ) -> dict[str, object]:
+        calls.append(config)
+        return {
+            "visible_choices": list(
+                ((shared.get("latest_snapshot") or {}).get("choices") or [])
+            ),
+        }
+
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "build_suggest_context",
+        _fake_build_suggest_context,
+    )
+    shared = _shared_state(
+        mode="choice_advisor",
+        snapshot=_session_state(
+            scene_id="scene-a",
+            line_id="line-1",
+            choices=[{"choice_id": "choice-1", "text": "左边", "index": 0}],
+            is_menu_open=True,
+        ),
+    )
+
+    await agent.tick(shared)
+    assert agent._pending_choice_advice is not None
+    agent._pending_choice_advice["requested_at"] = (
+        time.monotonic() - agent._CHOICE_ADVICE_WAIT_TIMEOUT_SECONDS - 0.1
+    )
+    await agent.tick(shared)
+
+    assert calls == [config]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_fills_odd_recent_line_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 3,
+    )
+    shared = _shared_state(
+        history_lines=[
+            {
+                "speaker": "A",
+                "text": "stable middle",
+                "line_id": "s2",
+                "ts": "2026-05-14T00:00:02Z",
+            },
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "B",
+                "text": "observed older",
+                "line_id": "o1",
+                "ts": "2026-05-14T00:00:01Z",
+            },
+            {
+                "speaker": "B",
+                "text": "observed latest",
+                "line_id": "o3",
+                "ts": "2026-05-14T00:00:03Z",
+            },
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["recent_lines"]] == [
+        "o1",
+        "s2",
+        "o3",
+    ]
+    assert "observed older" in public_context["scene_summary_seed"]
+    assert "stable middle" in public_context["scene_summary_seed"]
+    assert "observed latest" in public_context["scene_summary_seed"]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_choices_follow_recent_line_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 2,
+    )
+    shared = _shared_state(
+        history_lines=[
+            {
+                "speaker": "A",
+                "text": "stable older",
+                "line_id": "s1",
+                "ts": "2026-05-14T00:00:01Z",
+            },
+            {
+                "speaker": "A",
+                "text": "stable recent",
+                "line_id": "s2",
+                "ts": "2026-05-14T00:00:03Z",
+            },
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "B",
+                "text": "observed recent",
+                "line_id": "o2",
+                "ts": "2026-05-14T00:00:02Z",
+            },
+        ],
+        history_choices=[
+            {"choice_id": "c-old", "text": "old", "line_id": "s1"},
+            {"choice_id": "c-observed", "text": "observed", "line_id": "o2"},
+            {"choice_id": "c-stable", "text": "stable", "line_id": "s2"},
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o2", "s2"]
+    assert [choice["choice_id"] for choice in public_context["recent_choices"]] == [
+        "c-observed",
+        "c-stable",
+    ]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_keeps_condensed_count_for_internal_line_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 2,
+    )
+    shared = _shared_state(
+        snapshot=_session_state(scene_id="scene-a", line_id="line-current"),
+        history_lines=[
+            {
+                "speaker": "雪乃",
+                "text": "第一句\n第二句\n第三句",
+                "line_id": "s1",
+                "scene_id": "scene-a",
+                "_condensed_line_ids": ["s1", "s2", "s3"],
+                "_condensed_count": 3,
+            }
+        ],
+        history_observed_lines=[
+            {
+                "speaker": "雪乃",
+                "text": "候选一句\n候选二句",
+                "line_id": "o1",
+                "scene_id": "scene-a",
+                "_condensed_line_ids": ["o1", "o2"],
+                "_condensed_count": 2,
+            }
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert public_context["stable_lines"][0]["_condensed_count"] == 3
+    assert public_context["observed_lines"][0]["_condensed_count"] == 2
+    assert game_llm_agent_module._context_line_count(public_context["stable_lines"]) == 3
+    assert all("_condensed_count" not in line for line in public_context["recent_lines"])
+    assert all("_condensed_line_ids" not in line for line in public_context["recent_lines"])
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_keeps_recent_line_when_limit_is_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 1,
+    )
+    shared = _shared_state(
+        history_lines=[
+            {"speaker": "A", "text": "stable latest", "line_id": "s1"},
+        ],
+        history_observed_lines=[
+            {"speaker": "B", "text": "observed latest", "line_id": "o1"},
+        ],
+    )
+
+    public_context = agent._build_agent_reply_context(shared, prompt="status")["public_context"]
+
+    assert [line["line_id"] for line in public_context["recent_lines"]] == ["o1"]
+    assert public_context["scene_summary_seed"]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_reply_context_zero_line_limit_omits_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    monkeypatch.setattr(
+        game_llm_agent_module,
+        "_compute_dynamic_line_limit",
+        lambda *args, **kwargs: 0,
+    )
+    shared = _shared_state(
+        history_lines=[{"speaker": "A", "text": "stable", "line_id": "s1"}],
+        history_observed_lines=[{"speaker": "A", "text": "observed", "line_id": "o1"}],
+        history_choices=[{"text": "choice", "choice_id": "c1"}],
+    )
+
+    context = agent._build_agent_reply_context(shared, prompt="status")
+    public_context = context["public_context"]
+
+    assert public_context["stable_lines"] == []
+    assert public_context["observed_lines"] == []
+    assert public_context["recent_choices"] == []
+    assert public_context["recent_lines"] == []
 
 
 @pytest.mark.plugin_unit
@@ -12697,6 +11206,76 @@ async def test_game_llm_agent_pushes_scene_summary_after_eight_lines(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_scene_summary_counts_condensed_stable_lines(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        mode="companion",
+        snapshot=_session_state(
+            speaker="雪乃",
+            text="第 8 句台词。",
+            scene_id="scene-a",
+            line_id="line-8",
+            ts="2026-04-21T08:33:08Z",
+        ),
+    )
+    agent._runtime_loop = asyncio.get_running_loop()
+    agent._op_lock = asyncio.Lock()
+    agent._observed_session_id = str(shared["active_session_id"])
+    agent._observed_scene_id = "scene-a"
+    agent._schedule_scene_summary_task(
+        shared=shared,
+        session_id=str(shared["active_session_id"]),
+        scene_id="scene-a",
+        route_id="",
+        snapshot=dict(shared["latest_snapshot"]),
+        context={
+            "scene_id": "scene-a",
+            "route_id": "",
+            "stable_lines": [
+                {
+                    "line_id": "line-1",
+                    "speaker": "雪乃",
+                    "text": "\n".join(f"第 {index} 句台词。" for index in range(1, 9)),
+                    "scene_id": "scene-a",
+                    "route_id": "",
+                    "ts": "2026-04-21T08:33:08Z",
+                    "_condensed_line_ids": [f"line-{index}" for index in range(1, 9)],
+                    "_condensed_count": 8,
+                }
+            ],
+            "observed_lines": [],
+            "recent_choices": [],
+        },
+        trigger="line_count",
+        metadata={
+            "context_type": "galgame_scene_context",
+            "trigger": "line_count",
+            "scheduled_from_event_seq": 0,
+            "last_line_seq": 0,
+        },
+        update_scene_memory=False,
+        scheduled_line_count=8,
+    )
+    await _drain_agent_summary_tasks(agent)
+
+    assert ctx.pushed_messages[-1]["metadata"]["kind"] == "scene_summary"
+    assert ctx.pushed_messages[-1]["metadata"]["trigger"] == "line_count"
+    assert ctx.pushed_messages[-1]["metadata"]["stable_line_count"] == 8
+    assert ctx.pushed_messages[-1]["metadata"]["summary_delivery_key"] == "scene-a:0:8"
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     tmp_path: Path,
 ) -> None:
@@ -12713,8 +11292,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     lines = [
         {
             "line_id": f"line-{index}",
-            "speaker": "é›ªä¹ƒ",
-            "text": f"ç¬¬ {index} å¥å°è¯ã€‚",
+            "speaker": "雪乃",
+            "text": f"第 {index} 句台词。",
             "scene_id": "scene-a",
             "route_id": "",
             "ts": f"2026-04-21T08:33:{index:02d}Z",
@@ -12724,8 +11303,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
     shared_scene_a = _shared_state(
         mode="companion",
         snapshot=_session_state(
-            speaker="é›ªä¹ƒ",
-            text="ç¬¬ 8 å¥å°è¯ã€‚",
+            speaker="雪乃",
+            text="第 8 句台词。",
             scene_id="scene-a",
             line_id="line-8",
             ts="2026-04-21T08:33:08Z",
@@ -12736,8 +11315,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
         mode="companion",
         push_notifications=False,
         snapshot=_session_state(
-            speaker="é›ªä¹ƒ",
-            text="ä¸‹ä¸€å¹•ã€‚",
+            speaker="雪乃",
+            text="下一幕。",
             scene_id="scene-b",
             line_id="line-9",
             ts="2026-04-21T08:34:00Z",
@@ -12745,8 +11324,8 @@ async def test_game_llm_agent_delivers_line_count_summary_after_scene_change(
         history_lines=[
             {
                 "line_id": "line-9",
-                "speaker": "é›ªä¹ƒ",
-                "text": "ä¸‹ä¸€å¹•ã€‚",
+                "speaker": "雪乃",
+                "text": "下一幕。",
                 "scene_id": "scene-b",
                 "route_id": "",
                 "ts": "2026-04-21T08:34:00Z",

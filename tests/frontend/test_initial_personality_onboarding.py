@@ -1153,6 +1153,62 @@ def test_manual_character_personality_reselect_waits_for_home_tutorial_completio
 
 
 @pytest.mark.frontend
+def test_manual_character_personality_reselect_resumes_after_home_tutorial_early_end(mock_page: Page):
+    _bootstrap_page(mock_page)
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.__tutorialPromptState = 'completed';
+            window.__personaOnboardingState = {
+                status: 'completed',
+                handled_at: '2026-04-29T12:00:00Z',
+                manual_reselect_character_name: '小天',
+                manual_reselect_requested_at: '2026-04-29T12:10:00Z',
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "js" / "character_personality_onboarding.js"))
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.CharacterPersonalityOnboarding.bootstrap();
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = true;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: { page: 'home', source: 'idle_prompt' }
+            }));
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_hidden()
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.universalTutorialManager.isTutorialRunning = false;
+            window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
+                detail: { page: 'home', reason: 'page-changed' }
+            }));
+        }
+        """
+    )
+
+    expect(mock_page.locator("[data-testid='character-personality-overlay']")).to_be_visible()
+
+
+@pytest.mark.frontend
 def test_manual_character_personality_reselect_skip_clears_manual_pending_state(mock_page: Page):
     _bootstrap_page(mock_page)
     mock_page.evaluate(

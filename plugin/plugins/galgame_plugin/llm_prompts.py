@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .context_builder import _compact_lines_by_importance, _condense_dialogue_batch
 from .context_tokens import estimate_context_tokens
 
 _PROMPT_CONTEXT_MAX_CHARS = 12000
@@ -16,11 +18,13 @@ _PROMPT_COMPACTION_LEVELS = (
     (8, 500, 32),
     (4, 240, 16),
 )
+logger = logging.getLogger(__name__)
 
 
 class PromptBudgetConfig(Protocol):
     context_counting_mode: str
     context_max_tokens: int
+    context_semantic_compression: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +52,15 @@ def _compact_prompt_value(
         omitted = len(value) - string_limit
         return f"{value[:string_limit]}\n...[truncated {omitted} chars]"
     if isinstance(value, list):
-        items = value[-list_limit:] if len(value) > list_limit else value
+        if len(value) > list_limit and any(
+            isinstance(item, dict) and "_importance_score" in item for item in value
+        ):
+            items = _compact_lines_by_importance(
+                [dict(item) for item in value if isinstance(item, dict)],
+                limit=list_limit,
+            )
+        else:
+            items = value[-list_limit:] if len(value) > list_limit else value
         return [
             _compact_prompt_value(
                 item,
@@ -59,7 +71,7 @@ def _compact_prompt_value(
             for item in items
         ]
     if isinstance(value, dict):
-        items = list(value.items())
+        items = [(key, item) for key, item in value.items() if key != "_importance_score"]
         if dict_key_limit > 0 and len(items) > dict_key_limit:
             omitted = len(items) - dict_key_limit
             items = items[:dict_key_limit]
@@ -86,6 +98,30 @@ def _compact_prompt_value(
     return value
 
 
+def _strip_prompt_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_prompt_metadata(item)
+            for key, item in value.items()
+            if not str(key).startswith("_condensed_")
+        }
+    if isinstance(value, list):
+        return [_strip_prompt_metadata(item) for item in value]
+    return value
+
+
+def _strip_importance_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_importance_metadata(item)
+            for key, item in value.items()
+            if key != "_importance_score"
+        }
+    if isinstance(value, list):
+        return [_strip_importance_metadata(item) for item in value]
+    return value
+
+
 def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
     mode = str(getattr(config, "context_counting_mode", "char") or "char").strip().lower()
     if mode != "token":
@@ -95,6 +131,86 @@ def _context_budget(config: PromptBudgetConfig | None) -> tuple[str, int]:
     except (TypeError, ValueError):
         budget = _PROMPT_CONTEXT_DEFAULT_MAX_TOKENS
     return "token", max(1, budget)
+
+
+_CONDENSABLE_CONTEXT_KEYS = ("recent_lines", "stable_lines", "observed_lines")
+
+
+def _count_condensable_lines(context: dict[str, Any]) -> int:
+    total = 0
+    for key in _CONDENSABLE_CONTEXT_KEYS:
+        value = context.get(key)
+        if isinstance(value, list):
+            total += len(value)
+    public_context = context.get("public_context")
+    if isinstance(public_context, dict):
+        for key in _CONDENSABLE_CONTEXT_KEYS:
+            value = public_context.get(key)
+            if isinstance(value, list):
+                total += len(value)
+    return total
+
+
+def _strip_condense_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: item
+            for key, item in value.items()
+            if not str(key).startswith("_condensed_")
+        }
+    return value
+
+
+def _condensed_context_lines(value: Any) -> Any:
+    if not isinstance(value, list):
+        return value
+    return [
+        _strip_condense_metadata(item)
+        for item in _condense_dialogue_batch(
+            [dict(item) for item in value if isinstance(item, dict)]
+        )
+    ]
+
+
+def _condense_keys(container: dict[str, Any]) -> dict[str, Any]:
+    result = dict(container)
+    for key in _CONDENSABLE_CONTEXT_KEYS:
+        if key in result:
+            result[key] = _condensed_context_lines(result[key])
+    return result
+
+
+def _condense_context(
+    context: dict[str, Any],
+    config: PromptBudgetConfig | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    enabled = bool(getattr(config, "context_semantic_compression", False))
+    if not enabled:
+        return context, {
+            "semantic_compression_enabled": False,
+            "semantic_lines_before": _count_condensable_lines(context),
+            "semantic_lines_after": _count_condensable_lines(context),
+        }
+    before = _count_condensable_lines(context)
+    try:
+        condensed = _condense_keys(context)
+        public_context = condensed.get("public_context")
+        if isinstance(public_context, dict):
+            condensed["public_context"] = _condense_keys(public_context)
+        after = _count_condensable_lines(condensed)
+        return condensed, {
+            "semantic_compression_enabled": True,
+            "semantic_lines_before": before,
+            "semantic_lines_after": after,
+        }
+    except Exception:
+        logger.warning("Context compression failed, falling back to uncompressed", exc_info=True)
+        return dict(context), {
+            "semantic_compression_enabled": False,
+            "semantic_compression_fallback": True,
+            "semantic_lines_before": before,
+            "semantic_lines_after": before,
+        }
 
 
 def _fallback_context_from_excerpt(raw: str, excerpt: str) -> dict[str, Any]:
@@ -153,10 +269,12 @@ def _context_json_result_for_prompt(
     context: dict[str, Any],
     config: PromptBudgetConfig | None = None,
 ) -> PromptContextResult:
+    context = _strip_prompt_metadata(context)
+    rendered_context = _strip_importance_metadata(context)
     mode, budget = _context_budget(config)
-    raw = _json_dump(context)
+    raw = _json_dump(rendered_context)
     raw_chars = len(raw)
-    raw_tokens = estimate_context_tokens(context)
+    raw_tokens = estimate_context_tokens(rendered_context)
     raw_size = raw_tokens if mode == "token" else raw_chars
     if raw_size <= budget:
         return PromptContextResult(
@@ -183,6 +301,7 @@ def _context_json_result_for_prompt(
         )
         if isinstance(compact, dict):
             compact = {"_prompt_truncated": True, **compact}
+        compact = _strip_importance_metadata(compact)
         rendered = _json_dump(compact)
         compacted_tokens = estimate_context_tokens(compact if isinstance(compact, dict) else {})
         rendered_size = compacted_tokens if mode == "token" else len(rendered)
@@ -217,6 +336,25 @@ def _context_json_result_for_prompt(
             "compacted_chars": len(rendered),
             "compression_level": len(_PROMPT_COMPACTION_LEVELS) + 1,
         },
+    )
+
+
+def _truncation_notice(metadata: dict[str, Any]) -> str:
+    try:
+        compression_level = int(metadata.get("compression_level") or 0)
+    except (TypeError, ValueError):
+        compression_level = 0
+    if compression_level <= 0:
+        return ""
+    if compression_level >= 4:
+        return (
+            "\n\nContext truncation notice: the provided context was heavily compacted. "
+            "Treat missing details as unknown, avoid filling gaps, and explicitly mention "
+            "uncertainty when the answer depends on omitted context."
+        )
+    return (
+        "\n\nContext truncation notice: the provided context was compacted. "
+        "Do not infer unsupported details from omitted context."
     )
 
 
@@ -370,7 +508,9 @@ def build_prompt_messages_with_metadata(
 ) -> PromptMessagesResult:
     """Build chat messages and return prompt context metadata for telemetry."""
     system_prompt = _SYSTEM_PROMPTS[operation]
-    context_result = _context_json_result_for_prompt(context, config)
+    prompt_context, semantic_metadata = _condense_context(context, config)
+    context_result = _context_json_result_for_prompt(prompt_context, config)
+    system_prompt += _truncation_notice(context_result.metadata)
     user_prompt = (
         _USER_PROMPT_PREFIXES[operation]
         + f"{_json_dump(_EXAMPLES[operation])}\n\n"
@@ -382,5 +522,5 @@ def build_prompt_messages_with_metadata(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        metadata=dict(context_result.metadata),
+        metadata={**dict(context_result.metadata), **semantic_metadata},
     )

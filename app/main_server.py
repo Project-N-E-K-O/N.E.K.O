@@ -1063,6 +1063,14 @@ async def _init_character_resources(k: str, is_new_character: bool):
             )
         else:
             # 没有活跃session，可以安全地重新创建session_manager
+            # 旧 manager 持有的后台任务（如 idle session reset loop）必须显式
+            # cancel，否则强引用 self 让旧 manager 永远不被 GC——多次 reload 后
+            # 积累 N 份的 idle loop 各自 60s 醒一次。
+            if rs.session_manager is not None:
+                try:
+                    rs.session_manager.shutdown()
+                except Exception as e:
+                    logger.warning(f"shutdown 旧 session_manager 失败 ({k}): {e}")
             new_mgr = core.LLMSessionManager(
                 rs.sync_message_queue,
                 k,

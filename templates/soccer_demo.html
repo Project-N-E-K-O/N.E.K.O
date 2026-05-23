@@ -103,13 +103,37 @@
     pointer-events: none;
   }
   #controls {
-    position: fixed; left: 12px; top: 12px; z-index: 25;
+    position: fixed; right: 12px; top: 52px; z-index: 25;
+    max-width: min(360px, calc(100vw - 24px));
     color: rgba(255,255,255,0.85); font: 13px/1.4 sans-serif;
     background: rgba(0,0,0,0.45); padding: 6px 12px; border-radius: 6px;
     user-select: none; -webkit-user-select: none;
+    pointer-events: auto;
   }
   #controls label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
   #controls input[type="checkbox"] { cursor: pointer; width: 15px; height: 15px; }
+  #game-audio-controls {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
+    display: grid; gap: 6px;
+  }
+  #game-audio-controls label {
+    display: grid; grid-template-columns: auto 128px 34px; gap: 6px 8px; align-items: center;
+    cursor: default;
+  }
+  #game-audio-controls span {
+    font: 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.84);
+  }
+  #game-audio-controls input[type="range"] {
+    width: 128px;
+    accent-color: #72d6ff;
+    cursor: pointer;
+  }
+  #game-audio-controls output {
+    font: 11px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.68);
+    text-align: right;
+  }
   #voice-controls {
     margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
     display: none; grid-template-columns: auto 1fr auto; gap: 6px; align-items: center;
@@ -129,6 +153,52 @@
   #voice-controls input { min-width: 210px; padding: 4px 7px; }
   #voice-status {
     grid-column: 1 / -1; opacity: 0.75; font-size: 12px;
+  }
+  #mood-debug-panel {
+    display: none;
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.18);
+    gap: 7px;
+    min-width: 260px;
+    position: relative;
+    z-index: 45;
+    pointer-events: auto;
+  }
+  #mood-debug-panel[data-debug-visible="true"] {
+    display: grid;
+  }
+  .mood-debug-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    font: 600 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    color: rgba(255,255,255,0.92);
+  }
+  .mood-debug-actions {
+    display: flex; align-items: center; gap: 5px;
+  }
+  #mood-debug-panel[data-collapsed="true"] .mood-debug-body {
+    display: none;
+  }
+  .mood-debug-body {
+    display: grid; gap: 7px;
+  }
+  .mood-debug-row {
+    display: flex; flex-wrap: wrap; gap: 5px;
+  }
+  #mood-debug-panel button {
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+    background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.92);
+    font: 12px/1.3 "Segoe UI", "PingFang SC", sans-serif;
+    cursor: pointer; padding: 4px 7px;
+    pointer-events: auto;
+  }
+  #mood-debug-panel button[data-active="true"] {
+    background: rgba(255,255,255,0.28);
+    border-color: rgba(255,255,255,0.56);
+  }
+  #mood-debug-readout {
+    margin: 0; padding: 6px 7px; border-radius: 5px;
+    background: rgba(0,0,0,0.30); color: rgba(255,255,255,0.86);
+    font: 11px/1.35 Consolas, "Cascadia Mono", monospace;
+    white-space: pre-wrap;
   }
   #exit-to-start-button {
     position: fixed; right: 12px; top: 12px; z-index: 35;
@@ -186,6 +256,28 @@
      （"模型加载完成"等 4-6 字状态串）在 180px 槽位内视觉居中——之前缺这条所以
      文字落在槽位左侧、偏离 panel 中心约 50px。 */
   #loading-text { min-width: 180px; text-align: center; }
+  #start-tutorial {
+    max-width: 360px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: rgba(0,0,0,0.24);
+    border: 1px solid rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.84);
+    text-align: left;
+    font: 12px/1.45 "Segoe UI", "PingFang SC", sans-serif;
+  }
+  .start-tutorial-title {
+    margin-bottom: 5px;
+    color: rgba(255,255,255,0.95);
+    font-weight: 600;
+  }
+  #start-tutorial ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  #start-tutorial li + li {
+    margin-top: 3px;
+  }
   #soccer-start-button {
     min-width: 112px;
     padding: 8px 18px;
@@ -239,18 +331,60 @@
 <canvas id="debug"></canvas>
 <div id="ai-speech-bubble" role="status" aria-live="polite"></div>
 <div id="hint">
-  <div data-i18n="soccer.hint.controls">鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
+  <div data-i18n="soccer.hint.controls" data-i18n-params='{"distance":"90px"}'>鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ≤90px 触发）· R 复位</div>
   <div data-i18n="soccer.hint.aiMood">1-6 = AI 心情（平静/开心/生气/放松/悲伤/惊讶）· 进球后自动切换难度档</div>
 </div>
-<!-- Debug 控件区：开发用，固定英文（不进入 i18n 池）。 -->
+<!-- Debug 控件区：开发用；基础控件也走 i18n，避免非中文 locale 混杂硬编码。 -->
 <div id="controls">
-  <label><input type="checkbox" id="boundary-toggle"> Enable bounds (out-of-bounds rule)</label>
-  <label><input type="checkbox" id="voice-output-toggle" checked> Speak LLM lines (project voice)</label>
+  <label><input type="checkbox" id="boundary-toggle"> <span data-i18n="soccer.debugControls.bounds">启用边界（出界规则）</span></label>
+  <label><input type="checkbox" id="voice-output-toggle" checked> <span data-i18n="soccer.debugControls.voiceOutput">播放 LLM 台词（项目语音）</span></label>
+  <div id="game-audio-controls" aria-label="Game audio volume">
+    <label>
+      <span>BGM</span>
+      <input id="game-bgm-volume" type="range" min="0" max="100" step="1">
+      <output id="game-bgm-volume-value" for="game-bgm-volume">45%</output>
+    </label>
+    <label>
+      <span>SFX</span>
+      <input id="game-sfx-volume" type="range" min="0" max="100" step="1">
+      <output id="game-sfx-volume-value" for="game-sfx-volume">75%</output>
+    </label>
+  </div>
   <div id="voice-controls" aria-hidden="true">
-    <button id="voice-mic-button" type="button">Debug voice</button>
-    <input id="voice-text-input" type="text" placeholder="Debug: type final transcript, press Enter">
-    <button id="voice-send-button" type="button">Send</button>
-    <div id="voice-status">Debug STT: hidden</div>
+    <button id="voice-mic-button" type="button" data-i18n="soccer.debugControls.voiceButton">调试语音</button>
+    <input id="voice-text-input" type="text" data-i18n-placeholder="soccer.debugControls.voicePlaceholder" placeholder="调试：输入最终转写后回车">
+    <button id="voice-send-button" type="button" data-i18n="soccer.debugControls.send">发送</button>
+    <div id="voice-status" data-i18n="soccer.debugControls.voiceStatusHidden">调试 STT：隐藏</div>
+  </div>
+  <div id="mood-debug-panel" aria-hidden="true">
+    <div class="mood-debug-title">
+      <span>心情调试</span>
+      <div class="mood-debug-actions">
+        <button type="button" data-debug-action="collapse">收起</button>
+        <button type="button" data-debug-action="hide">隐藏</button>
+      </div>
+    </div>
+    <div class="mood-debug-body">
+      <div class="mood-debug-row" aria-label="心情">
+        <button type="button" data-debug-mood="calm">平静</button>
+        <button type="button" data-debug-mood="happy">开心</button>
+        <button type="button" data-debug-mood="angry">生气</button>
+        <button type="button" data-debug-mood="relaxed">放松</button>
+        <button type="button" data-debug-mood="sad">悲伤</button>
+        <button type="button" data-debug-mood="surprised">惊讶</button>
+      </div>
+      <div class="mood-debug-row" aria-label="难度">
+        <button type="button" data-debug-difficulty="max">最高</button>
+        <button type="button" data-debug-difficulty="lv2">二档</button>
+        <button type="button" data-debug-difficulty="lv3">三档</button>
+        <button type="button" data-debug-difficulty="lv4">四档</button>
+      </div>
+      <div class="mood-debug-row" aria-label="控制">
+        <button type="button" data-debug-action="rotation-toggle">随机心情：关</button>
+        <button type="button" data-debug-action="clear-startle">清空受惊冷却</button>
+      </div>
+      <pre id="mood-debug-readout">心情调试已隐藏</pre>
+    </div>
   </div>
 </div>
 <!-- ``data-i18n`` 走 i18n-i18next.js 的 ``updatePageTexts()`` 自动替换路径，
@@ -267,6 +401,16 @@
       <div id="loading-text" data-i18n="soccer.loading.initializingMiniGame">初始化足球小游戏…</div>
     </div>
     <div id="loading-actions" hidden>
+      <div id="start-tutorial" aria-live="polite">
+        <div class="start-tutorial-title" data-i18n="soccer.startTutorial.title">玩法说明</div>
+        <ul>
+          <li data-i18n="soccer.startTutorial.move">移动鼠标引导玩家角色。</li>
+          <li data-i18n="soccer.startTutorial.charge">靠近球时按住左键蓄力，松开射门。</li>
+          <li data-i18n="soccer.startTutorial.range" data-i18n-params='{"distance":"90px"}'>离球 90px 内才会触发踢球。</li>
+          <li data-i18n="soccer.startTutorial.reset">按 R 可以复位球和双方位置。</li>
+          <li data-i18n="soccer.startTutorial.ai">NEKO 的心情和难度会随局势变化。</li>
+        </ul>
+      </div>
       <button id="soccer-start-button" type="button" data-i18n="soccer.startScreen.startButton">开始</button>
       <label id="game-memory-option"><input type="checkbox" id="game-memory-toggle"> <span id="game-memory-label" data-i18n="soccer.memoryOption.label">本局对话进入记忆（默认不开启）</span></label>
       <div id="game-memory-hint" data-i18n="soccer.memoryOption.hint">关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。</div>
@@ -315,8 +459,18 @@
       button.hidden = !visible;
       button.disabled = !enabled;
     };
-    const _localized = (key, fallback) =>
-      typeof window.t === 'function' ? window.t(`soccer.${key}`) : fallback;
+    const _fillFallback = (fallback, params = {}) => Object.entries(params).reduce(
+      (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
+      fallback,
+    );
+    const _localized = (key, fallback, params = {}) => {
+      const fullKey = `soccer.${key}`;
+      if (typeof window.t === 'function') {
+        const translated = window.t(fullKey, params);
+        if (translated && translated !== fullKey && translated !== key) return translated;
+      }
+      return _fillFallback(fallback, params);
+    };
     const syncStartScreen = (fallbackText = '') => {
       if (state.assets && state.route && !state.routeStarting && !state.started) {
         updateText(fallbackText || _localized('startScreen.readyToStart', '准备完成，点击开始'));
@@ -425,6 +579,9 @@
 <script src="/static/live2d-model.js"></script>
 <script src="/static/live2d-interaction.js"></script>
 <script src="/static/live2d-init.js"></script>
+<script src="/static/game/games/soccer/how%20lovely%60s%20audio%20system%20temp%20root.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/games/soccer/soccer-audio-config.js?v={{ static_asset_version }}"></script>
+<script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
 
 <!-- Three.js via importmap -->
 <script type="importmap">
@@ -450,9 +607,243 @@
 <script>
 (async () => {
   const statusEl = document.getElementById('status');
+  const soccerLoadingText = (key, fallback) => {
+    const fullKey = `soccer.${key}`;
+    if (typeof window.t === 'function') {
+      const translated = window.t(fullKey);
+      if (translated && translated !== fullKey && translated !== key) return translated;
+    }
+    return fallback;
+  };
   const setStatus = (s) => {
     statusEl.textContent = s;
     window.__SoccerLoading?.set('assets', s);
+  };
+  window.__SoccerAiAvatar = window.__SoccerAiAvatar || { type: 'none', path: '', ready: false };
+  const markAiAvatar = (type, path, ready = true) => {
+    window.__SoccerAiAvatar = { type, path: path || '', ready: !!ready };
+  };
+
+  async function fetchSoccerCharacterInfo() {
+    try {
+      const url = new URL('/api/game/soccer/character', window.location.origin);
+      const lanlanName = window.lanlan_config?.lanlan_name || '';
+      if (lanlanName && lanlanName !== 'soccer_demo') {
+        url.searchParams.set('lanlan_name', lanlanName);
+      }
+      const charResp = await fetch(url.toString());
+      if (!charResp.ok) return {};
+      return await charResp.json();
+    } catch (e) {
+      console.warn('[soccer_demo] 获取角色信息失败:', e);
+      return {};
+    }
+  }
+
+  function prefersAiVrm(charData) {
+    const modelType = String(charData?.model_type || '').toLowerCase();
+    const subType = String(charData?.live3d_sub_type || '').toLowerCase();
+    return !!charData?.vrm_path && (
+      modelType === 'vrm' || (modelType === 'live3d' && subType === 'vrm')
+    );
+  }
+
+  function fitVrmManagerCamera(manager, containerId, label = 'VRM') {
+    const THREE = window.THREE;
+    const vrm = manager?.currentModel?.vrm;
+    if (!THREE || !manager?.camera || !vrm?.scene) return;
+
+    vrm.scene.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const mid = new THREE.Vector3();
+    box.getCenter(mid);
+    vrm.scene.position.x -= mid.x;
+    vrm.scene.position.z -= mid.z;
+    vrm.scene.position.y -= box.min.y;
+    vrm.scene.updateMatrixWorld(true);
+
+    const box2 = new THREE.Box3().setFromObject(vrm.scene);
+    const h = box2.max.y - box2.min.y;
+    const w = Math.max(box2.max.x - box2.min.x, box2.max.z - box2.min.z);
+    const cam = manager.camera;
+    const fovRad = cam.fov * Math.PI / 180;
+    const container = document.getElementById(containerId);
+    const aspect = container?.clientWidth && container?.clientHeight
+      ? container.clientWidth / container.clientHeight
+      : 200 / 300;
+    cam.aspect = aspect;
+    const visibleH = h * 1.15;
+    const dist = visibleH / (2 * Math.tan(fovRad / 2));
+    const lookY = visibleH / 2;
+    cam.position.set(0, lookY, dist);
+    cam.lookAt(0, lookY, 0);
+    cam.updateProjectionMatrix();
+    console.log(`[soccer_demo] fit ${label}: h=`, h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
+  }
+
+  window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager(manager, path, {
+    canvasId,
+    containerId,
+    label = 'VRM',
+    playIdle = true,
+  } = {}) {
+    if (!manager) throw new Error(`${label}: VRM manager missing`);
+    if (!path) throw new Error(`${label}: VRM path required`);
+    if (!canvasId || !containerId) throw new Error(`${label}: canvas/container required`);
+    if (!manager.scene || !manager.camera || !manager.renderer) {
+      await manager.core.init(canvasId, containerId, null, { embed: true });
+    }
+    const [{ GLTFLoader }, vrmModule] = await Promise.all([
+      import('three/addons/loaders/GLTFLoader.js'),
+      import('@pixiv/three-vrm'),
+    ]);
+    const loader = new GLTFLoader();
+    loader.register(p => new vrmModule.VRMLoaderPlugin(p));
+    const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
+    const vrm = gltf.userData.vrm;
+    if (!vrm) throw new Error(`${label}: loaded file is not a valid VRM`);
+
+    if (manager.currentModel?.vrm?.scene) {
+      const oldScene = manager.currentModel.vrm.scene;
+      manager.scene.remove(oldScene);
+      try { vrmModule.VRMUtils?.deepDispose?.(oldScene); }
+      catch (e) { console.warn(`[${label}] deepDispose failed:`, e); }
+    }
+
+    manager.scene.add(vrm.scene);
+    manager.currentModel = { vrm, gltf, scene: vrm.scene, url: path };
+    vrm.scene.visible = true;
+    fitVrmManagerCamera(manager, containerId, label);
+
+    if (manager.renderer?.domElement) {
+      manager.renderer.domElement.style.opacity = '1';
+      manager.renderer.domElement.style.display = 'block';
+    }
+    if (typeof manager.startAnimateLoop === 'function' && !manager._animationFrameId) {
+      manager.startAnimateLoop();
+    }
+    if (typeof manager._initMouseLookAtTracking === 'function') {
+      manager._initMouseLookAtTracking();
+    }
+    if (manager.interaction?.enableMouseTracking) {
+      manager.interaction.enableMouseTracking(true);
+    }
+    if (manager._cursorFollow?.setEnabled) {
+      manager._cursorFollow.setEnabled(true);
+    }
+    const modelName = path.split('/').pop()?.replace(/\.vrm$/i, '') || '';
+    try { await manager.expression?.loadMoodMap?.(modelName); }
+    catch (e) { console.warn(`[${label}] mood map load failed:`, e); }
+
+    if (playIdle) {
+      try {
+        await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+          loop: true, immediate: true, isIdle: true,
+        });
+      } catch (animErr) {
+        console.warn(`[${label}] idle animation failed (will keep T-pose):`, animErr);
+      }
+    }
+    return manager.currentModel;
+  };
+
+  window.__SoccerSetAiVrmFocus = function setAiVrmFocus(tx, ty) {
+    const follow = window.aiVrmManager?._cursorFollow;
+    if (!follow) return;
+    follow._rawMouseX = tx;
+    follow._rawMouseY = ty;
+    follow._hasPointerInput = true;
+    follow._lastPointerMoveAt = performance.now();
+    if (follow.setEnabled && !follow.isEnabled?.()) {
+      follow.setEnabled(true);
+    }
+  };
+
+  function pauseAiAvatarRenderer(type) {
+    try {
+      if (type === 'live2d') {
+        window.live2dManager?.pauseRendering?.();
+      } else if (type === 'vrm') {
+        window.aiVrmManager?.pauseRendering?.();
+      }
+    } catch (e) {
+      console.warn(`[soccer_demo] pause AI ${type} renderer failed:`, e);
+    }
+  }
+
+  function resumeAiAvatarRenderer(type) {
+    try {
+      if (type === 'live2d') {
+        window.live2dManager?.resumeRendering?.();
+      } else if (type === 'vrm') {
+        window.aiVrmManager?.resumeRendering?.();
+      }
+    } catch (e) {
+      console.warn(`[soccer_demo] resume AI ${type} renderer failed:`, e);
+    }
+  }
+
+  async function ensureAiLive2dReady() {
+    if (!window.live2dManager) throw new Error('live2dManager missing');
+    await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
+      width: 200,
+      height: 300,
+    });
+    const uiStubs = ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'];
+    for (const name of uiStubs) {
+      if (typeof window.live2dManager[name] !== 'function') {
+        window.live2dManager[name] = () => {};
+      }
+    }
+  }
+
+  function fitAiLive2dModel() {
+    const l2dModel = window.live2dManager?.currentModel;
+    if (!l2dModel?.width || !l2dModel?.height) return;
+    const canvasW = 200, canvasH = 300, margin = 6;
+    const s = Math.min(
+      (canvasW - margin * 2) / l2dModel.width,
+      (canvasH - margin * 2) / l2dModel.height
+    );
+    l2dModel.scale.set(l2dModel.scale.x * s, l2dModel.scale.y * s);
+    // L2D model 有 anchor，model.x/y 是 anchor 点位置，不是左上角。
+    const ax = l2dModel.anchor ? l2dModel.anchor.x : 0;
+    const ay = l2dModel.anchor ? l2dModel.anchor.y : 0;
+    const boundsX = (canvasW - l2dModel.width) / 2;
+    const boundsY = canvasH - margin - l2dModel.height;
+    l2dModel.x = boundsX + l2dModel.width * ax;
+    l2dModel.y = boundsY + l2dModel.height * ay;
+    // 背景 tab/headless 下 loadModel 内部 fade-in 可能卡在透明态。
+    l2dModel.alpha = 1;
+    if (window.live2dManager.pixi_app?.view) {
+      window.live2dManager.pixi_app.view.style.opacity = '1';
+    }
+    console.log('[soccer_demo] L2D fit:', l2dModel.width|0, 'x', l2dModel.height|0, 'at', l2dModel.x|0, ',', l2dModel.y|0);
+  }
+
+  window.__SoccerSetAiLive2dFocus = function setAiLive2dFocus(tx, ty) {
+    const mm = window.live2dManager?.currentModel;
+    const fc = mm?.internalModel?.focusController;
+    const aiCanvas = document.getElementById('ai-l2d-canvas');
+    if (!fc || !aiCanvas) return;
+    const rect = aiCanvas.getBoundingClientRect();
+    if (rect.width < 10) return;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const reach = 400;
+    const nx = Math.max(-1, Math.min(1, (tx - cx) / reach));
+    const ny = Math.max(-1, Math.min(1, -(ty - cy) / reach));
+    fc.focus(nx, ny);
+  };
+
+  window.__SoccerSetAiEmotion = function setAiEmotion(emotion) {
+    try {
+      if (window.__SoccerAiAvatar?.type === 'vrm') {
+        window.aiVrmManager?.expression?.setMood?.(emotion);
+        return;
+      }
+      window.live2dManager?.setEmotion?.(emotion);
+    } catch (_) {}
   };
 
   // 等 vrm 模块链加载完
@@ -473,193 +864,81 @@
       throw new Error('VRMManager class not found');
     }
     window.vrmManager = new VRMManager();
-    await window.vrmManager.core.init(
-      'player-vrm-canvas', 'player-vrm-container', null, { embed: true }
-    );
-    console.log('[soccer_demo] core.init done; scene children BEFORE load:', window.vrmManager.scene?.children?.length);
     setStatus('loading sensei.vrm…');
-    // 绕开 core.loadModel（它里面有 3 帧 rAF 等待，在 headless/背景 tab 下会 hang），
-    // 直接用 GLTFLoader + VRMLoaderPlugin 加载，手动 scene.add。
-    const [{ GLTFLoader }, vrmModule] = await Promise.all([
-      import('three/addons/loaders/GLTFLoader.js'),
-      import('@pixiv/three-vrm'),
-    ]);
-    const loader = new GLTFLoader();
-    loader.register(p => new vrmModule.VRMLoaderPlugin(p));
-    const gltf = await new Promise((res, rej) => loader.load('/static/vrm/sensei.vrm', res, null, rej));
-    const vrm = gltf.userData.vrm;
-    if (!vrm) throw new Error('Loaded file is not a valid VRM');
-    console.log('[soccer_demo] VRM parsed');
-    // 把模型放进 manager 的 scene，交给 core.init 已经设置好的 renderer/camera 渲染
-    window.vrmManager.scene.add(vrm.scene);
-    // 让 three-vrm 的更新发生——挂到 clock/render loop 上
-    window.vrmManager.currentModel = { vrm, gltf, scene: vrm.scene, url: '/static/vrm/sensei.vrm' };
-    vrm.scene.visible = true;
-
-    // 相机自适应：测出 bbox，把模型脚底放到 y=0、水平居中，再把相机拉到够远能装下整个人
-    {
-      const THREE = window.THREE;
-      vrm.scene.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(vrm.scene);
-      const mid = new THREE.Vector3();
-      box.getCenter(mid);
-      vrm.scene.position.x -= mid.x;
-      vrm.scene.position.z -= mid.z;
-      vrm.scene.position.y -= box.min.y; // 脚底贴地
-      vrm.scene.updateMatrixWorld(true);
-
-      const box2 = new THREE.Box3().setFromObject(vrm.scene);
-      const h = box2.max.y - box2.min.y;  // 身高
-      const w = Math.max(box2.max.x - box2.min.x, box2.max.z - box2.min.z); // 最大横宽（含胳膊/厚度）
-
-      const cam = window.vrmManager.camera;
-      const fovRad = cam.fov * Math.PI / 180;
-      const container = document.getElementById('player-vrm-container');
-      const aspect = container.clientWidth / container.clientHeight; // 200/300 ≈ 0.67
-      cam.aspect = aspect;
-      // 只按身高适配（T-pose 臂展比身高还宽，一起参与会把人拉到很小）；
-      // 把 lookAt 抬高到 (visibleH/2)，这样视口底边 = 模型脚底 y=0 —— 容器底边 = 角色脚底
-      const pad = 1.15;
-      const visibleH = h * pad;
-      const dist = visibleH / (2 * Math.tan(fovRad / 2));
-      const lookY = visibleH / 2;
-      cam.position.set(0, lookY, dist);
-      cam.lookAt(0, lookY, 0);
-      cam.updateProjectionMatrix();
-      console.log('[soccer_demo] fit camera: h=', h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
-    }
-
-    if (window.vrmManager.renderer?.domElement) {
-      window.vrmManager.renderer.domElement.style.opacity = '1';
-    }
-    // 启动 three 渲染循环（管理 camera/scene 每帧 render）
-    if (typeof window.vrmManager.startAnimateLoop === 'function' && !window.vrmManager._animationFrameId) {
-      window.vrmManager.startAnimateLoop();
-      console.log('[soccer_demo] animate loop started');
-    }
-
-    // 启用 VRM 的头/眼 cursor follow。cursor-follow controller 是在
-    // manager.initThreeJS 里 lazy 创建的，我们走的是 core.init 直通路径，手动补一下。
-    if (typeof window.vrmManager._initMouseLookAtTracking === 'function') {
-      window.vrmManager._initMouseLookAtTracking();
-    }
-    if (window.vrmManager.interaction?.enableMouseTracking) {
-      window.vrmManager.interaction.enableMouseTracking(true);
-    }
-    if (window.vrmManager._cursorFollow?.setEnabled) {
-      window.vrmManager._cursorFollow.setEnabled(true);
-    }
-
-    // 加载 idle 动画（wait03.vrma），去掉 T-pose
-    setStatus('loading idle animation…');
-    try {
-      await window.vrmManager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
-        loop: true, immediate: true, isIdle: true,
-      });
-      console.log('[soccer_demo] idle animation loaded');
-    } catch (animErr) {
-      console.warn('[soccer_demo] idle animation failed (will keep T-pose):', animErr);
-    }
+    await window.__SoccerLoadVrmIntoManager(window.vrmManager, '/static/vrm/sensei.vrm', {
+      canvasId: 'player-vrm-canvas',
+      containerId: 'player-vrm-container',
+      label: 'Player',
+      playIdle: true,
+    });
     setStatus('VRM ready');
 
-    // --- 接当前猫娘 Live2D 作为 AI ---
+    // --- 接当前猫娘头像作为 AI：当前支持 Live2D / VRM；MMD 继续回退到 Live2D ---
     try {
-      setStatus('loading AI Live2D…');
-      if (!window.live2dManager) throw new Error('live2dManager missing');
-      // 显式传 width/height，避免某些环境 window.screen.width=0 导致 canvas 变 1x1
-      await window.live2dManager.initPIXI('ai-l2d-canvas', 'ai-l2d-container', {
-        width: 200,
-        height: 300,
-      });
-      // loadModel 内部会调几个桌宠 UI 钩子（浮动按钮、锁图标、返回按钮），demo 里不需要，空实现绕过
-      const uiStubs = ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'];
-      for (const name of uiStubs) {
-        if (typeof window.live2dManager[name] !== 'function') {
-          window.live2dManager[name] = () => {};
-        }
-      }
-      // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
-      // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
-      // 需求 2：从后端获取当前角色的 Live2D 模型路径；获取失败时才回退到 mao_pro。
-      let aiL2dPath = '/static/mao_pro/mao_pro.model3.json';
-      try {
-        const charResp = await fetch('/api/game/soccer/character');
-        if (charResp.ok) {
-          const charData = await charResp.json();
-          if (charData.live2d_path) {
-            aiL2dPath = charData.live2d_path;
-            console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
-          }
-        }
-      } catch (e) {
-        console.warn('[soccer_demo] 获取角色信息失败，使用默认 mao_pro:', e);
-      }
-      const loadPromise = window.live2dManager.loadModel(aiL2dPath);
-      loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
-      await new Promise((resolve, reject) => {
-        const t0 = Date.now();
-        const tick = () => {
-          if (window.live2dManager?.currentModel?.width > 0) return resolve();
-          if (Date.now() - t0 > 20000) return reject(new Error('L2D model not appear within 20s'));
-          setTimeout(tick, 200);
-        };
-        tick();
-      });
-      console.log('[soccer_demo] L2D currentModel ready');
+      const charData = await fetchSoccerCharacterInfo();
+      let loadedAiAvatar = false;
 
-      // 适配：缩放 + 底部对齐（脚落在 canvas 底部，留一点 margin）
-      const l2dModel = window.live2dManager.currentModel;
-      if (l2dModel && l2dModel.width && l2dModel.height) {
-        const canvasW = 200, canvasH = 300, margin = 6;
-        const s = Math.min(
-          (canvasW - margin * 2) / l2dModel.width,
-          (canvasH - margin * 2) / l2dModel.height
-        );
-        l2dModel.scale.set(l2dModel.scale.x * s, l2dModel.scale.y * s);
-        // 注意：L2D model 有 anchor（mao_pro 是 0.65, 0.75），model.x/y 是 anchor 点位置，
-        // 不是左上角。要把 bounds 放到指定位置，得加上 width*anchor.x / height*anchor.y 补偿。
-        const ax = l2dModel.anchor ? l2dModel.anchor.x : 0;
-        const ay = l2dModel.anchor ? l2dModel.anchor.y : 0;
-        const boundsX = (canvasW - l2dModel.width) / 2;
-        const boundsY = canvasH - margin - l2dModel.height;
-        l2dModel.x = boundsX + l2dModel.width * ax;
-        l2dModel.y = boundsY + l2dModel.height * ay;
-        // 强制可见：loadModel 内部的 "3 frame rAF 等待 + CSS fade-in" 在 rAF 被 throttle 的
-        // 环境（后台/headless）下不会完成，alpha 会一直卡在 0.001、canvas opacity=0。
-        // 直接置 1 绕过，真浏览器里原流程会同样置 1，不冲突。
-        l2dModel.alpha = 1;
-        if (window.live2dManager.pixi_app?.view) {
-          window.live2dManager.pixi_app.view.style.opacity = '1';
+      if (prefersAiVrm(charData)) {
+        try {
+          const aiVrmPath = charData.vrm_path;
+          setStatus('loading AI VRM…');
+          if (typeof VRMManager === 'undefined') throw new Error('VRMManager class not found');
+          window.aiVrmManager = window.aiVrmManager || new VRMManager();
+          pauseAiAvatarRenderer('live2d');
+          await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, aiVrmPath, {
+            canvasId: 'ai-l2d-canvas',
+            containerId: 'ai-l2d-container',
+            label: 'AI VRM',
+          });
+          window.__focusL2DAt = window.__SoccerSetAiVrmFocus;
+          markAiAvatar('vrm', aiVrmPath, true);
+          loadedAiAvatar = true;
+          console.log('[soccer_demo] 使用当前角色 VRM 作为 AI:', charData.lanlan_name, aiVrmPath);
+        } catch (vrmErr) {
+          markAiAvatar('vrm', charData.vrm_path || '', false);
+          console.warn('[soccer_demo] AI VRM 加载失败，回退 Live2D:', vrmErr);
         }
-        console.log('[soccer_demo] L2D fit:', l2dModel.width|0, 'x', l2dModel.height|0, 'at', l2dModel.x|0, ',', l2dModel.y|0);
       }
 
-      // AI 注视控制：每帧从游戏 loop 调用 window.__focusL2DAt(targetScreenX, targetScreenY)
-      // 直接走 focusController，避免 model.focus 按 200x300 canvas 归一化导致的"超出=锁边"
-      const aiCanvas = document.getElementById('ai-l2d-canvas');
-      window.__focusL2DAt = (tx, ty) => {
-        const mm = window.live2dManager?.currentModel;
-        const fc = mm?.internalModel?.focusController;
-        if (!fc) return;
-        const rect = aiCanvas.getBoundingClientRect();
-        if (rect.width < 10) return; // 容器还没被 transform 到场上
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const reach = 400; // 多少屏幕像素等价于最大转头角度
-        const nx = Math.max(-1, Math.min(1, (tx - cx) / reach));
-        const ny = Math.max(-1, Math.min(1, -(ty - cy) / reach)); // L2D Y 轴向上为正
-        fc.focus(nx, ny);
-      };
+      if (!loadedAiAvatar) {
+        setStatus('loading AI Live2D…');
+        pauseAiAvatarRenderer('vrm');
+        await ensureAiLive2dReady();
+        // loadModel 的 await 在某些环境（preview/background tab）里 rAF 被 throttle 时不 resolve，
+        // 但 currentModel 其实早就设上了；用 race + 轮询等 currentModel 出现后直接做 fit，而不是死等 await
+        // 需求 2：从后端获取当前角色的 Live2D 模型路径；获取失败时才回退到 mao_pro。
+        let aiL2dPath = charData.live2d_path || '/static/mao_pro/mao_pro.model3.json';
+        if (charData.live2d_path) {
+          console.log('[soccer_demo] 使用当前角色 L2D:', charData.lanlan_name, aiL2dPath);
+        }
+        const loadPromise = window.live2dManager.loadModel(aiL2dPath);
+        loadPromise.catch(e => console.warn('[soccer_demo] L2D loadModel awaited reject:', e));
+        await new Promise((resolve, reject) => {
+          const t0 = Date.now();
+          const tick = () => {
+            if (window.live2dManager?.currentModel?.width > 0) return resolve();
+            if (Date.now() - t0 > 20000) return reject(new Error('L2D model not appear within 20s'));
+            setTimeout(tick, 200);
+          };
+          tick();
+        });
+        console.log('[soccer_demo] L2D currentModel ready');
+
+        fitAiLive2dModel();
+        window.__focusL2DAt = window.__SoccerSetAiLive2dFocus;
+        markAiAvatar('live2d', aiL2dPath, true);
+      }
 
       setStatus('all ready');
-    } catch (l2dErr) {
-      console.error('[soccer_demo] L2D failed:', l2dErr);
-      setStatus('L2D failed: ' + (l2dErr.message || l2dErr));
+    } catch (avatarErr) {
+      markAiAvatar('none', '', false);
+      console.error('[soccer_demo] AI avatar failed:', avatarErr);
+      setStatus('AI avatar failed: ' + (avatarErr.message || avatarErr));
     }
 
     window.__SoccerLoading?.done(
       'assets',
-      typeof window.t === 'function' ? window.t('soccer.loading.assetsDone') : '模型加载完成',
+      soccerLoadingText('loading.assetsDone', '模型加载完成'),
     );
     setTimeout(() => { statusEl.style.opacity = '0'; statusEl.style.transition = 'opacity 0.8s'; }, 1500);
   } catch (e) {
@@ -667,7 +946,7 @@
     setStatus('VRM init failed: ' + (e.message || e));
     window.__SoccerLoading?.done(
       'assets',
-      typeof window.t === 'function' ? window.t('soccer.loading.assetsFailed') : '模型初始化失败，继续进入游戏',
+      soccerLoadingText('loading.assetsFailed', '模型初始化失败，继续进入游戏'),
     );
   }
 })();
@@ -680,7 +959,7 @@
  *  给 neko 本体 / 外部脚本（LLM 生成、美术素材、UI 控件）使用的稳定入口。
  * ═══════════════════════════════════════════════════════════════════════════
  *
- *  ── 心情（只作用于 AI；影响速度/冷却/冲量/散射/特殊行为，并同步 L2D 表情）
+ *  ── 心情（只作用于 AI；影响速度/冷却/冲量/散射/特殊行为，并同步头像表情）
  *     SoccerDemo.MOODS                  // ['calm','happy','angry','relaxed','sad','surprised']
  *     SoccerDemo.setMood(name)          // 切换心情；会触发 'mood-<name>' 气泡 + onEvent('mood-changed')
  *     SoccerDemo.getMood()              // 当前心情字符串
@@ -702,10 +981,11 @@
  *  ── 头像（运行时替换，无需刷新）
  *     await SoccerDemo.setPlayerAvatar({ type: 'vrm',    path: '/static/vrm/xxx.vrm' })
  *     await SoccerDemo.setAiAvatar   ({ type: 'live2d', path: '/static/xxx/xxx.model3.json' })
+ *     await SoccerDemo.setAiAvatar   ({ type: 'vrm',    path: '/user_vrm/xxx.vrm' })
  *     SoccerDemo.getPlayerAvatar()      // { type, path }
  *     SoccerDemo.getAiAvatar()
  *
- *     注意：目前 player 只支持 vrm、AI 只支持 live2d；换 avatar 会自动 fit 相机/scale。
+ *     注意：目前 player 只支持 vrm、AI 支持 live2d / vrm；MMD 暂不接入。
  *
  *  ── 说话（气泡 + LLM 钩子）
  *     SoccerDemo.say(text, opts?)       // 直接说一句任意文本，返回 bool（是否成功播出）
@@ -763,12 +1043,12 @@
  *     场面控制:         'long-attack-possession' / 'long-defense-possession'（按 allowAttack 分支）
  *     观察玩家:         'player-idle' / 'player-charging-long' / 'close-proximity'
  *     空场氛围:         'free-ball' / 'score-boring' / 'no-goal-1min'
- *     物理彩蛋:         'fast-ball' / 'startle' / 'zoneout' / 'unstick'
+ *     物理彩蛋:         'fast-ball' / 'startle-direct' / 'startle-graze' / 'zoneout' / 'unstick'
  *     档位切换:         'diff-max' / 'diff-lv2' / 'diff-lv3' / 'diff-lv4'
  *     心情切换:         'mood-calm' / 'mood-happy' / 'mood-angry' / 'mood-relaxed' / 'mood-sad' / 'mood-surprised'
  *
  *  ── Debug
- *     SoccerDemo._snapshot()            // { mood, difficulty, score, aiMode, aiFreezeSec, ballGhost }
+ *     SoccerDemo._snapshot()            // { mood, difficulty, score, aiMode, aiFreezeSec, startle, ballGhost }
  *
  *  ── 键盘（debug 快捷键）
  *     1-6   切换心情（同 setMood）
@@ -777,18 +1057,65 @@
  *  ═══════════════════════════════════════════════════════════════════════════
  */
 (() => {
+  const _formatI18nFallback = (fallback, params = {}) => Object.entries(params || {}).reduce(
+    (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
+    fallback,
+  );
+  const _soccerI18nParam = (name) => '{' + '{' + name + '}' + '}';
   const _i18n = (key, fallback, params) => {
-    if (typeof window.t === 'function') return window.t(`soccer.${key}`, params || {});
-    if (!params) return fallback;
-    // 替换模式必须避开 Jinja2 模板里的双花括号字面量——本文件顶部有 Jinja
-    // 渲染（VRM_DEFAULT_LIGHTING），整份模板会过 Jinja parser；下面 replaceAll
-    // 的源串若写成模板字面量的 dollar 引用形式会被 Jinja 当表达式 SyntaxError。
-    // 拆字符拼接绕开 parser，运行期 JS 仍得到 [open][open]KEY[close][close]。
-    return Object.entries(params).reduce(
-      (s, [k, v]) => s.replaceAll('{' + '{' + k + '}' + '}', String(v)),
-      fallback,
-    );
+    const fullKey = `soccer.${key}`;
+    if (typeof window.t === 'function') {
+      const translated = window.t(fullKey, params || {});
+      if (translated && translated !== fullKey && translated !== key) return translated;
+    }
+    return _formatI18nFallback(fallback, params);
   };
+  const SOCCER_DOM_I18N_FALLBACKS = {
+    'soccer.hint.controls': '鼠标 = 引导玩家 · 按住左键 = 蓄力，松开 = 射门（离球 ' + _soccerI18nParam('distance') + ' 内触发）· R 复位',
+    'soccer.hint.aiMood': 'NEKO 的心情和难度会随局势变化',
+    'soccer.debugControls.bounds': '启用边界（出界规则）',
+    'soccer.debugControls.voiceOutput': '播放 LLM 台词（项目语音）',
+    'soccer.debugControls.voiceButton': '调试语音',
+    'soccer.debugControls.send': '发送',
+    'soccer.debugControls.voiceStatusHidden': '调试 STT：隐藏',
+    'soccer.exitGame.button': '退出游戏',
+    'soccer.loading.initializingMiniGame': '初始化足球小游戏…',
+    'soccer.startTutorial.title': '玩法说明',
+    'soccer.startTutorial.move': '移动鼠标引导玩家角色。',
+    'soccer.startTutorial.charge': '靠近球时按住左键蓄力，松开射门。',
+    'soccer.startTutorial.range': '离球 ' + _soccerI18nParam('distance') + ' 内才会触发踢球。',
+    'soccer.startTutorial.reset': '按 R 可以复位球和双方位置。',
+    'soccer.startTutorial.ai': 'NEKO 的心情和难度会随局势变化。',
+    'soccer.startScreen.startButton': '开始',
+    'soccer.memoryOption.label': '本局对话进入记忆（默认不开启）',
+    'soccer.memoryOption.hint': '关闭后，玩家输入、NEKO直接回应、事件回应、赛后摘要和后续续接都不会进入或引用记忆。',
+  };
+  const SOCCER_PLACEHOLDER_FALLBACKS = {
+    'soccer.debugControls.voicePlaceholder': '调试：输入最终转写后回车',
+  };
+  function applySoccerI18nFallbacks() {
+    document.querySelectorAll('[data-i18n^="soccer."]').forEach((el) => {
+      const key = el.getAttribute('data-i18n');
+      const fallback = SOCCER_DOM_I18N_FALLBACKS[key];
+      if (!fallback) return;
+      const current = String(el.textContent || '').trim();
+      if (!current || current === key) {
+        let params = {};
+        try { params = JSON.parse(el.getAttribute('data-i18n-params') || '{}'); }
+        catch (_) { params = {}; }
+        el.textContent = _formatI18nFallback(fallback, params);
+      }
+    });
+    document.querySelectorAll('[data-i18n-placeholder^="soccer."]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-placeholder');
+      const fallback = SOCCER_PLACEHOLDER_FALLBACKS[key];
+      if (!fallback) return;
+      const current = String(el.getAttribute('placeholder') || '').trim();
+      if (!current || current === key) el.setAttribute('placeholder', fallback);
+    });
+  }
+  window.addEventListener('localechange', () => setTimeout(applySoccerI18nFallbacks, 0));
+  setTimeout(applySoccerI18nFallbacks, 0);
   const _resolveSpeechLang = () => {
     const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
       || (typeof navigator !== 'undefined' && navigator.language)
@@ -861,6 +1188,10 @@
   };
   let _outOfBoundsTimer = 0;
   let _outOfBoundsSide = null; // 'player' | 'ai' | null — 最后触球的一方
+  let _lastWallBounceSfxAt = 0;
+  const WALL_BOUNCE_SFX_COOLDOWN_MS = 500;
+  let _startedAsMaxAngry = false;
+  let _openingMaxAngryBgmActive = false;
 
   const boundaryToggle = document.getElementById('boundary-toggle');
   boundaryToggle.addEventListener('change', () => {
@@ -873,14 +1204,388 @@
   const voiceTextInput = document.getElementById('voice-text-input');
   const voiceSendButton = document.getElementById('voice-send-button');
   const voiceStatusEl = document.getElementById('voice-status');
+  const moodDebugPanel = document.getElementById('mood-debug-panel');
+  const moodDebugReadout = document.getElementById('mood-debug-readout');
   const startButton = document.getElementById('soccer-start-button');
   const exitToStartButton = document.getElementById('exit-to-start-button');
+  const bgmVolumeInput = document.getElementById('game-bgm-volume');
+  const bgmVolumeValue = document.getElementById('game-bgm-volume-value');
+  const sfxVolumeInput = document.getElementById('game-sfx-volume');
+  const sfxVolumeValue = document.getElementById('game-sfx-volume-value');
+  const soccerGameAudio = (() => {
+    const gameSystem = window.NekoGameSystem || {};
+    const audioConfig = gameSystem.soccer?.audioConfig || {};
+    const config = {
+      audioMix: {},
+      bgm: {
+        startMenu: [],
+        inGame: { variants: [] },
+        difficulty: {},
+        result: {},
+        mood: {},
+      },
+      loopedBgm: {},
+      sfx: {},
+      ...audioConfig,
+    };
+    const audio = typeof gameSystem.GameAudioSystem === 'function'
+      ? new gameSystem.GameAudioSystem({
+          config: {
+            audioMix: config.audioMix,
+            bgm: config.bgm,
+            loopedBgm: config.loopedBgm,
+            sfx: config.sfx,
+          },
+          bgmStorageKey: 'neko.soccerGameAudio.bgmVolume',
+          sfxStorageKey: 'neko.soccerGameAudio.sfxVolume',
+          fadeMs: 900,
+          onBgmError: (event, context) => {
+            console.warn('[SoccerAudio] BGM 播放失败，已尝试跳过:', describeAudioFailure(event, context));
+          },
+          onSfxError: (event, context) => {
+            console.warn('[SoccerAudio] SFX 播放失败:', describeAudioFailure(event, context));
+          },
+        })
+      : null;
+    let currentKey = '';
+    let preloadRunId = 0;
+    let selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
+
+    function describeAudioFailure(event, context) {
+      const audio = context?.audio || null;
+      const mediaError = audio?.error || null;
+      return {
+        src: context?.track?.src || audio?.currentSrc || audio?.src || '',
+        code: mediaError?.code || '',
+        message: mediaError?.message || event?.message || event?.type || String(event || ''),
+        networkState: audio?.networkState,
+        readyState: audio?.readyState,
+      };
+    }
+
+    function isLoopedBgmConfig(value) {
+      return value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        typeof value.loop === 'string';
+    }
+
+    function preloadBgmTree(value) {
+      if (!audio || !value) return;
+      if (isLoopedBgmConfig(value)) {
+        audio.preloadLoopedBgm(value);
+        return;
+      }
+      if (typeof value === 'string' || Array.isArray(value) || value.src) {
+        audio.preloadBgm(value);
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach(preloadBgmTree);
+      }
+    }
+
+    function preloadSfxTree(value) {
+      if (!audio || !value) return;
+      if (typeof value === 'string' || Array.isArray(value) || value.src) {
+        audio.preloadSfx(value);
+        return;
+      }
+      if (typeof value === 'object') {
+        Object.values(value).forEach(preloadSfxTree);
+      }
+    }
+
+    // 足球游戏内音频全部预载，减少第一次切换到对应 BGM / SFX 时的可感知停顿。
+    // 注意：HTMLAudio 预载不能保证采样级无缝，只能降低网络读取和首次解码等待。
+    function schedulePreloadJobs(jobs) {
+      const runId = ++preloadRunId;
+      const schedule = (callback) => {
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(callback, { timeout: 500 });
+          return;
+        }
+        window.setTimeout(callback, 120);
+      };
+      const runNext = (index) => {
+        if (runId !== preloadRunId || index >= jobs.length) return;
+        jobs[index]();
+        schedule(() => runNext(index + 1));
+      };
+      runNext(0);
+    }
+
+    function preloadAllAudio() {
+      schedulePreloadJobs([
+        () => preloadBgmTree(config.bgm.startMenu),
+        () => preloadBgmTree(selectedInGameBgm),
+        () => preloadBgmTree(config.bgm.difficulty),
+        () => preloadBgmTree(config.bgm.mood),
+        () => preloadBgmTree(config.bgm.result),
+        () => preloadBgmTree(config.loopedBgm),
+        () => preloadSfxTree(config.sfx),
+      ]);
+    }
+
+    function pickPageInGameBgm(inGameConfig) {
+      const variants = Array.isArray(inGameConfig?.variants) ? inGameConfig.variants : [];
+      if (!variants.length) return isLoopedBgmConfig(inGameConfig) ? inGameConfig : null;
+      const index = Math.floor(Math.random() * variants.length);
+      return variants[Math.min(index, variants.length - 1)];
+    }
+
+    preloadAllAudio();
+
+    function resolvePlaylist() {
+      if (!_llm.gameStarted) {
+        return { key: 'startMenu', type: 'bgm', playlist: config.bgm.startMenu };
+      }
+
+      const moodPlaylist = config.bgm.mood?.[moodKey];
+      const difficultyName = DIFFICULTY[difficultyIdx]?.name;
+      const isMaxAngry = moodKey === 'angry' && difficultyName === 'max';
+      if (!isMaxAngry) {
+        // 开场 max + angry 的 plus BGM 只允许覆盖“开场后连续保持 max+angry”的阶段。
+        // 一旦玩家/LLM 改过难度或心情导致离开该组合，后续再回到 max+angry 应使用普通 max BGM。
+        _openingMaxAngryBgmActive = false;
+      }
+      if (
+        isMaxAngry &&
+        _openingMaxAngryBgmActive &&
+        moodPlaylist?.openingMax?.loop
+      ) {
+        return { key: 'mood:angry:opening-max', type: 'loopedBgm', config: moodPlaylist.openingMax };
+      }
+      if (
+        isMaxAngry &&
+        moodPlaylist?.max?.loop
+      ) {
+        return { key: 'mood:angry:max', type: 'loopedBgm', config: moodPlaylist.max };
+      }
+      if (
+        difficultyName === 'lv4' &&
+        moodKey !== 'angry' &&
+        moodKey !== 'sad' &&
+        config.bgm.difficulty?.lv4NonAngry?.loop
+      ) {
+        return { key: 'difficulty:lv4:non-angry', type: 'loopedBgm', config: config.bgm.difficulty.lv4NonAngry };
+      }
+
+      // 正常比赛 BGM：没有命中特殊心情 / 难度 BGM 时统一回到这里。
+      // 例如打破 max + angry 组合后，下一次 sync 会切换回 inGame。
+      if (selectedInGameBgm?.loop) {
+        const selectedId = selectedInGameBgm.id || 'selected';
+        return { key: `inGame:${selectedId}`, type: 'loopedBgm', config: selectedInGameBgm };
+      }
+      return { key: 'inGame', type: 'bgm', playlist: [] };
+    }
+
+    function hasPlayableBgmTarget(type, playlist, loopedConfig) {
+      if (type === 'loopedBgm') return Boolean(loopedConfig?.loop);
+      return Boolean(Array.isArray(playlist) ? playlist.length : playlist);
+    }
+
+    function isCurrentBgmTarget(type, playlist, loopedConfig) {
+      if (!hasPlayableBgmTarget(type, playlist, loopedConfig)) return true;
+      return type === 'loopedBgm'
+        ? audio.isCurrentBgm(loopedConfig)
+        : audio.isCurrentBgm(playlist);
+    }
+
+    function sync(reason = 'sync') {
+      if (!audio) return;
+      const { key: nextKey, type, playlist, config: loopedConfig } = resolvePlaylist();
+      if (nextKey === currentKey && isCurrentBgmTarget(type, playlist, loopedConfig)) return;
+      currentKey = nextKey;
+      if (type === 'loopedBgm') {
+        console.log(`[SoccerAudio] 切换循环 BGM=${nextKey} reason=${reason}`);
+        void audio.playLoopedBgm(loopedConfig, { id: `soccer:${nextKey}` });
+        return;
+      }
+      console.log(`[SoccerAudio] 切换 BGM 歌单=${nextKey} reason=${reason} tracks=${playlist.length}`);
+      void audio.playBgm(playlist, { id: `soccer:${nextKey}` });
+    }
+
+    function setConfig(nextConfig = {}) {
+      if (nextConfig.bgm && typeof nextConfig.bgm === 'object') {
+        const nextMood = nextConfig.bgm.mood;
+        const currentMood = config.bgm.mood || {};
+        Object.assign(config.bgm, nextConfig.bgm);
+        if (nextMood && typeof nextMood === 'object') {
+          config.bgm.mood = { ...currentMood, ...nextMood };
+        }
+        selectedInGameBgm = pickPageInGameBgm(config.bgm.inGame);
+      }
+      if (nextConfig.sfx && typeof nextConfig.sfx === 'object') {
+        Object.assign(config.sfx, nextConfig.sfx);
+      }
+      if (nextConfig.audioMix && typeof nextConfig.audioMix === 'object') {
+        config.audioMix = {
+          ...config.audioMix,
+          ...nextConfig.audioMix,
+          bgm: { ...(config.audioMix?.bgm || {}), ...(nextConfig.audioMix.bgm || {}) },
+          sfx: { ...(config.audioMix?.sfx || {}), ...(nextConfig.audioMix.sfx || {}) },
+        };
+      }
+      if (nextConfig.loopedBgm && typeof nextConfig.loopedBgm === 'object') {
+        Object.assign(config.loopedBgm, nextConfig.loopedBgm);
+      }
+      audio?.configure({ audioMix: config.audioMix, bgm: config.bgm, loopedBgm: config.loopedBgm, sfx: config.sfx });
+      preloadAllAudio();
+      currentKey = '';
+      sync('set-config');
+    }
+
+    function setBgmVolume(value) {
+      return audio ? audio.setBgmVolume(value) : 0;
+    }
+
+    function setSfxVolume(value) {
+      return audio ? audio.setSfxVolume(value) : 0;
+    }
+
+    function playSfx(keyOrAudio, options = {}) {
+      return audio ? audio.playSfx(keyOrAudio, options) : Promise.resolve(false);
+    }
+
+    function playBgm(keyOrPlaylist, options = {}) {
+      return audio ? audio.playBgm(keyOrPlaylist, options) : Promise.resolve(false);
+    }
+
+    function waitForBgmEnd(options = {}) {
+      return audio ? audio.waitForBgmEnd(options) : Promise.resolve(false);
+    }
+
+    function playLoopedBgm(keyOrConfig, options = {}) {
+      return audio ? audio.playLoopedBgm(keyOrConfig, options) : Promise.resolve(false);
+    }
+
+    function stopLoopedBgm(options = {}) {
+      audio?.stopLoopedBgm(options);
+    }
+
+    function finishLoopedBgm() {
+      return audio ? audio.finishLoopedBgm() : Promise.resolve(false);
+    }
+
+    function getBgmVolume() {
+      return audio ? audio.getBgmVolume() : 0;
+    }
+
+    function getCurrentBgmSrc() {
+      return audio ? audio.getCurrentBgmSrc() : '';
+    }
+
+    function isCurrentBgm(keyOrConfig) {
+      return audio ? audio.isCurrentBgm(keyOrConfig) : false;
+    }
+
+    function getSfxVolume() {
+      return audio ? audio.getSfxVolume() : 0;
+    }
+
+    function unlock() {
+      return audio ? audio.unlock() : Promise.resolve(false);
+    }
+
+    function stop() {
+      currentKey = '';
+      audio?.stopBgm();
+    }
+
+    function destroy() {
+      currentKey = '';
+      audio?.destroy();
+    }
+
+    return {
+      audio,
+      config,
+      sync,
+      setConfig,
+      playBgm,
+      waitForBgmEnd,
+      playSfx,
+      playLoopedBgm,
+      stopLoopedBgm,
+      finishLoopedBgm,
+      setBgmVolume,
+      setSfxVolume,
+      getBgmVolume,
+      getCurrentBgmSrc,
+      isCurrentBgm,
+      getSfxVolume,
+      unlock,
+      stop,
+      destroy,
+    };
+  })();
+  {
+    const gameSystem = window.NekoGameSystem || (window.NekoGameSystem = {});
+    gameSystem.soccer = gameSystem.soccer || {};
+    gameSystem.soccer.audio = soccerGameAudio;
+  }
+
+  // Chrome 等浏览器通常要求点击、按键、触摸这类真实用户激活后才能播放带声音音频；
+  // 鼠标移动一般不算用户激活。这里在首次激活时补一次 unlock，让之前被自动播放策略
+  // 拒绝的菜单 / 游戏 BGM 有机会恢复。
+  function unlockSoccerAudioFromUserActivation() {
+    void soccerGameAudio.unlock();
+  }
+  window.addEventListener('pointerdown', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+  window.addEventListener('keydown', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+  window.addEventListener('touchstart', unlockSoccerAudioFromUserActivation, { once: true, capture: true });
+
+  function _formatVolumePercent(value) {
+    return `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
+  }
+
+  function _syncGameAudioVolumeControls() {
+    const bgm = soccerGameAudio.getBgmVolume();
+    const sfx = soccerGameAudio.getSfxVolume();
+    if (bgmVolumeInput) {
+      bgmVolumeInput.disabled = !soccerGameAudio.audio;
+      bgmVolumeInput.value = String(Math.round(bgm * 100));
+    }
+    if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(bgm);
+    if (sfxVolumeInput) {
+      sfxVolumeInput.disabled = !soccerGameAudio.audio;
+      sfxVolumeInput.value = String(Math.round(sfx * 100));
+    }
+    if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(sfx);
+  }
+
+  bgmVolumeInput?.addEventListener('input', () => {
+    const volume = soccerGameAudio.setBgmVolume(Number(bgmVolumeInput.value) / 100);
+    if (bgmVolumeValue) bgmVolumeValue.textContent = _formatVolumePercent(volume);
+  });
+  sfxVolumeInput?.addEventListener('input', () => {
+    const volume = soccerGameAudio.setSfxVolume(Number(sfxVolumeInput.value) / 100);
+    if (sfxVolumeValue) sfxVolumeValue.textContent = _formatVolumePercent(volume);
+  });
+  _syncGameAudioVolumeControls();
+
   const debugSttVisible = new URLSearchParams(window.location.search).get('debug_stt') === '1' ||
     window.localStorage?.getItem('soccerDebugStt') === '1';
   if (debugSttVisible && voiceControls) {
     voiceControls.dataset.debugVisible = 'true';
     voiceControls.setAttribute('aria-hidden', 'false');
     console.log('[SoccerVoice][DebugSTT] 调试控件已显示 | 来源=debug_stt/localStorage');
+  }
+  const debugMoodVisible = new URLSearchParams(window.location.search).get('debug_mood') === '1' ||
+    window.localStorage?.getItem('soccerDebugMood') === '1';
+  function readMoodDebugCollapsed() {
+    try { return window.localStorage?.getItem('soccerDebugMoodCollapsed') === '1'; }
+    catch (_) { return false; }
+  }
+  const debugMoodCollapsed = readMoodDebugCollapsed();
+  let moodDebugMode = debugMoodVisible;
+  let moodDebugRotationEnabled = false;
+  if (debugMoodVisible && moodDebugPanel) {
+    moodDebugPanel.dataset.debugVisible = 'true';
+    moodDebugPanel.dataset.collapsed = debugMoodCollapsed ? 'true' : 'false';
+    moodDebugPanel.setAttribute('aria-hidden', 'false');
+    console.log('[SoccerMoodDebug] 调试面板已显示 | 来源=debug_mood/localStorage');
   }
   const isGameRuntimeReady = () => window.__SoccerLoading?.isReady?.() !== false;
   const isGameUiTarget = (target) => !!target?.closest?.('#controls, #loading-overlay, #exit-to-start-button');
@@ -956,10 +1661,18 @@
   window.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', e => {
     if (!isGameRuntimeReady()) return;
+    if (isGameUiTarget(e.target)) return;
     if (e.key === 'r' || e.key === 'R') resetPositions();
+    // 难度快捷键：u=max，i=lv2，o=lv3，p=lv4。
+    const difficultyHotkey = { u: 'max', i: 'lv2', o: 'lv3', p: 'lv4' }[e.key.toLowerCase()];
+    if (difficultyHotkey) {
+      e.preventDefault();
+      setDifficulty(difficultyHotkey, 'difficulty-hotkey');
+      return;
+    }
     // 1-6 切换 AI 心情（debug）
     const idx = Number(e.key) - 1;
-    if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx]);
+    if (idx >= 0 && idx < MOOD_KEYS.length) setMood(MOOD_KEYS[idx], { manual: true });
   });
 
   // 通用踢球：从 kicker 中心向 (aimX, aimY) 踢；dirX/dirY 为单位向量，球得到一次性大冲量。
@@ -980,8 +1693,11 @@
     // 边界系统：记录最后触球方
     _outOfBoundsSide = isPlayer ? 'player' : 'ai';
     lastTouchSide = isPlayer ? 'player' : 'ai';
+    lastPlayerKickAtMs = isPlayer ? performance.now() : 0;
+    playerKickWallBounceForStartle = false;
     logGameEvent(isPlayer ? 'player-kick' : 'ai-kick');
     markBallTouched();
+    void soccerGameAudio.playSfx('ball.kick');
     emitEvent(isPlayer ? 'player-kick' : 'ai-kick');
     // AI 把球从玩家附近踢走 → AI 抢到了；玩家把球从 AI 附近踢走 → AI 被抢
     if (oppNearBall) triggerScene(isPlayer ? 'stolen' : 'steal');
@@ -1120,12 +1836,21 @@
     }
 
     // ── 默认模式：墙壁反弹 ──
-    if (b.y < r)     { b.y = r;     b.vy = -b.vy * CFG.wallRestitution; }
-    if (b.y > H - r) { b.y = H - r; b.vy = -b.vy * CFG.wallRestitution; }
+    let bouncedOffWall = false;
+    if (b.y < r)     { b.y = r;     b.vy = -b.vy * CFG.wallRestitution; bouncedOffWall = true; }
+    if (b.y > H - r) { b.y = H - r; b.vy = -b.vy * CFG.wallRestitution; bouncedOffWall = true; }
     const inGoalBand = (b.y > goalY1 && b.y < goalY2);
     if (!inGoalBand) {
-      if (b.x < r)     { b.x = r;     b.vx = -b.vx * CFG.wallRestitution; }
-      if (b.x > W - r) { b.x = W - r; b.vx = -b.vx * CFG.wallRestitution; }
+      if (b.x < r)     { b.x = r;     b.vx = -b.vx * CFG.wallRestitution; bouncedOffWall = true; }
+      if (b.x > W - r) { b.x = W - r; b.vx = -b.vx * CFG.wallRestitution; bouncedOffWall = true; }
+    }
+    if (bouncedOffWall) {
+      const now = performance.now();
+      if (now - _lastWallBounceSfxAt >= WALL_BOUNCE_SFX_COOLDOWN_MS) {
+        _lastWallBounceSfxAt = now;
+        void soccerGameAudio.playSfx('ball.kick');
+      }
+      markPlayerKickWallBounceForStartle();
     }
   }
 
@@ -1166,19 +1891,27 @@
     if (b.x - r < CFG.goalWidth && b.y > y1 && b.y < y2) {
       state.score.ai++; flash('ai');
       const kind = lastTouchSide === 'player' ? 'own-goal-by-player' : 'goal-scored';
+      speechState.scoreAgeAccum = 0;
+      speechState.lastGoalTime = performance.now();
+      rebalanceDifficultyForScore(kind);
       triggerScene(kind);
       emitEvent(kind, { side: 'ai', lastTouch: lastTouchSide });
       resetPositions(+1);
       state.round++;
+      soccerGameAudio.sync('goal-ai');
       if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
     if (b.x + r > W - CFG.goalWidth && b.y > y1 && b.y < y2) {
       state.score.player++; flash('player');
       const kind = lastTouchSide === 'ai' ? 'own-goal-by-ai' : 'goal-conceded';
+      speechState.scoreAgeAccum = 0;
+      speechState.lastGoalTime = performance.now();
+      rebalanceDifficultyForScore(kind);
       triggerScene(kind);
       emitEvent(kind, { side: 'player', lastTouch: lastTouchSide });
       resetPositions(-1);
       state.round++;
+      soccerGameAudio.sync('goal-player');
       if (DIFFICULTY_AUTOCYCLE_ON_GOAL) cycleDifficulty();
     }
   }
@@ -1189,7 +1922,7 @@
   // 兜底难度统一钉到 lv2：原本的 lv2/lv3 random 让玩家受到的初始压力抖动 1 档，
   // pre-game 端 LLM 又被 prompt 强制建议 neutral_play 选 lv2 → 兜底也对齐 lv2，
   // 让 fallback 路径与 prompt 引导走同一档，避免"LLM 出 lv2 / 兜底出 lv3"的体感
-  // 差异。lv3 / lv4 仍可由 balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
+  // 差异。lv3 / lv4 仍可由局内自动平衡、balance_hint 推荐 + LLM setDifficulty 切到，不会消失。
   const DIFFICULTY = [
     { name: 'max', kickCdMin: 0.4, kickCdMax: 0.6, windupSec: 0.00, speedMul: 1.00, allowAttack: true },
     { name: 'lv2', kickCdMin: 0.9, kickCdMax: 1.4, windupSec: 0.35, speedMul: 1.00, allowAttack: true },
@@ -1200,6 +1933,43 @@
   let difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
   function cycleDifficulty() {
     difficultyIdx = (difficultyIdx + 1) % DIFFICULTY.length;
+  }
+  function setDifficulty(name, opts = {}) {
+    const normalized = typeof opts === 'string'
+      ? { source: opts, reason: opts }
+      : (opts.source ? opts : { ...opts, source: 'manual' });
+    return setDifficultyInternal(name, normalized);
+  }
+
+  function setDifficultyInternal(name, opts = {}) {
+    const i = DIFFICULTY.findIndex(d => d.name === name);
+    if (i < 0 || i === difficultyIdx) return false;
+    const before = DIFFICULTY[difficultyIdx].name;
+    difficultyIdx = i;
+    triggerScene('diff-' + name);
+    emitEvent('difficulty-changed', { difficulty: name });
+    if (opts.source) {
+      console.log(`[SoccerDifficulty] ${opts.source} | ${before} -> ${name} ${opts.reason || ''}`.trim());
+    }
+    soccerGameAudio.sync(opts.reason || opts.source || 'difficulty-changed');
+    return true;
+  }
+
+  function targetDifficultyForScoreDiff(scoreDiff) {
+    if (scoreDiff >= 10) return 'lv4';
+    if (scoreDiff >= 3) return 'lv3';
+    if (scoreDiff <= -6) return 'max';
+    if (scoreDiff <= -3) return 'lv2';
+    return 'lv2';
+  }
+
+  function rebalanceDifficultyForScore(reason = 'score') {
+    const scoreDiff = Number(state.score.ai || 0) - Number(state.score.player || 0);
+    const target = targetDifficultyForScoreDiff(scoreDiff);
+    return setDifficultyInternal(target, {
+      source: 'auto-balance',
+      reason: `reason=${reason} scoreDiff=${scoreDiff}`,
+    });
   }
 
   // 心情（只作用于 AI）。键盘 1-6 切换
@@ -1218,17 +1988,42 @@
   };
   const MOOD_KEYS = ['calm', 'happy', 'angry', 'relaxed', 'sad', 'surprised'];
   let moodKey = 'calm';
-  function setMood(name) {
-    if (!MOODS[name]) return;
-    moodKey = name;
-    // 同步 L2D 表情（复用项目原有 setEmotion）
-    const emotion = MOODS[name].emotion;
-    try { window.live2dManager?.setEmotion?.(emotion); } catch (_) {}
+  function isAutomaticMoodBlocked(opts = {}) {
+    return moodDebugMode && opts.manual !== true && opts.force !== true && !moodDebugRotationEnabled;
   }
 
-  // startle：检测球加速度，突变时冻结 AI 一段时间
+  function setMood(name, opts = {}) {
+    if (!MOODS[name]) return;
+    if (isAutomaticMoodBlocked(opts)) return false;
+    moodKey = name;
+    // 同步 AI 头像表情（Live2D / VRM）
+    const emotion = MOODS[name].emotion;
+    window.__SoccerSetAiEmotion?.(emotion);
+    return true;
+  }
+
+  // startle：惊讶心情下，球高速撞来/擦身掠过时冻结 AI 一小段时间。
+  // 以前用“速度变化 / dt”当加速度，墙壁反弹和踢球瞬间都会误触发；这里改成
+  // 基于球速 + 未来近距离轨迹的几何判定。
   let aiFreezeSec = 0;
-  let lastBallVx = 0, lastBallVy = 0;
+  const STARTLE_RULE = {
+    directSpeedMin: 700,
+    grazeSpeedMin: 850,
+    lookaheadSec: 0.55,
+    directPadding: 8,
+    grazeOuterPadding: 70,
+    directCooldownBase: 8,
+    grazeCooldownBase: 10,
+    cooldownRandomExtra: 5,
+    mutualLockSec: 2,
+    playerKickTriggerWindowSec: 1,
+    freezeSec: 0.25,
+  };
+  let startleDirectCdSec = 0;
+  let startleGrazeCdSec = 0;
+  let startleMutualLockSec = 0;
+  let lastPlayerKickAtMs = 0;
+  let playerKickWallBounceForStartle = false;
   // zoneout：sad 模式下周期性走神
   let zoneoutCooldown = 3 + Math.random() * 2;
 
@@ -1320,18 +2115,95 @@
     while (GAME_EVENTS.length > 5) GAME_EVENTS.shift();
   }
 
-  // 心情逐帧副作用：startle（惊讶，球速突变冻结）/ zoneout（悲伤，周期性走神）
-  function aiMoodTick(dt) {
-    const mood = MOODS[moodKey];
-    const b = state.ball;
-    const dVx = b.vx - lastBallVx, dVy = b.vy - lastBallVy;
-    const accelMag = Math.hypot(dVx, dVy) / Math.max(dt, 0.001);
-    lastBallVx = b.vx; lastBallVy = b.vy;
+  function decayStartleCooldowns(dt) {
+    startleDirectCdSec = Math.max(0, startleDirectCdSec - dt);
+    startleGrazeCdSec = Math.max(0, startleGrazeCdSec - dt);
+    startleMutualLockSec = Math.max(0, startleMutualLockSec - dt);
+  }
 
-    if (mood.style === 'startle' && accelMag > 4000 && aiFreezeSec <= 0) {
-      aiFreezeSec = 0.25;
-      aiKickCd = 0;
-      triggerScene('startle');
+  function rollStartleCooldown(baseSec) {
+    return baseSec + Math.random() * STARTLE_RULE.cooldownRandomExtra;
+  }
+
+  function projectedBallPassNearAi() {
+    const b = state.ball;
+    const speed = Math.hypot(b.vx, b.vy);
+    if (speed < Math.min(STARTLE_RULE.directSpeedMin, STARTLE_RULE.grazeSpeedMin)) return null;
+
+    const relVx = b.vx - state.ai.vx;
+    const relVy = b.vy - state.ai.vy;
+    const relSpeedSq = relVx * relVx + relVy * relVy;
+    if (relSpeedSq <= 0.0001) return null;
+
+    const acx = state.ai.x + CFG.charSize / 2;
+    const acy = state.ai.y + CFG.charSize / 2;
+    const relX = b.x - acx;
+    const relY = b.y - acy;
+    const tClosest = -(relX * relVx + relY * relVy) / relSpeedSq;
+    if (tClosest <= 0 || tClosest > STARTLE_RULE.lookaheadSec) return null;
+
+    const closestX = relX + relVx * tClosest;
+    const closestY = relY + relVy * tClosest;
+    const closestDist = Math.hypot(closestX, closestY);
+    const bodyRadius = CFG.charSize / 2 + CFG.ballRadius;
+    const directRadius = bodyRadius + STARTLE_RULE.directPadding;
+    const grazeRadius = bodyRadius + STARTLE_RULE.grazeOuterPadding;
+
+    return { speed, tClosest, closestDist, directRadius, grazeRadius };
+  }
+
+  function playerKickStartleWindowRemainingSec(now = performance.now()) {
+    if (!lastPlayerKickAtMs) return 0;
+    const elapsedSec = (now - lastPlayerKickAtMs) / 1000;
+    return Math.max(0, STARTLE_RULE.playerKickTriggerWindowSec - elapsedSec);
+  }
+
+  function markPlayerKickWallBounceForStartle() {
+    if (lastTouchSide === 'player' && playerKickStartleWindowRemainingSec() > 0) {
+      playerKickWallBounceForStartle = true;
+    }
+  }
+
+  function triggerStartle(kind, cooldownBaseSec) {
+    aiFreezeSec = STARTLE_RULE.freezeSec;
+    aiKickCd = 0;
+    const cooldownSec = rollStartleCooldown(cooldownBaseSec);
+    if (kind === 'startle-direct') startleDirectCdSec = cooldownSec;
+    else startleGrazeCdSec = cooldownSec;
+    startleMutualLockSec = STARTLE_RULE.mutualLockSec;
+    triggerScene(kind, { cooldownSec });
+  }
+
+  // 心情逐帧副作用：startle（惊讶，被高速球吓到）/ zoneout（悲伤，周期性走神）
+  function aiMoodTick(dt) {
+    decayStartleCooldowns(dt);
+    const mood = MOODS[moodKey];
+
+    if (
+      mood.style === 'startle' &&
+      lastTouchSide === 'player' &&
+      playerKickStartleWindowRemainingSec() > 0 &&
+      aiFreezeSec <= 0 &&
+      startleMutualLockSec <= 0
+    ) {
+      const pass = projectedBallPassNearAi();
+      if (pass) {
+        if (
+          startleDirectCdSec <= 0 &&
+          !playerKickWallBounceForStartle &&
+          pass.speed >= STARTLE_RULE.directSpeedMin &&
+          pass.closestDist <= pass.directRadius
+        ) {
+          triggerStartle('startle-direct', STARTLE_RULE.directCooldownBase);
+        } else if (
+          startleGrazeCdSec <= 0 &&
+          pass.speed >= STARTLE_RULE.grazeSpeedMin &&
+          pass.closestDist > pass.directRadius &&
+          pass.closestDist <= pass.grazeRadius
+        ) {
+          triggerStartle('startle-graze', STARTLE_RULE.grazeCooldownBase);
+        }
+      }
     }
     if (mood.style === 'zoneout') {
       zoneoutCooldown -= dt;
@@ -1497,6 +2369,8 @@
     'no-goal-1min': '长时间无进球',
     'fast-ball': '球速很快',
     'startle': '猫娘受惊',
+    'startle-direct': '猫娘被高速球撞来吓到',
+    'startle-graze': '猫娘被高速擦身球吓到',
     'zoneout': '猫娘走神',
     'unstick': '球脱困',
     'out-of-bounds': '球出界',
@@ -1534,6 +2408,36 @@
   function moodLabel(mood) {
     if (!mood) return '未知心情';
     return MOOD_LABELS[mood] ? `${MOOD_LABELS[mood]}(${mood})` : mood;
+  }
+  function debugText(key, fallback, params) {
+    return _i18n(`debug.${key}`, fallback, params);
+  }
+  function debugParam(name) {
+    return '{' + '{' + name + '}' + '}';
+  }
+  function debugMoodLabel(mood) {
+    const fallback = MOOD_LABELS[mood] || mood || '-';
+    return mood ? _i18n(`moods.${mood}`, fallback) : '-';
+  }
+  function debugDifficultyLabel(name) {
+    const fallback = ({ max: '最高', lv2: '二档', lv3: '三档', lv4: '四档' })[name] || name || '-';
+    return name ? _i18n(`difficulties.${name}`, fallback) : '-';
+  }
+  function debugAiModeLabel(mode) {
+    const fallback = ({ attack: '进攻', defend: '防守', clear: '解围' })[mode] || mode || '-';
+    return mode ? _i18n(`aiModes.${mode}`, fallback) : '-';
+  }
+  function debugGameEventLabel(label) {
+    const fallback = ({
+      'player-kick': '玩家踢球',
+      'ai-kick': 'AI 踢球',
+      unstick: '球脱困',
+    })[label] || label || '-';
+    return label && Object.prototype.hasOwnProperty.call({
+      'player-kick': true,
+      'ai-kick': true,
+      unstick: true,
+    }, label) ? _i18n(`debugEvents.${label}`, fallback) : fallback;
   }
   function soccerRecoverableLog(...args) {
     if (DEBUG_WARN_WITH_STACK) console.warn(...args);
@@ -1642,6 +2546,8 @@
     'no-goal-1min':  ['要不……平局？', '手累了……'],
     'fast-ball':     ['好猛！', '哇！'],
     'startle':       ['！', '吓我一跳'],
+    'startle-direct':['哇！别撞我！', '吓、吓死我了！'],
+    'startle-graze': ['刚刚擦过去了？！', '别从我旁边飞啦！'],
     'zoneout':       ['……啊？在打球呢。', '嗯？到哪了'],
     'unstick':       ['！球怎么不动了', '球卡了？'],
     'diff-max':      ['热身好了哦', '认真模式~'],
@@ -1660,7 +2566,7 @@
     'own-goal-by-ai': 9, 'own-goal-by-player': 9,
     'diff-max': 7, 'diff-lv2': 7, 'diff-lv3': 7, 'diff-lv4': 7,
     'mood-happy': 6, 'mood-angry': 6, 'mood-sad': 6, 'mood-surprised': 6, 'mood-relaxed': 6, 'mood-calm': 6,
-    'unstick': 5, 'startle': 5, 'zoneout': 5,
+    'unstick': 5, 'startle': 5, 'startle-direct': 5, 'startle-graze': 5, 'zoneout': 5,
     'steal': 4, 'stolen': 4, 'shot-miss': 4,
     'long-attack-possession': 3, 'long-defense-possession': 3,
     'close-proximity': 3, 'fast-ball': 3,
@@ -1674,12 +2580,12 @@
     'close-proximity': 12, 'fast-ball': 10,
     'player-idle': 20, 'player-charging-long': 15,
     'free-ball': 20, 'score-boring': 30, 'no-goal-1min': 60,
-    'startle': 6, 'zoneout': 6, 'unstick': 4,
+    'startle': 6, 'startle-direct': 8, 'startle-graze': 10, 'zoneout': 6, 'unstick': 4,
   };
   const QUICK_LINE_KEYS = [
     'goal-scored', 'goal-conceded', 'own-goal-by-ai', 'own-goal-by-player',
     'steal', 'stolen', 'player-idle', 'player-charging-long',
-    'free-ball', 'startle', 'zoneout',
+    'free-ball', 'startle-direct', 'startle-graze', 'zoneout',
   ];
 
   function applyGeneratedQuickLines(lines = {}) {
@@ -1724,7 +2630,7 @@
   }
   loadGeneratedQuickLines();
 
-  function triggerScene(kind) {
+  function triggerScene(kind, opts = {}) {
     const pool = LINES[kind];
     if (!pool || !pool.length) return false;
     const text = pool[Math.floor(Math.random() * pool.length)];
@@ -1732,7 +2638,7 @@
       kind,
       priority: PRIORITY[kind] || 0,
       cooldownKey: kind,
-      cooldownSec: COOLDOWN[kind] || 0,
+      cooldownSec: opts.cooldownSec ?? COOLDOWN[kind] ?? 0,
       waitForLLM: LLM_INTERCEPT_KINDS.has(kind),
     });
   }
@@ -1811,6 +2717,7 @@
     }
     if (speechState.scoreAgeAccum > 60) {
       triggerScene('no-goal-1min');
+      rebalanceDifficultyForScore('no-goal-1min');
       speechState.scoreAgeAccum = 0;
     }
 
@@ -1825,25 +2732,39 @@
   //  心情 20s 随机轮换
   // ═══════════════════════════════════════════════════════════════════════════
   let moodRotateTimer = null;
-  function enableMoodRotation(intervalSec = 20) {
-    disableMoodRotation();
+  function enableMoodRotation(intervalSec = 20, opts = {}) {
+    if (moodDebugMode) {
+      if (opts.manual !== true) return !!moodRotateTimer;
+      moodDebugRotationEnabled = true;
+    }
+    if (moodRotateTimer) { clearInterval(moodRotateTimer); moodRotateTimer = null; }
     moodRotateTimer = setInterval(() => {
       const others = MOOD_KEYS.filter(k => k !== moodKey);
       const next = others[Math.floor(Math.random() * others.length)];
-      setMood(next);
+      setMood(next, { source: 'rotation' });
     }, intervalSec * 1000);
+    return true;
   }
-  function disableMoodRotation() {
+  function disableMoodRotation(opts = {}) {
+    if (moodDebugMode) {
+      if (opts.manual !== true && opts.force !== true) return !moodRotateTimer;
+      moodDebugRotationEnabled = false;
+    }
     if (moodRotateTimer) { clearInterval(moodRotateTimer); moodRotateTimer = null; }
+    return true;
   }
 
   // 心情切换时播"mood-XX"气泡（重写 setMood 让它走一下这个钩子）
   const __setMoodBase = setMood;
-  setMood = function(name) {
-    if (!MOODS[name] || name === moodKey) { __setMoodBase(name); return; }
-    __setMoodBase(name);
+  setMood = function(name, opts = {}) {
+    if (!MOODS[name]) return false;
+    if (name === moodKey) return __setMoodBase(name, opts);
+    const changed = __setMoodBase(name, opts);
+    if (!changed) return false;
     triggerScene('mood-' + name);
     emitEvent('mood-changed', { mood: name });
+    soccerGameAudio.sync('mood-changed');
+    return true;
   };
 
   const __cycleDiffBase = cycleDifficulty;
@@ -1851,6 +2772,7 @@
     __cycleDiffBase();
     triggerScene('diff-' + DIFFICULTY[difficultyIdx].name);
     emitEvent('difficulty-changed', { difficulty: DIFFICULTY[difficultyIdx].name });
+    soccerGameAudio.sync('difficulty-changed');
   };
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1900,42 +2822,174 @@
   }
 
   async function setAiAvatar({ type, path } = {}) {
-    if (type !== 'live2d') throw new Error('ai avatar: only live2d supported');
     if (!path) throw new Error('ai avatar: path required');
-    // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
-    // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
-    const loadPromise = window.live2dManager.loadModel(path);
-    loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
-    await new Promise((resolve, reject) => {
-      const t0 = Date.now();
-      const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
-      const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
-      const tick = () => {
-        const m = window.live2dManager.currentModel;
-        const curUrl = m?.internalModel?.settings?.url || '';
-        // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
-        const urlMatches = curUrl === path || curUrl.endsWith(path);
-        if (m && m.width > 0 && (urlMatches || !startedWithSameModel)) return resolve();
-        if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
-        setTimeout(tick, 150);
-      };
-      tick();
-    });
-    const m = window.live2dManager.currentModel;
-    if (m && m.width && m.height) {
-      const canvasW = 200, canvasH = 300, margin = 6;
-      const s = Math.min((canvasW - margin * 2) / m.width, (canvasH - margin * 2) / m.height);
-      m.scale.set(m.scale.x * s, m.scale.y * s);
-      const ax = m.anchor ? m.anchor.x : 0;
-      const ay = m.anchor ? m.anchor.y : 0;
-      const bx = (canvasW - m.width) / 2;
-      const by = canvasH - margin - m.height;
-      m.x = bx + m.width * ax;
-      m.y = by + m.height * ay;
-      m.alpha = 1;
-      if (window.live2dManager.pixi_app?.view) window.live2dManager.pixi_app.view.style.opacity = '1';
+    if (type === 'vrm') {
+      if (typeof VRMManager === 'undefined') throw new Error('ai avatar: VRMManager class not found');
+      const previousType = window.__SoccerAiAvatar?.type;
+      window.aiVrmManager = window.aiVrmManager || new VRMManager();
+      pauseAiAvatarRenderer('live2d');
+      try {
+        await window.__SoccerLoadVrmIntoManager(window.aiVrmManager, path, {
+          canvasId: 'ai-l2d-canvas',
+          containerId: 'ai-l2d-container',
+          label: 'AI VRM',
+        });
+      } catch (e) {
+        if (previousType === 'live2d') resumeAiAvatarRenderer('live2d');
+        throw e;
+      }
+      window.__focusL2DAt = window.__SoccerSetAiVrmFocus;
+      resumeAiAvatarRenderer('vrm');
+      window.__SoccerAiAvatar = { type: 'vrm', path, ready: true };
+      emitEvent('ai-avatar-changed', { type, path });
+      return;
     }
+    if (type !== 'live2d') throw new Error('ai avatar: only live2d/vrm supported');
+    const previousType = window.__SoccerAiAvatar?.type;
+    pauseAiAvatarRenderer('vrm');
+    try {
+      await ensureAiLive2dReady();
+      // 不 await loadModel 的 Promise —— 在 rAF 被 throttle（后台 tab/headless）时它可能永不 resolve，
+      // 会把外部调用者（LLM / 本体集成）挂死。改用就绪轮询，与初始 AI 加载路径一致。
+      const loadPromise = window.live2dManager.loadModel(path);
+      loadPromise.catch(e => console.warn('[setAiAvatar] loadModel awaited reject:', e));
+      await new Promise((resolve, reject) => {
+        const t0 = Date.now();
+        const prevUrl = window.live2dManager.currentModel?.internalModel?.settings?.url || '';
+        const startedWithSameModel = prevUrl === path || prevUrl.endsWith(path);
+        const tick = () => {
+          const m = window.live2dManager.currentModel;
+          const curUrl = m?.internalModel?.settings?.url || '';
+          // 用完整路径比对（不是只看文件名），避免不同目录同名模型被误判
+          const urlMatches = curUrl === path || curUrl.endsWith(path);
+          if (m && m.width > 0 && (urlMatches || startedWithSameModel)) return resolve();
+          if (Date.now() - t0 > 20000) return reject(new Error('L2D model not ready within 20s'));
+          setTimeout(tick, 150);
+        };
+        tick();
+      });
+    } catch (e) {
+      if (previousType === 'vrm') resumeAiAvatarRenderer('vrm');
+      throw e;
+    }
+    fitAiLive2dModel();
+    window.__focusL2DAt = window.__SoccerSetAiLive2dFocus;
+    resumeAiAvatarRenderer('live2d');
+    window.__SoccerAiAvatar = { type: 'live2d', path, ready: true };
     emitEvent('ai-avatar-changed', { type, path });
+  }
+
+  function roundDebugNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(0, n).toFixed(2) : '0.00';
+  }
+
+  function clearStartleCooldowns() {
+    startleDirectCdSec = 0;
+    startleGrazeCdSec = 0;
+    startleMutualLockSec = 0;
+    lastPlayerKickAtMs = 0;
+    playerKickWallBounceForStartle = false;
+    updateMoodDebugPanel();
+  }
+
+  function getMoodDebugSnapshot() {
+    const b = state.ball;
+    const scoreDiff = Number(state.score.ai || 0) - Number(state.score.player || 0);
+    return {
+      debugMode: moodDebugMode,
+      mood: moodKey,
+      difficulty: DIFFICULTY[difficultyIdx].name,
+      difficultyAutoTarget: targetDifficultyForScoreDiff(scoreDiff),
+      scoreDiff,
+      moodRotation: moodRotateTimer ? 'on' : 'off',
+      moodRotationDebugEnabled: moodDebugRotationEnabled,
+      aiMode,
+      lastTouchSide,
+      playerKickStartleWindowSec: Number(roundDebugNumber(playerKickStartleWindowRemainingSec())),
+      playerKickWallBounceForStartle,
+      aiFreezeSec: Number(roundDebugNumber(aiFreezeSec)),
+      aiKickCdSec: Number(roundDebugNumber(aiKickCd)),
+      aiWindupSec: Number(roundDebugNumber(aiWindupRemaining)),
+      startleDirectCdSec: Number(roundDebugNumber(startleDirectCdSec)),
+      startleGrazeCdSec: Number(roundDebugNumber(startleGrazeCdSec)),
+      startleMutualLockSec: Number(roundDebugNumber(startleMutualLockSec)),
+      zoneoutCooldownSec: Number(roundDebugNumber(zoneoutCooldown)),
+      ballSpeed: Math.round(Math.hypot(b.vx, b.vy)),
+      ballGhost: ballGhostSec > 0,
+    };
+  }
+
+  function setMoodDebugVisible(visible = true, persist = false) {
+    if (!moodDebugPanel) return false;
+    const shouldShow = !!visible;
+    moodDebugMode = shouldShow;
+    moodDebugPanel.dataset.debugVisible = shouldShow ? 'true' : 'false';
+    moodDebugPanel.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+    if (shouldShow) {
+      moodDebugPanel.dataset.collapsed = readMoodDebugCollapsed() ? 'true' : 'false';
+      disableMoodRotation({ force: true });
+    } else if (!_llm.keepMoodRotationDisabled) {
+      enableMoodRotation(20);
+    }
+    if (persist) {
+      try {
+        if (shouldShow) window.localStorage?.setItem('soccerDebugMood', '1');
+        else window.localStorage?.removeItem('soccerDebugMood');
+      } catch (_) { /* storage can be unavailable */ }
+    }
+    updateMoodDebugPanel();
+    return shouldShow;
+  }
+
+  function setMoodDebugCollapsed(collapsed = true, persist = false) {
+    if (!moodDebugPanel) return false;
+    const shouldCollapse = !!collapsed;
+    moodDebugPanel.dataset.collapsed = shouldCollapse ? 'true' : 'false';
+    if (persist) {
+      try {
+        if (shouldCollapse) window.localStorage?.setItem('soccerDebugMoodCollapsed', '1');
+        else window.localStorage?.removeItem('soccerDebugMoodCollapsed');
+      } catch (_) { /* storage can be unavailable */ }
+    }
+    updateMoodDebugPanel();
+    return shouldCollapse;
+  }
+
+  function updateMoodDebugPanel() {
+    if (!moodDebugPanel || moodDebugPanel.dataset.debugVisible !== 'true') return;
+    const snapshot = getMoodDebugSnapshot();
+    const collapsed = moodDebugPanel.dataset.collapsed === 'true';
+    const collapseButton = moodDebugPanel.querySelector('[data-debug-action="collapse"]');
+    if (collapseButton) {
+      collapseButton.textContent = collapsed ? '展开' : '收起';
+      collapseButton.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+    moodDebugPanel.querySelectorAll('[data-debug-mood]').forEach(btn => {
+      btn.dataset.active = btn.dataset.debugMood === moodKey ? 'true' : 'false';
+    });
+    moodDebugPanel.querySelectorAll('[data-debug-difficulty]').forEach(btn => {
+      btn.dataset.active = btn.dataset.debugDifficulty === snapshot.difficulty ? 'true' : 'false';
+    });
+    const rotationToggleButton = moodDebugPanel.querySelector('[data-debug-action="rotation-toggle"]');
+    if (rotationToggleButton) {
+      const rotationOn = snapshot.moodRotation === 'on';
+      rotationToggleButton.dataset.active = rotationOn ? 'true' : 'false';
+      rotationToggleButton.textContent = rotationOn ? '随机心情：开' : '随机心情：关';
+    }
+    if (moodDebugReadout) {
+      moodDebugReadout.textContent = [
+        `测试=${snapshot.debugMode ? '开' : '关'}  心情=${snapshot.mood}  难度=${snapshot.difficulty}  随机=${snapshot.moodRotation === 'on' ? '开' : '关'}`,
+        `分差=${snapshot.scoreDiff}  自动目标难度=${snapshot.difficultyAutoTarget}`,
+        `AI状态=${snapshot.aiMode}  最后触球=${snapshot.lastTouchSide || '-'}  受惊窗口=${roundDebugNumber(snapshot.playerKickStartleWindowSec)}s  撞墙=${snapshot.playerKickWallBounceForStartle ? '是' : '否'}`,
+        `冻结=${roundDebugNumber(snapshot.aiFreezeSec)}s`,
+        `踢球冷却=${roundDebugNumber(snapshot.aiKickCdSec)}s  前摇=${roundDebugNumber(snapshot.aiWindupSec)}s`,
+        `直撞受惊冷却=${roundDebugNumber(snapshot.startleDirectCdSec)}s`,
+        `擦身受惊冷却=${roundDebugNumber(snapshot.startleGrazeCdSec)}s`,
+        `受惊互斥锁=${roundDebugNumber(snapshot.startleMutualLockSec)}s`,
+        `走神冷却=${roundDebugNumber(snapshot.zoneoutCooldownSec)}s  球速=${snapshot.ballSpeed}`,
+      ].join('\n');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1945,18 +2999,13 @@
     MOODS: Object.freeze(MOOD_KEYS.slice()),
     DIFFICULTIES: Object.freeze(DIFFICULTY.map(d => d.name)),
     // mood
-    setMood: (name) => setMood(name),
+    setMood: (name, opts = {}) => setMood(name, opts),
     getMood: () => moodKey,
     enableMoodRotation,
     disableMoodRotation,
     // difficulty
-    setDifficulty(name) {
-      const i = DIFFICULTY.findIndex(d => d.name === name);
-      if (i >= 0) {
-        difficultyIdx = i;
-        triggerScene('diff-' + name);
-        emitEvent('difficulty-changed', { difficulty: name });
-      }
+    setDifficulty(name, opts = {}) {
+      return setDifficultyInternal(name, opts.source ? opts : { ...opts, source: 'manual' });
     },
     getDifficulty: () => DIFFICULTY[difficultyIdx].name,
     cycleDifficulty: () => cycleDifficulty(),
@@ -1964,7 +3013,24 @@
     setPlayerAvatar,
     setAiAvatar,
     getPlayerAvatar: () => ({ type: 'vrm', path: window.vrmManager?.currentModel?.url }),
-    getAiAvatar:    () => ({ type: 'live2d', path: window.live2dManager?.currentModel?.internalModel?.settings?.url }),
+    getAiAvatar:    () => {
+      const state = window.__SoccerAiAvatar || { type: 'none', path: '', ready: false };
+      if (state.type === 'vrm') {
+        return {
+          type: 'vrm',
+          path: window.aiVrmManager?.currentModel?.url || state.path || '',
+          ready: !!state.ready,
+        };
+      }
+      if (state.type === 'live2d') {
+        return {
+          type: 'live2d',
+          path: window.live2dManager?.currentModel?.internalModel?.settings?.url || state.path || '',
+          ready: !!state.ready,
+        };
+      }
+      return { type: 'none', path: state.path || '', ready: false };
+    },
     // speech
     say,
     triggerScene,
@@ -1987,12 +3053,85 @@
     // 供外部调试：获取内部状态（只读快照）
     _snapshot: () => ({ mood: moodKey, difficulty: DIFFICULTY[difficultyIdx].name,
                         round: state.round,
-                        score: { ...state.score }, aiMode, aiFreezeSec,
+                        score: { ...state.score }, aiMode, aiFreezeSec, lastTouchSide,
+                        playerKickStartleWindowSec: playerKickStartleWindowRemainingSec(),
+                        playerKickWallBounceForStartle,
+                        startle: {
+                          directCdSec: startleDirectCdSec,
+                          grazeCdSec: startleGrazeCdSec,
+                          mutualLockSec: startleMutualLockSec,
+                        },
+                        zoneoutCooldownSec: zoneoutCooldown,
                         ballGhost: ballGhostSec > 0 }),
   };
 
-  // 默认开启 20s 心情轮换
-  enableMoodRotation(20);
+  function handleMoodDebugButton(btn) {
+    if (!btn) return;
+    const mood = btn.dataset.debugMood;
+    const difficulty = btn.dataset.debugDifficulty;
+    const action = btn.dataset.debugAction;
+    if (mood) {
+      window.SoccerDemo.setMood(mood, { manual: true });
+    } else if (difficulty) {
+      window.SoccerDemo.setDifficulty(difficulty);
+    } else if (action === 'rotation-toggle') {
+      if (moodRotateTimer) window.SoccerDemo.disableMoodRotation({ manual: true });
+      else window.SoccerDemo.enableMoodRotation(20, { manual: true });
+    } else if (action === 'clear-startle') {
+      clearStartleCooldowns();
+    } else if (action === 'collapse') {
+      setMoodDebugCollapsed(moodDebugPanel.dataset.collapsed !== 'true', true);
+    } else if (action === 'hide') {
+      setMoodDebugVisible(false, true);
+    }
+    updateMoodDebugPanel();
+  }
+
+  moodDebugPanel?.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      handleMoodDebugButton(btn);
+    });
+  });
+
+  window.SoccerDemoDebug = {
+    show(persist = true) { return setMoodDebugVisible(true, persist); },
+    hide(persist = true) { return setMoodDebugVisible(false, persist); },
+    collapse(persist = true) { return setMoodDebugCollapsed(true, persist); },
+    expand(persist = true) { return setMoodDebugCollapsed(false, persist); },
+    toggle(persist = true) {
+      return setMoodDebugVisible(moodDebugPanel?.dataset.debugVisible !== 'true', persist);
+    },
+    mood(name) {
+      window.SoccerDemo.setMood(name, { manual: true });
+      updateMoodDebugPanel();
+      return getMoodDebugSnapshot();
+    },
+    difficulty(name) { window.SoccerDemo.setDifficulty(name); updateMoodDebugPanel(); return getMoodDebugSnapshot(); },
+    rotation(enabled = true) {
+      if (enabled) window.SoccerDemo.enableMoodRotation(20, { manual: true });
+      else window.SoccerDemo.disableMoodRotation({ manual: true });
+      updateMoodDebugPanel();
+      return getMoodDebugSnapshot();
+    },
+    clearStartleCooldowns() { clearStartleCooldowns(); return getMoodDebugSnapshot(); },
+    snapshot: getMoodDebugSnapshot,
+    log() {
+      const snapshot = getMoodDebugSnapshot();
+      if (console.table) console.table(snapshot);
+      else console.log(snapshot);
+      return snapshot;
+    },
+  };
+  updateMoodDebugPanel();
+
+  // 默认开启 20s 心情轮换；debug_mood 测试模式下保持手动控制。
+  if (!moodDebugMode) enableMoodRotation(20);
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  LLM 接入（A+B 双簧模式）
@@ -2114,8 +3253,11 @@
     aiWindupTotal = 0;
     ballGhostSec = 0;
     lastTouchSide = null;
-    lastBallVx = 0;
-    lastBallVy = 0;
+    lastPlayerKickAtMs = 0;
+    playerKickWallBounceForStartle = false;
+    startleDirectCdSec = 0;
+    startleGrazeCdSec = 0;
+    startleMutualLockSec = 0;
     zoneoutCooldown = 3 + Math.random() * 2;
     aiMode = 'attack';
     aiReactSec = 0;
@@ -2128,8 +3270,10 @@
     GAME_EVENTS.length = 0;
 
     difficultyIdx = DEFAULT_DIFFICULTY_INDEX >= 0 ? DEFAULT_DIFFICULTY_INDEX : 1;
-    __setMoodBase('calm');
-    if (!_llm.keepMoodRotationDisabled) SoccerDemo.enableMoodRotation(20);
+    __setMoodBase('calm', { force: true });
+    if (moodDebugMode) SoccerDemo.disableMoodRotation({ force: true });
+    else if (_llm.keepMoodRotationDisabled) SoccerDemo.disableMoodRotation();
+    else SoccerDemo.enableMoodRotation(20);
     for (const key of Object.keys(SPEECH_CD)) delete SPEECH_CD[key];
     Object.assign(speechState, {
       ballInOppHalfSec: 0,
@@ -2141,6 +3285,7 @@
       lastFreezeKind: null,
     });
     SoccerDemo.clearBubble();
+    soccerGameAudio.sync('reset-start-screen');
   }
 
   function _resetGameRouteRuntime({ active = false, newSession = false } = {}) {
@@ -2161,6 +3306,8 @@
     _llm.gameStarted = false;
     _llm.gameStartedAt = 0;
     _llm.gameStartedAtEpochMs = 0;
+    _startedAsMaxAngry = false;
+    _openingMaxAngryBgmActive = false;
     _llm.gameMemoryTailCount = null;
     _llm.soccerGameMemoryEnabled = _isGameMemoryEnabled();
     _llm.lastVoiceFailure = null;
@@ -2585,17 +3732,19 @@
     _llm.preGameContextError = String(routeState?.pre_game_context_error || '');
     _llm.keepMoodRotationDisabled = !!(ctx && ctx.gameStance && ctx.gameStance !== 'neutral_play');
 
-    if (_llm.keepMoodRotationDisabled) {
+    if (moodDebugMode) {
+      SoccerDemo.disableMoodRotation({ force: true });
+    } else if (_llm.keepMoodRotationDisabled) {
       SoccerDemo.disableMoodRotation();
     } else {
       SoccerDemo.enableMoodRotation(20);
     }
 
     if (ctx?.initialMood && _isValidSoccerMood(ctx.initialMood)) {
-      SoccerDemo.setMood(ctx.initialMood);
+      SoccerDemo.setMood(ctx.initialMood, { source: 'pregame', force: true });
     }
     if (ctx?.initialDifficulty && _isValidSoccerDifficulty(ctx.initialDifficulty)) {
-      SoccerDemo.setDifficulty(ctx.initialDifficulty);
+      SoccerDemo.setDifficulty(ctx.initialDifficulty, { source: 'pregame' });
     }
 
     console.log(
@@ -3443,9 +4592,10 @@
       if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood)) {
         const beforeMood = SoccerDemo.getMood();
         SoccerDemo.disableMoodRotation();
-        SoccerDemo.setMood(result.control.mood);
-        applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
-        if (!_llm.keepMoodRotationDisabled) {
+        const moodChanged = SoccerDemo.setMood(result.control.mood, { source: 'llm-control' });
+        if (moodChanged) applied.push(`心情 ${moodLabel(beforeMood)} -> ${moodLabel(result.control.mood)}`);
+        else ignored.push(`心情=${result.control.mood}（调试随机关闭）`);
+        if (!moodDebugMode && !_llm.keepMoodRotationDisabled) {
           setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000);
         }
       } else if (result.control.mood) {
@@ -3453,8 +4603,8 @@
       }
       if (result.control.difficulty && SoccerDemo.DIFFICULTIES.includes(result.control.difficulty)) {
         const beforeDifficulty = SoccerDemo.getDifficulty();
-        SoccerDemo.setDifficulty(result.control.difficulty);
-        applied.push(`难度 ${beforeDifficulty} -> ${result.control.difficulty}`);
+        const difficultyChanged = SoccerDemo.setDifficulty(result.control.difficulty, { source: 'llm-control' });
+        if (difficultyChanged) applied.push(`难度 ${beforeDifficulty} -> ${result.control.difficulty}`);
       } else if (result.control.difficulty) {
         ignored.push(`难度=${result.control.difficulty}`);
       }
@@ -3617,6 +4767,15 @@
     _llm.gameStarted = true;
     _llm.gameStartedAt = performance.now();
     _llm.gameStartedAtEpochMs = Date.now();
+    const openingDifficultyName = DIFFICULTY[difficultyIdx]?.name || '';
+    _startedAsMaxAngry = openingDifficultyName === 'max' && moodKey === 'angry';
+    _openingMaxAngryBgmActive = _startedAsMaxAngry;
+    const openingBgmReason = openingDifficultyName === 'max' && moodKey === 'angry'
+      ? 'start-game-max-angry'
+      : 'start-game';
+    console.log(`[SoccerAudio] 开局 BGM 判定 mood=${moodKey} difficulty=${openingDifficultyName} reason=${openingBgmReason}`);
+    void soccerGameAudio.unlock();
+    soccerGameAudio.sync(openingBgmReason);
     void _sendGameRouteHeartbeat(true);
     _deliverPendingOpeningLine();
   }
@@ -3629,6 +4788,10 @@
   // localizer。各元素的 ``data-i18n="soccer.…"`` 已就位，本块整体删除。
 
   let _manualEndInFlight = false;
+  function _waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async function _endGameAndShowClosePrompt() {
     if (_manualEndInFlight || !isGameRuntimeReady()) return;
     _manualEndInFlight = true;
@@ -3641,12 +4804,36 @@
       const v = window.t(fullKey);
       return (v && v !== fullKey) ? v : fallback;
     };
+    let closeDelayMs = 600;
     try {
       window.__SoccerLoading?.ending?.(_t('exitGame.ending', '正在退出本局…'));
       await _endGameLLMSession(false, {
         reason: 'manual_user_exit',
         postgameProactive: false,
       });
+      const playerWon = Number(state.score.player || 0) > Number(state.score.ai || 0);
+      const playerWinBgm = soccerGameAudio.config.bgm.result?.playerWin;
+      const hasPlayerWinBgm = Array.isArray(playerWinBgm) ? playerWinBgm.length > 0 : Boolean(playerWinBgm);
+      if (playerWon && hasPlayerWinBgm) {
+        const started = await soccerGameAudio.playBgm(playerWinBgm, {
+          id: 'soccer:result:player-win',
+          repeat: false,
+          fadeMs: 250,
+        });
+        // 胜利结算 BGM 按 max(2.6 秒, BGM 播放完成) 后再返回。
+        // timeoutMs 只是异常兜底，避免浏览器没有 fired ended 时永久卡在退出流程。
+        if (started) {
+          await Promise.all([
+            _waitMs(2600),
+            soccerGameAudio.waitForBgmEnd({ timeoutMs: 120000 }),
+          ]);
+          closeDelayMs = 0;
+        } else {
+          closeDelayMs = 2600;
+        }
+      } else {
+        soccerGameAudio.stop();
+      }
     } finally {
       window.__SoccerLoading?.ended?.(_t('exitGame.ended', '游戏已结束，正在返回…'));
       _manualEndInFlight = false;
@@ -3663,7 +4850,7 @@
             window.location.assign('/');
           }
         }, 150);
-      }, 600);
+      }, closeDelayMs);
     }
   }
 
@@ -3804,8 +4991,14 @@
     _setVoiceStatus(_i18n('voiceStatus.debugUnsupported', '当前浏览器不支持调试 STT，请用调试文本框提交'));
   }
 
-  window.addEventListener('pagehide', () => _endGameLLMSession(true));
-  window.addEventListener('beforeunload', () => _endGameLLMSession(true));
+  window.addEventListener('pagehide', () => {
+    soccerGameAudio.destroy();
+    _endGameLLMSession(true);
+  });
+  window.addEventListener('beforeunload', () => {
+    soccerGameAudio.destroy();
+    _endGameLLMSession(true);
+  });
 
   let lastT = performance.now();
   function loop(t) {
@@ -3865,6 +5058,7 @@
     // 说话子系统：场景轮询 + 气泡同步到 AI 头顶
     speechTick(dt);
     positionBubble();
+    updateMoodDebugPanel();
 
     render();
     requestAnimationFrame(loop);
@@ -3911,8 +5105,8 @@
       }
     }
 
-    // AI：L2D 没加载成功的话，用方块 fallback
-    if (!window.live2dManager?.currentModel) {
+    // AI：头像没加载成功的话，用方块 fallback
+    if (!window.__SoccerAiAvatar?.ready) {
       drawChar(state.ai);
     }
 
@@ -4058,12 +5252,25 @@
     dctx.fillStyle = '#fff';
     dctx.textAlign = 'left';
     dctx.font = '12px monospace';
-    dctx.fillText(`mouse: ${state.mouse.x|0}, ${state.mouse.y|0}`, 12, 20);
-    dctx.fillText(`player ctr: ${pcx|0}, ${pcy|0}`, 12, 36);
-    dctx.fillText(`ai ctr: ${acx|0}, ${acy|0}  mode: ${aiMode}`, 12, 52);
-    dctx.fillText(`round: ${state.round}  difficulty: ${DIFFICULTY[difficultyIdx].name}  mood: ${moodKey}  charge: ${(playerCharge*100)|0}%`, 12, 68);
+    dctx.fillText(debugText('mouse', `鼠标：${debugParam('x')}, ${debugParam('y')}`, { x: state.mouse.x | 0, y: state.mouse.y | 0 }), 12, 20);
+    dctx.fillText(debugText('playerCenter', `玩家中心：${debugParam('x')}, ${debugParam('y')}`, { x: pcx | 0, y: pcy | 0 }), 12, 36);
+    dctx.fillText(debugText('aiCenter', `AI 中心：${debugParam('x')}, ${debugParam('y')}  状态：${debugParam('mode')}`, {
+      x: acx | 0,
+      y: acy | 0,
+      mode: debugAiModeLabel(aiMode),
+    }), 12, 52);
+    dctx.fillText(debugText('state', `回合：${debugParam('round')}  难度：${debugParam('difficulty')}  心情：${debugParam('mood')}  蓄力：${debugParam('charge')}%`, {
+      round: state.round,
+      difficulty: debugDifficultyLabel(DIFFICULTY[difficultyIdx].name),
+      mood: debugMoodLabel(moodKey),
+      charge: (playerCharge * 100) | 0,
+    }), 12, 68);
     const ballSp = Math.hypot(state.ball.vx, state.ball.vy) | 0;
-    dctx.fillText(`ball: (${state.ball.x|0}, ${state.ball.y|0})  v=${ballSp}`, 12, 84);
+    dctx.fillText(debugText('ball', `球：(${debugParam('x')}, ${debugParam('y')})  速度=${debugParam('speed')}`, {
+      x: state.ball.x | 0,
+      y: state.ball.y | 0,
+      speed: ballSp,
+    }), 12, 84);
 
     // 最近事件（kick / unstick），4 秒内可见，按时间淡出
     const nowMs = performance.now();
@@ -4077,8 +5284,14 @@
                 : ev.label === 'ai-kick' ? '239,69,101'
                 : '61,169,252';
       dctx.fillStyle = `rgba(${col},${alpha})`;
-      dctx.fillText(`${ageSec.toFixed(1)}s  ${ev.label}  @(${ev.x},${ev.y})  v=(${ev.vx},${ev.vy})`,
-        12, 104 + i * 14);
+      dctx.fillText(debugText('event', `${debugParam('age')}秒  ${debugParam('label')}  @(${debugParam('x')},${debugParam('y')})  速度=(${debugParam('vx')},${debugParam('vy')})`, {
+        age: ageSec.toFixed(1),
+        label: debugGameEventLabel(ev.label),
+        x: ev.x,
+        y: ev.y,
+        vx: ev.vx,
+        vy: ev.vy,
+      }), 12, 104 + i * 14);
     }
 
     // 前摇视觉指示：AI 周围环形进度 + 瞄准线
@@ -4108,7 +5321,7 @@
     dctx.font = 'bold 36px sans-serif';
     dctx.fillText(`${state.score.player}  :  ${state.score.ai}`, W/2, 54);
     dctx.font = 'bold 16px sans-serif';
-    dctx.fillText(`Round ${state.round}`, W/2, 78);
+    dctx.fillText(debugText('roundCenter', `第 ${debugParam('round')} 回合`, { round: state.round }), W/2, 78);
   }
 
   function drawChar(c) {

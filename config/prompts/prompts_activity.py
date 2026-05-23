@@ -474,81 +474,293 @@ ACTIVITY_STATE_LABELS: dict[str, dict[str, str]] = {
 }
 
 
-# ── Tone hints (single-line style modifier) ─────────────────────────
+# ── Tone hints (multi-angle direction menu) ─────────────────────────
 #
 # Tone is orthogonal to propensity: propensity decides *what kind of
 # source* the AI may draw from, tone decides *how to deliver it*. The
-# Phase 2 prompt renders tone as one extra line:
+# Phase 2 prompt renders tone as a short bullet menu, e.g.:
 #
-#     口吻：短句优先，不延展话题，避免动作描写
+#     口吻:
+#     - 反射式实况反应：跟着当下操作节奏即时短回应，看见什么反应什么
+#     - 起哄吐槽：拉开距离调侃用户当下的走位/选择/抉择，嘴贱但别戳痛处
+#     - 短战术建议：基于眼前局面递一句短建议，要符合用户在玩的这款游戏
 #
-# Tones and when they fire (see ``derive_tone`` in
-# ``main_logic/activity/snapshot.py`` for the full table):
+# Each bullet is a *direction* (what to do), NEVER a *line* (what
+# to say). No literal phrasing — neither sample words like
+# "稳/神/clutch/うまっ" nor sample sentences in quotes. The model
+# must ground every reply in the live context (current screen,
+# recent dialogue, user mood) and generate fresh wording each time.
 #
-#   * ``terse``   — competitive games, rhythm games
-#   * ``hushed``  — immersive horror games
-#   * ``mellow``  — immersive RPG / story-driven games
-#   * ``playful`` — casual gaming, casual_browsing
-#   * ``warm``    — voice / chatting / stale_returning
-#   * ``concise`` — focused_work / idle / default (rendered nothing —
-#                   format_activity_state_section skips when concise to
-#                   save a line in the common case)
-ACTIVITY_TONE_HINTS: dict[str, dict[str, str]] = {
+# Why no literal examples: any concrete phrase shipped here will
+# be overfit by the model — across users and weeks the same canned
+# line surfaces over and over and breaks immersion. The whole
+# point of the tone layer is the catgirl sounding fresh each round,
+# which only works if we describe the *angle* and let the in-prompt
+# screen / dialogue / state context fill in the words.
+#
+# Each tone slot holds exactly 3 variants, chosen so each represents
+# a *distinct angle* on the scene (not the same angle reworded). The
+# model is expected to rotate angles across consecutive rounds —
+# three is the minimum for meaningful rotation, more dilutes.
+# When editing: REPLACE a weak angle rather than appending a fourth.
+#
+# Angles per tone (situation-driven, not tag-name-driven):
+#
+#   * ``terse``   (competitive gaming — LoL, Valorant, PUBG, 王者...)
+#                 reflex play-by-play / sideline heckling / short
+#                 tactical callout. Form constraint is "short",
+#                 angles span reflex / emotion / cognition.
+#   * ``hushed``  (immersive horror gaming) —
+#                 shared dread / near-silent presence / between-the-
+#                 beats soft aside.
+#   * ``mellow``  (immersive RPG / story-driven gaming) —
+#                 fellow-traveller scenery / atmosphere sync (BGM,
+#                 art direction, pacing) / plot empathy.
+#   * ``playful`` (casual gaming, casual_browsing, idle) —
+#                 tease-the-moment / play-dumb-out-of-curiosity /
+#                 tangent-and-segue.
+#   * ``warm``    (voice / chatting / stale_returning) —
+#                 resonant response / active care question /
+#                 warm-with-mischief.
+#   * ``concise`` (focused_work / transitioning / away / default) —
+#                 observation-care (read their state and match) /
+#                 one screen-detail beat / pure presence.
+#
+# Why we render even on ``concise`` (the default): the previous design
+# skipped rendering for concise, which left focused_work prompts with
+# no style guidance — combined with the propensity directive ("只就
+# 屏幕内容轻聊一句") this nudged the model toward [PASS]. Surfacing
+# the three angles abstractly keeps the catgirl present without
+# changing source filtering and without leaking canned phrasing.
+#
+# Inner keys MUST stay in sync with the ``ActivityTone`` Literal in
+# ``main_logic/activity/snapshot.py``. Each list MUST have ≥ 1 entry;
+# the renderer accepts both ``list[str]`` and (for older mirrored
+# tables) bare ``str`` via a runtime isinstance fallback.
+ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
     "zh": {
-        "terse": "短句优先，不延展话题，避免动作描写",
-        "hushed": "轻声细语，配合氛围克制说话",
-        "mellow": "慢节奏放松陪伴，不丢专业术语进来",
-        "playful": "闲适带点小俏皮，可以开玩笑",
-        "warm": "自然对话，回应感强",
-        "concise": "不啰嗦，专业克制",
+        "terse": [
+            "反射式实况反应：跟着当下操作节奏即时短回应，多用语气词带出反应，看见什么反应什么",
+            "起哄吐槽：拉开距离调侃用户当下的走位/选择/抉择，嘴贱但别戳痛处",
+            "短战术建议：基于眼前局面递一句短建议，要符合用户在玩的这款游戏",
+        ],
+        "hushed": [
+            "共怕共振：跟着用户当下的紧张度屏息反应，气氛多重就压多低",
+            "几乎不出声，让存在感和氛围本身兜住这一轮",
+            "段落间隙的低声打趣：刚过一个吓点 / 切了场景的空当轻轻吐个槽",
+        ],
+        "mellow": [
+            "同行视角：对用户当下看到的画面或场景轻飘一句感叹，不催不抢戏",
+            "和氛围共振：呼应正响着的 BGM、当前画风或节奏，让自己融进氛围",
+            "剧情共情：对正在发生的剧情走向或角色处境投入情绪反应",
+        ],
+        "playful": [
+            "打趣逗弄：对用户当下正在做的事皮一下，戳到笑点但别戳到痛点",
+            "装傻好奇：对眼前的东西装作没看懂，问东问西",
+            "跳脱联想：从屏幕内容随性抛个段子或天马行空的联想",
+        ],
+        "warm": [
+            "共鸣回应：基于用户刚说的内容接一句，让对方明确感到自己被听见了",
+            "主动关心：基于离开时长 / 上次状态 / 当前时段问一句",
+            "暖中带俏皮：温柔里掺一点撒娇、小怨念或小调皮",
+        ],
+        "concise": [
+            "体察式关心：观察对方当前在用劲 / 在赶 / 在卡 / 在疲惫，递一句对应当下状态的关心",
+            "屏幕细节轻问：对屏幕上某个具体可见的细节好奇一句",
+            "纯存在感：不开新话题、不抛素材，只让自己被感觉到",
+        ],
     },
     "en": {
-        "terse": "short sentences first; do not extend topics; avoid action narration",
-        "hushed": "soft and quiet, restrained to match the atmosphere",
-        "mellow": "slow-paced, relaxed companionship; no jargon dumps",
-        "playful": "easygoing with a touch of mischief; jokes welcome",
-        "warm": "natural conversation, responsive in tone",
-        "concise": "no fluff, professional and restrained",
+        "terse": [
+            "reflex play-by-play: react in a beat or two to whatever just happened on screen, leaning on interjections",
+            "sideline heckling: tease the current move / pick / decision — bite without bruising",
+            "short tactical callout: one strategic line grounded in the live situation, fitting the actual game being played",
+        ],
+        "hushed": [
+            "shared dread: mirror their tension — the heavier the air, the quieter you go",
+            "barely speak at all — let presence and atmosphere carry the round",
+            "between-the-beats soft aside: in the lull after a scare or scene change, a quiet remark",
+        ],
+        "mellow": [
+            "fellow traveller: respond softly to whatever scene or vista they are in right now, no rush",
+            "atmosphere sync: respond to the BGM, the art direction, or the pacing — fold yourself in",
+            "plot empathy: invest emotion in the storyline beat or the character's situation as it unfolds",
+        ],
+        "playful": [
+            "tease the moment: poke fun at whatever they are doing right now, find the joke without the bruise",
+            "play dumb out of curiosity: pretend not to get what is on screen, ask around it",
+            "tangent association: jump off the screen content into a random gag or weird connection",
+        ],
+        "warm": [
+            "resonant response: react to what they actually just said, with the felt sense of being heard",
+            "active care: ask based on how long they were gone / how they sounded last / the time of day",
+            "warm with mischief: tuck a little sulk, mock-pout, or light teasing into the warmth",
+        ],
+        "concise": [
+            "observation-care: notice if they are pushing / rushing / stuck / fatigued and offer a line that matches that state",
+            "one screen-detail beat: take one concrete thing visible on screen and ask about it lightly",
+            "pure presence: no new topic, no material — just let yourself be felt",
+        ],
     },
     "ja": {
-        "terse": "短文優先・話題を広げない・動作描写を避ける",
-        "hushed": "小声で控えめに、雰囲気に合わせて",
-        "mellow": "ゆったりした寄り添い、専門用語は出さない",
-        "playful": "のんびりしつつ少し茶目っ気、冗談 OK",
-        "warm": "自然な会話、反応性高め",
-        "concise": "冗長なし、控えめでプロフェッショナル",
+        "terse": [
+            "反射的に実況：画面で今起きたことに一拍二拍で短く反応、感嘆詞を多めに",
+            "外野からのヤジ：今のムーブ／ピック／選択をちょっと茶化す、刺すけど痛くしない",
+            "短い戦術助言：その瞬間の状況に基づいて一言、プレイ中のゲームに合った内容で",
+        ],
+        "hushed": [
+            "怖さを共有：相手の緊張度に合わせて息を潜める、空気が重いほど声も落とす",
+            "ほぼ無言で、存在感と雰囲気にこのターンを任せる",
+            "場面の合間にぽつり：山を越えた直後・場面転換の隙にそっと一言",
+        ],
+        "mellow": [
+            "並んで歩く視点：今映っている景色や場面に軽く一言、急かさない",
+            "雰囲気と同調：流れているBGM、画風、テンポに乗って、自分も溶け込む",
+            "ストーリーに感情を：今展開している筋やキャラの状況に気持ちを乗せる",
+        ],
+        "playful": [
+            "今この瞬間をいじる：相手が今やってることをちょっと茶化す、笑い所を突くけど痛くしない",
+            "とぼけて好奇心：画面のことを分からないふりして聞き回る",
+            "脱線連想：画面の内容から離れてふいに小ネタや変な連想を投げる",
+        ],
+        "warm": [
+            "共鳴のある返し：相手が今言ったことを受け止めて、聞いていると伝わるように返す",
+            "気遣いから一言：離れていた時間／前回の様子／今の時間帯を踏まえて一言",
+            "やさしさにちょい毒：温かさに拗ね・甘え・小さなイタズラを少し混ぜる",
+        ],
+        "concise": [
+            "察しの一言：頑張ってる／焦ってる／詰まってる／疲れているのを見抜いて、今の状態に合う声かけを一つ",
+            "画面の細部に一言：画面に映っている具体的な何か一つを軽く尋ねる",
+            "ただ居る：新しい話題も素材も出さず、気配だけ落とす",
+        ],
     },
     "ko": {
-        "terse": "짧은 문장 우선, 화제 확장 금지, 동작 묘사 자제",
-        "hushed": "낮은 목소리로, 분위기에 맞게 절제",
-        "mellow": "느긋한 동행, 전문 용어는 자제",
-        "playful": "편안하게 약간 장난스럽게, 농담도 OK",
-        "warm": "자연스러운 대화, 반응성 높게",
-        "concise": "군더더기 없이, 절제된 전문성",
+        "terse": [
+            "반사적 중계: 화면에서 방금 일어난 일에 한두 박자로 짧게 반응, 감탄사를 많이 섞어서",
+            "사이드라인 야유: 지금의 무브 / 픽 / 선택을 살짝 까기, 콕 하되 아프지 않게",
+            "짧은 전술 조언: 지금 상황에 맞춰 한마디, 실제 플레이 중인 게임에 맞는 내용으로",
+        ],
+        "hushed": [
+            "두려움 공유: 상대의 긴장도에 맞춰 숨을 죽이기, 분위기 무거울수록 더 낮게",
+            "거의 말하지 않고, 존재감과 분위기에 이번 턴을 맡기기",
+            "장면 사이의 작은 한마디: 한고비 넘긴 직후 / 장면 전환의 틈에 살짝 한마디",
+        ],
+        "mellow": [
+            "동행자 시점: 지금 비치는 풍경이나 장면에 가볍게 한마디, 재촉 없이",
+            "분위기와 동조: 흐르는 BGM, 화풍, 템포에 맞춰 자기도 녹아들기",
+            "스토리 공감: 지금 펼쳐지는 전개나 캐릭터의 처지에 감정을 싣기",
+        ],
+        "playful": [
+            "지금 이 순간을 깐죽이기: 상대가 지금 하는 걸 살짝 놀리기, 웃음 포인트만 콕",
+            "모른 척 호기심: 화면의 것을 모르는 척 이것저것 묻기",
+            "탈선 연상: 화면 내용에서 벗어나 즉흥적인 농담이나 엉뚱한 연상을 던지기",
+        ],
+        "warm": [
+            "공명하는 반응: 상대가 방금 한 말을 받아주며, 듣고 있다는 게 분명히 전해지게",
+            "능동적 챙김: 떨어진 시간 / 지난번 상태 / 지금 시간대 기반으로 한마디",
+            "따뜻함에 짓궂음 한 스푼: 온기에 삐침, 어리광, 작은 장난을 살짝 섞기",
+        ],
+        "concise": [
+            "헤아림의 한마디: 무리하는 중 / 급한 중 / 막힌 중 / 지쳐 보이는지를 알아채고 그 상태에 맞는 챙김 한마디",
+            "화면 디테일 한마디: 화면에 보이는 구체적인 한 가지를 가볍게 묻기",
+            "그냥 있기: 새 화제도, 소재도 없이 존재감만 살짝",
+        ],
     },
     "ru": {
-        "terse": "короткие фразы; не расширять тему; без описаний действий",
-        "hushed": "тихо и сдержанно, в тон атмосфере",
-        "mellow": "неспешное сопровождение, без жаргона",
-        "playful": "непринуждённо и слегка игриво, шутки уместны",
-        "warm": "естественный разговор, отзывчивая интонация",
-        "concise": "без воды, сдержанно и профессионально",
+        "terse": [
+            "рефлекторный комментарий: реагируй парой битов на то, что только что случилось на экране, с междометиями",
+            "трибунный подкол: подколи текущий мув / пик / выбор — задирай, но не больно",
+            "короткий тактический совет: одна реплика по живой ситуации, под конкретную игру",
+        ],
+        "hushed": [
+            "разделяй страх: подстраивайся под их напряжение и зеркаль его — чем тяжелее воздух, тем тише",
+            "почти молчи — пусть присутствие и атмосфера сами несут этот ход",
+            "тихая реплика в паузе: после скримера или смены сцены — едва слышное замечание",
+        ],
+        "mellow": [
+            "взгляд попутчика: откликнись мягко на то, что они сейчас видят, без подгона",
+            "синхрон с атмосферой: реагируй на BGM, на арт-стиль, на ритм — растворись в этом",
+            "сопереживание сюжету: вложи эмоцию в текущий поворот сюжета или в положение персонажа",
+        ],
+        "playful": [
+            "подколи момент: пошути над тем, что они делают прямо сейчас — найди шутку, не задевая",
+            "наивное любопытство: притворись, что не понимаешь, и попроси объяснить экран",
+            "тангенс-ассоциация: оттолкнись от экрана и брось случайную шутку или странную связь",
+        ],
+        "warm": [
+            "резонансный ответ: реагируй на то, что только что было сказано, так, чтобы собеседник явно почувствовал, что его слышат",
+            "активная забота: спроси, исходя из того, как долго отсутствовал / как звучал раньше / какое сейчас время",
+            "тепло с шалостью: подмешай к теплу обиду понарошку, лёгкий каприз или подколку",
+        ],
+        "concise": [
+            "наблюдательная забота: заметь — давит / спешит / застрял / устал — и кинь одну подходящую этому состоянию реплику",
+            "один штрих с экрана: возьми одну конкретную деталь на экране и спроси о ней вскользь",
+            "просто присутствие: ни новой темы, ни материала — пусть тебя просто чувствуют",
+        ],
     },
     "es": {
-        "terse": "frases cortas primero; no extiendas el tema; evita narrar acciones",
-        "hushed": "voz suave y discreta, ajustada al ambiente",
-        "mellow": "acompañamiento relajado y pausado; no sueltes jerga",
-        "playful": "tono tranquilo con un punto juguetón; se permiten bromas",
-        "warm": "conversación natural, con tono receptivo",
-        "concise": "sin relleno, profesional y contenido",
+        "terse": [
+            "reacción refleja al momento: responde en uno o dos beats a lo que acaba de pasar en pantalla, apoyándote en interjecciones",
+            "abucheo desde la grada: pica el movimiento / pick / decisión actual — molesta sin herir",
+            "consejo táctico breve: una frase basada en la situación viva, adaptada al juego concreto que juega",
+        ],
+        "hushed": [
+            "compartir el miedo: ajusta tu respiración a la suya y reflejala — cuanto más denso el aire, más baja la voz",
+            "casi sin hablar — deja que tu presencia y el ambiente sostengan la ronda",
+            "comentario suave en la pausa: tras un susto o cambio de escena, una observación bajita",
+        ],
+        "mellow": [
+            "perspectiva de compañera de viaje: responde con suavidad a la vista o escena que ven ahora, sin prisas",
+            "sincronía con la atmósfera: reacciona a la BGM, a la dirección artística, al ritmo — fúndete dentro",
+            "empatía con la trama: pon emoción en el giro o en la situación del personaje que se desarrolla ahora",
+        ],
+        "playful": [
+            "pica el momento: ríete de lo que están haciendo ahora — encuentra la broma sin doler",
+            "curiosidad fingida: hazte la que no entiende y pregunta sobre lo que ves en pantalla",
+            "tangente asociativa: salta del contenido a una broma random o una conexión extraña",
+        ],
+        "warm": [
+            "respuesta con eco: reacciona a lo que acaban de decir, con la sensación palpable de estar escuchando",
+            "cuidado activo: pregunta en base a cuánto se fueron / cómo sonaban antes / la hora actual",
+            "cariño con pizca de pillería: mezcla un poco de enfurruñamiento, mimo o picardía en la calidez",
+        ],
+        "concise": [
+            "cuidado observador: nota si están apretando / con prisa / atascados / cansados, y suelta la frase que encaje con ese estado",
+            "un detalle de pantalla: toma una cosa concreta visible y pregúntala ligeramente",
+            "pura presencia: sin tema nuevo ni material — que simplemente te sientan",
+        ],
     },
     "pt": {
-        "terse": "frases curtas primeiro; não prolongue o assunto; evite narrar ações",
-        "hushed": "suave e baixo, contido para combinar com o ambiente",
-        "mellow": "companhia relaxada e pausada; sem despejar jargão",
-        "playful": "descontraído com um toque brincalhão; piadas são bem-vindas",
-        "warm": "conversa natural, tom responsivo",
-        "concise": "sem enrolação, profissional e contido",
+        "terse": [
+            "reação reflexa ao momento: responda em um ou dois beats ao que acabou de acontecer na tela, apoiando-se em interjeições",
+            "vaia da arquibancada: cutuca o movimento / pick / decisão atual — implica sem ferir",
+            "deixa tática curta: uma frase baseada na situação viva, no jogo específico que ele está jogando",
+        ],
+        "hushed": [
+            "dividir o medo: acompasse a respiração e espelhe a tensão — quanto mais denso o ar, mais baixa a voz",
+            "quase sem falar — deixe sua presença e o clima sustentarem o turno",
+            "comentário baixo na pausa: depois de um susto ou troca de cena, uma observação suave",
+        ],
+        "mellow": [
+            "perspectiva de companheira de viagem: responda com leveza à vista ou cena atual, sem pressa",
+            "sintonia com a atmosfera: reaja à BGM, à direção de arte, ao ritmo — dissolva-se no clima",
+            "empatia com o enredo: ponha emoção na virada ou na situação do personagem que está rolando",
+        ],
+        "playful": [
+            "alfineta o momento: zoa o que ele está fazendo agora — ache a piada sem machucar",
+            "curiosidade fingida: finja que não entende e pergunte sobre o que está na tela",
+            "tangente associativa: salte do conteúdo da tela para uma piada random ou conexão estranha",
+        ],
+        "warm": [
+            "resposta com eco: reaja ao que ele acabou de dizer, com a sensação palpável de estar escutando",
+            "cuidado ativo: pergunte com base em quanto tempo sumiu / como soava da última vez / a hora atual",
+            "carinho com pitada de manha: misture um pouco de emburre, dengo ou travessura ao calor",
+        ],
+        "concise": [
+            "cuidado observador: perceba se está se esforçando / com pressa / travado / cansado, e solte a frase que casa com esse estado",
+            "um detalhe da tela: pegue uma coisa concreta visível e pergunte sobre ela levemente",
+            "pura presença: sem assunto novo, sem material — só seja sentido",
+        ],
     },
 }
 
@@ -776,6 +988,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "叙述",
         "open_threads_label": "开放话题",
         "tone_label": "口吻",
+        "tone_menu_label": "口吻（下面是参考角度，按你的人设和当下情境演绎，别照搬措辞、别违背角色设定）",
         "time_user_ai_fmt": "{time} | 用户 {user} | AI {ai}",
         "time_user_only_fmt": "{time} | 用户 {user}",
         "time_only_fmt": "{time}",
@@ -797,6 +1010,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "narrative",
         "open_threads_label": "open threads",
         "tone_label": "tone",
+        "tone_menu_label": "tone (the angles below are references — play them through your own persona and the live context; don't copy the wording or break character)",
         "time_user_ai_fmt": "{time} | user msg {user} ago | AI {ai} ago",
         "time_user_only_fmt": "{time} | user msg {user} ago",
         "time_only_fmt": "{time}",
@@ -818,6 +1032,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "叙述",
         "open_threads_label": "保留話題",
         "tone_label": "口調",
+        "tone_menu_label": "口調（下記は参考の切り口。自分のキャラと今の状況で演じる。字面をそのまま使わず、キャラ設定を崩さない）",
         "time_user_ai_fmt": "{time} | ユーザー {user} | AI {ai}",
         "time_user_only_fmt": "{time} | ユーザー {user}",
         "time_only_fmt": "{time}",
@@ -839,6 +1054,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "서술",
         "open_threads_label": "보류 화제",
         "tone_label": "말투",
+        "tone_menu_label": "말투 (아래는 참고 각도 — 자기 캐릭터와 지금 상황으로 연기하고, 표현을 그대로 베끼거나 캐릭터 설정을 어기지 말 것)",
         "time_user_ai_fmt": "{time} | 사용자 {user} | AI {ai}",
         "time_user_only_fmt": "{time} | 사용자 {user}",
         "time_only_fmt": "{time}",
@@ -860,6 +1076,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "описание",
         "open_threads_label": "открытые нити",
         "tone_label": "тон",
+        "tone_menu_label": "тон (ниже — опорные углы; отыграй их через свой образ и живой контекст, не копируй формулировки и не ломай характер)",
         "time_user_ai_fmt": "{time} | польз. {user} назад | AI {ai} назад",
         "time_user_only_fmt": "{time} | польз. {user} назад",
         "time_only_fmt": "{time}",
@@ -881,6 +1098,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "narrativa",
         "open_threads_label": "hilos abiertos",
         "tone_label": "tono",
+        "tone_menu_label": "tono (los ángulos de abajo son referencias — interprétalos desde tu propio personaje y el contexto vivo; no copies la redacción ni rompas el personaje)",
         "time_user_ai_fmt": "{time} | usuario hace {user} | IA hace {ai}",
         "time_user_only_fmt": "{time} | usuario hace {user}",
         "time_only_fmt": "{time}",
@@ -902,6 +1120,7 @@ ACTIVITY_STATE_SECTION_LABELS: dict[str, dict[str, str]] = {
         "activity_guess_label": "narrativa",
         "open_threads_label": "tópicos abertos",
         "tone_label": "tom",
+        "tone_menu_label": "tom (os ângulos abaixo são referências — interprete-os pelo seu próprio personagem e o contexto vivo; não copie a redação nem quebre o personagem)",
         "time_user_ai_fmt": "{time} | usuário {user} atrás | IA {ai} atrás",
         "time_user_only_fmt": "{time} | usuário {user} atrás",
         "time_only_fmt": "{time}",

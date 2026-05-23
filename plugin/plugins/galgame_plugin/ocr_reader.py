@@ -91,7 +91,6 @@ from .screen_classifier import (
     normalize_screen_type,
 )
 from .screen_classifier import analyze_screen_visual_features
-from .tesseract_support import inspect_tesseract_installation, resolve_tesseract_path
 
 try:
     from PIL import Image as _PIL_IMAGE_MODULE
@@ -263,8 +262,6 @@ _SELF_UI_GUARD_SUBSTRINGS = (
     "documents\\code\\n.e.k.o",
     "d:\\work\\code\\n.e.k.o",
     "rapidocr",
-    "tesseract",
-    "ocr compatibility fallback",
     "install queued task",
     "plugin manager",
     "galgame plugin",
@@ -1799,7 +1796,6 @@ class OcrReaderProfileRuntime:
 
 @dataclass(slots=True)
 class OcrReaderBackendRuntime:
-    tesseract_path: str = ""
     languages: str = ""
     takeover_reason: str = ""
     backend_kind: str = ""
@@ -1982,7 +1978,6 @@ class OcrReaderRuntime:
             "profile",
             "recommended_capture_profile_manual_present",
         ),
-        "tesseract_path": ("backend", "tesseract_path"),
         "languages": ("backend", "languages"),
         "takeover_reason": ("backend", "takeover_reason"),
         "backend_kind": ("backend", "backend_kind"),
@@ -2204,7 +2199,6 @@ class OcrReaderRuntime:
             "recommended_capture_profile_sample_text": self.recommended_capture_profile_sample_text,
             "recommended_capture_profile_bucket_key": self.recommended_capture_profile_bucket_key,
             "recommended_capture_profile_manual_present": self.recommended_capture_profile_manual_present,
-            "tesseract_path": self.tesseract_path,
             "languages": self.languages,
             "takeover_reason": self.takeover_reason,
             "backend_kind": self.backend_kind,
@@ -2373,7 +2367,6 @@ class SelectedOcrBackendPlan:
     primary: OcrBackendDescriptor = field(default_factory=OcrBackendDescriptor)
     fallback: OcrBackendDescriptor = field(default_factory=OcrBackendDescriptor)
     rapidocr_inspection: dict[str, Any] = field(default_factory=dict)
-    tesseract_inspection: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -3217,66 +3210,6 @@ class Win32CaptureBackend:
             )
         except Exception:
             pass
-
-
-class TesseractOcrBackend:
-    def __init__(
-        self,
-        *,
-        tesseract_path: str = "",
-        install_target_dir_raw: str = "",
-        languages: str = "",
-    ) -> None:
-        self._tesseract_path = tesseract_path
-        self._install_target_dir_raw = install_target_dir_raw
-        self._languages = languages
-
-    def is_available(self) -> bool:
-        path = resolve_tesseract_path(
-            self._tesseract_path,
-            install_target_dir_raw=self._install_target_dir_raw,
-        )
-        if not path:
-            return False
-        inspection = inspect_tesseract_installation(
-            configured_path=self._tesseract_path,
-            install_target_dir_raw=self._install_target_dir_raw,
-            languages=self._languages,
-        )
-        return bool(inspection.get("installed"))
-
-    def extract_text(self, image: Any) -> str:
-        import pytesseract
-
-        path = resolve_tesseract_path(
-            self._tesseract_path,
-            install_target_dir_raw=self._install_target_dir_raw,
-        )
-        if path:
-            pytesseract.pytesseract.tesseract_cmd = path
-        lang = self._languages
-        # PSM 6 assumes a single dialogue block, which matches VN subtitle boxes.
-        config = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
-        prepared = _prepare_ocr_image(image)
-
-        best_text = ""
-        best_score = (-1.0, 0, 0)
-        for candidate in (image, prepared):
-            text = pytesseract.image_to_string(candidate, lang=lang, config=config).strip()
-            score = _score_ocr_text(text)
-            if score > best_score:
-                best_text = text
-                best_score = score
-            score_value, cjk_or_kana_count, significant_chars = score
-            if (
-                significant_chars >= 8
-                and (
-                    (cjk_or_kana_count >= 2 and score_value >= 14.0)
-                    or score_value >= 20.0
-                )
-            ):
-                break
-        return best_text
 
 
 class RapidOcrBackend:
@@ -7366,7 +7299,10 @@ class OcrReaderManager:
             return _TickPreflightResult(result=result, should_return=True)
 
         backend_plan_started_at = self._time_fn()
-        backend_plan = await asyncio.to_thread(self._resolve_backend_plan)
+        if self._custom_ocr_backend:
+            backend_plan = self._custom_ocr_backend_plan()
+        else:
+            backend_plan = await asyncio.to_thread(self._resolve_backend_plan)
         backend_plan_duration = max(0.0, self._time_fn() - backend_plan_started_at)
         if not backend_plan.primary.available:
             self._runtime = self._build_runtime(
@@ -8314,7 +8250,7 @@ class OcrReaderManager:
 
     def _configured_backend_selection(self) -> str:
         selection = str(self._config.ocr_reader_backend_selection or "auto").strip().lower()
-        if selection in {"auto", "rapidocr", "tesseract"}:
+        if selection in {"auto", "rapidocr"}:
             return selection
         return "auto"
 
@@ -8357,32 +8293,11 @@ class OcrReaderManager:
     ) -> OcrCaptureProfile:
         return self._capture_profile_selection_for_target(target, stage=stage).profile
 
-    def _resolved_tesseract_path(self) -> str:
-        return resolve_tesseract_path(
-            self._config.ocr_reader_tesseract_path,
-            install_target_dir_raw=self._config.ocr_reader_install_target_dir,
-        )
-
-    def _tesseract_descriptor(self, inspection: dict[str, Any]) -> OcrBackendDescriptor:
-        installed = bool(inspection.get("installed"))
-        detail = "selected_primary" if installed else self._tesseract_unavailable_detail(inspection)
-        return OcrBackendDescriptor(
-            kind="tesseract",
-            backend=TesseractOcrBackend(
-                tesseract_path=self._config.ocr_reader_tesseract_path,
-                install_target_dir_raw=self._config.ocr_reader_install_target_dir,
-                languages=self._config.ocr_reader_languages,
-            ),
-            path=str(inspection.get("detected_path") or self._resolved_tesseract_path()),
-            model=self._config.ocr_reader_languages,
-            detail=detail,
-            available=installed,
-        )
-
     def _rapidocr_descriptor(self, inspection: dict[str, Any], *, enabled: bool) -> OcrBackendDescriptor:
         detail = str(inspection.get("detail") or "missing")
         if not enabled:
             detail = "disabled_by_config"
+        available = enabled and bool(inspection.get("installed"))
         return OcrBackendDescriptor(
             kind="rapidocr",
             backend=self._rapidocr_backend_for_config(),
@@ -8391,15 +8306,14 @@ class OcrReaderManager:
                 inspection.get("selected_model")
                 or f"{self._config.rapidocr_ocr_version}/{self._config.rapidocr_lang_type}/{self._config.rapidocr_model_type}"
             ),
-            detail="selected_primary" if enabled and bool(inspection.get("installed")) else detail,
-            available=enabled and bool(inspection.get("installed")),
+            detail="selected_primary" if available else detail,
+            available=available,
         )
 
     @staticmethod
     def _backend_plan_config_key(config: GalgameConfig) -> tuple[str, ...]:
         return (
             str(config.ocr_reader_backend_selection or "").strip().lower(),
-            str(config.ocr_reader_tesseract_path or "").strip(),
             str(config.ocr_reader_install_target_dir or "").strip(),
             str(config.ocr_reader_languages or "").strip().lower(),
             str(bool(config.rapidocr_enabled)),
@@ -8423,11 +8337,6 @@ class OcrReaderManager:
         ):
             return self._backend_plan_cache
         selection = self._configured_backend_selection()
-        tesseract_inspection = inspect_tesseract_installation(
-            configured_path=self._config.ocr_reader_tesseract_path,
-            install_target_dir_raw=self._config.ocr_reader_install_target_dir,
-            languages=self._config.ocr_reader_languages,
-        )
         rapidocr_inspection = inspect_rapidocr_installation(
             install_target_dir_raw=self._config.rapidocr_install_target_dir,
             engine_type=self._config.rapidocr_engine_type,
@@ -8435,7 +8344,6 @@ class OcrReaderManager:
             model_type=self._config.rapidocr_model_type,
             ocr_version=self._config.rapidocr_ocr_version,
         )
-        tesseract = self._tesseract_descriptor(tesseract_inspection)
         rapidocr = self._rapidocr_descriptor(
             rapidocr_inspection,
             enabled=bool(self._config.rapidocr_enabled),
@@ -8443,90 +8351,72 @@ class OcrReaderManager:
         plan = SelectedOcrBackendPlan(
             selection=selection,
             rapidocr_inspection=rapidocr_inspection,
-            tesseract_inspection=tesseract_inspection,
         )
 
-        if selection == "rapidocr":
-            plan.primary = rapidocr
-            self._backend_plan_cache_key = cache_key
-            self._backend_plan_cache_at = now
-            self._backend_plan_cache = plan
-            return plan
-        if selection == "tesseract":
-            plan.primary = tesseract
-            self._backend_plan_cache_key = cache_key
-            self._backend_plan_cache_at = now
-            self._backend_plan_cache = plan
-            return plan
         if rapidocr.available:
             rapidocr.detail = "selected_primary"
-            plan.primary = rapidocr
-            if tesseract.available:
-                tesseract.detail = "compatibility_fallback"
-                plan.fallback = tesseract
-            self._backend_plan_cache_key = cache_key
-            self._backend_plan_cache_at = now
-            self._backend_plan_cache = plan
-            return plan
-        if tesseract.available:
-            tesseract.detail = f"auto_fallback_from_rapidocr:{rapidocr.detail}"
-            plan.primary = tesseract
-            self._backend_plan_cache_key = cache_key
-            self._backend_plan_cache_at = now
-            self._backend_plan_cache = plan
-            return plan
-        if rapidocr.available or bool(self._config.rapidocr_enabled):
-            plan.primary = rapidocr
-            if tesseract.kind:
-                plan.fallback = tesseract
-            self._backend_plan_cache_key = cache_key
-            self._backend_plan_cache_at = now
-            self._backend_plan_cache = plan
-            return plan
-        plan.primary = tesseract
+        plan.primary = rapidocr
         self._backend_plan_cache_key = cache_key
         self._backend_plan_cache_at = now
         self._backend_plan_cache = plan
         return plan
 
-    @staticmethod
-    def _tesseract_unavailable_detail(inspection: dict[str, Any]) -> str:
-        if str(inspection.get("detail") or "") == "missing_languages":
-            return "missing_languages"
-        return "missing_tesseract"
+    def _custom_ocr_backend_plan(self) -> SelectedOcrBackendPlan:
+        backend = self._ocr_backend
+        kind = str(
+            self._runtime.backend_kind
+            or getattr(backend, "kind", "")
+            or backend.__class__.__name__
+            or "custom"
+        )
+        detail = str(
+            self._runtime.backend_detail
+            or getattr(backend, "detail", "")
+            or "custom_backend"
+        )
+        available = False
+        try:
+            is_available = getattr(backend, "is_available", None)
+            if callable(is_available):
+                available = bool(is_available())
+            else:
+                availability = getattr(backend, "availability", None)
+                available = bool(availability() if callable(availability) else availability)
+        except Exception as exc:  # noqa: BLE001 - custom backend status must not crash preflight
+            detail = f"availability_error:{type(exc).__name__}"
+            available = False
+        if not available and detail == "custom_backend":
+            detail = "custom_backend_unavailable"
+        return SelectedOcrBackendPlan(
+            selection="custom",
+            primary=OcrBackendDescriptor(
+                kind=kind,
+                backend=backend,
+                detail=detail,
+                available=available,
+            ),
+        )
 
     def _backend_unavailable_detail(self, plan: SelectedOcrBackendPlan) -> str:
-        if plan.selection == "rapidocr":
-            return plan.primary.detail or "missing"
-        if plan.selection == "tesseract":
-            return self._tesseract_unavailable_detail(plan.tesseract_inspection)
         if plan.primary.kind == "rapidocr":
             return plan.primary.detail or "missing"
-        if str(plan.tesseract_inspection.get("detail") or "") == "missing_languages":
-            return "missing_languages"
-        return "missing_tesseract"
+        return plan.primary.detail or f"{plan.primary.kind or 'custom'}_unavailable"
 
     def _backend_unavailable_warnings(self, plan: SelectedOcrBackendPlan) -> list[str]:
         warnings: list[str] = []
         if plan.selection == "rapidocr" or plan.primary.kind == "rapidocr":
             warnings.append(f"ocr_reader RapidOCR is unavailable: {plan.primary.detail or 'missing'}")
-            if plan.selection == "rapidocr":
-                return warnings
-            tesseract_detail = str(plan.tesseract_inspection.get("detail") or "")
-            if tesseract_detail == "missing_languages":
-                missing = plan.tesseract_inspection.get("missing_languages", [])
-                warnings.append(f"ocr_reader Tesseract fallback is missing languages: {missing}")
-            elif tesseract_detail and tesseract_detail != "installed":
-                warnings.append("ocr_reader Tesseract fallback is missing or not configured")
             return warnings
-        if str(plan.tesseract_inspection.get("detail") or "") == "missing_languages":
-            missing = plan.tesseract_inspection.get("missing_languages", [])
-            warnings.append(f"ocr_reader Tesseract is missing languages: {missing}")
-        else:
-            warnings.append("ocr_reader Tesseract is missing or not configured")
+        if plan.primary.kind:
+            warnings.append(
+                f"ocr_reader {plan.primary.kind} is unavailable: {plan.primary.detail or 'unavailable'}"
+            )
+            return warnings
         rapid_detail = str(plan.rapidocr_inspection.get("detail") or "")
         if rapid_detail and rapid_detail != "installed":
             warnings.append(f"ocr_reader RapidOCR status: {rapid_detail}")
+        else:
+            warnings.append("ocr_reader RapidOCR is missing or not configured")
         return warnings
 
     def _build_runtime(
@@ -8670,7 +8560,6 @@ class OcrReaderManager:
             recommended_capture_profile_manual_present=bool(
                 recommendation.get("manual_profile_present")
             ),
-            tesseract_path=self._resolved_tesseract_path(),
             languages=self._config.ocr_reader_languages,
             takeover_reason=takeover_reason or self._runtime.takeover_reason,
             backend_kind=str(backend.kind or ""),
@@ -8922,14 +8811,7 @@ class OcrReaderManager:
         if plan is not None:
             resolved_plan = plan
         elif self._custom_ocr_backend:
-            resolved_plan = SelectedOcrBackendPlan(
-                primary=OcrBackendDescriptor(
-                    kind=str(self._runtime.backend_kind or "custom"),
-                    backend=self._ocr_backend,
-                    detail=str(self._runtime.backend_detail or "custom_backend"),
-                    available=True,
-                )
-            )
+            resolved_plan = self._custom_ocr_backend_plan()
         else:
             resolved_plan = self._resolve_backend_plan()
         if self._custom_ocr_backend:

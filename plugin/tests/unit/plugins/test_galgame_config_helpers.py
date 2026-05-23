@@ -93,7 +93,7 @@ def test_galgame_config_groups_fields_and_keeps_flat_compatibility(tmp_path: Pat
         auto_open_ui=True,
         llm_target_entry_ref="entry-1",
         ocr_reader_enabled=True,
-        ocr_reader_backend_selection="tesseract",
+        ocr_reader_backend_selection="rapidocr",
         ocr_reader_screen_templates=[{"id": "demo", "stage": "title_stage"}],
         ocr_reader_screen_awareness_model_enabled=True,
         ocr_reader_screen_awareness_model_path="screen-model.json",

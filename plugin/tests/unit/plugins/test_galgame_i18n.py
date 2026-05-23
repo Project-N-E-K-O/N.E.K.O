@@ -6,8 +6,7 @@ from plugin.sdk.shared.i18n import load_plugin_i18n_from_dir, resolve_i18n_refs,
 _EXPECTED_ENTRY_IDS = [
     "galgame_get_status",
     "galgame_install_textractor",
-    "galgame_install_tesseract",
-    "galgame_install_rapidocr",
+    "galgame_download_rapidocr_models",
     "galgame_install_dxcam",
     "galgame_get_snapshot",
     "galgame_get_history",
@@ -41,10 +40,6 @@ _EXPECTED_ENTRY_IDS = [
 _EXPECTED_RUNTIME_KEYS = [
     "install.textractor.ok",
     "install.textractor.fail",
-    "install.tesseract.ok",
-    "install.tesseract.fail",
-    "install.rapidocr.ok",
-    "install.rapidocr.fail",
     "install.dxcam.ok",
     "install.dxcam.fail",
     "errors.not_configured",
@@ -68,7 +63,7 @@ def test_i18n_all_locales_have_all_keys(galgame_i18n_dir, locale) -> None:
         _assert_bundle_has_key(i18n, locale, f"entries.{entry_id}.description")
     for key in _EXPECTED_RUNTIME_KEYS:
         _assert_bundle_has_key(i18n, locale, key)
-    assert len(i18n.messages[locale]) == 74
+    assert len(i18n.messages[locale]) == 70
 
 
 def test_tr_ref_resolves_to_correct_locale(galgame_i18n_dir) -> None:
