@@ -749,10 +749,78 @@ def main():
         print(f"  forged counter landed under stat_date(s): {landed_dates}")
         assert landed_dates, "forged counter should still be stored (under fallback date)"
         assert "9999-99-99" not in landed_dates, (
-            "Codex P2 regression: malformed stat_date '9999-99-99' was persisted "
+            "regression: malformed stat_date '9999-99-99' was persisted "
             "as a real partition key — date.fromisoformat validation not working"
         )
         print("  ✓ malformed stat_date rejected, fell back to a valid date")
+
+        # 第二个 case：parse-pass 但越界的未来日期（9999-12-31）。fromisoformat
+        # 接受它，但 ±2 天范围约束必须拦下，否则字典序 retention 永远 prune
+        # 不掉（CodeRabbit）。
+        oor_payload = {
+            "device_id": "k" * 64, "app_version": "2.0.0", "branch": "main",
+            "locale": "en-US", "timezone": "UTC", "distribution": "source",
+            "steam_user_id": "", "daily_stats": {}, "recent_records": [],
+            "instruments": {
+                "window_start": time.time() - 60, "window_end": time.time(),
+                "stat_date": "9999-12-31",  # 可解析但越界的未来日期
+                "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+                "counters": {"oor_stat_date_counter": 1},
+                "histograms": {},
+            },
+        }
+        s_oor, _ = _sign_and_submit(oor_payload, gzip_it=False, batch_id="smoke-oordate-1")
+        assert s_oor == 200, f"out-of-range-date payload should still be accepted (HTTP {s_oor})"
+        time.sleep(0.3)
+        conn_oor = sqlite3.connect(db_path)
+        oor_rows = conn_oor.execute(
+            "SELECT stat_date FROM instrument_counters "
+            "WHERE metric_key = 'oor_stat_date_counter'"
+        ).fetchall()
+        conn_oor.close()
+        oor_dates = [r[0] for r in oor_rows]
+        print(f"  out-of-range counter landed under stat_date(s): {oor_dates}")
+        assert oor_dates, "oor counter should still be stored (under fallback date)"
+        assert "9999-12-31" not in oor_dates, (
+            "regression: out-of-range stat_date '9999-12-31' was persisted as a "
+            "real partition key — range check (±2 days) not working"
+        )
+        print("  ✓ out-of-range stat_date rejected, fell back to a valid date")
+
+        # NaN counter 不能炸整批：含 NaN 的 payload 仍 200，NaN 样本被跳过，
+        # 同批的合法 counter 照常入库（Codex P2）。
+        nan_payload = {
+            "device_id": "m" * 64, "app_version": "2.0.0", "branch": "main",
+            "locale": "en-US", "timezone": "UTC", "distribution": "source",
+            "steam_user_id": "", "daily_stats": {}, "recent_records": [],
+            "instruments": {
+                "window_start": time.time() - 60, "window_end": time.time(),
+                "stat_date": time.strftime("%Y-%m-%d"),
+                "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+                # NaN 通过 JSON 'NaN' token 传入（Python json 默认接受）
+                "counters": {"nan_counter": float("nan"), "good_counter_beside_nan": 7},
+                "histograms": {},
+            },
+        }
+        nan_body = json.dumps(nan_payload)  # 默认 allow_nan=True，产出 NaN token
+        # 复用 _sign_and_submit 需要 dict；直接走它，签名基于 canonical json
+        s_nan, _ = _sign_and_submit(nan_payload, gzip_it=False, batch_id="smoke-nan-1")
+        assert s_nan == 200, f"NaN payload should be accepted, bad sample skipped (HTTP {s_nan})"
+        time.sleep(0.3)
+        conn_nan = sqlite3.connect(db_path)
+        good_beside = conn_nan.execute(
+            "SELECT value FROM instrument_counters WHERE metric_key = 'good_counter_beside_nan'"
+        ).fetchone()
+        nan_landed = conn_nan.execute(
+            "SELECT COUNT(*) FROM instrument_counters WHERE metric_key = 'nan_counter'"
+        ).fetchone()[0]
+        conn_nan.close()
+        assert good_beside is not None and good_beside[0] == 7, (
+            "Codex P2 regression: NaN sample rolled back the whole batch — "
+            "valid counter beside it was lost"
+        )
+        assert nan_landed == 0, "NaN counter should have been skipped, not stored"
+        print("  ✓ NaN counter skipped, valid counter in same batch survived")
 
         # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表

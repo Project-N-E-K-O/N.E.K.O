@@ -20,6 +20,7 @@ import csv
 import io
 import json
 import logging
+import math
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -71,12 +72,23 @@ class TelemetryStorage:
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=10000")
             conn.row_factory = sqlite3.Row
+            # 关掉 Python 的隐式事务管理，改由 _transaction 手动 BEGIN IMMEDIATE。
+            # 默认 deferred 事务在 WAL 下读不取写锁，histogram 的 read-merge-write
+            # 中间会被并发写者插入 → 丢更新。
+            conn.isolation_level = None
             self._local.conn = conn
         return self._local.conn
 
     @contextmanager
     def _transaction(self):
         conn = self._get_conn()
+        # BEGIN IMMEDIATE：事务一开始就取 SQLite 写锁，让 store_event 里
+        # histogram 的"读旧 buckets → Python 合并 → 写回"对并发写者（多 worker /
+        # 多进程，各自独立连接，甚至同一 device 的 main/agent/memory 三进程同时
+        # POST）串行化。否则两个请求都读到同一份旧 buckets、各自合并、后写者
+        # 覆盖前写者，bucket 分布与 count/sum 漂移（Codex P1）。busy_timeout=10000
+        # 让并发写者阻塞等待而非立刻 "database is locked"。
+        conn.execute("BEGIN IMMEDIATE")
         try:
             yield conn
             conn.commit()
@@ -338,8 +350,15 @@ class TelemetryStorage:
         valid_client_date = False
         if isinstance(client_date, str) and len(client_date) == 10:
             try:
-                date.fromisoformat(client_date)
-                valid_client_date = True
+                _parsed = date.fromisoformat(client_date)
+                # 范围约束：instrument 是实时窗口（snapshot clear-on-read，不会
+                # 从 unsent 队列补发历史），stat_date 应该≈服务端今天。客户端
+                # 时区最多 ±14h + 时钟偏差，放宽到 ±2 天。像 "9999-12-31" 这种
+                # 能过 fromisoformat 但越界的伪造未来日期同样会绕过
+                # prune_old_instruments 的字典序清理、污染 dashboard 分区，所以
+                # 越界一律回退（CodeRabbit）。
+                if abs((_parsed - date.today()).days) <= 2:
+                    valid_client_date = True
             except ValueError:
                 valid_client_date = False
         if valid_client_date:
@@ -364,6 +383,11 @@ class TelemetryStorage:
         for metric_key, value in counters.items():
             if not isinstance(metric_key, str) or not isinstance(value, (int, float)):
                 continue
+            # 拒 NaN / Inf：SQLite REAL NOT NULL 收到 NaN 会被 Python binding
+            # 映射成 NULL → IntegrityError → 整个 store_event 事务回滚，连带
+            # 合法的 daily_stats 一起丢。跳过单个坏样本而非炸整批（Codex P2）。
+            if not math.isfinite(value):
+                continue
             if len(metric_key) > 256:
                 # 防御：客户端误传超长 key。截断不合并 —— 截断后可能跟
                 # 已有 key 冲突 UPSERT，污染数据。直接丢。
@@ -387,7 +411,14 @@ class TelemetryStorage:
             buckets = h.get("buckets") or []
             if not isinstance(count, (int, float)) or not isinstance(hsum, (int, float)):
                 continue
+            # 同 counter：拒 NaN / Inf 防 NULL→IntegrityError 整批回滚（Codex P2）。
+            if not math.isfinite(count) or not math.isfinite(hsum):
+                continue
             if not isinstance(buckets, list):
+                continue
+            # bucket 元素也要全是 finite 数字——非有限值进 json.dumps 会产出
+            # 非法 "NaN" token，下游解析/合并出问题。
+            if not all(isinstance(b, (int, float)) and math.isfinite(b) for b in buckets):
                 continue
 
             # SQL 不擅长 array element-wise 加；读出现有 buckets，
