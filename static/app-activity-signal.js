@@ -46,6 +46,22 @@
     var hasLoggedBridgeMissing = false;
 
     function resolveLanlanName() {
+        // Order matters: ``window.appState.lanlan_name`` first, then
+        // ``window.lanlan_config.lanlan_name`` as fallback. During a
+        // character switch the renderer updates ``appState`` ahead of
+        // ``lanlan_config`` (see ``static/app-character.js`` switch
+        // sequence + the existing precedent in
+        // ``static/app-react-chat-window.js`` ~line 1442 where
+        // CodeRabbit flagged the same lag in a prior PR). Reading
+        // ``lanlan_config`` first would push a few heartbeats to the
+        // *old* tracker during the switch window — 404'd by backend
+        // but loses the immediate post-switch OS-signal coverage.
+        try {
+            var st = window.appState;
+            if (st && typeof st.lanlan_name === 'string' && st.lanlan_name) {
+                return st.lanlan_name;
+            }
+        } catch (_) {}
         try {
             var cfg = window.lanlan_config;
             if (cfg && typeof cfg.lanlan_name === 'string' && cfg.lanlan_name) {
