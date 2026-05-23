@@ -1461,12 +1461,18 @@ class TokenTracker:
             # （含进程 kill 后重启）保留同一 seq，成功 200 后清空。把 seq 放进
             # hash，daily / records / instruments 自己不需要进 hash —— 尤其
             # instruments 是 clear-on-read、不会在重传中复现，把它进 hash 反而
-            # 破坏 (a)。device_id_legacy 也不进：它依赖 uuid.getnode()，多网卡
-            # 机器枚举顺序不稳定，进 hash 会让重传变成新 batch 被累加。
-            # 签名 (HMAC) 仍覆盖完整 payload。
+            # 破坏 (a)。
+            #
+            # batch_core **只用 retry-stable 字段**：device_id + batch_seq。
+            # app_version 故意不进 —— 它在每次上报时实时读 changelog，重试之间
+            # 若用户更新了 app，同一份 unsent batch 会算出不同 batch_id；
+            # timeout-after-commit 后在新版本上重启重传就绕过 seen_batches、
+            # 把已 commit 的 daily_stats 重复计（Codex P1）。device_id_legacy
+            # 同理也不进（依赖 uuid.getnode()，多网卡枚举顺序不稳）。
+            # batch_seq 已是 per-window 唯一 + 跨重试稳定，device_id 保证跨设备
+            # 不撞，二者足够。签名 (HMAC) 仍覆盖完整 payload（含 app_version）。
             batch_core = {
                 "device_id": payload["device_id"],
-                "app_version": payload["app_version"],
                 "batch_seq": batch_seq,
             }
             batch_id = hashlib.sha256(

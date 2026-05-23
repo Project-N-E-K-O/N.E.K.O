@@ -787,6 +787,38 @@ def main():
         )
         print("  ✓ out-of-range stat_date rejected, fell back to a valid date")
 
+        # 第三个 case：client_date 无效（走 window_end fallback）但 window_end
+        # 是远期时间戳。fallback 路径也必须过同一 recency 校验，否则偏斜时钟/
+        # 伪造 window_end 能造远期分区逃过 retention（Codex P2）。
+        we_payload = {
+            "device_id": "p" * 64, "app_version": "2.0.0", "branch": "main",
+            "locale": "en-US", "timezone": "UTC", "distribution": "source",
+            "steam_user_id": "", "daily_stats": {}, "recent_records": [],
+            "instruments": {
+                "window_start": time.time(),
+                "window_end": time.time() + 5 * 365 * 86400,  # ~5 年后
+                "stat_date": "not-a-valid-date",  # len!=10 → 跳过 client_date，走 window_end
+                "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+                "counters": {"we_fallback_counter": 1},
+                "histograms": {},
+            },
+        }
+        s_we, _ = _sign_and_submit(we_payload, gzip_it=False, batch_id="smoke-wedate-1")
+        assert s_we == 200, f"window_end-fallback payload should be accepted (HTTP {s_we})"
+        time.sleep(0.3)
+        conn_we = sqlite3.connect(db_path)
+        we_dates = [r[0] for r in conn_we.execute(
+            "SELECT stat_date FROM instrument_counters WHERE metric_key='we_fallback_counter'"
+        ).fetchall()]
+        conn_we.close()
+        _today = time.strftime("%Y-%m-%d")
+        print(f"  window_end-fallback counter landed under stat_date(s): {we_dates}")
+        assert we_dates and all(d == _today for d in we_dates), (
+            "Codex P2 regression: far-future window_end bypassed recency guard — "
+            f"landed under {we_dates} instead of today {_today}"
+        )
+        print("  ✓ far-future window_end fallback rejected, fell back to today")
+
         # NaN counter 不能炸整批：含 NaN 的 payload 仍 200，NaN 样本被跳过，
         # 同批的合法 counter 照常入库（Codex P2）。
         nan_payload = {

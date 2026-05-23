@@ -364,39 +364,40 @@ class TelemetryStorage:
         #      在午夜附近上报不会被服务端本地时区误拆到两天。
         #   2) window_end 时间戳按服务端时区落天 — 老客户端兼容回退。
         #   3) fallback_stat_date（一般是 today.isoformat()）— 兜底。
+        # 兜底：fallback_stat_date（一般 today）。下面按优先级求一个 candidate
+        # 日期，但**两条来源都必须过同一个 recency 校验**才采用。
         stat_date = fallback_stat_date or date.today().isoformat()
+        today = date.today()
+        candidate: date | None = None
+
+        # 来源 1：客户端 snapshot 的 stat_date（客户端本地日历天，跟 daily_stats
+        # 同口径）。HMAC 密钥在开源客户端可读，伪造 payload 可塞
+        # "9999-99-99"/"abcd-ef-gh"（解析失败）或 "9999-12-31"（能解析但越界）。
         client_date = instruments.get("stat_date")
-        # 真 ISO 校验，不能只看长度+dash 位置：HMAC 密钥在开源客户端里可读，
-        # 伪造 payload 可塞 "9999-99-99" / "abcd-ef-gh"——这类坏值长度和 dash
-        # 位置都过，但落库后 retention 的字典序比较（stat_date < cutoff）永远
-        # prune 不掉，还会在 dashboard 凭空多出垃圾分区。date.fromisoformat
-        # 解析失败就走 window_end / fallback 回退（Codex 指出）。
-        valid_client_date = False
         if isinstance(client_date, str) and len(client_date) == 10:
             try:
-                _parsed = date.fromisoformat(client_date)
-                # 范围约束：instrument 是实时窗口（snapshot clear-on-read，不会
-                # 从 unsent 队列补发历史），stat_date 应该≈服务端今天。客户端
-                # 时区最多 ±14h + 时钟偏差，放宽到 ±2 天。像 "9999-12-31" 这种
-                # 能过 fromisoformat 但越界的伪造未来日期同样会绕过
-                # prune_old_instruments 的字典序清理、污染 dashboard 分区，所以
-                # 越界一律回退（CodeRabbit）。
-                if abs((_parsed - date.today()).days) <= 2:
-                    valid_client_date = True
+                candidate = date.fromisoformat(client_date)
             except ValueError:
-                valid_client_date = False
-        if valid_client_date:
-            stat_date = client_date
-        else:
-            try:
-                window_end = instruments.get("window_end")
-                if isinstance(window_end, (int, float)) and window_end > 0:
+                candidate = None
+
+        # 来源 2：window_end 时间戳按服务端时区落天（老客户端 / client_date 缺失
+        # 时回退）。同样要过下面的 recency 校验——偏斜时钟或伪造的 window_end
+        # 也能造远期 stat_date 逃过 retention（Codex）。
+        if candidate is None:
+            window_end = instruments.get("window_end")
+            if isinstance(window_end, (int, float)) and window_end > 0:
+                try:
                     from datetime import datetime as _dt
-                    stat_date = _dt.fromtimestamp(window_end).date().isoformat()
-            except (TypeError, ValueError, OSError):
-                # fromtimestamp 失败（数值越界 / OS 时间错乱）：保持上面的
-                # fallback_stat_date / today，不让一条坏 payload 整批回滚。
-                pass
+                    candidate = _dt.fromtimestamp(window_end).date()
+                except (TypeError, ValueError, OSError, OverflowError):
+                    candidate = None
+
+        # 统一 recency 校验：instrument 是实时窗口（snapshot clear-on-read，不从
+        # unsent 队列补发历史），stat_date 必≈服务端今天。客户端时区最多 ±14h +
+        # 时钟偏差，放宽到 ±2 天。越界（伪造未来日期 / 时钟错乱）一律走 fallback，
+        # 否则字典序 retention（stat_date < cutoff）永远 prune 不掉、污染 dashboard。
+        if candidate is not None and abs((candidate - today).days) <= 2:
+            stat_date = candidate.isoformat()
 
         counters = instruments.get("counters") or {}
         histograms = instruments.get("histograms") or {}
