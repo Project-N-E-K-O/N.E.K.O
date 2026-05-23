@@ -833,6 +833,10 @@ def main():
                 "stat_date": time.strftime("%Y-%m-%d"),
                 "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
                 "counters": {},
+                # 注：fractional count/bucket（如 0.5）在 Pydantic HistogramStat
+                # (count:int, buckets:List[int]) 层就被拒成 400，到不了 storage；
+                # storage 的整数归一化是 defense-in-depth。所以这里只用整数值的
+                # 形状不自洽 case 测 storage 跳过逻辑。
                 "histograms": {
                     "bad_shape_hist": {  # count=100 但 buckets 只加起来 =2
                         "count": 100, "sum": 50.0,

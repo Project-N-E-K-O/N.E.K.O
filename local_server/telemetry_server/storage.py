@@ -55,6 +55,23 @@ def _bucket_quantile(buckets: list, bounds: list, q: float) -> dict:
     return {"upper_bound": None, "bucket_index": len(buckets) - 1}
 
 
+def _as_int_count(x) -> int | None:
+    """把整数计数语义的值归一化成 int；非整数 / NaN / Inf / bool 返回 None。
+
+    histogram 的 count 和 bucket 必须是整数计数。接受 int 或整数值 float
+    （如 ``4.0``，跨序列化器容差），拒 ``4.5`` / NaN / Inf / True/False。
+    归一化后再做 sum==count 校验和写库，避免 ``int()`` 截断造成不一致。
+    """
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float):
+        if math.isfinite(x) and x.is_integer():
+            return int(x)
+    return None
+
+
 class TelemetryStorage:
     """线程安全的 SQLite 遥测存储。"""
 
@@ -415,17 +432,29 @@ class TelemetryStorage:
                 continue
             count = h.get("count", 0)
             hsum = h.get("sum", 0.0)
-            buckets = h.get("buckets") or []
-            if not isinstance(count, (int, float)) or not isinstance(hsum, (int, float)):
+            raw_buckets = h.get("buckets") or []
+            if not isinstance(raw_buckets, list):
                 continue
-            # 同 counter：拒 NaN / Inf 防 NULL→IntegrityError 整批回滚（Codex P2）。
-            if not math.isfinite(count) or not math.isfinite(hsum):
+            # count 和 bucket 是**整数计数**语义：归一化成 int（接受 int 或
+            # 整数值 float 如 4.0），非整数值 / NaN / Inf / bool 一律 reject。
+            # 否则后面写库 int(count) 截断会让 count 与 buckets 落库后不一致
+            # （如 count=0.5, buckets=[0.5] 能过 sum==count 浮点校验，但写库
+            # int(0.5)=0 而 buckets 存 [0.5]，dashboard 分位数算错）（CodeRabbit）。
+            count = _as_int_count(count)
+            if count is None:
                 continue
-            if not isinstance(buckets, list):
+            buckets = []
+            _bucket_ok = True
+            for b in raw_buckets:
+                bi = _as_int_count(b)
+                if bi is None:
+                    _bucket_ok = False
+                    break
+                buckets.append(bi)
+            if not _bucket_ok:
                 continue
-            # bucket 元素也要全是 finite 数字——非有限值进 json.dumps 会产出
-            # 非法 "NaN" token，下游解析/合并出问题。
-            if not all(isinstance(b, (int, float)) and math.isfinite(b) for b in buckets):
+            # hsum 是观测值之和，可以是小数（如延迟求和），只要 finite 非 bool。
+            if isinstance(hsum, bool) or not isinstance(hsum, (int, float)) or not math.isfinite(hsum):
                 continue
             # 形状自洽校验（防伪造 / 损坏 payload 把 dashboard 静默带歪）：
             # get_histogram_summary 的 avg 用 count、p50/p95 用 buckets，count 与

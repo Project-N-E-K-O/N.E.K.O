@@ -1678,6 +1678,7 @@ class OmniOfflineClient:
                             if api_key_rejected:
                                 _ic("api_key_invalid")
                         except Exception:
+                            # 埋点 best-effort，绝不影响错误上报 / 重试主流程。
                             pass
 
                     # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
