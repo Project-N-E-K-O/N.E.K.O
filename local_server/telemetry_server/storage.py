@@ -18,11 +18,33 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
+
+
+def normalize_steam_id(raw) -> str:
+    """把任意来源的 steam_user_id 归一化为 canonical 十进制 Steam64，非法返回 ''。
+
+    单一事实源：ingest（server.py）和 canonical 边构建（扫 events.payload）共用
+    这一份，避免两条写路径规则漂移把同一身份拆成两个节点。
+
+    raw 不标注 str：边构建扫的是原始 events.payload JSON，伪造 / 异常行的
+    steam_user_id 可能是 number / null / 其它类型，直接 .isdigit() 会抛异常。
+    先做类型守卫再走字符串规则。ingest 侧传进来的是 Pydantic str，守卫对它无害。
+
+    规则（与历史 ingest 一致）：纯数字 + 长度 <= 20（u64 十进制 20 位，cheap
+    pre-check 挡超长串 DoS）+ 0 < int < 2^64（排除 '0'/'00' 哨兵和超界值）+
+    str(int()) 去前导零（否则 '00076561...' 会和 '76561...' 被当成两个账号）。
+    """
+    if not isinstance(raw, str):
+        return ""
+    if raw.isdigit() and len(raw) <= 20 and 0 < int(raw) < (1 << 64):
+        return str(int(raw))
+    return ""
 
 
 class TelemetryStorage:
@@ -109,6 +131,62 @@ class TelemetryStorage:
                     batch_id    TEXT PRIMARY KEY,
                     received_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
                 );
+
+                -- ===== canonical identity 身份聚合层 =====
+                -- device⟷steam 观测边（append-only）。边由 build_edges_from_events
+                -- 扫 events 产出，不在 ingest 路径里产边。first_seen/last_seen 用事件
+                -- 观测时间 events.received_at，可空（纯连通兜底边留 NULL）。
+                CREATE TABLE IF NOT EXISTS device_steam_edges (
+                    device_id     TEXT NOT NULL,
+                    steam_user_id TEXT NOT NULL,        -- 归一化十进制 Steam64
+                    first_seen    TEXT,
+                    last_seen     TEXT,
+                    observe_count INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (device_id, steam_user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dse_steam ON device_steam_edges(steam_user_id);
+
+                -- device⟷device 别名边（device_id 算法升级导致同机新旧两 ID）。
+                -- 边源 = events.payload.device_id_legacy。dev_lo/dev_hi 按字典序存，
+                -- 保证 (a,b) 与 (b,a) 去重为同一行。
+                CREATE TABLE IF NOT EXISTS device_alias_edges (
+                    dev_lo        TEXT NOT NULL,
+                    dev_hi        TEXT NOT NULL,
+                    first_seen    TEXT,
+                    last_seen     TEXT,
+                    observe_count INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (dev_lo, dev_hi)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dae_hi ON device_alias_edges(dev_hi);
+
+                -- 删号防复活硬约束：所有产边路径先查 denylist，命中跳过。
+                CREATE TABLE IF NOT EXISTS steam_id_denylist (
+                    steam_user_id TEXT PRIMARY KEY,
+                    deleted_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+                );
+
+                -- union-find 连通分量落表。entity_type ∈ ('device','steam')。
+                CREATE TABLE IF NOT EXISTS canonical_map (
+                    entity_type  TEXT NOT NULL,
+                    entity_id    TEXT NOT NULL,
+                    canonical_id TEXT NOT NULL,
+                    PRIMARY KEY (entity_type, entity_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_cm_canonical ON canonical_map(canonical_id);
+
+                -- 合并历史，外部引用顺 alias 链解析到当前 canonical（保持一跳）。
+                CREATE TABLE IF NOT EXISTS canonical_alias (
+                    old_canonical_id TEXT PRIMARY KEY,
+                    new_canonical_id TEXT NOT NULL,
+                    merged_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'))
+                );
+
+                -- 边构建增量游标（处理到的最大 events.id）。
+                CREATE TABLE IF NOT EXISTS edge_build_cursor (
+                    id        INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_event_id INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT OR IGNORE INTO edge_build_cursor (id, last_event_id) VALUES (1, 0);
             """)
             # 老库 devices 表上线时还没有 branch/locale/timezone/distribution/steam_user_id
             # 列。CREATE TABLE IF NOT EXISTS 不会动已存在的 schema，所以这里显式
@@ -484,6 +562,254 @@ class TelemetryStorage:
             writer.writerow([r["model"], r["stat_date"], r["pt"], r["ct"],
                              r["tt"], r["cch"], r["cc"]])
         return output.getvalue()
+
+    # ----- canonical identity 身份聚合 -----
+
+    def add_steam_id_to_denylist(self, steam_user_id: str) -> str:
+        """删号：被删 Steam64 进 denylist（防复活硬约束）+ 脱敏源数据 + 删边。
+
+        events.payload 里的历史值按 events 180 天 retention 自然过期，不在此处
+        改写（保留 HMAC 原文完整性）；denylist 保证它即便被回填扫到也不产边。
+        返回归一化后的 ID（非法输入返回 ''，不做任何操作）。
+        """
+        sid = normalize_steam_id(steam_user_id)
+        if not sid:
+            return ""
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO steam_id_denylist (steam_user_id) VALUES (?)", (sid,)
+            )
+            conn.execute("DELETE FROM device_steam_edges WHERE steam_user_id = ?", (sid,))
+            conn.execute("UPDATE devices SET steam_user_id = '' WHERE steam_user_id = ?", (sid,))
+        return sid
+
+    def build_edges_from_events(self, batch_limit: int = 5000) -> int:
+        """扫 events 增量产边（device⟷steam + device⟷device 别名）。
+
+        首跑 = 全量回填（游标从 0 起），之后按 events.id 游标增量。边时间戳用
+        事件观测时间 events.received_at，绝不用墙上时间（否则回填把历史边全盖成
+        回填时刻，留存指标失真）。steam_user_id 复用 normalize_steam_id + denylist
+        过滤，所有产边路径一致。返回本次处理的事件数。
+        """
+        conn = self._get_conn()
+        row = conn.execute("SELECT last_event_id FROM edge_build_cursor WHERE id = 1").fetchone()
+        last_id = row["last_event_id"] if row else 0
+        events = conn.execute(
+            "SELECT id, device_id, payload, received_at FROM events WHERE id > ? ORDER BY id LIMIT ?",
+            (last_id, batch_limit),
+        ).fetchall()
+        if not events:
+            return 0
+        denylist = {
+            r["steam_user_id"] for r in conn.execute("SELECT steam_user_id FROM steam_id_denylist")
+        }
+        max_id = last_id
+        processed = 0
+        with self._transaction() as c:
+            for ev in events:
+                max_id = ev["id"]
+                processed += 1
+                dev = ev["device_id"]
+                ts = ev["received_at"]
+                if not isinstance(dev, str) or not dev:
+                    continue
+                try:
+                    payload = json.loads(ev["payload"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                sid = normalize_steam_id(payload.get("steam_user_id"))
+                if sid and sid not in denylist:
+                    c.execute("""
+                        INSERT INTO device_steam_edges (device_id, steam_user_id, first_seen, last_seen, observe_count)
+                        VALUES (?, ?, ?, ?, 1)
+                        ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
+                            first_seen = COALESCE(MIN(device_steam_edges.first_seen, excluded.first_seen), device_steam_edges.first_seen, excluded.first_seen),
+                            last_seen  = COALESCE(MAX(device_steam_edges.last_seen,  excluded.last_seen),  device_steam_edges.last_seen,  excluded.last_seen),
+                            observe_count = device_steam_edges.observe_count + 1
+                    """, (dev, sid, ts, ts))
+                legacy = payload.get("device_id_legacy")
+                if isinstance(legacy, str) and legacy and legacy != dev:
+                    lo, hi = sorted((dev, legacy))
+                    c.execute("""
+                        INSERT INTO device_alias_edges (dev_lo, dev_hi, first_seen, last_seen, observe_count)
+                        VALUES (?, ?, ?, ?, 1)
+                        ON CONFLICT(dev_lo, dev_hi) DO UPDATE SET
+                            first_seen = COALESCE(MIN(device_alias_edges.first_seen, excluded.first_seen), device_alias_edges.first_seen, excluded.first_seen),
+                            last_seen  = COALESCE(MAX(device_alias_edges.last_seen,  excluded.last_seen),  device_alias_edges.last_seen,  excluded.last_seen),
+                            observe_count = device_alias_edges.observe_count + 1
+                    """, (lo, hi, ts, ts))
+            c.execute("UPDATE edge_build_cursor SET last_event_id = ? WHERE id = 1", (max_id,))
+        return processed
+
+    def recompute_canonical(self) -> int:
+        """对 device⟷steam + device⟷device 边跑 union-find，落表 canonical_map。
+
+        canonical_id 代表元规则（确定性，重算不抖）：节点加命名空间前缀
+        （steam=``s:``、device=``d:``）；代表元 = 分量内最小 steam 节点，无 steam
+        退化为最小 device 节点。合并 churn 写 canonical_alias 并 path-compress
+        保持一跳。返回 canonical 数。
+        """
+        conn = self._get_conn()
+        parent: dict[str, str] = {}
+
+        def find(x: str) -> str:
+            root = x
+            while parent.get(root, root) != root:
+                root = parent[root]
+            # path halving
+            while parent.get(x, x) != root:
+                parent[x], x = root, parent[x]
+            parent.setdefault(root, root)
+            return root
+
+        def union(a: str, b: str) -> None:
+            parent.setdefault(a, a)
+            parent.setdefault(b, b)
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                # 让字典序小的当根，稳定且与代表元规则方向一致
+                lo, hi = sorted((ra, rb))
+                parent[hi] = lo
+
+        for r in conn.execute("SELECT device_id, steam_user_id FROM device_steam_edges"):
+            union("d:" + r["device_id"], "s:" + r["steam_user_id"])
+        for r in conn.execute("SELECT dev_lo, dev_hi FROM device_alias_edges"):
+            union("d:" + r["dev_lo"], "d:" + r["dev_hi"])
+        # 把所有 device 都纳入（无边的 device 自成一个 canonical，指标才覆盖全量）
+        for r in conn.execute("SELECT device_id FROM devices"):
+            parent.setdefault("d:" + r["device_id"], "d:" + r["device_id"])
+
+        # 每个连通分量选代表元：min steam 节点 优先，否则 min device 节点
+        root_steam: dict[str, str] = {}
+        root_device: dict[str, str] = {}
+        for node in list(parent.keys()):
+            root = find(node)
+            if node.startswith("s:"):
+                if root not in root_steam or node < root_steam[root]:
+                    root_steam[root] = node
+            else:
+                if root not in root_device or node < root_device[root]:
+                    root_device[root] = node
+        root_canon = {
+            root: root_steam.get(root) or root_device.get(root)
+            for root in set(list(root_steam) + list(root_device))
+        }
+        new_map = {node: root_canon[find(node)] for node in parent}
+
+        old_canon = {
+            r["canonical_id"] for r in conn.execute("SELECT DISTINCT canonical_id FROM canonical_map")
+        }
+        new_canon_ids = set(root_canon.values())
+
+        with self._transaction() as c:
+            c.execute("DELETE FROM canonical_map")
+            c.executemany(
+                "INSERT INTO canonical_map (entity_type, entity_id, canonical_id) VALUES (?, ?, ?)",
+                [
+                    ("steam" if node.startswith("s:") else "device", node[2:], canon)
+                    for node, canon in new_map.items()
+                ],
+            )
+            # alias 维护：曾是 canonical、现已被并入别处的 ID 记一条，并 path-compress
+            for x in old_canon - new_canon_ids:
+                y = new_map.get(x)
+                if y and y != x:
+                    c.execute(
+                        "INSERT INTO canonical_alias (old_canonical_id, new_canonical_id) VALUES (?, ?) "
+                        "ON CONFLICT(old_canonical_id) DO UPDATE SET new_canonical_id = excluded.new_canonical_id",
+                        (x, y),
+                    )
+                    c.execute(
+                        "UPDATE canonical_alias SET new_canonical_id = ? WHERE new_canonical_id = ?",
+                        (y, x),
+                    )
+        return len(new_canon_ids)
+
+    def resolve_canonical(self, canonical_id: str) -> str:
+        """顺 alias 链解析旧 canonical_id 到当前（一跳即到，path compression 保证）。"""
+        row = self._get_conn().execute(
+            "SELECT new_canonical_id FROM canonical_alias WHERE old_canonical_id = ?", (canonical_id,)
+        ).fetchone()
+        return row["new_canonical_id"] if row else canonical_id
+
+    def get_canonical_metrics(self, days: int = 30) -> dict:
+        """canonical 口径 DAU/WAU/MAU/留存（按真人去重，与 device 口径并存）。
+
+        device → canonical 经 canonical_map 映射；未落表的 device 回退 'd:'||device_id
+        （等价于自成 canonical），保证 recompute 没跑过时也不崩、只是不去重。
+        """
+        conn = self._get_conn()
+        today = date.today()
+        # device → canonical 的公共映射片段
+        J = ("LEFT JOIN canonical_map cm ON cm.entity_type='device' AND cm.entity_id=a.device_id")
+        C = "COALESCE(cm.canonical_id, 'd:'||a.device_id)"
+
+        def active_count(cutoff: str) -> int:
+            return conn.execute(
+                f"SELECT COUNT(DISTINCT {C}) AS cnt FROM daily_aggregates a {J} "
+                "WHERE a.model='_total' AND a.call_type='_total' AND a.stat_date >= ?",
+                (cutoff,),
+            ).fetchone()["cnt"]
+
+        cutoff = (today - timedelta(days=days)).isoformat()
+        dau_rows = conn.execute(
+            f"SELECT a.stat_date, COUNT(DISTINCT {C}) AS dau FROM daily_aggregates a {J} "
+            "WHERE a.model='_total' AND a.call_type='_total' AND a.stat_date >= ? "
+            "GROUP BY a.stat_date ORDER BY a.stat_date DESC",
+            (cutoff,),
+        ).fetchall()
+        dau_trend = {r["stat_date"]: r["dau"] for r in dau_rows}
+
+        wau = active_count((today - timedelta(days=7)).isoformat())
+        mau = active_count((today - timedelta(days=30)).isoformat())
+
+        # canonical first_seen = 旗下最早 device 的 first_seen
+        canon_first_cte = (
+            "WITH dc AS ("
+            "  SELECT COALESCE(cm.canonical_id, 'd:'||d.device_id) AS canon, d.first_seen "
+            "  FROM devices d LEFT JOIN canonical_map cm ON cm.entity_type='device' AND cm.entity_id=d.device_id"
+            "), canon_first AS (SELECT canon, MIN(date(first_seen)) AS join_date FROM dc GROUP BY canon)"
+        )
+
+        def retention(anchor: str, check: str) -> float:
+            cohort = conn.execute(
+                canon_first_cte + " SELECT COUNT(*) AS cnt FROM canon_first WHERE join_date = ?",
+                (anchor,),
+            ).fetchone()["cnt"]
+            if cohort == 0:
+                return 0.0
+            retained = conn.execute(
+                canon_first_cte
+                + f" SELECT COUNT(DISTINCT {C}) AS cnt FROM daily_aggregates a {J} "
+                "JOIN canon_first cf ON cf.canon = COALESCE(cm.canonical_id, 'd:'||a.device_id) "
+                "WHERE cf.join_date = ? AND a.stat_date = ? AND a.model='_total' AND a.call_type='_total'",
+                (anchor, check),
+            ).fetchone()["cnt"]
+            return round(retained / cohort * 100, 1)
+
+        d1 = retention((today - timedelta(days=2)).isoformat(), (today - timedelta(days=1)).isoformat())
+        d7 = retention((today - timedelta(days=8)).isoformat(), (today - timedelta(days=1)).isoformat())
+
+        new_rows = conn.execute(
+            canon_first_cte
+            + " SELECT join_date, COUNT(*) AS cnt FROM canon_first WHERE join_date >= ? GROUP BY join_date ORDER BY join_date DESC",
+            (cutoff,),
+        ).fetchall()
+
+        return {
+            "canonical_dau_today": dau_trend.get(today.isoformat(), 0),
+            "canonical_wau": wau,
+            "canonical_mau": mau,
+            "canonical_d1_retention": d1,
+            "canonical_d7_retention": d7,
+            "canonical_dau_trend": dau_trend,
+            "canonical_new_trend": {r["join_date"]: r["cnt"] for r in new_rows},
+            "total_canonical": conn.execute(
+                "SELECT COUNT(DISTINCT canonical_id) AS cnt FROM canonical_map"
+            ).fetchone()["cnt"],
+        }
 
     # ----- 维护 -----
 

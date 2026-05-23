@@ -68,17 +68,9 @@ _report_to_server()  检查距上次上报是否 ≥ 60s（1分钟）
   SQLite WAL ~500 write/s → 日均够用
 ```
 
-## 管理端
+## 管理端 API
 
-### 仪表盘
-
-浏览器访问：`http://服务器:8099/api/v1/admin/dashboard?days=30`
-
-需要 Header: `Authorization: Bearer YOUR_ADMIN_TOKEN`
-
-（提示：可以用浏览器扩展如 ModHeader 添加 Authorization Header）
-
-### API
+全部需要 Header: `Authorization: Bearer YOUR_ADMIN_TOKEN`（或 `?token=` 查询参数）。返回 JSON，无内置 HTML 看板。
 
 ```bash
 TOKEN="YOUR_ADMIN_TOKEN"
@@ -88,6 +80,15 @@ curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/stats?
 
 # 活跃设备
 curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/devices?days=7
+
+# 用户指标（device 口径 + canonical 口径并列）
+curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/canonical/metrics?days=30
+
+# 手动触发：扫 events 产边 + 重算 canonical（平时每 5 分钟自动跑）
+curl -X POST -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/canonical/rebuild
+
+# 删号：Steam64 入 denylist（防复活）+ 脱敏 + 删边 + 重算
+curl -X POST -H "Authorization: Bearer $TOKEN" "http://服务器:8099/api/v1/admin/canonical/denylist?steam_user_id=765..."
 
 # 导出 CSV（按日汇总）
 curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/export/daily.csv?days=90 -o daily.csv
