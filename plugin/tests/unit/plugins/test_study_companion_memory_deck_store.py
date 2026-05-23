@@ -251,6 +251,8 @@ def test_memory_due_reviews_sort_by_deck_and_retrievability(tmp_path: Path) -> N
 
         due = memory.due_reviews(limit=10)
         word_due = memory.due_reviews(limit=1, item_type="word")
+        with pytest.raises(ValueError, match="unsupported memory item type"):
+            memory.due_reviews(limit=1, item_type="all")
 
         assert [item["item"]["prompt"] for item in due[:3]] == [
             "weak",

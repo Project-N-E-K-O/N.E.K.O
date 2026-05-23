@@ -454,7 +454,9 @@ class MemoryDeckStore:
             rows = active_item_card_rows(
                 self.store._require_conn(), deck_id=deck_id
             )
-        if item_type: rows = [row for row in rows if str(row["item_type"] or "") == normalize_item_type(item_type)]
+        item_kind = str(item_type or "").strip().lower()
+        if item_kind and item_kind not in {"word", "sentence", "paragraph", "cloze", "custom"}: raise ValueError("unsupported memory item type")
+        if item_kind: rows = [row for row in rows if str(row["item_type"] or "") == item_kind]
         due = self.fsrs.get_due_reviews(
             [self.store._json_loads(row["card_data"], {}) for row in rows]
         )
