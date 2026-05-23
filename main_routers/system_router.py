@@ -4163,6 +4163,14 @@ def _activity_signal_validate_float(
     ``UserActivityTracker.push_external_system_signal`` docstring), so
     we keep ``None`` distinct from a present-but-invalid value — the
     latter is a 400 with a specific error.
+
+    Non-finite values (``NaN`` / ``±Infinity``) are rejected explicitly
+    before range comparison — ``float('nan') < lo`` is silently
+    ``False``, so they'd otherwise bypass the bounds check. Worse,
+    serialising them downstream (state-machine logs, JSON responses)
+    crashes since standard JSON forbids them. ``math.isfinite`` is the
+    correct guard: it rejects NaN and both infinities while accepting
+    every normal/subnormal float.
     """
     raw = data.get(key)
     if raw is None:
@@ -4171,6 +4179,8 @@ def _activity_signal_validate_float(
         val = float(raw)
     except (TypeError, ValueError):
         return None, f"{key} must be a number"
+    if not math.isfinite(val):
+        return None, f"{key} must be finite"
     if lo is not None and val < lo:
         return None, f"{key} must be >= {lo}"
     if hi is not None and val > hi:

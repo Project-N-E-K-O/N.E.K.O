@@ -111,8 +111,14 @@
         } catch (e) {
             // Bridge call itself threw — distinct from "bridge returned
             // an empty snapshot" because it usually means IPC died.
-            // Log once and let the failure counter throttle the rest.
-            if (consecutiveFailures < LOG_FAILURE_QUIET_THRESHOLD) {
+            // Bump the failure counter so the log throttle below kicks
+            // in: ``readSignalsFromBridge`` returns ``null`` either for
+            // benign "no signal" or for real failures, and we want
+            // repeat failures to fall under the same 3-then-quiet
+            // policy as POST failures. Then log gated by current
+            // counter (after increment, ``<= threshold``).
+            consecutiveFailures++;
+            if (consecutiveFailures <= LOG_FAILURE_QUIET_THRESHOLD) {
                 console.warn('[activity-signal] bridge read failed:', e);
             }
             return null;
@@ -120,22 +126,31 @@
     }
 
     async function pushOnce(lanlanName) {
+        // Set the in-flight latch BEFORE the bridge read so two ticks
+        // can't both clear the ``if (inFlight)`` check while one is
+        // mid-await. On a slow IPC (Linux xprop, macOS Screen Recording
+        // prompt) the bridge read can take seconds; without this latch
+        // a subsequent tick would re-enter, hit the backend twice in
+        // quick succession, and trip the 5s rate limit unnecessarily.
         if (inFlight) {
-            // Previous POST still running (rare — endpoint is fast).
-            // Skip this tick rather than queueing up; backend rate
-            // limit would reject it anyway.
+            // Previous tick still in flight (rare — endpoint is fast).
+            // Skip rather than queue; the backend rate limit would
+            // reject the duplicate anyway.
             return;
         }
-        var payload = await readSignalsFromBridge();
-        if (payload === null) {
-            // Bridge read failed or returned nothing usable. Skip silently —
-            // tracker's 30s TTL will expire and the local collector takes
-            // over, which is the documented fallback for this case.
-            return;
-        }
-        payload.lanlan_name = lanlanName;
         inFlight = true;
         try {
+            var payload = await readSignalsFromBridge();
+            if (payload === null) {
+                // Bridge read failed or returned nothing usable. Skip
+                // silently — tracker's 30s TTL will expire and the
+                // local collector takes over, which is the documented
+                // fallback for this case. ``readSignalsFromBridge``
+                // already incremented ``consecutiveFailures`` if the
+                // bridge call itself threw.
+                return;
+            }
+            payload.lanlan_name = lanlanName;
             var resp = await fetch(ENDPOINT, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

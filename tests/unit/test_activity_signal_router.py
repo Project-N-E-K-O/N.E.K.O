@@ -211,6 +211,42 @@ def test_field_validation_400s(monkeypatch, payload, expected_error_fragment):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("field", ["idle_seconds", "cpu_avg_30s", "gpu_utilization"])
+@pytest.mark.parametrize("bad_token", ["NaN", "Infinity", "-Infinity"])
+def test_nan_and_infinity_rejected(monkeypatch, field, bad_token):
+    """``NaN`` / ``±Infinity`` must be 400'd before they reach the tracker.
+
+    ``float('nan') < lo`` is silently ``False``, so a missing
+    ``math.isfinite`` check let these slip past the range guards
+    (CodeRabbit + Codex P2 on PR #1477). Worse, downstream JSON
+    serialisation of NaN/Infinity crashes since RFC 8259 forbids them.
+
+    We bypass TestClient's ``json=`` helper (which uses httpx's strict
+    ``allow_nan=False`` serialiser) and send raw bytes via ``content=``
+    — Python's stdlib ``json.loads`` (what Starlette uses) accepts the
+    non-standard ``NaN`` / ``Infinity`` tokens, which is exactly the
+    in-the-wild path an attacker / buggy client would take.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+    body = (
+        '{"lanlan_name":"Aria","' + field + '":' + bad_token + '}'
+    ).encode()
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 400, resp.text
+    err = resp.json()["error"]
+    assert field in err, f"error should name the offending field, got: {err!r}"
+    assert "finite" in err.lower(), f"error should mention 'finite', got: {err!r}"
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
 def test_tracker_exception_returns_500(monkeypatch):
     """If tracker.push_external_system_signal raises, surface 500."""
     mgr, tracker = _build_mgr()
