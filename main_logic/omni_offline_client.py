@@ -68,14 +68,15 @@ _SUMMARY_LATE_FINISH_SLACK = 25
 # discard flow.
 _SUMMARY_GIBBERISH_RECHECK_TOKENS = 100
 
-# Hard char cap on the summary LLM output. Defensive backstop: prompt
-# asks for "1-2 sentences ≤ 40 chars" but small models drift. After
-# stripping quotes and slicing to the first 2 sentence-end-delimited
-# segments, we still hard-truncate to this many chars before feeding
-# TTS. 80 chars ≈ 25 Chinese / 12 English words — short enough that the
-# summary stays in the "quick wrap-up" tonal zone regardless of model
-# obedience.
-_SUMMARY_HARD_CHAR_CAP = 80
+# Hard token cap on the summary LLM output. Defensive backstop: prompt
+# asks for "1-2 sentences" but small models drift. After stripping quotes
+# and slicing to the first 2 sentence-end-delimited segments, we still
+# hard-truncate to this many tokens (tiktoken, same unit as the budget)
+# before feeding TTS. Token-based so the cap behaves consistently across
+# languages (a char cap punishes CJK, where one char ≈ one token, far
+# harder than Latin scripts). 50 tokens keeps the summary in the
+# "quick wrap-up" zone regardless of model obedience.
+_SUMMARY_HARD_TOKEN_CAP = 50
 
 
 # Floor on API-side ``max_completion_tokens`` when summary mode is on.
@@ -1269,8 +1270,9 @@ class OmniOfflineClient:
         emotion-tier LLM 写出来的 1-2 句收尾，或在配置缺失/调用失败时返回
         ``None`` —— 由 caller fallback 到"完整原文照读"。
 
-        语种从 ``tail`` 检测（前缀可能很短，尾巴信息量更稳）；persona 占位
-        符 ``{lanlan_name}`` / ``{master_name}`` 在 system 模板里替换。
+        prompt 不灌 persona —— prefix/tail 本身就是主模型用人设口吻写出来的，
+        小模型只要保留原有语气、把尾巴压短即可，不需要再演一遍人设。语种从
+        ``tail`` 检测（前缀可能很短，尾巴信息量更稳）。
         """
         if not (tail and tail.strip()):
             return None
@@ -1308,12 +1310,9 @@ class OmniOfflineClient:
             logger.warning("summary: prompt 模板取失败: %s", e)
             return None
 
-        # persona 名字若为空也允许，let format 填空字符串；prompt 仍能自洽。
+        # system 模板 persona-agnostic，无占位符直接用；user 模板只填 prefix/tail。
+        system_text = templates['system']
         try:
-            system_text = templates['system'].format(
-                lanlan_name=self.lanlan_name or '',
-                master_name=self.master_name or '',
-            )
             user_text = templates['user_template'].format(
                 prefix=prefix or '',
                 tail=tail,
@@ -1361,8 +1360,9 @@ class OmniOfflineClient:
             return None
         # 硬性收口：emotion-tier 模型即使被 prompt 约束也可能输出 3-4 句话，
         # 直接灌进 TTS 会把"短促收尾"这个核心目标打废。最多保留 2 个 sentence-end
-        # 段，再硬截到 ``_SUMMARY_HARD_CHAR_CAP`` 字符。两个限制叠加：先按句末
-        # 切，再按字符兜底——任意一条触发都收口。
+        # 段，再硬截到 ``_SUMMARY_HARD_TOKEN_CAP`` 个 token。两个限制叠加：先按
+        # 句末切，再按 token 兜底——任意一条触发都收口。token 口径与 budget
+        # 一致，跨语种行为统一（字符口径会过度惩罚 CJK）。
         sentence_segments: list[str] = []
         cursor = 0
         for idx, ch in enumerate(summary):
@@ -1375,8 +1375,8 @@ class OmniOfflineClient:
             trimmed = "".join(sentence_segments)
             # 若模型在 2 句之外还塞了尾巴，丢弃
             summary = trimmed.strip()
-        if len(summary) > _SUMMARY_HARD_CHAR_CAP:
-            summary = summary[:_SUMMARY_HARD_CHAR_CAP].rstrip()
+        if count_tokens(summary) > _SUMMARY_HARD_TOKEN_CAP:
+            summary = truncate_to_tokens(summary, _SUMMARY_HARD_TOKEN_CAP).rstrip()
         if not summary:
             return None
         return summary
@@ -1532,12 +1532,29 @@ class OmniOfflineClient:
                         prefix_buffer = ""
                         prefix_checked = not bool(self._prefix_buffer_size)
 
-                        # Summary-mode 状态机（仅 self.enable_long_response_summary=True 时
-                        # 有意义）。一旦 _total 越过 max_response_length，state 由 idle 切到
-                        # pending_cutover；从此 chunk 起寻找第一个 terminator（句末或逗号），
-                        # 找到后 state → cutover_done，从那点起 emit 只去 UI 不去 TTS，并攒进
-                        # summary_tail_buffer 等流末。tool_round_persisted 触发时整套状态
-                        # 重置，因为下一段是新的语义单元。
+                        # ── Summary-mode 状态机（仅 summary_mode_enabled 时生效）──
+                        # 完整流转图，便于把散在 4 处（这里初始化 / 长度 trigger /
+                        # emit fork / 流末 epilogue）的逻辑拼成一张图：
+                        #
+                        #   idle ──(_total 越过 budget)──▶ pending_cutover
+                        #     │                                 │
+                        #     │                  (找到 budget 之后的 terminator)
+                        #     │                                 ▼
+                        #     │                           cutover_done
+                        #     │                          /     │      \
+                        #     │           (tail 攒到乱码)/      │       \(stream 结束)
+                        #     │                       /        │        \
+                        #     │           gibberish_fallback   │   epilogue 决策：
+                        #     │           (静默截断，          │   · final<budget+slack → abandon，tail 续 TTS
+                        #     │            history 只留 prefix) │   · 否则 → 调小模型摘要续 TTS（失败则 abandon）
+                        #     │                                 │
+                        #     └─(stream 结束仍 idle / pending)──┴─▶ 常规：完整原文进 history
+                        #
+                        # 各状态的 emit 去向：
+                        #   idle / pending_cutover  → UI + TTS（both）
+                        #   cutover_done            → 仅 UI（tail 攒进 summary_tail_buffer）
+                        # tool_round_persisted 触发时：先把 cutover 后的 tail abandon 给
+                        # TTS（否则永远听不到），再把整套状态重置回 idle。
                         summary_state = 'idle'
                         summary_prefix_for_history = ""  # cutover 触发那一刻 assistant_message 的快照
                         summary_tail_buffer = ""        # post-cutover UI-only 文本
