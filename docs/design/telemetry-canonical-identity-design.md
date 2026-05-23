@@ -74,13 +74,19 @@ CREATE INDEX IF NOT EXISTS idx_edge_steam ON device_steam_edges(steam_user_id);
 **边由内部 job 扫 `events` 产出，不在 ingest 路径里产边。** 这样公开 repo 的收数据代码完全不动，归并逻辑全在内部分析侧。job 增量处理新 `events`（按 `received_at` / `id` 游标推进），对每条 payload 里的 `steam_user_id` 跑归一化 + denylist 过滤（见附录），合法才 UPSERT：
 
 ```sql
--- 仅当归一化后非空且不在 denylist 才产边；空值不携带新关联信息，跳过
-INSERT INTO device_steam_edges (device_id, steam_user_id)
-VALUES (?, ?)
+-- 时间戳必须用事件观测时间 events.received_at（第 3/4 个参数），绝不用 job
+-- 的 wall-clock now —— 否则全量回填会把所有历史边盖上同一个回填运行时间，
+-- §4 按 canonical first_seen 算 cohort/留存会全部塌缩进回填窗口、彻底失真。
+-- 仅当归一化后非空且不在 denylist 才产边；空值不携带新关联信息，跳过。
+INSERT INTO device_steam_edges (device_id, steam_user_id, first_seen, last_seen, observe_count)
+VALUES (?, ?, ?, ?, 1)                              -- 第 3、4 参数 = 该事件 received_at
 ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
-    last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
-    observe_count = observe_count + 1;
+    first_seen    = MIN(device_steam_edges.first_seen, excluded.first_seen),
+    last_seen     = MAX(device_steam_edges.last_seen,  excluded.last_seen),
+    observe_count = device_steam_edges.observe_count + excluded.observe_count;
 ```
+
+> 表 DDL 里 `first_seen`/`last_seen` 的 `now` DEFAULT 只是兜底，边构建 job **总是显式传 `received_at`**，DEFAULT 不该被走到。
 
 - 观测事实表，不删（除 §7 GDPR 删号）
 - 首次跑 = 全量扫历史 `events`（即回填）；之后增量扫新 `events`。**回填和实时产边是同一份代码**，不存在两套规则漂移。
@@ -142,7 +148,7 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 3. **看板不进公开 repo**。公开 repo 只对用户透明"收什么数据、怎么收"；DAU/MAU/canonical/留存这些是内部分析工具，放内部，不暴露细节。内部看板里 device 口径（装机量）和 canonical 口径（真实用户）并列，呈现方式由运维定。
 
-4. **回填认栽，但当前可全量覆盖**。原则上 `events` 只留 180 天（`prune_old_events`），更早的边随事件清理丢失、不硬补。**但 telemetry 上线至今仅 90 天 < 180 天 retention，一条都没被 prune**，所以现在回填能覆盖全部历史，无缺口。"补不回"的限制是为将来超 180 天后准备的。
+4. **回填认栽，但当前可全量覆盖**。原则上 `events` 只留 180 天（`prune_old_events`），更早的边随事件清理丢失、不硬补。**但 telemetry 上线至今仅 90 天 < 180 天 retention，一条都没被 prune**，所以现在回填能覆盖全部历史、无缺口 ——"补不回"的限制是为将来超 180 天后准备的。
 
 5. **edge 不记 distribution-at-observation**。边只管"谁和谁关联过"。渠道历史已在 `events.payload`，要审计去那查，不在边表冗余。
 
