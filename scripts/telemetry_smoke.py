@@ -822,6 +822,49 @@ def main():
         assert nan_landed == 0, "NaN counter should have been skipped, not stored"
         print("  ✓ NaN counter skipped, valid counter in same batch survived")
 
+        # 形状不自洽的 histogram（count=100 但 sum(buckets)=2）必须被跳过，
+        # 否则 dashboard 的 avg(用 count) 与 p50/p95(用 buckets) 打架（CodeRabbit）。
+        shape_payload = {
+            "device_id": "n" * 64, "app_version": "2.0.0", "branch": "main",
+            "locale": "en-US", "timezone": "UTC", "distribution": "source",
+            "steam_user_id": "", "daily_stats": {}, "recent_records": [],
+            "instruments": {
+                "window_start": time.time() - 60, "window_end": time.time(),
+                "stat_date": time.strftime("%Y-%m-%d"),
+                "bounds": [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+                "counters": {},
+                "histograms": {
+                    "bad_shape_hist": {  # count=100 但 buckets 只加起来 =2
+                        "count": 100, "sum": 50.0,
+                        "buckets": [0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    },
+                    "good_shape_hist": {  # 自洽：sum(buckets)=3=count
+                        "count": 3, "sum": 18.0,
+                        "buckets": [0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    },
+                },
+            },
+        }
+        s_shape, _ = _sign_and_submit(shape_payload, gzip_it=False, batch_id="smoke-shape-1")
+        assert s_shape == 200, f"shape payload should be accepted, bad hist skipped (HTTP {s_shape})"
+        time.sleep(0.3)
+        conn_shape = sqlite3.connect(db_path)
+        bad_hist = conn_shape.execute(
+            "SELECT COUNT(*) FROM instrument_histograms WHERE metric_key='bad_shape_hist'"
+        ).fetchone()[0]
+        good_hist = conn_shape.execute(
+            "SELECT count FROM instrument_histograms WHERE metric_key='good_shape_hist'"
+        ).fetchone()
+        conn_shape.close()
+        assert bad_hist == 0, (
+            "CodeRabbit regression: inconsistent histogram (sum(buckets)!=count) "
+            "was stored — shape validation not working"
+        )
+        assert good_hist is not None and good_hist[0] == 3, (
+            "self-consistent histogram in same batch should still be stored"
+        )
+        print("  ✓ inconsistent histogram skipped, consistent one in same batch stored")
+
         # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
         # --------------------------------------------------------------

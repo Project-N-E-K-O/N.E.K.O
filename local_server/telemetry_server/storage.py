@@ -240,10 +240,17 @@ class TelemetryStorage:
         today = date.today().isoformat()
         with self._transaction() as conn:
             if batch_id:
-                conn.execute(
+                cur = conn.execute(
                     "INSERT OR IGNORE INTO seen_batches (batch_id) VALUES (?)",
                     (batch_id,),
                 )
+                # 真幂等闸：rowcount==0 = batch_id 已存在（server.py 预检与本次
+                # 写入之间的 TOCTOU / 并发重试）。配合 _transaction 的 BEGIN
+                # IMMEDIATE 写锁，此检查与下游写入原子——第二个并发请求在这里
+                # 短路，不再继续写 events / daily_aggregates / instrument_*，
+                # 避免双写双计（CodeRabbit）。
+                if cur.rowcount == 0:
+                    return
             conn.execute(
                 "INSERT INTO events (device_id, app_version, payload, event_date) VALUES (?, ?, ?, ?)",
                 (device_id, app_version, payload_json, today),
@@ -419,6 +426,16 @@ class TelemetryStorage:
             # bucket 元素也要全是 finite 数字——非有限值进 json.dumps 会产出
             # 非法 "NaN" token，下游解析/合并出问题。
             if not all(isinstance(b, (int, float)) and math.isfinite(b) for b in buckets):
+                continue
+            # 形状自洽校验（防伪造 / 损坏 payload 把 dashboard 静默带歪）：
+            # get_histogram_summary 的 avg 用 count、p50/p95 用 buckets，count 与
+            # buckets 不一致就会让两个数字打架。要求 count 非负、bucket 非负、
+            # bounds 长度匹配（len==buckets-1，溢出桶）、且 sum(buckets)==count。
+            if count < 0 or any(b < 0 for b in buckets):
+                continue
+            if bounds and len(bounds) != len(buckets) - 1:
+                continue
+            if sum(buckets) != count:
                 continue
 
             # SQL 不擅长 array element-wise 加；读出现有 buckets，
