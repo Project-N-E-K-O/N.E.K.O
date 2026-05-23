@@ -3528,6 +3528,14 @@ class LLMSessionManager:
         self.session_start_failure_count += 1
         self.session_start_last_failure_time = datetime.now()
         logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - diag_start:.2f}秒): {e}")
+        # Telemetry：语音会话启动失败 —— 语音优先桌宠，voice 在用户开口前就坏掉
+        # = 静默 D1 流失（现在完全看不到）。reason 用异常类名（低基数 enum），
+        # best-effort 不阻塞失败收口流程。
+        try:
+            from utils.instrument import counter as _instr_counter
+            _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
+        except Exception:
+            pass
         error_str = str(e)
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(
@@ -6897,7 +6905,14 @@ class LLMSessionManager:
                         # 首日听不到语音是核心体验断裂，D1 流失重要信号。
                         try:
                             from utils.instrument import counter as _instr_counter
-                            _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32])
+                            # before_first_loop：TTS 在用户体验到核心 loop 前就坏 =
+                            # 首次体验障碍（开了口但没听到回复）。低基数 true/false/unknown。
+                            try:
+                                from utils.token_tracker import TokenTracker as _TT
+                                _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
+                            except Exception:
+                                _bfl = "unknown"
+                            _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32], before_first_loop=_bfl)
                         except Exception:
                             # 埋点 best-effort，绝不影响 TTS 错误的重试/上报主流程。
                             pass

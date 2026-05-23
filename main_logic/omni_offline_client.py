@@ -2255,9 +2255,17 @@ class OmniOfflineClient:
                         # except 与本块互斥，不会双计（Codex）。
                         try:
                             from utils.instrument import counter as _ic
-                            _ic("llm_error", error_class=error_type[:48])
+                            # before_first_loop：错误发生在用户体验到核心 loop 之前 =
+                            # 首次体验障碍型流失（开了口但没收到回复）。true/false/unknown
+                            # 低基数；区分"卡在首次体验"vs"用过之后才报错"两类 D1 流失。
+                            try:
+                                from utils.token_tracker import TokenTracker as _TT
+                                _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
+                            except Exception:
+                                _bfl = "unknown"
+                            _ic("llm_error", error_class=error_type[:48], before_first_loop=_bfl)
                             if api_key_rejected:
-                                _ic("api_key_invalid")
+                                _ic("api_key_invalid", before_first_loop=_bfl)
                         except Exception:
                             # 埋点 best-effort，绝不影响错误上报 / 重试主流程。
                             pass

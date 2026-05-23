@@ -1352,6 +1352,15 @@ class TokenTracker:
             # 不影响幂等，也不该影响调用方（音频投递路径）。
             pass
 
+    def has_completed_core_loop(self) -> bool:
+        """本进程内用户是否已完成过一轮核心体验（发消息→收回复→听到语音）。
+
+        给各错误埋点站点判 ``before_first_loop`` 维度用：False = 错误发生在用户
+        还没体验到产品核心之前 = 首次体验障碍型流失（最该救）；True = 体验过
+        核心之后的错误，流失更可能是产品价值问题。两类运营动作不同。
+        """
+        return self._core_loop_recorded
+
     # ---- 持久化 ----
 
     def save(self):
