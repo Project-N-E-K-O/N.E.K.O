@@ -802,8 +802,8 @@ def main():
                 "histograms": {},
             },
         }
-        nan_body = json.dumps(nan_payload)  # 默认 allow_nan=True，产出 NaN token
-        # 复用 _sign_and_submit 需要 dict；直接走它，签名基于 canonical json
+        # _sign_and_submit 内部 json.dumps（默认 allow_nan=True）会把 NaN 序列化
+        # 成 'NaN' token，server json.loads 默认接受 → 进 storage 被 isfinite 拦下。
         s_nan, _ = _sign_and_submit(nan_payload, gzip_it=False, batch_id="smoke-nan-1")
         assert s_nan == 200, f"NaN payload should be accepted, bad sample skipped (HTTP {s_nan})"
         time.sleep(0.3)
