@@ -1456,9 +1456,14 @@ class StudyCompanionPlugin(NekoPluginBase):
                     topic_due_count = await asyncio.to_thread(
                         self._knowledge_tracker.count_due_reviews
                     )
+                    merged = {
+                        k: v
+                        for k, v in payload.items()
+                        if k != "due_reviews"
+                    } if isinstance(payload, dict) else {}
                     return Ok(
                         {
-                            **payload,
+                            **merged,
                             "card_count": len(cards),
                             "due_count": int(payload.get("due_count") or 0)
                             + int(topic_due_count or 0),

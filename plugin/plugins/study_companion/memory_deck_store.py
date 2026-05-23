@@ -576,7 +576,11 @@ class MemoryDeckStore:
                     str(item_id),
                     int(selected),
                     1
-                    if (correct if correct is not None else int(selected) >= 3)
+                    if (
+                        correct
+                        if correct is not None
+                        else int(selected) >= int(StudyFsrsRating.Hard)
+                    )
                     else 0,
                     int(elapsed_ms) if elapsed_ms is not None else None,
                     str(error_type or ""),
