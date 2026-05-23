@@ -520,90 +520,68 @@ def _is_release_build() -> bool:
     return False
 
 
-def _is_steam_sdk_engaged() -> bool:
-    """Steam SDK 是否拿到/缓存过 user id 或 工坊订阅。
+def _get_telemetry_metadata() -> tuple[str, str]:
+    """一次性返回 ``(distribution, steam_user_id)``，两个字段同源同观测点。
 
-    任一信号为真即认为是 Steam 版：
-    1. 当前进程 Steamworks SDK 实例的 ``Users.GetSteamID()`` 返回非零 —— 真
-       的从 Steam 客户端拿到了登录用户。
-    2. ``Workshop.GetNumSubscribedItems()`` 大于 0 —— 用户订阅过工坊内容。
-    3. ``config_dir/workshop_config.json`` 存在 —— 之前任何一次会话写过工坊
-       配置，足以证明这台机器跑过 Steam 版（cloudsave 会把它打包带走，所以
-       即使本次会话 Steam 客户端没开，文件仍在就算）。
+    合并自原 ``_get_telemetry_distribution()`` 与 ``_get_telemetry_steam_user_id()``：
+    Steamworks ``Users.GetSteamID()`` **只调一次**，distribution 与
+    steam_user_id 从同一次观测派生。原本两个函数各调一次 ``GetSteamID()``，
+    Steamworks SDK 异步 init 时两次调用可能跨越 ready 边界——第一次返 0
+    （distribution 走 ``release``）、第二次返 Steam64（steam_user_id 拿到），
+    产出 ``release + 非空 Steam64`` 的矛盾态。合并后该矛盾态在源头消除。
 
-    1/2 是实时探测，覆盖正常 Steam session；3 是磁盘兜底，覆盖"上次跑过 Steam
-    本次断网/客户端没开"的场景。
+    **不变量**：返回的 steam_user_id 非空 ⟹ distribution == ``steam``。
+    （反之不成立：steam + 空 ID 是合法尾部，见判定 3。）
+
+    判定顺序（沿用原逻辑）：
+    1. 非 release build → ``("source", "")``。源码运行哪怕开着 Steam 客户端
+       也算 source —— 只有 release 才可能是 Steam 版。
+    2. release + ``GetSteamID()`` 拿到非零 Steam64 → ``("steam", str(sid))``。
+       锚定首个信号，distribution 与 ID 同次观测。
+    3. release + 工坊订阅 > 0 或 ``workshop_config.json`` 存在 → ``("steam", "")``。
+       证明这台机器跑过 Steam 版（cloudsave 会把 workshop_config.json 打包
+       带走），但本次没从 Steam 客户端拿到登录用户（没开 / 断网）。
+    4. release 但无任何 Steam 信号 → ``("release", "")``。
+
+    Steam64 用 string 而非 int 上报，避免 u64（常超 2^53）在 JS / 部分 JSON
+    消费方精度丢失。所有异常 swallow —— 埋点不能抛。
     """
+    if not _is_release_build():
+        return "source", ""
+
+    # 实时探测：GetSteamID() 只调一次，结果同时决定 distribution 和
+    # steam_user_id —— 这是修复 race 的核心，不再分两次调用跨越 ready 边界。
     try:
         from utils.steam_state import get_steamworks
         sw = get_steamworks()
         if sw is not None:
+            sid = 0
             try:
-                if int(sw.Users.GetSteamID() or 0) > 0:
-                    return True
+                sid = int(sw.Users.GetSteamID() or 0)
             except Exception:
-                pass
+                sid = 0
+            if sid > 0:
+                return "steam", str(sid)
+            # 没拿到登录用户，但订阅过工坊也算 Steam 版（steam + 空 ID）。
             try:
                 if int(sw.Workshop.GetNumSubscribedItems() or 0) > 0:
-                    return True
+                    return "steam", ""
             except Exception:
                 pass
     except Exception:
         pass
 
+    # 磁盘兜底：之前任何一次会话写过 workshop_config.json 即证明跑过 Steam
+    # 版，即使本次 Steam 客户端没开（cloudsave 会把它带走）。
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
         if (cm.config_dir / "workshop_config.json").exists():
-            return True
+            return "steam", ""
     except Exception:
         pass
 
-    return False
-
-
-def _get_telemetry_steam_user_id() -> str:
-    """读取当前会话的 Steam64 user id，作为字符串返回。
-
-    返回非空 string 表示 Steamworks SDK 真的从 Steam 客户端拿到了登录用户；
-    返回空 string 表示 SDK 没起来 / Steam 客户端没开 / 源码模式没初始化
-    SDK 等情形。
-
-    用 string 而非 int 上报，避免 Steam64（u64，常超过 2^53）在某些 JSON
-    消费方（JS / 部分 SDK）里精度丢失。
-    """
-    try:
-        from utils.steam_state import get_steamworks
-        sw = get_steamworks()
-        if sw is None:
-            return ""
-        try:
-            sid = int(sw.Users.GetSteamID() or 0)
-        except Exception:
-            return ""
-        if sid > 0:
-            return str(sid)
-    except Exception:
-        pass
-    return ""
-
-
-def _get_telemetry_distribution() -> str:
-    """识别发行渠道：steam / release / source。
-
-    判定顺序：
-    1. 先看是否 release build（PyInstaller ``sys.frozen`` 或 Nuitka
-       ``__compiled__`` / ``__nuitka_binary_dir``）。**只有 release 才可能是
-       Steam 版** —— 源码运行哪怕开着 Steam 客户端也算 source。
-    2. release + Steam SDK 拿到/缓存过 user id 或工坊订阅 → ``steam``。
-    3. release 但 SDK 没动 → ``release``（独立发行版）。
-    4. 非 release → ``source``（开源/开发模式）。
-    """
-    if not _is_release_build():
-        return "source"
-    if _is_steam_sdk_engaged():
-        return "steam"
-    return "release"
+    return "release", ""
 
 
 def _get_telemetry_timezone() -> str:
@@ -1139,8 +1117,10 @@ class TokenTracker:
             app_version = _get_app_version_from_changelog()
             telemetry_locale = _get_telemetry_locale()
             telemetry_timezone = _get_telemetry_timezone()
-            telemetry_distribution = _get_telemetry_distribution()
-            telemetry_steam_user_id = _get_telemetry_steam_user_id()
+            # 一次调用同时拿 distribution + steam_user_id，两个字段同源 ——
+            # 杜绝原本两次独立 GetSteamID() 跨 SDK ready 边界产生的
+            # release + 非空 Steam64 矛盾态。
+            telemetry_distribution, telemetry_steam_user_id = _get_telemetry_metadata()
 
             payload = {
                 "device_id": self._device_id,
