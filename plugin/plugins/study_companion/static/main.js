@@ -133,9 +133,13 @@ function setStudyState(data = {}) {
 function setMemoryDeckState(deck = {}) {
   const dueCards = Array.isArray(deck.due_cards)
     ? deck.due_cards
-    : (Array.isArray(deck.cards) ? deck.cards.filter((item) => item && item.is_due) : []);
+    : (Array.isArray(deck.due_reviews)
+      ? deck.due_reviews
+      : (Array.isArray(deck.cards) ? deck.cards.filter((item) => item && item.is_due) : []));
   const cards = Array.isArray(deck.cards) ? deck.cards : [];
-  const cardCount = Number.isFinite(Number(deck.card_count)) ? Number(deck.card_count) : cards.length;
+  const cardCount = Number.isFinite(Number(deck.card_count))
+    ? Number(deck.card_count)
+    : (Number.isFinite(Number(deck.item_count)) ? Number(deck.item_count) : cards.length);
   const dueCount = Number.isFinite(Number(deck.due_count)) ? Number(deck.due_count) : dueCards.length;
   currentMemoryCard = dueCards[0] || null;
   if (memoryDeckStatus) {
@@ -146,8 +150,11 @@ function setMemoryDeckState(deck = {}) {
   }
   if (memoryDueCard) {
     if (currentMemoryCard) {
-      const front = compactText(currentMemoryCard.front, currentMemoryCard.topic_id || '-');
-      const back = compactText(currentMemoryCard.back, '-');
+      const front = compactText(
+        currentMemoryCard.front || currentMemoryCard.item?.prompt,
+        currentMemoryCard.topic_id || currentMemoryCard.item_id || '-',
+      );
+      const back = compactText(currentMemoryCard.back || currentMemoryCard.item?.answer, '-');
       const retention = Number.isFinite(Number(currentMemoryCard.retrievability))
         ? `R ${(Number(currentMemoryCard.retrievability) * 100).toFixed(0)}%`
         : '';
@@ -397,12 +404,13 @@ async function saveMemoryCard() {
 }
 
 async function reviewMemoryCard(rating) {
-  if (!currentMemoryCard || !currentMemoryCard.topic_id) {
+  const topicId = currentMemoryCard?.topic_id || currentMemoryCard?.item_id || '';
+  if (!topicId) {
     return;
   }
   setStatus(t('ui.memory.reviewing', 'Reviewing memory card...'));
   const data = await callPlugin('study_memory_card_review', {
-    topic_id: currentMemoryCard.topic_id,
+    topic_id: topicId,
     rating,
   });
   const scheduledDays = data.schedule && Number.isFinite(Number(data.schedule.scheduled_days))

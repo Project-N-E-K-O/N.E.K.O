@@ -741,6 +741,7 @@ class KnowledgeTracker:
 
     def get_status_summary(self, *, limit: int = 8) -> dict[str, Any]:
         overview = self.store.list_mastery_overview(limit=limit)
+        memory_deck = self.get_memory_deck_status(limit=limit)
         return {
             "topic_count": self.store.count_topics(),
             "tracked_topic_count": self.store.count_tracked_mastery_topics(),
@@ -748,7 +749,7 @@ class KnowledgeTracker:
             "weak_topic_count": self.count_weak_topics(),
             "due_review_count": self.count_due_reviews(),
             "memory_card_count": int(
-                self.get_memory_deck_status(limit=limit).get("card_count") or 0
+                memory_deck.get("card_count") or memory_deck.get("item_count") or 0
             ),
             "last_updated_at": overview[0].get("updated_at") if overview else "",
             "candidate_quality": self.quality.status_summary(limit=limit),

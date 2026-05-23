@@ -5,21 +5,12 @@ import json
 import uuid
 from typing import Any
 
-from .fsrs_bridge import (
-    FSRSBridge,
-    StudyFsrsRating,
-    create_card,
-    rate_answer,
-    retrievability,
-)
+from .fsrs_bridge import FSRSBridge, StudyFsrsRating, create_card, rate_answer
 from .memory_candidates import upsert_memory_candidate
+from .memory_compat import compat_card_payload as build_compat_card_payload
 from .memory_imports import import_word_rows, normalize_csv_fieldnames
-from .memory_queries import active_item_card_rows
-from .memory_ratings import (
-    normalize_rating,
-    rating_from_recitation_score,
-    rating_from_word_result,
-)
+from .memory_queries import active_item_card_rows, item_row_by_metadata_value
+from .memory_ratings import normalize_rating, rating_from_recitation_score, rating_from_word_result
 from .memory_rows import (
     card_from_joined_row,
     card_from_row,
@@ -32,12 +23,7 @@ from .memory_rows import (
     safe_int,
 )
 from .memory_schema import ensure_memory_schema, normalize_deck_type, normalize_item_type
-from .memory_text import (
-    build_cloze_prompt,
-    diff_recitation,
-    normalize_tags,
-    split_passage_text,
-)
+from .memory_text import build_cloze_prompt, diff_recitation, normalize_tags, split_passage_text
 from .models import json_copy
 
 class MemoryDeckStore:
@@ -256,6 +242,15 @@ class MemoryDeckStore:
                     """,
                     (str(deck_id or ""), prompt_text),
                 ).fetchone()
+            else:
+                existing = item_row_by_metadata_value(
+                    conn,
+                    deck_id=str(deck_id or ""),
+                    item_type=item_kind,
+                    key="legacy_topic_id",
+                    value=str(metadata_payload.get("legacy_topic_id") or ""),
+                    json_loads=self.store._json_loads,
+                )
             if existing is None:
                 item_id = str(uuid.uuid4())
                 conn.execute(
@@ -280,10 +275,15 @@ class MemoryDeckStore:
                 conn.execute(
                     """
                     UPDATE memory_items
-                    SET answer = ?, metadata_json = ?, status = 'active', updated_at = datetime('now')
+                    SET prompt = ?, answer = ?, metadata_json = ?, status = 'active', updated_at = datetime('now')
                     WHERE id = ?
                     """,
-                    (answer_text, self.store._json_dumps(metadata_payload), item_id),
+                    (
+                        prompt_text,
+                        answer_text,
+                        self.store._json_dumps(metadata_payload),
+                        item_id,
+                    ),
                 )
                 created = False
             card = self._ensure_fsrs_card_locked(conn, item_id)
@@ -757,45 +757,9 @@ class MemoryDeckStore:
         }
 
     def compat_card_payload(self, item: dict[str, Any]) -> dict[str, Any]:
-        card = (
-            item.get("fsrs_card") or self.get_fsrs_card(str(item.get("id") or "")) or {}
+        return build_compat_card_payload(
+            item, get_fsrs_card=self.get_fsrs_card, fsrs=self.fsrs
         )
-        raw_card = card.get("card") if isinstance(card, dict) else {}
-        due_reviews = self.fsrs.get_due_reviews([raw_card]) if raw_card else []
-        due_item = due_reviews[0] if due_reviews else None
-        return {
-            "id": str(item.get("id") or ""),
-            "topic_id": str(item.get("id") or ""),
-            "item_id": str(item.get("id") or ""),
-            "deck_id": str(item.get("deck_id") or ""),
-            "front": str(item.get("prompt") or ""),
-            "back": str(item.get("answer") or ""),
-            "tags": list((item.get("metadata") or {}).get("tags") or []),
-            "source": str((item.get("metadata") or {}).get("source") or ""),
-            "card_type": "memory",
-            "due": str(raw_card.get("due") or ""),
-            "is_due": due_item is not None,
-            "retrievability": round(
-                float(due_item.get("retrievability"))
-                if due_item
-                else retrievability(raw_card),
-                4,
-            )
-            if raw_card
-            else 0.0,
-            "state": str(raw_card.get("state") or ""),
-            "scheduled_days": float(raw_card.get("scheduled_days") or 0.0),
-            "reps": int(raw_card.get("reps") or 0),
-            "lapses": int(raw_card.get("lapses") or 0),
-            "last_review": str(raw_card.get("last_review") or ""),
-            "created_at": str(item.get("created_at") or ""),
-            "updated_at": str(item.get("updated_at") or ""),
-            "last_rating": int(card.get("last_rating") or 0)
-            if isinstance(card, dict)
-            else 0,
-            "item": item,
-            "fsrs_card": card,
-        }
 
     def _ensure_fsrs_card_locked(self, conn: Any, item_id: str) -> dict[str, Any]:
         existing = conn.execute(

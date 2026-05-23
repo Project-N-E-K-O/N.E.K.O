@@ -27,6 +27,7 @@ export default function WordReview(props: PluginSurfaceProps) {
     const due = Array.isArray(payload.due_reviews) ? payload.due_reviews : [];
     setReviews(due.filter((item: DueReview) => item.item?.item_type === 'word'));
     setShowAnswer(false);
+    setStatus('');
   }
 
   async function rate(rating: string) {

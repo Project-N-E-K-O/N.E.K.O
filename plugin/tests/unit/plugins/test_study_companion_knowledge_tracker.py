@@ -261,7 +261,7 @@ def test_memory_deck_summary_provider_overrides_legacy_memory_cards(
         tracker = KnowledgeTracker(store)
         tracker.set_memory_deck_summary_provider(
             lambda *, limit=8: {
-                "card_count": 7,
+                "item_count": 7,
                 "due_count": 3,
                 "decks": [{"name": "Real Deck"}],
                 "due_reviews": [{"item_id": "real-item"}],
@@ -272,7 +272,7 @@ def test_memory_deck_summary_provider_overrides_legacy_memory_cards(
         session = tracker.get_session_summary()
         status = tracker.get_status_summary(limit=4)
 
-        assert session["memory_deck"]["card_count"] == 7
+        assert session["memory_deck"]["item_count"] == 7
         assert session["memory_deck"]["decks"][0]["name"] == "Real Deck"
         assert status["memory_card_count"] == 7
     finally:

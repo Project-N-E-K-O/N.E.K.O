@@ -1072,6 +1072,9 @@ def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     assert "throw new Error(tf('ui.error.run_export_failed'" in static_source
     assert "if (!response.ok) {\n    return {};" not in static_source
     assert "callPlugin('study_set_mode'" in static_source
+    assert "Array.isArray(deck.due_reviews)" in static_source
+    assert "Number(deck.item_count)" in static_source
+    assert "currentMemoryCard.front || currentMemoryCard.item?.prompt" in static_source
 
 
 def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
@@ -2494,6 +2497,7 @@ async def test_study_plugin_starts_and_collects_entries(
     assert "study_memory_import_words" in entries
     assert "study_memory_import_passage" in entries
     assert "study_memory_due_reviews" in entries
+    assert "study_memory_review_item" in entries
     assert "study_memory_recitation_attempt" in entries
     assert "study_set_knowledge_contribution_opt_in" in entries
     disabled_export = await plugin._study_export_notes_entry(
@@ -2508,9 +2512,28 @@ async def test_study_plugin_starts_and_collects_entries(
     )
     assert isinstance(memory_card, Ok)
     card_item_id = memory_card.value["card"]["item_id"]
+    updated_memory_card = await plugin.study_memory_card_upsert(
+        topic_id="phase7_plugin_memory",
+        front="Updated study memory prompt",
+        back="Updated reviewable recall card.",
+        difficulty=0.0,
+        tags=["phase7", "updated"],
+    )
+    assert isinstance(updated_memory_card, Ok)
+    assert updated_memory_card.value["created"] is False
+    assert updated_memory_card.value["card"]["item_id"] == card_item_id
+    assert updated_memory_card.value["card"]["front"] == "Updated study memory prompt"
+    assert (
+        updated_memory_card.value["card"]["item"]["metadata"]["difficulty"] == 0.0
+    )
     due_deck = await plugin.study_memory_deck(limit=5, due_only=True)
     assert isinstance(due_deck, Ok)
     assert any(item["item_id"] == card_item_id for item in due_deck.value["cards"])
+    reviewed_again = await plugin.study_memory_review_item(
+        item_id=card_item_id, rating="again"
+    )
+    assert isinstance(reviewed_again, Ok)
+    assert reviewed_again.value["review_record"]["correct"] == 0
     reviewed = await plugin.study_memory_card_review(
         topic_id=card_item_id, rating="good"
     )

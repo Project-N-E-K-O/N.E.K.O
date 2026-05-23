@@ -247,27 +247,26 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._state.active_mode = str(
                 result.get("new_mode") or self._state.active_mode
             )
-            self._state.mode_started_at = float(
-                checkpoint.get("mode_started_at") or self._state.mode_started_at or 0.0
-            )
-            self._state.recent_mode_switches = (
-                checkpoint.get("recent_mode_switches")
-                if isinstance(checkpoint.get("recent_mode_switches"), list)
-                else self._state.recent_mode_switches
-            )
-            self._state.suggestion_cooldowns = (
-                checkpoint.get("suggestion_cooldowns")
-                if isinstance(checkpoint.get("suggestion_cooldowns"), dict)
-                else self._state.suggestion_cooldowns
-            )
-            self._state.session_suggestions = (
-                checkpoint.get("session_suggestions")
-                if isinstance(checkpoint.get("session_suggestions"), list)
-                else self._state.session_suggestions
-            )
-            self._state.mode_lock_until = float(
-                checkpoint.get("mode_lock_until") or self._state.mode_lock_until or 0.0
-            )
+            if "mode_started_at" in checkpoint:
+                self._state.mode_started_at = float(
+                    checkpoint.get("mode_started_at") or 0.0
+                )
+            if isinstance(checkpoint.get("recent_mode_switches"), list):
+                self._state.recent_mode_switches = checkpoint.get(
+                    "recent_mode_switches"
+                )
+            if isinstance(checkpoint.get("suggestion_cooldowns"), dict):
+                self._state.suggestion_cooldowns = checkpoint.get(
+                    "suggestion_cooldowns"
+                )
+            if isinstance(checkpoint.get("session_suggestions"), list):
+                self._state.session_suggestions = checkpoint.get(
+                    "session_suggestions"
+                )
+            if "mode_lock_until" in checkpoint:
+                self._state.mode_lock_until = float(
+                    checkpoint.get("mode_lock_until") or 0.0
+                )
             self._state.checkpoint = {
                 **checkpoint,
                 "changed": bool(result.get("changed")),
@@ -943,7 +942,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "legacy_topic_id": str(topic_id or ""),
                     "subject": str(subject or "memory"),
                     "chapter": str(chapter or "memory_deck"),
-                    "difficulty": float(difficulty or 0.5),
+                    "difficulty": 0.5 if difficulty is None else float(difficulty),
                     "tags": tags if isinstance(tags, list) else [],
                     "source": str(source or "manual"),
                 },
@@ -1286,7 +1285,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "enum": ["again", "hard", "good", "easy"],
                     "default": "good",
                 },
-                "correct": {"type": "boolean", "default": True},
+                "correct": {"type": "boolean"},
                 "error_type": {"type": "string", "default": ""},
                 "elapsed_ms": {"type": "integer", "default": 0},
                 "session_id": {"type": "string", "default": ""},
@@ -1299,7 +1298,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         self,
         item_id: str = "",
         rating: str = "good",
-        correct: bool = True,
+        correct: bool | None = None,
         error_type: str = "",
         elapsed_ms: int = 0,
         session_id: str = "",
@@ -1310,7 +1309,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._memory_deck_store.review_item,
                 item_id=item_id,
                 rating=rating,
-                correct=bool(correct),
+                correct=correct if isinstance(correct, bool) else None,
                 error_type=error_type,
                 elapsed_ms=int(elapsed_ms or 0) or None,
                 session_id=session_id,

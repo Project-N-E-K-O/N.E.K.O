@@ -42,4 +42,31 @@ def active_item_card_rows(conn: Any, *, deck_id: str = "") -> list[Any]:
     )
 
 
-__all__ = ["active_item_card_rows"]
+def item_row_by_metadata_value(
+    conn: Any,
+    *,
+    deck_id: str,
+    item_type: str,
+    key: str,
+    value: str,
+    json_loads: Any,
+) -> Any | None:
+    target = str(value or "").strip()
+    if not target:
+        return None
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM memory_items
+        WHERE deck_id = ? AND item_type = ?
+        """,
+        (str(deck_id or ""), str(item_type or "")),
+    ).fetchall()
+    for row in rows:
+        metadata = json_loads(row["metadata_json"], {}) or {}
+        if str(metadata.get(key) or "").strip() == target:
+            return row
+    return None
+
+
+__all__ = ["active_item_card_rows", "item_row_by_metadata_value"]
