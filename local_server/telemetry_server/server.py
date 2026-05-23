@@ -221,18 +221,19 @@ async def admin_canonical_metrics(days: int = 30):
 @app.post("/api/v1/admin/canonical/rebuild", dependencies=[Depends(require_admin)])
 async def admin_canonical_rebuild():
     """手动触发：扫 events 产边（drain 到追平）+ 重算 canonical 连通分量。"""
-    processed = storage.build_all_pending_edges()
-    canonicals = storage.recompute_canonical()
+    # 同步 SQLite/union-find 丢线程池，别卡住事件循环（拖慢公开上报接口）。
+    processed = await asyncio.to_thread(storage.build_all_pending_edges)
+    canonicals = await asyncio.to_thread(storage.recompute_canonical)
     return {"events_processed": processed, "canonical_count": canonicals}
 
 
 @app.post("/api/v1/admin/canonical/denylist", dependencies=[Depends(require_admin)])
 async def admin_canonical_denylist(steam_user_id: str):
     """删号：Steam64 入 denylist（防复活）+ 脱敏源数据 + 删边 + 重算。"""
-    sid = storage.add_steam_id_to_denylist(steam_user_id)
+    sid = await asyncio.to_thread(storage.add_steam_id_to_denylist, steam_user_id)
     if not sid:
         raise HTTPException(400, "invalid steam_user_id")
-    storage.recompute_canonical()
+    await asyncio.to_thread(storage.recompute_canonical)
     return {"denylisted": sid}
 
 

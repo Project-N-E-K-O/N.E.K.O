@@ -42,8 +42,14 @@ def normalize_steam_id(raw) -> str:
     """
     if not isinstance(raw, str):
         return ""
-    if raw.isdigit() and len(raw) <= 20 and 0 < int(raw) < (1 << 64):
-        return str(int(raw))
+    # 必须 isascii：str.isdigit() 对 Unicode 数字（如上标 '²'、阿拉伯-印度数字）
+    # 返回 True，但 int('²') 抛 ValueError。不挡的话 ingest 会 500、且 build_edges
+    # 在事务里抛异常回滚、游标不前进 —— 一条伪造事件就能永久卡死 canonical 重建。
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 20:
+        return ""
+    value = int(raw)
+    if 0 < value < (1 << 64):
+        return str(value)
     return ""
 
 
@@ -239,6 +245,12 @@ class TelemetryStorage:
                     steam_user_id: str = ""):
         today = date.today().isoformat()
         with self._transaction() as conn:
+            # denylist 收口：删号后该 Steam64 不得经任何上报写回 devices 列。
+            # 在事务内判定（写串行，看得到已提交的 denylist），把它折叠成空串。
+            if steam_user_id and conn.execute(
+                "SELECT 1 FROM steam_id_denylist WHERE steam_user_id = ?", (steam_user_id,)
+            ).fetchone():
+                steam_user_id = ""
             if batch_id:
                 conn.execute(
                     "INSERT OR IGNORE INTO seen_batches (batch_id) VALUES (?)",
@@ -822,7 +834,9 @@ class TelemetryStorage:
             "canonical_dau_trend": dau_trend,
             "canonical_new_trend": {r["join_date"]: r["cnt"] for r in new_rows},
             "total_canonical": conn.execute(
-                "SELECT COUNT(DISTINCT canonical_id) AS cnt FROM canonical_map"
+                "SELECT COUNT(DISTINCT COALESCE(cm.canonical_id, 'd:'||d.device_id)) AS cnt "
+                "FROM devices d "
+                "LEFT JOIN canonical_map cm ON cm.entity_type='device' AND cm.entity_id=d.device_id"
             ).fetchone()["cnt"],
         }
 

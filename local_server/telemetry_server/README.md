@@ -88,7 +88,8 @@ curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/canoni
 curl -X POST -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/canonical/rebuild
 
 # 删号：Steam64 入 denylist（防复活）+ 脱敏 + 删边 + 重算
-curl -X POST -H "Authorization: Bearer $TOKEN" "http://服务器:8099/api/v1/admin/canonical/denylist?steam_user_id=765..."
+# steam_user_id 走查询参数，传完整 17 位 Steam64（下例为占位，请替换为实际 ID）
+curl -X POST -H "Authorization: Bearer $TOKEN" "http://服务器:8099/api/v1/admin/canonical/denylist?steam_user_id=76561198000000001"
 
 # 导出 CSV（按日汇总）
 curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/export/daily.csv?days=90 -o daily.csv

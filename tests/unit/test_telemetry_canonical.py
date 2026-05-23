@@ -66,8 +66,12 @@ def _canon_of(store, device_id):
     (123, ""),            # 非字符串：number
     (None, ""),           # 非字符串：null
     (["x"], ""),          # 非字符串：list
+    ("²", ""),       # Unicode 上标 '²'：isdigit()=True 但 int() 抛 ValueError
+    ("１２３", ""),   # 全角数字
+    ("١٢٣", ""),   # 阿拉伯-印度数字
 ])
 def test_normalize(raw, expected):
+    # 关键：非法输入只能返回 ''，绝不抛异常（否则 ingest 500 / build_edges 卡死）
     assert normalize_steam_id(raw) == expected
 
 
@@ -213,6 +217,36 @@ def test_drain_loop_catches_up(store):
     assert cursor == max_event
     edges = store._get_conn().execute("SELECT COUNT(*) c FROM device_steam_edges").fetchone()["c"]
     assert edges == 12
+
+
+def test_build_edges_normalizes_payload(store):
+    """events.payload 里的原始未归一化 steam_user_id 必须归一化后再建边。
+
+    '0076561198000000001' 与 '76561198000000001' 应归并到同一 canonical；
+    哨兵 '0' 不产边。这是身份拆分/污染的回归点。
+    """
+    _report(store, "deviceLEADINGZERO0", steam="0076561198000000001")  # 前导零
+    _report(store, "deviceNORMALXXXXXX", steam="76561198000000001")     # 规范形
+    _report(store, "deviceSENTINELXXXX", steam="0")                     # 哨兵
+    store.build_edges_from_events()
+    store.recompute_canonical()
+    assert _canon_of(store, "deviceLEADINGZERO0") == _canon_of(store, "deviceNORMALXXXXXX")
+    # 哨兵不产边 → 自成 canonical
+    assert _canon_of(store, "deviceSENTINELXXXX") == "d:deviceSENTINELXXXX"
+    edges = store._get_conn().execute(
+        "SELECT DISTINCT steam_user_id FROM device_steam_edges"
+    ).fetchall()
+    assert [r["steam_user_id"] for r in edges] == ["76561198000000001"]
+
+
+def test_denylist_collapses_in_store_event(store):
+    """删号后该 Steam64 不得经后续上报写回 devices 列（脱敏不被覆盖）。"""
+    store.add_steam_id_to_denylist("76561198000000001")
+    _report(store, "deviceXXXXXXXXXXXX", steam="76561198000000001")
+    val = store._get_conn().execute(
+        "SELECT steam_user_id FROM devices WHERE device_id='deviceXXXXXXXXXXXX'"
+    ).fetchone()["steam_user_id"]
+    assert val == "", "denylisted ID 被上报写回 devices 列"
 
 
 def test_denylist_atomic_guard_on_insert(store):
