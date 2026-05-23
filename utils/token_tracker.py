@@ -834,6 +834,9 @@ class TokenTracker:
         session_start 看得见、session_end 永远缺失，dashboard 上"异常退出
         率"会被误算成 100%。event 单独通过 event_logger.flush 走本地 jsonl。
         """
+        # global 声明提到函数开头：下面 3b 步骤会读 _TELEMETRY_SERVER_URL，
+        # Python 要求 global 声明先于任何使用（否则 SyntaxError）。
+        global _TELEMETRY_SERVER_URL
         # ── 1) session_end 先落 instrument buffer，让随后的 save() 带上 ──
         try:
             from utils.instrument import (
@@ -877,6 +880,23 @@ class TokenTracker:
             # 下次进程启动会重传。
             pass
 
+        # ── 3b) 若第一次 save 是「重传」（进程带着早先失败遗留的 _pending_batch_seq），
+        # _report_to_server 会按 is_retry 跳过 instrument snapshot，刚 emit 的
+        # session_end / session_duration_sec 仍留在 buffer。常见"网络早先挂、
+        # 退出前恢复"场景下重传会成功并清掉 batch_seq，但没有第二次发送，
+        # session 指标就在关 URL 前静默丢了（Codex）。所以这里检查：instrument
+        # 还有数据 + batch_seq 已清（说明重传成功、下次是 fresh 窗口会 snapshot）
+        # → 再 bypass throttle 发一次。
+        try:
+            from utils.instrument import has_data as _instrument_has_data
+            if (_instrument_has_data() and self._pending_batch_seq is None
+                    and _TELEMETRY_SERVER_URL and not _DO_NOT_TRACK):
+                with self._lock:
+                    self._last_report_time = 0.0
+                self.save()
+        except Exception:
+            pass
+
         # ── 4) flush event_logger —— event 不走远程 instrument 通道，本地 jsonl 兜底 ──
         try:
             from utils.event_logger import EventLogger
@@ -887,7 +907,6 @@ class TokenTracker:
             # 发出去了，这里失败影响的只是诊断细节，不阻塞 atexit。
             pass
         finally:
-            global _TELEMETRY_SERVER_URL
             _TELEMETRY_SERVER_URL = ""
 
     def _load_unsent_queue(self):

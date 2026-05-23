@@ -2794,13 +2794,17 @@ async def set_persona_onboarding_state(request: Request):
         status_in,
         config_manager=config_manager,
     )
-    # Telemetry：onboarding 漏斗的关键节点。status 是低基数 enum
-    # （pending / persona_chosen / completed 等），event 记录每步完成 +
-    # counter 用于跨用户的步骤完成率比较。诊断 D1 流失的核心数据。
+    # Telemetry：onboarding 漏斗的关键节点。**用归一化后的 state["status"]**
+    # 而非请求体原值 status_in：mark_initial_personality_state 会把状态收敛成
+    # 小枚举（pending / completed / skipped 等），客户端可以传任意 status 字符串
+    # 但存储 fallback 成 pending。直接用 raw 会让任意输入变成不同的
+    # onboarding_step dim，污染 funnel 切片 + 吃 instrument key 预算（同
+    # lanlan_name 教训：raw 客户端输入不进 dim）（Codex）。
+    _norm_status = (state.get("status") if isinstance(state, dict) else None) or "unknown"
     try:
         from utils.instrument import event as _instr_event, counter as _instr_counter
-        _instr_event("onboarding_step", status=status_in[:32])
-        _instr_counter("onboarding_step", status=status_in[:32])
+        _instr_event("onboarding_step", status=str(_norm_status)[:32])
+        _instr_counter("onboarding_step", status=str(_norm_status)[:32])
     except Exception:
         # 埋点失败绝不影响 onboarding endpoint —— 一条 telemetry 走丢比让
         # 用户卡在角色选择失败重要多了。日志也省，防 import 故障刷屏。
