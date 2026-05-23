@@ -249,6 +249,11 @@ jobs:
       - name: Build all frontend projects
         shell: bash
         run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            ./build_frontend.sh
+            bash scripts/verify_frontend_build.sh
+            exit 0
+          fi
           cd frontend/plugin-manager
           npm ci
           npm run build-only

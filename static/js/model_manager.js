@@ -9490,6 +9490,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const currentModelData = await RequestHelper.fetchJson(apiUrl);
 
                 if (!currentModelData.success) {
+                    showStatus(currentModelData.error || t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));
                     return;
                 }
 

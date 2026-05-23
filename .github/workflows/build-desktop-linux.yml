@@ -210,12 +210,8 @@ jobs:
       - name: Build all frontend projects
         shell: bash
         run: |
-          cd frontend/plugin-manager
-          npm ci
-          npm run build-only
-          cd ../react-neko-chat
-          npm ci
-          npm run build
+          ./build_frontend.sh
+          bash scripts/verify_frontend_build.sh
 
       # --- Build with Nuitka ---
       - name: Build with Nuitka
