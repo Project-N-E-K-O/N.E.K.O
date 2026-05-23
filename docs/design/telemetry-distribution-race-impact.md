@@ -1,6 +1,6 @@
 # Telemetry `distribution` × `steam_user_id` race — impact assessment
 
-**Draft / 仅评估阶段 — 此 PR 暂未含代码改动。修复 commit 待运维确认评估后再推。**
+**状态：评估 + 客户端修复。** 影响面评估（下文）经运维生产诊断确认（Q1 矛盾态当前为 0，详见评论区）；客户端 race 防御修复已随本 PR 推入（commit `b311ff02`，见 §5）。下文 §1 Root cause 描述的是修复前代码状态，函数已被合并，引用的行号为历史定位。Server 端多对多 / canonical 聚合另开 design doc + server PR，不在本 PR scope。
 
 ## TL;DR
 
@@ -270,7 +270,7 @@ WHERE distribution = 'steam' AND steam_user_id = '';
 
 ## 5. 修复后会发生什么
 
-**客户端修复（任务二，待批准后开工）**：合并两个函数为单一调用，确保 `distribution` 和 `steam_user_id` 同源同观测点。修复后：
+**客户端修复（已随本 PR 推入，commit `b311ff02`）**：`_get_telemetry_distribution()` + `_get_telemetry_steam_user_id()` 合并为 `_get_telemetry_metadata() -> (distribution, steam_user_id)`，内部 `Users.GetSteamID()` 只调一次，两字段同源同观测点。`tests/unit/test_telemetry_metadata_consistency.py` 覆盖 8 种信号组合 + 单次调用断言 + 异常降级，守门不变量"非空 steam_user_id ⟹ distribution=steam"。修复后：
 
 - **race 消除**：`release + 非空 ID` 永不再出现（这是修复的核心保证）。`steam` 在 SDK 起来拿到 Steam64 时带 ID；下面 Cohort C 描述的 `steam + ''` 是 by-design 合法尾部，仍可能出现。
 - **Cohort B**：他们本来就在覆写自愈，修复后不会再被错标，下次上报继续覆写到 `steam`。
