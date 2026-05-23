@@ -90,6 +90,16 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 规模：当前约 16k device、1.5k steam、边数千。并查集（union-find）在这个量级是毫秒级，全量重算完全可接受。
 
+#### 代表元选择必须确定性（否则重算后 canonical_id 抖动）
+
+光说"代表元"不够——若 union-find 合并顺序不同导致同一张图算出不同 `canonical_id`，看板/缓存/外部引用会无意义 churn。固化规则：
+
+- 节点先按命名空间区分，避免 device_id 哈希与 Steam64 串空间碰撞：steam 节点记为 `s:<steam64>`、device 节点记为 `d:<device_id>`。
+- **代表元 = 分量内最小 steam 节点**（字典序），因为 Steam 账号比 device_id 稳定（device 重装会换 ID，Steam 账号长存）；分量内**无 steam 节点**时（纯 device 簇，如 release/source 没登录过 Steam）退化为最小 device 节点。
+- 这条规则对固定边集是确定的，重算不抖。
+
+**合并不可避免的 churn 要可追溯**：两个分量因新边并成一个时，survivor 的 `canonical_id` 取并集后的最小 steam 节点，败方成员被重指。这是"两个身份被发现是同一人"的语义必然，但下游外部引用需要能跟随——加一张 `canonical_alias(old_canonical_id, new_canonical_id, merged_at)` 历史表，重指时写一条，外部引用可顺着 alias 链解析到当前 canonical。
+
 两种物化策略见 §6 决策点 1。
 
 ### 3.3 distribution 派生
@@ -136,7 +146,14 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 - 仍零 PII：Steam64 是 Steam 公开 ID（非实名），device_id 是匿名哈希
 - `canonical_id` 是内部代理键，不外泄、不下发客户端
-- GDPR / 删号：删某 `steam_user_id` → 删其所有边 → 重算受影响连通分量（落表策略下重跑 union-find 即可）
+
+**GDPR / 删号必须防"删后复活"**：只删边 + 重算不够 —— 源数据里还有两处会让被删 Steam 标识重新产边：`devices.steam_user_id` 单列、以及 `events.payload` JSON（180 天内）。任一回填 / 重建任务都会把它捞回来。完整流程：
+
+1. **tombstone / denylist**：被删的 `steam_user_id` 进一张 `steam_id_denylist` 表。ingest 产边和所有回填脚本都先查 denylist，命中即跳过，绝不产边。
+2. **源数据脱敏**：清掉 `devices.steam_user_id`（置空）；`events.payload` 里的字段按 events 表 180 天 retention 自然过期，或对该 Steam64 主动 scrub（JSON 改写）。
+3. **重算**：删边后重跑受影响连通分量的 union-find。
+
+denylist 是防复活的硬约束，retention 过期是兜底，两者都要，不能只靠其一。
 
 ## 8. 实施阶段（拍板后）
 
@@ -150,25 +167,29 @@ ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
 
 ## 附：回填 SQL 草稿（决策点 4 定了再用）
 
+> ⚠️ **两个数据源的归一化状态不同**：`devices.steam_user_id` 是 ingest 时**已归一化**写入的（`server.py` 137-146：纯数字 + `len<=20` + `0 < int < 2^64` + `str(int())` 去前导零、排除 `0`/`00` 哨兵），可直接产边。但 `events.payload` 存的是**原始客户端 payload**（`server.py:112` 为 HMAC 验签保留原文），其中 `steam_user_id` **未经归一化**——`"00076561198..."`、超 u64 界值、`"0"` 哨兵都可能在里面。直接 `json_extract` 回填会把同一身份拆成多个节点、或把哨兵/垃圾混进图，污染连通分量。
+
 ```sql
--- 从 devices 现有非空 steam_user_id 兜底产边（每 device 仅最后一个 ID，聊胜于无）
+-- 源 1：从 devices 已归一化的非空 steam_user_id 兜底（每 device 仅最后一个 ID，聊胜于无）。
+-- 这一支可纯 SQL，因为 devices 列写入时已归一化。
 INSERT OR IGNORE INTO device_steam_edges (device_id, steam_user_id, first_seen, last_seen, observe_count)
 SELECT device_id, steam_user_id, first_seen, last_seen, 1
 FROM devices
 WHERE steam_user_id != '';
-
--- 从 events.payload JSON 回填完整观测边（180 天内，含每次上报的 device↔steam 对）
--- 需 server 侧脚本解析 payload JSON 提取 (device_id, steam_user_id)，SQLite JSON1：
-INSERT INTO device_steam_edges (device_id, steam_user_id, first_seen, last_seen, observe_count)
-SELECT device_id,
-       json_extract(payload, '$.steam_user_id') AS sid,
-       MIN(received_at), MAX(received_at), COUNT(*)
-FROM events
-WHERE json_extract(payload, '$.steam_user_id') IS NOT NULL
-  AND json_extract(payload, '$.steam_user_id') != ''
-GROUP BY device_id, sid
-ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
-    first_seen = MIN(device_steam_edges.first_seen, excluded.first_seen),
-    last_seen  = MAX(device_steam_edges.last_seen,  excluded.last_seen),
-    observe_count = device_steam_edges.observe_count + excluded.observe_count;
 ```
+
+```python
+# 源 2：从 events.payload 回填完整观测边（180 天内）。必须复用 ingest 的归一化，
+# 不能纯 SQL —— u64 范围检查、去前导零无法在 SQLite 里可靠表达。用 server 侧脚本：
+def _normalize_steam_id(raw: str) -> str:
+    """与 server.py ingest 同一套规则；不合法返回 ''（不产边）。"""
+    if raw and raw.isdigit() and len(raw) <= 20 and 0 < int(raw) < (1 << 64):
+        return str(int(raw))
+    return ""
+
+# 遍历 events，json 解析 payload，对 steam_user_id 跑 _normalize_steam_id，
+# 非空且不在 denylist（见 §7）才 UPSERT 进 device_steam_edges，
+# first_seen/last_seen 取 received_at 的 MIN/MAX、observe_count 累加。
+```
+
+> 回填和实时 ingest 必须共用同一个 `_normalize_steam_id`（抽成共享函数），否则两条写路径规则漂移又会拆裂身份。denylist 过滤也要在这一步生效。
