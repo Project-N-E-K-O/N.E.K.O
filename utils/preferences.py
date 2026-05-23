@@ -459,9 +459,17 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
             data.append(global_pref)
 
         atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
+        # 设置变更后打一个 settings_state telemetry 快照（变更后的新值）。
+        # lazy import 防 token_tracker ↔ preferences 循环依赖。埋点失败不能
+        # 影响 save 的成功返回。
+        try:
+            from utils.token_tracker import record_settings_state
+            record_settings_state()
+        except Exception:
+            pass
         return True
     except MaintenanceModeError:
         raise
     except Exception as e:
         print(f"保存全局对话设置失败: {e}")
-        return False 
+        return False

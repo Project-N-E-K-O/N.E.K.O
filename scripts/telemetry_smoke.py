@@ -664,6 +664,57 @@ def main():
         print(f"  ✓ fresh counter landed in next window: {rows_j}")
 
         # --------------------------------------------------------------
+        # [4i] 新增业务埋点端到端：D1 信号 + settings_state + proactive_fired
+        #
+        # 验证 note_first_user_message / note_core_loop_completed /
+        # record_settings_state 产出的 counter/histogram 走完整通道到 server。
+        # --------------------------------------------------------------
+        print("\n[4i] New telemetry: D1 signals + settings_state...")
+        Instrument._instance = None
+        TokenTracker._instance = None
+        tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
+        tracker_k = TokenTracker.get_instance()
+        tracker_k._session_start_ts = time.time() - 8.0
+        # D1 漏斗
+        tracker_k.note_first_user_message("text")
+        tracker_k.note_core_loop_completed()
+        # settings + proactive + D1 错误（直接走 instrument，模拟各 hook 点）
+        counter("settings_state", 1, proactive="on", interval="10-30s",
+                privacy="off", vision_chat="on")
+        counter("proactive_fired", 1, channel="vision")
+        counter("llm_error", 1, error_class="TimeoutError")
+        counter("api_key_invalid", 1)
+        counter("tts_error", 1, code="API_KEY_REJECTED")
+        histogram("llm_ttft_ms", 850.0)
+        tracker_k._last_report_time = 0
+        tracker_k.save()
+        time.sleep(0.5)
+
+        conn_k = sqlite3.connect(db_path)
+        ic = {r[0]: r[1] for r in conn_k.execute(
+            "SELECT metric_key, value FROM instrument_counters WHERE metric_key IN "
+            "('first_message_sent|input_type=text','core_loop_completed',"
+            "'proactive_fired|channel=vision','llm_error|error_class=TimeoutError',"
+            "'api_key_invalid','tts_error|code=API_KEY_REJECTED') "
+            "OR metric_key LIKE 'settings_state|%'"
+        ).fetchall()}
+        ih = {r[0]: r[1] for r in conn_k.execute(
+            "SELECT metric_key, count FROM instrument_histograms "
+            "WHERE metric_key LIKE 'llm_ttft_ms%' OR metric_key LIKE 'time_to_first_message_sec%'"
+        ).fetchall()}
+        conn_k.close()
+        print(f"  counters landed: {sorted(ic.keys())}")
+        print(f"  histograms landed: {sorted(ih.keys())}")
+        for need in ("first_message_sent|input_type=text", "core_loop_completed",
+                     "proactive_fired|channel=vision", "llm_error|error_class=TimeoutError",
+                     "api_key_invalid", "tts_error|code=API_KEY_REJECTED"):
+            assert need in ic, f"new telemetry counter missing: {need}"
+        assert any(k.startswith("settings_state|") for k in ic), "settings_state missing"
+        assert any(k.startswith("llm_ttft_ms") for k in ih), "llm_ttft_ms missing"
+        assert any(k.startswith("time_to_first_message_sec") for k in ih), "time_to_first_message_sec missing"
+        print("  ✓ all new D1 + settings + proactive telemetry reached server")
+
+        # --------------------------------------------------------------
         # [5/5] dashboard 能返回 + 含 instrument 表
         # --------------------------------------------------------------
         print("\n[5/5] Fetching dashboard HTML...")

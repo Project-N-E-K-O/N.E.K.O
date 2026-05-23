@@ -1947,6 +1947,12 @@ class LLMSessionManager:
             if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
                 self._session_turn_count += 1
+                # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
+                try:
+                    from utils.token_tracker import TokenTracker as _TT
+                    _TT.get_instance().note_first_user_message("voice")
+                except Exception:
+                    pass
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
@@ -6020,6 +6026,12 @@ class LLMSessionManager:
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
                     self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
+                    # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
+                    try:
+                        from utils.token_tracker import TokenTracker as _TT
+                        _TT.get_instance().note_first_user_message("text")
+                    except Exception:
+                        pass
                     # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                     # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
                     # 文本路径，避免 openclaw handoff（会再走一次 handle_input_transcript
@@ -6762,6 +6774,14 @@ class LLMSessionManager:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
+                        # Telemetry：TTS 失败。code 是已归一化的低基数枚举
+                        # （API_ARREARS / API_KEY_REJECTED / TTS_CONNECTION_FAILED ...）。
+                        # 首日听不到语音是核心体验断裂，D1 流失重要信号。
+                        try:
+                            from utils.instrument import counter as _instr_counter
+                            _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32])
+                        except Exception:
+                            pass
                         # 可重试的错误：前2次静默重试，第3次失败时上报前端
                         if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
                             self._tts_retry_notify_count += 1
@@ -6774,6 +6794,14 @@ class LLMSessionManager:
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
                         self._confirm_pending_ai_voice_echo(speech_id)
+                        # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
+                        # note_core_loop_completed 的"用户已开口"前置，构成 D1
+                        # 核心 loop 完成信号（每进程一次，内部幂等）。
+                        try:
+                            from utils.token_tracker import TokenTracker as _TT
+                            _TT.get_instance().note_core_loop_completed()
+                        except Exception:
+                            pass
                     else:
                         self._discard_pending_ai_voice_echo()
                     continue

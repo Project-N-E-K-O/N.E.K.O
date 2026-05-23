@@ -239,9 +239,11 @@ async def admin_devices(days: int = 7):
 
 @app.post("/api/v1/admin/prune", dependencies=[Depends(require_admin)])
 async def admin_prune(max_days: int = 180):
-    """清理旧事件日志（聚合数据保留）。"""
-    deleted = storage.prune_old_events(max_days=max(max_days, 30))
-    return {"deleted_events": deleted}
+    """清理旧事件日志 + instrument 聚合（daily_aggregates 永久保留）。"""
+    days = max(max_days, 30)
+    deleted_events = storage.prune_old_events(max_days=days)
+    deleted_instruments = storage.prune_old_instruments(max_days=days)
+    return {"deleted_events": deleted_events, "deleted_instruments": deleted_instruments}
 
 
 # ---------------------------------------------------------------------------

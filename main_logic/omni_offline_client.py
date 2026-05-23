@@ -1282,6 +1282,11 @@ class OmniOfflineClient:
                     assistant_message = ""
                     assistant_message_total = ""
                     guard_attempt = 0
+                    # Telemetry：TTFT（首 token 延迟）。从这里到第一个 chunk 到达
+                    # 的时长，D1 流失里"响应太慢"的关键信号。只记一次（首 attempt
+                    # 首 chunk）；reroll 不重置，反映用户真实等待体感。
+                    _ttft_start = time.time()
+                    _ttft_recorded = False
                     while guard_attempt <= self.max_response_rerolls:
                         self._is_responding = True
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
@@ -1314,6 +1319,13 @@ class OmniOfflineClient:
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
                         async for chunk in self._astream_with_tools(self._conversation_history):
+                            if not _ttft_recorded:
+                                _ttft_recorded = True
+                                try:
+                                    from utils.instrument import histogram as _instr_h
+                                    _instr_h("llm_ttft_ms", max(0.0, (time.time() - _ttft_start) * 1000.0))
+                                except Exception:
+                                    pass
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
                                 logger.debug(f"🔍 [Usage] {chunk_usage}")
@@ -1702,6 +1714,16 @@ class OmniOfflineClient:
                         break
                 except Exception as e:
                     is_api_key_rejected = _is_api_key_rejected_error(e)
+                    # Telemetry：D1 流失里 LLM 调用失败是大头。error_class 低基数
+                    # （exception 类名）；api_key_invalid 单独计——首日配错 key
+                    # 是源码版用户的常见流失坑。
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        _instr_counter("llm_error", error_class=type(e).__name__[:48])
+                        if is_api_key_rejected:
+                            _instr_counter("api_key_invalid")
+                    except Exception:
+                        pass
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
                         discard_error_payload = status_error_payload

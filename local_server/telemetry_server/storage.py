@@ -780,5 +780,24 @@ class TelemetryStorage:
             conn.execute("DELETE FROM seen_batches WHERE received_at < ?", (cutoff,))
             return result.rowcount
 
+    def prune_old_instruments(self, max_days: int = 180) -> int:
+        """清理超期的 instrument_counters / instrument_histograms 行。
+
+        这两张表按 (device_id, stat_date, metric_key) 累加，不清理会随时间
+        无限增长。对齐 events 表的 180 天 retention。stat_date 是
+        ``YYYY-MM-DD`` 字符串（客户端本地日历天），可直接字典序比较。
+
+        返回两张表删除的总行数。
+        """
+        cutoff = (date.today() - timedelta(days=max_days)).isoformat()
+        with self._transaction() as conn:
+            r1 = conn.execute(
+                "DELETE FROM instrument_counters WHERE stat_date < ?", (cutoff,)
+            )
+            r2 = conn.execute(
+                "DELETE FROM instrument_histograms WHERE stat_date < ?", (cutoff,)
+            )
+            return r1.rowcount + r2.rowcount
+
     def vacuum(self):
         self._get_conn().execute("VACUUM")

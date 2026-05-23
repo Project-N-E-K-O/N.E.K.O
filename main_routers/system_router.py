@@ -1829,6 +1829,22 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
 
+    # Telemetry：主动搭话实际投递。channel 是低基数 enum（vision/news/video/
+    # personal/music/meme/mini_game/...），截断防意外高基数。配合 settings_state
+    # 的 proactive 配置档，能看深度用户每天实际被主动搭话几次。
+    #
+    # 不在这里做 responded 回应率配对：用户消息分发在 core.py（main_logic 层），
+    # 主动搭话在 main_routers 层，module-layering CI 禁止 core.py 反向 import
+    # system_router；跨层共享"上次投递时刻"状态会破坏分层。回应率由 server 端
+    # 用 proactive_fired 时刻与用户消息活动 timestamp 关联粗估即可，要精确配对
+    # 再单独开 PR。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("proactive_fired", channel=(str(channel) or "default")[:24])
+    except Exception:
+        # 埋点失败不能影响主动搭话投递
+        pass
+
 
 # ---------- Mini-game 邀请短路状态管理 ----------
 # 入口在 proactive_chat 内部、过完 propensity / skip_probability /

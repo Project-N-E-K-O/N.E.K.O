@@ -659,6 +659,69 @@ def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 主动搭话 / 隐私模式设置快照埋点
+# ---------------------------------------------------------------------------
+
+def _bucket_proactive_interval(seconds) -> str:
+    """把 proactiveChatInterval（1-3600 秒）分桶成低基数 enum。
+
+    **不上报 raw 秒数** —— 那是连续值，进 dim 会让 metric_key 基数爆炸
+    （跟之前 lanlan_name 同类教训）。分 5 桶覆盖典型配置区间。
+    """
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return "unknown"
+    if s < 10:
+        return "<10s"
+    if s < 30:
+        return "10-30s"
+    if s < 60:
+        return "30-60s"
+    if s < 300:
+        return "60-300s"
+    return ">=300s"
+
+
+def record_settings_state() -> None:
+    """读当前主动搭话 / 隐私模式设置，打一个 settings_state counter。
+
+    触发时机：
+    - app 启动（record_app_start，仅 main_server 进程）
+    - 用户改设置（preferences.save_global_conversation_settings 成功后）
+
+    用途：server 端按 device 活跃天数 / event_count 切出深度用户，再看他们
+    settings_state 各 dim 组合的分布 —— 即"深度用户把主动搭话 / 隐私模式
+    定在什么档"。
+
+    dim 全是低基数 enum，interval 分桶不发 raw 秒数：
+    - proactive: on / off（proactiveChatEnabled）
+    - interval: <10s / 10-30s / ... / >=300s（off 时为 "off"）
+    - vision_chat: on / off（proactiveVisionChatEnabled）
+    - privacy: on / off（隐私模式 = proactiveVisionEnabled 反面，默认关）
+    """
+    if _DO_NOT_TRACK:
+        return
+    try:
+        from utils.preferences import load_global_conversation_settings
+        from utils.instrument import counter as _c
+        s = load_global_conversation_settings()
+        proactive_on = bool(s.get("proactiveChatEnabled", False))
+        _c(
+            "settings_state", 1,
+            proactive="on" if proactive_on else "off",
+            interval=(_bucket_proactive_interval(s.get("proactiveChatInterval", 0))
+                      if proactive_on else "off"),
+            vision_chat="on" if s.get("proactiveVisionChatEnabled", False) else "off",
+            # 隐私模式 = proactiveVisionEnabled 的反面（default True → 默认隐私关）
+            privacy="on" if not s.get("proactiveVisionEnabled", True) else "off",
+        )
+    except Exception:
+        # 埋点失败不影响业务，静默
+        pass
+
+
+# ---------------------------------------------------------------------------
 # TokenTracker 单例
 # ---------------------------------------------------------------------------
 
@@ -711,6 +774,8 @@ class TokenTracker:
         self._has_recorded_app_start: bool = False  # 🔒 app_start 单次上报锁
         self._session_start_ts: float = 0.0  # session_end 计算 duration 用
         self._session_process: str = "unknown"
+        self._first_user_message_recorded: bool = False  # 🔒 首条用户消息单次锁
+        self._core_loop_recorded: bool = False  # 🔒 首次完成核心 loop 单次锁
 
         # 首次启动：迁移旧版 per-instance 文件
         self._migrate_legacy_files()
@@ -1111,6 +1176,63 @@ class TokenTracker:
             source="",
             success=True,
         )
+
+        # 启动快照：当前主动搭话 / 隐私设置。只在 main_server 打，避免多进程
+        # （agent/memory_server 也跑 record_app_start）把同一份设置重复计 3 次。
+        # settings 是 user-facing 概念，跟 main 进程绑定最自然。
+        if process == "main_server":
+            record_settings_state()
+
+    def note_first_user_message(self, input_type: str = "text"):
+        """记录本进程内用户的第一条消息（D1 漏斗关键里程碑）。
+
+        每个进程生命周期内只记一次（线程安全）。区分两类 D1 流失：
+        - first_message_sent counter：用户真的"开口"了——没这条 = 装了打开
+          没说话就走（onboarding / 配置障碍）
+        - time_to_first_message_sec histogram：app 启动→首条消息的时长。卡在
+          配置 / 选角色 / 麦克风授权 = 长；秒级 = 顺畅上手
+
+        input_type: text / voice（低基数）
+        """
+        with self._lock:
+            if self._first_user_message_recorded:
+                return
+            self._first_user_message_recorded = True
+            anchor = self._session_start_ts
+
+        try:
+            from utils.instrument import counter as _c, histogram as _h
+            _c("first_message_sent", input_type=input_type)
+            if anchor > 0:
+                _h("time_to_first_message_sec", max(0.0, time.time() - anchor))
+        except Exception:
+            # 埋点失败不能挡用户消息处理
+            pass
+
+    def note_core_loop_completed(self):
+        """用户完成一轮核心体验：发消息→收回复→听到语音。每进程记一次。
+
+        只在用户已经发过消息（_first_user_message_recorded=True）后才算 —— 纯
+        proactive 触发的语音不算"用户主动体验到核心 loop"。
+
+        D1 流失分析的关键区分信号：
+        - 有 first_message_sent 但没 core_loop_completed = 用户开口了但没听到
+          回复（卡在 LLM 失败 / TTS 失败 / 太慢）→ 首次体验障碍型流失
+        - 有 core_loop_completed = 完整体验过产品核心，之后流失更可能是
+          "玩了不喜欢"（产品价值问题）→ 两类流失的运营动作完全不同
+        """
+        with self._lock:
+            if self._core_loop_recorded:
+                return
+            if not self._first_user_message_recorded:
+                return  # 用户还没开口，不算用户发起的核心 loop
+            self._core_loop_recorded = True
+
+        try:
+            from utils.instrument import counter as _c
+            _c("core_loop_completed")
+        except Exception:
+            pass
 
     # ---- 持久化 ----
 
