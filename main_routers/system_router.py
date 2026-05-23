@@ -4215,13 +4215,22 @@ async def push_activity_signal(request: Request):
     feeds both the async ``get_snapshot`` and the sync variant — see
     ``tracker._select_system_snapshot``.
 
-    Why not loopback-only / CSRF guarded: in remote deployments the
-    frontend is intentionally not on loopback. CSRF/Origin would be
-    the right hardening, but adding it requires updating frontend
-    agent fetch sites to send ``X-CSRF-Token`` (out of PR B scope —
-    see issue #1023 audit). For PR B we accept anonymous pushes; the
-    per-lanlan rate limit below + the tracker's per-character lookup
-    are the practical defenses.
+    Auth:
+
+    * Origin-present same-origin gate (zero-frontend-cost defence,
+      suggested by CodeRabbit on PR #1477): when the request carries an
+      ``Origin`` / ``Referer`` header AND that origin isn't in
+      ``_get_allowed_local_origins`` (which always includes the current
+      ``request.base_url``), reject with 403. Browser-mediated requests
+      always carry ``Origin`` for POST, so this single check blocks
+      cross-site drive-by JS without breaking ``curl`` / Electron's
+      same-origin renderer / native scripts (no Origin → allowed).
+    * Per-lanlan 5s rate limit below + the tracker's per-character
+      lookup raise spam cost and bound the impact even if Origin
+      validation passes.
+    * A stricter CSRF token mechanism (parity with screenshot endpoints)
+      is tracked for a follow-up security-hardening PR; the threat
+      model write-up lives in issue #1023.
 
     Body fields (all optional except ``lanlan_name``):
       * ``lanlan_name`` (required) — which character's tracker to update
@@ -4236,6 +4245,23 @@ async def push_activity_signal(request: Request):
     ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
     tracker hasn't initialised yet.
     """
+    # ── Origin-present same-origin gate ────────────────────────────
+    # When the request carries an Origin (or Referer fallback) but it's
+    # not in our allowed-origins set, refuse — that's the drive-by CSRF
+    # signature. Missing Origin means a non-browser caller (curl, Node,
+    # native script) which we explicitly allow because there's no
+    # mandatory CSRF token yet. Same-origin browser requests pass
+    # naturally because their Origin matches ``request.base_url``,
+    # which ``_get_allowed_local_origins`` always includes.
+    request_origin = _get_request_origin(request)
+    if request_origin:
+        allowed = _get_allowed_local_origins(request)
+        if request_origin not in allowed:
+            return _json_no_store_response(
+                {"success": False, "error": "origin not allowed"},
+                status_code=403,
+            )
+
     try:
         data = await request.json()
     except Exception:

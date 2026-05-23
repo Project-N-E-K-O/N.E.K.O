@@ -210,6 +210,119 @@ def test_field_validation_400s(monkeypatch, payload, expected_error_fragment):
     tracker.push_external_system_signal.assert_not_called()
 
 
+# ── Origin-present same-origin gate ──────────────────────────────────
+
+
+@pytest.mark.unit
+def test_no_origin_header_accepted(monkeypatch):
+    """``curl`` / Node / native scripts send no Origin → must be allowed.
+
+    The Origin gate is intentionally permissive in the no-Origin case
+    because:
+      - Browsers always send Origin on POST (since the 2024-ish spec
+        update), so missing Origin reliably means non-browser caller
+      - Mandatory CSRF tokens would block legitimate native callers
+        without a clean path forward; defer to follow-up PR
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
+
+    assert resp.status_code == 200, resp.text
+    tracker.push_external_system_signal.assert_called_once()
+
+
+@pytest.mark.unit
+def test_same_origin_browser_request_accepted(monkeypatch):
+    """Browser fetch with matching Origin (== ``request.base_url``) passes."""
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria"},
+        headers={"Origin": "http://testserver"},  # TestClient's base_url
+    )
+
+    assert resp.status_code == 200, resp.text
+    tracker.push_external_system_signal.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("evil_origin", [
+    "https://evil.com",
+    "http://attacker.example.com:8080",
+    "https://localhost.evil.com",
+])
+def test_cross_site_origin_blocked_with_403(monkeypatch, evil_origin):
+    """Drive-by browser fetch from off-origin page → 403.
+
+    This is the threat that the Origin gate exists to block: a
+    malicious page on attacker.com calling our endpoint via fetch().
+    Browser always sends Origin = the page's origin; since that's not
+    our base_url, we reject before tracker dispatch.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria"},
+        headers={"Origin": evil_origin},
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert "origin" in resp.json()["error"].lower()
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+def test_referer_used_when_no_origin(monkeypatch):
+    """``_get_request_origin`` falls back to Referer when Origin absent.
+
+    Drive-by CSRF mitigation must work even when an attacker omits
+    Origin (some older clients / browser bugs do this) — Referer is
+    the practical fallback, and our helper already implements it.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    # Referer from off-origin page → should still block
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria"},
+        headers={"Referer": "https://evil.com/some/path"},
+    )
+
+    assert resp.status_code == 403
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+def test_unparseable_origin_treated_as_absent(monkeypatch):
+    """Garbage Origin (can't parse scheme/host) → treated as no-Origin.
+
+    Mirrors screenshot-router test
+    ``test_interactive_screenshot_blocks_browser_requests_with_unparseable_origin``
+    inverted: unparseable means "we can't tell where this came from",
+    so we fall through to the no-Origin path (allow). The endpoint's
+    rate limit + lanlan_name lookup still bound impact.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria"},
+        headers={"Origin": "not a url"},
+    )
+
+    # Origin couldn't be normalised → counts as no Origin → allowed
+    assert resp.status_code == 200, resp.text
+    tracker.push_external_system_signal.assert_called_once()
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("field", ["idle_seconds", "cpu_avg_30s", "gpu_utilization"])
 @pytest.mark.parametrize("bad_token", ["NaN", "Infinity", "-Infinity"])
