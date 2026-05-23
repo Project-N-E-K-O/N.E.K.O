@@ -269,9 +269,13 @@ async def _periodic_canonical_rebuild():
     即便没有新事件也会重试——不会让 canonical_map 永久停在 build 已推进、recompute
     没跟上的不一致态。
     """
-    need_recompute = False
+    # 启动先无条件补一次（need_recompute=True + sleep 移到循环末尾），覆盖两件事：
+    # (1) 启动期 /canonical/metrics 不至于先读到空/旧 canonical_map（原本要等 5 分钟）；
+    # (2) need_recompute 是内存脏标记，若上个进程在 build 已推进游标、recompute 未落表
+    #     时崩溃，重启会丢标记 —— 靠这次启动补算把 canonical_map 与现有边重新对齐，
+    #     不再依赖"恰好有新事件"才触发。recompute 在本量级是毫秒级，每次启动跑一次无妨。
+    need_recompute = True
     while True:
-        await asyncio.sleep(300)
         try:
             async with _canonical_lock:  # 与手动 /rebuild、/denylist 互斥，串行化重算
                 if await asyncio.to_thread(storage.build_all_pending_edges):
@@ -281,6 +285,7 @@ async def _periodic_canonical_rebuild():
                     need_recompute = False  # 仅成功后清脏；异常时保持，下 tick 重试
         except Exception:
             logger.exception("canonical rebuild failed")
+        await asyncio.sleep(300)
 
 
 @app.on_event("startup")
