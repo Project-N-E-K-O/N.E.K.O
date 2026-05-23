@@ -110,15 +110,14 @@ jobs:
           # i18n-sync needs full history to diff against the merge-base of
           # origin/main. Other steps don't care, but fetch-depth: 0 has
           # negligible cost on this repo.
+          #
+          # The checkout@v5 bump is the actual fix here: the old @v4 tripped a
+          # credential-handling regression against the runner's git 2.54 on the
+          # full-history fetch ("could not read Username", git exit 128), which
+          # broke this job on every PR. (fetch-tags has no effect under
+          # fetch-depth: 0 — checkout fetches tags regardless — so we don't set
+          # it; the fix is purely the version bump.)
           fetch-depth: 0
-          # Skip the +refs/tags/* leg of the fetch. The merge-base diff only
-          # needs branch history; tags are dead weight here and the broad
-          # multi-refspec fetch (all heads + all tags) is exactly the shape
-          # that tripped the runner-git 2.54 / checkout credential regression
-          # ("could not read Username", git exit 128) that broke this job.
-          # checkout@v5 + dropping tags keeps the fetch to branch history
-          # only, which is all check_i18n_sync needs.
-          fetch-tags: false
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
