@@ -176,3 +176,27 @@ jobs:
         # `python scripts/check_module_layering.py --show-layers` to print
         # the hierarchy. Companion unit test: tests/unit/test_module_layering.py.
         run: python scripts/check_module_layering.py
+
+  study-companion-coverage:
+    name: Study Companion coverage (pytest-cov >=80%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run Study Companion coverage gate
+        run: >
+          uv run python -m pytest -c pytest.ini
+          plugin/tests/unit/plugins/test_study_companion*.py
+          --cov=plugin/plugins/study_companion
+          --cov-report=term-missing:skip-covered
+          --cov-fail-under=80
+          -q

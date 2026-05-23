@@ -16,6 +16,7 @@ def compat_card_payload(
     metadata = item.get("metadata") or {}
     topic_id = str(metadata.get("topic_id") or metadata.get("legacy_topic_id") or item.get("id") or "")
     raw_card = card.get("card") if isinstance(card, dict) else {}
+    raw_card = raw_card if isinstance(raw_card, dict) else {}
     due_reviews = fsrs.get_due_reviews([raw_card]) if raw_card else []
     due_item = due_reviews[0] if due_reviews else None
     return {

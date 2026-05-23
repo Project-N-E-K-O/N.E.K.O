@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11

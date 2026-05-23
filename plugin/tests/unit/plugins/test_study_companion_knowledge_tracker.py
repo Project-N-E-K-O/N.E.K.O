@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from plugin.plugins.study_companion.fsrs_bridge import StudyFsrsRating
 from plugin.plugins.study_companion.knowledge_tracker import (
     KnowledgeTracker,
@@ -13,6 +15,8 @@ from plugin.plugins.study_companion.knowledge_tracker import (
     _difficulty_to_level,
 )
 from plugin.plugins.study_companion.store import StudyStore
+
+pytestmark = pytest.mark.unit
 
 
 class _Logger:
