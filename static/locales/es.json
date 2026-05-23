@@ -865,7 +865,7 @@
         "coreApiKey": "Clave API principal",
         "freeVersionHint": "(No es necesario para la versión gratuita)",
         "coreApiPlaceholder": "Por favor ingrese su clave API",
-        "coreApiProvider": "API principal (chat de voz)",
+        "coreApiProvider": "API principal (chat de voz, solo omnimodal)",
         "assistApiProvider": "API de asistencia (Memoria/Agente/Chat de texto/Voz personalizada)",
         "saveSettings": "Guardar configuración",
         "closeSettings": "Cerca",

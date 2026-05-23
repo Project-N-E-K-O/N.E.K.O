@@ -70,7 +70,7 @@ _report_to_server()  检查距上次上报是否 ≥ 60s（1分钟）
 
 ## 管理端 API
 
-全部需要 Header: `Authorization: Bearer YOUR_ADMIN_TOKEN`（或 `?token=` 查询参数）。返回 JSON，无内置 HTML 看板。
+全部需要 Header: `Authorization: Bearer YOUR_ADMIN_TOKEN`（或 `?token=` 查询参数）。**返回 JSON，公开 repo 不内置 HTML 看板**——可视化由内部工具基于这些 JSON / 直查 DB 自建。
 
 ```bash
 TOKEN="YOUR_ADMIN_TOKEN"
@@ -80,6 +80,9 @@ curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/stats?
 
 # 活跃设备
 curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/devices?days=7
+
+# instrument 埋点：top counters + histogram p50/p95（D2-D7 流失诊断数据）
+curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/instruments?days=7
 
 # 用户指标（device 口径 + canonical 口径并列）
 curl -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admin/canonical/metrics?days=30

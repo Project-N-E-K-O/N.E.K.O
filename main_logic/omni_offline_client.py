@@ -1523,6 +1523,11 @@ class OmniOfflineClient:
                     assistant_message = ""
                     assistant_message_total = ""
                     guard_attempt = 0
+                    # Telemetry：TTFT（首 token 延迟）。从这里到第一个 chunk 到达
+                    # 的时长，D1 流失里"响应太慢"的关键信号。只记一次（首 attempt
+                    # 首 chunk）；reroll 不重置，反映用户真实等待体感。
+                    _ttft_start = time.time()
+                    _ttft_recorded = False
                     while guard_attempt <= self.max_response_rerolls:
                         self._is_responding = True
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
@@ -1589,6 +1594,14 @@ class OmniOfflineClient:
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
                         async for chunk in self._astream_with_tools(self._conversation_history):
+                            if not _ttft_recorded:
+                                _ttft_recorded = True
+                                try:
+                                    from utils.instrument import histogram as _instr_h
+                                    _instr_h("llm_ttft_ms", max(0.0, (time.time() - _ttft_start) * 1000.0))
+                                except Exception:
+                                    # 埋点 best-effort，绝不打断流式响应主路径。
+                                    pass
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
                                 logger.debug(f"🔍 [Usage] {chunk_usage}")
@@ -2235,15 +2248,31 @@ class OmniOfflineClient:
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
 
+                    def _count_llm_error(api_key_rejected: bool = False):
+                        # D1 失败诊断：typed API 错误（连接/认证/限流/欠费/配额/
+                        # key 拒绝）的**终态**也要计入 llm_error。只在给上的 break
+                        # 路径调，不在 retry-continue 调（重试中不算失败）。generic
+                        # except 与本块互斥，不会双计（Codex）。
+                        try:
+                            from utils.instrument import counter as _ic
+                            _ic("llm_error", error_class=error_type[:48])
+                            if api_key_rejected:
+                                _ic("api_key_invalid")
+                        except Exception:
+                            # 埋点 best-effort，绝不影响错误上报 / 重试主流程。
+                            pass
+
                     # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
                     if '欠费' in error_str_lower or 'standing' in error_str_lower:
                         logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
+                        _count_llm_error()
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                             status_reported = True
                         break
                     elif _is_api_key_rejected_error(e):
                         logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
+                        _count_llm_error(api_key_rejected=True)
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                             status_reported = True
@@ -2274,6 +2303,7 @@ class OmniOfflineClient:
                     else:
                         error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
+                        _count_llm_error()  # 重试耗尽 = 终态失败，计入 llm_error
                         if self.on_status_message:
                             if is_internal_error:
                                 await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
@@ -2283,6 +2313,17 @@ class OmniOfflineClient:
                         break
                 except Exception as e:
                     is_api_key_rejected = _is_api_key_rejected_error(e)
+                    # Telemetry：D1 流失里 LLM 调用失败是大头。error_class 低基数
+                    # （exception 类名）；api_key_invalid 单独计——首日配错 key
+                    # 是源码版用户的常见流失坑。
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        _instr_counter("llm_error", error_class=type(e).__name__[:48])
+                        if is_api_key_rejected:
+                            _instr_counter("api_key_invalid")
+                    except Exception:
+                        # 埋点 best-effort，绝不掩盖/打断原始 LLM 错误的处理路径。
+                        pass
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
                         discard_error_payload = status_error_payload

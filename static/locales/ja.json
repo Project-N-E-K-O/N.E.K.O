@@ -865,7 +865,7 @@
         "coreApiKey": "Core APIキー",
         "freeVersionHint": "（無料版は不要）",
         "coreApiPlaceholder": "APIキーを入力してください",
-        "coreApiProvider": "Core API（音声会話）",
+        "coreApiProvider": "Core API（音声会話、オムニモーダルのみ）",
         "assistApiProvider": "Assist API（記憶/Agent/テキスト/カスタム音声）",
         "saveSettings": "設定を保存",
         "closeSettings": "閉じる",

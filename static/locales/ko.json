@@ -865,7 +865,7 @@
         "coreApiKey": "핵심 API 키",
         "freeVersionHint": "(무료 버전에는 필요하지 않음)",
         "coreApiPlaceholder": "API 키를 입력하세요.",
-        "coreApiProvider": "핵심 API(음성 채팅)",
+        "coreApiProvider": "핵심 API(음성 채팅, 옴니모달 전용)",
         "assistApiProvider": "지원 API(메모리/에이전트/텍스트 채팅/사용자 정의 음성)",
         "saveSettings": "설정 저장",
         "closeSettings": "닫기",

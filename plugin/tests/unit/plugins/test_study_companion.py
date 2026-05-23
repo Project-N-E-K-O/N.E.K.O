@@ -1073,6 +1073,9 @@ def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     assert "throw new Error(tf('ui.error.run_export_failed'" in static_source
     assert "if (!response.ok) {\n    return {};" not in static_source
     assert "callPlugin('study_set_mode'" in static_source
+    assert "Array.isArray(deck.due_reviews)" in static_source
+    assert "Number(deck.item_count)" in static_source
+    assert "currentMemoryCard.front || currentMemoryCard.item?.prompt" in static_source
 
 
 def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
@@ -2789,37 +2792,153 @@ async def test_study_plugin_starts_and_collects_entries(
     )
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
-    try:
-        assert isinstance(result, Ok)
-        entries = plugin.collect_entries()
-        assert "study_status" in entries
-        assert "study_explain_text" in entries
-        assert "study_ocr_snapshot" in entries
-        assert "study_set_mode" in entries
-        assert "study_detect_mode_intent" in entries
-        assert "study_export_notes" not in entries
-        assert "study_knowledge_map" in entries
-        assert "study_set_knowledge_contribution_opt_in" in entries
-        disabled_export = await plugin._study_export_notes_entry(
-            fmt="markdown", preview_only=True, title="Default Notes"
-        )
-        assert isinstance(disabled_export, Err)
-        status = await plugin.study_status()
-        assert isinstance(status, Ok)
-        assert status.value["status"] == "ready"
-        assert status.value["is_first_run"] is True
-        assert status.value["active_mode"] == MODE_COMPANION
-        assert "mode_started_at" in status.value
-        assert "recent_mode_switches" in status.value
-        assert status.value["knowledge_summary"]["topic_count"] >= 120
-        assert "review_queue" in status.value
-        assert "weak_topics" in status.value
-        assert "mastery_overview" in status.value
-        assert (
-            runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db"
-        ).is_file()
-    finally:
-        await plugin.shutdown()
+
+    assert isinstance(result, Ok)
+    entries = plugin.collect_entries()
+    assert "study_status" in entries
+    assert "study_explain_text" in entries
+    assert "study_ocr_snapshot" in entries
+    assert "study_set_mode" in entries
+    assert "study_detect_mode_intent" in entries
+    assert "study_export_notes" not in entries
+    assert "study_knowledge_map" in entries
+    assert "study_memory_card_upsert" in entries
+    assert "study_memory_deck" in entries
+    assert "study_memory_card_review" in entries
+    assert "study_memory_create_deck" in entries
+    assert "study_memory_import_words" in entries
+    assert "study_memory_import_passage" in entries
+    assert "study_memory_due_reviews" in entries
+    assert "study_memory_review_item" in entries
+    assert "study_memory_recitation_attempt" in entries
+    assert "study_set_knowledge_contribution_opt_in" in entries
+    disabled_export = await plugin._study_export_notes_entry(
+        fmt="markdown", preview_only=True, title="Default Notes"
+    )
+    assert isinstance(disabled_export, Err)
+    memory_card = await plugin.study_memory_card_upsert(
+        topic_id="phase7_plugin_memory",
+        front="What does the study memory deck store?",
+        back="Reviewable recall cards.",
+        tags=["phase7"],
+    )
+    assert isinstance(memory_card, Ok)
+    card_item_id = memory_card.value["card"]["item_id"]
+    updated_memory_card = await plugin.study_memory_card_upsert(
+        topic_id="phase7_plugin_memory",
+        front="Updated study memory prompt",
+        back="Updated reviewable recall card.",
+        difficulty=0.0,
+        tags=["phase7", "updated"],
+    )
+    assert isinstance(updated_memory_card, Ok)
+    assert updated_memory_card.value["created"] is False
+    assert updated_memory_card.value["card"]["item_id"] == card_item_id
+    assert updated_memory_card.value["card"]["topic_id"] == "phase7_plugin_memory"
+    assert updated_memory_card.value["card"]["front"] == "Updated study memory prompt"
+    assert (
+        updated_memory_card.value["card"]["item"]["metadata"]["topic_id"]
+        == "phase7_plugin_memory"
+    )
+    assert (
+        updated_memory_card.value["card"]["item"]["metadata"]["difficulty"] == 0.0
+    )
+    fresh_memory_card = await plugin.study_memory_card_upsert(
+        topic_id="phase7_plugin_recent",
+        front="Recently updated prompt",
+        back="Recently updated answer.",
+    )
+    assert isinstance(fresh_memory_card, Ok)
+    fresh_item_id = fresh_memory_card.value["card"]["item_id"]
+    reviewed_fresh = await plugin.study_memory_card_review(
+        topic_id="phase7_plugin_recent", rating="easy"
+    )
+    assert isinstance(reviewed_fresh, Ok)
+    assert reviewed_fresh.value["card"]["item_id"] == fresh_item_id
+    assert reviewed_fresh.value["card"]["topic_id"] == "phase7_plugin_recent"
+    plugin._store.ensure_topic(topic_id="phase7_topic_due", name="Phase 7 Topic")
+    topic_card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+        "phase7_topic_due"
+    ).to_dict()
+    plugin._store.upsert_fsrs_card(
+        topic_id="phase7_topic_due", card=topic_card, last_rating=0
+    )
+    due_deck = await plugin.study_memory_deck(limit=5, due_only=True)
+    assert isinstance(due_deck, Ok)
+    assert any(item["item_id"] == card_item_id for item in due_deck.value["cards"])
+    topic_due_deck = await plugin.study_memory_deck(
+        limit=1, due_only=True, include_topic_cards=True
+    )
+    assert isinstance(topic_due_deck, Ok)
+    assert all(item["is_due"] for item in topic_due_deck.value["cards"])
+    assert any(
+        item["item_id"] == card_item_id for item in topic_due_deck.value["cards"]
+    )
+    assert all(
+        item["item_id"] != fresh_item_id for item in topic_due_deck.value["cards"]
+    )
+    assert topic_due_deck.value["due_count"] >= len(
+        topic_due_deck.value["due_cards"]
+    )
+    topic_deck = await plugin.study_memory_deck(
+        limit=5, due_only=True, include_topic_cards=True
+    )
+    assert isinstance(topic_deck, Ok)
+    assert any(item["topic_id"] == "phase7_topic_due" for item in topic_deck.value["cards"])
+    assert topic_deck.value["card_count"] == len(topic_deck.value["cards"])
+    merged_deck = await plugin.study_memory_deck(
+        limit=1, due_only=False, include_topic_cards=True
+    )
+    assert isinstance(merged_deck, Ok)
+    assert len(merged_deck.value["cards"]) == 1
+    assert merged_deck.value["card_count"] == 1
+    loose_card = await plugin.study_memory_card_upsert(front="Loose prompt", back="A")
+    loose_card_again = await plugin.study_memory_card_upsert(
+        front="Another loose prompt", back="B"
+    )
+    assert isinstance(loose_card, Ok)
+    assert isinstance(loose_card_again, Ok)
+    assert loose_card.value["created"] is True
+    assert loose_card_again.value["created"] is True
+    assert loose_card.value["card"]["item_id"] != loose_card_again.value["card"]["item_id"]
+    reviewed_again = await plugin.study_memory_review_item(
+        item_id=card_item_id, rating="again"
+    )
+    assert isinstance(reviewed_again, Ok)
+    assert reviewed_again.value["review_record"]["correct"] == 0
+    inferred_review = await plugin.study_memory_review_item(
+        item_id=card_item_id, correct=False, error_type="spelling"
+    )
+    assert isinstance(inferred_review, Ok)
+    assert inferred_review.value["rating"] == 2
+    reviewed = await plugin.study_memory_card_review(
+        topic_id="phase7_plugin_memory", rating="good"
+    )
+    assert isinstance(reviewed, Ok)
+    assert reviewed.value["rating"] == 3
+    reviewed_topic = await plugin.study_memory_card_review(
+        topic_id="phase7_topic_due", rating="good"
+    )
+    assert isinstance(reviewed_topic, Ok)
+    assert reviewed_topic.value["topic_id"] == "phase7_topic_due"
+    assert reviewed_topic.value["rating"] == 3
+    assert reviewed_topic.value["card"]["topic_id"] == "phase7_topic_due"
+    status = await plugin.study_status()
+    assert isinstance(status, Ok)
+    assert status.value["status"] == "ready"
+    assert status.value["is_first_run"] is True
+    assert status.value["active_mode"] == MODE_COMPANION
+    assert "mode_started_at" in status.value
+    assert "recent_mode_switches" in status.value
+    assert status.value["knowledge_summary"]["topic_count"] >= 120
+    assert "review_queue" in status.value
+    assert status.value["memory_deck"]["card_count"] >= 1
+    assert "weak_topics" in status.value
+    assert "mastery_overview" in status.value
+    assert (
+        runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db"
+    ).is_file()
+    await plugin.shutdown()
 
 
 @pytest.mark.asyncio
