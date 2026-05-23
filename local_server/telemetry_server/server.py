@@ -220,8 +220,8 @@ async def admin_canonical_metrics(days: int = 30):
 
 @app.post("/api/v1/admin/canonical/rebuild", dependencies=[Depends(require_admin)])
 async def admin_canonical_rebuild():
-    """手动触发：增量扫 events 产边 + 重算 canonical 连通分量。"""
-    processed = storage.build_edges_from_events()
+    """手动触发：扫 events 产边（drain 到追平）+ 重算 canonical 连通分量。"""
+    processed = storage.build_all_pending_edges()
     canonicals = storage.recompute_canonical()
     return {"events_processed": processed, "canonical_count": canonicals}
 
@@ -258,7 +258,7 @@ async def _periodic_canonical_rebuild():
     while True:
         await asyncio.sleep(300)
         try:
-            processed = await asyncio.to_thread(storage.build_edges_from_events)
+            processed = await asyncio.to_thread(storage.build_all_pending_edges)
             if processed:
                 await asyncio.to_thread(storage.recompute_canonical)
         except Exception:

@@ -16,7 +16,6 @@ import pytest
 _SRV_DIR = Path(__file__).resolve().parents[2] / "local_server" / "telemetry_server"
 sys.path.insert(0, str(_SRV_DIR))
 
-import storage as st  # noqa: E402
 from storage import TelemetryStorage, normalize_steam_id  # noqa: E402
 
 
@@ -198,6 +197,38 @@ def test_canonical_metrics_dedup(store):
     assert device_m["dau_today"] == 2
     assert canon_m["canonical_dau_today"] == 1
     assert canon_m["total_canonical"] == 1
+
+
+def test_drain_loop_catches_up(store):
+    """build_all_pending_edges 必须 drain 全部，不能只吃一页（游标落后 bug）。"""
+    for i in range(12):
+        _report(store, f"device{i:012d}", steam=f"765611980000000{i:02d}")
+    # 单页只吃 5 条，但 build_all_pending_edges 应循环到追平 12 条
+    total = store.build_all_pending_edges(batch_limit=5)
+    assert total == 12
+    cursor = store._get_conn().execute(
+        "SELECT last_event_id FROM edge_build_cursor WHERE id=1"
+    ).fetchone()["last_event_id"]
+    max_event = store._get_conn().execute("SELECT MAX(id) m FROM events").fetchone()["m"]
+    assert cursor == max_event
+    edges = store._get_conn().execute("SELECT COUNT(*) c FROM device_steam_edges").fetchone()["c"]
+    assert edges == 12
+
+
+def test_denylist_atomic_guard_on_insert(store):
+    """denylist 已有的 ID，即使 events 里有，build 也不得插入（原子 WHERE NOT EXISTS）。"""
+    # 先把某 steam 加入 denylist
+    store.add_steam_id_to_denylist("76561198000000001")
+    # 再来一批含该 ID 的 events（模拟删号后又上报 / 回填扫到旧事件）
+    _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")
+    _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000002")
+    store.build_edges_from_events()
+    rows = store._get_conn().execute(
+        "SELECT steam_user_id FROM device_steam_edges ORDER BY steam_user_id"
+    ).fetchall()
+    sids = [r["steam_user_id"] for r in rows]
+    assert "76561198000000001" not in sids, "denylist ID 被插回"
+    assert "76561198000000002" in sids
 
 
 def test_edge_uses_event_time_not_now(store):

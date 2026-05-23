@@ -600,9 +600,6 @@ class TelemetryStorage:
         ).fetchall()
         if not events:
             return 0
-        denylist = {
-            r["steam_user_id"] for r in conn.execute("SELECT steam_user_id FROM steam_id_denylist")
-        }
         max_id = last_id
         processed = 0
         with self._transaction() as c:
@@ -620,15 +617,20 @@ class TelemetryStorage:
                 if not isinstance(payload, dict):
                     continue
                 sid = normalize_steam_id(payload.get("steam_user_id"))
-                if sid and sid not in denylist:
+                if sid:
+                    # denylist 用 WHERE NOT EXISTS 在 INSERT 内原子判定，而非读快照：
+                    # SQLite 写事务串行，若并发删号已提交，这里的子查询能看到，
+                    # 杜绝"读快照后删号→本批仍把被删 ID 插回复活"的竞态。
+                    # WHERE 子句同时消除 INSERT...SELECT 与 ON CONFLICT 的解析歧义。
                     c.execute("""
                         INSERT INTO device_steam_edges (device_id, steam_user_id, first_seen, last_seen, observe_count)
-                        VALUES (?, ?, ?, ?, 1)
+                        SELECT ?, ?, ?, ?, 1
+                        WHERE NOT EXISTS (SELECT 1 FROM steam_id_denylist WHERE steam_user_id = ?)
                         ON CONFLICT(device_id, steam_user_id) DO UPDATE SET
                             first_seen = COALESCE(MIN(device_steam_edges.first_seen, excluded.first_seen), device_steam_edges.first_seen, excluded.first_seen),
                             last_seen  = COALESCE(MAX(device_steam_edges.last_seen,  excluded.last_seen),  device_steam_edges.last_seen,  excluded.last_seen),
                             observe_count = device_steam_edges.observe_count + 1
-                    """, (dev, sid, ts, ts))
+                    """, (dev, sid, ts, ts, sid))
                 legacy = payload.get("device_id_legacy")
                 if isinstance(legacy, str) and legacy and legacy != dev:
                     lo, hi = sorted((dev, legacy))
@@ -642,6 +644,19 @@ class TelemetryStorage:
                     """, (lo, hi, ts, ts))
             c.execute("UPDATE edge_build_cursor SET last_event_id = ? WHERE id = 1", (max_id,))
         return processed
+
+    def build_all_pending_edges(self, batch_limit: int = 5000) -> int:
+        """循环 drain 到游标追平再返回，避免单次只吃一页、游标永远落后于 ingest。
+
+        每页满（processed == batch_limit）说明还有，继续；不满即追平。返回总处理数。
+        """
+        total = 0
+        while True:
+            n = self.build_edges_from_events(batch_limit=batch_limit)
+            total += n
+            if n < batch_limit:
+                break
+        return total
 
     def recompute_canonical(self) -> int:
         """对 device⟷steam + device⟷device 边跑 union-find，落表 canonical_map。
