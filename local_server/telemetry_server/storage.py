@@ -366,17 +366,21 @@ class TelemetryStorage:
         #   3) fallback_stat_date（一般是 today.isoformat()）— 兜底。
         # 兜底：fallback_stat_date（一般 today）。下面按优先级求一个 candidate
         # 日期，但**两条来源都必须过同一个 recency 校验**才采用。
-        stat_date = fallback_stat_date or date.today().isoformat()
+        today = date.today()
+        stat_date = today.isoformat()
         # recency anchor：在线实时上报锚到今天；但 store_instruments 文档承诺支持
         # 离线导入 / 跨表回填——调用方显式传了 fallback_stat_date 时，就拿它当
-        # anchor 校验历史样本，否则合法的历史快照会被压回今天打歪导入分区
-        # （CodeRabbit）。live 路径传的 fallback 就是 today，行为不变。
-        recency_anchor = date.today()
+        # anchor 校验历史样本，否则合法的历史快照会被压回今天打歪导入分区。
+        # live 路径传的 fallback 就是 today，行为不变。
+        # **只有解析成功才把 fallback 回填进 stat_date** —— 否则像 "foo" 这种
+        # 无效 fallback 会被原样落库污染 retention 分区（CodeRabbit）。
+        recency_anchor = today
         if fallback_stat_date:
             try:
                 recency_anchor = date.fromisoformat(fallback_stat_date)
+                stat_date = recency_anchor.isoformat()
             except ValueError:
-                recency_anchor = date.today()
+                recency_anchor = today
         candidate: date | None = None
 
         # 来源 1：客户端 snapshot 的 stat_date（客户端本地日历天，跟 daily_stats
