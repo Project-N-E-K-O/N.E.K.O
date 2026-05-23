@@ -11,16 +11,14 @@
     <template #header>
       <div class="dialog-header">
         <div>
-          <div class="dialog-title">{{ t('packageManager.resultDialog.title') }}</div>
-          <div class="dialog-subtitle">
-            {{ t('packageManager.resultDialog.subtitle', { count: resultHistory.length }) }}
-          </div>
+          <div class="dialog-title">包管理执行记录</div>
+          <div class="dialog-subtitle">保留最近 {{ resultHistory.length }} 条执行结果</div>
         </div>
       </div>
     </template>
 
     <div v-if="resultHistory.length === 0" class="dialog-empty">
-      <el-empty :description="t('packageManager.resultDialog.empty')" />
+      <el-empty description="执行包管理操作后，这里会显示记录" />
     </div>
 
     <div v-else class="dialog-layout">
@@ -34,11 +32,11 @@
           @click="$emit('select', record.id)"
         >
           <div class="history-item__top">
-            <el-tag size="small" effect="dark" type="info">{{ record.kindLabel }}</el-tag>
+            <el-tag size="small" effect="dark" type="info">{{ record.kind }}</el-tag>
             <span class="history-item__time">{{ record.createdAt }}</span>
           </div>
           <div class="history-item__summary">
-            {{ record.summaryHighlights[0]?.value || record.summaryWarnings[0] || t('packageManager.resultDialog.viewDetails') }}
+            {{ record.summaryHighlights[0]?.value || record.summaryWarnings[0] || '查看详情' }}
           </div>
         </button>
       </aside>
@@ -47,10 +45,10 @@
         <template v-if="activeResultRecord">
           <div class="detail-header">
             <div>
-              <div class="detail-title">{{ t('packageManager.resultDialog.detailTitle') }}</div>
+              <div class="detail-title">结果详情</div>
               <div class="detail-meta">{{ activeResultRecord.createdAt }}</div>
             </div>
-            <el-tag type="primary" effect="plain">{{ activeResultRecord.kindLabel }}</el-tag>
+            <el-tag type="primary" effect="plain">{{ activeResultRecord.kind }}</el-tag>
           </div>
 
           <div v-if="activeResultRecord.summaryMetrics.length > 0" class="summary-grid">
@@ -66,26 +64,18 @@
 
           <div v-if="activeResultRecord.inspectResult" class="inspect-panel">
             <el-descriptions :column="2" border class="inspect-summary">
-              <el-descriptions-item :label="t('packageManager.resultDialog.inspect.packageId')">
-                {{ activeResultRecord.inspectResult.package_id }}
-              </el-descriptions-item>
-              <el-descriptions-item :label="t('packageManager.resultDialog.inspect.packageType')">
-                {{ getPackageTypeLabel(activeResultRecord.inspectResult.package_type, t) }}
-              </el-descriptions-item>
-              <el-descriptions-item :label="t('packageManager.resultDialog.inspect.version')">
-                {{ activeResultRecord.inspectResult.version || '-' }}
-              </el-descriptions-item>
-              <el-descriptions-item :label="t('packageManager.resultDialog.inspect.schemaVersion')">
-                {{ activeResultRecord.inspectResult.schema_version || '-' }}
-              </el-descriptions-item>
-              <el-descriptions-item :label="t('packageManager.resultDialog.inspect.hashCheck')">
+              <el-descriptions-item label="包 ID">{{ activeResultRecord.inspectResult.package_id }}</el-descriptions-item>
+              <el-descriptions-item label="类型">{{ activeResultRecord.inspectResult.package_type }}</el-descriptions-item>
+              <el-descriptions-item label="版本">{{ activeResultRecord.inspectResult.version || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="Schema">{{ activeResultRecord.inspectResult.schema_version || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="Hash 校验">
                 <el-tag
                   :type="activeResultRecord.inspectResult.payload_hash_verified === true ? 'success' : activeResultRecord.inspectResult.payload_hash_verified === false ? 'danger' : 'info'"
                 >
-                  {{ getHashStatusLabel(activeResultRecord.inspectResult.payload_hash_verified, t) }}
+                  {{ activeResultRecord.inspectResult.payload_hash_verified === null ? '未校验' : activeResultRecord.inspectResult.payload_hash_verified ? '通过' : '失败' }}
                 </el-tag>
               </el-descriptions-item>
-              <el-descriptions-item :label="t('packageManager.resultDialog.inspect.profiles')">
+              <el-descriptions-item label="Profiles">
                 {{ activeResultRecord.inspectResult.profile_names.join(', ') || '-' }}
               </el-descriptions-item>
             </el-descriptions>
@@ -103,7 +93,7 @@
           </div>
 
           <div v-if="activeResultRecord.summaryListItems.length > 0" class="summary-section">
-            <div class="summary-section__title">{{ t('packageManager.resultDialog.summaryTitle') }}</div>
+            <div class="summary-section__title">明细</div>
             <div class="summary-chip-list">
               <el-tag
                 v-for="item in activeResultRecord.summaryListItems"
@@ -117,7 +107,7 @@
           </div>
 
           <div v-if="activeResultRecord.summaryWarnings.length > 0" class="summary-section">
-            <div class="summary-section__title">{{ t('packageManager.resultDialog.notesTitle') }}</div>
+            <div class="summary-section__title">注意</div>
             <div class="summary-warning-list">
               <div
                 v-for="warning in activeResultRecord.summaryWarnings"
@@ -130,7 +120,7 @@
           </div>
 
           <div class="summary-section">
-            <div class="summary-section__title">{{ t('packageManager.resultDialog.rawJsonTitle') }}</div>
+            <div class="summary-section__title">原始结果 JSON</div>
             <pre class="result-block">{{ activeResultRecord.resultText }}</pre>
           </div>
         </template>
@@ -140,26 +130,19 @@
 </template>
 
 <script setup lang="ts">
-import { useI18n } from 'vue-i18n'
 import type { PackageResultRecord } from '@/composables/usePackageManager'
-import { getHashStatusLabel, getPackageTypeLabel } from '@/components/plugin/packageResultDisplay'
 
-withDefaults(
-  defineProps<{
-    visible: boolean
-    resultHistory: PackageResultRecord[]
-    activeResultId: string
-    activeResultRecord: PackageResultRecord | null
-  }>(),
-  {},
-)
+defineProps<{
+  visible: boolean
+  resultHistory: PackageResultRecord[]
+  activeResultId: string
+  activeResultRecord: PackageResultRecord | null
+}>()
 
 defineEmits<{
   'update:visible': [value: boolean]
   select: [recordId: string]
 }>()
-
-const { t } = useI18n()
 </script>
 
 <style scoped>

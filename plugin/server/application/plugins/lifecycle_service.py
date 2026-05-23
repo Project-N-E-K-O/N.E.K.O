@@ -27,6 +27,7 @@ from plugin.core.registry import (
     _resolve_plugin_id_conflict,
     scan_static_metadata,
 )
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
@@ -41,7 +42,7 @@ from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.llm_tool_registry import (
     clear_plugin_tools as clear_plugin_llm_tools,
 )
-from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
+from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
@@ -561,7 +562,11 @@ class PluginLifecycleService:
                     plugin_id=current_plugin_id,
                     error_type="InvalidEntryPoint",
                 )
-            entry = entry_obj
+            entry = normalize_plugin_entry_point(
+                entry_obj,
+                config_path=config_path,
+                builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
+            )
 
             resolved_id = _resolve_plugin_id_conflict(
                 current_plugin_id,

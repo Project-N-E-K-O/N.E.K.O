@@ -17,9 +17,6 @@ export default {
     back: 'Voltar',
     submit: 'Enviar',
     close: 'Fechar',
-    minimize: 'Minimizar',
-    maximize: 'Maximizar',
-    restore: 'Restaurar',
     success: 'Sucesso',
     error: 'Erro',
     warning: 'Aviso',
@@ -42,7 +39,104 @@ export default {
     serverLogs: 'Registros do servidor',
     adapters: 'Adaptadores',
     adapterUI: 'UI do adaptador',
-    packageManager: 'Gerenciador de pacotes'
+    packageManager: 'Gerenciador de pacotes',
+    market: 'Mercado de plugins'
+  },
+  market: {
+    title: 'Obter novos plugins',
+    subtitle: 'Navegue e instale plugins do mercado',
+    getNewPlugins: 'Obter novos plugins',
+    openMarket: 'Abrir mercado',
+    closeMarket: 'Fechar mercado',
+    openInBrowser: 'Abrir no navegador',
+    account: 'Conta do Market',
+    accountConnected: 'Conectado: {name}',
+    login: 'Entrar',
+    loginStarted: 'Navegador aberto. Conclua a autorização no Market.',
+    loginSuccess: 'Login do Market conectado',
+    loginFailed: 'Falha no login do Market',
+    loginPending: 'A autorização do Market expirou; tente novamente',
+    logoutSuccess: 'Sessão do Market encerrada',
+    searchPlaceholder: 'Buscar plugins...',
+    notConfigured: 'Mercado não configurado',
+    configHint: 'Defina a variável de ambiente NEKO_MARKET_URL',
+    noResults: 'Nenhum plugin encontrado',
+    install: 'Instalar',
+    installed: 'Instalado',
+    installing: 'Instalando...',
+    installSuccess: 'Tarefa de instalação criada: {name}',
+    installFailed: 'Falha na instalação',
+    installPreparing: 'Preparando instalação...',
+    installDialogTitle: 'Instalando {name}',
+    installDialogTitleUpgrade: 'Atualizando {name}',
+    installCompleted: 'Instalação concluída',
+    installCompletedUpgrade: 'Atualização concluída',
+    rollbackRunning: 'Instalação falhou; revertendo...',
+    rollbackCompleted: 'Revertido para a versão anterior',
+    installStage: {
+      pending: 'Preparando',
+      download: 'Baixando',
+      verify: 'Verificando',
+      install: 'Instalando',
+      stop_old: 'Parando versão antiga',
+      backup_old: 'Fazendo backup',
+      restart: 'Iniciando nova versão',
+      rollback: 'Revertendo',
+      completed: 'Concluído',
+      failed: 'Falhou',
+    },
+    noDownloadUrl: 'Nenhuma URL de download disponível',
+    pairRequired: 'É necessário parear Bridge Token',
+    recommended: 'Recomendado',
+    allPlugins: 'Todos os plugins',
+    noDescription: 'Sem descrição',
+    unknownAuthor: 'Desconhecido',
+    filterRules: 'Filtros',
+    filterRulesTitle: 'Sintaxe de busca',
+    filterRulesHint: 'Clique para inserir. Aceita key:value, prefixo - para excluir.',
+    filterGroups: {
+      state: 'Estado',
+      zone: 'Zona',
+      meta: 'Metadados'
+    },
+    filterLabels: {
+      recommended: 'Recomendado',
+      installed: 'Instalado',
+      uninstalled: 'Não instalado',
+      tag: 'Tag',
+      author: 'Autor',
+      name: 'Nome',
+      versionGte: 'Versão ≥',
+      hasRepo: 'Com repo',
+      hasTags: 'Com tags'
+    },
+    zones: {
+      game: 'Jogo',
+      companion: 'Companheiro',
+      function: 'Função',
+      entertainment: 'Entretenimento',
+      tool: 'Ferramenta'
+    },
+    sortNewest: 'Mais recente',
+    sortMostDownloads: 'Downloads',
+    sortTopRated: 'Melhor avaliado',
+    sortName: 'Nome',
+    upgrading: 'Upgrading...',
+    upgradeTo: 'Upgrade to v{version}',
+    upgradeSuccess: 'Upgraded: {name}',
+    yanked: 'Yanked',
+    yankedDefault: 'This version has been yanked by its author',
+    noVersionAvailable: 'No release available',
+    upgradeRollback: 'Upgrade failed; rolled back to previous version',
+    upgradeAlreadyAtTarget: 'Already at the target version',
+    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
+    lockWriteFailed: 'Failed to write install record'
+  },
+  settings: {
+    channel: 'Update channel',
+    channelStable: 'Stable',
+    channelBeta: 'Beta',
+    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
   },
   auth: {
     unauthorized: 'Acesso não autorizado',
@@ -115,6 +209,32 @@ export default {
     noEntries: 'Sem pontos de entrada',
     showMetrics: 'Mostrar métricas',
     hideMetrics: 'Ocultar métricas',
+    showSourceDetail: 'Show Source Details',
+    hideSourceDetail: 'Hide Source Details',
+    installSource: {
+      channel: {
+        builtin: 'Built-in',
+        manual: 'Manual',
+        imported: 'Imported',
+        market: 'Market',
+      },
+      // v2: Market release channel values displayed on SourceDetailRow.
+      channelLabels: {
+        stable: 'Stable',
+        beta: 'Beta',
+      },
+      updateAvailable: 'Update available',
+      labels: {
+        installedAt: 'Installed',
+        packageFilename: 'Package',
+        sha256: 'SHA-256',
+        marketId: 'Market ID',
+        version: 'Version',
+        previousVersion: 'Previous',
+        latestAvailable: 'Latest available',
+        channel: 'Channel',
+      },
+    },
     filterPlaceholder: 'Filtrar plugins por texto, pinyin e regras is:/type:/has:',
     filterRules: 'Regras',
     filterRulesTitle: 'Regras de filtro',
@@ -168,6 +288,10 @@ export default {
     typePlugin: 'Plugin',
     typeAdapter: 'Adaptador',
     typeExtension: 'Extensão',
+    layoutList: 'Lista',
+    layoutSingle: 'Coluna única',
+    layoutDouble: 'Duas colunas',
+    layoutCompact: 'Compacto',
     openPackageManager: 'Gerenciador de pacotes',
     closePackageManager: 'Ocultar gerenciador de pacotes',
     packageManagerOpened: 'Gerenciador de pacotes aberto',
@@ -192,12 +316,12 @@ export default {
     batchNoReloadable: 'Nenhum plugin em execução na seleção',
     import: 'Importar',
     importing: 'Importando…',
-    importSuccess: '{name} importado, {count} plugins desempacotados',
+    importSuccess: '{name} importado, {count} plugins instalados',
     importFailed: 'Falha ao importar',
     export: 'Exportar',
     exportSuccess: '{count} pacotes exportados',
     exportFailed: 'Falha ao exportar',
-    exportPackFailed: 'Falha no empacotamento, não foi possível exportar',
+    exportBuildFailed: 'Falha no empacotamento, não foi possível exportar',
     filterRuleGroups: {
       state: 'Estado',
       type: 'Tipo',
@@ -228,7 +352,7 @@ export default {
       runtime: 'Tempo de execução',
       plugin: 'Extras do plugin'
     },
-    pack: 'Empacotar plugin',
+    build: 'Empacotar plugin',
     delete: 'Excluir plugin',
     disableExtension: 'Desabilitar extensão',
     enableExtension: 'Habilitar extensão',
@@ -329,107 +453,6 @@ export default {
     cancelConfirmMessage: 'ID da execução: {runId}',
     cancelSuccess: 'Cancelamento solicitado'
   },
-  packageManager: {
-    resultDialog: {
-      title: 'Registro de resultados de pacotes',
-      subtitle: 'Mantém os últimos {count} resultados de execução',
-      empty: 'Os resultados das operações de pacote aparecerão aqui',
-      viewDetails: 'Ver detalhes',
-      detailTitle: 'Detalhes do resultado',
-      summaryTitle: 'Detalhes',
-      notesTitle: 'Notas',
-      rawJsonTitle: 'JSON bruto do resultado',
-      kinds: {
-        pack: 'Empacotar',
-        inspect: 'Inspecionar',
-        verify: 'Verificar',
-        unpack: 'Descompactar',
-        analyze: 'Analisar',
-      },
-      inspect: {
-        packageId: 'ID do pacote',
-        packageType: 'Tipo',
-        version: 'Versão',
-        schemaVersion: 'Schema',
-        hashCheck: 'Verificação Hash',
-        profiles: 'Profiles',
-        packageTypes: {
-          bundle: 'Bundle',
-          plugin: 'Pacote de plugin',
-        },
-        hashStatus: {
-          notChecked: 'Não verificado',
-          passed: 'Aprovado',
-          failed: 'Falhou',
-        },
-      },
-      metrics: {
-        pack: {
-          type: 'Tipo',
-          succeeded: 'Sucesso',
-          failed: 'Falha',
-          containsPlugins: 'Contém plugins',
-          status: 'Estado',
-          complete: 'Concluído',
-          partialFailed: 'Falha parcial',
-        },
-        inspect: {
-          pluginCount: 'Contagem de plugins',
-          profileCount: 'Profiles',
-          hash: 'Hash',
-        },
-        unpack: {
-          processedPlugins: 'Plugins processados',
-          conflictStrategy: 'Estratégia de conflito',
-          hash: 'Hash',
-        },
-        analyze: {
-          pluginCount: 'Contagem de plugins',
-          commonDependencies: 'Dependências comuns',
-          sharedDependencies: 'Dependências compartilhadas',
-        },
-      },
-      highlights: {
-        pack: {
-          bundlePluginId: 'ID do bundle',
-          bundleName: 'Nome do bundle',
-          bundleVersion: 'Versão do bundle',
-          outputPath: 'Caminho de saída',
-          firstPlugin: 'Primeiro plugin',
-          latestPackagePath: 'Caminho do pacote mais recente',
-        },
-        inspect: {
-          packageId: 'ID do pacote',
-          packageType: 'Tipo de pacote',
-          version: 'Versão',
-        },
-        unpack: {
-          packageId: 'ID do pacote',
-          pluginsRoot: 'Diretório de plugins',
-          profilesRoot: 'Diretório de Profiles',
-        },
-        analyze: {
-          currentSdk: 'Suporte do SDK atual',
-          supported: 'compatível',
-          unsupported: 'não totalmente compatível',
-          matchingVersions: 'Combinações recomendadas',
-        },
-      },
-      list: {
-        pluginPrefix: 'plugin:',
-        profilePrefix: 'profile:',
-        renamedSuffix: '(renomeado)',
-        arrow: '->',
-      },
-      warnings: {
-        bundleNeedsTwoPlugins: 'Um bundle geralmente deve conter pelo menos dois plugins',
-        verifyFailed: 'O pacote não passou na verificação hash. Não importe diretamente para um ambiente de execução.',
-        inspectHashFailed: 'A verificação hash do pacote atual falhou e o conteúdo pode ter sido modificado.',
-        analyzeSdkMismatch: 'A versão atual do SDK não é compatível com todos os plugins em conjunto.',
-        analyzeSharedDependencies: '{count} dependências compartilhadas detectadas. Verifique bem as restrições de versão ao criar bundles.',
-      },
-    },
-  },
   status: {
     running: 'Em execução',
     stopped: 'Parado',
@@ -459,12 +482,12 @@ export default {
     pluginStarted: 'Plugin iniciado com sucesso',
     pluginStopped: 'Plugin parado',
     pluginReloaded: 'Plugin recarregado com sucesso',
-    pluginPacked: 'Plugin empacotado: {packageName}',
+    pluginBuilt: 'Plugin empacotado: {packageName}',
     pluginDeleted: 'Plugin excluído',
     startFailed: 'Falha ao iniciar',
     stopFailed: 'Falha ao parar',
     reloadFailed: 'Falha ao recarregar',
-    packFailed: 'Falha ao empacotar plugin',
+    buildFailed: 'Falha ao empacotar plugin',
     deleteFailed: 'Falha ao excluir plugin',
     pluginLoadFailed: 'O plugin falhou ao carregar e não pode ser iniciado.',
     confirmDisableExt: 'Desabilitar esta extensão? Sua funcionalidade será descarregada do plugin hospedeiro.',
@@ -531,19 +554,19 @@ export default {
       },
       lines: {
         introActivationHint: 'Clica aqui pra eu poder começar a falar, nya~!',
-        introGreetingReply: 'Brisa suave, sol, e você aparecendo exatamente na hora certa. Prazer em te conhecer, eu sou Lin Youyi; cuide bem de mim daqui em diante, miau! Escrevi tudo sobre este lugar no guia para iniciantes. Considere isso o primeiro presentinho do nosso encontro; dá uma olhada!',
-        introBasic: 'Ooh, olha este botaozinho brilhante! Dá um clique nele e a gente pode começar a conversar na hora! Quer me contar as novidades de hoje? Ou só chamar meu nome? Vamos, experimenta, mal posso esperar para ouvir sua voz! Miau!',
-        takeoverCaptureCursor: 'Ta-dá! Apareceu o interruptor mágico definitivo! É só tocar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas web... Mas, se esse ponteiro do mouse ficar se mexendo por aí, talvez eu não consiga resistir a pular nele! Você está pronto para minhas travessuras... ah, não, para minha ajuda? Miau!',
-        takeoverPluginPreviewHome: 'Ainda não acabou! Olha, olha, tem muuuitos plugins divertidos aqui!',
-        takeoverPluginPreviewDashboard: 'Com eles, eu não só consigo ler o danmaku do Bilibili, mas também ajudar você a apagar as luzes e ligar o ar-condicionado... Eu sou a super deusa gata onipotente! Hehe!',
-        takeoverSettingsPeekIntro: 'Claro, se você quiser que eu converse mais com você, não é impossível. Só prepare mais peixinhos secos pra mim, hehe. Tá bom, vou parar de te provocar; todas as configurações estão neste ícone de engrenagem.',
-        takeoverSettingsPeekDetail: 'Olha, aqui você pode colocar roupas novas em mim, me dar uma voz bonita... Trocar por outra catgirl ou modificar memórias? Espera um pouco! O que você está fazendo? Não vai me substituir, vai? Aaaah, de jeito nenhum! Fecha, fecha rápido!',
-        takeoverSettingsPeekDetailPart1: 'Olha, aqui você pode colocar roupas novas em mim, me dar uma voz bonita... Trocar por outra catgirl ou modificar memórias?',
-        takeoverSettingsPeekDetailPart2: 'Espera um pouco! O que você está fazendo? Não vai me substituir, vai? Aaaah, de jeito nenhum! Fecha, fecha rápido!',
-        takeoverReturnControl: 'Tá bom, tá bom, não vou mais tomar conta do seu computador! O controle voltou pra você! Mas nada de clicar em configurações estranhas quando eu não estiver olhando! Conte comigo, e cuide de mim daqui em diante!',
-        interruptResistLight1: 'Ei! Não me arrasta, ainda não é a sua vez!',
-        interruptResistLight3: 'Espera um pouco! Ainda não acabou, não me interrompa assim!',
-        interruptAngryExit: 'Humano! Você é muito sem educação, miau! Já que você quer tanto operar tudo sozinho, então vai brincar com essa tela fria sozinho! Hmph!',
+        introGreetingReply: 'Bem-vindo de volta para casa, miau~ O mundo lá fora pode ser tão cansativo, não é? Neste pequeno ninho só nosso, você pode deixar todas as preocupações de lado. Eu sou Lin Youyi. Pode confiar em mim nesta introdução; vou segurar sua mão e guiar você passo a passo.',
+        introBasic: 'Olha, tem um botão mágico aqui! É só clicar nele e você pode conversar diretamente comigo! Quer me contar as novidades divertidas de hoje? Ou talvez só chamar o meu nome? Vem experimentar, mal posso esperar para ouvir a sua voz! Miau!',
+        takeoverCaptureCursor: 'Um super botão mágico aparece! Basta clicar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas da web... Mas, se esse ponteiro do mouse ficar se mexendo para lá e para cá, talvez eu não consiga resistir a pular em cima dele! Está pronto para a minha bagunça... quer dizer, para a minha ajuda? Miau!',
+        takeoverPluginPreviewHome: 'Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!',
+        takeoverPluginPreviewDashboard: 'Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~',
+        takeoverSettingsPeekIntro: 'Claro, eu não me importaria de bater mais papo se você quiser, mas é melhor preparar bastante peixinho seco! Hehe, brincadeira! Todas as configurações estão neste ícone de engrenagem.',
+        takeoverSettingsPeekDetail: 'Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?! Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!',
+        takeoverSettingsPeekDetailPart1: 'Olha, dá pra trocar minha roupa, ou minha voz... espera, TROCAR POR OUTRA CATGIRL?! OU APAGAR MEMÓRIAS?!',
+        takeoverSettingsPeekDetailPart2: 'Espera, o que você está fazendo?! Você não está tentando me substituir, né?! Não, não, não! Fecha isso! Fecha agora mesmo!',
+        takeoverReturnControl: 'Tá bom, tá bom, já parei de sequestrar o seu PC~! Devolvendo o controle pra você! Mas não ouse mexer em configurações estranhas enquanto eu não estou olhando! Conto com você daqui pra frente, nya~!',
+        interruptResistLight1: 'Ei! Não me arrasta! Ainda não é a sua vez, nya!',
+        interruptResistLight3: 'Calma aí! Ainda não terminei, não me interrompa desse jeito!',
+        interruptAngryExit: 'Humanoooo~~~~! Você é tão sem educação, nya! Já que quer fazer tudo sozinho, vai brincar com essa tela fria sozinho! Hmph!',
         introPractice: 'Agora, tenta falar comigo e vê se a gente está sincronizadinho, nya~!',
       },
     }
@@ -558,79 +581,79 @@ export default {
     steps: {
       start: {
         title: 'Comece aqui',
-        body: 'Use este botão para reproduzir a tour do gerenciador de plugins quando quiser. Se você trocar o idioma durante a reprodução, a tour acompanha o novo idioma.'
+        body: 'Use este botão sempre que quiser rever o tutorial do gerenciador de plugins. Eu não vou aparecer sozinha, nya.'
       },
       stats: {
         title: 'Visão geral dos plugins',
-        body: 'Esses cartões resumem o total, os em execução, os parados e os que travaram, para avaliar primeiro o estado do serviço de plugins.'
+        body: 'Estes cartões mostram plugins totais, em execução, parados e com falha para você entender o estado de relance.'
       },
       metrics: {
         title: 'Monitor de desempenho',
-        body: 'Esta área mostra CPU, memória, threads e a contagem de plugins ativos. Confira primeiro quando o galgame OCR ou o Agent estiverem lentos.'
+        body: 'Esta área mostra CPU, memória, threads e plugins ativos do serviço de plugins.'
       },
       server: {
         title: 'Informações do servidor',
-        body: 'Aqui você pode verificar a versão do SDK, a contagem de plugins e a hora da atualização para confirmar que o serviço de plugins do backend está disponível.'
+        body: 'Aqui você vê a versão do SDK, a contagem de plugins e a hora da atualização para confirmar que o serviço está saudável.'
       },
       plugins: {
         title: 'Lista de plugins',
-        body: 'Abra o Gerenciamento de Plugins para iniciar, parar, recarregar, configurar plugins ou abrir a UI e o guia do galgame_plugin.'
+        body: 'Entre em Plugins à esquerda para iniciar, parar, configurar plugins ou verificar logs.'
       },
       pluginWorkbench: {
         title: 'Área de plugins',
-        body: 'Este espaço reúne plugins normais, adaptadores e extensões. galgame_plugin, Danmaku, MCP e outros plugins ficam aqui.'
+        body: 'Aqui ficam plugins, adaptadores e extensões para a gestão do dia a dia.'
       },
       pluginFilters: {
         title: 'Busca e filtros',
-        body: 'Filtre por nome, estado, tipo ou regras avançadas. Para encontrar o galgame_plugin rapidamente, pesquise por galgame.'
+        body: 'Filtre por nome, estado, tipo ou regras avançadas quando a lista ficar grande.'
       },
       pluginLayout: {
         title: 'Layout da visualização',
-        body: 'Alterne entre lista, uma coluna, duas colunas e modo compacto. Duas colunas ou o modo compacto reduzem a rolagem quando há muitos plugins.'
+        body: 'Alterne entre lista, uma coluna, duas colunas e modo compacto conforme sua tela.'
       },
       pluginContextMenu: {
         title: 'Ações com clique direito',
-        body: 'Clique com o botão direito em um plugin para abrir detalhes, configuração, logs, UI ou guia, e para executar iniciar, parar e recarregar.'
+        body: 'Clique com o botão direito em um plugin para abrir detalhes, configuração, logs ou ações comuns.'
       },
       packageManager: {
         title: 'Gerenciador de pacotes',
-        body: 'O gerenciador de pacotes reutiliza os filtros atuais e a seleção múltipla para criar pacotes de plugin único ou bundles, e também para lidar com pacotes locais.'
+        body: 'Ele reutiliza filtros e seleção atuais para construir, inspecionar, verificar ou instalar.'
       },
       packageOperations: {
         title: 'Operações de pacote',
-        body: 'Empacote plugins selecionados, individuais ou todos; crie bundles; inspecione e verifique pacotes; descompacte pacotes; ou analise dependências de bundles aqui.'
+        body: 'Escolha modos de build, inspecione pacotes, instale ou analise bundles. O guia não executa ações perigosas.'
       },
       pluginDetail: {
         title: 'Detalhes do plugin',
-        body: 'A página de detalhes mostra a UI, o guia, as informações básicas, entradas, métricas, configuração e logs. O painel principal do galgame_plugin é a guia UI.'
+        body: 'A página de detalhes mostra metadados, entradas, métricas, configuração e logs.'
       },
       pluginDetailActions: {
         title: 'Ações dos detalhes',
-        body: 'As ações no canto superior direito se aplicam ao plugin atual. Ao depurar o galgame_plugin, confirme que ele está em execução antes de abrir a UI ou os logs.'
+        body: 'As ações no canto superior direito se aplicam ao plugin atual.'
       },
       runs: {
         title: 'Execuções',
-        body: 'As execuções mostram o histórico e o estado ao vivo das tarefas de entrada do plugin, como instalar dependências de OCR, explicar falas ou resumir cenas.'
+        body: 'Execuções mostram histórico e estado ao vivo das tarefas dos plugins.'
       },
       runsList: {
         title: 'Lista de execuções',
-        body: 'Selecione uma execução de tarefa à esquerda. Depois que instalações, análises ou entradas de Agent terminarem, use esta lista para rever os resultados.'
+        body: 'Selecione uma execução à esquerda ou atualize para sincronizar os registros recentes.'
       },
       runsDetail: {
         title: 'Detalhe da execução',
-        body: 'O painel de detalhes mostra etapa, progresso, erros e exportações. Cancelar aparece apenas em tarefas longas que podem ser interrompidas.'
+        body: 'O painel mostra etapa, progresso, erros e exportações; cancelar só aparece quando permitido.'
       },
       logs: {
         title: 'Logs do servidor',
-        body: 'Os logs do servidor mostram a saída de todo o serviço de plugins. Logs específicos do galgame_plugin também ficam disponíveis na página de detalhes.'
+        body: 'Logs do servidor ajudam a revisar saídas e erros do serviço de plugins.'
       },
       logToolbar: {
         title: 'Filtros de logs',
-        body: 'Filtre por nível, palavra-chave e número de linhas, ou alterne a rolagem automática. Use o ID do plugin como palavra-chave ao depurar.'
+        body: 'Filtre por nível, palavra-chave e número de linhas, ou alterne a rolagem automática.'
       },
       logList: {
         title: 'Lista de logs',
-        body: 'Os logs mostram hora, origem, nível e mensagem. Erros de OCR, Memory Reader, Agent e do gerenciador de pacotes costumam aparecer primeiro aqui.'
+        body: 'Os logs mostram hora, origem, nível e mensagem para depurar problemas de plugins.'
       }
     }
   }

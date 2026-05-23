@@ -68,7 +68,7 @@ import httpx # noqa
 import time # noqa
 import signal # noqa
 from datetime import datetime, timezone # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS, USER_PLUGIN_BASE # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
@@ -106,7 +106,7 @@ if _IS_MAIN_PROCESS:
 
 try:
     from fastapi import FastAPI, Request # noqa
-    from fastapi.responses import JSONResponse # noqa
+    from fastapi.responses import JSONResponse, Response # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
@@ -1593,6 +1593,67 @@ async def beacon_shutdown():
     except Exception as e:
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.api_route("/market/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route("/market", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
+    """Proxy plugin-manager Market bridge calls to the user plugin server.
+
+    Vite dev proxies /market to USER_PLUGIN_SERVER_PORT. The packaged UI is
+    served by the main server, so it needs the same same-origin bridge here.
+    """
+
+    target = f"{USER_PLUGIN_BASE}/market"
+    if path:
+        target = f"{target}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    hop_by_hop = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in hop_by_hop
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=await request.body(),
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Market bridge unavailable", "error": str(exc)},
+        )
+
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in hop_by_hop
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
 
 # 挂载全部路由
 app.include_router(config_router)

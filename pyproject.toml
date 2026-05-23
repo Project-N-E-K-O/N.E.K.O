@@ -83,6 +83,9 @@ dependencies = [
 path = "config/__init__.py"
 pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
 
+[project.scripts]
+neko-plugin = "plugin.neko_plugin_cli.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = [
   "app",

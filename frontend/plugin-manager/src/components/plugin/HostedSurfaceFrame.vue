@@ -59,7 +59,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource } from '@/api/plugins'
-import { withStaticUiLocale } from '@/components/plugin/staticUiUrl'
 import { buildHostedTsxDocument } from '@/components/plugin/hosted/tsxRuntime'
 import { openExternalUrl } from '@/utils/openExternal'
 import type { PluginUiSurface } from '@/types/api'
@@ -87,19 +86,10 @@ const error = ref('')
 const runtimeError = ref('')
 const runtimeErrorFatal = ref(false)
 let currentLoadId = 0
-const warnedBlockedStaticUrls = new Set<string>()
 
 const frameStyle = computed(() => ({
   minHeight: props.height,
 }))
-
-function isSameOriginUrl(url: string) {
-  try {
-    return new URL(url, window.location.href).origin === window.location.origin
-  } catch {
-    return false
-  }
-}
 
 const surfaceTitle = computed(() => {
   return props.surface.title || props.surface.id || props.pluginId
@@ -107,41 +97,14 @@ const surfaceTitle = computed(() => {
 
 const surfaceUrl = computed(() => {
   const explicitUrl = props.surface.url || props.surface.ui_path
-  if (explicitUrl) {
-    if (props.surface.mode === 'static' && !isSameOriginUrl(explicitUrl)) {
-      const warningKey = `${props.pluginId}:${explicitUrl}`
-      if (!warnedBlockedStaticUrls.has(warningKey)) {
-        warnedBlockedStaticUrls.add(warningKey)
-        console.warn('[HostedSurfaceFrame] blocked cross-origin static surface URL', {
-          pluginId: props.pluginId,
-          explicitUrl,
-          surface: `${props.surface.kind}:${props.surface.id}`,
-        })
-      }
-      return ''
-    }
-    return props.surface.mode === 'static'
-      ? withStaticUiLocale(explicitUrl, String(locale.value))
-      : explicitUrl
-  }
+  if (explicitUrl) return explicitUrl
   if (props.surface.mode === 'static') {
     // LEGACY_STATIC_UI_COMPAT:
     // Static surfaces currently use the old /plugin/{id}/ui/ route.
     // Later this URL should come from the unified surface metadata.
-    return withStaticUiLocale(`/plugin/${encodeURIComponent(props.pluginId)}/ui/`, String(locale.value))
+    return `/plugin/${encodeURIComponent(props.pluginId)}/ui/`
   }
   return ''
-})
-
-const hostedSurfaceOrigin = computed(() => {
-  if (props.surface.mode !== 'static' || !surfaceUrl.value) {
-    return ''
-  }
-  try {
-    return new URL(surfaceUrl.value, window.location.href).origin
-  } catch {
-    return ''
-  }
 })
 
 const placeholderTitle = computed(() => {
@@ -352,7 +315,6 @@ async function loadHostedTsx() {
     const response = await getPluginHostedSurfaceSource(props.pluginId, {
       kind: props.surface.kind,
       id: props.surface.id,
-      locale: String(locale.value),
     })
     if (loadId !== currentLoadId) return
     if (props.surface.mode === 'markdown') {
@@ -386,7 +348,6 @@ async function loadHostedTsx() {
 
 function handleMessage(event: MessageEvent) {
   if (event.source !== iframeRef.value?.contentWindow) return
-  if (props.surface.mode === 'static' && event.origin !== hostedSurfaceOrigin.value) return
   const data = event.data
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-error') {
     const message = typeof data.payload?.message === 'string' ? data.payload.message : t('plugins.ui.loadError')
@@ -422,13 +383,12 @@ function handleMessage(event: MessageEvent) {
 async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
-  const targetOrigin = props.surface.mode === 'static' && hostedSurfaceOrigin.value ? hostedSurfaceOrigin.value : '*'
   const respond = (payload: Record<string, any>) => {
     iframeRef.value?.contentWindow?.postMessage({
       type: 'neko-hosted-surface-response',
       requestId,
       ...payload,
-    }, targetOrigin)
+    }, '*')
   }
   if (!requestId) return
   try {
@@ -475,18 +435,6 @@ watch(
     loadHostedTsx()
   },
 )
-
-// Static panels are served as a real URL (no `srcdoc`), so locale changes
-// flow through `surfaceUrl` rebuilding with a new `?locale=...` query.
-// Bumping `iframeKey` on every URL diff forces Vue to remount the <iframe>
-// element instead of relying on the browser to honour an in-place src
-// rewrite — Chromium occasionally keeps the previous document around when
-// only the query changes, which leaves the panel stuck on the old locale.
-watch(surfaceUrl, (next, prev) => {
-  if (props.surface.mode !== 'static') return
-  if (!next || next === prev) return
-  iframeKey.value += 1
-})
 </script>
 
 <style scoped>

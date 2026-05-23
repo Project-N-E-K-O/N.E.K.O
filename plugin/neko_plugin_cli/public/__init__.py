@@ -1,8 +1,29 @@
-"""Public Python surface for neko-plugin-cli packaging helpers."""
+"""Public surface for plugin package helpers."""
 
-from .bundle_analysis import analyze_bundle_plugins
-from .inspect import inspect_package
-from .pack import PackResult, pack_bundle, pack_plugin
+from __future__ import annotations
+
+from ..core import (
+    BuildResult,
+    analyze_bundle_plugins,
+    inspect_package,
+    build_bundle,
+    build_plugin,
+    install_package,
+)
+
+# Legacy aliases for backward compatibility
+from .pack import pack_plugin, pack_bundle
 from .unpack import unpack_package
 
-__all__ = ["PackResult", "analyze_bundle_plugins", "inspect_package", "pack_bundle", "pack_plugin", "unpack_package"]
+__all__ = [
+    "BuildResult",
+    "analyze_bundle_plugins",
+    "inspect_package",
+    "build_bundle",
+    "build_plugin",
+    "install_package",
+    # Legacy aliases
+    "pack_plugin",
+    "pack_bundle",
+    "unpack_package",
+]
