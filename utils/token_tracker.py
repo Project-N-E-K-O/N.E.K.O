@@ -776,6 +776,10 @@ class TokenTracker:
         self._has_recorded_app_start: bool = False  # 🔒 app_start 单次上报锁
         self._session_start_ts: float = 0.0  # session_end 计算 duration 用
         self._session_process: str = "unknown"
+        # 本 session 用户消息轮数。note_user_message 累加，record_app_start 重置，
+        # _atexit_save(session_end) emit 成 session_turn_count histogram —— 含 0
+        # 即"零消息会话"（开了 app 一句没聊就走），D1 流失最直接信号。
+        self._session_msg_count: int = 0
         self._first_user_message_recorded: bool = False  # 🔒 首条用户消息单次锁
         self._core_loop_recorded: bool = False  # 🔒 首次完成核心 loop 单次锁
 
@@ -847,6 +851,10 @@ class TokenTracker:
             if duration > 0:
                 # 直接传秒；instrument bounds 是数字通用，没绑定单位
                 _instr_histogram("session_duration_sec", duration, process=self._session_process)
+            # 本 session 用户消息轮数（无条件 emit，含 0）——0 即零消息会话。
+            # 配合 session_duration_sec 看：短时长+0 轮 = 开了就走；长时长+0 轮 =
+            # 挂着没互动。是 D1 浅尝 vs 上瘾的核心区分。
+            _instr_histogram("session_turn_count", self._session_msg_count, process=self._session_process)
         except Exception:
             # instrument import / emit 失败不能让进程退出卡住 —— 实在丢一条
             # 也比 atexit 抛出强（atexit 异常会让 SIGTERM 退出码变化）。
@@ -1174,6 +1182,7 @@ class TokenTracker:
             self._has_recorded_app_start = True
             self._session_start_ts = time.time()
             self._session_process = process
+            self._session_msg_count = 0  # 新 session 起点，轮数清零
 
         # 新埋点：sparse event 走本地 events.jsonl（诊断），同时打 counter
         # 走远程聚合通道（dashboard 看 DAU / session 总数）。event 因为带
@@ -1226,6 +1235,27 @@ class TokenTracker:
             _c("first_message_sent", input_type=input_type)
             if anchor > 0:
                 _h("time_to_first_message_sec", max(0.0, time.time() - anchor))
+        except Exception:
+            # 埋点失败不能挡用户消息处理
+            pass
+
+    def note_user_message(self, input_type: str = "text"):
+        """每条用户消息都调（区别于 note_first_user_message 只记首条）。
+
+        - emit ``user_message_sent`` counter（input_type 维度）：求和 = 聊天总轮数，
+          按 input_type 切 = voice/text 模态占比
+        - 累加本 session 轮数 ``_session_msg_count``，session_end 时 emit
+          ``session_turn_count`` histogram（含 0 = 零消息会话）
+
+        调用方负责保证每条真实用户消息恰好调一次（见 core.py：只在文本侧
+        on_user_message 入口和真语音消息点调，避开 openclaw handoff 复用路径）。
+        input_type: text / voice（低基数）
+        """
+        with self._lock:
+            self._session_msg_count += 1
+        try:
+            from utils.instrument import counter as _c
+            _c("user_message_sent", input_type=input_type)
         except Exception:
             # 埋点失败不能挡用户消息处理
             pass

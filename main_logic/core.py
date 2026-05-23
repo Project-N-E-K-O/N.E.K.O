@@ -2022,7 +2022,12 @@ class LLMSessionManager:
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
                     from utils.token_tracker import TokenTracker as _TT
-                    _TT.get_instance().note_first_user_message("voice")
+                    _tt = _TT.get_instance()
+                    _tt.note_first_user_message("voice")
+                    # 每条用户消息：user_message_sent counter（轮数 + voice/text 占比）
+                    # + 累加 per-session 轮数（session_end emit session_turn_count）。
+                    # 只在此真语音消息点调，避开 2041 openclaw 文本 handoff 复用，杜绝双计。
+                    _tt.note_user_message("voice")
                 except Exception:
                     # 埋点 best-effort，绝不阻塞语音转录消息处理（同文本路径）。
                     pass
@@ -6128,7 +6133,11 @@ class LLMSessionManager:
                     # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
                     try:
                         from utils.token_tracker import TokenTracker as _TT
-                        _TT.get_instance().note_first_user_message("text")
+                        _tt = _TT.get_instance()
+                        _tt.note_first_user_message("text")
+                        # 每条用户消息：user_message_sent counter + 累加 per-session 轮数。
+                        # 此处是文本侧 on_user_message 唯一入口，每条真实消息恰好一次。
+                        _tt.note_user_message("text")
                     except Exception:
                         # 埋点 best-effort，绝不阻塞用户消息处理；note_first_user_message
                         # 自身幂等，丢一次也不影响 D1 漏斗统计。
