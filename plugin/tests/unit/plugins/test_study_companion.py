@@ -2573,6 +2573,13 @@ async def test_study_plugin_starts_and_collects_entries(
     )
     assert isinstance(topic_deck, Ok)
     assert any(item["topic_id"] == "phase7_topic_due" for item in topic_deck.value["cards"])
+    assert topic_deck.value["card_count"] == len(topic_deck.value["cards"])
+    merged_deck = await plugin.study_memory_deck(
+        limit=1, due_only=False, include_topic_cards=True
+    )
+    assert isinstance(merged_deck, Ok)
+    assert len(merged_deck.value["cards"]) == 1
+    assert merged_deck.value["card_count"] == 1
     loose_card = await plugin.study_memory_card_upsert(front="Loose prompt", back="A")
     loose_card_again = await plugin.study_memory_card_upsert(
         front="Another loose prompt", back="B"

@@ -1013,9 +1013,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     return Ok(
                         {
                             **payload,
-                            "card_count": int(
-                                payload.get("item_count") or payload.get("card_count") or 0
-                            ),
+                            "card_count": len(cards),
                             "due_count": int(payload.get("due_count") or 0)
                             + int(topic_due_count or 0),
                             "cards": cards,
@@ -1031,6 +1029,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     self._memory_deck_store.compat_card_payload(item) for item in items
                 ] + topic_cards
                 due_cards = [item for item in cards if item.get("is_due")]
+                cards = cards[:safe_limit]
                 return Ok(
                     {
                         "card_count": len(cards),
