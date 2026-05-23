@@ -1336,10 +1336,26 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
 
-    async def handle_text_data(self, text: str, is_first_chunk: bool = False):
-        """文本回调：处理文本显示和TTS（用于文本模式）"""
+    async def handle_text_data(
+        self,
+        text: str,
+        is_first_chunk: bool = False,
+        *,
+        ui_enabled: bool = True,
+        tts_enabled: bool = True,
+    ):
+        """文本回调：处理文本显示和 TTS（用于文本模式）。
+
+        ``ui_enabled`` / ``tts_enabled`` 拆分由 OmniOfflineClient 的长回复
+        summary 路径用：cutover 之后的 tail 文本只走 UI（保持前端"显示全文"），
+        summary LLM 算出来的浓缩版只走 TTS（保持 TTS 不读完整尾巴）。两个标
+        志互斥也成立——既不去 UI 又不去 TTS 等于丢弃整段，直接 return。
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
+            return
+
+        if not ui_enabled and not tts_enabled:
             return
 
         # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
@@ -1355,8 +1371,10 @@ class LLMSessionManager:
             )
             return
 
-        # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
-        if is_first_chunk and self.use_tts:
+        # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音。
+        # summary epilogue 触发的 TTS-only 注入 is_first_chunk=False，不会
+        # 误清掉本轮已经播放/排队的 prefix 音频。
+        if is_first_chunk and self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
                 self._discard_pending_ai_voice_echo()
@@ -1370,14 +1388,15 @@ class LLMSessionManager:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(
-            text,
-            is_first_chunk,
-            remember_voice_echo=not self.use_tts,
-        )
-        
+        if ui_enabled:
+            await self.send_lanlan_response(
+                text,
+                is_first_chunk,
+                remember_voice_echo=not self.use_tts,
+            )
+
         # 如果配置了TTS，将文本发送到TTS队列或缓存
-        if self.use_tts:
+        if self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
@@ -3999,6 +4018,17 @@ class LLMSessionManager:
                         master_name=self.master_name,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
+                        # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
+                        # 文本是 `tts_enabled=True, ui_enabled=False` 注入的，若 TTS
+                        # 实际不发声它会被 handle_text_data 静默丢掉，但 history 仍被
+                        # 重写成 prefix+summary —— 静音会话会"live 看到全文、reload 看
+                        # 不到尾巴"，是隐性内容丢失。注意 `_resolve_session_use_tts` 对
+                        # text mode 永远返回 True；真正的"发声"还要 DISABLE_TTS=False，
+                        # 否则 tts_worker 会被换成 dummy_tts_worker。
+                        enable_long_response_summary=(
+                            self.use_tts
+                            and not core_config_snapshot.get('DISABLE_TTS', False)
+                        ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
                 else:
@@ -4453,6 +4483,14 @@ class LLMSessionManager:
                     master_name=self.master_name,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
+                    # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
+                    # （理由见 main session 构造点的注释）。pending_use_tts 是热切换
+                    # 准备时已 resolve 的下一轮 use_tts；DISABLE_TTS 仍需独立检查
+                    # 因为它会把 worker 换成 dummy_tts_worker。
+                    enable_long_response_summary=(
+                        self.pending_use_tts
+                        and not core_config_snapshot.get('DISABLE_TTS', False)
+                    ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")

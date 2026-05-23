@@ -11,12 +11,14 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
+from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.llm_prompts import (
     _compact_prompt_value,
@@ -39,18 +41,34 @@ from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
-from plugin.plugins.study_companion.knowledge_contribution import PublicGraphContributionBuilder
+from plugin.plugins.study_companion.knowledge_contribution import (
+    PublicGraphContributionBuilder,
+)
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
-from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply, build_config
+from plugin.plugins.study_companion.models import (
+    OcrSnapshot,
+    StudyConfig,
+    TutorReply,
+    build_config,
+)
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
-from plugin.plugins.study_companion.study_ocr_pipeline import StudyCaptureProfile, StudyOcrPipeline
+from plugin.plugins.study_companion.study_ocr_pipeline import (
+    StudyCaptureProfile,
+    StudyOcrPipeline,
+)
 from plugin.plugins.study_companion import service as study_service
 from plugin.plugins.study_companion import tesseract_support as study_tesseract_support
-from plugin.plugins.study_companion.screen_classifier import ScreenClassification, classify_screen_from_ocr
+from plugin.plugins.study_companion.screen_classifier import (
+    ScreenClassification,
+    classify_screen_from_ocr,
+)
 from plugin.plugins.study_companion.service import _available_tesseract_languages
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, _JSONCorrector
-from plugin.plugins.study_companion.ui_api import build_knowledge_map_payload, build_open_ui_payload
+from plugin.plugins.study_companion.ui_api import (
+    build_knowledge_map_payload,
+    build_open_ui_payload,
+)
 from plugin.server.application.plugins.ui_query_service import _build_surfaces_sync
 from plugin.sdk.plugin import Err, Ok
 
@@ -85,7 +103,9 @@ class _Ctx:
     def __init__(self, plugin_dir: Path, config: dict[str, object]) -> None:
         self.logger = _Logger()
         self.config_path = plugin_dir / "plugin.toml"
-        self.config_path.write_text("[plugin]\nid='study_companion'\n", encoding="utf-8")
+        self.config_path.write_text(
+            "[plugin]\nid='study_companion'\n", encoding="utf-8"
+        )
         self._config = config
         self._effective_config = {
             "plugin": {"store": {"enabled": True}, "database": {"enabled": False}},
@@ -107,7 +127,9 @@ class _Ctx:
     async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0):
         return {"profile_name": profile_name, "config": self._config}
 
-    async def get_own_effective_config(self, profile_name: str | None = None, timeout: float = 5.0):
+    async def get_own_effective_config(
+        self, profile_name: str | None = None, timeout: float = 5.0
+    ):
         return {"config": self._config}
 
     async def update_own_config(self, updates, timeout: float = 10.0):
@@ -208,7 +230,9 @@ class _FakeTutorAgent:
         mode: str = MODE_COMPANION,
         context: dict[str, object] | None = None,
     ) -> TutorReply:
-        self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+        self.evaluations.append(
+            (question, answer, expected_answer, dict(context or {}), mode)
+        )
         return TutorReply(
             operation="answer_evaluate",
             input_text=answer,
@@ -236,9 +260,15 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
 
     store.save_config(config)
     store.save_state(state)
-    store.append_interaction(kind="concept_explain", input_text="a", output_text="b", history_limit=2)
-    store.append_interaction(kind="concept_explain", input_text="c", output_text="d", history_limit=2)
-    store.append_interaction(kind="concept_explain", input_text="e", output_text="f", history_limit=2)
+    store.append_interaction(
+        kind="concept_explain", input_text="a", output_text="b", history_limit=2
+    )
+    store.append_interaction(
+        kind="concept_explain", input_text="c", output_text="d", history_limit=2
+    )
+    store.append_interaction(
+        kind="concept_explain", input_text="e", output_text="f", history_limit=2
+    )
     store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
     store.ensure_session(session_id="session-1", mode="interactive")
     store.add_qa_record(
@@ -293,13 +323,20 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
 
     assert store.load_config(StudyConfig()).language == "en"
     assert store.load_state(build_initial_state()).last_ocr_text == "photosynthesis"
-    assert [item["input_text"] for item in store.list_interactions(limit=10)] == ["e", "c"]
+    assert [item["input_text"] for item in store.list_interactions(limit=10)] == [
+        "e",
+        "c",
+    ]
     exported = store.export_json()
     assert exported["config"]["language"] == "en"
     assert exported["sessions"][0]["id"] == "session-1"
-    assert [item["question"]["question"] for item in store.list_qa_records(limit=2)] == ["Recent QA 0", "Recent QA 1"]
+    assert [
+        item["question"]["question"] for item in store.list_qa_records(limit=2)
+    ] == ["Recent QA 0", "Recent QA 1"]
     assert [item["rating"] for item in store.list_review_log(limit=2)] == [1, 2]
-    assert [item["context"].get("index") for item in store.list_knowledge_evidence(limit=2)] == [0, 1]
+    assert [
+        item["context"].get("index") for item in store.list_knowledge_evidence(limit=2)
+    ] == [0, 1]
     assert exported["qa_records"][-1]["question"]["question"] == "Recent QA 1"
     assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
     assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
@@ -440,8 +477,12 @@ def test_build_tutor_payload_preserves_structured_summary() -> None:
 
 def test_study_mode_manager_intent_switch_rules() -> None:
     assert normalize_mode("concept_explain") == MODE_COMPANION
-    assert "already in" in build_transition_phrase(MODE_COMPANION, language="en-GB", outcome="same")
-    assert "already in" in build_transition_phrase(MODE_COMPANION, language="eng", outcome="same")
+    assert "already in" in build_transition_phrase(
+        MODE_COMPANION, language="en-GB", outcome="same"
+    )
+    assert "already in" in build_transition_phrase(
+        MODE_COMPANION, language="eng", outcome="same"
+    )
     pure = handle_user_intent("教我")
     assert pure["mode"] == MODE_TEACHING
     assert pure["pure_switch"] is True
@@ -471,7 +512,9 @@ def test_study_mode_manager_intent_switch_rules() -> None:
     assert cross_mode["keyword"] == "互动模式"
     assert mode_label(MODE_TEACHING, language="ja") == "指導"
     assert mode_label(MODE_TEACHING, language="pt-BR") == "Ensino"
-    assert "教学" not in build_transition_phrase(MODE_TEACHING, language="ja", outcome="changed")
+    assert "教学" not in build_transition_phrase(
+        MODE_TEACHING, language="ja", outcome="changed"
+    )
 
     manager = ModeManager(current_mode=MODE_COMPANION)
     first = manager.switch_to(MODE_INTERACTIVE, "unit", now=1000.0)
@@ -508,7 +551,9 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
 
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42
-    fsrs_config = build_config({"fsrs": {"retention_target": 0.88, "auto_optimize_interval_days": 14}})
+    fsrs_config = build_config(
+        {"fsrs": {"retention_target": 0.88, "auto_optimize_interval_days": 14}}
+    )
     assert fsrs_config.fsrs_retention_target == 0.88
     assert fsrs_config.fsrs_auto_optimize_interval_days == 14
     llm_section_legacy_timeout = build_config({"llm": {"llm_call_timeout_seconds": 84}})
@@ -530,7 +575,14 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
     try:
-        store.set_raw("state", {"status": "ready", "active_mode": "concept_explain", "last_ocr_text": "legacy"})
+        store.set_raw(
+            "state",
+            {
+                "status": "ready",
+                "active_mode": "concept_explain",
+                "last_ocr_text": "legacy",
+            },
+        )
         loaded = store.load_state(build_initial_state())
         assert loaded.active_mode == MODE_COMPANION
         assert loaded.last_ocr_text == "legacy"
@@ -541,7 +593,9 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
         store.close()
 
 
-def test_trusted_knowledge_candidate_is_deprecated_after_conflict(tmp_path: Path) -> None:
+def test_trusted_knowledge_candidate_is_deprecated_after_conflict(
+    tmp_path: Path,
+) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
     quality = KnowledgeQualityStore(store, trusted_negative_threshold=1)
@@ -579,27 +633,41 @@ def test_trusted_knowledge_candidate_is_deprecated_after_conflict(tmp_path: Path
 
 
 def test_study_screen_classifier_routes_summary_keywords_to_summary() -> None:
-    english = classify_screen_from_ocr("## Summary\n\nThe learner reviewed photosynthesis.")
+    english = classify_screen_from_ocr(
+        "## Summary\n\nThe learner reviewed photosynthesis."
+    )
     assert english.screen_type == "summary"
     assert "summary" in english.signals.get("summary_hits", [])
 
-    chinese = classify_screen_from_ocr("本节总结\n光合作用的主要过程包括光反应和暗反应。")
+    chinese = classify_screen_from_ocr(
+        "本节总结\n光合作用的主要过程包括光反应和暗反应。"
+    )
     assert chinese.screen_type == "summary"
     assert "总结" in chinese.signals.get("summary_hits", [])
 
 
 def test_study_screen_classifier_covers_core_screen_types_and_smoothing() -> None:
-    assert classify_screen_from_ocr("", window_title="").to_payload()["screen_type"] == "idle"
+    assert (
+        classify_screen_from_ocr("", window_title="").to_payload()["screen_type"]
+        == "idle"
+    )
 
-    question = classify_screen_from_ocr("Problem 1: What is the derivative?", window_title="Quiz exercise")
+    question = classify_screen_from_ocr(
+        "Problem 1: What is the derivative?", window_title="Quiz exercise"
+    )
     assert question.screen_type == "question"
     assert question.confidence > 0.0
 
-    answering = classify_screen_from_ocr("Answer submitted\nScore: incorrect\nFeedback: retry", window_title="Answer review")
+    answering = classify_screen_from_ocr(
+        "Answer submitted\nScore: incorrect\nFeedback: retry",
+        window_title="Answer review",
+    )
     assert answering.screen_type in {"answering", "review"}
     assert answering.signals["answer_hits"]
 
-    notes = classify_screen_from_ocr("Notes\nmemo outline for photosynthesis", window_title="Study note")
+    notes = classify_screen_from_ocr(
+        "Notes\nmemo outline for photosynthesis", window_title="Study note"
+    )
     assert notes.screen_type == "notes"
 
     reading = classify_screen_from_ocr(
@@ -622,12 +690,16 @@ def test_study_screen_classifier_covers_core_screen_types_and_smoothing() -> Non
 def test_compact_prompt_value_stops_at_max_depth() -> None:
     nested = {"a": {"b": {"c": {"d": "bottom"}}}}
 
-    compacted = _compact_prompt_value(nested, list_limit=5, string_limit=50, max_depth=2)
+    compacted = _compact_prompt_value(
+        nested, list_limit=5, string_limit=50, max_depth=2
+    )
 
     assert compacted == {"a": {"b": "...[max depth reached]"}}
 
 
-def test_study_prompt_builder_compacts_large_context_and_rejects_unknown_operation() -> None:
+def test_study_prompt_builder_compacts_large_context_and_rejects_unknown_operation() -> (
+    None
+):
     context = {
         "text": "x" * 20000,
         "language": "en",
@@ -657,7 +729,9 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
             {
                 "id": "number_axis",
                 "name": "Number Axis",
-                "prerequisites": [{"id": "real_number_concept", "required_mastery": 0.55}],
+                "prerequisites": [
+                    {"id": "real_number_concept", "required_mastery": 0.55}
+                ],
                 "related": [{"id": "absolute_value", "relation": "next"}],
             },
             {"id": "real_number_concept", "name": "Real Numbers"},
@@ -665,8 +739,17 @@ def test_study_knowledge_map_payload_uses_topic_ids_for_object_edges() -> None:
         ]
     )
 
-    assert {"from": "real_number_concept", "to": "number_axis", "relation": "prerequisite", "required_mastery": 0.55} in payload["edges"]
-    assert {"from": "number_axis", "to": "absolute_value", "relation": "next"} in payload["edges"]
+    assert {
+        "from": "real_number_concept",
+        "to": "number_axis",
+        "relation": "prerequisite",
+        "required_mastery": 0.55,
+    } in payload["edges"]
+    assert {
+        "from": "number_axis",
+        "to": "absolute_value",
+        "relation": "next",
+    } in payload["edges"]
     assert all(not edge["from"].startswith("{") for edge in payload["edges"])
 
 
@@ -736,14 +819,19 @@ def test_study_companion_i18n_bundles_are_present() -> None:
         assert "entries.set_knowledge_contribution_opt_in.name" in bundle
         assert "entries.export_notes.name" in bundle
 
-    en_bundle = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
+    en_bundle = json.loads(
+        (plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8")
+    )
     for locale in locales:
         assert set(bundles[locale]) == set(en_bundle)
     for locale in [item for item in locales if item != "en"]:
         bundle = bundles[locale]
         assert any(bundle[key] != en_bundle[key] for key in phase3_keys)
     assert bundles["ja"]["entries.open_ui.name"] != en_bundle["entries.open_ui.name"]
-    assert bundles["ja"]["entries.download_rapidocr_models.description"] != en_bundle["entries.download_rapidocr_models.description"]
+    assert (
+        bundles["ja"]["entries.download_rapidocr_models.description"]
+        != en_bundle["entries.download_rapidocr_models.description"]
+    )
 
     with (plugin_dir / "plugin.toml").open("rb") as handle:
         config = tomllib.load(handle)
@@ -757,16 +845,32 @@ def test_study_companion_i18n_bundles_are_present() -> None:
     }
     surfaces, warnings = _build_surfaces_sync("study_companion", meta)
     assert warnings == []
-    assert any(surface["id"] == "study-panel" and surface["available"] is True for surface in surfaces)
-    assert any(surface["id"] == "knowledge-map" and surface["available"] is True for surface in surfaces)
-    assert any(surface["id"] == "knowledge-contribution-settings" and surface["available"] is True for surface in surfaces)
-    assert any(surface["id"] == "note-exporter" and surface["available"] is True for surface in surfaces)
-    assert any(surface["id"] == "quickstart" and surface["available"] is True for surface in surfaces)
+    assert any(
+        surface["id"] == "study-panel" and surface["available"] is True
+        for surface in surfaces
+    )
+    assert any(
+        surface["id"] == "knowledge-map" and surface["available"] is True
+        for surface in surfaces
+    )
+    assert any(
+        surface["id"] == "knowledge-contribution-settings"
+        and surface["available"] is True
+        for surface in surfaces
+    )
+    assert any(
+        surface["id"] == "note-exporter" and surface["available"] is True
+        for surface in surfaces
+    )
+    assert any(
+        surface["id"] == "quickstart" and surface["available"] is True
+        for surface in surfaces
+    )
 
     index_html = (plugin_dir / "static" / "index.html").read_text(encoding="utf-8")
     main_js = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
     assert "./i18n.js" in index_html
-    assert "data-i18n=\"ui.title\"" in index_html
+    assert 'data-i18n="ui.title"' in index_html
     assert "I18n.init" in main_js
 
 
@@ -774,9 +878,13 @@ def test_study_companion_static_ui_smoke_with_mocked_runs() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
     if shutil.which("node") is None:
-        pytest.skip("node is not installed; frontend/plugin-manager happy-dom smoke test requires node")
+        pytest.skip(
+            "node is not installed; frontend/plugin-manager happy-dom smoke test requires node"
+        )
     if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
-        pytest.skip("frontend/plugin-manager node_modules with happy-dom is not installed")
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
 
     script = r"""
 import { Window } from 'happy-dom';
@@ -913,7 +1021,10 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "study_explain_text: 60000" in source
     assert "const deadline = Date.now() + timeoutForEntry(entryId);" in source
     assert "for (let i = 0; i < 40; i += 1)" not in source
-    assert "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})" in source
+    assert (
+        "async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {})"
+        in source
+    )
     assert "await refresh(controller.signal, { updateReply: false });" in source
     assert "const appliedMode = String(" in source
     assert "setStatus((prev) => ({" in source
@@ -932,7 +1043,9 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
     assert "POLL_TIMEOUT_BUFFER_MS = 5_000" in source
     assert "const timeoutSeconds = Number(entry?.timeout);" in source
     assert "return timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS;" in source
-    assert "const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);" in source
+    assert (
+        "const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);" in source
+    )
     assert "while (Date.now() < deadline)" in source
     assert "pollTimeoutMs = getEntryTimeoutMs(exportEntry)" in source
     assert "}, pollTimeoutMs);" in source
@@ -942,12 +1055,17 @@ def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None
 
 def test_study_companion_ui_export_failures_are_not_silent_successes() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
-    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    hosted_source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(
+        encoding="utf-8"
+    )
     static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
 
     assert "RUN_EXPORT_RETRY_COUNT = 3" in hosted_source
     assert "throw new Error(`Run export failed: HTTP ${lastStatus}`);" in hosted_source
-    assert "const exported = exportResp.ok ? await exportResp.json() : {};" not in hosted_source
+    assert (
+        "const exported = exportResp.ok ? await exportResp.json() : {};"
+        not in hosted_source
+    )
     assert "return item?.json?.data || {};" not in hosted_source
     assert "study_set_mode" in hosted_source
 
@@ -975,12 +1093,18 @@ def test_study_companion_static_mode_switch_uses_applied_mode() -> None:
     assert "answerInput.value = '';" not in static_source
 
 
-def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_fails() -> None:
+def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_fails() -> (
+    None
+):
     if shutil.which("node") is None:
         pytest.skip("node is not installed")
 
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
 
     script = r"""
 import { Window } from 'happy-dom';
@@ -1104,6 +1228,18 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_surface_utils_preserves_nonstandard_backend_error_details() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "study_surface_utils.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function pluginErrorMessage" in source
+    assert "typeof error === 'string'" in source
+    assert "JSON.stringify(error)" in source
+    assert "throw new Error(pluginErrorMessage(item.json.error))" in source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
@@ -1244,7 +1380,9 @@ def test_study_companion_does_not_import_galgame_ocr_reader_directly() -> None:
 
 def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
     cfg = StudyConfig()
-    empty = StudyOcrPipeline(logger=_Logger(), config=cfg, ocr_backend=_FakeOcrBackend(""))
+    empty = StudyOcrPipeline(
+        logger=_Logger(), config=cfg, ocr_backend=_FakeOcrBackend("")
+    )
     assert empty.snapshot_from_image(object()).status == "empty"
     assert empty.snapshot_from_image(None).diagnostic == "no image supplied"
 
@@ -1292,19 +1430,28 @@ def test_ocr_pipeline_normalizes_box_objects_and_capture_failures() -> None:
     assert snapshot.status == "ok"
     assert snapshot.backend == "fake"
     assert snapshot.text == "Box text Dict text Tail"
-    assert snapshot.boxes == [{"text": "Box text", "x": 1}, {"text": "Dict text", "x": 2}]
+    assert snapshot.boxes == [
+        {"text": "Box text", "x": 1},
+        {"text": "Dict text", "x": 2},
+    ]
 
-    broken = StudyOcrPipeline(logger=_Logger(), config=StudyConfig(), capture_backend=_BrokenCapture())
+    broken = StudyOcrPipeline(
+        logger=_Logger(), config=StudyConfig(), capture_backend=_BrokenCapture()
+    )
     failed = broken.capture_snapshot(target=object())
     assert failed.status == "capture_failed"
     assert "target capture boom" in failed.diagnostic
 
 
-def test_ocr_pipeline_reports_fullscreen_capture_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ocr_pipeline_reports_fullscreen_capture_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _capture_boom():
         raise RuntimeError("capture boom")
 
-    monkeypatch.setattr(StudyOcrPipeline, "_capture_fullscreen", staticmethod(_capture_boom))
+    monkeypatch.setattr(
+        StudyOcrPipeline, "_capture_fullscreen", staticmethod(_capture_boom)
+    )
     pipeline = StudyOcrPipeline(logger=_Logger(), config=StudyConfig())
 
     snapshot = pipeline.capture_snapshot()
@@ -1323,7 +1470,9 @@ def test_available_tesseract_languages_logs_timeout_and_falls_back(
     (tessdata / "eng.traineddata").write_text("stub", encoding="utf-8")
 
     def _timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd=[str(detected), "--list-langs"], timeout=5.0)
+        raise subprocess.TimeoutExpired(
+            cmd=[str(detected), "--list-langs"], timeout=5.0
+        )
 
     monkeypatch.setattr(subprocess, "run", _timeout)
     with caplog.at_level("WARNING", logger=study_service._LOGGER.name):
@@ -1359,9 +1508,14 @@ async def test_study_install_tesseract_uses_local_support(
             )
             if hasattr(maybe_awaitable, "__await__"):
                 await maybe_awaitable
-        return {"summary": "Tesseract is ready", "detected_path": "C:/Tesseract/tesseract.exe"}
+        return {
+            "summary": "Tesseract is ready",
+            "detected_path": "C:/Tesseract/tesseract.exe",
+        }
 
-    monkeypatch.setattr(study_tesseract_support, "install_tesseract", _fake_install_tesseract)
+    monkeypatch.setattr(
+        study_tesseract_support, "install_tesseract", _fake_install_tesseract
+    )
     ctx = _Ctx(
         tmp_path,
         {
@@ -1379,7 +1533,9 @@ async def test_study_install_tesseract_uses_local_support(
     assert isinstance(result, Ok)
 
     try:
-        install_result = await plugin.study_install_tesseract(force=True, _ctx={"run_id": "run-study-install"})
+        install_result = await plugin.study_install_tesseract(
+            force=True, _ctx={"run_id": "run-study-install"}
+        )
 
         assert isinstance(install_result, Ok)
         assert install_result.value["summary"] == "Tesseract is ready"
@@ -1393,14 +1549,18 @@ async def test_study_install_tesseract_uses_local_support(
         await plugin.shutdown()
 
 
-def test_study_ocr_pipeline_uses_local_tesseract_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_study_ocr_pipeline_uses_local_tesseract_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     created: list[dict[str, object]] = []
 
     class _FakeTesseractBackend:
         def __init__(self, **kwargs) -> None:
             created.append(dict(kwargs))
 
-    monkeypatch.setattr(study_tesseract_support, "TesseractOcrBackend", _FakeTesseractBackend)
+    monkeypatch.setattr(
+        study_tesseract_support, "TesseractOcrBackend", _FakeTesseractBackend
+    )
     pipeline = StudyOcrPipeline(
         logger=_Logger(),
         config=StudyConfig(
@@ -1438,7 +1598,9 @@ def test_study_tesseract_backend_restores_global_tesseract_cmd(
 
     fake_pytesseract.image_to_string = image_to_string
     monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
-    monkeypatch.setattr(study_tesseract_support, "_prepare_ocr_image", lambda image: "prepared-image")
+    monkeypatch.setattr(
+        study_tesseract_support, "_prepare_ocr_image", lambda image: "prepared-image"
+    )
 
     backend = study_tesseract_support.TesseractOcrBackend(
         tesseract_path=str(executable),
@@ -1508,6 +1670,57 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
         assert "screen_classification" in plugin._agent.inputs[0][1]
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_ocr_snapshot_feeds_supervision_activity() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(
+            self, *, ocr_text: str, sensor_available: bool
+        ) -> dict[str, object]:
+            self.calls.append(
+                {"ocr_text": ocr_text, "sensor_available": sensor_available}
+            )
+            return {
+                "sensor_available": sensor_available,
+                "inactivity_detected": False,
+            }
+
+    persisted: list[bool] = []
+
+    async def _persist_state() -> None:
+        persisted.append(True)
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._ocr_pipeline = _FakeStudyOcrPipeline(
+        OcrSnapshot(
+            text="photosynthesis note",
+            status="ok",
+            captured_at="2026-05-11T00:00:00Z",
+        )
+    )
+    plugin._supervision = supervision
+    plugin._lock = threading.RLock()
+    plugin._state = build_initial_state()
+    plugin._persist_state = _persist_state
+    plugin._update_screen_classification = lambda text, update_empty=False: {
+        "screen_type": "reading",
+        "text": text,
+        "update_empty": update_empty,
+    }
+
+    result = await plugin.study_ocr_snapshot()
+
+    assert isinstance(result, Ok)
+    assert result.value["supervision"]["sensor_available"] is True
+    assert supervision.calls == [
+        {"ocr_text": "photosynthesis note", "sensor_available": True}
+    ]
+    assert persisted == [True]
 
 
 @pytest.mark.asyncio
@@ -1582,7 +1795,10 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert isinstance(explained, Ok)
         assert explained.value["intent"]["mode"] == MODE_TEACHING
         assert explained.value["mode_switch"]["changed"] is True
-        assert explained.value["reply"] == f'explained[teaching]: {explained.value["input_text"]}'
+        assert (
+            explained.value["reply"]
+            == f"explained[teaching]: {explained.value['input_text']}"
+        )
         assert plugin._agent.inputs[-1][0] == explained.value["input_text"]
         assert plugin._agent.inputs[-1][2] == MODE_TEACHING
         assert plugin._agent.inputs[-1][1]["source"] == "manual"
@@ -1592,8 +1808,13 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
 
         short_explained = await plugin.study_explain_text("??????")
         assert isinstance(short_explained, Ok)
-        assert short_explained.value.get("intent", {}).get("pure_switch", False) is False
-        assert short_explained.value["reply"] == f'explained[teaching]: {short_explained.value["input_text"]}'
+        assert (
+            short_explained.value.get("intent", {}).get("pure_switch", False) is False
+        )
+        assert (
+            short_explained.value["reply"]
+            == f"explained[teaching]: {short_explained.value['input_text']}"
+        )
         assert plugin._agent.inputs[-1][0] == short_explained.value["input_text"]
         assert plugin._agent.inputs[-1][2] == MODE_TEACHING
         assert plugin._agent.inputs[-1][1]["source"] == "manual"
@@ -1699,7 +1920,9 @@ async def test_learning_context_builds_question_params_off_event_loop(
             self.calls: list[tuple[str, bool]] = []
 
         def get_next_question_params(self, topic_id: str = "") -> dict[str, object]:
-            self.calls.append((topic_id, threading.get_ident() != self.event_loop_thread_id))
+            self.calls.append(
+                (topic_id, threading.get_ident() != self.event_loop_thread_id)
+            )
             return {"target_topic_id": topic_id, "threaded": self.calls[-1][1]}
 
     runtime_root = tmp_path / "runtime"
@@ -1725,7 +1948,10 @@ async def test_learning_context_builds_question_params_off_event_loop(
             extra={"topic_hint": "quadratic_vertex_form"},
         )
 
-        assert context["knowledge_question_params"]["target_topic_id"] == "quadratic_vertex_form"
+        assert (
+            context["knowledge_question_params"]["target_topic_id"]
+            == "quadratic_vertex_form"
+        )
         assert tracker.calls == [("quadratic_vertex_form", True)]
     finally:
         await plugin.shutdown()
@@ -1764,7 +1990,9 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
         )
 
         assert isinstance(evaluated, Ok)
-        assert fake_agent.evaluations[-1][0] == "What organelle stores genetic material?"
+        assert (
+            fake_agent.evaluations[-1][0] == "What organelle stores genetic material?"
+        )
         assert fake_agent.evaluations[-1][2] == ""
         assert fake_agent.evaluations[-1][3]["expected_answer"] == ""
     finally:
@@ -1785,7 +2013,9 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
             mode: str = MODE_COMPANION,
             context: dict[str, object] | None = None,
         ) -> TutorReply:
-            self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+            self.evaluations.append(
+                (question, answer, expected_answer, dict(context or {}), mode)
+            )
             return TutorReply(
                 operation="answer_evaluate",
                 input_text=answer,
@@ -1836,7 +2066,9 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
     plugin._agent = _TrackingTutorAgent()
 
     try:
-        plugin._store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+        plugin._store.ensure_topic(
+            topic_id="photosynthesis_topic", name="Photosynthesis"
+        )
         plugin._store.ensure_topic(topic_id="cell_nucleus", name="Cell nucleus")
         with plugin._lock:
             plugin._state.current_question = {
@@ -1881,7 +2113,9 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
             mode: str = MODE_COMPANION,
             context: dict[str, object] | None = None,
         ) -> TutorReply:
-            self.evaluations.append((question, answer, expected_answer, dict(context or {}), mode))
+            self.evaluations.append(
+                (question, answer, expected_answer, dict(context or {}), mode)
+            )
             return TutorReply(
                 operation="answer_evaluate",
                 input_text=answer,
@@ -1940,7 +2174,9 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
                 "difficulty": 3,
             }
 
-        evaluated = await plugin.study_evaluate_answer(answer="(-h,k)", _ctx={"run_id": "answer-run-1"})
+        evaluated = await plugin.study_evaluate_answer(
+            answer="(-h,k)", _ctx={"run_id": "answer-run-1"}
+        )
         assert isinstance(evaluated, Ok)
         assert evaluated.value["verdict"] == "wrong"
 
@@ -1949,7 +2185,11 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
         assert mastery["level"] in {"薄弱", "进行中", "未接触"}
         assert plugin._store.get_fsrs_card("quadratic_vertex_form") is not None
         assert plugin._store.list_wrong_questions(topic_id="quadratic_vertex_form")
-        session = next(item for item in plugin._store.list_sessions() if item["id"] == "answer-run-1")
+        session = next(
+            item
+            for item in plugin._store.list_sessions()
+            if item["id"] == "answer-run-1"
+        )
         assert session["question_count"] == 1
         assert session["topics_touched"] == ["quadratic_vertex_form"]
 
@@ -1965,7 +2205,9 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
 
 
 @pytest.mark.asyncio
-async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tutor_agent_prompt_and_reply_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     messages = build_concept_explain_messages(
         text="A derivative measures instantaneous rate of change.",
         language="en",
@@ -1990,9 +2232,13 @@ async def test_tutor_agent_prompt_and_reply_contract(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_tutor_agent_teaching_prefix_is_applied_once(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tutor_agent_teaching_prefix_is_applied_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
-    teaching_prefix = build_transition_phrase(MODE_TEACHING, language="en", outcome="changed")
+    teaching_prefix = build_transition_phrase(
+        MODE_TEACHING, language="en", outcome="changed"
+    )
 
     async def _fake_call_model(_messages):
         return f"{teaching_prefix}\n\nA derivative is the slope at one point."
@@ -2050,12 +2296,16 @@ def test_json_corrector_parses_plain_json() -> None:
 
 def test_json_corrector_parses_code_fenced_json() -> None:
     corrector = _JSONCorrector(logger=_Logger())
-    assert corrector.parse_json_object('```json\n{"question": "What is it?"}\n```') == {"question": "What is it?"}
+    assert corrector.parse_json_object('```json\n{"question": "What is it?"}\n```') == {
+        "question": "What is it?"
+    }
 
 
 def test_json_corrector_recovers_json_from_surrounding_text() -> None:
     corrector = _JSONCorrector(logger=_Logger())
-    assert corrector.parse_json_object('noise before {"topic": "biology", "score": 90} noise after') == {
+    assert corrector.parse_json_object(
+        'noise before {"topic": "biology", "score": 90} noise after'
+    ) == {
         "topic": "biology",
         "score": 90,
     }
@@ -2067,7 +2317,11 @@ def test_json_corrector_recovers_json_from_surrounding_text() -> None:
     [
         (
             "question_generate",
-            {"text": "Photosynthesis converts light to chemical energy.", "mode": MODE_INTERACTIVE, "context": {"screen_classification": {"screen_type": "reading"}}},
+            {
+                "text": "Photosynthesis converts light to chemical energy.",
+                "mode": MODE_INTERACTIVE,
+                "context": {"screen_classification": {"screen_type": "reading"}},
+            },
             {
                 "question": "What process converts light to chemical energy?",
                 "answer": "Photosynthesis",
@@ -2101,7 +2355,13 @@ def test_json_corrector_recovers_json_from_surrounding_text() -> None:
         ),
         (
             "knowledge_track",
-            {"mode": MODE_COMPANION, "context": {"screen_classification": {"screen_type": "review"}, "session_summary_seed": {"weak_points": ["definition"]}}},
+            {
+                "mode": MODE_COMPANION,
+                "context": {
+                    "screen_classification": {"screen_type": "review"},
+                    "session_summary_seed": {"weak_points": ["definition"]},
+                },
+            },
             {
                 "topic": "photosynthesis",
                 "mastery_delta": 0.1,
@@ -2117,7 +2377,12 @@ def test_json_corrector_recovers_json_from_surrounding_text() -> None:
         (
             "summarize_session",
             {
-                "history": [{"kind": "question_generate", "output_text": "What process converts light to chemical energy?"}],
+                "history": [
+                    {
+                        "kind": "question_generate",
+                        "output_text": "What process converts light to chemical energy?",
+                    }
+                ],
                 "mode": MODE_TEACHING,
                 "context": {"screen_classification": {"screen_type": "summary"}},
             },
@@ -2160,10 +2425,38 @@ async def test_tutor_agent_structured_operations_normal_path(
 @pytest.mark.parametrize(
     "operation_name, kwargs",
     [
-        ("question_generate", {"text": "Photosynthesis converts light to chemical energy.", "context": {"screen_classification": {"screen_type": "reading"}}}),
-        ("answer_evaluate", {"question": "What process converts light to chemical energy?", "answer": "It is photosynthesis.", "expected_answer": "Photosynthesis", "context": {"screen_classification": {"screen_type": "answering"}}}),
-        ("knowledge_track", {"context": {"screen_classification": {"screen_type": "review"}}}),
-        ("summarize_session", {"history": [{"kind": "question_generate", "output_text": "What process converts light to chemical energy?"}], "context": {"screen_classification": {"screen_type": "summary"}}}),
+        (
+            "question_generate",
+            {
+                "text": "Photosynthesis converts light to chemical energy.",
+                "context": {"screen_classification": {"screen_type": "reading"}},
+            },
+        ),
+        (
+            "answer_evaluate",
+            {
+                "question": "What process converts light to chemical energy?",
+                "answer": "It is photosynthesis.",
+                "expected_answer": "Photosynthesis",
+                "context": {"screen_classification": {"screen_type": "answering"}},
+            },
+        ),
+        (
+            "knowledge_track",
+            {"context": {"screen_classification": {"screen_type": "review"}}},
+        ),
+        (
+            "summarize_session",
+            {
+                "history": [
+                    {
+                        "kind": "question_generate",
+                        "output_text": "What process converts light to chemical energy?",
+                    }
+                ],
+                "context": {"screen_classification": {"screen_type": "summary"}},
+            },
+        ),
     ],
 )
 async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostics(
@@ -2186,7 +2479,9 @@ async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostic
 
 
 @pytest.mark.asyncio
-async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from utils import config_manager, llm_client
 
     class _ConfigManager:
@@ -2235,7 +2530,253 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_study_pomodoro_status_offloads_timer_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 1}
+
+        def tick(self) -> dict[str, object]:
+            return {"state": "short_break", "remaining_seconds": 300}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "short_break"
+    assert to_thread_calls == ["status", "tick"]
+    assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_status_drives_supervision_reminders() -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 120}
+
+        def tick(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 119}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.reminder_count = 0
+
+        def due_reminder(self) -> dict[str, object]:
+            self.reminder_count += 1
+            return {"due": True, "reminder_level": "low_frequency"}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert status.value["supervision_reminder"] == {
+        "due": True,
+        "reminder_level": "low_frequency",
+    }
+    assert supervision.reminder_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_stop_offloads_timer_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def stop(self) -> dict[str, object]:
+            return {
+                "state": "cancelled",
+                "current_focus_session": {"id": "focus-1", "status": "cancelled"},
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_stop()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "cancelled"
+    assert to_thread_calls == ["stop"]
+    assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_does_not_restart_supervision_on_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, _goal_id: str) -> dict[str, object]:
+            return {"id": "goal-1"}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-1"},
+                "config": {"focus_minutes": 25},
+            }
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return self.status()
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_start_count = 0
+
+        def on_focus_start(self, **_kwargs) -> None:
+            self.focus_start_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1")
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert to_thread_calls == ["status", "start"]
+    assert supervision.focus_start_count == 0
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_offloads_blocking_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, goal_id: str) -> dict[str, object]:
+            return {"id": goal_id, "title": "read"}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "idle", "current_focus_session": {}}
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-2"},
+                "config": {"focus_minutes": 30},
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.goal: dict[str, object] = {}
+            self.planned_minutes = 0.0
+
+        def on_focus_start(
+            self, *, goal: dict[str, object], planned_minutes: float
+        ) -> None:
+            self.goal = goal
+            self.planned_minutes = planned_minutes
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1", focus_minutes=30)
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert to_thread_calls == ["status", "start", "get_goal"]
+    assert supervision.goal == {"id": "goal-1", "title": "read"}
+    assert supervision.planned_minutes == 30.0
+
+
+@pytest.mark.asyncio
+async def test_study_supervision_toggle_respects_disable_guard() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def set_enabled(self, enabled: bool) -> dict[str, object]:
+            self.calls.append(enabled)
+            return {"enabled": enabled}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._cfg.supervision.allow_disable_by_chat = False
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = object()
+    plugin._supervision = supervision
+
+    result = await plugin.study_supervision_toggle(enabled=False)
+
+    assert isinstance(result, Err)
+    assert "blocked by config" in str(result.error)
+    assert supervision.calls == []
+
+
+@pytest.mark.asyncio
+async def test_study_plugin_starts_and_collects_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     ctx = _Ctx(
@@ -2248,32 +2789,73 @@ async def test_study_plugin_starts_and_collects_entries(tmp_path: Path, monkeypa
     )
     plugin = StudyCompanionPlugin(ctx)
     result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        entries = plugin.collect_entries()
+        assert "study_status" in entries
+        assert "study_explain_text" in entries
+        assert "study_ocr_snapshot" in entries
+        assert "study_set_mode" in entries
+        assert "study_detect_mode_intent" in entries
+        assert "study_export_notes" not in entries
+        assert "study_knowledge_map" in entries
+        assert "study_set_knowledge_contribution_opt_in" in entries
+        disabled_export = await plugin._study_export_notes_entry(
+            fmt="markdown", preview_only=True, title="Default Notes"
+        )
+        assert isinstance(disabled_export, Err)
+        status = await plugin.study_status()
+        assert isinstance(status, Ok)
+        assert status.value["status"] == "ready"
+        assert status.value["is_first_run"] is True
+        assert status.value["active_mode"] == MODE_COMPANION
+        assert "mode_started_at" in status.value
+        assert "recent_mode_switches" in status.value
+        assert status.value["knowledge_summary"]["topic_count"] >= 120
+        assert "review_queue" in status.value
+        assert "weak_topics" in status.value
+        assert "mastery_overview" in status.value
+        assert (
+            runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db"
+        ).is_file()
+    finally:
+        await plugin.shutdown()
 
-    assert isinstance(result, Ok)
-    entries = plugin.collect_entries()
-    assert "study_status" in entries
-    assert "study_explain_text" in entries
-    assert "study_ocr_snapshot" in entries
-    assert "study_set_mode" in entries
-    assert "study_detect_mode_intent" in entries
-    assert "study_export_notes" not in entries
-    assert "study_knowledge_map" in entries
-    assert "study_set_knowledge_contribution_opt_in" in entries
-    disabled_export = await plugin._study_export_notes_entry(fmt="markdown", preview_only=True, title="Default Notes")
-    assert isinstance(disabled_export, Err)
-    status = await plugin.study_status()
-    assert isinstance(status, Ok)
-    assert status.value["status"] == "ready"
-    assert status.value["is_first_run"] is True
-    assert status.value["active_mode"] == MODE_COMPANION
-    assert "mode_started_at" in status.value
-    assert "recent_mode_switches" in status.value
-    assert status.value["knowledge_summary"]["topic_count"] >= 120
-    assert "review_queue" in status.value
-    assert "weak_topics" in status.value
-    assert "mastery_overview" in status.value
-    assert (runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db").is_file()
-    await plugin.shutdown()
+
+@pytest.mark.asyncio
+async def test_study_status_degrades_when_habit_payload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+
+        class _BrokenHabitStore:
+            def list_goals(self, **_kwargs):
+                raise RuntimeError("habit db unavailable")
+
+        plugin._habit_store = _BrokenHabitStore()  # type: ignore[assignment]
+
+        status = await plugin.study_status()
+
+        assert isinstance(status, Ok)
+        assert status.value["status"] == "ready"
+        assert status.value["habit"]["available"] is False
+        assert "habit db unavailable" in status.value["habit"]["error"]
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio
@@ -2313,7 +2895,10 @@ async def test_study_plugin_shutdown_continues_when_dynamic_entry_cleanup_fails(
 
     assert isinstance(shutdown_result, Ok)
     assert shutdown_called is True
-    assert any("dynamic entry cleanup failed" in str(args[0]) for args, _kwargs in ctx.logger.warnings)
+    assert any(
+        "dynamic entry cleanup failed" in str(args[0])
+        for args, _kwargs in ctx.logger.warnings
+    )
 
 
 @pytest.mark.asyncio
@@ -2329,7 +2914,11 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
             "study": {"language": "en"},
             "ocr_reader": {"enabled": True},
             "rapidocr": {"lang_type": "ch"},
-            "doc_export": {"enabled": True, "default_style": "compact", "xmind_enabled": False},
+            "doc_export": {
+                "enabled": True,
+                "default_style": "compact",
+                "xmind_enabled": False,
+            },
         },
     )
     plugin = StudyCompanionPlugin(ctx)
@@ -2354,7 +2943,9 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
             history_limit=10,
         )
 
-        exported = await entries["study_export_notes"].handler(fmt="markdown", preview_only=False, title="Unit Notes")
+        exported = await entries["study_export_notes"].handler(
+            fmt="markdown", preview_only=False, title="Unit Notes"
+        )
         assert isinstance(exported, Ok)
         assert exported.value["filename"] == "unit-notes.md"
         assert exported.value["format"] == "markdown"
@@ -2383,7 +2974,10 @@ async def test_study_plugin_doc_export_dynamic_entry_and_knowledge_settings(
         preview = await plugin.study_anonymous_knowledge_preview(limit=10)
         assert isinstance(preview, Ok)
         assert preview.value["opt_in"] is True
-        assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is True
+        assert (
+            plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in
+            is True
+        )
     finally:
         await plugin.shutdown()
 
@@ -2409,7 +3003,10 @@ async def test_study_knowledge_contribution_opt_in_preview_failure_is_atomic(
         result = await plugin.study_set_knowledge_contribution_opt_in(opt_in=True)
         assert isinstance(result, Err)
         assert plugin._cfg.knowledge_contribution_opt_in is False
-        assert plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in is False
+        assert (
+            plugin._store.load_config(StudyConfig()).knowledge_contribution_opt_in
+            is False
+        )
     finally:
         await plugin.shutdown()
 
@@ -2436,7 +3033,9 @@ async def test_study_plugin_doc_export_schema_includes_xmind_only_when_enabled(
 
     try:
         entries = plugin.collect_entries()
-        export_formats = entries["study_export_notes"].meta.input_schema["properties"]["fmt"]["enum"]
+        export_formats = entries["study_export_notes"].meta.input_schema["properties"][
+            "fmt"
+        ]["enum"]
         assert export_formats == ["markdown", "pdf", "docx", "xmind"]
     finally:
         await plugin.shutdown()
@@ -2460,7 +3059,9 @@ async def test_study_plugin_startup_restores_runtime_mode_without_overwriting_de
     state = build_initial_state(mode=MODE_TEACHING)
     plugin._store.open()
     try:
-        plugin._store.save_config(StudyConfig(mode=MODE_COMPANION, default_mode=MODE_COMPANION, language="en"))
+        plugin._store.save_config(
+            StudyConfig(mode=MODE_COMPANION, default_mode=MODE_COMPANION, language="en")
+        )
         plugin._store.save_state(state)
     finally:
         plugin._store.close()
@@ -2478,7 +3079,9 @@ async def test_study_plugin_startup_restores_runtime_mode_without_overwriting_de
 
 
 @pytest.mark.asyncio
-async def test_study_plugin_startup_failure_cleans_partial_resources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_study_plugin_startup_failure_cleans_partial_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
 

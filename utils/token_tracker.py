@@ -366,17 +366,30 @@ def _get_anonymous_device_id() -> str:
 #
 # 三者都是描述「这台机器/这个用户当前是谁」的副字段：
 #   - branch：首次启动时随机抽签后落盘，后续启动只读不改，保证同一设备稳定。
-#             当前 _TELEMETRY_BRANCHES 只有一个值，将来扩展元组即可触发 split；
-#             已经落盘的老用户继续读到旧分支，新用户随机进新池。
+#             扩展 _TELEMETRY_BRANCHES 元组即可触发 split，新用户随机进新池。注意：
+#             从池里移除某分支会让落盘旧值被严格校验判非法、按当前池重抽迁组（见
+#             privacy_default_off_v1 退役说明），这是退役实验的有意行为，不是
+#             append-only 扩展场景。
 #   - locale / timezone：每次上报时取当下值；同一设备换语言/换时区都视为同
 #             一个 device_id，server 端按 "latest seen" 覆写即可。
 # ---------------------------------------------------------------------------
 
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
-# A/B 池：
+# A/B 池（只决定「首启默认值」实验分组；首启后用户行为已落盘、不再响应覆写，其分组
+# 归因对默认值实验无意义，分析端按真·首启样本过滤即可）：
 #   - "main"：控制组，沿用历史默认（隐私模式按用户地区分流，仅中国地区默认关闭）
-#   - "privacy_default_off_v1"：实验组，隐私模式一律默认关闭
-_TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v1")
+#   - "privacy_default_off_v2"：实验组，与已退役的 v1 方向相反——
+#       v1 对「国外用户」试隐私默认关（国内本就默认关，对国内 no-op）；
+#       v2 对「国内用户」试隐私默认开（国外本就默认开，对国外 no-op）。
+#       即：国外用户恒隐私开，国内用户在 main / v2 间分流。抽签全地区随机，国外用户
+#       也会落 v2 但首启覆写是 no-op；分析国内 A/B 时按 locale 过滤即可。
+#
+# 已退役实验：
+#   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线、移出池。
+#     老 v1 落盘用户的旧值被 _read 严格校验判非法 → 下次启动按当前池随机重抽（落
+#     main 或 v2）。这些都是已过首启的用户，重抽只改 telemetry 标签、不动已落盘的
+#     vision 偏好，对「默认值」实验无影响，故不为其单独做确定性迁移。
+_TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v2")
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
 # 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和
@@ -411,8 +424,10 @@ def _get_telemetry_branch(config_dir: Path) -> str:
         # 让 OSError 透出，让 `/conversation-settings` 的 except 把 telemetryBranch
         # 返 None，前端保留 pending marker，下次启动 fast path 读到合法值收敛。
         #
-        # 严格校验：append-only 池下迁移期老分支也该保留在 _TELEMETRY_BRANCHES
-        # 里，所以这里不会误杀历史值。
+        # 严格校验：活跃分支都在 _TELEMETRY_BRANCHES 里，所以正常情况下不会误杀。
+        # 唯一例外是退役实验（如 privacy_default_off_v1）——它被有意移出池，落盘旧值
+        # 在这里判非法、触发按当前池重抽（见上方退役说明），正是「让老实验群退出原
+        # 分支」的预期路径。
         if not p.exists():
             return None
         value = p.read_text(encoding="utf-8").strip()
@@ -520,90 +535,68 @@ def _is_release_build() -> bool:
     return False
 
 
-def _is_steam_sdk_engaged() -> bool:
-    """Steam SDK 是否拿到/缓存过 user id 或 工坊订阅。
+def _get_telemetry_metadata() -> tuple[str, str]:
+    """一次性返回 ``(distribution, steam_user_id)``，两个字段同源同观测点。
 
-    任一信号为真即认为是 Steam 版：
-    1. 当前进程 Steamworks SDK 实例的 ``Users.GetSteamID()`` 返回非零 —— 真
-       的从 Steam 客户端拿到了登录用户。
-    2. ``Workshop.GetNumSubscribedItems()`` 大于 0 —— 用户订阅过工坊内容。
-    3. ``config_dir/workshop_config.json`` 存在 —— 之前任何一次会话写过工坊
-       配置，足以证明这台机器跑过 Steam 版（cloudsave 会把它打包带走，所以
-       即使本次会话 Steam 客户端没开，文件仍在就算）。
+    合并自原 ``_get_telemetry_distribution()`` 与 ``_get_telemetry_steam_user_id()``：
+    Steamworks ``Users.GetSteamID()`` **只调一次**，distribution 与
+    steam_user_id 从同一次观测派生。原本两个函数各调一次 ``GetSteamID()``，
+    Steamworks SDK 异步 init 时两次调用可能跨越 ready 边界——第一次返 0
+    （distribution 走 ``release``）、第二次返 Steam64（steam_user_id 拿到），
+    产出 ``release + 非空 Steam64`` 的矛盾态。合并后该矛盾态在源头消除。
 
-    1/2 是实时探测，覆盖正常 Steam session；3 是磁盘兜底，覆盖"上次跑过 Steam
-    本次断网/客户端没开"的场景。
+    **不变量**：返回的 steam_user_id 非空 ⟹ distribution == ``steam``。
+    （反之不成立：steam + 空 ID 是合法尾部，见判定 3。）
+
+    判定顺序（沿用原逻辑）：
+    1. 非 release build → ``("source", "")``。源码运行哪怕开着 Steam 客户端
+       也算 source —— 只有 release 才可能是 Steam 版。
+    2. release + ``GetSteamID()`` 拿到非零 Steam64 → ``("steam", str(sid))``。
+       锚定首个信号，distribution 与 ID 同次观测。
+    3. release + 工坊订阅 > 0 或 ``workshop_config.json`` 存在 → ``("steam", "")``。
+       证明这台机器跑过 Steam 版（cloudsave 会把 workshop_config.json 打包
+       带走），但本次没从 Steam 客户端拿到登录用户（没开 / 断网）。
+    4. release 但无任何 Steam 信号 → ``("release", "")``。
+
+    Steam64 用 string 而非 int 上报，避免 u64（常超 2^53）在 JS / 部分 JSON
+    消费方精度丢失。所有异常 swallow —— 埋点不能抛。
     """
+    if not _is_release_build():
+        return "source", ""
+
+    # 实时探测：GetSteamID() 只调一次，结果同时决定 distribution 和
+    # steam_user_id —— 这是修复 race 的核心，不再分两次调用跨越 ready 边界。
     try:
         from utils.steam_state import get_steamworks
         sw = get_steamworks()
         if sw is not None:
+            sid = 0
             try:
-                if int(sw.Users.GetSteamID() or 0) > 0:
-                    return True
+                sid = int(sw.Users.GetSteamID() or 0)
             except Exception:
-                pass
+                sid = 0
+            if sid > 0:
+                return "steam", str(sid)
+            # 没拿到登录用户，但订阅过工坊也算 Steam 版（steam + 空 ID）。
             try:
                 if int(sw.Workshop.GetNumSubscribedItems() or 0) > 0:
-                    return True
+                    return "steam", ""
             except Exception:
                 pass
     except Exception:
         pass
 
+    # 磁盘兜底：之前任何一次会话写过 workshop_config.json 即证明跑过 Steam
+    # 版，即使本次 Steam 客户端没开（cloudsave 会把它带走）。
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
         if (cm.config_dir / "workshop_config.json").exists():
-            return True
+            return "steam", ""
     except Exception:
         pass
 
-    return False
-
-
-def _get_telemetry_steam_user_id() -> str:
-    """读取当前会话的 Steam64 user id，作为字符串返回。
-
-    返回非空 string 表示 Steamworks SDK 真的从 Steam 客户端拿到了登录用户；
-    返回空 string 表示 SDK 没起来 / Steam 客户端没开 / 源码模式没初始化
-    SDK 等情形。
-
-    用 string 而非 int 上报，避免 Steam64（u64，常超过 2^53）在某些 JSON
-    消费方（JS / 部分 SDK）里精度丢失。
-    """
-    try:
-        from utils.steam_state import get_steamworks
-        sw = get_steamworks()
-        if sw is None:
-            return ""
-        try:
-            sid = int(sw.Users.GetSteamID() or 0)
-        except Exception:
-            return ""
-        if sid > 0:
-            return str(sid)
-    except Exception:
-        pass
-    return ""
-
-
-def _get_telemetry_distribution() -> str:
-    """识别发行渠道：steam / release / source。
-
-    判定顺序：
-    1. 先看是否 release build（PyInstaller ``sys.frozen`` 或 Nuitka
-       ``__compiled__`` / ``__nuitka_binary_dir``）。**只有 release 才可能是
-       Steam 版** —— 源码运行哪怕开着 Steam 客户端也算 source。
-    2. release + Steam SDK 拿到/缓存过 user id 或工坊订阅 → ``steam``。
-    3. release 但 SDK 没动 → ``release``（独立发行版）。
-    4. 非 release → ``source``（开源/开发模式）。
-    """
-    if not _is_release_build():
-        return "source"
-    if _is_steam_sdk_engaged():
-        return "steam"
-    return "release"
+    return "release", ""
 
 
 def _get_telemetry_timezone() -> str:
@@ -1139,8 +1132,10 @@ class TokenTracker:
             app_version = _get_app_version_from_changelog()
             telemetry_locale = _get_telemetry_locale()
             telemetry_timezone = _get_telemetry_timezone()
-            telemetry_distribution = _get_telemetry_distribution()
-            telemetry_steam_user_id = _get_telemetry_steam_user_id()
+            # 一次调用同时拿 distribution + steam_user_id，两个字段同源 ——
+            # 杜绝原本两次独立 GetSteamID() 跨 SDK ready 边界产生的
+            # release + 非空 Steam64 矛盾态。
+            telemetry_distribution, telemetry_steam_user_id = _get_telemetry_metadata()
 
             payload = {
                 "device_id": self._device_id,

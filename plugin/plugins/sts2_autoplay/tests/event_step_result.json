@@ -1,0 +1,2149 @@
+{
+  "before_screen": "EVENT",
+  "before_actions": [
+    {
+      "type": "choose_event_option",
+      "label": "choose_event_option",
+      "raw": {
+        "name": "choose_event_option",
+        "requires_target": false,
+        "requires_index": true
+      }
+    },
+    {
+      "type": "discard_potion",
+      "label": "discard_potion",
+      "raw": {
+        "name": "discard_potion",
+        "requires_target": false,
+        "requires_index": true
+      }
+    }
+  ],
+  "planned": {
+    "kind": "ok",
+    "payload": {
+      "status": "ok",
+      "message": "��ǰ�滮������choose_event_option��",
+      "summary": "��ǰ�滮������choose_event_option��",
+      "planned_operation": {
+        "action_type": "choose_event_option",
+        "kwargs": {
+          "option_index": 0
+        },
+        "confidence": 0.8,
+        "source": "heuristic",
+        "reason": "event_preference_or_default",
+        "action_id": "",
+        "category": "unknown",
+        "candidate_actions": []
+      }
+    }
+  },
+  "executed": {
+    "kind": "dict",
+    "payload": {
+      "data": {
+        "status": "ok",
+        "message": "��ִ�ж���: choose_event_option",
+        "summary": "��ִ�ж���: choose_event_option",
+        "executed": true,
+        "operation": {
+          "action_id": "9db8f883f2ff",
+          "action_type": "choose_event_option",
+          "category": "event",
+          "kwargs": {
+            "option_index": 0
+          },
+          "source": "heuristic",
+          "confidence": 0.8,
+          "reason": "event_preference_or_default",
+          "candidate_actions": [],
+          "action": {
+            "id": "9db8f883f2ff",
+            "type": "choose_event_option",
+            "category": "event",
+            "label": "choose_event_option",
+            "raw": {
+              "name": "choose_event_option",
+              "requires_target": false,
+              "requires_index": true
+            },
+            "default_kwargs": {},
+            "requires_index": true,
+            "requires_target": false
+          }
+        },
+        "result": {
+          "action": "choose_event_option",
+          "status": "completed",
+          "stable": true,
+          "message": "Event proceeded.",
+          "state": {
+            "state_version": 7,
+            "run_id": "68229LMPUQ",
+            "screen": "MAP",
+            "session": {
+              "mode": "singleplayer",
+              "phase": "run",
+              "control_scope": "local_player"
+            },
+            "in_combat": false,
+            "turn": null,
+            "available_actions": [
+              "choose_map_node",
+              "discard_potion"
+            ],
+            "combat": null,
+            "run": {
+              "character_id": "DEFECT",
+              "character_name": "���ϻ�����",
+              "floor": 1,
+              "current_hp": 60,
+              "max_hp": 75,
+              "gold": 99,
+              "max_energy": 3,
+              "base_orb_slots": 3,
+              "deck": [
+                {
+                  "index": 0,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 1,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 2,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 3,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 4,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 5,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 6,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 7,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 8,
+                  "card_id": "ZAP",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "����1�����������",
+                  "resolved_rules_text": "����1�����������",
+                  "dynamic_values": []
+                },
+                {
+                  "index": 9,
+                  "card_id": "DUALCAST",
+                  "name": "˫���ͷ�",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���������Ҳ�ĳ��������Ρ�",
+                  "resolved_rules_text": "���������Ҳ�ĳ��������Ρ�",
+                  "dynamic_values": []
+                },
+                {
+                  "index": 10,
+                  "card_id": "ASCENDERS_BANE",
+                  "name": "����֮��",
+                  "upgraded": false,
+                  "card_type": "Curse",
+                  "rarity": "Curse",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": -1,
+                  "star_cost": 0,
+                  "rules_text": "",
+                  "resolved_rules_text": "���ܱ������ ���ޡ� ���㡣",
+                  "dynamic_values": []
+                }
+              ],
+              "relics": [
+                {
+                  "index": 0,
+                  "relic_id": "CRACKED_CORE",
+                  "name": "�������",
+                  "description": "��ÿ��ս����ʼʱ��[gold]����[/gold][blue]1[/blue]��[gold]����[/gold]������",
+                  "stack": null,
+                  "is_melted": false
+                },
+                {
+                  "index": 1,
+                  "relic_id": "PHIAL_HOLSTER",
+                  "name": "ҩƿƤ��",
+                  "description": "ʰ��ʱ�����[blue]1[/blue]��ҩˮ��λ�����[blue]2[/blue]ƿ���ҩˮ��",
+                  "stack": null,
+                  "is_melted": false
+                }
+              ],
+              "players": [
+                {
+                  "player_id": "1",
+                  "slot_index": 0,
+                  "is_local": true,
+                  "is_connected": true,
+                  "character_id": "DEFECT",
+                  "character_name": "���ϻ�����",
+                  "current_hp": 60,
+                  "max_hp": 75,
+                  "gold": 99,
+                  "is_alive": true
+                }
+              ],
+              "potions": [
+                {
+                  "index": 0,
+                  "potion_id": "FLEX_POTION",
+                  "name": "����ҩˮ",
+                  "description": "���[blue]5[/blue]��[gold]����[/gold]�����������غϽ���ʱ��ʧȥ[blue]5[/blue]��[gold]����[/gold]��",
+                  "rarity": "Common",
+                  "occupied": true,
+                  "usage": "CombatOnly",
+                  "target_type": "AnyPlayer",
+                  "is_queued": false,
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "can_use": false,
+                  "can_discard": true
+                },
+                {
+                  "index": 1,
+                  "potion_id": "VULNERABLE_POTION",
+                  "name": "����ҩˮ",
+                  "description": "����[blue]3[/blue]��[gold]����[/gold]��",
+                  "rarity": "Common",
+                  "occupied": true,
+                  "usage": "CombatOnly",
+                  "target_type": "AnyEnemy",
+                  "is_queued": false,
+                  "requires_target": true,
+                  "target_index_space": "enemies",
+                  "valid_target_indices": [],
+                  "can_use": false,
+                  "can_discard": true
+                },
+                {
+                  "index": 2,
+                  "potion_id": null,
+                  "name": null,
+                  "description": null,
+                  "rarity": null,
+                  "occupied": false,
+                  "usage": null,
+                  "target_type": null,
+                  "is_queued": false,
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "can_use": false,
+                  "can_discard": false
+                }
+              ]
+            },
+            "multiplayer": null,
+            "multiplayer_lobby": null,
+            "map": {
+              "current_node": {
+                "row": 0,
+                "col": 3
+              },
+              "is_travel_enabled": true,
+              "is_traveling": false,
+              "map_generation_count": 1,
+              "rows": 16,
+              "cols": 7,
+              "starting_node": {
+                "row": 0,
+                "col": 3
+              },
+              "boss_node": {
+                "row": 16,
+                "col": 3
+              },
+              "second_boss_node": null,
+              "nodes": [
+                {
+                  "row": 0,
+                  "col": 3,
+                  "node_type": "Ancient",
+                  "state": "Traveled",
+                  "visited": true,
+                  "is_current": true,
+                  "is_available": false,
+                  "is_start": true,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [],
+                  "children": [
+                    {
+                      "row": 1,
+                      "col": 1
+                    },
+                    {
+                      "row": 1,
+                      "col": 3
+                    },
+                    {
+                      "row": 1,
+                      "col": 4
+                    },
+                    {
+                      "row": 1,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 1,
+                  "col": 1,
+                  "node_type": "Monster",
+                  "state": "Travelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": true,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 0,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 2,
+                      "col": 1
+                    },
+                    {
+                      "row": 2,
+                      "col": 2
+                    }
+                  ]
+                },
+                {
+                  "row": 1,
+                  "col": 3,
+                  "node_type": "Monster",
+                  "state": "Travelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": true,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 0,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 2,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 1,
+                  "col": 4,
+                  "node_type": "Monster",
+                  "state": "Travelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": true,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 0,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 2,
+                      "col": 4
+                    }
+                  ]
+                },
+                {
+                  "row": 1,
+                  "col": 5,
+                  "node_type": "Monster",
+                  "state": "Travelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": true,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 0,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 2,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 2,
+                  "col": 1,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 1,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 3,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 2,
+                  "col": 2,
+                  "node_type": "Shop",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 1,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 3,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 2,
+                  "col": 3,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 1,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 3,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 2,
+                  "col": 4,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 1,
+                      "col": 4
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 3,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 2,
+                  "col": 5,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 1,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 3,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 3,
+                  "col": 1,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 2,
+                      "col": 1
+                    },
+                    {
+                      "row": 2,
+                      "col": 2
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 4,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 3,
+                  "col": 3,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 2,
+                      "col": 3
+                    },
+                    {
+                      "row": 2,
+                      "col": 4
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 4,
+                      "col": 2
+                    },
+                    {
+                      "row": 4,
+                      "col": 4
+                    }
+                  ]
+                },
+                {
+                  "row": 3,
+                  "col": 5,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 2,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 4,
+                      "col": 4
+                    }
+                  ]
+                },
+                {
+                  "row": 4,
+                  "col": 0,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 3,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 5,
+                      "col": 0
+                    },
+                    {
+                      "row": 5,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 4,
+                  "col": 2,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 3,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 5,
+                      "col": 2
+                    }
+                  ]
+                },
+                {
+                  "row": 4,
+                  "col": 4,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 3,
+                      "col": 3
+                    },
+                    {
+                      "row": 3,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 5,
+                      "col": 4
+                    },
+                    {
+                      "row": 5,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 5,
+                  "col": 0,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 4,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 6,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 5,
+                  "col": 1,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 4,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 6,
+                      "col": 0
+                    },
+                    {
+                      "row": 6,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 5,
+                  "col": 2,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 4,
+                      "col": 2
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 6,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 5,
+                  "col": 4,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 4,
+                      "col": 4
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 6,
+                      "col": 4
+                    }
+                  ]
+                },
+                {
+                  "row": 5,
+                  "col": 5,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 4,
+                      "col": 4
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 6,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 6,
+                  "col": 0,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 5,
+                      "col": 0
+                    },
+                    {
+                      "row": 5,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 7,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 6,
+                  "col": 1,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 5,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 7,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 6,
+                  "col": 3,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 5,
+                      "col": 2
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 7,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 6,
+                  "col": 4,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 5,
+                      "col": 4
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 7,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 6,
+                  "col": 5,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 5,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 7,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 7,
+                  "col": 0,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 6,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 8,
+                      "col": 0
+                    },
+                    {
+                      "row": 8,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 7,
+                  "col": 1,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 6,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 8,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 7,
+                  "col": 3,
+                  "node_type": "Shop",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 6,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 8,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 7,
+                  "col": 5,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 6,
+                      "col": 4
+                    },
+                    {
+                      "row": 6,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 8,
+                      "col": 4
+                    },
+                    {
+                      "row": 8,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 8,
+                  "col": 0,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 7,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 9,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 8,
+                  "col": 1,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 7,
+                      "col": 0
+                    },
+                    {
+                      "row": 7,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 9,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 8,
+                  "col": 3,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 7,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 9,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 8,
+                  "col": 4,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 7,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 9,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 8,
+                  "col": 5,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 7,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 9,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 9,
+                  "col": 0,
+                  "node_type": "Treasure",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 8,
+                      "col": 0
+                    },
+                    {
+                      "row": 8,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 10,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 9,
+                  "col": 3,
+                  "node_type": "Treasure",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 8,
+                      "col": 3
+                    },
+                    {
+                      "row": 8,
+                      "col": 4
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 10,
+                      "col": 2
+                    },
+                    {
+                      "row": 10,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 9,
+                  "col": 5,
+                  "node_type": "Treasure",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 8,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 10,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 10,
+                  "col": 0,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 9,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 11,
+                      "col": 0
+                    },
+                    {
+                      "row": 11,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 10,
+                  "col": 2,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 9,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 11,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 10,
+                  "col": 3,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 9,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 11,
+                      "col": 2
+                    }
+                  ]
+                },
+                {
+                  "row": 10,
+                  "col": 5,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 9,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 11,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 11,
+                  "col": 0,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 10,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 12,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 11,
+                  "col": 1,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 10,
+                      "col": 0
+                    },
+                    {
+                      "row": 10,
+                      "col": 2
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 12,
+                      "col": 0
+                    },
+                    {
+                      "row": 12,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 11,
+                  "col": 2,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 10,
+                      "col": 3
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 12,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 11,
+                  "col": 5,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 10,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 12,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 12,
+                  "col": 0,
+                  "node_type": "Unknown",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 11,
+                      "col": 0
+                    },
+                    {
+                      "row": 11,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 13,
+                      "col": 0
+                    }
+                  ]
+                },
+                {
+                  "row": 12,
+                  "col": 1,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 11,
+                      "col": 1
+                    },
+                    {
+                      "row": 11,
+                      "col": 2
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 13,
+                      "col": 0
+                    },
+                    {
+                      "row": 13,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 12,
+                  "col": 5,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 11,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 13,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 13,
+                  "col": 0,
+                  "node_type": "Shop",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 12,
+                      "col": 0
+                    },
+                    {
+                      "row": 12,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 14,
+                      "col": 0
+                    },
+                    {
+                      "row": 14,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 13,
+                  "col": 1,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 12,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 14,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 13,
+                  "col": 5,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 12,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 14,
+                      "col": 5
+                    }
+                  ]
+                },
+                {
+                  "row": 14,
+                  "col": 0,
+                  "node_type": "Monster",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 13,
+                      "col": 0
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 15,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 14,
+                  "col": 1,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 13,
+                      "col": 0
+                    },
+                    {
+                      "row": 13,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 15,
+                      "col": 1
+                    }
+                  ]
+                },
+                {
+                  "row": 14,
+                  "col": 5,
+                  "node_type": "Elite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 13,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 15,
+                      "col": 4
+                    }
+                  ]
+                },
+                {
+                  "row": 15,
+                  "col": 1,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 14,
+                      "col": 0
+                    },
+                    {
+                      "row": 14,
+                      "col": 1
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 16,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 15,
+                  "col": 4,
+                  "node_type": "RestSite",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": false,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 14,
+                      "col": 5
+                    }
+                  ],
+                  "children": [
+                    {
+                      "row": 16,
+                      "col": 3
+                    }
+                  ]
+                },
+                {
+                  "row": 16,
+                  "col": 3,
+                  "node_type": "Boss",
+                  "state": "Untravelable",
+                  "visited": false,
+                  "is_current": false,
+                  "is_available": false,
+                  "is_start": false,
+                  "is_boss": true,
+                  "is_second_boss": false,
+                  "parents": [
+                    {
+                      "row": 15,
+                      "col": 1
+                    },
+                    {
+                      "row": 15,
+                      "col": 4
+                    }
+                  ],
+                  "children": []
+                }
+              ],
+              "available_nodes": [
+                {
+                  "index": 0,
+                  "row": 1,
+                  "col": 1,
+                  "node_type": "Monster",
+                  "state": "Travelable"
+                },
+                {
+                  "index": 1,
+                  "row": 1,
+                  "col": 3,
+                  "node_type": "Monster",
+                  "state": "Travelable"
+                },
+                {
+                  "index": 2,
+                  "row": 1,
+                  "col": 4,
+                  "node_type": "Monster",
+                  "state": "Travelable"
+                },
+                {
+                  "index": 3,
+                  "row": 1,
+                  "col": 5,
+                  "node_type": "Monster",
+                  "state": "Travelable"
+                }
+              ]
+            },
+            "selection": null,
+            "character_select": null,
+            "timeline": null,
+            "chest": null,
+            "event": null,
+            "shop": null,
+            "rest": null,
+            "reward": null,
+            "modal": null,
+            "game_over": null,
+            "agent_view": {
+              "version": 1,
+              "screen": "MAP",
+              "run_id": "68229LMPUQ",
+              "session": {
+                "mode": "singleplayer",
+                "phase": "run",
+                "control_scope": "local_player"
+              },
+              "turn": null,
+              "actions": [
+                "choose_map_node",
+                "discard_potion"
+              ],
+              "available_actions": [
+                "choose_map_node",
+                "discard_potion"
+              ],
+              "combat": null,
+              "run": {
+                "character": "���ϻ�����",
+                "floor": 1,
+                "hp": "60/75",
+                "gold": 99,
+                "max_energy": 3,
+                "base_orb_slots": 3,
+                "deck": [
+                  {
+                    "line": "˫���ͷ� [1��]�����������Ҳ�ĳ��������Ρ�",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "���*4 [1��]�����6���˺���",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "��� [1��]������1�����������",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "����֮�� [0��]�����ܱ������ ���ޡ� ���㡣",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "����*4 [1��]�����5��񵲡�",
+                    "keywords": [
+                      "��"
+                    ],
+                    "mods": []
+                  }
+                ],
+                "relics": [
+                  "�������",
+                  "ҩƿƤ��"
+                ],
+                "potions": [
+                  {
+                    "i": 0,
+                    "line": "0: ����ҩˮ��CombatOnly",
+                    "usable": false,
+                    "discard": true,
+                    "target": "player",
+                    "targets": []
+                  },
+                  {
+                    "i": 1,
+                    "line": "1: ����ҩˮ��CombatOnly",
+                    "usable": false,
+                    "discard": true,
+                    "target": "enemy",
+                    "targets": []
+                  },
+                  {
+                    "i": 2,
+                    "line": "2: ��",
+                    "usable": false,
+                    "discard": false,
+                    "target": null,
+                    "targets": []
+                  }
+                ],
+                "piles": {
+                  "draw": [],
+                  "discard": [],
+                  "exhaust": []
+                }
+              },
+              "map": {
+                "current": "0,3",
+                "options": [
+                  {
+                    "i": 0,
+                    "line": "Monster (1,1)"
+                  },
+                  {
+                    "i": 1,
+                    "line": "Monster (1,3)"
+                  },
+                  {
+                    "i": 2,
+                    "line": "Monster (1,4)"
+                  },
+                  {
+                    "i": 3,
+                    "line": "Monster (1,5)"
+                  }
+                ]
+              },
+              "selection": null,
+              "character_select": null,
+              "timeline": null,
+              "chest": null,
+              "event": null,
+              "shop": null,
+              "rest": null,
+              "reward": null,
+              "modal": null,
+              "game_over": null,
+              "glossary": {
+                "��": "�񵲻����ȵ��������ܵ����˺���"
+              }
+            }
+          }
+        }
+      },
+      "delivery": "proactive",
+      "message": "��ִ�ж���: choose_event_option"
+    }
+  },
+  "after_screen": "MAP",
+  "after_actions": [
+    {
+      "type": "choose_map_node",
+      "label": "choose_map_node",
+      "raw": {
+        "name": "choose_map_node",
+        "requires_target": false,
+        "requires_index": true
+      }
+    },
+    {
+      "type": "discard_potion",
+      "label": "discard_potion",
+      "raw": {
+        "name": "discard_potion",
+        "requires_target": false,
+        "requires_index": true
+      }
+    }
+  ]
+}
