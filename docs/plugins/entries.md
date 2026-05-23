@@ -1,8 +1,12 @@
 # Entries & Parameters
 
-An **entry point** is a function in your plugin that can be called from the Plugin Manager, by other plugins, or by the AI agent.
+An entry point is a "function" your plugin exposes to the outside world. Every executable button users see in Plugin Manager, every tool the AI agent can call, every service other plugins can request — those are all entry points.
 
-## Defining an entry
+---
+
+## The simplest entry
+
+You want your plugin to do one thing. Add `@plugin_entry` to a method:
 
 ```python
 from plugin.sdk.plugin import NekoPluginBase, neko_plugin, plugin_entry, Ok
@@ -10,57 +14,62 @@ from plugin.sdk.plugin import NekoPluginBase, neko_plugin, plugin_entry, Ok
 @neko_plugin
 class MyPlugin(NekoPluginBase):
 
-    @plugin_entry(id="search", name="Search", description="Search for something")
-    async def search(self, query: str, max_results: int = 10):
-        results = await self._do_search(query, max_results)
-        return Ok({"results": results})
+    @plugin_entry(id="hello", name="Say Hello", description="Say hello")
+    async def hello(self):
+        return Ok({"message": "Hello!"})
 ```
 
-That's it. The SDK automatically generates the input schema from your type annotations.
+This entry has no parameters. Click execute in Plugin Manager, get back `{"message": "Hello!"}`.
 
-## How parameters work
+---
 
-The SDK looks at your function signature and builds a JSON Schema from it:
+## Adding parameters
+
+Most entries need input. Just write parameters in the function signature:
 
 ```python
-async def search(self, query: str, max_results: int = 10):
+@plugin_entry(id="greet", name="Greet", description="Greet someone by name")
+async def greet(self, name: str, times: int = 1):
+    messages = [f"Hello, {name}!" for _ in range(times)]
+    return Ok({"messages": messages})
 ```
 
-Becomes:
+The SDK automatically:
+- Generates an input form from `name: str` and `times: int = 1` (shown in the panel)
+- `name` has no default → required
+- `times` has default `1` → optional
+- Type checking: passing a string for `times` will error
 
-```json
-{
-  "type": "object",
-  "properties": {
-    "query": {"type": "string"},
-    "max_results": {"type": "integer", "default": 10}
-  },
-  "required": ["query"]
-}
-```
+You don't need to write any JSON Schema.
 
-- Parameters without defaults → `required`
-- Parameters with defaults → optional
-- `self` and `**kwargs` are ignored
+---
 
-## Adding descriptions with `Annotated`
+## Adding descriptions to parameters
+
+By default, the panel shows the variable name (`name`, `times`). To show friendlier descriptions, use `Annotated`:
 
 ```python
 from typing import Annotated
 
-async def search(
+@plugin_entry(id="greet", name="Greet", description="Greet someone by name")
+async def greet(
     self,
-    query: Annotated[str, "Search keywords"],
-    max_results: Annotated[int, "Max number of results"] = 10,
+    name: Annotated[str, "The person's name"],
+    times: Annotated[int, "How many times to repeat"] = 1,
 ):
-    ...
+    messages = [f"Hello, {name}!" for _ in range(times)]
+    return Ok({"messages": messages})
 ```
 
-The string inside `Annotated` becomes the `description` in the schema. This description is shown in the Plugin Manager UI and to the AI agent.
+Now the panel shows "The person's name" next to `name`, and "How many times to repeat" next to `times`.
 
-## Using Pydantic models for complex inputs
+The AI agent also sees these descriptions, helping it understand what values to pass.
 
-When you have many parameters or need validation (min/max, regex, etc.), use a Pydantic model:
+---
+
+## Many parameters: use a Pydantic model
+
+If your entry has many parameters or needs complex validation (min/max, regex, etc.), define them as a Pydantic model:
 
 ```python
 from pydantic import BaseModel, Field
@@ -69,22 +78,30 @@ class SearchParams(BaseModel):
     query: str = Field(..., description="Search keywords")
     max_results: int = Field(default=10, ge=1, le=50, description="Max results")
     language: str = Field(default="zh-CN", description="Result language")
+    include_images: bool = Field(default=False, description="Include image results")
 
 @plugin_entry(id="search", name="Search", description="Search for content")
 async def search(self, params: SearchParams):
-    # params is a validated Pydantic instance
+    self.logger.info("Searching: {} (max {})", params.query, params.max_results)
     results = await self._do_search(params.query, params.max_results)
-    return Ok({"results": results})
+    return Ok({"results": results, "count": len(results)})
 ```
 
-The SDK:
-1. Generates `input_schema` from the model (including descriptions, defaults, constraints)
-2. Validates incoming arguments with `model_validate()` at runtime
+When the SDK sees a function with one parameter typed as a BaseModel, it automatically:
+1. Generates an input form from the model (with descriptions, defaults, constraint hints)
+2. Validates input with `model_validate()` on call (e.g. `max_results=100` is rejected because `le=50`)
 3. Passes the validated model instance to your function
 
-## Return values
+**When to use Pydantic vs plain parameters?**
 
-Always return `Ok(...)` for success or `Err(...)` for errors:
+- ≤ 3 parameters, no complex validation → write them in the function signature
+- Many parameters, need validation constraints, want better docs → use a Pydantic model
+
+---
+
+## Returning success and failure
+
+Entry points must return `Ok(...)` or `Err(...)`:
 
 ```python
 from plugin.sdk.plugin import Ok, Err, SdkError
@@ -96,54 +113,104 @@ async def divide(self, a: float, b: float):
     return Ok({"result": a / b})
 ```
 
+- `Ok(data)` — Success. `data` can be a dict, list, string, or number.
+- `Err(SdkError("reason"))` — Failure. The error message shows in the panel and tells the AI "this call failed".
+
+**Why not just raise exceptions?** Because plugins run in separate processes — exceptions don't propagate to the main system. `Ok`/`Err` is the cross-process safe communication pattern. That said, if your code unexpectedly raises, the framework catches it and converts to `Err` automatically — no crash.
+
+---
+
 ## Controlling what the AI sees
 
-By default, the AI sees the full return value. Use `llm_result_fields` to limit it:
+By default, the AI sees all fields you return. But sometimes the return value contains large raw data (like a full search results list) and you only want the AI to see a summary:
 
 ```python
 @plugin_entry(
     id="search",
     name="Search",
-    description="Search the web",
-    llm_result_fields=["summary"],
+    description="Web search",
+    llm_result_fields=["summary", "count"],
 )
 async def search(self, query: str):
     results = await self._do_search(query)
     summary = self._build_summary(results)
-    # AI only sees "summary"; "raw_results" is stored but hidden from the AI
-    return Ok({"summary": summary, "raw_results": results})
+    return Ok({
+        "summary": summary,          # ← AI can see this
+        "count": len(results),        # ← AI can see this
+        "raw_results": results,       # ← AI can't see this, but data is still stored
+    })
 ```
 
-## `@plugin_entry` options
+Only fields listed in `llm_result_fields` are sent to the AI. Other fields are stored normally and visible in the panel — they just don't get stuffed into the AI's context (saves tokens).
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `id` | method name | Entry point ID |
-| `name` | same as id | Display name |
-| `description` | `""` | Description (shown to AI and in UI) |
-| `input_schema` | auto-inferred | Manual JSON Schema (overrides auto-inference) |
-| `params` | auto-inferred | Explicit Pydantic model class |
-| `timeout` | `None` | Execution timeout in seconds |
-| `llm_result_fields` | `None` | Fields visible to the AI |
-| `kind` | `"action"` | Entry type |
-| `auto_start` | `False` | Auto-execute on plugin load |
+---
 
-## Dynamic entries
+## Other entry options
 
-Register entry points at runtime (e.g. based on config):
+`@plugin_entry` supports these additional options:
+
+```python
+@plugin_entry(
+    id="process",              # Entry ID (defaults to method name)
+    name="Process Data",       # Display name
+    description="Process and transform data",  # Description (for humans and AI)
+    timeout=60.0,              # Timeout in seconds — auto-cancel if exceeded
+    auto_start=True,           # Execute once automatically when plugin loads
+    kind="service",            # Type tag (default "action")
+)
+async def process(self, data: str):
+    ...
+```
+
+Most of the time you only need `id`, `name`, `description`. Use the others as needed.
+
+---
+
+## Dynamic entries: register at runtime
+
+Sometimes you don't know what entries your plugin will have — it might depend on config, user settings, or capabilities returned by an external service. Use dynamic registration:
 
 ```python
 from plugin.sdk.plugin import lifecycle, Ok
 
 @lifecycle(id="startup")
 async def on_startup(self):
-    commands = self.metadata.get("commands", {})
-    for cmd_id, cmd_config in commands.items():
+    # Suppose config defines a set of commands
+    cfg = await self.config.dump()
+    commands = cfg.get("commands", {})
+
+    for cmd_id, cmd_info in commands.items():
         self.register_dynamic_entry(
             entry_id=cmd_id,
-            handler=lambda **kwargs: Ok({"executed": cmd_id}),
-            name=cmd_config.get("name", cmd_id),
-            description=cmd_config.get("description", ""),
+            handler=self._make_handler(cmd_info),
+            name=cmd_info.get("name", cmd_id),
+            description=cmd_info.get("description", ""),
         )
+
+    self.logger.info("Registered {} dynamic entries", len(commands))
     return Ok({"status": "ready"})
+
+def _make_handler(self, cmd_info):
+    template = cmd_info.get("template", "Executed: {cmd}")
+    async def handler(cmd: str = ""):
+        return Ok({"output": template.format(cmd=cmd)})
+    return handler
 ```
+
+Dynamic entries work just like static ones — visible in the panel, executable, callable by the AI.
+
+Use `self.unregister_dynamic_entry(entry_id)` to remove them.
+
+---
+
+## Summary
+
+| Scenario | Approach |
+|----------|----------|
+| Simple function, few params | `@plugin_entry` + type annotations in signature |
+| Want param descriptions | Use `Annotated[type, "description"]` |
+| Many params / need validation | Define a Pydantic model as single parameter |
+| Return success | `return Ok({...})` |
+| Return failure | `return Err(SdkError("reason"))` |
+| Limit what AI sees | `llm_result_fields=["field1", "field2"]` |
+| Don't know entries until runtime | `self.register_dynamic_entry(...)` |

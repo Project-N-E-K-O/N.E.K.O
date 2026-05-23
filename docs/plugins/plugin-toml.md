@@ -1,37 +1,23 @@
 # Plugin Config (plugin.toml)
 
-Every plugin has a `plugin.toml` file in its root folder. This page explains all available fields.
+Every plugin has a `plugin.toml` in its root folder. It tells N.E.K.O what your plugin is, how to load it, and what capabilities it has.
 
-## Minimal example
+Below is a complete config for a fictional "Smart Notes" plugin. This plugin can search and create notes, has its own UI panel, supports multiple languages, and can be called by the AI agent.
 
-```toml
-[plugin]
-id = "my_plugin"
-name = "My Plugin"
-version = "0.1.0"
-entry = "plugin.plugins.my_plugin:MyPlugin"
-
-[plugin.sdk]
-supported = ">=0.1.0,<0.3.0"
-
-[plugin_runtime]
-enabled = true
-```
-
-## Full example (real plugin)
+## Full example
 
 ```toml
 [plugin]
-id = "web_search"
-name = "网络搜索"
-description = "联网搜索。自动根据用户 IP 选择搜索引擎。"
-short_description = "Web search via Baidu (CN) or DuckDuckGo (intl)."
-keywords = ["搜索", "search", "百度", "duckduckgo", "google"]
-version = "0.1.0"
-entry = "plugin.plugins.web_search:WebSearchPlugin"
+id = "smart_notes"
+name = "Smart Notes"
+description = "Manage your notes: search, create, organize, with AI-powered classification."
+short_description = "Note management with AI-powered organization."
+keywords = ["note", "笔记", "memo", "record", "メモ"]
+version = "1.2.0"
+entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 
 [plugin.author]
-name = "N.E.K.O Team"
+name = "Alice"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
@@ -42,83 +28,143 @@ default_locale = "zh-CN"
 locales_dir = "i18n"
 
 [plugin.store]
-enabled = false
+enabled = true
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "Smart Notes"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "User Guide"
+entry = "docs/guide.md"
+permissions = ["state:read"]
 
 [plugin_runtime]
 enabled = true
 auto_start = true
 
-# Custom config section — read via self.config.dump()
-[search]
-max_results = 8
-timeout_seconds = 15
+[notes]
+max_per_page = 20
+auto_classify = true
 ```
 
-## Field reference
+## Section by section
 
-### `[plugin]` — Plugin identity
+### `[plugin]` — Who is this plugin
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | Yes | Unique identifier. Must match the folder name. |
-| `name` | Yes | Display name shown in Plugin Manager. |
-| `entry` | Yes | Python entry point: `plugin.plugins.<id>:<ClassName>` |
-| `description` | No | Full description of what the plugin does. |
-| `short_description` | No | Brief description (< 300 chars) used by the AI agent to decide whether to call this plugin. |
-| `keywords` | No | List of regex patterns. The AI agent uses these to match user intent to your plugin. |
-| `version` | No | Semver version string. |
-| `type` | No | `"plugin"` (default), `"extension"`, or `"adapter"`. |
-| `passive` | No | If `true`, the AI agent won't proactively dispatch tasks to this plugin. Used for listeners (e.g. danmaku, QQ auto-reply). |
+```toml
+[plugin]
+id = "smart_notes"
+name = "Smart Notes"
+entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
+```
 
-### `[plugin.author]`
+These three fields are **required**. `id` must match the folder name. `entry` tells the system where to find your Python class.
 
-| Field | Description |
-|-------|-------------|
-| `name` | Author name |
-| `email` | Author email (optional) |
+```toml
+description = "Manage your notes: search, create, organize, with AI-powered classification."
+short_description = "Note management with AI-powered organization."
+keywords = ["note", "笔记", "memo", "record", "メモ"]
+```
 
-### `[plugin.sdk]` — SDK version constraints
+These three fields determine whether the **AI agent can find your plugin**:
 
-| Field | Description |
-|-------|-------------|
-| `recommended` | Recommended SDK version range. |
-| `supported` | Minimum supported range. Plugin is rejected if not met. |
-| `untested` | Allowed but shows a warning on load. |
-| `conflicts` | Version ranges that are rejected. |
+- `short_description` — The AI uses this to judge "what can this plugin do". Keep it concise and accurate.
+- `keywords` — The AI uses these to match user intent. If the user says "take a note" and your keywords include "note", it matches.
+- `description` — Full description for humans, shown in Plugin Manager.
 
-### `[plugin_runtime]` — Runtime behavior
+If your plugin doesn't need to be called by the AI (e.g. a pure listener), you can skip these and add `passive = true`.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `true` | Whether the plugin can be loaded at all. |
-| `auto_start` | `false` | Start automatically when N.E.K.O launches. |
+```toml
+version = "1.2.0"
+```
 
-### `[plugin.i18n]` — Internationalization
+Optional. Used for version management and marketplace publishing.
 
-| Field | Description |
-|-------|-------------|
-| `default_locale` | Fallback locale (e.g. `"zh-CN"`, `"en"`). |
-| `locales_dir` | Directory containing locale JSON files, relative to plugin root. |
+---
+
+### `[plugin.author]` — Who wrote it
+
+```toml
+[plugin.author]
+name = "Alice"
+```
+
+Optional. Shown in Plugin Manager.
+
+---
+
+### `[plugin.sdk]` — Which SDK version it's compatible with
+
+```toml
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+```
+
+Tells the system which SDK version your plugin was written for. If the user's N.E.K.O is too old or too new, the system will warn or refuse to load.
+
+- `supported` — Below this range: refused to load
+- `recommended` — Best experience in this range
+- `untested` — Allowed but shows "untested" warning
+- `conflicts` — Explicitly incompatible versions
+
+---
+
+### `[plugin_runtime]` — How it runs
+
+```toml
+[plugin_runtime]
+enabled = true
+auto_start = true
+```
+
+- `enabled` — Set to `false` to temporarily disable without deleting files
+- `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel
+
+---
+
+### `[plugin.i18n]` — Multi-language support
+
+```toml
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+```
+
+If your plugin needs multiple languages, create an `i18n/` folder in your plugin directory with locale files:
+
+```
+i18n/
+├── en.json
+└── zh-CN.json
+```
+
+Don't need i18n? Just don't include this section.
+
+---
 
 ### `[plugin.store]` — Persistent storage
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `false` | Enable `self.store` key-value persistence. |
+```toml
+[plugin.store]
+enabled = true
+```
 
-### `[plugin.database]` — SQLite database
+When enabled, you can use `self.store` in code to save and retrieve data (key-value pairs) that persists across restarts.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `enabled` | `false` | Enable `self.db` SQLite access. |
+Don't need storage? Just don't include this section (disabled by default).
 
-### `[plugin_state]` — State persistence
+---
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `backend` | `"off"` | `"off"`, `"memory"`, or `"file"`. |
-
-### `[plugin.ui]` — Hosted UI surfaces
+### `[plugin.ui]` — Custom UI
 
 ```toml
 [plugin.ui]
@@ -126,44 +172,63 @@ enabled = true
 
 [[plugin.ui.panel]]
 id = "main"
-title = "My Plugin"
+title = "Smart Notes"
 entry = "ui/panel.tsx"
 context = "dashboard"
 permissions = ["state:read", "action:call"]
 
 [[plugin.ui.guide]]
 id = "quickstart"
-title = "Quickstart"
-entry = "docs/quickstart.md"
+title = "User Guide"
+entry = "docs/guide.md"
 permissions = ["state:read"]
 ```
 
-See [Hosted UI](./hosted-ui) for full documentation.
+If your plugin needs a custom interface in Plugin Manager:
 
-### Custom config sections
+- `panel` — Interactive panel (written in TSX, can have buttons, tables, forms)
+- `guide` — Read-only documentation (written in Markdown)
 
-Any section not recognized by the framework is treated as custom config. Read it in your plugin:
+The file extension determines rendering: `.tsx` = interactive panel, `.md` = documentation.
+
+Don't need UI? Just don't include this section. See [Hosted UI](./hosted-ui) for details.
+
+---
+
+### Custom sections — Your business config
+
+```toml
+[notes]
+max_per_page = 20
+auto_classify = true
+```
+
+Any section the framework doesn't recognize becomes your business config. Read it in code:
 
 ```python
 cfg = await self.config.dump()
-my_settings = cfg.get("search", {})
+notes_cfg = cfg.get("notes", {})
+max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-## File structure with all optional files
+You can define as many custom sections as you want, named however you like.
+
+---
+
+## Directory structure for this plugin
 
 ```
-plugin/plugins/my_plugin/
-├── plugin.toml          # Required: plugin config
-├── __init__.py          # Required: plugin code
-├── config.json          # Optional: additional config
-├── data/                # Optional: runtime data (self.data_path())
-├── i18n/                # Optional: locale files
+plugin/plugins/smart_notes/
+├── plugin.toml              ← the file above
+├── __init__.py              ← plugin code
+├── i18n/                    ← locale files (because [plugin.i18n] is configured)
 │   ├── en.json
 │   └── zh-CN.json
-├── ui/                  # Optional: Hosted TSX panels
+├── ui/                      ← interactive panel (because [[plugin.ui.panel]] is configured)
 │   └── panel.tsx
-├── docs/                # Optional: Markdown/TSX guides
-│   └── quickstart.md
-└── static/              # Optional: legacy web UI
-    └── index.html
+├── docs/                    ← user guide (because [[plugin.ui.guide]] is configured)
+│   └── guide.md
+└── data/                    ← runtime data (auto-created, self.data_path() points here)
 ```
+
+Only `plugin.toml` and `__init__.py` are required. Everything else is created as needed.
