@@ -4253,6 +4253,23 @@ async def push_activity_signal(request: Request):
     # mandatory CSRF token yet. Same-origin browser requests pass
     # naturally because their Origin matches ``request.base_url``,
     # which ``_get_allowed_local_origins`` always includes.
+    #
+    # Opaque-origin guard (Codex F5 on PR #1477): browsers send the
+    # literal string ``"null"`` as Origin for sandboxed iframes,
+    # ``file://`` pages, and certain extension contexts. ``urlsplit``
+    # parses "null" into an empty scheme/netloc which
+    # ``_normalize_origin_value`` turns into ``""`` — without this
+    # check that bypasses to the no-Origin "allowed" branch. We
+    # explicitly reject the raw "null" string before normalisation, on
+    # both Origin and Referer (the latter is our fallback).
+    raw_origin = (request.headers.get("origin") or "").strip().lower()
+    raw_referer = (request.headers.get("referer") or "").strip().lower()
+    if raw_origin == "null" or raw_referer == "null":
+        return _json_no_store_response(
+            {"success": False, "error": "origin not allowed"},
+            status_code=403,
+        )
+
     request_origin = _get_request_origin(request)
     if request_origin:
         allowed = _get_allowed_local_origins(request)
@@ -4314,6 +4331,27 @@ async def push_activity_signal(request: Request):
     if err:
         return _json_no_store_response(
             {"success": False, "error": err}, status_code=400,
+        )
+
+    # ── Empty-signal guard (Codex F6 on PR #1477, defence-in-depth) ──
+    # If every signal field is absent, the tracker's
+    # ``push_external_system_signal`` would still mark
+    # ``os_signals_available=True`` and default missing numerics to
+    # ``0.0`` — i.e., a payload of ``{"lanlan_name": "X"}`` would
+    # silently overwrite real state with synthetic "idle=0 / cpu=0 /
+    # no window". The frontend client already skips empty bridge
+    # snapshots, but a malicious or buggy native caller could still
+    # POST an empty payload, so we reject server-side too.
+    if all(v is None for v in (
+        idle_seconds, cpu_avg_30s, gpu_utilization,
+        window_title, process_name,
+    )):
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "at least one signal field required",
+            },
+            status_code=400,
         )
 
     # Per-lanlan throttle — matches the frontend's 5s heartbeat. TTL

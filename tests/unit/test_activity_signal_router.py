@@ -95,31 +95,70 @@ def test_full_payload_forwards_to_tracker(monkeypatch):
 
 
 @pytest.mark.unit
-def test_lanlan_name_only_payload_accepted(monkeypatch):
-    """Frontend may push just lanlan_name — tracker handles None fields."""
+def test_lanlan_name_only_payload_rejected_400(monkeypatch):
+    """A payload with no signal fields must 400, not push synthetic zeros.
+
+    Codex F6 (PR #1477): the tracker's ``push_external_system_signal``
+    defaults missing numerics to ``0.0`` and unconditionally marks
+    ``os_signals_available=True``. Accepting an all-None push therefore
+    overwrites real state with "idle=0 / cpu=0 / no window" — actively
+    biases activity classification. Defence-in-depth at the endpoint:
+    require ≥ 1 signal field. Frontend client also skips empty bridge
+    snapshots, but the server side closes the same hole for native /
+    malicious callers.
+    """
     mgr, tracker = _build_mgr()
     client = _build_client(monkeypatch, {"Aria": mgr})
 
     resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
 
-    assert resp.status_code == 200
+    assert resp.status_code == 400
+    assert "signal field" in resp.json()["error"]
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("single_field,value", [
+    ("window_title", "Finder"),
+    ("process_name", "Code.exe"),
+    ("idle_seconds", 5),
+    ("cpu_avg_30s", 25.5),
+    ("gpu_utilization", 50.0),
+])
+def test_single_field_payload_accepted(monkeypatch, single_field, value):
+    """Any single signal field is enough — partial snapshot still useful.
+
+    Bridge platforms differ in coverage (Wayland often can't read
+    window, Mac without Screen Recording perm can't either, AMD/Intel
+    no GPU); a partial push is better than no push as long as ≥ 1
+    real datum is in there.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", single_field: value},
+    )
+
+    assert resp.status_code == 200, resp.text
     tracker.push_external_system_signal.assert_called_once()
-    kwargs = tracker.push_external_system_signal.call_args.kwargs
-    # All optional fields default to None — let tracker decide defaults.
-    assert kwargs["window_title"] is None
-    assert kwargs["process_name"] is None
-    assert kwargs["idle_seconds"] is None
-    assert kwargs["cpu_avg_30s"] is None
-    assert kwargs["gpu_utilization"] is None
 
 
 @pytest.mark.unit
 def test_lanlan_name_stripped(monkeypatch):
-    """Whitespace around lanlan_name is stripped before lookup."""
+    """Whitespace around lanlan_name is stripped before lookup.
+
+    Carries one signal field (``idle_seconds``) to pass the empty-payload
+    guard (Codex F6); the strip behaviour itself is independent.
+    """
     mgr, tracker = _build_mgr()
     client = _build_client(monkeypatch, {"Aria": mgr})
 
-    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "  Aria  "})
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "  Aria  ", "idle_seconds": 0},
+    )
 
     assert resp.status_code == 200
     tracker.push_external_system_signal.assert_called_once()
@@ -168,7 +207,7 @@ def test_unknown_lanlan_name_returns_404(monkeypatch):
     client = _build_client(monkeypatch, {"Aria": _build_mgr()[0]})
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Unknown"},
+        json={"lanlan_name": "Unknown", "idle_seconds": 0},
     )
     assert resp.status_code == 404
     assert "not registered" in resp.json()["error"]
@@ -180,7 +219,7 @@ def test_mgr_without_tracker_returns_503(monkeypatch):
     mgr, _ = _build_mgr(has_tracker=False)
     client = _build_client(monkeypatch, {"Aria": mgr})
 
-    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
 
     assert resp.status_code == 503
     assert "tracker" in resp.json()["error"].lower()
@@ -227,7 +266,7 @@ def test_no_origin_header_accepted(monkeypatch):
     mgr, tracker = _build_mgr()
     client = _build_client(monkeypatch, {"Aria": mgr})
 
-    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
 
     assert resp.status_code == 200, resp.text
     tracker.push_external_system_signal.assert_called_once()
@@ -241,7 +280,7 @@ def test_same_origin_browser_request_accepted(monkeypatch):
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria"},
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
         headers={"Origin": "http://testserver"},  # TestClient's base_url
     )
 
@@ -268,7 +307,7 @@ def test_cross_site_origin_blocked_with_403(monkeypatch, evil_origin):
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria"},
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
         headers={"Origin": evil_origin},
     )
 
@@ -291,11 +330,42 @@ def test_referer_used_when_no_origin(monkeypatch):
     # Referer from off-origin page → should still block
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria"},
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
         headers={"Referer": "https://evil.com/some/path"},
     )
 
     assert resp.status_code == 403
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("header_name,opaque_value", [
+    ("Origin", "null"),
+    ("Origin", "NULL"),  # case-insensitive
+    ("Referer", "null"),  # Referer fallback also rejects "null"
+])
+def test_opaque_origin_null_rejected(monkeypatch, header_name, opaque_value):
+    """``Origin: null`` (and Referer: null) from sandboxed iframes / file://
+    contexts must be 403, not fall through to the no-Origin allow path.
+
+    Codex P1 (F5 on PR #1477): browsers emit the literal string "null"
+    for opaque origins. ``urlsplit("null")`` parses into empty scheme +
+    netloc → ``_normalize_origin_value`` returns "" → the no-Origin
+    allow branch fires, bypassing the gate. Without an explicit raw
+    check, ``<iframe sandbox>`` on attacker.com could fetch our
+    endpoint and spoof signals.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "idle_seconds": 5},
+        headers={header_name: opaque_value},
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert "origin" in resp.json()["error"].lower()
     tracker.push_external_system_signal.assert_not_called()
 
 
@@ -314,7 +384,7 @@ def test_unparseable_origin_treated_as_absent(monkeypatch):
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria"},
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
         headers={"Origin": "not a url"},
     )
 
@@ -366,7 +436,7 @@ def test_tracker_exception_returns_500(monkeypatch):
     tracker.push_external_system_signal.side_effect = RuntimeError("boom")
     client = _build_client(monkeypatch, {"Aria": mgr})
 
-    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
+    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
 
     assert resp.status_code == 500
     assert "tracker rejected" in resp.json()["error"]
@@ -379,7 +449,7 @@ def test_tracker_exception_returns_500(monkeypatch):
 def test_second_push_within_interval_returns_429(monkeypatch):
     mgr, tracker = _build_mgr()
     client = _build_client(monkeypatch, {"Aria": mgr})
-    payload = {"lanlan_name": "Aria"}
+    payload = {"lanlan_name": "Aria", "idle_seconds": 0}
 
     resp1 = client.post(ACTIVITY_SIGNAL_ENDPOINT, json=payload)
     resp2 = client.post(ACTIVITY_SIGNAL_ENDPOINT, json=payload)
@@ -403,8 +473,8 @@ def test_throttle_independent_per_lanlan_name(monkeypatch):
     mgr_b, tracker_b = _build_mgr()
     client = _build_client(monkeypatch, {"Aria": mgr_a, "Bea": mgr_b})
 
-    resp_a = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
-    resp_b = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Bea"})
+    resp_a = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
+    resp_b = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Bea", "idle_seconds": 0})
 
     assert resp_a.status_code == 200
     assert resp_b.status_code == 200
@@ -428,11 +498,11 @@ def test_push_accepted_after_interval_elapses(monkeypatch):
         system_router_module.time, "time", lambda: fake_now[0],
     )
 
-    resp1 = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
+    resp1 = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
     assert resp1.status_code == 200
 
     fake_now[0] = 1006.0  # > _EXTERNAL_SIGNAL_MIN_INTERVAL (5.0)
-    resp2 = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria"})
+    resp2 = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
     assert resp2.status_code == 200, resp2.text
     assert tracker.push_external_system_signal.call_count == 2
 
@@ -456,7 +526,8 @@ def test_throttle_dict_bounded(monkeypatch):
     client = _build_client(monkeypatch, {"NewArrival": mgr})
 
     resp = client.post(
-        ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "NewArrival"},
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "NewArrival", "idle_seconds": 0},
     )
     assert resp.status_code == 200
 

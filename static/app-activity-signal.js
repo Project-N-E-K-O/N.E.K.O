@@ -166,6 +166,19 @@
                 // bridge call itself threw.
                 return;
             }
+            // F6 (Codex on PR #1477): bridge returned an object but
+            // every field failed type/range validation, so the payload
+            // is empty. Posting just lanlan_name is worse than skipping
+            // — the tracker's ``push_external_system_signal`` defaults
+            // absent numerics to 0.0 and flips ``os_signals_available``
+            // to true, silently overwriting real state with "idle=0,
+            // cpu=0, no window". Skip and let the 30s TTL hand back to
+            // the local collector. Backend also rejects empty payloads
+            // as a defence-in-depth, but skipping client-side saves an
+            // HTTP roundtrip and a rate-limit hit.
+            if (Object.keys(payload).length === 0) {
+                return;
+            }
             payload.lanlan_name = lanlanName;
             var resp = await fetch(ENDPOINT, {
                 method: 'POST',
