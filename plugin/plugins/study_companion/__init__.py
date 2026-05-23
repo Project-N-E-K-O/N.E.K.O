@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime
 from pathlib import Path
 import threading
 import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugin.sdk.plugin import (
     Err,
@@ -29,6 +31,8 @@ from .constants import (
     MODE_TEACHING,
 )
 from .doc_exporter import DocExporter, normalize_format
+from .checkin_manager import CheckinManager
+from .pomodoro_timer import PomodoroTimer
 from .screen_classifier import classify_screen_from_ocr
 from .models import (
     MODE_CONCEPT_EXPLAIN,
@@ -59,11 +63,14 @@ from .knowledge_tracker import KnowledgeTracker
 from .memory_deck_store import MemoryDeckStore
 from .state import build_initial_state
 from .store import StudyStore
+from .study_habit_store import StudyHabitStore
 from .study_ocr_pipeline import StudyOcrPipeline
+from .supervision import SupervisionController
 from .tutor_llm_agent import TutorLLMAgent
 from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
+from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 
 
 @neko_plugin
@@ -98,6 +105,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         self._knowledge_tracker.set_memory_deck_summary_provider(
             self._memory_deck_store.status_summary
         )
+        self._habit_store: StudyHabitStore | None = None
+        self._checkin_manager: CheckinManager | None = None
+        self._pomodoro_timer: PomodoroTimer | None = None
+        self._supervision: SupervisionController | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -118,6 +129,18 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._knowledge_tracker.set_memory_deck_summary_provider(
                 self._memory_deck_store.status_summary
             )
+            self._habit_store = StudyHabitStore(self._store)
+            self._checkin_manager = CheckinManager(
+                self._habit_store,
+                makeup_window_days=self._cfg.checkin.makeup_window_days,
+            )
+            self._pomodoro_timer = PomodoroTimer(
+                self._habit_store,
+                config=self._cfg.pomodoro,
+                auto_derive_from_session=self._cfg.checkin.auto_derive_from_session,
+                checkin_timezone=self._cfg.checkin.streak_timezone,
+            )
+            self._supervision = SupervisionController(self._cfg.supervision)
             restored = await asyncio.to_thread(
                 self._store.load_state, build_initial_state(mode=self._cfg.mode)
             )
@@ -288,6 +311,8 @@ class StudyCompanionPlugin(NekoPluginBase):
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
         is_first_run = not bool(self._store.list_interactions(limit=1))
+        today = self._today()
+        habit_payload = self._habit_status_payload(today)
         knowledge = {
             "knowledge_summary": self._knowledge_tracker.get_status_summary(limit=8),
             "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(
@@ -303,9 +328,44 @@ class StudyCompanionPlugin(NekoPluginBase):
             config=self._cfg,
             state=self._state,
             history=history,
-            knowledge=knowledge,
+            knowledge={**knowledge, "habit": habit_payload},
             is_first_run=is_first_run,
         )
+
+    def _habit_status_payload(self, today: str) -> dict[str, Any]:
+        if (
+            self._habit_store is None
+            or self._checkin_manager is None
+            or self._pomodoro_timer is None
+        ):
+            return {
+                "available": False,
+                "error": "study habit system is not initialized",
+            }
+        try:
+            payload = build_habit_dashboard_payload(
+                goals=self._habit_store.list_goals(date=today),
+                checkin=self._checkin_manager.checkin_status(date=today, today=today),
+                pomodoro=self._pomodoro_timer.status(),
+                summary=self._checkin_manager.daily_summary(date=today),
+                supervision=self._supervision.status()
+                if self._supervision is not None
+                else {},
+            )
+            payload["available"] = True
+            return payload
+        except Exception as exc:
+            self.logger.warning("study habit status payload degraded: {}", exc)
+            return {"available": False, "error": str(exc)}
+
+    def _today(self) -> str:
+        timezone_name = str(self._cfg.checkin.streak_timezone or "local").strip()
+        if timezone_name and timezone_name.lower() != "local":
+            try:
+                return datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+            except ZoneInfoNotFoundError:
+                self.logger.warning("invalid study checkin timezone: {}", timezone_name)
+        return datetime.now().astimezone().date().isoformat()
 
     def _sync_doc_export_entry(self) -> None:
         self.unregister_dynamic_entry("study_export_notes")
@@ -587,7 +647,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         metadata: dict[str, Any],
         extra_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._record_tutor_result(operation, reply)
+        self._record_tutor_result(operation, reply, extra=extra_context)
         diagnostic = str(reply.diagnostic or "")
         if diagnostic and reply.degraded:
             with self._lock:
@@ -805,6 +865,392 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_status(self, **_):
         payload = await asyncio.to_thread(self._status_payload)
         return Ok(payload)
+
+    def _require_habit_components(
+        self,
+    ) -> tuple[StudyHabitStore, CheckinManager, PomodoroTimer, SupervisionController]:
+        if (
+            self._habit_store is None
+            or self._checkin_manager is None
+            or self._pomodoro_timer is None
+            or self._supervision is None
+        ):
+            raise RuntimeError("study habit system is not initialized")
+        return (
+            self._habit_store,
+            self._checkin_manager,
+            self._pomodoro_timer,
+            self._supervision,
+        )
+
+    @plugin_entry(
+        id="study_pomodoro_status",
+        name="Study Pomodoro Status",
+        description="Return the current Study Companion pomodoro timer status.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["state", "mode", "remaining_seconds", "session_count"],
+    )
+    async def study_pomodoro_status(self, **_):
+        try:
+            _, _, timer, supervision = self._require_habit_components()
+            before_status = await asyncio.to_thread(timer.status)
+            before_state = str(before_status.get("state") or "")
+            status = await asyncio.to_thread(timer.tick)
+            after_state = str(status.get("state") or "")
+            reminder: dict[str, Any] = {}
+            if before_state == "focusing" and after_state in {
+                "short_break",
+                "long_break",
+                "completed",
+            }:
+                supervision.on_focus_end()
+            elif after_state == "focusing":
+                reminder = supervision.due_reminder()
+            payload = build_pomodoro_status_payload(status)
+            if reminder:
+                payload["supervision_reminder"] = reminder
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_pomodoro_start",
+        name="Start Study Pomodoro",
+        description="Start a focus pomodoro for an optional daily goal.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "focus_minutes": {"type": "integer"},
+                "goal_id": {"type": "string", "default": ""},
+            },
+        },
+        llm_result_fields=["state", "remaining_seconds", "goal_id"],
+    )
+    async def study_pomodoro_start(
+        self, focus_minutes: int | None = None, goal_id: str = "", **_
+    ):
+        try:
+            habits, _, timer, supervision = self._require_habit_components()
+            before_status = await asyncio.to_thread(timer.status)
+            before_session_id = str(
+                before_status.get("current_focus_session", {}).get("id") or ""
+            )
+            status = await asyncio.to_thread(
+                timer.start, goal_id=goal_id, focus_minutes=focus_minutes
+            )
+            after_session_id = str(
+                status.get("current_focus_session", {}).get("id") or ""
+            )
+            if (
+                str(status.get("state") or "") == "focusing"
+                and after_session_id
+                and after_session_id != before_session_id
+            ):
+                goal = (
+                    await asyncio.to_thread(habits.get_goal, str(goal_id or ""))
+                    if goal_id
+                    else {}
+                )
+                supervision.on_focus_start(
+                    goal=goal or {},
+                    planned_minutes=float(
+                        status.get("config", {}).get("focus_minutes") or focus_minutes or 0
+                    ),
+                )
+            return Ok(build_pomodoro_status_payload(status))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_pomodoro_pause",
+        name="Pause Study Pomodoro",
+        description="Pause the active focus pomodoro.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["state", "remaining_seconds"],
+    )
+    async def study_pomodoro_pause(self, **_):
+        try:
+            _, _, timer, _ = self._require_habit_components()
+            return Ok(build_pomodoro_status_payload(timer.pause()))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_pomodoro_resume",
+        name="Resume Study Pomodoro",
+        description="Resume a paused focus pomodoro.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["state", "remaining_seconds"],
+    )
+    async def study_pomodoro_resume(self, **_):
+        try:
+            _, _, timer, _ = self._require_habit_components()
+            return Ok(build_pomodoro_status_payload(timer.resume()))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_pomodoro_stop",
+        name="Stop Study Pomodoro",
+        description="Stop the active focus or break timer.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["state", "current_focus_session"],
+    )
+    async def study_pomodoro_stop(self, **_):
+        try:
+            _, _, timer, supervision = self._require_habit_components()
+            status = await asyncio.to_thread(timer.stop)
+            supervision.on_focus_end()
+            return Ok(build_pomodoro_status_payload(status))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_pomodoro_skip_break",
+        name="Skip Study Pomodoro Break",
+        description="Skip the current short or long break when allowed.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["state", "remaining_seconds"],
+    )
+    async def study_pomodoro_skip_break(self, **_):
+        try:
+            _, _, timer, _ = self._require_habit_components()
+            return Ok(build_pomodoro_status_payload(timer.skip_break()))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_goals",
+        name="Study Daily Goals",
+        description="Return daily study habit goals for a date.",
+        input_schema={
+            "type": "object",
+            "properties": {"date": {"type": "string", "default": ""}},
+        },
+        llm_result_fields=["goals"],
+    )
+    async def study_goals(self, date: str = "", **_):
+        try:
+            habits, _, _, _ = self._require_habit_components()
+            target_date = str(date or self._today())[:10]
+            return Ok(
+                {
+                    "date": target_date,
+                    "goals": await asyncio.to_thread(
+                        habits.list_goals, date=target_date
+                    ),
+                }
+            )
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_goal_create",
+        name="Create Study Daily Goal",
+        description="Create a local daily study goal.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "default": ""},
+                "target_type": {"type": "string", "default": "custom"},
+                "target_id": {"type": "string", "default": ""},
+                "subject": {"type": "string", "default": ""},
+                "target_amount": {"type": "number", "default": 1},
+                "unit": {"type": "string", "default": "task"},
+            },
+        },
+        llm_result_fields=["goal"],
+    )
+    async def study_goal_create(
+        self,
+        date: str = "",
+        target_type: str = "custom",
+        target_id: str = "",
+        subject: str = "",
+        target_amount: float = 1,
+        unit: str = "task",
+        **_,
+    ):
+        try:
+            _, manager, _, _ = self._require_habit_components()
+            goal = await asyncio.to_thread(
+                manager.create_goal,
+                date=str(date or self._today())[:10],
+                target_type=target_type,
+                target_id=target_id,
+                subject=subject,
+                target_amount=target_amount,
+                unit=unit,
+            )
+            return Ok({"goal": goal})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_goal_update",
+        name="Update Study Daily Goal",
+        description="Update a local daily study goal.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "goal_id": {"type": "string"},
+                "target_amount": {"type": "number"},
+                "progress_amount": {"type": "number"},
+                "status": {"type": "string"},
+            },
+            "required": ["goal_id"],
+        },
+        llm_result_fields=["goal"],
+    )
+    async def study_goal_update(
+        self,
+        goal_id: str,
+        target_amount: float | None = None,
+        progress_amount: float | None = None,
+        status: str | None = None,
+        **_,
+    ):
+        try:
+            _, manager, _, _ = self._require_habit_components()
+            goal = await asyncio.to_thread(
+                manager.update_goal,
+                goal_id,
+                target_amount=target_amount,
+                progress_amount=progress_amount,
+                status=status,
+            )
+            return Ok({"goal": goal})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_goal_delete",
+        name="Delete Study Daily Goal",
+        description="Delete a local daily study goal and associated focus sessions.",
+        input_schema={
+            "type": "object",
+            "properties": {"goal_id": {"type": "string"}},
+            "required": ["goal_id"],
+        },
+        llm_result_fields=["deleted"],
+    )
+    async def study_goal_delete(self, goal_id: str, **_):
+        try:
+            _, manager, _, _ = self._require_habit_components()
+            deleted = await asyncio.to_thread(manager.delete_goal, goal_id)
+            return Ok({"deleted": bool(deleted), "goal_id": goal_id})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_checkin_status",
+        name="Study Check-In Status",
+        description="Return current check-in status and streak.",
+        input_schema={
+            "type": "object",
+            "properties": {"date": {"type": "string", "default": ""}},
+        },
+        llm_result_fields=["checked_in", "streak_days"],
+    )
+    async def study_checkin_status(self, date: str = "", **_):
+        try:
+            _, manager, _, _ = self._require_habit_components()
+            target_date = str(date or self._today())[:10]
+            return Ok(
+                await asyncio.to_thread(
+                    manager.checkin_status,
+                    date=target_date,
+                    today=self._today(),
+                )
+            )
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_checkin_manual",
+        name="Manual Study Check-In",
+        description="Record a manual study check-in or makeup check-in.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "default": ""},
+                "note": {"type": "string", "default": ""},
+            },
+        },
+        llm_result_fields=["checkin"],
+    )
+    async def study_checkin_manual(self, date: str = "", note: str = "", **_):
+        try:
+            _, manager, _, _ = self._require_habit_components()
+            checkin = await asyncio.to_thread(
+                manager.manual_checkin,
+                date=str(date or self._today())[:10],
+                today=self._today(),
+                note=note,
+            )
+            return Ok({"checkin": checkin})
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_session_summary",
+        name="Study Habit Session Summary",
+        description="Return the daily habit summary for focus minutes and goal completion.",
+        input_schema={
+            "type": "object",
+            "properties": {"date": {"type": "string", "default": ""}},
+        },
+        llm_result_fields=[
+            "total_focus_minutes",
+            "completed_goal_count",
+            "incomplete_goal_count",
+        ],
+    )
+    async def study_session_summary(self, date: str = "", **_):
+        try:
+            _, manager, _, _ = self._require_habit_components()
+            return Ok(
+                await asyncio.to_thread(
+                    manager.daily_summary,
+                    date=str(date or self._today())[:10],
+                )
+            )
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_supervision_status",
+        name="Study Supervision Status",
+        description="Return focus supervision state and sensor availability.",
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["enabled", "sensor_available", "reminder_level"],
+    )
+    async def study_supervision_status(self, **_):
+        try:
+            _, _, _, supervision = self._require_habit_components()
+            return Ok(supervision.status())
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
+        id="study_supervision_toggle",
+        name="Toggle Study Supervision",
+        description="Enable or disable low-frequency focus supervision reminders.",
+        input_schema={
+            "type": "object",
+            "properties": {"enabled": {"type": "boolean"}},
+            "required": ["enabled"],
+        },
+        llm_result_fields=["enabled", "reminder_level"],
+    )
+    async def study_supervision_toggle(self, enabled: bool, **_):
+        try:
+            _, _, _, supervision = self._require_habit_components()
+            if not bool(enabled) and not self._cfg.supervision.allow_disable_by_chat:
+                return Err(SdkError("study supervision disable is blocked by config"))
+            return Ok(supervision.set_enabled(bool(enabled)))
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
 
     @plugin_entry(
         id="study_knowledge_quality_status",
@@ -1599,6 +2045,12 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError("study OCR pipeline is not initialized"))
         snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
         payload = build_ocr_payload(snapshot)
+        if self._supervision is not None:
+            sensor_available = snapshot.status in {"ok", "empty"}
+            payload["supervision"] = self._supervision.observe_activity(
+                ocr_text=snapshot.text,
+                sensor_available=sensor_available,
+            )
         if snapshot.text.strip():
             with self._lock:
                 self._state.last_ocr_text = snapshot.text

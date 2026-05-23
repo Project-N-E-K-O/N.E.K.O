@@ -4,7 +4,13 @@ from dataclasses import asdict, dataclass, field
 import math
 from typing import Any, Literal, TypedDict
 
-from .constants import MODE_COMPANION, MODE_CONCEPT_EXPLAIN, MODE_INTERACTIVE, MODE_TEACHING, SUPPORTED_MODES
+from .constants import (
+    MODE_COMPANION,
+    MODE_CONCEPT_EXPLAIN,
+    MODE_INTERACTIVE,
+    MODE_TEACHING,
+    SUPPORTED_MODES,
+)
 from .json_utils import json_copy
 from .mode_manager import normalize_mode
 
@@ -69,6 +75,7 @@ class TutorReplyPayload(TypedDict, total=False):
     next_actions: list[str]
     markdown: str
 
+
 STATUS_READY = "ready"
 STATUS_STOPPED = "stopped"
 STATUS_ERROR = "error"
@@ -81,6 +88,14 @@ def utc_now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _range_or_default(value: object, minimum: int, maximum: int, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if minimum <= number <= maximum else default
 
 
 @dataclass(slots=True)
@@ -96,6 +111,63 @@ class DocExportConfig:
         style = str(self.default_style or "neko").strip().lower() or "neko"
         self.default_style = style if style in STUDY_EXPORT_STYLES else "neko"
         self.xmind_enabled = bool(self.xmind_enabled)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PomodoroConfig:
+    focus_minutes: int = 25
+    short_break_minutes: int = 5
+    long_break_minutes: int = 15
+    long_break_interval: int = 4
+    allow_skip_break: bool = True
+    allow_custom_duration: bool = True
+
+    def __post_init__(self) -> None:
+        self.focus_minutes = _range_or_default(self.focus_minutes, 1, 120, 25)
+        self.short_break_minutes = _range_or_default(self.short_break_minutes, 1, 30, 5)
+        self.long_break_minutes = _range_or_default(self.long_break_minutes, 1, 60, 15)
+        self.long_break_interval = _range_or_default(self.long_break_interval, 1, 10, 4)
+        self.allow_skip_break = bool(self.allow_skip_break)
+        self.allow_custom_duration = bool(self.allow_custom_duration)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class SupervisionConfig:
+    enabled: bool = True
+    remind_interval_minutes: int = 10
+    inactivity_timeout_minutes: int = 5
+    allow_disable_by_chat: bool = True
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+        self.remind_interval_minutes = _range_or_default(
+            self.remind_interval_minutes, 1, 60, 10
+        )
+        self.inactivity_timeout_minutes = _range_or_default(
+            self.inactivity_timeout_minutes, 1, 30, 5
+        )
+        self.allow_disable_by_chat = bool(self.allow_disable_by_chat)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class CheckinConfig:
+    streak_timezone: str = "local"
+    makeup_window_days: int = 3
+    auto_derive_from_session: bool = True
+
+    def __post_init__(self) -> None:
+        self.streak_timezone = str(self.streak_timezone or "local").strip() or "local"
+        self.makeup_window_days = _range_or_default(self.makeup_window_days, 0, 7, 3)
+        self.auto_derive_from_session = bool(self.auto_derive_from_session)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -130,27 +202,66 @@ class StudyConfig:
     knowledge_contribution_opt_in: bool = False
     knowledge_contribution_min_sample_count: int = 3
     doc_export: DocExportConfig = field(default_factory=DocExportConfig)
+    pomodoro: PomodoroConfig = field(default_factory=PomodoroConfig)
+    supervision: SupervisionConfig = field(default_factory=SupervisionConfig)
+    checkin: CheckinConfig = field(default_factory=CheckinConfig)
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
         self.default_mode = normalize_mode(self.default_mode or self.mode)
         self.language = str(self.language or "zh-CN").strip() or "zh-CN"
         self.history_limit = max(1, self._coerce_int(self.history_limit, 50))
-        self.ocr_install_timeout_seconds = self._clamp_float(self.ocr_install_timeout_seconds, 1.0, 3600.0, 300.0)
-        self.ocr_left_inset_ratio = self._clamp_float(self.ocr_left_inset_ratio, 0.0, 1.0, 0.03)
-        self.ocr_right_inset_ratio = self._clamp_float(self.ocr_right_inset_ratio, 0.0, 1.0, 0.03)
+        self.ocr_install_timeout_seconds = self._clamp_float(
+            self.ocr_install_timeout_seconds, 1.0, 3600.0, 300.0
+        )
+        self.ocr_left_inset_ratio = self._clamp_float(
+            self.ocr_left_inset_ratio, 0.0, 1.0, 0.03
+        )
+        self.ocr_right_inset_ratio = self._clamp_float(
+            self.ocr_right_inset_ratio, 0.0, 1.0, 0.03
+        )
         self.ocr_top_ratio = self._clamp_float(self.ocr_top_ratio, 0.0, 1.0, 0.0)
-        self.ocr_bottom_inset_ratio = self._clamp_float(self.ocr_bottom_inset_ratio, 0.0, 1.0, 0.0)
-        self.llm_call_timeout_seconds = self._clamp_float(self.llm_call_timeout_seconds, 1.0, 3600.0, 30.0)
-        self.fsrs_retention_target = self._clamp_float(self.fsrs_retention_target, 0.1, 0.99, 0.90)
-        self.fsrs_auto_optimize_interval_days = max(1, self._coerce_int(self.fsrs_auto_optimize_interval_days, 30))
+        self.ocr_bottom_inset_ratio = self._clamp_float(
+            self.ocr_bottom_inset_ratio, 0.0, 1.0, 0.0
+        )
+        self.llm_call_timeout_seconds = self._clamp_float(
+            self.llm_call_timeout_seconds, 1.0, 3600.0, 30.0
+        )
+        self.fsrs_retention_target = self._clamp_float(
+            self.fsrs_retention_target, 0.1, 0.99, 0.90
+        )
+        self.fsrs_auto_optimize_interval_days = max(
+            1, self._coerce_int(self.fsrs_auto_optimize_interval_days, 30)
+        )
         self.knowledge_contribution_opt_in = bool(self.knowledge_contribution_opt_in)
         self.knowledge_contribution_min_sample_count = max(
             1,
             self._coerce_int(self.knowledge_contribution_min_sample_count, 3),
         )
         if not isinstance(self.doc_export, DocExportConfig):
-            self.doc_export = DocExportConfig(**self.doc_export) if isinstance(self.doc_export, dict) else DocExportConfig()
+            self.doc_export = (
+                DocExportConfig(**self.doc_export)
+                if isinstance(self.doc_export, dict)
+                else DocExportConfig()
+            )
+        if not isinstance(self.pomodoro, PomodoroConfig):
+            self.pomodoro = (
+                PomodoroConfig(**self.pomodoro)
+                if isinstance(self.pomodoro, dict)
+                else PomodoroConfig()
+            )
+        if not isinstance(self.supervision, SupervisionConfig):
+            self.supervision = (
+                SupervisionConfig(**self.supervision)
+                if isinstance(self.supervision, dict)
+                else SupervisionConfig()
+            )
+        if not isinstance(self.checkin, CheckinConfig):
+            self.checkin = (
+                CheckinConfig(**self.checkin)
+                if isinstance(self.checkin, dict)
+                else CheckinConfig()
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -163,7 +274,9 @@ class StudyConfig:
             return default
 
     @staticmethod
-    def _clamp_float(value: object, minimum: float, maximum: float, default: float) -> float:
+    def _clamp_float(
+        value: object, minimum: float, maximum: float, default: float
+    ) -> float:
         try:
             number = float(value)
         except (TypeError, ValueError, OverflowError):
@@ -171,6 +284,7 @@ class StudyConfig:
         if not math.isfinite(number):
             number = default
         return max(minimum, min(maximum, number))
+
 
 @dataclass(slots=True)
 class StudyState:
@@ -240,36 +354,62 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
     ocr = raw.get("ocr_reader") if isinstance(raw.get("ocr_reader"), dict) else {}
     rapidocr = raw.get("rapidocr") if isinstance(raw.get("rapidocr"), dict) else {}
     fsrs = raw.get("fsrs") if isinstance(raw.get("fsrs"), dict) else {}
-    contribution = raw.get("knowledge_contribution") if isinstance(raw.get("knowledge_contribution"), dict) else {}
-    doc_export = raw.get("doc_export") if isinstance(raw.get("doc_export"), dict) else {}
+    contribution = (
+        raw.get("knowledge_contribution")
+        if isinstance(raw.get("knowledge_contribution"), dict)
+        else {}
+    )
+    doc_export = (
+        raw.get("doc_export") if isinstance(raw.get("doc_export"), dict) else {}
+    )
+    pomodoro = study.get("pomodoro") if isinstance(study.get("pomodoro"), dict) else {}
+    supervision = (
+        study.get("supervision") if isinstance(study.get("supervision"), dict) else {}
+    )
+    checkin = study.get("checkin") if isinstance(study.get("checkin"), dict) else {}
 
-    def _raw(section: dict[str, Any], key: str, default: Any, flat_key: str | None = None) -> Any:
+    def _raw(
+        section: dict[str, Any], key: str, default: Any, flat_key: str | None = None
+    ) -> Any:
         if key in section:
             return section.get(key, default)
         if flat_key and flat_key in raw:
             return raw.get(flat_key, default)
         return default
 
-    def _str(section: dict[str, Any], key: str, default: str, flat_key: str | None = None) -> str:
+    def _str(
+        section: dict[str, Any], key: str, default: str, flat_key: str | None = None
+    ) -> str:
         return str(_raw(section, key, default, flat_key) or default)
 
-    def _bool(section: dict[str, Any], key: str, default: bool, flat_key: str | None = None) -> bool:
+    def _bool(
+        section: dict[str, Any], key: str, default: bool, flat_key: str | None = None
+    ) -> bool:
         value = _raw(section, key, default, flat_key)
         return value if isinstance(value, bool) else default
 
-    def _int(section: dict[str, Any], key: str, default: int, flat_key: str | None = None) -> int:
+    def _int(
+        section: dict[str, Any], key: str, default: int, flat_key: str | None = None
+    ) -> int:
         try:
             return int(_raw(section, key, default, flat_key))
         except (TypeError, ValueError):
             return default
 
-    def _float(section: dict[str, Any], key: str, default: float, flat_key: str | None = None) -> float:
+    def _float(
+        section: dict[str, Any], key: str, default: float, flat_key: str | None = None
+    ) -> float:
         try:
             return float(_raw(section, key, default, flat_key))
         except (TypeError, ValueError):
             return default
 
-    def _float_alias(section: dict[str, Any], keys: tuple[str, ...], default: float, flat_key: str | None = None) -> float:
+    def _float_alias(
+        section: dict[str, Any],
+        keys: tuple[str, ...],
+        default: float,
+        flat_key: str | None = None,
+    ) -> float:
         for key in keys:
             if key in section:
                 try:
@@ -288,7 +428,15 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             value = default
         return max(minimum, min(maximum, value))
 
-    default_mode = _str(study, "default_mode", _str(study, "mode", MODE_COMPANION, "mode"), "default_mode").strip() or MODE_COMPANION
+    default_mode = (
+        _str(
+            study,
+            "default_mode",
+            _str(study, "mode", MODE_COMPANION, "mode"),
+            "default_mode",
+        ).strip()
+        or MODE_COMPANION
+    )
     default_mode = normalize_mode(default_mode)
     mode = normalize_mode(_str(study, "mode", default_mode, "mode"))
 
@@ -298,37 +446,85 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         language=_str(study, "language", "zh-CN", "language"),
         history_limit=max(1, _int(study, "history_limit", 50, "history_limit")),
         ocr_enabled=_bool(ocr, "enabled", True, "ocr_enabled"),
-        ocr_backend_selection=_str(ocr, "backend_selection", "rapidocr", "ocr_backend_selection"),
+        ocr_backend_selection=_str(
+            ocr, "backend_selection", "rapidocr", "ocr_backend_selection"
+        ),
         ocr_capture_backend=_str(ocr, "capture_backend", "auto", "ocr_capture_backend"),
         ocr_tesseract_path=_str(ocr, "tesseract_path", "", "ocr_tesseract_path"),
-        ocr_install_manifest_url=_str(ocr, "install_manifest_url", "", "ocr_install_manifest_url"),
-        ocr_install_target_dir=_str(ocr, "install_target_dir", "", "ocr_install_target_dir"),
+        ocr_install_manifest_url=_str(
+            ocr, "install_manifest_url", "", "ocr_install_manifest_url"
+        ),
+        ocr_install_target_dir=_str(
+            ocr, "install_target_dir", "", "ocr_install_target_dir"
+        ),
         ocr_install_timeout_seconds=_clamp(
-            _float(ocr, "install_timeout_seconds", 300.0, "ocr_install_timeout_seconds"),
+            _float(
+                ocr, "install_timeout_seconds", 300.0, "ocr_install_timeout_seconds"
+            ),
             1.0,
             3600.0,
             300.0,
         ),
         ocr_languages=_str(ocr, "languages", "chi_sim+jpn+eng", "ocr_languages"),
-        ocr_left_inset_ratio=_clamp(_float(ocr, "left_inset_ratio", 0.03, "ocr_left_inset_ratio"), 0.0, 1.0, 0.03),
-        ocr_right_inset_ratio=_clamp(_float(ocr, "right_inset_ratio", 0.03, "ocr_right_inset_ratio"), 0.0, 1.0, 0.03),
-        ocr_top_ratio=_clamp(_float(ocr, "top_ratio", 0.0, "ocr_top_ratio"), 0.0, 1.0, 0.0),
-        ocr_bottom_inset_ratio=_clamp(_float(ocr, "bottom_inset_ratio", 0.0, "ocr_bottom_inset_ratio"), 0.0, 1.0, 0.0),
-        rapidocr_install_target_dir=_str(rapidocr, "install_target_dir", "", "rapidocr_install_target_dir"),
-        rapidocr_engine_type=_str(rapidocr, "engine_type", "onnxruntime", "rapidocr_engine_type"),
+        ocr_left_inset_ratio=_clamp(
+            _float(ocr, "left_inset_ratio", 0.03, "ocr_left_inset_ratio"),
+            0.0,
+            1.0,
+            0.03,
+        ),
+        ocr_right_inset_ratio=_clamp(
+            _float(ocr, "right_inset_ratio", 0.03, "ocr_right_inset_ratio"),
+            0.0,
+            1.0,
+            0.03,
+        ),
+        ocr_top_ratio=_clamp(
+            _float(ocr, "top_ratio", 0.0, "ocr_top_ratio"), 0.0, 1.0, 0.0
+        ),
+        ocr_bottom_inset_ratio=_clamp(
+            _float(ocr, "bottom_inset_ratio", 0.0, "ocr_bottom_inset_ratio"),
+            0.0,
+            1.0,
+            0.0,
+        ),
+        rapidocr_install_target_dir=_str(
+            rapidocr, "install_target_dir", "", "rapidocr_install_target_dir"
+        ),
+        rapidocr_engine_type=_str(
+            rapidocr, "engine_type", "onnxruntime", "rapidocr_engine_type"
+        ),
         rapidocr_lang_type=_str(rapidocr, "lang_type", "ch", "rapidocr_lang_type"),
-        rapidocr_model_type=_str(rapidocr, "model_type", "mobile", "rapidocr_model_type"),
-        rapidocr_ocr_version=_str(rapidocr, "ocr_version", "PP-OCRv4", "rapidocr_ocr_version"),
+        rapidocr_model_type=_str(
+            rapidocr, "model_type", "mobile", "rapidocr_model_type"
+        ),
+        rapidocr_ocr_version=_str(
+            rapidocr, "ocr_version", "PP-OCRv4", "rapidocr_ocr_version"
+        ),
         llm_call_timeout_seconds=_clamp(
-            _float_alias(llm, ("call_timeout_seconds", "llm_call_timeout_seconds"), 30.0, "llm_call_timeout_seconds"),
+            _float_alias(
+                llm,
+                ("call_timeout_seconds", "llm_call_timeout_seconds"),
+                30.0,
+                "llm_call_timeout_seconds",
+            ),
             1.0,
             3600.0,
             30.0,
         ),
-        fsrs_retention_target=_clamp(_float(fsrs, "retention_target", 0.90, "fsrs_retention_target"), 0.1, 0.99, 0.90),
+        fsrs_retention_target=_clamp(
+            _float(fsrs, "retention_target", 0.90, "fsrs_retention_target"),
+            0.1,
+            0.99,
+            0.90,
+        ),
         fsrs_auto_optimize_interval_days=max(
             1,
-            _int(fsrs, "auto_optimize_interval_days", 30, "fsrs_auto_optimize_interval_days"),
+            _int(
+                fsrs,
+                "auto_optimize_interval_days",
+                30,
+                "fsrs_auto_optimize_interval_days",
+            ),
         ),
         knowledge_contribution_opt_in=_bool(
             contribution,
@@ -347,8 +543,70 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         ),
         doc_export=DocExportConfig(
             enabled=_bool(doc_export, "enabled", False, "doc_export_enabled"),
-            pdf_backend=_str(doc_export, "pdf_backend", "reportlab", "doc_export_pdf_backend"),
-            default_style=_str(doc_export, "default_style", "neko", "doc_export_default_style"),
-            xmind_enabled=_bool(doc_export, "xmind_enabled", False, "doc_export_xmind_enabled"),
+            pdf_backend=_str(
+                doc_export, "pdf_backend", "reportlab", "doc_export_pdf_backend"
+            ),
+            default_style=_str(
+                doc_export, "default_style", "neko", "doc_export_default_style"
+            ),
+            xmind_enabled=_bool(
+                doc_export, "xmind_enabled", False, "doc_export_xmind_enabled"
+            ),
+        ),
+        pomodoro=PomodoroConfig(
+            focus_minutes=_int(pomodoro, "focus_minutes", 25, "pomodoro_focus_minutes"),
+            short_break_minutes=_int(
+                pomodoro, "short_break_minutes", 5, "pomodoro_short_break_minutes"
+            ),
+            long_break_minutes=_int(
+                pomodoro, "long_break_minutes", 15, "pomodoro_long_break_minutes"
+            ),
+            long_break_interval=_int(
+                pomodoro, "long_break_interval", 4, "pomodoro_long_break_interval"
+            ),
+            allow_skip_break=_bool(
+                pomodoro, "allow_skip_break", True, "pomodoro_allow_skip_break"
+            ),
+            allow_custom_duration=_bool(
+                pomodoro,
+                "allow_custom_duration",
+                True,
+                "pomodoro_allow_custom_duration",
+            ),
+        ),
+        supervision=SupervisionConfig(
+            enabled=_bool(supervision, "enabled", True, "supervision_enabled"),
+            remind_interval_minutes=_int(
+                supervision,
+                "remind_interval_minutes",
+                10,
+                "supervision_remind_interval_minutes",
+            ),
+            inactivity_timeout_minutes=_int(
+                supervision,
+                "inactivity_timeout_minutes",
+                5,
+                "supervision_inactivity_timeout_minutes",
+            ),
+            allow_disable_by_chat=_bool(
+                supervision,
+                "allow_disable_by_chat",
+                True,
+                "supervision_allow_disable_by_chat",
+            ),
+        ),
+        checkin=CheckinConfig(
+            streak_timezone=_str(
+                checkin, "streak_timezone", "local", "checkin_streak_timezone"
+            ),
+            makeup_window_days=_int(
+                checkin, "makeup_window_days", 3, "checkin_makeup_window_days"
+            ),
+            auto_derive_from_session=_bool(
+                checkin,
+                "auto_derive_from_session",
+                True,
+                "checkin_auto_derive_from_session",
+            ),
         ),
     )

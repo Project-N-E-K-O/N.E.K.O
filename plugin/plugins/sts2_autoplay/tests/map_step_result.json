@@ -1,0 +1,989 @@
+{
+  "before_screen": "MAP",
+  "before_actions": [
+    {
+      "type": "choose_map_node",
+      "label": "choose_map_node",
+      "raw": {
+        "name": "choose_map_node",
+        "requires_target": false,
+        "requires_index": true
+      }
+    },
+    {
+      "type": "discard_potion",
+      "label": "discard_potion",
+      "raw": {
+        "name": "discard_potion",
+        "requires_target": false,
+        "requires_index": true
+      }
+    }
+  ],
+  "planned": {
+    "kind": "ok",
+    "payload": {
+      "status": "ok",
+      "message": "��ǰ�滮������choose_map_node��",
+      "summary": "��ǰ�滮������choose_map_node��",
+      "planned_operation": {
+        "action_type": "choose_map_node",
+        "kwargs": {
+          "option_index": 0
+        },
+        "confidence": 0.82,
+        "source": "heuristic",
+        "reason": "map_preference_or_default",
+        "action_id": "",
+        "category": "unknown",
+        "candidate_actions": []
+      }
+    }
+  },
+  "executed": {
+    "kind": "dict",
+    "payload": {
+      "data": {
+        "status": "ok",
+        "message": "��ִ�ж���: choose_map_node",
+        "summary": "��ִ�ж���: choose_map_node",
+        "executed": true,
+        "operation": {
+          "action_id": "6c210891bfab",
+          "action_type": "choose_map_node",
+          "category": "map",
+          "kwargs": {
+            "option_index": 0
+          },
+          "source": "heuristic",
+          "confidence": 0.82,
+          "reason": "map_preference_or_default",
+          "candidate_actions": [],
+          "action": {
+            "id": "6c210891bfab",
+            "type": "choose_map_node",
+            "category": "map",
+            "label": "choose_map_node",
+            "raw": {
+              "name": "choose_map_node",
+              "requires_target": false,
+              "requires_index": true
+            },
+            "default_kwargs": {},
+            "requires_index": true,
+            "requires_target": false
+          }
+        },
+        "result": {
+          "action": "choose_map_node",
+          "status": "completed",
+          "stable": true,
+          "message": "Action completed.",
+          "state": {
+            "state_version": 7,
+            "run_id": "68229LMPUQ",
+            "screen": "COMBAT",
+            "session": {
+              "mode": "singleplayer",
+              "phase": "run",
+              "control_scope": "local_player"
+            },
+            "in_combat": true,
+            "turn": 1,
+            "available_actions": [
+              "end_turn",
+              "play_card",
+              "use_potion",
+              "discard_potion"
+            ],
+            "combat": {
+              "player": {
+                "current_hp": 60,
+                "max_hp": 75,
+                "block": 0,
+                "energy": 3,
+                "stars": 0,
+                "focus": 0,
+                "powers": [],
+                "base_orb_slots": 3,
+                "orb_capacity": 3,
+                "empty_orb_slots": 2,
+                "orbs": [
+                  {
+                    "slot_index": 0,
+                    "orb_id": "LIGHTNING_ORB",
+                    "name": "����",
+                    "passive_value": 3,
+                    "evoke_value": 8,
+                    "is_front": true
+                  }
+                ]
+              },
+              "players": [
+                {
+                  "player_id": "1",
+                  "slot_index": 0,
+                  "is_local": true,
+                  "is_connected": true,
+                  "character_id": "DEFECT",
+                  "character_name": "���ϻ�����",
+                  "current_hp": 60,
+                  "max_hp": 75,
+                  "block": 0,
+                  "energy": 3,
+                  "stars": 0,
+                  "focus": 0,
+                  "is_alive": true
+                }
+              ],
+              "hand": [
+                {
+                  "index": 0,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "target_type": "Self",
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ],
+                  "playable": true,
+                  "unplayable_reason": null
+                },
+                {
+                  "index": 1,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "target_type": "AnyEnemy",
+                  "requires_target": true,
+                  "target_index_space": "enemies",
+                  "valid_target_indices": [
+                    0,
+                    1,
+                    2
+                  ],
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ],
+                  "playable": true,
+                  "unplayable_reason": null
+                },
+                {
+                  "index": 2,
+                  "card_id": "ZAP",
+                  "name": "���",
+                  "upgraded": false,
+                  "target_type": "Self",
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "����1�����������",
+                  "resolved_rules_text": "����1�����������",
+                  "dynamic_values": [],
+                  "playable": true,
+                  "unplayable_reason": null
+                },
+                {
+                  "index": 3,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "target_type": "Self",
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ],
+                  "playable": true,
+                  "unplayable_reason": null
+                },
+                {
+                  "index": 4,
+                  "card_id": "DUALCAST",
+                  "name": "˫���ͷ�",
+                  "upgraded": false,
+                  "target_type": "Self",
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���������Ҳ�ĳ��������Ρ�",
+                  "resolved_rules_text": "���������Ҳ�ĳ��������Ρ�",
+                  "dynamic_values": [],
+                  "playable": true,
+                  "unplayable_reason": null
+                }
+              ],
+              "enemies": [
+                {
+                  "index": 0,
+                  "enemy_id": "LEAF_SLIME_S",
+                  "name": "��Ҷʷ��ķ��С��",
+                  "current_hp": 15,
+                  "max_hp": 15,
+                  "block": 0,
+                  "is_alive": true,
+                  "is_hittable": true,
+                  "powers": [],
+                  "intent": "GOOP_MOVE",
+                  "move_id": "GOOP_MOVE",
+                  "intents": [
+                    {
+                      "index": 0,
+                      "intent_type": "StatusCard",
+                      "label": "1",
+                      "damage": null,
+                      "hits": null,
+                      "total_damage": null,
+                      "status_card_count": 1
+                    }
+                  ]
+                },
+                {
+                  "index": 1,
+                  "enemy_id": "LEAF_SLIME_M",
+                  "name": "��Ҷʷ��ķ���У�",
+                  "current_hp": 33,
+                  "max_hp": 33,
+                  "block": 0,
+                  "is_alive": true,
+                  "is_hittable": true,
+                  "powers": [],
+                  "intent": "STICKY_SHOT",
+                  "move_id": "STICKY_SHOT",
+                  "intents": [
+                    {
+                      "index": 0,
+                      "intent_type": "StatusCard",
+                      "label": "2",
+                      "damage": null,
+                      "hits": null,
+                      "total_damage": null,
+                      "status_card_count": 2
+                    }
+                  ]
+                },
+                {
+                  "index": 2,
+                  "enemy_id": "TWIG_SLIME_S",
+                  "name": "��֦ʷ��ķ��С��",
+                  "current_hp": 11,
+                  "max_hp": 11,
+                  "block": 0,
+                  "is_alive": true,
+                  "is_hittable": true,
+                  "powers": [],
+                  "intent": "BUTT_MOVE",
+                  "move_id": "BUTT_MOVE",
+                  "intents": [
+                    {
+                      "index": 0,
+                      "intent_type": "Attack",
+                      "label": "5",
+                      "damage": 5,
+                      "hits": 1,
+                      "total_damage": 5,
+                      "status_card_count": null
+                    }
+                  ]
+                }
+              ]
+            },
+            "run": {
+              "character_id": "DEFECT",
+              "character_name": "���ϻ�����",
+              "floor": 2,
+              "current_hp": 60,
+              "max_hp": 75,
+              "gold": 99,
+              "max_energy": 3,
+              "base_orb_slots": 3,
+              "deck": [
+                {
+                  "index": 0,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 1,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 2,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 3,
+                  "card_id": "STRIKE_DEFECT",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Attack",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Damage:diff()}���˺���",
+                  "resolved_rules_text": "���6���˺���",
+                  "dynamic_values": [
+                    {
+                      "name": "Damage",
+                      "base_value": 6,
+                      "current_value": 6,
+                      "enchanted_value": 6,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 4,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 5,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 6,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 7,
+                  "card_id": "DEFEND_DEFECT",
+                  "name": "����",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���{Block:diff()}��񵲡�",
+                  "resolved_rules_text": "���5��񵲡�",
+                  "dynamic_values": [
+                    {
+                      "name": "Block",
+                      "base_value": 5,
+                      "current_value": 5,
+                      "enchanted_value": 5,
+                      "is_modified": false,
+                      "was_just_upgraded": false
+                    }
+                  ]
+                },
+                {
+                  "index": 8,
+                  "card_id": "ZAP",
+                  "name": "���",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "����1�����������",
+                  "resolved_rules_text": "����1�����������",
+                  "dynamic_values": []
+                },
+                {
+                  "index": 9,
+                  "card_id": "DUALCAST",
+                  "name": "˫���ͷ�",
+                  "upgraded": false,
+                  "card_type": "Skill",
+                  "rarity": "Basic",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": 1,
+                  "star_cost": 0,
+                  "rules_text": "���������Ҳ�ĳ��������Ρ�",
+                  "resolved_rules_text": "���������Ҳ�ĳ��������Ρ�",
+                  "dynamic_values": []
+                },
+                {
+                  "index": 10,
+                  "card_id": "ASCENDERS_BANE",
+                  "name": "����֮��",
+                  "upgraded": false,
+                  "card_type": "Curse",
+                  "rarity": "Curse",
+                  "costs_x": false,
+                  "star_costs_x": false,
+                  "energy_cost": -1,
+                  "star_cost": 0,
+                  "rules_text": "",
+                  "resolved_rules_text": "���ܱ������ ���ޡ� ���㡣",
+                  "dynamic_values": []
+                }
+              ],
+              "relics": [
+                {
+                  "index": 0,
+                  "relic_id": "CRACKED_CORE",
+                  "name": "�������",
+                  "description": "��ÿ��ս����ʼʱ��[gold]����[/gold][blue]1[/blue]��[gold]����[/gold]������",
+                  "stack": null,
+                  "is_melted": false
+                },
+                {
+                  "index": 1,
+                  "relic_id": "PHIAL_HOLSTER",
+                  "name": "ҩƿƤ��",
+                  "description": "ʰ��ʱ�����[blue]1[/blue]��ҩˮ��λ�����[blue]2[/blue]ƿ���ҩˮ��",
+                  "stack": null,
+                  "is_melted": false
+                }
+              ],
+              "players": [
+                {
+                  "player_id": "1",
+                  "slot_index": 0,
+                  "is_local": true,
+                  "is_connected": true,
+                  "character_id": "DEFECT",
+                  "character_name": "���ϻ�����",
+                  "current_hp": 60,
+                  "max_hp": 75,
+                  "gold": 99,
+                  "is_alive": true
+                }
+              ],
+              "potions": [
+                {
+                  "index": 0,
+                  "potion_id": "FLEX_POTION",
+                  "name": "����ҩˮ",
+                  "description": "���[blue]5[/blue]��[gold]����[/gold]�����������غϽ���ʱ��ʧȥ[blue]5[/blue]��[gold]����[/gold]��",
+                  "rarity": "Common",
+                  "occupied": true,
+                  "usage": "CombatOnly",
+                  "target_type": "AnyPlayer",
+                  "is_queued": false,
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "can_use": true,
+                  "can_discard": true
+                },
+                {
+                  "index": 1,
+                  "potion_id": "VULNERABLE_POTION",
+                  "name": "����ҩˮ",
+                  "description": "����[blue]3[/blue]��[gold]����[/gold]��",
+                  "rarity": "Common",
+                  "occupied": true,
+                  "usage": "CombatOnly",
+                  "target_type": "AnyEnemy",
+                  "is_queued": false,
+                  "requires_target": true,
+                  "target_index_space": "enemies",
+                  "valid_target_indices": [
+                    0,
+                    1,
+                    2
+                  ],
+                  "can_use": true,
+                  "can_discard": true
+                },
+                {
+                  "index": 2,
+                  "potion_id": null,
+                  "name": null,
+                  "description": null,
+                  "rarity": null,
+                  "occupied": false,
+                  "usage": null,
+                  "target_type": null,
+                  "is_queued": false,
+                  "requires_target": false,
+                  "target_index_space": null,
+                  "valid_target_indices": [],
+                  "can_use": false,
+                  "can_discard": false
+                }
+              ]
+            },
+            "multiplayer": null,
+            "multiplayer_lobby": null,
+            "map": null,
+            "selection": null,
+            "character_select": null,
+            "timeline": null,
+            "chest": null,
+            "event": null,
+            "shop": null,
+            "rest": null,
+            "reward": null,
+            "modal": null,
+            "game_over": null,
+            "agent_view": {
+              "version": 1,
+              "screen": "COMBAT",
+              "run_id": "68229LMPUQ",
+              "session": {
+                "mode": "singleplayer",
+                "phase": "run",
+                "control_scope": "local_player"
+              },
+              "turn": 1,
+              "actions": [
+                "end_turn",
+                "play_card",
+                "use_potion",
+                "discard_potion"
+              ],
+              "available_actions": [
+                "end_turn",
+                "play_card",
+                "use_potion",
+                "discard_potion"
+              ],
+              "combat": {
+                "player": {
+                  "hp": "60/75",
+                  "block": 0,
+                  "energy": 3,
+                  "stars": 0,
+                  "focus": 0,
+                  "orbs": [
+                    "���� ����3/����8"
+                  ]
+                },
+                "hand": [
+                  {
+                    "i": 0,
+                    "line": "���� [1��]�����5��񵲡�",
+                    "playable": true,
+                    "target": null,
+                    "targets": [],
+                    "why": null,
+                    "keywords": [
+                      "��"
+                    ],
+                    "mods": []
+                  },
+                  {
+                    "i": 1,
+                    "line": "��� [1��]�����6���˺���",
+                    "playable": true,
+                    "target": "enemies",
+                    "targets": [
+                      0,
+                      1,
+                      2
+                    ],
+                    "why": null,
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "i": 2,
+                    "line": "��� [1��]������1�����������",
+                    "playable": true,
+                    "target": null,
+                    "targets": [],
+                    "why": null,
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "i": 3,
+                    "line": "���� [1��]�����5��񵲡�",
+                    "playable": true,
+                    "target": null,
+                    "targets": [],
+                    "why": null,
+                    "keywords": [
+                      "��"
+                    ],
+                    "mods": []
+                  },
+                  {
+                    "i": 4,
+                    "line": "˫���ͷ� [1��]�����������Ҳ�ĳ��������Ρ�",
+                    "playable": true,
+                    "target": null,
+                    "targets": [],
+                    "why": null,
+                    "keywords": [],
+                    "mods": []
+                  }
+                ],
+                "draw": [
+                  {
+                    "line": "���*3 [1��]�����6���˺���",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "����֮�� [0��]�����ܱ������ ���ޡ� ���㡣",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "����*2 [1��]�����5��񵲡�",
+                    "keywords": [
+                      "��"
+                    ],
+                    "mods": []
+                  }
+                ],
+                "discard": [],
+                "exhaust": [],
+                "enemies": [
+                  {
+                    "i": 0,
+                    "name": "��Ҷʷ��ķ��С��",
+                    "hp": "15/15",
+                    "block": 0,
+                    "intent": "GOOP_MOVE",
+                    "alive": true,
+                    "hittable": true
+                  },
+                  {
+                    "i": 1,
+                    "name": "��Ҷʷ��ķ���У�",
+                    "hp": "33/33",
+                    "block": 0,
+                    "intent": "STICKY_SHOT",
+                    "alive": true,
+                    "hittable": true
+                  },
+                  {
+                    "i": 2,
+                    "name": "��֦ʷ��ķ��С��",
+                    "hp": "11/11",
+                    "block": 0,
+                    "intent": "BUTT_MOVE",
+                    "alive": true,
+                    "hittable": true
+                  }
+                ]
+              },
+              "run": {
+                "character": "���ϻ�����",
+                "floor": 2,
+                "hp": "60/75",
+                "gold": 99,
+                "max_energy": 3,
+                "base_orb_slots": 3,
+                "deck": [
+                  {
+                    "line": "˫���ͷ� [1��]�����������Ҳ�ĳ��������Ρ�",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "���*4 [1��]�����6���˺���",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "��� [1��]������1�����������",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "����֮�� [0��]�����ܱ������ ���ޡ� ���㡣",
+                    "keywords": [],
+                    "mods": []
+                  },
+                  {
+                    "line": "����*4 [1��]�����5��񵲡�",
+                    "keywords": [
+                      "��"
+                    ],
+                    "mods": []
+                  }
+                ],
+                "relics": [
+                  "�������",
+                  "ҩƿƤ��"
+                ],
+                "potions": [
+                  {
+                    "i": 0,
+                    "line": "0: ����ҩˮ��CombatOnly",
+                    "usable": true,
+                    "discard": true,
+                    "target": "player",
+                    "targets": []
+                  },
+                  {
+                    "i": 1,
+                    "line": "1: ����ҩˮ��CombatOnly",
+                    "usable": true,
+                    "discard": true,
+                    "target": "enemy",
+                    "targets": [
+                      0,
+                      1,
+                      2
+                    ]
+                  },
+                  {
+                    "i": 2,
+                    "line": "2: ��",
+                    "usable": false,
+                    "discard": false,
+                    "target": null,
+                    "targets": []
+                  }
+                ],
+                "piles": {
+                  "draw": [
+                    {
+                      "line": "���*3 [1��]�����6���˺���",
+                      "keywords": [],
+                      "mods": []
+                    },
+                    {
+                      "line": "����֮�� [0��]�����ܱ������ ���ޡ� ���㡣",
+                      "keywords": [],
+                      "mods": []
+                    },
+                    {
+                      "line": "����*2 [1��]�����5��񵲡�",
+                      "keywords": [
+                        "��"
+                      ],
+                      "mods": []
+                    }
+                  ],
+                  "discard": [],
+                  "exhaust": []
+                }
+              },
+              "map": null,
+              "selection": null,
+              "character_select": null,
+              "timeline": null,
+              "chest": null,
+              "event": null,
+              "shop": null,
+              "rest": null,
+              "reward": null,
+              "modal": null,
+              "game_over": null,
+              "glossary": {
+                "��": "�񵲻����ȵ��������ܵ����˺���"
+              }
+            }
+          }
+        }
+      },
+      "delivery": "proactive",
+      "message": "��ִ�ж���: choose_map_node"
+    }
+  },
+  "after_screen": "COMBAT",
+  "after_actions": [
+    {
+      "type": "end_turn",
+      "label": "end_turn",
+      "raw": {
+        "name": "end_turn",
+        "requires_target": false,
+        "requires_index": false
+      }
+    },
+    {
+      "type": "play_card",
+      "label": "play_card",
+      "raw": {
+        "name": "play_card",
+        "requires_target": false,
+        "requires_index": true
+      }
+    },
+    {
+      "type": "use_potion",
+      "label": "use_potion",
+      "raw": {
+        "name": "use_potion",
+        "requires_target": false,
+        "requires_index": true
+      }
+    },
+    {
+      "type": "discard_potion",
+      "label": "discard_potion",
+      "raw": {
+        "name": "discard_potion",
+        "requires_target": false,
+        "requires_index": true
+      }
+    }
+  ]
+}

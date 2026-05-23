@@ -577,6 +577,7 @@ def _crop_window_image(
     cropped = image.crop((left, top, right, bottom))
     cropped.info["galgame_bounds_coordinate_space"] = "capture"
     cropped.info["galgame_source_size"] = {"width": float(crop_w), "height": float(crop_h)}
+    cropped.info["galgame_full_frame_image"] = image
     cropped.info["galgame_source_background_hash"] = source_background_hash
     cropped.info["galgame_capture_rect"] = {
         "left": float(window_rect[0] + left),

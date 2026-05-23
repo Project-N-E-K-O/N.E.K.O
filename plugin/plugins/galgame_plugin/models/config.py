@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from .constants import (
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
@@ -144,6 +145,18 @@ class GalgameOcrReaderConfig:
 
 
 @dataclass(slots=True)
+class GalgameVisionConfig:
+    vision_classifier_enabled: bool = False
+    vision_classifier_model_dir: str = DEFAULT_VISION_CLASSIFIER_MODEL_DIR
+    vision_classifier_model_name: str = "v1_galgame"
+    vision_classifier_threshold: float = 0.75
+    vision_classifier_tick_interval: int = 1
+    vision_classifier_inference_timeout_ms: float = 200.0
+    vision_classifier_input_size: list[int] = field(default_factory=lambda: [224, 224])
+    vision_classifier_input_size_low: list[int] = field(default_factory=lambda: [160, 160])
+
+
+@dataclass(slots=True)
 class GalgameRapidOcrConfig:
     rapidocr_enabled: bool = False
     rapidocr_enabled_explicit: bool = False
@@ -174,6 +187,7 @@ class GalgameConfig:
     reader: GalgameReaderConfig
     memory_reader: GalgameMemoryReaderConfig
     ocr_reader: GalgameOcrReaderConfig
+    vision: GalgameVisionConfig
     rapidocr: GalgameRapidOcrConfig
 
     _FIELD_MAP: ClassVar[dict[str, tuple[str, str]]] = {
@@ -342,6 +356,20 @@ class GalgameConfig:
             "ocr_reader",
             "ocr_reader_unobserved_advance_hold_duration_seconds",
         ),
+        "vision_classifier_enabled": ("vision", "vision_classifier_enabled"),
+        "vision_classifier_model_dir": ("vision", "vision_classifier_model_dir"),
+        "vision_classifier_model_name": ("vision", "vision_classifier_model_name"),
+        "vision_classifier_threshold": ("vision", "vision_classifier_threshold"),
+        "vision_classifier_tick_interval": ("vision", "vision_classifier_tick_interval"),
+        "vision_classifier_inference_timeout_ms": (
+            "vision",
+            "vision_classifier_inference_timeout_ms",
+        ),
+        "vision_classifier_input_size": ("vision", "vision_classifier_input_size"),
+        "vision_classifier_input_size_low": (
+            "vision",
+            "vision_classifier_input_size_low",
+        ),
         "rapidocr_enabled": ("rapidocr", "rapidocr_enabled"),
         "rapidocr_enabled_explicit": ("rapidocr", "rapidocr_enabled_explicit"),
         "rapidocr_install_target_dir": ("rapidocr", "rapidocr_install_target_dir"),
@@ -362,6 +390,7 @@ class GalgameConfig:
         reader: GalgameReaderConfig | None = None,
         memory_reader: GalgameMemoryReaderConfig | None = None,
         ocr_reader: GalgameOcrReaderConfig | None = None,
+        vision: GalgameVisionConfig | None = None,
         rapidocr: GalgameRapidOcrConfig | None = None,
         **legacy_fields: Any,
     ) -> None:
@@ -373,6 +402,7 @@ class GalgameConfig:
             memory_reader if memory_reader is not None else GalgameMemoryReaderConfig()
         )
         self.ocr_reader = ocr_reader if ocr_reader is not None else GalgameOcrReaderConfig()
+        self.vision = vision if vision is not None else GalgameVisionConfig()
         self.rapidocr = rapidocr if rapidocr is not None else GalgameRapidOcrConfig()
 
         for field_name in self._FIELD_MAP:

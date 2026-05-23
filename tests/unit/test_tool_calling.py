@@ -2194,3 +2194,424 @@ async def test_realtime_apply_tools_to_session_step_emits_function_tools_only():
     tools = sent[0]["session"]["tools"]
     assert all(t.get("type") != "web_search" for t in tools)
     assert any(t.get("type") == "function" for t in tools)
+
+
+# ============================================================================
+# Summary-mode（长回复 emotion-tier 摘要路径）
+# ============================================================================
+
+def _build_summary_client(monkeypatch, *, max_response_length: int = 4):
+    """组装一个走 summary 路径的 OmniOfflineClient stub。
+
+    单测里 count_tokens 走"按词切空格"，刚好让 ``one two three four. ...``
+    这种字符串里每个词都恰好 1 token，方便控制何时跨阈值。
+    """
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = max_response_length
+    client.max_response_rerolls = 1
+    client.enable_response_guard = True
+    client.enable_long_response_summary = True
+    client.vision_model = ""
+    client.model = "x"
+    return client
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatch):
+    """Summary 路径 happy path：模型超 budget 很多，越过 budget 后第一个
+    terminator 后的尾巴替换成 emotion-tier 摘要。UI 看完整原文，TTS 听
+    prefix+summary，history 存 prefix+summary。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    # 让 summary 调用产出固定字符串
+    async def fake_summarize(self, prefix, tail):
+        fake_summarize.captured = {"prefix": prefix, "tail": tail}
+        return "总之就这样啦"
+    fake_summarize.captured = {}
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # budget=4，但要让 cutover 落在越界点之后 —— budget 前的句号不该被当
+    # cutover。trigger chunk 后排几个逗号分隔的子句，第一个逗号在 budget
+    # 之后，cutover 应该落到那里。尾巴 ≥ 25 tokens 大于 slack，触发摘要。
+    prefix_segment = "one two three four."  # 4 words, 用尽 budget
+    overshoot_segment = " five, six seven eight nine ten."  # 越界后第一个 terminator 是逗号
+    long_tail = " " + " ".join(f"w{i}" for i in range(25)) + "."
+    long_text = prefix_segment + overshoot_segment + long_tail
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content=long_text)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    delta_calls: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append({
+            "text": text,
+            "is_first": is_first,
+            "ui_enabled": kwargs.get("ui_enabled", True),
+            "tts_enabled": kwargs.get("tts_enabled", True),
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger long")
+
+    # 3 类调用都必须出现
+    both_emits = [c for c in delta_calls if c["ui_enabled"] and c["tts_enabled"]]
+    ui_only_emits = [c for c in delta_calls if c["ui_enabled"] and not c["tts_enabled"]]
+    tts_only_emits = [c for c in delta_calls if not c["ui_enabled"] and c["tts_enabled"]]
+
+    assert both_emits, "cutover 之前的 prefix 必须以 both 模式发出"
+    assert ui_only_emits, "cutover 之后的 tail 必须只去 UI"
+    assert len(tts_only_emits) == 1, "summary 必须以 tts-only 注入一次"
+    assert tts_only_emits[0]["text"] == "总之就这样啦"
+
+    # _summarize_tail_for_tts 收到的 prefix 应当以越界后的 terminator 结尾。
+    # 关键：budget 内已经有句号 "four." (offset 18) —— 旧的从 chunk 头扫的实现
+    # 会在那里 cutover；overflow-offset 修复后应当跳过它，落到 "five," 处。
+    captured_prefix = fake_summarize.captured["prefix"].rstrip()
+    assert captured_prefix.endswith(","), (
+        "cutover 应该落在越界后的逗号，不应该在 budget 之内的句号 "
+        "(actual prefix: %r)" % captured_prefix
+    )
+    assert fake_summarize.captured["tail"]
+
+    # history 写 prefix + summary（与 TTS 听到的对齐）
+    last_msg = client._conversation_history[-1].content
+    assert last_msg.endswith("总之就这样啦")
+    # prefix 必然包含 budget 之前的部分
+    assert "one two three four." in last_msg
+    # 越界后才出现的 tail 词不应进 history
+    assert "w24" not in last_msg
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_abandoned_when_overshoot_under_slack(monkeypatch):
+    """超 budget 但只多几个 token（< slack）时放弃摘要，tail 续给 TTS 读完，
+    history 留完整原文，没有 prefix/summary 分裂。"""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    summarize_called = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "should not be used"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # budget=4，模型只写 7 词，7 < 4+25 → abandon。trigger chunk 后必须有
+    # 至少一个 terminator 在越界点之后，否则 cutover 退化到流末 / 没 tail。
+    short_overshoot = "one two three four. five, six seven."
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content=short_overshoot)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    delta_calls: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append({
+            "text": text,
+            "ui_enabled": kwargs.get("ui_enabled", True),
+            "tts_enabled": kwargs.get("tts_enabled", True),
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("short overshoot")
+
+    assert summarize_called == [], "overshoot 不够大不应当调摘要"
+    # 必须看到一次 ui_only 发出（cutover 之后的 tail）+ 一次 tts_only 发出（abandon 时补给 TTS）
+    ui_only_emits = [c for c in delta_calls if c["ui_enabled"] and not c["tts_enabled"]]
+    tts_only_emits = [c for c in delta_calls if not c["ui_enabled"] and c["tts_enabled"]]
+    assert ui_only_emits, "cutover 后的 tail 必须只去 UI"
+    assert len(tts_only_emits) == 1, "abandon 路径 tail 必须补一次 TTS-only"
+    # 不只验通道，还要验内容：abandon 续给 TTS 的必须是原文 tail，
+    # 绝不能是摘要器的返回值（那条 path 不该被走到）。
+    tts_text = tts_only_emits[0]["text"]
+    assert "six seven." in tts_text, f"TTS 续读应是原文 tail，实际: {tts_text!r}"
+    assert "should not be used" not in tts_text
+
+    # history 是完整原文
+    assert client._conversation_history[-1].content.strip() == short_overshoot.strip()
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_gibberish_fallback_silently_commits_prefix(monkeypatch):
+    """cutover 后 tail 在 gibberish 重检阈值上被判定为乱码 → 静默截断：
+    不发 RESPONSE_INVALID（那会触发 core 端 _clear_tts_pipeline 把队列里未播完
+    的 prefix 一起清掉，反而让用户已经在听的话被截断）。history 只留 prefix，
+    TTS 自然把队列残余播完。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    # 降低 gibberish 重检阈值，避免单测吐 100+ tokens 才触发
+    monkeypatch.setattr(_ofc, "_SUMMARY_GIBBERISH_RECHECK_TOKENS", 2)
+
+    # 强制 _is_gibberish_response 在尾巴被检测时返 True
+    monkeypatch.setattr(_ofc, "_is_gibberish_response", lambda text: "GIB" in text)
+
+    summarize_called = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "unused"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # prefix 部分先走 both，cutover 落在越界后的第一个逗号；之后 "GIB" 进 tail，
+    # 重检触发 gibberish 命中。
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="one two three four. five, GIB GIB GIB.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    discarded: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        # 这里不关心具体 delta；focus 在 discard 通知上
+        return None
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded.append({
+            "reason": reason,
+            "will_retry": will_retry,
+            "message": message,
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger gibberish tail")
+
+    assert summarize_called == [], "gibberish fallback 不应调摘要"
+    # 关键：不再发 response_discarded —— 否则 core 会 _clear_tts_pipeline，
+    # 把已经在 TTS 队列里的 prefix 一并清掉。
+    assert discarded == []
+
+    # history 只保留 prefix（cutover 之前的部分），不含 tail
+    last_msg = client._conversation_history[-1].content
+    assert "GIB" not in last_msg
+    assert last_msg.startswith("one two three four.")
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_overflow_offset_consumed_across_chunks(monkeypatch):
+    """Trigger chunk 没有 terminator 时 state 停在 pending_cutover，
+    `summary_overflow_offset` 必须消费回 0，让下一个 chunk 能从头扫到
+    leading terminator。没消费回 0 的话，搜索会跳过 chunk 头部，把 cutover
+    错放到 chunk 尾。codex P2 的回归守门。"""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    summarize_called: list = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "总之"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # Trigger chunk: 5 词无 terminator (budget=4) → state 切到 pending_cutover，
+    # 找不到 terminator，offset 必须消费回 0。
+    # 下一个 chunk 头部就有逗号；如果 offset 没消费，搜索从 > 0 起会跳过它。
+    async def _astream(self, messages, **overrides):
+        # 单独 yield，模拟 provider 多 chunk 流；chunk 2 头部加 leading space
+        # 避免 token 边界粘连导致 word-split count_tokens 把 "e" 和 "h," 合并。
+        yield LLMStreamChunk(content="a b c d e")
+        yield LLMStreamChunk(content=" h, i j k l m n o p q r s t u v w x y z aa bb cc dd ee ff.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        return None
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("multi-chunk offset reset")
+
+    # cutover 必须发生（summary 被调），并且 prefix 应该结束于第二 chunk
+    # 头部的逗号 —— 这只有在 offset 消费回 0 时才可能。
+    assert summarize_called, "second chunk 必须能 cutover（offset 已被消费）"
+    captured_prefix = summarize_called[0][0]
+    assert captured_prefix.endswith("h,"), (
+        "cutover 应该落在 second chunk 头部的逗号 (offset=0)，没消费回 0 "
+        "时会跳过该逗号。实际 prefix: %r" % captured_prefix
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_budget_bump_scoped_to_stream_text(monkeypatch):
+    """summary 模式只在 stream_text 期间把 self.llm.max_completion_tokens 抬到
+    _SUMMARY_API_BUDGET_FLOOR，结束后精确还原 —— 不泄漏给共用同一 self.llm 的
+    prompt_ephemeral（proactive 没长度 guard，被抬到 3000 会吐超长回复）。"""
+    from types import SimpleNamespace
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import (
+        OmniOfflineClient, _budget_to_max_tokens, _SUMMARY_API_BUDGET_FLOOR,
+    )
+    from utils.llm_client import LLMStreamChunk
+
+    observed: dict = {}
+
+    async def _astream(self, messages, **overrides):
+        # 记录流式进行中 client 上的 cap
+        observed["during"] = self.llm.max_completion_tokens
+        yield LLMStreamChunk(content="hi there.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    normal_budget = _budget_to_max_tokens(4)  # budget+slack，远小于 3000 floor
+    client.llm = SimpleNamespace(max_completion_tokens=normal_budget)
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger")
+
+    # 流中被抬到 floor（normal_budget < 3000）
+    assert observed["during"] == _SUMMARY_API_BUDGET_FLOOR
+    # 流结束后精确还原到原值，不泄漏给 prompt_ephemeral
+    assert client.llm.max_completion_tokens == normal_budget
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypatch):
+    """没开 summary 的 client（game/默认 stream_text 调用）必须保持原来的
+    abort+inline truncate 行为，不被新路径干扰，并且小模型摘要器一次也不能调。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    summarize_calls: list = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_calls.append((prefix, tail))
+        return "should never run"
+
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    async def _astream(self, messages, **overrides):
+        # 6 词，budget=4 → 过线触发旧 guard 路径
+        yield LLMStreamChunk(content="one two three four. five six.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    delta_calls: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append({
+            "text": text,
+            "ui_enabled": kwargs.get("ui_enabled", True),
+            "tts_enabled": kwargs.get("tts_enabled", True),
+        })
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        pass
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 4
+    client.max_response_rerolls = 1
+    client.enable_response_guard = True
+    client.enable_long_response_summary = False  # 关键
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("disabled summary")
+
+    # 旧路径：所有 emit 都是 both（没 ui/tts 拆分）
+    assert delta_calls, "至少要 emit 过一次"
+    for c in delta_calls:
+        assert c["ui_enabled"] and c["tts_enabled"]
+    # 关键回归：禁用模式下小模型摘要器一次都不能被调
+    assert summarize_calls == []

@@ -149,6 +149,9 @@ def _build_runtime_constructor_kwargs(
             kwargs["rec_model_path"] = rec_path
             if cls_path:
                 kwargs["cls_model_path"] = cls_path
+                cls_image_shape = _rapidocr_cls_image_shape_for_model(cls_path)
+                if cls_image_shape is not None:
+                    kwargs["cls_image_shape"] = cls_image_shape
         if engine_type:
             kwargs["engine_type"] = engine_type
         return kwargs
@@ -175,6 +178,15 @@ def _build_runtime_constructor_kwargs(
         if key in parameters:
             kwargs[key] = value
     return kwargs
+
+
+def _rapidocr_cls_image_shape_for_model(cls_path: str | None) -> list[int] | None:
+    if not cls_path:
+        return None
+    name = Path(cls_path).name.lower()
+    if "pp-lcnet" in name or "textline_ori_cls" in name:
+        return [3, 80, 160]
+    return None
 
 
 _SESSION_OPTIONS_PATCH_TLS = threading.local()

@@ -58,6 +58,7 @@ def build_status_payload(
             "anonymous_knowledge_stats_summary"
         )
         or {},
+        "habit": knowledge_payload.get("habit") or {},
         "review_queue": knowledge_payload.get("review_queue") or [],
         "memory_deck": knowledge_payload.get("memory_deck") or {},
         "weak_topics": knowledge_payload.get("weak_topics") or [],

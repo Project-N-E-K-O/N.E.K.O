@@ -18,6 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
+from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.llm_prompts import (
     _compact_prompt_value,
@@ -1103,6 +1104,10 @@ def test_study_companion_static_panel_keeps_mode_highlight_when_status_refresh_f
 
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     frontend_dir = Path(__file__).resolve().parents[4] / "frontend" / "plugin-manager"
+    if not (frontend_dir / "node_modules" / "happy-dom").is_dir():
+        pytest.skip(
+            "frontend/plugin-manager node_modules with happy-dom is not installed"
+        )
 
     script = r"""
 import { Window } from 'happy-dom';
@@ -1226,6 +1231,18 @@ if (document.querySelector('[data-mode="interactive"]').getAttribute('aria-press
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def test_study_surface_utils_preserves_nonstandard_backend_error_details() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "study_surface_utils.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function pluginErrorMessage" in source
+    assert "typeof error === 'string'" in source
+    assert "JSON.stringify(error)" in source
+    assert "throw new Error(pluginErrorMessage(item.json.error))" in source
 
 
 def test_study_companion_i18n_prefers_traditional_chinese_bundle() -> None:
@@ -1656,6 +1673,57 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
         assert "screen_classification" in plugin._agent.inputs[0][1]
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_ocr_snapshot_feeds_supervision_activity() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(
+            self, *, ocr_text: str, sensor_available: bool
+        ) -> dict[str, object]:
+            self.calls.append(
+                {"ocr_text": ocr_text, "sensor_available": sensor_available}
+            )
+            return {
+                "sensor_available": sensor_available,
+                "inactivity_detected": False,
+            }
+
+    persisted: list[bool] = []
+
+    async def _persist_state() -> None:
+        persisted.append(True)
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._ocr_pipeline = _FakeStudyOcrPipeline(
+        OcrSnapshot(
+            text="photosynthesis note",
+            status="ok",
+            captured_at="2026-05-11T00:00:00Z",
+        )
+    )
+    plugin._supervision = supervision
+    plugin._lock = threading.RLock()
+    plugin._state = build_initial_state()
+    plugin._persist_state = _persist_state
+    plugin._update_screen_classification = lambda text, update_empty=False: {
+        "screen_type": "reading",
+        "text": text,
+        "update_empty": update_empty,
+    }
+
+    result = await plugin.study_ocr_snapshot()
+
+    assert isinstance(result, Ok)
+    assert result.value["supervision"]["sensor_available"] is True
+    assert supervision.calls == [
+        {"ocr_text": "photosynthesis note", "sensor_available": True}
+    ]
+    assert persisted == [True]
 
 
 @pytest.mark.asyncio
@@ -2465,6 +2533,250 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
 
 
 @pytest.mark.asyncio
+async def test_study_pomodoro_status_offloads_timer_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 1}
+
+        def tick(self) -> dict[str, object]:
+            return {"state": "short_break", "remaining_seconds": 300}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "short_break"
+    assert to_thread_calls == ["status", "tick"]
+    assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_status_drives_supervision_reminders() -> None:
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 120}
+
+        def tick(self) -> dict[str, object]:
+            return {"state": "focusing", "remaining_seconds": 119}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.reminder_count = 0
+
+        def due_reminder(self) -> dict[str, object]:
+            self.reminder_count += 1
+            return {"due": True, "reminder_level": "low_frequency"}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_status()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert status.value["supervision_reminder"] == {
+        "due": True,
+        "reminder_level": "low_frequency",
+    }
+    assert supervision.reminder_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_stop_offloads_timer_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Timer:
+        def stop(self) -> dict[str, object]:
+            return {
+                "state": "cancelled",
+                "current_focus_session": {"id": "focus-1", "status": "cancelled"},
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_end_count = 0
+
+        def on_focus_end(self) -> None:
+            self.focus_end_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_stop()
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "cancelled"
+    assert to_thread_calls == ["stop"]
+    assert supervision.focus_end_count == 1
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_does_not_restart_supervision_on_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, _goal_id: str) -> dict[str, object]:
+            return {"id": "goal-1"}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-1"},
+                "config": {"focus_minutes": 25},
+            }
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return self.status()
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.focus_start_count = 0
+
+        def on_focus_start(self, **_kwargs) -> None:
+            self.focus_start_count += 1
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1")
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert to_thread_calls == ["status", "start"]
+    assert supervision.focus_start_count == 0
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_offloads_blocking_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, goal_id: str) -> dict[str, object]:
+            return {"id": goal_id, "title": "read"}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "idle", "current_focus_session": {}}
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-2"},
+                "config": {"focus_minutes": 30},
+            }
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.goal: dict[str, object] = {}
+            self.planned_minutes = 0.0
+
+        def on_focus_start(
+            self, *, goal: dict[str, object], planned_minutes: float
+        ) -> None:
+            self.goal = goal
+            self.planned_minutes = planned_minutes
+
+    to_thread_calls: list[str] = []
+
+    async def _to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1", focus_minutes=30)
+
+    assert isinstance(status, Ok)
+    assert status.value["state"] == "focusing"
+    assert to_thread_calls == ["status", "start", "get_goal"]
+    assert supervision.goal == {"id": "goal-1", "title": "read"}
+    assert supervision.planned_minutes == 30.0
+
+
+@pytest.mark.asyncio
+async def test_study_supervision_toggle_respects_disable_guard() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def set_enabled(self, enabled: bool) -> dict[str, object]:
+            self.calls.append(enabled)
+            return {"enabled": enabled}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._cfg.supervision.allow_disable_by_chat = False
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = object()
+    plugin._supervision = supervision
+
+    result = await plugin.study_supervision_toggle(enabled=False)
+
+    assert isinstance(result, Err)
+    assert "blocked by config" in str(result.error)
+    assert supervision.calls == []
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_starts_and_collects_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2620,6 +2932,42 @@ async def test_study_plugin_starts_and_collects_entries(
         runtime_root / "plugins" / "study_companion" / "data" / "study_companion.db"
     ).is_file()
     await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_status_degrades_when_habit_payload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+
+        class _BrokenHabitStore:
+            def list_goals(self, **_kwargs):
+                raise RuntimeError("habit db unavailable")
+
+        plugin._habit_store = _BrokenHabitStore()  # type: ignore[assignment]
+
+        status = await plugin.study_status()
+
+        assert isinstance(status, Ok)
+        assert status.value["status"] == "ready"
+        assert status.value["habit"]["available"] is False
+        assert "habit db unavailable" in status.value["habit"]["error"]
+    finally:
+        await plugin.shutdown()
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from .config import (
     GalgameOcrReaderConfig,
     GalgameRapidOcrConfig,
     GalgameReaderConfig,
+    GalgameVisionConfig,
     _ConfigFieldProxy,
 )
 from .constants import (
@@ -30,6 +31,7 @@ from .constants import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     MENU_PREFIX_RE,
     MODE_CHOICE_ADVISOR,
     MODE_COMPANION,
@@ -151,6 +153,7 @@ __all__ = [
     "DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO",
     "DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO",
     "DEFAULT_OCR_CAPTURE_TOP_RATIO",
+    "DEFAULT_VISION_CLASSIFIER_MODEL_DIR",
     "DEFAULT_SAVE_CONTEXT",
     "GalgameBridgeConfig",
     "GalgameConfig",
@@ -160,6 +163,7 @@ __all__ = [
     "GalgameOcrReaderConfig",
     "GalgameRapidOcrConfig",
     "GalgameReaderConfig",
+    "GalgameVisionConfig",
     "MENU_PREFIX_RE",
     "MODE_CHOICE_ADVISOR",
     "MODE_COMPANION",

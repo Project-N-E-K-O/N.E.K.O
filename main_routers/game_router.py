@@ -3509,7 +3509,10 @@ async def _build_and_register_game_session(
     lanlan_name = str(char_info.get("lanlan_name") or "").strip()
     reply_chunks: list[str] = []
 
-    async def on_text_delta(text: str, is_first: bool):
+    async def on_text_delta(text: str, is_first: bool, **_kwargs):
+        # **_kwargs 吞掉 ui_enabled / tts_enabled（OmniOfflineClient summary 路径会传，
+        # 但 game 短台词跑的是非 summary 模式，理论上不会发 UI/TTS 分流。保留 kwargs
+        # forward-compat 防签名漂移触发 TypeError。）
         reply_chunks.append(text)
 
     set_call_type("game_chat")

@@ -41,6 +41,9 @@ DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO = 0.05
 DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO = 0.05
 DEFAULT_OCR_CAPTURE_TOP_RATIO = 0.62
 DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO = 0.08
+DEFAULT_VISION_CLASSIFIER_MODEL_DIR = (
+    "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
+)
 OCR_CAPTURE_PROFILE_RATIO_KEYS = (
     "left_inset_ratio",
     "right_inset_ratio",
