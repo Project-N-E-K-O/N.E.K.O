@@ -120,9 +120,9 @@ svg {
   --drop-rotation: 0deg;
   --drop-scale: 1;
   --drop-delay: 0ms;
-  position: fixed;
-  left: 0;
-  top: 0;
+  position: absolute;
+  left: calc(100% - 30px);
+  top: 33px;
   z-index: 10000;
   pointer-events: none;
   opacity: 1;
@@ -1871,13 +1871,15 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
 }
 
 .compact-chat-surface-shell {
+  --compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
   position: relative;
   display: flex;
   justify-content: center;
   padding-top: 4px;
-  width: 100%;
+  width: var(--compact-surface-active-width);
   overflow: visible;
   z-index: 4;
+  margin: 0 auto;
   -webkit-app-region: no-drag;
 }
 
@@ -1887,7 +1889,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   isolation: isolate;
   display: flex;
   align-items: center;
-  width: min(100%, 520px);
+  width: 100%;
   min-width: 0;
   height: 54px;
   min-height: 54px;
@@ -2050,16 +2052,46 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   cursor: grabbing;
 }
 
+.compact-chat-resize-handle {
+  position: absolute;
+  top: 4px;
+  width: 12px;
+  height: 54px;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  opacity: 0;
+  pointer-events: auto;
+  touch-action: none;
+  z-index: 9;
+  -webkit-app-region: no-drag;
+}
+
+.compact-chat-resize-handle-left {
+  left: -4px;
+}
+
+.compact-chat-resize-handle-right {
+  right: -4px;
+}
+
+.compact-chat-surface-shell:hover > .compact-chat-resize-handle,
+.compact-chat-resize-handle:hover,
+.compact-chat-resize-handle:active {
+  opacity: 1;
+}
+
 .compact-export-history-anchor {
   position: fixed;
-  left: calc(var(--compact-surface-left, 50vw) + (var(--compact-surface-width, 430px) / 2));
+  --compact-export-surface-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
+  left: calc(var(--compact-surface-left, 50vw) + (var(--compact-export-surface-width) / 2));
   bottom: calc(100vh - var(--compact-surface-top, 68vh) + 12px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
-  --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-surface-width, 430px) * 0.0116), 6px);
+  --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
-  --compact-export-controls-action-height: clamp(26px, calc(var(--compact-surface-width, 430px) * 0.0651), 30px);
-  --compact-export-controls-collapsed-toggle-height: clamp(12px, calc(var(--compact-surface-width, 430px) * 0.0326), 16px);
-  --compact-export-controls-collapsed-width: clamp(82px, calc(var(--compact-surface-width, 430px) * 0.2093), 112px);
+  --compact-export-controls-action-height: clamp(26px, calc(var(--compact-export-surface-width) * 0.0651), 30px);
+  --compact-export-controls-collapsed-toggle-height: clamp(12px, calc(var(--compact-export-surface-width) * 0.0326), 16px);
+  --compact-export-controls-collapsed-width: clamp(82px, calc(var(--compact-export-surface-width) * 0.2093), 112px);
   --compact-export-controls-expanded-block-size: calc(
     var(--compact-export-controls-action-height) + (var(--compact-export-controls-padding-y) * 2) +
       (var(--compact-export-controls-border-width) * 2)
@@ -2070,10 +2102,21 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   --compact-export-controls-collapse-delta: 0px;
   --compact-export-history-region-height: var(
     --compact-history-slot-height,
-    min(calc(var(--compact-surface-width, 430px) * 1.18), 63vh)
+    min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
   );
-  width: min(var(--compact-surface-width, 430px), calc(100vw - 24px));
-  max-height: min(calc(var(--compact-surface-width, 430px) * 1.46), 78vh);
+  --compact-export-history-viewport-gutter: 24px;
+  --compact-export-history-width-ratio: 1;
+  --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
+  --compact-export-history-inline-size: min(
+    calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
+    var(--compact-export-history-max-inline-size)
+  );
+  --compact-export-history-bubble-max-ratio: 82%;
+  --compact-export-history-system-bubble-max-ratio: 92%;
+  --compact-export-preview-bubble-max-ratio: 88%;
+  --compact-export-preview-system-bubble-max-ratio: 94%;
+  width: var(--compact-export-history-inline-size);
+  max-height: min(calc(var(--compact-export-surface-width) * 1.46), 78vh);
   transform: translateX(-50%);
   z-index: 100001;
   pointer-events: none;
@@ -2090,10 +2133,12 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
 body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-export-history-region-height: var(
     --compact-history-slot-height,
-    min(calc(var(--compact-surface-width, 430px) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
+    min(calc(var(--compact-export-surface-width) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
   );
-  width: min(var(--compact-surface-width, 430px), calc(var(--compact-desktop-workarea-width, 1440px) - 24px));
-  max-height: min(calc(var(--compact-surface-width, 430px) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
+  --compact-export-history-max-inline-size: calc(
+    var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)
+  );
+  max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
 }
 
 .compact-export-history-panel {
@@ -2218,7 +2263,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-bubble {
   position: relative;
-  max-width: 82%;
+  max-width: var(--compact-export-history-bubble-max-ratio);
   min-width: 0;
   padding: 8px 10px;
   border: 1.5px solid transparent;
@@ -2244,7 +2289,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-message.is-system .compact-export-history-bubble {
-  max-width: 92%;
+  max-width: var(--compact-export-history-system-bubble-max-ratio);
   background: rgba(131, 148, 175, 0.18);
   color: #607086;
 }
@@ -2778,7 +2823,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-preview-bubble {
-  max-width: 88%;
+  max-width: var(--compact-export-preview-bubble-max-ratio);
   min-width: 0;
   padding: 7px 9px;
   border-radius: 8px 14px 14px 14px;
@@ -2793,7 +2838,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-preview-message.is-system .compact-export-preview-bubble {
-  max-width: 94%;
+  max-width: var(--compact-export-preview-system-bubble-max-ratio);
   background: rgba(131, 148, 175, 0.16);
   color: #607086;
 }

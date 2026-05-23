@@ -27,15 +27,19 @@ describe('App', () => {
     const { container, rerender } = render(<App chatSurfaceMode="compact" compactChatState="default" />);
 
     expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelectorAll('.compact-chat-surface-shell .compact-chat-resize-handle')).toHaveLength(2);
     expect(container.querySelector('.compact-chat-surface-shell')).not.toHaveAttribute('data-compact-geometry-item');
     expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-item', 'capsule');
     expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
     expect(container.querySelector('[data-compact-geometry-item="dragHandle"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-resize-side="left"]')).toHaveAttribute('data-compact-geometry-item', 'resizeHandle');
+    expect(container.querySelector('[data-compact-resize-side="right"]')).toHaveAttribute('data-compact-geometry-item', 'resizeHandle');
     const stableSurfaceShell = container.querySelector('.compact-chat-surface-shell');
     const stableSurfaceFrame = container.querySelector('.compact-chat-surface-frame');
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
     expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelectorAll('.compact-chat-surface-shell .compact-chat-resize-handle')).toHaveLength(2);
     expect(container.querySelector('.compact-chat-surface-shell')).not.toHaveAttribute('data-compact-geometry-item');
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-item', 'input');
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
@@ -44,7 +48,145 @@ describe('App', () => {
 
     rerender(<App chatSurfaceMode="full" />);
     expect(container.querySelector('.compact-chat-drag-handle')).toBeNull();
+    expect(container.querySelector('.compact-chat-resize-handle')).toBeNull();
     expect(container.querySelector('[data-compact-geometry-owner="surface"]')).toBeNull();
+  });
+
+  it('lets compact surface resize from the visible edges without collapsing input or firing tools', async () => {
+    const onCompactChatStateChange = vi.fn();
+    const onComposerImportImage = vi.fn();
+    const resizeRequests: Array<{ side: string; width: number; phase: string }> = [];
+    const handleResizeRequest = (event: Event) => {
+      resizeRequests.push((event as CustomEvent).detail);
+    };
+    window.addEventListener('neko:compact-surface-resize-request', handleResizeRequest);
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onCompactChatStateChange={onCompactChatStateChange}
+        onComposerImportImage={onComposerImportImage}
+      />,
+    );
+
+    try {
+      const rightHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="right"]');
+      expect(rightHandle).not.toBeNull();
+      fireEvent.pointerDown(rightHandle!, {
+        pointerId: 21,
+        clientX: 430,
+        screenX: 430,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(rightHandle!, {
+        pointerId: 21,
+        clientX: 560,
+        screenX: 560,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('560px');
+      });
+      expect((container.querySelector('.compact-chat-surface-shell') as HTMLElement).style
+        .getPropertyValue('--compact-surface-resize-width')).toBe('560px');
+      expect(resizeRequests).toEqual([
+        { side: 'right', width: 430, phase: 'start' },
+        { side: 'right', width: 560, phase: 'move' },
+      ]);
+
+      fireEvent.pointerUp(rightHandle!, {
+        pointerId: 21,
+        clientX: 560,
+        screenX: 560,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('');
+      });
+      expect((container.querySelector('.compact-chat-surface-shell') as HTMLElement).style
+        .getPropertyValue('--compact-surface-resize-width')).toBe('');
+      expect(resizeRequests).toEqual([
+        { side: 'right', width: 430, phase: 'start' },
+        { side: 'right', width: 560, phase: 'move' },
+        { side: 'right', width: 560, phase: 'end' },
+      ]);
+
+      fireEvent.pointerDown(rightHandle!, {
+        pointerId: 22,
+        clientX: 560,
+        screenX: 560,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(rightHandle!, {
+        pointerId: 22,
+        clientX: 240,
+        screenX: 240,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('430px');
+      });
+      fireEvent.pointerUp(rightHandle!, {
+        pointerId: 22,
+        clientX: 240,
+        screenX: 240,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('');
+      });
+
+      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(onComposerImportImage).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
+
+      const leftHandle = container.querySelector<HTMLDivElement>('[data-compact-resize-side="left"]');
+      expect(leftHandle).not.toBeNull();
+      fireEvent.pointerDown(leftHandle!, {
+        pointerId: 23,
+        clientX: 180,
+        screenX: 500,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(leftHandle!, {
+        pointerId: 23,
+        clientX: 180,
+        screenX: 380,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('550px');
+      });
+      expect(resizeRequests.slice(-2)).toEqual([
+        { side: 'left', width: 430, phase: 'start' },
+        { side: 'left', width: 550, phase: 'move' },
+      ]);
+      fireEvent.pointerUp(leftHandle!, {
+        pointerId: 23,
+        clientX: 180,
+        screenX: 380,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+    } finally {
+      window.removeEventListener('neko:compact-surface-resize-request', handleResizeRequest);
+    }
   });
 
   it('toggles compact inline history from the export tool without calling the full export path', () => {
@@ -1510,7 +1652,7 @@ describe('App', () => {
     const actionButton = screen.getByRole('button', { name: '更多工具' });
     fireEvent.click(actionButton);
 
-    const fan = document.body.querySelector('.compact-input-tool-fan');
+    const fan = container.querySelector('.compact-input-tool-fan');
     const shell = container.querySelector('.compact-chat-surface-shell');
     const inlineInput = container.querySelector('[data-compact-geometry-part="inputBody"]');
     expect(onComposerSubmit).not.toHaveBeenCalled();
@@ -1518,16 +1660,17 @@ describe('App', () => {
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
     expect(fan).toHaveAttribute('data-compact-geometry-owner', 'surface');
     expect(fan).toHaveAttribute('data-compact-geometry-item', 'toolFan');
-    expect(fan?.parentElement).toBe(document.body);
+    expect(fan?.parentElement).toBe(shell);
     expect(inlineInput?.contains(fan)).toBe(false);
-    expect(shell?.contains(fan)).toBe(false);
+    expect(shell?.contains(fan)).toBe(true);
+    expect(fan).not.toHaveAttribute('style');
     expect(fan?.querySelectorAll('[data-compact-tool-wheel-slot="-2"], [data-compact-tool-wheel-slot="-1"], [data-compact-tool-wheel-slot="0"], [data-compact-tool-wheel-slot="1"], [data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="-2"], .compact-input-tool-item[data-compact-tool-wheel-slot="-1"], .compact-input-tool-item[data-compact-tool-wheel-slot="0"], .compact-input-tool-item[data-compact-tool-wheel-slot="1"], .compact-input-tool-item[data-compact-tool-wheel-slot="2"]')).toHaveLength(5);
     expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(3);
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
   });
 
-  it('keeps the compact tool fan screen-anchored when desktop bounds change without moving the base surface', async () => {
+  it('keeps compact input tools attached to the compact surface shell when layout changes', async () => {
     const desktopWindow = window as typeof window & {
       __nekoDesktopCompactLayout?: {
         surface?: { left: number; top: number; width: number; height: number };
@@ -1540,38 +1683,18 @@ describe('App', () => {
         surface: { left: 24, top: 320, width: 420, height: 56 },
         windowBounds: { x: 10, y: 10, width: 460, height: 90 },
       };
-      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
       const actionButton = screen.getByRole('button', { name: '更多工具' });
-      Object.defineProperty(actionButton, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          left: 80,
-          top: 100,
-          right: 120,
-          bottom: 140,
-          width: 40,
-          height: 40,
-        }),
-      });
 
       fireEvent.click(actionButton);
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      const shell = container.querySelector('.compact-chat-surface-shell');
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
       await waitFor(() => {
-        expect(fan.style.left).toBe('100px');
-        expect(fan.style.top).toBe('120px');
+        expect(fan.parentElement).toBe(shell);
+        expect(fan.style.left).toBe('');
+        expect(fan.style.top).toBe('');
       });
 
-      Object.defineProperty(actionButton, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          left: 180,
-          top: 220,
-          right: 220,
-          bottom: 260,
-          width: 40,
-          height: 40,
-        }),
-      });
       desktopWindow.__nekoDesktopCompactLayout = {
         surface: { left: 4, top: 280, width: 420, height: 56 },
         windowBounds: { x: 30, y: 50, width: 520, height: 220 },
@@ -1581,13 +1704,9 @@ describe('App', () => {
           detail: desktopWindow.__nekoDesktopCompactLayout,
         }));
       });
-      expect(fan.style.left).toBe('80px');
-      expect(fan.style.top).toBe('80px');
       act(() => {
         window.dispatchEvent(new Event('resize'));
       });
-      expect(fan.style.left).toBe('80px');
-      expect(fan.style.top).toBe('80px');
 
       desktopWindow.__nekoDesktopCompactLayout = {
         surface: { left: 42, top: 330, width: 420, height: 56 },
@@ -1599,76 +1718,9 @@ describe('App', () => {
         }));
       });
       await waitFor(() => {
-        expect(fan.style.left).toBe('200px');
-        expect(fan.style.top).toBe('240px');
-      });
-    } finally {
-      desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;
-    }
-  });
-
-  it('realigns the compact tool fan to the current toggle before auto-closing on an action', async () => {
-    const desktopWindow = window as typeof window & {
-      __nekoDesktopCompactLayout?: {
-        surface?: { left: number; top: number; width: number; height: number };
-        windowBounds?: { x: number; y: number; width: number; height: number };
-      } | null;
-    };
-    const originalDesktopLayout = desktopWindow.__nekoDesktopCompactLayout;
-    try {
-      desktopWindow.__nekoDesktopCompactLayout = {
-        surface: { left: 24, top: 320, width: 420, height: 56 },
-        windowBounds: { x: 10, y: 10, width: 460, height: 90 },
-      };
-      render(<App chatSurfaceMode="compact" compactChatState="input" />);
-      const actionButton = screen.getByRole('button', { name: '更多工具' });
-      Object.defineProperty(actionButton, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          left: 80,
-          top: 100,
-          right: 120,
-          bottom: 140,
-          width: 40,
-          height: 40,
-        }),
-      });
-
-      fireEvent.click(actionButton);
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      await waitFor(() => {
-        expect(fan.style.left).toBe('100px');
-        expect(fan.style.top).toBe('120px');
-      });
-
-      desktopWindow.__nekoDesktopCompactLayout = {
-        surface: { left: 4, top: 280, width: 420, height: 56 },
-        windowBounds: { x: 30, y: 50, width: 520, height: 220 },
-      };
-      Object.defineProperty(actionButton, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          left: 180,
-          top: 220,
-          right: 220,
-          bottom: 260,
-          width: 40,
-          height: 40,
-        }),
-      });
-      act(() => {
-        window.dispatchEvent(new CustomEvent('neko:desktop-compact-layout-change', {
-          detail: desktopWindow.__nekoDesktopCompactLayout,
-        }));
-      });
-      expect(fan.style.left).toBe('80px');
-      expect(fan.style.top).toBe('80px');
-
-      fireEvent.click(fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement);
-      await waitFor(() => {
-        expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-        expect(fan.style.left).toBe('200px');
-        expect(fan.style.top).toBe('240px');
+        expect(fan.parentElement).toBe(shell);
+        expect(fan.style.left).toBe('');
+        expect(fan.style.top).toBe('');
       });
     } finally {
       desktopWindow.__nekoDesktopCompactLayout = originalDesktopLayout;

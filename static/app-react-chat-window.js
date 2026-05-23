@@ -186,6 +186,7 @@
     var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
+    var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
@@ -202,6 +203,7 @@
     var compactInteractionGeometrySnapshot = '';
     var compactSurfaceAnchorLocked = false;
     var compactSurfacePendingModelOpen = false;
+    var compactSurfaceResizeSession = null;
 
     function normalizeCompactDesktopRect(raw) {
         if (!raw) return null;
@@ -243,6 +245,21 @@
         };
     }
 
+    function normalizeCompactDesktopWindowBounds(raw) {
+        var area = normalizeCompactDesktopWorkArea(raw);
+        if (!area) return null;
+        return {
+            x: area.left,
+            y: area.top,
+            width: area.width,
+            height: area.height,
+            left: area.left,
+            top: area.top,
+            right: area.right,
+            bottom: area.bottom
+        };
+    }
+
     function getElectronCompactLayoutOverride() {
         if (!isElectronChatWindow()) return null;
         var layout = window.__nekoDesktopCompactLayout;
@@ -251,6 +268,7 @@
         if (!surface) return null;
         var ball = normalizeCompactDesktopRect(layout.ball);
         var workArea = normalizeCompactDesktopWorkArea(layout.workArea);
+        var windowBounds = normalizeCompactDesktopWindowBounds(layout.windowBounds);
         var compactChoicePlacement = layout.compactChoicePlacement === 'above' || layout.compactChoicePlacement === 'below'
             ? layout.compactChoicePlacement
             : null;
@@ -258,6 +276,7 @@
             surface: surface,
             ball: ball,
             workArea: workArea,
+            windowBounds: windowBounds,
             compactChoicePlacement: compactChoicePlacement
         };
     }
@@ -377,12 +396,25 @@
         return false;
     }
 
+    function getCompactSurfaceResizeMaxWidth() {
+        return Math.max(
+            COMPACT_SURFACE_MAX_WIDTH,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2))
+        );
+    }
+
     function getCompactSurfaceMetrics() {
         var shell = getShell();
         var rect = getCompactSurfaceBaseRect() || (shell ? normalizeCompactDomRect(shell.getBoundingClientRect()) : null);
-        var width = isMobileWidth()
+        var defaultWidth = isMobileWidth()
             ? Math.max(280, window.innerWidth - 16)
             : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
+        var measuredWidth = rect && rect.width > 0 ? rect.width : 0;
+        var storedWidth = loadCompactSurfaceStoredWidth();
+        var width = Math.round(Math.min(
+            Math.max(defaultWidth, measuredWidth, storedWidth || 0),
+            getCompactSurfaceResizeMaxWidth()
+        ));
         var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
         return {
             width: width,
@@ -393,6 +425,21 @@
     function clampCompactSurfacePosition(left, top, metrics) {
         var width = metrics.width || COMPACT_SURFACE_MAX_WIDTH;
         var height = metrics.height || COMPACT_SURFACE_DEFAULT_HEIGHT;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        if (layoutOverride && layoutOverride.windowBounds && layoutOverride.workArea) {
+            var windowBounds = layoutOverride.windowBounds;
+            var workArea = layoutOverride.workArea;
+            var screenLeft = windowBounds.x + left;
+            var screenTop = windowBounds.y + top;
+            var screenMinLeft = workArea.left + COMPACT_SURFACE_VIEWPORT_PAD_X;
+            var screenMaxLeft = Math.max(screenMinLeft, workArea.right - width - COMPACT_SURFACE_VIEWPORT_PAD_X);
+            var screenMinTop = workArea.top + COMPACT_SURFACE_VIEWPORT_PAD_TOP;
+            var screenMaxTop = Math.max(screenMinTop, workArea.bottom - height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM);
+            return {
+                left: Math.max(screenMinLeft, Math.min(screenLeft, screenMaxLeft)) - windowBounds.x,
+                top: Math.max(screenMinTop, Math.min(screenTop, screenMaxTop)) - windowBounds.y
+            };
+        }
         var minLeft = isMobileWidth() ? 8 : COMPACT_SURFACE_VIEWPORT_PAD_X;
         var maxLeft = Math.max(minLeft, window.innerWidth - width - minLeft);
         var maxTop = Math.max(
@@ -419,13 +466,228 @@
         }
     }
 
-    function saveCompactSurfacePosition(left, top) {
+    function loadCompactSurfaceStoredWidth() {
         try {
-            window.localStorage.setItem(COMPACT_SURFACE_POSITION_STORAGE_KEY, JSON.stringify({
+            var raw = window.localStorage.getItem(COMPACT_SURFACE_POSITION_STORAGE_KEY);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            var width = Number(parsed && parsed.width);
+            if (!Number.isFinite(width) || width <= 0) return null;
+            var maxWidth = getCompactSurfaceResizeMaxWidth();
+            return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveCompactSurfacePosition(left, top, width) {
+        try {
+            var payload = {
                 left: Math.round(left),
                 top: Math.round(top)
-            }));
+            };
+            if (Number.isFinite(Number(width)) && Number(width) > 0) {
+                payload.width = Math.round(Number(width));
+            }
+            window.localStorage.setItem(COMPACT_SURFACE_POSITION_STORAGE_KEY, JSON.stringify(payload));
         } catch (_) {}
+    }
+
+    function saveCompactSurfaceWidth(width) {
+        try {
+            var raw = window.localStorage.getItem(COMPACT_SURFACE_POSITION_STORAGE_KEY);
+            var payload = raw ? JSON.parse(raw) : {};
+            if (!payload || typeof payload !== 'object') payload = {};
+            payload.width = Math.round(Number(width));
+            window.localStorage.setItem(COMPACT_SURFACE_POSITION_STORAGE_KEY, JSON.stringify(payload));
+        } catch (_) {}
+    }
+
+    function getCompactSurfaceDesktopWindowBounds() {
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var windowBounds = layoutOverride && layoutOverride.windowBounds;
+        if (!windowBounds) return null;
+        var x = Number(windowBounds.x);
+        var y = Number(windowBounds.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        return windowBounds;
+    }
+
+    function getCompactSurfaceResizeScreenRect(rect) {
+        if (!rect) return null;
+        if (compactSurfaceResizeSession) {
+            var screenLeft = compactSurfaceResizeSession.side === 'left'
+                ? compactSurfaceResizeSession.anchorRightScreen - rect.width
+                : compactSurfaceResizeSession.anchorLeftScreen;
+            return {
+                left: Math.round(screenLeft),
+                top: Math.round(compactSurfaceResizeSession.anchorTopScreen),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+            };
+        }
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        if (!windowBounds) return null;
+        return {
+            left: Math.round(Number(windowBounds.x) + rect.left),
+            top: Math.round(Number(windowBounds.y) + rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        };
+    }
+
+    function dispatchCompactSurfaceLayoutChange(rect) {
+        var detail = rect || null;
+        if (detail && isElectronChatWindow()) {
+            detail = Object.assign({}, detail, {
+                screenRect: getCompactSurfaceResizeScreenRect(detail),
+                resizeActive: !!compactSurfaceResizeSession
+            });
+        }
+        window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+            detail: detail
+        }));
+    }
+
+    function applyCompactSurfaceRect(left, top, width, height, options) {
+        var shell = getShell();
+        if (!shell) return null;
+
+        var safeWidth = Number(width);
+        var safeHeight = Number(height);
+        if (!Number.isFinite(safeWidth) || safeWidth <= 0) {
+            safeWidth = COMPACT_SURFACE_MAX_WIDTH;
+        }
+        if (!Number.isFinite(safeHeight) || safeHeight <= 0) {
+            safeHeight = COMPACT_SURFACE_DEFAULT_HEIGHT;
+        }
+
+        var clamped = clampCompactSurfacePosition(Number(left) || 0, Number(top) || 0, {
+            width: safeWidth,
+            height: safeHeight
+        });
+        var rect = {
+            left: Math.round(clamped.left),
+            top: Math.round(clamped.top),
+            width: Math.round(safeWidth),
+            height: Math.round(safeHeight)
+        };
+
+        compactSurfaceAnchorSnapshot = [
+            rect.left,
+            rect.top,
+            rect.width,
+            rect.height
+        ].join(':');
+        compactSurfaceAnchorLocked = true;
+        shell.style.setProperty('--compact-surface-left', rect.left + 'px');
+        shell.style.setProperty('--compact-surface-top', rect.top + 'px');
+        shell.style.setProperty('--compact-surface-width', rect.width + 'px');
+        shell.style.setProperty('--compact-surface-height', rect.height + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', rect.left + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', rect.top + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', rect.width + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', rect.height + 'px');
+        shell.style.transform = 'none';
+        if (options && options.persist && !isElectronChatWindow()) {
+            saveCompactSurfacePosition(rect.left, rect.top, rect.width);
+        }
+        dispatchCompactSurfaceLayoutChange(rect);
+        syncCompactInteractionGeometry();
+        return rect;
+    }
+
+    function getCurrentCompactSurfaceRect() {
+        var shell = getShell();
+        if (!shell) return null;
+        var domRect = normalizeCompactDomRect(shell.getBoundingClientRect());
+        if (!domRect) return null;
+        var css = window.getComputedStyle ? window.getComputedStyle(document.documentElement) : null;
+        var cssLeft = css ? parseFloat(css.getPropertyValue('--compact-surface-left')) : NaN;
+        var cssTop = css ? parseFloat(css.getPropertyValue('--compact-surface-top')) : NaN;
+        var cssWidth = css ? parseFloat(css.getPropertyValue('--compact-surface-width')) : NaN;
+        var cssHeight = css ? parseFloat(css.getPropertyValue('--compact-surface-height')) : NaN;
+        return {
+            left: Number.isFinite(cssLeft) ? cssLeft : domRect.left,
+            top: Number.isFinite(cssTop) ? cssTop : domRect.top,
+            width: Number.isFinite(cssWidth) && cssWidth > 0 ? cssWidth : domRect.width,
+            height: Number.isFinite(cssHeight) && cssHeight > 0 ? cssHeight : domRect.height
+        };
+    }
+
+    function getCompactSurfaceDesktopWindowX() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        var x = Number(windowBounds && windowBounds.x);
+        return Number.isFinite(x) ? x : 0;
+    }
+
+    function getCompactSurfaceDesktopWindowY() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        var y = Number(windowBounds && windowBounds.y);
+        return Number.isFinite(y) ? y : 0;
+    }
+
+    function clampCompactSurfaceResizeWidthForSide(side, desiredWidth, currentRect) {
+        var width = Number(desiredWidth);
+        if (!Number.isFinite(width) || width <= 0) {
+            width = currentRect && currentRect.width ? currentRect.width : COMPACT_SURFACE_MAX_WIDTH;
+        }
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var sideMax;
+        if (layoutOverride && layoutOverride.windowBounds && layoutOverride.workArea) {
+            var windowBounds = layoutOverride.windowBounds;
+            var workArea = layoutOverride.workArea;
+            var anchorLeftScreen = compactSurfaceResizeSession
+                ? compactSurfaceResizeSession.anchorLeftScreen
+                : currentRect.left + windowBounds.x;
+            var anchorRightScreen = compactSurfaceResizeSession
+                ? compactSurfaceResizeSession.anchorRightScreen
+                : currentRect.left + currentRect.width + windowBounds.x;
+            sideMax = side === 'left'
+                ? anchorRightScreen - (workArea.left + COMPACT_SURFACE_VIEWPORT_PAD_X)
+                : (workArea.right - COMPACT_SURFACE_VIEWPORT_PAD_X) - anchorLeftScreen;
+        } else {
+            var minLeft = isMobileWidth() ? 8 : COMPACT_SURFACE_VIEWPORT_PAD_X;
+            var maxRight = window.innerWidth - minLeft;
+            sideMax = side === 'left'
+                ? (currentRect.left + currentRect.width) - minLeft
+                : maxRight - currentRect.left;
+        }
+        var maxWidth = Math.max(
+            COMPACT_SURFACE_MAX_WIDTH,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, sideMax)
+        );
+        return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+    }
+
+    function applyCompactSurfaceResizeRequest(detail) {
+        if (!isHomeCompactSurfaceRoute()) return;
+        var side = detail && detail.side === 'left' ? 'left' : 'right';
+        var phase = detail && detail.phase;
+        var currentRect = getCurrentCompactSurfaceRect();
+        if (!currentRect) return;
+        var windowX = getCompactSurfaceDesktopWindowX();
+        if (phase === 'start' || !compactSurfaceResizeSession || compactSurfaceResizeSession.side !== side) {
+            compactSurfaceResizeSession = {
+                side: side,
+                anchorLeftScreen: currentRect.left + windowX,
+                anchorRightScreen: currentRect.left + currentRect.width + windowX,
+                anchorTopScreen: currentRect.top + getCompactSurfaceDesktopWindowY()
+            };
+        }
+        var width = clampCompactSurfaceResizeWidthForSide(side, detail && detail.width, currentRect);
+        var left = side === 'left'
+            ? compactSurfaceResizeSession.anchorRightScreen - windowX - width
+            : compactSurfaceResizeSession.anchorLeftScreen - windowX;
+        applyCompactSurfaceRect(left, currentRect.top, width, currentRect.height, {
+            persist: phase === 'end'
+        });
+        if (phase === 'end' && isElectronChatWindow()) {
+            saveCompactSurfaceWidth(width);
+        }
+        if (phase === 'end') {
+            compactSurfaceResizeSession = null;
+        }
     }
 
     function getCompactSurfaceTarget(layoutOverride) {
@@ -535,6 +797,11 @@
 
     function getCompactSurfaceBaseRect() {
         var root = getRoot();
+        var compactSurfaceShell = root ? root.querySelector('.compact-chat-surface-shell') : null;
+        if (compactSurfaceShell && shouldIncludeCompactGeometryElement(compactSurfaceShell)) {
+            var shellRect = normalizeCompactDomRect(compactSurfaceShell.getBoundingClientRect());
+            if (shellRect) return shellRect;
+        }
         var candidates = [
             '[data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
             '[data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]'
@@ -590,7 +857,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
-        if (element.getAttribute('aria-hidden') === 'true' && item !== 'dragHandle') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'dragHandle' && item !== 'resizeHandle') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
         if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         return true;
@@ -713,7 +980,23 @@
     function collectCompactSurfaceGeometryItems() {
         var root = getRoot();
         if (!root) return [];
+        var compactSurfaceShell = root.querySelector('.compact-chat-surface-shell');
+        var shellRect = compactSurfaceShell
+            ? normalizeCompactDomRect(compactSurfaceShell.getBoundingClientRect())
+            : null;
         var elements = Array.prototype.slice.call(document.querySelectorAll('[data-compact-geometry-owner="surface"]'));
+        var initialItems = [];
+        if (shellRect) {
+            initialItems.push({
+                id: 'surface:shell',
+                owner: 'surface',
+                kind: 'surfaceShell',
+                visualRect: shellRect,
+                hitRect: null,
+                nativeRect: shellRect,
+                interactive: false
+            });
+        }
         return elements.reduce(function (items, element) {
             if (
                 !root.contains(element)
@@ -740,7 +1023,7 @@
                 interactive: true
             });
             return items;
-        }, []);
+        }, initialItems);
     }
 
     function getCompactInteractionGeometrySnapshot() {
@@ -749,7 +1032,7 @@
         var surfaceItems = isCompactHomeMinimizeBallEnabled() ? collectCompactSurfaceGeometryItems() : [];
         var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
         var baseSurfaceRects = surfaceItems
-            .filter(function (item) { return item && (item.kind === 'capsule' || item.kind === 'input'); })
+            .filter(function (item) { return item && (item.kind === 'surfaceShell' || item.kind === 'capsule' || item.kind === 'input'); })
             .map(function (item) { return item.nativeRect; });
         var ballRect = isCompactHomeMinimizeBallEnabled() && !isElectronCompactExternalBallEnabled()
             ? normalizeCompactDomRect(getCompactMinimizeBallTarget())
@@ -801,6 +1084,7 @@
         document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         compactSurfaceAnchorSnapshot = '';
         compactSurfaceAnchorLocked = false;
+        dispatchCompactSurfaceLayoutChange(null);
         syncCompactInteractionGeometry();
     }
 
@@ -812,6 +1096,9 @@
             return;
         }
         if (compactSurfaceAnchorLocked) {
+            return;
+        }
+        if (compactSurfaceResizeSession && !isElectronChatWindow()) {
             return;
         }
 
@@ -847,6 +1134,12 @@
             document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         }
+        dispatchCompactSurfaceLayoutChange({
+            left: Math.round(target.left),
+            top: Math.round(target.top),
+            width: Math.round(target.width),
+            height: Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+        });
         syncCompactInteractionGeometry();
     }
 
@@ -1554,31 +1847,7 @@
         var metrics = getCompactSurfaceMetrics();
         var width = metrics.width || rect.width || COMPACT_SURFACE_MAX_WIDTH;
         var height = metrics.height || COMPACT_SURFACE_DEFAULT_HEIGHT;
-        var clamped = clampCompactSurfacePosition(left, top, {
-            width: width,
-            height: height
-        });
-
-        compactSurfaceAnchorSnapshot = [
-            Math.round(clamped.left),
-            Math.round(clamped.top),
-            Math.round(width),
-            Math.round(height)
-        ].join(':');
-        compactSurfaceAnchorLocked = true;
-        shell.style.setProperty('--compact-surface-left', Math.round(clamped.left) + 'px');
-        shell.style.setProperty('--compact-surface-top', Math.round(clamped.top) + 'px');
-        shell.style.setProperty('--compact-surface-width', Math.round(width) + 'px');
-        shell.style.setProperty('--compact-surface-height', Math.round(height) + 'px');
-        document.documentElement.style.setProperty('--compact-surface-left', Math.round(clamped.left) + 'px');
-        document.documentElement.style.setProperty('--compact-surface-top', Math.round(clamped.top) + 'px');
-        document.documentElement.style.setProperty('--compact-surface-width', Math.round(width) + 'px');
-        document.documentElement.style.setProperty('--compact-surface-height', Math.round(height) + 'px');
-        shell.style.transform = 'none';
-        if (!isElectronChatWindow()) {
-            saveCompactSurfacePosition(clamped.left, clamped.top);
-        }
-        syncCompactInteractionGeometry();
+        applyCompactSurfaceRect(left, top, width, height, { persist: true });
     }
 
     function positionWindowAtLeftMiddle() {
@@ -3945,6 +4214,12 @@
         });
         window.addEventListener('neko:desktop-avatar-bounds-change', function () {
             scheduleCompactMinimizeBallTracking();
+        });
+        window.addEventListener('neko:compact-surface-resize-request', function (event) {
+            applyCompactSurfaceResizeRequest(event.detail || {});
+        });
+        window.addEventListener('neko:compact-surface-resize-width-change', function () {
+            syncCompactInteractionGeometry();
         });
     }
 

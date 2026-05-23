@@ -79,6 +79,20 @@ const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
+const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
+const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
+const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
+
+type CompactSurfaceResizeSide = 'left' | 'right';
+
+type CompactSurfaceResizeState = {
+  pointerId: number;
+  side: CompactSurfaceResizeSide;
+  startPointerX: number;
+  startWidth: number;
+  lastWidth: number;
+  captureTarget: Element | null;
+};
 
 type CompactToolWheelPointerState = {
   id: number;
@@ -98,6 +112,12 @@ type CompactMessagePreview = {
 
 type DesktopCompactChoicePlacementLayout = {
   compactChoicePlacement?: 'above' | 'below' | null;
+  surface?: {
+    left?: number;
+    top?: number;
+    width?: number;
+    height?: number;
+  } | null;
   windowBounds?: {
     x?: number;
     y?: number;
@@ -111,6 +131,23 @@ type DesktopCompactChoicePlacementLayout = {
     height?: number;
   } | null;
 };
+
+function clampCompactSurfaceResizeWidth(width: number, maxAvailableWidth: number): number {
+  const maxWidth = Math.max(
+    0,
+    Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, maxAvailableWidth - COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER),
+  );
+  const minWidth = Math.min(COMPACT_SURFACE_RESIZE_MIN_WIDTH, maxWidth || COMPACT_SURFACE_RESIZE_MIN_WIDTH);
+  return Math.round(Math.max(minWidth, Math.min(width, Math.max(minWidth, maxWidth))));
+}
+
+function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement>): number {
+  const screenX = Number(event.screenX);
+  if (Number.isFinite(screenX)) {
+    return screenX;
+  }
+  return event.clientX;
+}
 
 type SpeechPlaybackState = {
   active: boolean;
@@ -844,12 +881,6 @@ export default function App({
   const compactInputToolWheelPointerRef = useRef<CompactToolWheelPointerState | null>(null);
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
-  const compactInputToolFanSurfaceSnapshotRef = useRef('');
-  const compactInputToolFanScreenAnchorRef = useRef<{
-    screenX: number;
-    screenY: number;
-    surfaceSnapshot: string;
-  } | null>(null);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
@@ -897,11 +928,12 @@ export default function App({
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
-  const [compactInputToolFanStyle, setCompactInputToolFanStyle] = useState<CSSProperties | null>(null);
+  const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
+  const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1039,6 +1071,36 @@ export default function App({
   const effectiveCompactChatState = isCompactSurface
     ? getEffectiveCompactChatState(compactChatState, compactSurfaceChoicesVisible)
     : compactChatState;
+  const getCompactSurfaceResizeMaxAvailableWidth = useCallback(() => {
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+    };
+    const workAreaWidth = Number(desktopWindow.__nekoDesktopCompactLayout?.workArea?.width);
+    if (Number.isFinite(workAreaWidth) && workAreaWidth > 0) {
+      return workAreaWidth;
+    }
+    return window.innerWidth || COMPACT_SURFACE_RESIZE_MIN_WIDTH + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER;
+  }, []);
+  const getClampedCompactSurfaceResizeWidth = useCallback((width: number) => (
+    clampCompactSurfaceResizeWidth(width, getCompactSurfaceResizeMaxAvailableWidth())
+  ), [getCompactSurfaceResizeMaxAvailableWidth]);
+  const getCurrentCompactSurfaceWidth = useCallback(() => {
+    const rectWidth = compactInputShellRef.current?.getBoundingClientRect().width;
+    if (Number.isFinite(rectWidth) && rectWidth && rectWidth > 0) {
+      return getClampedCompactSurfaceResizeWidth(rectWidth);
+    }
+    const cssWidth = Number.parseFloat(
+      window.getComputedStyle(document.documentElement).getPropertyValue('--compact-surface-width'),
+    );
+    if (Number.isFinite(cssWidth) && cssWidth > 0) {
+      return getClampedCompactSurfaceResizeWidth(cssWidth);
+    }
+    return COMPACT_SURFACE_RESIZE_MIN_WIDTH;
+  }, [getClampedCompactSurfaceResizeWidth]);
+  const compactSurfaceEffectiveWidth = isCompactSurface
+    && compactSurfaceResizeWidth !== null
+    ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
+    : null;
   const compactChoiceLayerOpen = !isCompactSurface
     ? compactSurfaceChoicesVisible
     : effectiveCompactChatState === 'options';
@@ -1636,6 +1698,147 @@ export default function App({
     onCompactChatStateChange?.(nextState);
   }, [isCompactSurface, onCompactChatStateChange]);
 
+  const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
+    const shell = compactInputShellRef.current;
+    if (width === null) {
+      document.documentElement.style.removeProperty('--compact-surface-resize-width');
+      shell?.style.removeProperty('--compact-surface-resize-width');
+      return;
+    }
+    const value = `${getClampedCompactSurfaceResizeWidth(width)}px`;
+    document.documentElement.style.setProperty('--compact-surface-resize-width', value);
+    shell?.style.setProperty('--compact-surface-resize-width', value);
+  }, [getClampedCompactSurfaceResizeWidth]);
+
+  const dispatchCompactSurfaceResizeRequest = useCallback((
+    side: CompactSurfaceResizeSide,
+    width: number,
+    phase: 'start' | 'move' | 'end',
+  ) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-request', {
+      detail: { side, width, phase },
+    }));
+  }, []);
+
+  const finishCompactSurfaceResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactSurfaceResizeStateRef.current;
+    if (!resizeState) return;
+    if (event && resizeState.pointerId !== event.pointerId) return;
+    dispatchCompactSurfaceResizeRequest(resizeState.side, resizeState.lastWidth, 'end');
+    applyCompactSurfaceResizeWidthVar(null);
+    setCompactSurfaceResizeWidth(null);
+    const captureTarget = resizeState.captureTarget;
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(resizeState.pointerId)) {
+          captureTarget.releasePointerCapture(resizeState.pointerId);
+        }
+      } catch (_) {}
+    }
+    compactSurfaceResizeStateRef.current = null;
+  }, [applyCompactSurfaceResizeWidthVar, dispatchCompactSurfaceResizeRequest]);
+
+  const handleCompactSurfaceResizePointerDown = useCallback((
+    side: CompactSurfaceResizeSide,
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (!isCompactSurface) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startWidth = compactSurfaceEffectiveWidth ?? getCurrentCompactSurfaceWidth();
+    compactSurfaceResizeStateRef.current = {
+      pointerId: event.pointerId,
+      side,
+      startPointerX: getCompactSurfaceResizePointerX(event),
+      startWidth,
+      lastWidth: startWidth,
+      captureTarget: event.currentTarget,
+    };
+    applyCompactSurfaceResizeWidthVar(startWidth);
+    compactInputToolFanPositionSyncRef.current?.();
+    setCompactSurfaceResizeWidth(startWidth);
+    dispatchCompactSurfaceResizeRequest(side, startWidth, 'start');
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+  }, [applyCompactSurfaceResizeWidthVar, compactSurfaceEffectiveWidth, dispatchCompactSurfaceResizeRequest, getCurrentCompactSurfaceWidth, isCompactSurface]);
+
+  const handleCompactSurfaceResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactSurfaceResizeStateRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const deltaX = getCompactSurfaceResizePointerX(event) - resizeState.startPointerX;
+    const signedDelta = resizeState.side === 'right' ? deltaX : -deltaX;
+    const nextWidth = getClampedCompactSurfaceResizeWidth(resizeState.startWidth + signedDelta);
+    resizeState.lastWidth = nextWidth;
+    applyCompactSurfaceResizeWidthVar(nextWidth);
+    compactInputToolFanPositionSyncRef.current?.();
+    setCompactSurfaceResizeWidth(nextWidth);
+    dispatchCompactSurfaceResizeRequest(resizeState.side, nextWidth, 'move');
+  }, [applyCompactSurfaceResizeWidthVar, dispatchCompactSurfaceResizeRequest, getClampedCompactSurfaceResizeWidth]);
+
+  const handleCompactSurfaceResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    finishCompactSurfaceResize(event);
+  }, [finishCompactSurfaceResize]);
+
+  const handleCompactSurfaceResizePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    finishCompactSurfaceResize(event);
+  }, [finishCompactSurfaceResize]);
+
+  useEffect(() => {
+    if (!isCompactSurface || compactSurfaceEffectiveWidth === null) {
+      applyCompactSurfaceResizeWidthVar(null);
+      return;
+    }
+    applyCompactSurfaceResizeWidthVar(compactSurfaceEffectiveWidth);
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-width-change', {
+      detail: { width: compactSurfaceEffectiveWidth },
+    }));
+  }, [applyCompactSurfaceResizeWidthVar, compactSurfaceEffectiveWidth, isCompactSurface]);
+
+  useEffect(() => () => {
+    applyCompactSurfaceResizeWidthVar(null);
+  }, [applyCompactSurfaceResizeWidthVar]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return undefined;
+    const clampExistingWidth = () => {
+      setCompactSurfaceResizeWidth(current => (
+        current === null ? current : getClampedCompactSurfaceResizeWidth(current)
+      ));
+    };
+    window.addEventListener('resize', clampExistingWidth);
+    window.addEventListener('neko:desktop-compact-layout-change', clampExistingWidth);
+    return () => {
+      window.removeEventListener('resize', clampExistingWidth);
+      window.removeEventListener('neko:desktop-compact-layout-change', clampExistingWidth);
+    };
+  }, [getClampedCompactSurfaceResizeWidth, isCompactSurface]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return undefined;
+    const syncAppliedResizeWidth = (event: Event) => {
+      const resizeState = compactSurfaceResizeStateRef.current;
+      if (!resizeState) return;
+      const width = Number((event as CustomEvent).detail?.width);
+      if (!Number.isFinite(width) || width <= 0) return;
+      const appliedWidth = getClampedCompactSurfaceResizeWidth(width);
+      resizeState.lastWidth = appliedWidth;
+      applyCompactSurfaceResizeWidthVar(appliedWidth);
+      setCompactSurfaceResizeWidth(appliedWidth);
+    };
+    window.addEventListener('neko:compact-surface-layout-change', syncAppliedResizeWidth);
+    return () => {
+      window.removeEventListener('neko:compact-surface-layout-change', syncAppliedResizeWidth);
+    };
+  }, [applyCompactSurfaceResizeWidthVar, getClampedCompactSurfaceResizeWidth, isCompactSurface]);
+
   const closeCompactInputToolFan = useCallback((options?: {
     afterClose?: () => void;
     deferDesktopAction?: boolean;
@@ -1692,97 +1895,7 @@ export default function App({
     compactInputToolWheelPointerRef.current = null;
   }, []);
 
-  const readDesktopCompactLayoutSnapshot = useCallback((): {
-    surfaceSnapshot: string;
-    windowBounds: { x: number; y: number; width: number; height: number } | null;
-  } => {
-    const desktopWindow = window as Window & {
-      __nekoDesktopCompactLayout?: {
-        surface?: {
-          left?: number;
-          top?: number;
-          width?: number;
-          height?: number;
-        } | null;
-        windowBounds?: {
-          x?: number;
-          y?: number;
-          width?: number;
-          height?: number;
-        } | null;
-      } | null;
-    };
-    const surface = desktopWindow.__nekoDesktopCompactLayout?.surface;
-    const rawWindowBounds = desktopWindow.__nekoDesktopCompactLayout?.windowBounds;
-    const windowBounds = rawWindowBounds
-      && Number.isFinite(Number(rawWindowBounds.x))
-      && Number.isFinite(Number(rawWindowBounds.y))
-      ? {
-        x: Math.round(Number(rawWindowBounds.x) || 0),
-        y: Math.round(Number(rawWindowBounds.y) || 0),
-        width: Math.round(Number(rawWindowBounds.width) || 0),
-        height: Math.round(Number(rawWindowBounds.height) || 0),
-      }
-      : null;
-    if (!surface) {
-      return { surfaceSnapshot: '', windowBounds };
-    }
-    const surfaceLeft = Math.round(Number(surface.left) || 0) + (windowBounds?.x ?? 0);
-    const surfaceTop = Math.round(Number(surface.top) || 0) + (windowBounds?.y ?? 0);
-    return {
-      surfaceSnapshot: [
-        surfaceLeft,
-        surfaceTop,
-        Math.round(Number(surface.width) || 0),
-        Math.round(Number(surface.height) || 0),
-      ].join(':'),
-      windowBounds,
-    };
-  }, []);
-
-  const updateCompactInputToolFanPosition = useCallback((options?: { preserveDesktopScreenAnchor?: boolean }) => {
-    const toggleNode = compactInputToolToggleRef.current;
-    if (!toggleNode) return;
-
-    const desktopLayout = readDesktopCompactLayoutSnapshot();
-    const currentAnchor = compactInputToolFanScreenAnchorRef.current;
-    if (
-      options?.preserveDesktopScreenAnchor
-      && desktopLayout.windowBounds
-      && currentAnchor
-      && currentAnchor.surfaceSnapshot === desktopLayout.surfaceSnapshot
-    ) {
-      const left = currentAnchor.screenX - desktopLayout.windowBounds.x;
-      const top = currentAnchor.screenY - desktopLayout.windowBounds.y;
-      setCompactInputToolFanStyle(current => {
-        if (current?.left === left && current?.top === top) {
-          return current;
-        }
-        return { left, top };
-      });
-      return;
-    }
-
-    const toggleRect = toggleNode.getBoundingClientRect();
-    const toggleCenterX = toggleRect.left + toggleRect.width / 2;
-    const toggleCenterY = toggleRect.top + toggleRect.height / 2;
-    const screenX = toggleCenterX + (desktopLayout.windowBounds?.x ?? 0);
-    const screenY = toggleCenterY + (desktopLayout.windowBounds?.y ?? 0);
-    compactInputToolFanScreenAnchorRef.current = {
-      screenX,
-      screenY,
-      surfaceSnapshot: desktopLayout.surfaceSnapshot,
-    };
-    const left = desktopLayout.windowBounds ? screenX - desktopLayout.windowBounds.x : toggleCenterX;
-    const top = desktopLayout.windowBounds ? screenY - desktopLayout.windowBounds.y : toggleCenterY;
-
-    setCompactInputToolFanStyle(current => {
-      if (current?.left === left && current?.top === top) {
-        return current;
-      }
-      return { left, top };
-    });
-  }, [readDesktopCompactLayoutSnapshot]);
+  const updateCompactInputToolFanPosition = useCallback(() => {}, []);
 
   useEffect(() => {
     compactInputToolFanPositionSyncRef.current = () => updateCompactInputToolFanPosition();
@@ -1875,53 +1988,6 @@ export default function App({
       document.removeEventListener('keydown', handleKeyDown, true);
     };
   }, [effectiveCompactChatState, isCompactSurface, scheduleForcedCompactInputCollapse]);
-
-  useEffect(() => {
-    if (!compactInputToolFanOpen) {
-      compactInputToolFanScreenAnchorRef.current = null;
-      return;
-    }
-    compactInputToolFanSurfaceSnapshotRef.current = readDesktopCompactLayoutSnapshot().surfaceSnapshot;
-    updateCompactInputToolFanPosition();
-
-    const handleLayoutChange = () => {
-      if (readDesktopCompactLayoutSnapshot().windowBounds) {
-        updateCompactInputToolFanPosition({ preserveDesktopScreenAnchor: true });
-        return;
-      }
-      updateCompactInputToolFanPosition();
-    };
-    const handleDesktopCompactLayoutChange = () => {
-      const nextSurfaceSnapshot = readDesktopCompactLayoutSnapshot().surfaceSnapshot;
-      if (nextSurfaceSnapshot === compactInputToolFanSurfaceSnapshotRef.current) {
-        updateCompactInputToolFanPosition({ preserveDesktopScreenAnchor: true });
-        return;
-      }
-      compactInputToolFanSurfaceSnapshotRef.current = nextSurfaceSnapshot;
-      updateCompactInputToolFanPosition();
-    };
-    const visualViewport = window.visualViewport;
-    window.addEventListener('resize', handleLayoutChange);
-    window.addEventListener('scroll', handleLayoutChange, true);
-    window.addEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
-    visualViewport?.addEventListener('resize', handleLayoutChange);
-    visualViewport?.addEventListener('scroll', handleLayoutChange);
-
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined' && compactInputToolToggleRef.current) {
-      observer = new ResizeObserver(handleLayoutChange);
-      observer.observe(compactInputToolToggleRef.current);
-    }
-
-    return () => {
-      window.removeEventListener('resize', handleLayoutChange);
-      window.removeEventListener('scroll', handleLayoutChange, true);
-      window.removeEventListener('neko:desktop-compact-layout-change', handleDesktopCompactLayoutChange);
-      visualViewport?.removeEventListener('resize', handleLayoutChange);
-      visualViewport?.removeEventListener('scroll', handleLayoutChange);
-      observer?.disconnect();
-    };
-  }, [compactInputToolFanOpen, readDesktopCompactLayoutSnapshot, updateCompactInputToolFanPosition]);
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
@@ -2939,7 +3005,6 @@ export default function App({
       data-compact-geometry-owner="surface"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
-      style={compactInputToolFanStyle ?? undefined}
       onPointerDown={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         if (event.target === event.currentTarget) {
@@ -3218,10 +3283,6 @@ export default function App({
     </div>
   ) : null;
 
-  const compactInputToolFanPortalNode = compactInputToolFanNode && typeof document !== 'undefined'
-    ? createPortal(compactInputToolFanNode, document.body)
-    : compactInputToolFanNode;
-
   const choiceLayerNode = (
     <div
       className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
@@ -3362,6 +3423,11 @@ export default function App({
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
+  const compactSurfaceShellStyle = isCompactSurface && compactSurfaceEffectiveWidth !== null
+    ? ({
+      '--compact-surface-resize-width': `${compactSurfaceEffectiveWidth}px`,
+    } as CSSProperties)
+    : undefined;
   const chatBodyNode = isCompactSurface ? (
     <section
       className="chat-body chat-body-compact-surface"
@@ -3399,7 +3465,6 @@ export default function App({
     >
       {compactExportHistoryNode}
       {compactChoiceLayerNode}
-      {compactInputToolFanPortalNode}
       {floatingFistDrops.map(drop => (
         <span
           key={drop.id}
@@ -3496,9 +3561,9 @@ export default function App({
                   alt=""
                 />
               </div>
-            )}
-          </div>
-        </div>
+	                  )}
+                </div>
+              </div>
       ) : null}
       <section
         className={`chat-window ${surfaceModeClassName}`}
@@ -3562,6 +3627,7 @@ export default function App({
                 className="compact-chat-surface-shell"
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
+                style={compactSurfaceShellStyle}
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >
                 <div
@@ -3570,6 +3636,30 @@ export default function App({
                   data-compact-geometry-item="dragHandle"
                   data-compact-geometry-owner="surface"
                   aria-hidden="true"
+                />
+                <div
+                  className="compact-chat-resize-handle compact-chat-resize-handle-left"
+                  data-compact-resize-side="left"
+                  data-compact-geometry-item="resizeHandle"
+                  data-compact-geometry-owner="surface"
+                  aria-hidden="true"
+                  onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
+                  onPointerMove={handleCompactSurfaceResizePointerMove}
+                  onPointerUp={handleCompactSurfaceResizePointerUp}
+                  onPointerCancel={handleCompactSurfaceResizePointerCancel}
+                  onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
+                />
+                <div
+                  className="compact-chat-resize-handle compact-chat-resize-handle-right"
+                  data-compact-resize-side="right"
+                  data-compact-geometry-item="resizeHandle"
+                  data-compact-geometry-owner="surface"
+                  aria-hidden="true"
+                  onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
+                  onPointerMove={handleCompactSurfaceResizePointerMove}
+                  onPointerUp={handleCompactSurfaceResizePointerUp}
+                  onPointerCancel={handleCompactSurfaceResizePointerCancel}
+                  onLostPointerCapture={handleCompactSurfaceResizePointerCancel}
                 />
                 <div
                   className="compact-chat-surface-frame"
@@ -3644,9 +3734,10 @@ export default function App({
                         {compactPreviewDisplayText}
                       </span>
                     </button>
-                  )}
-                </div>
-              </div>
+	                  )}
+		                </div>
+		                {compactInputToolFanNode}
+		              </div>
             ) : (
               <div
                 className="composer-input-shell"

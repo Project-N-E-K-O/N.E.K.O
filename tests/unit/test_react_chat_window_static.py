@@ -62,6 +62,95 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     assert "vw" not in desktop_history_block
 
 
+def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    anchor_block = css_block(
+        styles,
+        ".compact-export-history-anchor {",
+        "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
+    )
+    desktop_history_block = styles.split(
+        "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
+        1,
+    )[1].split(".compact-export-history-panel", 1)[0]
+    bubble_block = css_block(styles, ".compact-export-history-bubble {", ".compact-export-history-message.is-disabled")
+    system_bubble_block = css_block(
+        styles,
+        ".compact-export-history-message.is-system .compact-export-history-bubble {",
+        ".compact-export-history-message.is-selected",
+    )
+    preview_bubble_block = css_block(
+        styles,
+        ".compact-export-preview-bubble {",
+        ".compact-export-preview-message.is-user",
+    )
+    preview_system_bubble_block = css_block(
+        styles,
+        ".compact-export-preview-message.is-system .compact-export-preview-bubble {",
+        ".compact-export-preview-meta",
+    )
+
+    assert "--compact-export-history-width-ratio:" in anchor_block
+    assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));" in anchor_block
+    assert "--compact-export-history-inline-size: min(" in anchor_block
+    assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
+    assert "width: var(--compact-export-history-inline-size);" in anchor_block
+    assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
+    assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
+    assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
+    assert "max-width: var(--compact-export-history-bubble-max-ratio);" in bubble_block
+    assert "max-width: var(--compact-export-history-system-bubble-max-ratio);" in system_bubble_block
+    assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
+    assert "max-width: var(--compact-export-preview-system-bubble-max-ratio);" in preview_system_bubble_block
+
+
+def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    metrics_block = script.split("function getCompactSurfaceMetrics()", 1)[1].split(
+        "function clampCompactSurfacePosition(left, top, metrics)",
+        1,
+    )[0]
+    include_block = script.split("function shouldIncludeCompactGeometryElement(element)", 1)[1].split(
+        "function getCompactGeometryElementRect(element)",
+        1,
+    )[0]
+    resize_shell_block = css_block(styles, ".compact-chat-surface-shell {", ".compact-chat-surface-frame")
+    frame_block = css_block(styles, ".compact-chat-surface-frame {", ".compact-chat-surface-frame[data-compact-chat-state")
+    handle_block = css_block(styles, ".compact-chat-resize-handle {", ".compact-chat-resize-handle-left")
+
+    assert "var measuredWidth = rect && rect.width > 0 ? rect.width : 0;" in metrics_block
+    assert "var storedWidth = loadCompactSurfaceStoredWidth();" in metrics_block
+    assert "getCompactSurfaceResizeMaxWidth()" in metrics_block
+    assert "item !== 'resizeHandle'" in include_block
+    assert "function applyCompactSurfaceResizeRequest(detail)" in script
+    assert "var compactSurfaceResizeSession = null;" in script
+    assert "function getCompactSurfaceDesktopWindowX()" in script
+    assert "anchorLeftScreen: currentRect.left + windowX" in script
+    assert "anchorRightScreen: currentRect.left + currentRect.width + windowX" in script
+    assert "? compactSurfaceResizeSession.anchorRightScreen - windowX - width" in script
+    assert ": compactSurfaceResizeSession.anchorLeftScreen - windowX;" in script
+    assert "persist: phase === 'end'" in script
+    assert "phase === 'end' && isElectronChatWindow()" in script
+    assert "compactSurfaceResizeSession = null;" in script
+    assert "neko:compact-surface-resize-request" in script
+    assert "neko:compact-surface-layout-change" in script
+    assert "neko:compact-surface-resize-width-change" in script
+
+    assert "--compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));" in resize_shell_block
+    assert "width: var(--compact-surface-active-width);" in resize_shell_block
+    assert "width: 100%;" in frame_block
+    assert "width: 12px;" in handle_block
+    assert "cursor: ew-resize;" in handle_block
+    assert "pointer-events: auto;" in handle_block
+    assert "touch-action: none;" in handle_block
+    assert ".compact-chat-resize-handle::before" not in styles
+    assert "left: -4px;" in styles
+    assert "right: -4px;" in styles
+
+
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
