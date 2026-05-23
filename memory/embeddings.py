@@ -650,15 +650,25 @@ def detect_avx2_details() -> tuple[bool, bool]:
     matching the VNNI-inconclusive policy.
     """
     if platform.machine().lower() in ("arm64", "aarch64"):
-        # ARM64 always has NEON; the int8 path is viable regardless of dotprod
-        # (dotprod only governs the *fast* path, same role VNNI plays on x86).
-        return True, True
+        # On ARM the only tier boundary we act on is dotprod — it plays VNNI's
+        # role (fast int8). There is no separate "acceptable 256-bit floor vs
+        # disable" split like x86's AVX2-vs-SSE: base NEON is 128-bit, the
+        # SSE-equivalent *disable* tier under this PR's own logic. So the int8
+        # floor on ARM == the dotprod gate. Returning that (not a blanket
+        # (True, True)) keeps prior behavior intact — no-dotprod SBCs
+        # (Cortex-A53/A57/A72, Pi-3 class) still disable under auto, exactly as
+        # before. The AVX2 broadening is x86-only. (Codex P2 on PR #1482.)
+        return _detect_int8_fast_path_arm()
     try:
         import cpuinfo  # type: ignore
         flags = cpuinfo.get_cpu_info().get("flags", []) or []
         if flags:
             return ("avx2" in flags), True
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # cpuinfo not installed / CPUID probe failed / empty flags. Don't fail
+        # hard — fall through to the /proc/cpuinfo parse (Linux) or to the
+        # inconclusive (False, False) return, where auto stays optimistic and
+        # still picks int8. Same degrade-don't-disable stance as VNNI detect.
         pass
     if platform.system() == "Linux":
         try:

@@ -242,6 +242,13 @@ def _read_bool_env(var_name: str, default: bool) -> bool:
             return True
         if val in ("0", "false", "no", "off"):
             return False
+        if val:
+            # 非空但不可识别（如 typo "ture"）：警告并回退，别静默吞掉让用户
+            # 摸不着头脑"为什么开关没生效"。与 _read_str_env 的 allowed 行为一致。
+            logger.warning(
+                "Ignoring %s=%r (not a boolean); using default %s",
+                key, raw, default,
+            )
     return default
 
 
