@@ -366,17 +366,30 @@ def _get_anonymous_device_id() -> str:
 #
 # 三者都是描述「这台机器/这个用户当前是谁」的副字段：
 #   - branch：首次启动时随机抽签后落盘，后续启动只读不改，保证同一设备稳定。
-#             当前 _TELEMETRY_BRANCHES 只有一个值，将来扩展元组即可触发 split；
-#             已经落盘的老用户继续读到旧分支，新用户随机进新池。
+#             扩展 _TELEMETRY_BRANCHES 元组即可触发 split，新用户随机进新池。注意：
+#             从池里移除某分支会让落盘旧值被严格校验判非法、按当前池重抽迁组（见
+#             privacy_default_off_v1 退役说明），这是退役实验的有意行为，不是
+#             append-only 扩展场景。
 #   - locale / timezone：每次上报时取当下值；同一设备换语言/换时区都视为同
 #             一个 device_id，server 端按 "latest seen" 覆写即可。
 # ---------------------------------------------------------------------------
 
 _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
-# A/B 池：
+# A/B 池（只决定「首启默认值」实验分组；首启后用户行为已落盘、不再响应覆写，其分组
+# 归因对默认值实验无意义，分析端按真·首启样本过滤即可）：
 #   - "main"：控制组，沿用历史默认（隐私模式按用户地区分流，仅中国地区默认关闭）
-#   - "privacy_default_off_v1"：实验组，隐私模式一律默认关闭
-_TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v1")
+#   - "privacy_default_off_v2"：实验组，与已退役的 v1 方向相反——
+#       v1 对「国外用户」试隐私默认关（国内本就默认关，对国内 no-op）；
+#       v2 对「国内用户」试隐私默认开（国外本就默认开，对国外 no-op）。
+#       即：国外用户恒隐私开，国内用户在 main / v2 间分流。抽签全地区随机，国外用户
+#       也会落 v2 但首启覆写是 no-op；分析国内 A/B 时按 locale 过滤即可。
+#
+# 已退役实验：
+#   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线、移出池。
+#     老 v1 落盘用户的旧值被 _read 严格校验判非法 → 下次启动按当前池随机重抽（落
+#     main 或 v2）。这些都是已过首启的用户，重抽只改 telemetry 标签、不动已落盘的
+#     vision 偏好，对「默认值」实验无影响，故不为其单独做确定性迁移。
+_TELEMETRY_BRANCHES: tuple = ("main", "privacy_default_off_v2")
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
 # 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和
@@ -411,8 +424,10 @@ def _get_telemetry_branch(config_dir: Path) -> str:
         # 让 OSError 透出，让 `/conversation-settings` 的 except 把 telemetryBranch
         # 返 None，前端保留 pending marker，下次启动 fast path 读到合法值收敛。
         #
-        # 严格校验：append-only 池下迁移期老分支也该保留在 _TELEMETRY_BRANCHES
-        # 里，所以这里不会误杀历史值。
+        # 严格校验：活跃分支都在 _TELEMETRY_BRANCHES 里，所以正常情况下不会误杀。
+        # 唯一例外是退役实验（如 privacy_default_off_v1）——它被有意移出池，落盘旧值
+        # 在这里判非法、触发按当前池重抽（见上方退役说明），正是「让老实验群退出原
+        # 分支」的预期路径。
         if not p.exists():
             return None
         value = p.read_text(encoding="utf-8").strip()
