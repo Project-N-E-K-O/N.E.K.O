@@ -50,6 +50,23 @@ def test_make_key_value_types():
     assert _make_key("e", {"s": "x", "n": 3, "b": True}) == "e|b=True,n=3,s=x"
 
 
+def test_make_key_escapes_delimiters_no_collision():
+    # 含分隔符的值不能让不同 dim 组合塌缩成同一 key（Codex P2）
+    k1 = _make_key("e", {"a": "x,b=y"})       # 单个 dim，值里带 , 和 =
+    k2 = _make_key("e", {"a": "x", "b": "y"})  # 两个 dim
+    assert k1 != k2, f"delimiter collision: {k1!r} == {k2!r}"
+
+
+def test_make_key_escape_is_injective():
+    # "a,b" 和 "a=b" 转义后必须区分（简单 replace 成 _ 会塌缩，escape 不会）
+    assert _make_key("e", {"k": "a,b"}) != _make_key("e", {"k": "a=b"})
+
+
+def test_make_key_pipe_escaped():
+    # 值里的 | 也转义，不破坏 name|dims 结构
+    assert _make_key("e", {"k": "a|b"}) == "e|k=a\\|b"
+
+
 # ---------------------------------------------------------------------------
 # counter
 # ---------------------------------------------------------------------------

@@ -242,17 +242,35 @@ class Instrument:
 # ---------------------------------------------------------------------------
 
 
+def _esc_dim(s) -> str:
+    r"""转义 metric_key 分隔符（``\`` ``|`` ``,`` ``=``）。
+
+    前端 WS telemetry 接受任意字符串 dim 值，若值里含 ``,`` 或 ``=``，未转义
+    拼接会让不同 dim 组合塌缩成同一 metric_key（如 ``{a:"x,b=y"}`` 与
+    ``{a:"x", b:"y"}`` 都拼成 ``a=x,b=y``），静默混淆 dashboard 切片。反斜杠
+    转义保证单射：不同 (k,v) 集合永远产出不同 key（Codex）。``\`` 先转，
+    避免二次转义把别的转义序列再escape。
+    """
+    return (
+        str(s)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace(",", "\\,")
+        .replace("=", "\\=")
+    )
+
+
 def _make_key(name: str, dims: dict) -> str:
     """把 (name, dims) 拼成一个稳定的 flat key。
 
-    格式：``name`` 或 ``name|k1=v1,k2=v2``（dims 按 key 字典序拼）。
-    没有 dims 时省略 ``|``，保持简单 case 的 key 短。
+    格式：``name`` 或 ``name|k1=v1,k2=v2``（dims 按 key 字典序拼，k/v 都过
+    _esc_dim 转义分隔符）。没有 dims 时省略 ``|``，保持简单 case 的 key 短。
 
     值会用 ``str()`` 转换 —— 调用方有义务只传可序列化的低基数维度。
     """
     if not dims:
         return name
-    parts = [f"{k}={dims[k]}" for k in sorted(dims.keys())]
+    parts = [f"{_esc_dim(k)}={_esc_dim(dims[k])}" for k in sorted(dims.keys())]
     return f"{name}|{','.join(parts)}"
 
 

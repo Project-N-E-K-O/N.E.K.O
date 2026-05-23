@@ -1667,15 +1667,30 @@ class OmniOfflineClient:
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
 
+                    def _count_llm_error(api_key_rejected: bool = False):
+                        # D1 失败诊断：typed API 错误（连接/认证/限流/欠费/配额/
+                        # key 拒绝）的**终态**也要计入 llm_error。只在给上的 break
+                        # 路径调，不在 retry-continue 调（重试中不算失败）。generic
+                        # except 与本块互斥，不会双计（Codex）。
+                        try:
+                            from utils.instrument import counter as _ic
+                            _ic("llm_error", error_class=error_type[:48])
+                            if api_key_rejected:
+                                _ic("api_key_invalid")
+                        except Exception:
+                            pass
+
                     # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
                     if '欠费' in error_str_lower or 'standing' in error_str_lower:
                         logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
+                        _count_llm_error()
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                             status_reported = True
                         break
                     elif _is_api_key_rejected_error(e):
                         logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
+                        _count_llm_error(api_key_rejected=True)
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                             status_reported = True
@@ -1706,6 +1721,7 @@ class OmniOfflineClient:
                     else:
                         error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
+                        _count_llm_error()  # 重试耗尽 = 终态失败，计入 llm_error
                         if self.on_status_message:
                             if is_internal_error:
                                 await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
