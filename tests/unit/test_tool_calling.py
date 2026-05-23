@@ -2368,6 +2368,11 @@ async def test_stream_text_summary_abandoned_when_overshoot_under_slack(monkeypa
     tts_only_emits = [c for c in delta_calls if not c["ui_enabled"] and c["tts_enabled"]]
     assert ui_only_emits, "cutover 后的 tail 必须只去 UI"
     assert len(tts_only_emits) == 1, "abandon 路径 tail 必须补一次 TTS-only"
+    # 不只验通道，还要验内容：abandon 续给 TTS 的必须是原文 tail，
+    # 绝不能是摘要器的返回值（那条 path 不该被走到）。
+    tts_text = tts_only_emits[0]["text"]
+    assert "six seven." in tts_text, f"TTS 续读应是原文 tail，实际: {tts_text!r}"
+    assert "should not be used" not in tts_text
 
     # history 是完整原文
     assert client._conversation_history[-1].content.strip() == short_overshoot.strip()
@@ -2491,6 +2496,48 @@ async def test_stream_text_summary_overflow_offset_consumed_across_chunks(monkey
         "cutover 应该落在 second chunk 头部的逗号 (offset=0)，没消费回 0 "
         "时会跳过该逗号。实际 prefix: %r" % captured_prefix
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_budget_bump_scoped_to_stream_text(monkeypatch):
+    """summary 模式只在 stream_text 期间把 self.llm.max_completion_tokens 抬到
+    _SUMMARY_API_BUDGET_FLOOR，结束后精确还原 —— 不泄漏给共用同一 self.llm 的
+    prompt_ephemeral（proactive 没长度 guard，被抬到 3000 会吐超长回复）。"""
+    from types import SimpleNamespace
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import (
+        OmniOfflineClient, _budget_to_max_tokens, _SUMMARY_API_BUDGET_FLOOR,
+    )
+    from utils.llm_client import LLMStreamChunk
+
+    observed: dict = {}
+
+    async def _astream(self, messages, **overrides):
+        # 记录流式进行中 client 上的 cap
+        observed["during"] = self.llm.max_completion_tokens
+        yield LLMStreamChunk(content="hi there.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    normal_budget = _budget_to_max_tokens(4)  # budget+slack，远小于 3000 floor
+    client.llm = SimpleNamespace(max_completion_tokens=normal_budget)
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger")
+
+    # 流中被抬到 floor（normal_budget < 3000）
+    assert observed["during"] == _SUMMARY_API_BUDGET_FLOOR
+    # 流结束后精确还原到原值，不泄漏给 prompt_ephemeral
+    assert client.llm.max_completion_tokens == normal_budget
 
 
 @pytest.mark.asyncio

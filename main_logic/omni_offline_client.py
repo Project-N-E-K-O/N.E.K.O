@@ -542,17 +542,15 @@ class OmniOfflineClient:
         # max_response_length + 20 让 LLM API 自然在 budget+20 token 处停下来，
         # 既省掉无效生成成本，又给 fence 留 20 token slack 看到 overshoot
         # 能区分 truncate / gibberish-filter 路径。
-        # summary 模式下 API budget 至少抬到 _SUMMARY_API_BUDGET_FLOOR（=3000），
-        # 让模型有足够空间走完真正想说的内容；caller budget 比 floor 还大时
-        # 直接用 budget+slack，floor 不再起作用。Python 侧 epilogue 决定截断/
-        # 摘要/原文。
+        # ⚠️ 这里**永远**用普通 budget，不烤进 summary 的 3000 floor —— 因为
+        # 同一个 self.llm 既给 stream_text 又给 prompt_ephemeral（proactive）用，
+        # 把 3000 烤进 client 会让没有长度 guard 的 proactive 轮次也能吐到 3000
+        # token。summary 的 budget 抬升改成 stream_text 内临时 bump + finally
+        # 还原（见 stream_text 顶部），把 3000 严格限定在长回复流式路径里。
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
-            max_completion_tokens=_budget_to_max_tokens(
-                self.max_response_length,
-                summary_mode=self.enable_long_response_summary,
-            ),
+            max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
         )
 
         # ── Tool calling state ────────────────────────────────────────
@@ -1113,10 +1111,8 @@ class OmniOfflineClient:
         if isinstance(max_length, int):
             self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
             if self.llm is not None:
-                self.llm.max_completion_tokens = _budget_to_max_tokens(
-                    self.max_response_length,
-                    summary_mode=getattr(self, "enable_long_response_summary", False),
-                )
+                # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
+                self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)
             logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
     def _match_name_prefix(self, text: str, name: str) -> int:
@@ -1178,10 +1174,8 @@ class OmniOfflineClient:
             new_llm = create_chat_llm(
                 new_model, base_url, api_key,
                 streaming=True, max_retries=0,
-                max_completion_tokens=_budget_to_max_tokens(
-                    self.max_response_length,
-                    summary_mode=getattr(self, "enable_long_response_summary", False),
-                ),
+                # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
+                max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -1477,6 +1471,19 @@ class OmniOfflineClient:
         # snapshot 避免后面每一处都 getattr，也防止运行中外部改属性导致
         # state machine 半生效。
         summary_mode_enabled = bool(getattr(self, "enable_long_response_summary", False))
+
+        # summary 模式临时把 API budget 抬到 _SUMMARY_API_BUDGET_FLOOR：让模型
+        # 有空间把话写完，cutover 之后的尾巴才有东西可摘要（普通 budget 下模型
+        # 在 ~budget 处就停了，没有尾巴）。**只在 stream_text 内 bump**，finally
+        # 还原，避免泄漏到共用同一 self.llm 的 prompt_ephemeral（proactive 没有
+        # 长度 guard，被抬到 3000 会吐超长回复）。snapshot 原值精确还原，兼容
+        # 运行中 update_max_response_length 改过 budget 的场景。
+        _summary_prev_max_tokens = None
+        if summary_mode_enabled and getattr(self, "llm", None) is not None:
+            _summary_prev_max_tokens = self.llm.max_completion_tokens
+            self.llm.max_completion_tokens = _budget_to_max_tokens(
+                self.max_response_length, summary_mode=True,
+            )
 
         try:
             self._is_responding = True
@@ -2145,8 +2152,11 @@ class OmniOfflineClient:
                                 self._conversation_history.append(
                                     AIMessage(content=summary_prefix_for_history)
                                 )
-                            if assistant_message_total:
-                                await self._check_repetition(assistant_message_total)
+                            # 重复检测只看 prefix（= 真正进 history / 被 TTS 读的部分）。
+                            # 用 assistant_message_total 会把判定为乱码、已丢弃的 tail
+                            # 也塞进 _recent_responses，污染后续重复判定。
+                            if summary_prefix_for_history:
+                                await self._check_repetition(summary_prefix_for_history)
                             assistant_message = ""
                             guard_exhausted = True
                             break
@@ -2324,6 +2334,10 @@ class OmniOfflineClient:
                     break
         finally:
             self._is_responding = False
+
+            # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
+            if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
+                self.llm.max_completion_tokens = _summary_prev_max_tokens
 
             # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
             # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
