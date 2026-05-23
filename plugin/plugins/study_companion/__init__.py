@@ -1080,27 +1080,9 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             topic_key = str(topic_id or "").strip()
-            item_id = topic_key
-            item = await asyncio.to_thread(self._memory_deck_store.get_item, item_id)
-            if item is None and topic_key:
-                deck = await asyncio.to_thread(
-                    self._memory_deck_store.get_or_create_default_deck,
-                    deck_type="custom",
-                )
-                exported = await asyncio.to_thread(
-                    self._memory_deck_store.export_deck_json,
-                    str(deck.get("id") or ""),
-                )
-                for candidate in exported.get("items") or []:
-                    metadata = candidate.get("metadata") or {}
-                    if str(
-                        metadata.get("topic_id") or metadata.get("legacy_topic_id") or ""
-                    ).strip() == topic_key:
-                        item_id = str(candidate.get("id") or "")
-                        break
             payload = await asyncio.to_thread(
                 self._memory_deck_store.review_item,
-                item_id=item_id,
+                item_id=topic_key,
                 rating=rating,
             )
             item = payload.get("item") if isinstance(payload, dict) else {}

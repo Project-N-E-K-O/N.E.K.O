@@ -54,13 +54,14 @@ def item_row_by_metadata_value(
     target = str(value or "").strip()
     if not target:
         return None
+    clauses = ["item_type = ?"]
+    params: list[Any] = [str(item_type or "")]
+    if deck_id:
+        clauses.insert(0, "deck_id = ?")
+        params.insert(0, str(deck_id or ""))
     rows = conn.execute(
-        """
-        SELECT *
-        FROM memory_items
-        WHERE deck_id = ? AND item_type = ?
-        """,
-        (str(deck_id or ""), str(item_type or "")),
+        f"SELECT * FROM memory_items WHERE {' AND '.join(clauses)}",
+        params,
     ).fetchall()
     keys = (key,) if isinstance(key, str) else key
     for row in rows:

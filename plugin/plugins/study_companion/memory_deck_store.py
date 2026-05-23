@@ -245,19 +245,10 @@ class MemoryDeckStore:
                     (str(deck_id or ""), prompt_text),
                 ).fetchone()
             else:
-                fallback_key = "legacy_topic_id" if metadata_payload.get("legacy_topic_id") else ""
-                dedupe_key = dedupe_metadata_key or fallback_key
-                fallback_value = metadata_payload.get("topic_id") or metadata_payload.get("legacy_topic_id")
-                dedupe_value = str(dedupe_metadata_value or fallback_value or "").strip()
+                dedupe_key = dedupe_metadata_key or ("legacy_topic_id" if metadata_payload.get("legacy_topic_id") else "")
+                dedupe_value = str(dedupe_metadata_value or metadata_payload.get("topic_id") or metadata_payload.get("legacy_topic_id") or "").strip()
                 if dedupe_key and dedupe_value:
-                    existing = item_row_by_metadata_value(
-                        conn,
-                        deck_id=str(deck_id or ""),
-                        item_type=item_kind,
-                        key=dedupe_key,
-                        value=dedupe_value,
-                        json_loads=self.store._json_loads,
-                    )
+                    existing = item_row_by_metadata_value(conn, deck_id=str(deck_id or ""), item_type=item_kind, key=dedupe_key, value=dedupe_value, json_loads=self.store._json_loads)
             if existing is None:
                 item_id = str(uuid.uuid4())
                 conn.execute(
@@ -508,7 +499,15 @@ class MemoryDeckStore:
         elapsed_ms: int | None = None,
         session_id: str = "",
     ) -> dict[str, Any]:
-        item = self.get_item(item_id)
+        item_key = str(item_id or "").strip()
+        item_id = item_key
+        item = self.get_item(item_key)
+        if item is None and item_key:
+            with self.store._lock:
+                row = item_row_by_metadata_value(self.store._require_conn(), deck_id="", item_type="custom", key=("topic_id", "legacy_topic_id"), value=item_key, json_loads=self.store._json_loads)
+            item = item_from_row(row, self.store._json_loads)
+            if item is not None:
+                item_id = str(item["id"])
         if item is None:
             raise ValueError("memory item not found")
         selected = (
