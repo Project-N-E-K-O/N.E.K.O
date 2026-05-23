@@ -1295,16 +1295,20 @@ class StudyCompanionPlugin(NekoPluginBase):
             "properties": {
                 "deck_id": {"type": "string", "default": ""},
                 "limit": {"type": "integer", "default": 50},
+                "item_type": {"type": "string", "default": ""},
             },
         },
         llm_result_fields=["due_reviews"],
     )
-    async def study_memory_due_reviews(self, deck_id: str = "", limit: int = 50, **_):
+    async def study_memory_due_reviews(
+        self, deck_id: str = "", limit: int = 50, item_type: str = "", **_
+    ):
         try:
             reviews = await asyncio.to_thread(
                 self._memory_deck_store.due_reviews,
                 deck_id=deck_id,
                 limit=max(1, min(500, int(limit or 50))),
+                item_type=item_type,
             )
             return Ok({"due_reviews": reviews})
         except Exception as exc:
@@ -1324,7 +1328,6 @@ class StudyCompanionPlugin(NekoPluginBase):
                 "rating": {
                     "type": "string",
                     "enum": ["again", "hard", "good", "easy"],
-                    "default": "good",
                 },
                 "correct": {"type": "boolean"},
                 "error_type": {"type": "string", "default": ""},
@@ -1338,7 +1341,7 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_memory_review_item(
         self,
         item_id: str = "",
-        rating: str = "good",
+        rating: str | None = None,
         correct: bool | None = None,
         error_type: str = "",
         elapsed_ms: int = 0,

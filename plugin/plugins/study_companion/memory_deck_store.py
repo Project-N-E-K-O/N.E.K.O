@@ -449,13 +449,12 @@ class MemoryDeckStore:
             )
         return card_from_row(row, self.store._json_loads)
 
-    def due_reviews(
-        self, *, deck_id: str = "", limit: int = 50
-    ) -> list[dict[str, Any]]:
+    def due_reviews(self, *, deck_id: str = "", limit: int = 50, item_type: str = "") -> list[dict[str, Any]]:
         with self.store._lock:
             rows = active_item_card_rows(
                 self.store._require_conn(), deck_id=deck_id
             )
+        if item_type: rows = [row for row in rows if str(row["item_type"] or "") == normalize_item_type(item_type)]
         due = self.fsrs.get_due_reviews(
             [self.store._json_loads(row["card_data"], {}) for row in rows]
         )

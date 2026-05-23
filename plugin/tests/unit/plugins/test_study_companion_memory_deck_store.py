@@ -250,12 +250,14 @@ def test_memory_due_reviews_sort_by_deck_and_retrievability(tmp_path: Path) -> N
             conn.commit()
 
         due = memory.due_reviews(limit=10)
+        word_due = memory.due_reviews(limit=1, item_type="word")
 
         assert [item["item"]["prompt"] for item in due[:3]] == [
             "weak",
             "strong",
             "beta",
         ]
+        assert word_due[0]["item"]["item_type"] == "word"
         assert due[0]["deck"]["name"] == "Alpha"
         assert due[0]["retrievability"] <= due[1]["retrievability"]
     finally:

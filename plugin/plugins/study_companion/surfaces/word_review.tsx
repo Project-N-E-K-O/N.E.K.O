@@ -23,7 +23,7 @@ export default function WordReview(props: PluginSurfaceProps) {
   const current = reviews[0];
 
   async function refresh(signal?: AbortSignal) {
-    const payload = await callPlugin<{ due_reviews?: DueReview[] }>('study_memory_due_reviews', { limit: 50 }, signal);
+    const payload = await callPlugin<{ due_reviews?: DueReview[] }>('study_memory_due_reviews', { item_type: 'word', limit: 50 }, signal);
     const due = Array.isArray(payload.due_reviews) ? payload.due_reviews : [];
     setReviews(due.filter((item: DueReview) => item.item?.item_type === 'word'));
     setShowAnswer(false);

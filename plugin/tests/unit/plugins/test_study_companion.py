@@ -2594,6 +2594,11 @@ async def test_study_plugin_starts_and_collects_entries(
     )
     assert isinstance(reviewed_again, Ok)
     assert reviewed_again.value["review_record"]["correct"] == 0
+    inferred_review = await plugin.study_memory_review_item(
+        item_id=card_item_id, correct=False, error_type="spelling"
+    )
+    assert isinstance(inferred_review, Ok)
+    assert inferred_review.value["rating"] == 2
     reviewed = await plugin.study_memory_card_review(
         topic_id="phase7_plugin_memory", rating="good"
     )
