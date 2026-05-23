@@ -55,7 +55,16 @@ import re
 import sys
 from typing import Any
 
-logger = logging.getLogger(__name__)
+# 走 get_module_logger(..., "Memory") 把本模块日志归到 N.E.K.O.Memory.*，
+# 否则 ``logging.getLogger(__name__)`` 产生的 ``memory.embeddings`` logger
+# 落在 N.E.K.O 命名空间之外，向上只能传到无 handler 的 root，导致
+# "EmbeddingService: ready / vectors disabled (reason)" 这类关键状态行
+# 永远不进 Memory 日志文件——线上排"为啥向量召回是空的"时根本看不到原因。
+try:
+    from utils.logger_config import get_module_logger
+    logger = get_module_logger(__name__, "Memory")
+except Exception:  # noqa: BLE001 — 极早期/裸测试环境拿不到 config，退回裸 logger
+    logger = logging.getLogger(__name__)
 
 
 # ── on-disk vector encoding ──────────────────────────────────────────
