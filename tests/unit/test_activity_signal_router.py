@@ -451,6 +451,43 @@ def test_unparseable_origin_treated_as_absent(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("field", ["idle_seconds", "cpu_avg_30s", "gpu_utilization"])
+def test_oversized_integer_rejected_400_not_500(monkeypatch, field):
+    """JSON-valid huge ints that ``float()`` can't represent → 400, not 500.
+
+    Codex F9 on PR #1477: ``float(10**400)`` raises ``OverflowError``,
+    which the original ``except (TypeError, ValueError)`` missed →
+    request crashes as 500 instead of being a clean validation 400.
+    Cheap DOS / crash-spam vector for anyone POSTing arbitrary big ints.
+
+    JSON spec doesn't bound integer precision so this is a legit
+    payload from the parser's perspective — Starlette's ``json.loads``
+    happily produces a Python big-int and hands it to us.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr})
+    # JSON: huge int literal. Pass as raw bytes since ``json=`` helper
+    # would serialise it as scientific notation that fits in a double.
+    body = (
+        '{"lanlan_name":"Aria","' + field + '":'
+        + '1' + '0' * 400  # 10**400 — clearly beyond double's range
+        + '}'
+    ).encode()
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 400, (
+        f"oversized int should 400 (clean validation), got {resp.status_code}"
+    )
+    assert field in resp.json()["error"]
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["idle_seconds", "cpu_avg_30s", "gpu_utilization"])
 @pytest.mark.parametrize("bool_value", [True, False])
 def test_boolean_rejected_in_numeric_fields(monkeypatch, field, bool_value):
     """Booleans must be 400'd before ``float()`` coerces them to 0.0/1.0.

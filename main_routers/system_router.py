@@ -4185,7 +4185,14 @@ def _activity_signal_validate_float(
         return None, f"{key} must be a number"
     try:
         val = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is raised by ``float()`` when the integer is
+        # too large to fit in a C double (Codex F9 on PR #1477) —
+        # JSON allows arbitrary-precision ints which Python loads as
+        # native big ints, and ``float(10**400)`` blows up. Without
+        # this case the request becomes a 500 instead of a clean 400,
+        # giving a low-cost crash vector to anyone POSTing oversized
+        # numeric literals.
         return None, f"{key} must be a number"
     if not math.isfinite(val):
         return None, f"{key} must be finite"
