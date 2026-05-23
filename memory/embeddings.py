@@ -132,9 +132,16 @@ class _DisableReason(enum.Enum):
     # the install commands diverge.
     NO_TOKENIZERS = "tokenizers_not_importable"
     NO_MODEL_FILE = "model_file_missing"
-    # Default bundle is INT8; ``auto`` picks INT8 only when VNNI is present or
-    # detection is inconclusive — confirmed absence disables local vectors.
+    # Default bundle is INT8. ``auto`` picks INT8 when *any* usable SIMD int8
+    # path exists: AVX-VNNI (fast) OR plain AVX2 (slower but fine for our nano
+    # model + small corpus). Only when BOTH are confirmed absent (SSE-only
+    # ancient/low-end CPUs) does auto disable — see NO_SIMD_INT8_PATH.
     AVX_VNNI_REQUIRED_FOR_INT8 = "avx_vnni_required_for_int8_bundle"
+    # No AVX-VNNI *and* no AVX2 (both confirmed): int8 kernels would fall to
+    # SSE, too slow to justify auto-enabling. Distinct from the VNNI reason so
+    # the log separates "no fast path at all" from the now-supported "no VNNI
+    # but AVX2 present" case (Haswell 2013+ / Zen+).
+    NO_SIMD_INT8_PATH = "no_avx2_or_vnni_for_int8"
     LOW_RAM = "ram_below_threshold"
     LOAD_ERROR = "load_raised"
     INFERENCE_ERROR = "inference_raised"
@@ -583,13 +590,17 @@ def _log_int8_fast_path_decision(has_vnni: bool, confirmed: bool) -> None:
         vendor, family, model = info
         family_str = f"0x{family:X}"
         model_str = f"0x{model:X}"
+    # No AVX-VNNI fast path. ``auto`` no longer disables on this alone — it
+    # falls back to the slower AVX2 int8 kernel (and only disables when AVX2 is
+    # *also* confirmed absent). So the message describes the fallback, not a
+    # disable, to avoid the old "vectors are off" misread.
     logger.warning(
-        "EmbeddingService: no INT8 fast path detected on this CPU "
-        "(vendor=%s family=%s model=%s arch=%s confirmed=%s). "
-        "`auto` quantization will %s; set VECTORS_QUANTIZATION=int8 or =fp32 "
-        "to override after consulting docs/embedding-quantization.md.",
+        "EmbeddingService: no AVX-VNNI int8 fast path on this CPU "
+        "(vendor=%s family=%s model=%s arch=%s vnni_absence_confirmed=%s). "
+        "`auto` will fall back to the slower AVX2 int8 kernel if AVX2 is "
+        "present (disable only when AVX2 is also absent). Force with "
+        "VECTORS_QUANTIZATION=int8 / =fp32 if needed.",
         vendor, family_str, model_str, platform.machine() or "?", confirmed,
-        "disable local vectors" if confirmed else "optimistically pick int8",
     )
 
 
@@ -621,6 +632,44 @@ def detect_avx_vnni() -> bool:
     """Backward-compatible: whether AVX-VNNI was detected."""
     has_vnni, _confirmed = detect_avx_vnni_details()
     return has_vnni
+
+
+def detect_avx2_details() -> tuple[bool, bool]:
+    """Return ``(has_avx2, absence_confirmed)`` for x86; ARM is treated as
+    "has a usable int8 SIMD path" (NEON is universal on ARM64).
+
+    AVX2 is the *slow-but-acceptable* int8 floor: without AVX-VNNI's fused
+    dot product, onnxruntime's MLAS still has solid AVX2 int8 kernels (256-bit,
+    ~2× SSE throughput) — fine for our nano model + small corpus. Below AVX2
+    (SSE-only) int8 would be too slow to auto-enable.
+
+    Unlike VNNI, ``avx2`` *is* reliably reported by py-cpuinfo's CPUID probe on
+    Windows (the VNNI Windows gap was specific to the ``avx_vnni`` flag), so we
+    don't need the family/model table here. ``absence_confirmed=False`` means
+    no source could read CPU flags — caller stays optimistic (picks int8),
+    matching the VNNI-inconclusive policy.
+    """
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        # ARM64 always has NEON; the int8 path is viable regardless of dotprod
+        # (dotprod only governs the *fast* path, same role VNNI plays on x86).
+        return True, True
+    try:
+        import cpuinfo  # type: ignore
+        flags = cpuinfo.get_cpu_info().get("flags", []) or []
+        if flags:
+            return ("avx2" in flags), True
+    except Exception:
+        pass
+    if platform.system() == "Linux":
+        try:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("flags") and "avx2" in line.split():
+                        return True, True
+            return False, True
+        except Exception:
+            return False, False
+    return False, False
 
 
 def resolve_dim_for_ram(ram_gb: float | None) -> int | None:
@@ -669,39 +718,62 @@ def _coerce_dim(value, ram_gb: float | None) -> int | None:
     return as_int
 
 
+def _auto_int8_or_none(
+    has_vnni: bool,
+    vnni_absence_confirmed: bool,
+    has_avx2: bool,
+    avx2_absence_confirmed: bool,
+) -> str | None:
+    """``auto`` policy core: pick ``int8`` when *any* usable int8 SIMD path
+    exists, else ``None`` (disable).
+
+    Tiers:
+      1. AVX-VNNI present → int8 (fast path).
+      2. VNNI inconclusive → int8 (optimistic, unchanged from before).
+      3. VNNI confirmed absent, but AVX2 present → int8 (slow-but-fine —
+         Haswell 2013+ / Zen+; covers the bulk of pre-2021 desktops).
+      4. VNNI confirmed absent, AVX2 inconclusive → int8 (optimistic).
+      5. VNNI *and* AVX2 both confirmed absent → None (SSE-only; too slow).
+    """
+    if has_vnni or not vnni_absence_confirmed:
+        return "int8"
+    if has_avx2 or not avx2_absence_confirmed:
+        return "int8"
+    return None
+
+
 def _resolve_quantization(
     value: str | None,
     has_vnni: bool,
     *,
     vnni_absence_confirmed: bool = True,
+    has_avx2: bool = True,
+    avx2_absence_confirmed: bool = False,
 ) -> str | None:
-    """Map ``\"auto\"`` / ``\"int8\"`` / ``\"fp32\"`` after VNNI policy.
+    """Map ``\"auto\"`` / ``\"int8\"`` / ``\"fp32\"`` onto a loadable variant.
 
     Returns ``\"int8\"``, ``\"fp32\"``, or ``None``. ``None`` means local
-    embeddings are off for ``auto`` when AVX-VNNI is confidently absent.
-    Explicit ``\"fp32\"`` always loads the FP32 ONNX when files exist.
+    embeddings are off — for ``auto``, only when the CPU has *neither* AVX-VNNI
+    nor AVX2 (both confirmed). Explicit ``\"fp32\"`` always loads the FP32 ONNX
+    when files exist.
 
-    Explicit ``\"int8\"`` without VNNI is still honoured (with a warning)
-    so operators can force INT8 on slow CPUs if they accept the cost.
+    Explicit ``\"int8\"`` is always honoured (with a warning when no VNNI fast
+    path) so operators can force INT8 even on SSE-only CPUs if they accept the
+    cost. ``has_avx2`` defaults True so the historical 3-arg call sites keep the
+    old (VNNI-only) behaviour until they pass the AVX2 detection through.
     """
     if value == "fp32":
         return "fp32"
-    if value == "auto" or value is None:
-        if has_vnni:
-            return "int8"
-        if not vnni_absence_confirmed:
-            return "int8"
-        return None
-    if value not in ("int8", "fp32"):
-        if has_vnni:
-            return "int8"
-        if not vnni_absence_confirmed:
-            return "int8"
-        return None
-    if value == "int8" and not has_vnni:
+    if value == "auto" or value is None or value not in ("int8", "fp32"):
+        return _auto_int8_or_none(
+            has_vnni, vnni_absence_confirmed, has_avx2, avx2_absence_confirmed,
+        )
+    # value == "int8" (forced)
+    if not has_vnni:
         logger.warning(
-            "EmbeddingService: int8 requested but AVX-VNNI not detected — "
-            "expect slower inference than a hypothetical fp32 build",
+            "EmbeddingService: int8 requested but AVX-VNNI not detected "
+            "(avx2=%s) — expect slower inference (AVX2 kernel or SSE fallback)",
+            has_avx2,
         )
     return "int8"
 
@@ -852,6 +924,8 @@ class EmbeddingService:
         ram_gb: float | None = None,        # injected for tests
         has_vnni: bool | None = None,       # injected for tests
         vnni_absence_confirmed: bool | None = None,  # False = inconclusive detect
+        has_avx2: bool | None = None,       # injected for tests
+        avx2_absence_confirmed: bool | None = None,  # False = inconclusive detect
     ) -> None:
         self._model_dir = model_dir
         self._enabled = enabled
@@ -873,6 +947,15 @@ class EmbeddingService:
             detected_vnni, absence_confirmed = detect_avx_vnni_details()
             self._has_vnni = detected_vnni
             self._vnni_absence_confirmed = absence_confirmed
+        if has_avx2 is not None:
+            self._has_avx2 = has_avx2
+            self._avx2_absence_confirmed = (
+                True if avx2_absence_confirmed is None else avx2_absence_confirmed
+            )
+        else:
+            detected_avx2, avx2_confirmed = detect_avx2_details()
+            self._has_avx2 = detected_avx2
+            self._avx2_absence_confirmed = avx2_confirmed
         self._dim = _coerce_dim(embedding_dim_setting, self._ram_gb)
         if quantization_setting not in ("auto", "int8", "fp32"):
             logger.warning(
@@ -886,6 +969,8 @@ class EmbeddingService:
             norm_quant,
             self._has_vnni,
             vnni_absence_confirmed=self._vnni_absence_confirmed,
+            has_avx2=self._has_avx2,
+            avx2_absence_confirmed=self._avx2_absence_confirmed,
         )
 
         self._state = EmbeddingState.INIT
@@ -907,7 +992,9 @@ class EmbeddingService:
             # caught it already.
             self._mark_disabled(_DisableReason.LOW_RAM, log=False)
         elif self._quantization is None:
-            self._mark_disabled(_DisableReason.AVX_VNNI_REQUIRED_FOR_INT8, log=True)
+            # auto + neither AVX-VNNI nor AVX2 (both confirmed) → SSE-only,
+            # too slow to auto-enable. (Forced int8 never resolves to None.)
+            self._mark_disabled(_DisableReason.NO_SIMD_INT8_PATH, log=True)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -950,6 +1037,9 @@ class EmbeddingService:
     def has_vnni(self) -> bool:
         return self._has_vnni
 
+    def has_avx2(self) -> bool:
+        return self._has_avx2
+
     async def request_load(self) -> bool:
         """Load the ONNX session if not already loaded. Returns
         ``is_available()`` after the attempt.
@@ -982,8 +1072,8 @@ class EmbeddingService:
                 return False
             self._state = EmbeddingState.READY
             logger.info(
-                "EmbeddingService: ready (model_id=%s, ram=%.1fGB, vnni=%s)",
-                self.model_id(), self._ram_gb or 0.0, self._has_vnni,
+                "EmbeddingService: ready (model_id=%s, ram=%.1fGB, vnni=%s, avx2=%s)",
+                self.model_id(), self._ram_gb or 0.0, self._has_vnni, self._has_avx2,
             )
             return True
 
@@ -1244,6 +1334,7 @@ def _build_default_service() -> EmbeddingService:
     # profile that only contains the *other* variant would still satisfy the
     # completeness check and short-circuit a complete bundled fallback.
     has_vnni, vnni_absence_confirmed = detect_avx_vnni_details()
+    has_avx2, avx2_absence_confirmed = detect_avx2_details()
     norm_q = (
         VECTORS_QUANTIZATION
         if VECTORS_QUANTIZATION in ("auto", "int8", "fp32")
@@ -1251,6 +1342,7 @@ def _build_default_service() -> EmbeddingService:
     )
     resolved_quantization = _resolve_quantization(
         norm_q, has_vnni, vnni_absence_confirmed=vnni_absence_confirmed,
+        has_avx2=has_avx2, avx2_absence_confirmed=avx2_absence_confirmed,
     )
 
     model_dir = (
@@ -1270,6 +1362,8 @@ def _build_default_service() -> EmbeddingService:
         profile_id=VECTORS_MODEL_PROFILE_ID,
         has_vnni=has_vnni,
         vnni_absence_confirmed=vnni_absence_confirmed,
+        has_avx2=has_avx2,
+        avx2_absence_confirmed=avx2_absence_confirmed,
     )
 
 
