@@ -235,6 +235,20 @@ def test_parse_time_window_boundary_overflow_returns_none():
         assert parse_time_window(tok) is None, tok
 
 
+def test_to_naive_local_boundary_overflow_falls_back_to_strip():
+    """边界 aware 值 astimezone 加减 offset 会越过 datetime.min/max 抛
+    OverflowError；to_naive_local 退回直接剥 tz（保墙钟）而非崩（Codex）。"""
+    from datetime import datetime, timezone, timedelta
+    from memory.temporal import to_naive_local
+    # min 附近 + 正 offset → astimezone 转本地（机器 tz）可能下溢
+    near_min = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=14)))
+    out = to_naive_local(near_min)
+    assert out is not None and out.tzinfo is None
+    near_max = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone(timedelta(hours=-14)))
+    out2 = to_naive_local(near_max)
+    assert out2 is not None and out2.tzinfo is None
+
+
 def test_parse_time_window_tz_aware_token_returns_naive():
     """带 tz 的 ISO time token 不该崩，且返回 naive 区间。带分秒 → 精度到
     小时（1 小时窗口），tz 先转本地再 floor。"""

@@ -154,7 +154,13 @@ def to_naive_local(dt: datetime | None) -> datetime | None:
     害 day 级窗口/排序在日界处归错天（Codex）。这里统一转换。
     """
     if dt is not None and dt.tzinfo is not None:
-        return dt.astimezone().replace(tzinfo=None)
+        try:
+            return dt.astimezone().replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            # 边界 aware 值（如 0001-01-01+14:00 / 9999-12-31-14:00）astimezone
+            # 加减 offset 会越过 datetime.min/max 抛 OverflowError，不能让它冒到
+            # parse_time_window / 渲染链路（Codex）。退而求其次直接剥 tz（保墙钟）。
+            return dt.replace(tzinfo=None)
     return dt
 
 
