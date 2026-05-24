@@ -2902,18 +2902,23 @@ class LLMSessionManager:
             # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
             # tool call 翻 is_error，模型反而不能正常走。
             text = str(r.get("text") or "").strip()
-            anchor = str(
-                r.get("event_end_at")
-                or r.get("event_start_at")
-                or r.get("created_at")
-                or ""
-            )
-            # date_part 也走 to_naive_local 归一，否则 aware 锚点的日期切片
-            # （UTC 墙钟）会和 rel（time_since_label 已转本地）对不上、在日界
-            # 处差一天（Codex）。解析失败回退到原始切片。
-            anchor_dt = to_naive_local(_parse_iso_safe(anchor))
-            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else anchor[:10]
-            rel = _time_label(anchor, lang=_lang)  # 无法解析 → ""
+            # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
+            # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
+            # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
+            # 把本可用的低优先级字段挡掉，渲染出乱码日期（Codex）。
+            # _parse_iso_safe 对 None / int / list 等都安全返回 None。
+            # date_part 和 rel 都从同一个归一后的 datetime 出，口径一致。
+            anchor_dt = None
+            for _cand in (
+                r.get("event_end_at"),
+                r.get("event_start_at"),
+                r.get("created_at"),
+            ):
+                anchor_dt = to_naive_local(_parse_iso_safe(_cand))
+                if anchor_dt is not None:
+                    break
+            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else ""
+            rel = _time_label(anchor_dt.isoformat(), lang=_lang) if anchor_dt else ""
             if date_part and rel:
                 time_suffix = f"  ({date_part}, {rel})"
             elif date_part:
