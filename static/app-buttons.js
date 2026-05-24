@@ -2736,11 +2736,18 @@
                 // holding only the compressed copy (low memory) and lets send pass it through
                 // without re-encoding.
                 var avatarPos = result.dataUrl === result.originalDataUrl ? result.avatarPos : null;
-                var compactDataUrl = result.dataUrl;
+                var compactDataUrl;
                 try {
                     compactDataUrl = await mod.compressScreenshotDataUrlTo720p(result.dataUrl);
                 } catch (compressErr) {
-                    console.warn('[\u622A\u56FE] 720p \u538B\u7F29\u5931\u8D25\uFF0C\u4F7F\u7528\u539F\u56FE\u5165\u5217:', compressErr);
+                    // Compression only throws when the image can't be decoded/encoded (the 720p
+                    // canvas is small enough that size limits never apply). Don't fall back to the
+                    // full-res original -- that would break the "list holds only compressed <=1MB"
+                    // invariant and pin a huge dataUrl in memory, and a broken image would fail at
+                    // send anyway. Abort queueing and surface an error toast instead.
+                    console.warn('[\u622A\u56FE] 720p \u538B\u7F29\u5931\u8D25\uFF0C\u53D6\u6D88\u5165\u5217:', compressErr);
+                    window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
+                    return false;
                 }
 
                 mod.addScreenshotToList(compactDataUrl, avatarPos);
