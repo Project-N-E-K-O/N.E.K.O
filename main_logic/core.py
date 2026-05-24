@@ -2859,11 +2859,14 @@ class LLMSessionManager:
         results = results if isinstance(results, list) else []
         elapsed_ms = result_payload.get("elapsed_ms", 0) if isinstance(result_payload, dict) else 0
 
+        # INFO 只记 has_time（布尔），不落 time_arg 原值——time_arg 是用户
+        # 原始输入，按本函数 docstring 立的隐私分层规矩（INFO 可能被打包外送）
+        # 原文只进下面的 DEBUG。
         logger.info(
             "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
-            "time=%s → hits=%d elapsed=%.0fms",
+            "has_time=%s → hits=%d elapsed=%.0fms",
             self.lanlan_name, self.input_mode, session_kind, _lang,
-            time_arg or "-", len(results), elapsed_ms,
+            bool(time_arg), len(results), elapsed_ms,
         )
         logger.debug(
             "[recall_memory] args=%s query=%r time=%r ids=%s",

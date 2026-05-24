@@ -3831,10 +3831,14 @@ async def get_memory(query: str, lanlan_name: str):
 
 
 class QueryMemoryRequest(BaseModel):
-    query: str
-    # 可选时间回溯：填了就走"按事件时间列出全部反思"的路径，忽略 query
-    # 语义匹配。格式见 memory.temporal.parse_time_window（单日 / 整月 /
-    # 整年 / 日期区间）。不填或解析失败则走常规混合语义检索。
+    # query / time 都可选，至少给一个有效值即可（time-only 是新支持的用法）。
+    # 两者都空时不报错，hybrid_recall 对空 query 短路返回空 results，调用方
+    # 把空结果翻成"没有找到相关记忆"——和本端点"绝不让召回失败/空入参把
+    # tool call 整死"的设计一致，所以这里不做 422/400 硬校验。
+    query: str | None = None
+    # 可选时间回溯：填了就走"按事件时间返回最接近的 fact + reflection"的
+    # 路径，忽略 query 语义匹配。格式见 memory.temporal.parse_time_window
+    # （单日 / 整月 / 整年 / 日期区间）。不填或解析失败则走常规混合语义检索。
     time: str | None = None
 
 
