@@ -566,6 +566,74 @@ def render_regen_avoid_instruction(terms: List[str], lang: str, master_name: str
     )
 
 
+# ---------------------------------------------------------------------------
+# Proactive 格式纠正指令 — 初稿没按格式输出时自救用
+# ---------------------------------------------------------------------------
+# 初稿没解析到合法来源标签时（弱化模型常把人设 Format/约束块当正文吐出来，
+# 如 "No Markdown: Yes."），system_router 注入这段再生成一次，把模型拽回
+# "第一行写来源标签、其后正文" 的格式；与 BEGIN 触发句一起放进 Human turn
+# （末尾仍是中性触发句）。占位符：{master_name} 搭话对象。
+
+PROACTIVE_FORMAT_FIX_INSTRUCTION = {
+    'zh': (
+        "【格式纠正】上一次的输出没有按规定格式，把格式要求当成正文吐了出来。"
+        "请重写：第一行只写一个来源标签（[CHAT]、[MUSIC] 或 [MEME] 之一），"
+        "第二行起只写要对{master_name}说的话本身；没什么新鲜的可说就只输出 [PASS]。"
+        "不要复述或解释任何规则，不要输出清单或思考过程，标签和正文以外的内容一律不要输出。"
+    ),
+    'en': (
+        "[Format fix] Your last output didn't follow the required format — it spat out the "
+        "rules as if they were the message. Rewrite it: the first line is a single source tag "
+        "(one of [CHAT], [MUSIC], or [MEME]), then from the next line write only the actual "
+        "words you'd say to {master_name}; if you have nothing fresh to say, output only [PASS]. "
+        "Do NOT restate or explain any rule, do NOT output lists or reasoning, and output "
+        "nothing other than the tag and the message."
+    ),
+    'ja': (
+        "【書式修正】前回の出力は指定の書式に従わず、ルールをそのまま本文として出してしまいました。"
+        "書き直してください：1行目に来源タグを1つだけ（[CHAT]・[MUSIC]・[MEME] のいずれか）、"
+        "2行目以降は{master_name}に実際に言う言葉だけ。新しく言うことがなければ [PASS] だけを出力。"
+        "ルールを復唱・説明せず、リストや思考過程を出さず、タグと本文以外は何も出力しないこと。"
+    ),
+    'ko': (
+        "【형식 교정】지난 출력이 규정된 형식을 따르지 않고 규칙을 본문처럼 뱉어냈습니다. "
+        "다시 쓰세요: 첫 줄에는 출처 태그 하나만([CHAT]·[MUSIC]·[MEME] 중 하나), 이후 줄부터는 "
+        "{master_name}에게 실제로 할 말만. 새로 할 말이 없으면 [PASS]만 출력. 규칙을 되풀이하거나 "
+        "설명하지 말고, 목록·사고 과정을 출력하지 말며, 태그와 본문 외에는 아무것도 출력하지 마세요."
+    ),
+    'ru': (
+        "[Исправь формат] Прошлый вывод не соответствовал формату — ты выдал правила, как "
+        "будто это сообщение. Перепиши: первая строка — один тег источника (один из [CHAT], "
+        "[MUSIC] или [MEME]), далее со следующей строки — только сами слова, которые ты скажешь "
+        "{master_name}; если нового сказать нечего, выведи только [PASS]. Не пересказывай и не "
+        "объясняй правила, не выводи списки или рассуждения и не выводи ничего, кроме тега и сообщения."
+    ),
+    'es': (
+        "[Corrige el formato] Tu última salida no siguió el formato requerido: soltó las reglas "
+        "como si fueran el mensaje. Reescríbela: la primera línea es una sola etiqueta de fuente "
+        "(una de [CHAT], [MUSIC] o [MEME]), luego desde la línea siguiente escribe solo lo que le "
+        "dirías a {master_name}; si no tienes nada nuevo que decir, responde solo [PASS]. No "
+        "repitas ni expliques ninguna regla, no muestres listas ni razonamientos, y no muestres "
+        "nada más que la etiqueta y el mensaje."
+    ),
+    'pt': (
+        "[Corrija o formato] Sua última saída não seguiu o formato exigido — cuspiu as regras "
+        "como se fossem a mensagem. Reescreva: a primeira linha é uma única etiqueta de fonte "
+        "(uma de [CHAT], [MUSIC] ou [MEME]), depois, a partir da linha seguinte, escreva apenas o "
+        "que você diria a {master_name}; se não tiver nada novo a dizer, responda apenas [PASS]. "
+        "Não repita nem explique nenhuma regra, não exiba listas ou raciocínio, e não exiba nada "
+        "além da etiqueta e da mensagem."
+    ),
+}
+
+
+def render_format_fix_instruction(lang: str, master_name: str = "") -> str:
+    """渲染"格式纠正"自救指令。``master_name`` 缺省退化为中性占位符。"""
+    short = _norm_lang(lang)
+    template = PROACTIVE_FORMAT_FIX_INSTRUCTION.get(short) or PROACTIVE_FORMAT_FIX_INSTRUCTION['en']
+    return template.format(master_name=master_name or _DEFAULT_ADDRESSEE.get(short, "them"))
+
+
 # =====================================================================
 # ======= Negative-keyword target check (RFC §3.4.5 Layer 2) ==========
 # =====================================================================

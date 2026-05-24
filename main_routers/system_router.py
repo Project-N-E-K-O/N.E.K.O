@@ -110,7 +110,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_label_aliases_flat,
 )
 from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
-from config.prompts.prompts_directives import render_regen_avoid_instruction
+from config.prompts.prompts_directives import render_regen_avoid_instruction, render_format_fix_instruction
 from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -5416,27 +5416,31 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
 
         # ========== 4. 获取 LLM 配置 ==========
+        # 主动搭话全链路（Phase1 筛选 / Phase2 生成 / regen）用 conversation tier
+        # 而非 correction tier：correction（纠错）模型在不开思考时较难稳定遵循
+        # "第一行写来源标签" 的格式，容易把人设约束块当正文吐出来；conversation
+        # 是主对话主力模型，格式遵循更稳。仍保持 disable_thinking（vision+思考必超时）。
         try:
-            correction_config = _config_manager.get_model_api_config('correction')
-            correction_model = correction_config.get('model')
-            correction_base_url = correction_config.get('base_url')
-            correction_api_key = correction_config.get('api_key')
-            
-            if not correction_model or not correction_api_key:
-                logger.error("纠错模型配置缺失: model或api_key未设置")
+            conversation_config = _config_manager.get_model_api_config('conversation')
+            conversation_model = conversation_config.get('model')
+            conversation_base_url = conversation_config.get('base_url')
+            conversation_api_key = conversation_config.get('api_key')
+
+            if not conversation_model or not conversation_api_key:
+                logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(JSONResponse({
                     "success": False,
-                    "error": "纠错模型配置缺失",
-                    "detail": "请在设置中配置纠错模型的model和api_key"
+                    "error": "对话模型配置缺失",
+                    "detail": "请在设置中配置对话模型的model和api_key"
                 }, status_code=500))
-            
+
             vision_config = _config_manager.get_model_api_config('vision')
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')
             has_vision_model = bool(vision_model_name and vision_api_key)
             if not has_vision_model:
-                logger.info("Vision 模型未配置，Phase 2 将退回使用 correction 模型")
+                logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(JSONResponse({
@@ -5454,7 +5458,7 @@ async def proactive_chat(request: Request):
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
-                m, bu, ak = correction_model, correction_base_url, correction_api_key
+                m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
@@ -5477,7 +5481,7 @@ async def proactive_chat(request: Request):
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
             dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
             """
-            actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
+            actual_model = (vision_model_name if use_vision and has_vision_model else conversation_model)
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
             human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
@@ -6228,7 +6232,7 @@ async def proactive_chat(request: Request):
             human_content = human_text
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
 
-        actual_model = (vision_model_name if phase2_use_vision else correction_model)
+        actual_model = (vision_model_name if phase2_use_vision else conversation_model)
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
 
         # --- 流式调用 + 在线拦截 ---
@@ -6373,8 +6377,56 @@ async def proactive_chat(request: Request):
         # 这类脚手架泄漏。合法搭话必然以 tag 起头，缺 tag 即判格式泄漏，drop 整轮，
         # 不要把脚手架念给博士听。（TTS 在本函数后段才真正投递，此处 abort 安全。）
         if not aborted and full_text.strip() and not source_tag:
-            print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，判为格式泄漏，drop")
-            aborted = True
+            # 没解析到合法来源标签——多半是模型把人设 Format/约束块当正文吐了出来。
+            # 不直接 drop，先给一次"格式纠正"regen 自救：重建 Human turn（fix 指令 +
+            # 原 human_text，末尾仍是 BEGIN 触发句），ainvoke 重跑一次再解析 tag。
+            # 解析到合法非 PASS tag → 用自救结果接回主流程（下游 is_duplicate / BM25
+            # 照常生效）；仍无 tag / [PASS] / 空 → 才判格式泄漏 drop。preempt 时放弃。
+            print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                aborted = True
+            else:
+                _fix_human_text = f"{render_format_fix_instruction(proactive_lang, master_name_current)}\n\n{human_text}"
+                if phase2_use_vision:
+                    _fix_human_content = [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
+                        {"type": "text", "text": _fix_human_text},
+                    ]
+                else:
+                    _fix_human_content = _fix_human_text
+                _fix_text = ""
+                try:
+                    async with asyncio.timeout(20.0):
+                        async with _make_llm(
+                            temperature=1.0,
+                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                            use_vision=phase2_use_vision,
+                            disable_thinking=True,
+                        ) as _fix_llm:
+                            _fix_resp = await _fix_llm.ainvoke(
+                                [messages[0], HumanMessage(content=_fix_human_content)]
+                            )
+                            _fix_text = (_fix_resp.content if hasattr(_fix_resp, "content") else "") or ""
+                except Exception as _fix_exc:
+                    logger.warning("[%s] Phase 2 格式自救 regen 失败: %s", lanlan_name, _fix_exc)
+                    _fix_text = ""
+                _fc = (_fix_text or "").strip()
+                _fm = re.search(r"主动搭话\s*\n", _fc)
+                if _fm:
+                    _fc = _fc[_fm.end():]
+                _fc = _fc.lstrip()
+                _fix_tag = ""
+                _ftm = re.match(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", _fc, re.IGNORECASE)
+                if _ftm:
+                    _fix_tag = _ftm.group(1).upper()
+                    _fc = _fc[_ftm.end():]
+                if _fix_tag and _fix_tag != "PASS" and _fc.strip() and "[PASS]" not in _fc.upper():
+                    source_tag = _fix_tag
+                    full_text = _fc.strip()
+                    print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
+                else:
+                    print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
+                    aborted = True
 
         # --- 结果处理 ---
         # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
