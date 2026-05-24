@@ -214,6 +214,7 @@
     var compactSurfaceAnchorLocked = false;
     var compactSurfacePendingModelOpen = false;
     var compactSurfaceResizeSession = null;
+    var compactSurfaceDesktopResizeActive = false;
 
     function normalizeCompactDesktopRect(raw) {
         if (!raw) return null;
@@ -713,6 +714,13 @@
         if (!isHomeCompactSurfaceRoute() && !isDesktopHomeCompactSurfaceRoute()) return;
         var side = detail && detail.side === 'left' ? 'left' : 'right';
         var phase = detail && detail.phase;
+        if (isElectronChatWindow() && detail && detail.screenRect) {
+            compactSurfaceDesktopResizeActive = phase !== 'end';
+            if (phase === 'end') {
+                compactSurfaceResizeSession = null;
+            }
+            return;
+        }
         var currentRect = getCurrentCompactSurfaceRect();
         if (!currentRect) return;
         var windowX = getCompactSurfaceDesktopWindowX();
@@ -1165,6 +1173,9 @@
             return;
         }
         if (compactSurfaceAnchorLocked) {
+            return;
+        }
+        if (compactSurfaceDesktopResizeActive && isElectronChatWindow()) {
             return;
         }
         if (compactSurfaceResizeSession && !isElectronChatWindow()) {
@@ -4287,8 +4298,10 @@
         });
 
         window.addEventListener('neko:desktop-compact-layout-change', function () {
-            compactSurfaceAnchorLocked = false;
-            compactSurfaceAnchorSnapshot = '';
+            if (!compactSurfaceDesktopResizeActive) {
+                compactSurfaceAnchorLocked = false;
+                compactSurfaceAnchorSnapshot = '';
+            }
             scheduleCompactMinimizeBallTracking();
         });
         if (window.__nekoDesktopCompactLayout) {

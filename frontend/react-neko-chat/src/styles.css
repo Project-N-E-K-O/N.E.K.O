@@ -1914,8 +1914,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
-  gap: 10px;
-  padding: 5px 10px 5px 20px;
+  gap: 0;
+  padding: 5px 62px 5px 20px;
 }
 
 .compact-chat-surface-frame::before {
@@ -2909,10 +2909,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle {
-  position: relative;
+  position: absolute;
+  top: 5px;
+  right: 9px;
   z-index: 5;
   isolation: isolate;
   -webkit-app-region: no-drag;
+  transform: none;
+}
+
+.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle:hover {
+  transform: none;
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle::before {
@@ -2981,6 +2988,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.compact-input-tool-fan[data-compact-input-tool-fan-open="false"] {
+  visibility: hidden;
+  pointer-events: none !important;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="false"] .compact-input-tool-item {
+  pointer-events: none !important;
+}
+
 .compact-chat-surface-shell *,
 .compact-input-tool-fan * {
   -webkit-app-region: no-drag;
@@ -3043,6 +3059,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
+  visibility: visible;
   pointer-events: auto;
 }
 
@@ -3136,6 +3153,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
   opacity: 0;
   transform: translate(55px, 55px) scale(0.56);
+  pointer-events: none;
 }
 
 .compact-input-tool-fan .composer-tool-btn img {

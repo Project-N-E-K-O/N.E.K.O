@@ -153,6 +153,13 @@ function getCompactSurfaceResizePointerX(event: ReactPointerEvent<HTMLDivElement
   return event.clientX;
 }
 
+function isDesktopCompactSurfaceLayoutActive(): boolean {
+  return typeof window !== 'undefined'
+    && !!(window as typeof window & {
+      __nekoDesktopCompactLayout?: { windowBounds?: unknown } | null;
+    }).__nekoDesktopCompactLayout?.windowBounds;
+}
+
 type SpeechPlaybackState = {
   active: boolean;
   audioContextTime: number;
@@ -1088,6 +1095,36 @@ export default function App({
   const getClampedCompactSurfaceResizeWidth = useCallback((width: number) => (
     clampCompactSurfaceResizeWidth(width, getCompactSurfaceResizeMaxAvailableWidth())
   ), [getCompactSurfaceResizeMaxAvailableWidth]);
+  const getClampedCompactSurfaceResizeWidthForSide = useCallback((
+    side: CompactSurfaceResizeSide,
+    width: number,
+    resizeState?: CompactSurfaceResizeState | null,
+  ) => {
+    const desktopWindow = window as typeof window & {
+      __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
+    };
+    const workArea = desktopWindow.__nekoDesktopCompactLayout?.workArea;
+    const areaX = Number(workArea?.x);
+    const areaWidth = Number(workArea?.width);
+    if (
+      resizeState
+      && isDesktopCompactSurfaceLayoutActive()
+      && Number.isFinite(areaX)
+      && Number.isFinite(areaWidth)
+      && areaWidth > 0
+    ) {
+      const edgePad = COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER / 2;
+      const areaLeft = areaX + edgePad;
+      const areaRight = areaX + areaWidth - edgePad;
+      const maxWidth = side === 'left'
+        ? resizeState.anchorRightScreen - areaLeft
+        : areaRight - resizeState.anchorLeftScreen;
+      if (Number.isFinite(maxWidth) && maxWidth > 0) {
+        return clampCompactSurfaceResizeWidth(width, maxWidth + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER);
+      }
+    }
+    return getClampedCompactSurfaceResizeWidth(width);
+  }, [getClampedCompactSurfaceResizeWidth]);
   const getCurrentCompactSurfaceWidth = useCallback(() => {
     const rectWidth = compactInputShellRef.current?.getBoundingClientRect().width;
     if (Number.isFinite(rectWidth) && rectWidth && rectWidth > 0) {
@@ -1704,6 +1741,11 @@ export default function App({
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
+    if (isDesktopCompactSurfaceLayoutActive()) {
+      document.documentElement.style.removeProperty('--compact-surface-resize-width');
+      shell?.style.removeProperty('--compact-surface-resize-width');
+      return;
+    }
     if (width === null) {
       document.documentElement.style.removeProperty('--compact-surface-resize-width');
       shell?.style.removeProperty('--compact-surface-resize-width');
@@ -1799,7 +1841,9 @@ export default function App({
     };
     applyCompactSurfaceResizeWidthVar(startWidth);
     compactInputToolFanPositionSyncRef.current?.();
-    setCompactSurfaceResizeWidth(startWidth);
+    if (!isDesktopCompactSurfaceLayoutActive()) {
+      setCompactSurfaceResizeWidth(startWidth);
+    }
     dispatchCompactSurfaceResizeRequest(side, startWidth, 'start');
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -1813,13 +1857,19 @@ export default function App({
     event.stopPropagation();
     const deltaX = getCompactSurfaceResizePointerX(event) - resizeState.startPointerX;
     const signedDelta = resizeState.side === 'right' ? deltaX : -deltaX;
-    const nextWidth = getClampedCompactSurfaceResizeWidth(resizeState.startWidth + signedDelta);
+    const nextWidth = getClampedCompactSurfaceResizeWidthForSide(
+      resizeState.side,
+      resizeState.startWidth + signedDelta,
+      resizeState,
+    );
     resizeState.lastWidth = nextWidth;
     applyCompactSurfaceResizeWidthVar(nextWidth);
     compactInputToolFanPositionSyncRef.current?.();
-    setCompactSurfaceResizeWidth(nextWidth);
+    if (!isDesktopCompactSurfaceLayoutActive()) {
+      setCompactSurfaceResizeWidth(nextWidth);
+    }
     dispatchCompactSurfaceResizeRequest(resizeState.side, nextWidth, 'move');
-  }, [applyCompactSurfaceResizeWidthVar, dispatchCompactSurfaceResizeRequest, getClampedCompactSurfaceResizeWidth]);
+  }, [applyCompactSurfaceResizeWidthVar, dispatchCompactSurfaceResizeRequest, getClampedCompactSurfaceResizeWidthForSide]);
 
   const handleCompactSurfaceResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1851,6 +1901,11 @@ export default function App({
   useEffect(() => {
     if (!isCompactSurface) return undefined;
     const clampExistingWidth = () => {
+      if (isDesktopCompactSurfaceLayoutActive()) {
+        setCompactSurfaceResizeWidth(null);
+        applyCompactSurfaceResizeWidthVar(null);
+        return;
+      }
       setCompactSurfaceResizeWidth(current => (
         current === null ? current : getClampedCompactSurfaceResizeWidth(current)
       ));
@@ -1866,6 +1921,11 @@ export default function App({
   useEffect(() => {
     if (!isCompactSurface) return undefined;
     const syncAppliedResizeWidth = (event: Event) => {
+      if (isDesktopCompactSurfaceLayoutActive()) {
+        setCompactSurfaceResizeWidth(null);
+        applyCompactSurfaceResizeWidthVar(null);
+        return;
+      }
       const resizeState = compactSurfaceResizeStateRef.current;
       if (!resizeState) return;
       const width = Number((event as CustomEvent).detail?.width);
@@ -3465,7 +3525,9 @@ export default function App({
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
-  const compactSurfaceShellStyle = isCompactSurface && compactSurfaceEffectiveWidth !== null
+  const compactSurfaceShellStyle = isCompactSurface
+    && compactSurfaceEffectiveWidth !== null
+    && !isDesktopCompactSurfaceLayoutActive()
     ? ({
       '--compact-surface-resize-width': `${compactSurfaceEffectiveWidth}px`,
     } as CSSProperties)

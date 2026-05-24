@@ -4,6 +4,7 @@ from pathlib import Path
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
+REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
@@ -108,6 +109,7 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
 def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
     metrics_block = script.split("function getCompactSurfaceMetrics()", 1)[1].split(
         "function clampCompactSurfacePosition(left, top, metrics)",
@@ -132,6 +134,11 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "function applyCompactSurfaceResizeRequest(detail)" in script
     assert "function isDesktopHomeCompactSurfaceRoute()" in script
     assert "if (!isHomeCompactSurfaceRoute() && !isDesktopHomeCompactSurfaceRoute()) return;" in script
+    assert "var compactSurfaceDesktopResizeActive = false;" in script
+    assert "if (isElectronChatWindow() && detail && detail.screenRect)" in script
+    assert "compactSurfaceDesktopResizeActive = phase !== 'end';" in script
+    assert "if (compactSurfaceDesktopResizeActive && isElectronChatWindow())" in script
+    assert "if (!compactSurfaceDesktopResizeActive) {\n                compactSurfaceAnchorLocked = false;" in script
     assert "var compactSurfaceResizeSession = null;" in script
     assert "surfaceScreenRect: surfaceScreenRect" in script
     assert "function getCompactSurfaceDesktopWindowX()" in script
@@ -155,6 +162,16 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "neko:compact-surface-resize-request" in script
     assert "neko:compact-surface-layout-change" in script
     assert "neko:compact-surface-resize-width-change" in script
+    assert "function isDesktopCompactSurfaceLayoutActive()" in app_source
+    assert "document.documentElement.style.removeProperty('--compact-surface-resize-width');" in app_source
+    assert "&& !isDesktopCompactSurfaceLayoutActive()" in app_source
+    assert "const getClampedCompactSurfaceResizeWidthForSide = useCallback" in app_source
+    assert "resizeState.anchorRightScreen - areaLeft" in app_source
+    assert "areaRight - resizeState.anchorLeftScreen" in app_source
+    assert "if (!isDesktopCompactSurfaceLayoutActive()) {\n      setCompactSurfaceResizeWidth(startWidth);" in app_source
+    assert "if (!isDesktopCompactSurfaceLayoutActive()) {\n      setCompactSurfaceResizeWidth(nextWidth);" in app_source
+    assert "if (isDesktopCompactSurfaceLayoutActive()) {\n        setCompactSurfaceResizeWidth(null);" in app_source
+    assert "applyCompactSurfaceResizeWidthVar(null);\n        return;\n      }\n      const resizeState = compactSurfaceResizeStateRef.current;" in app_source
 
     assert "--compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));" in resize_shell_block
     assert "width: var(--compact-surface-active-width);" in resize_shell_block
@@ -179,6 +196,20 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "top: 31px;" in fan_block
     assert "position: fixed;" not in fan_block
     assert "--compact-input-tool-fan-origin-left" not in fan_block
+    assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="false"]' in styles
+    assert "visibility: hidden;" in styles
+    assert "pointer-events: none !important;" in styles
+    assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]' in styles
+    assert "visibility: visible;" in styles
+    assert (
+        '.compact-chat-surface-frame[data-compact-chat-state="input"] '
+        '.compact-input-tool-toggle:hover'
+    ) in styles
+    assert 'padding: 5px 62px 5px 20px;' in styles
+    assert 'right: 9px;' in styles
+    assert "transform: none;" in styles
+    assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
+    assert "pointer-events: none;" in styles
 
 
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
