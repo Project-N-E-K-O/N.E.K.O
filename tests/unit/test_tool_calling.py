@@ -373,12 +373,15 @@ async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
         "thinking 模型发起 tool_calls 那轮的 reasoning_content 必须累积并回填进历史，"
         "否则部分 provider 下一轮报 400"
     )
-    # 第二轮请求确实带上了含 reasoning_content 的历史
+    # 第二轮请求确实带上了含 reasoning_content 的历史，且值与本轮累积的推理链
+    # 完全一致（不只验存在——中间路径若截断/改写 reasoning_content 也要抓到）。
     second_call_messages = fake_llm.calls[1][0]
-    assert any(
-        isinstance(m, dict) and m.get("reasoning_content")
+    replayed = next(
+        m.get("reasoning_content")
         for m in second_call_messages
+        if isinstance(m, dict) and m.get("reasoning_content")
     )
+    assert replayed == "用户问起以前的事，我得查一下记忆。"
 
 
 @pytest.mark.asyncio
