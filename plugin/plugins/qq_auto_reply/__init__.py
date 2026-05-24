@@ -86,6 +86,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._backlog_summary_threshold = 10
         self._backlog_notify_cooldown_seconds = 900
         self._backlog_issue_notify_threshold = 1
+        self._relay_backlog_items: list[dict[str, Any]] = []
 
     def _refresh_admin_qq(self) -> None:
         self._admin_qq = None
@@ -361,6 +362,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "refreshed_at": 0,
                 "stale": True,
             },
+            "backlog_items": list(self._relay_backlog_items),
             "config_ready": await self.config_store.exists(),
             "ui": build_open_ui_payload(plugin_id=self.plugin_id, available=True, i18n=self.i18n),
         }
@@ -555,6 +557,41 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         payload = await self._build_dashboard_state()
         payload["persisted"] = success
         return Ok(payload)
+
+    @plugin_entry(id="send_backlog_reply_direct", name=tr("entries.send_backlog_reply_direct.name", default="直发 backlog 回复"), description=tr("entries.send_backlog_reply_direct.description", default="直接发送 backlog 回复消息，不经过 AI 生成。"), input_schema={"type": "object", "properties": {"source_type": {"type": "string"}, "target_id": {"type": "string"}, "sender_id": {"type": "string"}, "original_message": {"type": "string"}, "reply_text": {"type": "string"}}, "required": ["source_type", "target_id", "original_message", "reply_text"], "additionalProperties": False})
+    async def send_backlog_reply_direct(self, source_type: str, target_id: str, original_message: str, reply_text: str, sender_id: str = "", **_):
+        try:
+            self._ensure_qq_client_connected()
+            normalized_source_type = str(source_type or "").strip().lower()
+            normalized_target_id = str(target_id or "").strip()
+            normalized_original_message = self._validate_outbound_message(original_message)
+            normalized_reply_text = self._validate_outbound_message(reply_text)
+            if normalized_source_type not in {"group", "private"}:
+                return Err(SdkError("INVALID_SOURCE_TYPE: source_type 必须是 group 或 private"))
+            if not normalized_target_id:
+                return Err(SdkError("INVALID_TARGET: target_id 不能为空"))
+            outbound_message = f"回复原句：{normalized_original_message}\n发送内容：{normalized_reply_text}"
+            if normalized_source_type == "group":
+                await self.qq_client.send_group_message(normalized_target_id, outbound_message)
+            else:
+                await self.qq_client.send_message(normalized_target_id, outbound_message)
+            self._relay_backlog_items = [
+                item for item in self._relay_backlog_items
+                if not (
+                    str(item.get("source_type") or "") == normalized_source_type
+                    and str(item.get("target_id") or "") == normalized_target_id
+                    and str(item.get("sender_id") or "") == str(sender_id or "")
+                    and str(item.get("original_message") or "") == normalized_original_message
+                )
+            ]
+            return Ok({"status": "sent", "source_type": normalized_source_type, "target_id": normalized_target_id})
+        except QQAutoReplyValidationError as e:
+            return Err(SdkError(f"INVALID_ARGUMENT: {str(e)}"))
+        except RuntimeError as e:
+            return Err(SdkError(f"NOT_READY: {self.i18n.t('errors.proactive_not_ready', default='{error}', error=str(e))}"))
+        except Exception as e:
+            self.logger.exception("Failed to send direct backlog reply")
+            return Err(SdkError(f"SEND_FAILED: {self.i18n.t('errors.proactive_send_failed', default='{error}', error=str(e))}"))
 
     @plugin_entry(id="sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新二维码"), description=tr("entries.sync_qrcode.description", default="重新复制 NapCat 登录二维码到插件静态目录并返回最新状态。"), input_schema={"type": "object", "properties": {}})
     async def sync_qrcode(self, **_):
@@ -946,6 +983,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             relay_text = f"[QQ群转发] 群 {source_id} / 用户 {sender_id}: {message_text}"
         else:
             relay_text = f"[QQ私聊转发] 来自 {sender_id}: {message_text}"
+        self._relay_backlog_items = ([{
+            "id": f"{source_type}:{source_id}:{sender_id}:{int(time.time() * 1000)}",
+            "source_type": source_type,
+            "target_id": str(source_id or ""),
+            "sender_id": str(sender_id or ""),
+            "target_label": f"QQ群 {source_id}" if source_type == "group" else f"私聊 {source_id}",
+            "original_message": message_text,
+            "relay_preview": relay_text,
+            "timestamp": int(time.time()),
+        }] + list(self._relay_backlog_items))[:50]
         await self.qq_client.send_message(self._admin_qq, relay_text)
         return None
 

@@ -59,6 +59,8 @@ const pluginId = 'qq_auto_reply';
             selectedBacklogGroupId: '',
             backlogLabels: [],
             backlogLabelDrafts: [],
+            backlogItems: [],
+            activeReplyItem: null,
         };
 
         function nextStep(stepNum) {
@@ -177,6 +179,7 @@ const pluginId = 'qq_auto_reply';
             state.config.truthReplyProbability = Number(settings.truth_reply_probability ?? 0.1);
             state.backlogLabels = Array.isArray(settings.backlog_labels) ? settings.backlog_labels.map(normalizeBacklogLabelDraft) : [];
             state.backlogLabelDrafts = state.backlogLabels.map((item) => ({ ...item }));
+            state.backlogItems = Array.isArray(data.backlog_items) ? data.backlog_items : [];
             console.log('[qq_auto_reply debug] backlog labels loaded', state.backlogLabelDrafts);
             renderBacklogLabelEditor();
             document.getElementById('cfg-url').value = state.config.url;
@@ -218,6 +221,7 @@ const pluginId = 'qq_auto_reply';
             updateConfigGate();
             refreshGuideProgress();
             renderList();
+            renderBacklogReplyList();
             renderBacklogSummary();
             if (state.selectedBacklogGroupId) {
                 const exists = Array.isArray(state.backlogSummary?.groups) && state.backlogSummary.groups.some((item) => String(item.group_id || '') === state.selectedBacklogGroupId);
@@ -591,6 +595,76 @@ const pluginId = 'qq_auto_reply';
             }
             state.backlogLabelDrafts.splice(index, 1);
             renderBacklogLabelEditor();
+        }
+
+        function renderBacklogReplyList() {
+            const container = document.getElementById('backlog-reply-list');
+            if (!container) {
+                return;
+            }
+            if (!state.backlogItems.length) {
+                container.innerHTML = `<div class="empty-state">${t('ui.backlog.reply.empty', '暂时没有可快捷回复的消息。')}</div>`;
+                return;
+            }
+            container.innerHTML = state.backlogItems.map((item, index) => {
+                const targetLabel = String(item.target_label || item.target_id || '-');
+                const originalMessage = String(item.original_message || '').trim() || t('ui.backlog.empty_message', '（空消息）');
+                const dateText = item.timestamp ? new Date(Number(item.timestamp) * 1000).toLocaleString() : t('ui.backlog.unknown_time', '未知时间');
+                return `
+                    <button class="backlog-message-item reply-action" type="button" onclick="openBacklogReplyModal(${index})">
+                        <div class="backlog-message-top">
+                            <span>${escapeHtml(targetLabel)}</span>
+                            <span>${escapeHtml(dateText)}</span>
+                        </div>
+                        <div class="backlog-message-text">${escapeHtml(originalMessage)}</div>
+                    </button>
+                `;
+            }).join('');
+        }
+
+        function openBacklogReplyModal(index) {
+            const item = state.backlogItems[index];
+            if (!item) {
+                return;
+            }
+            state.activeReplyItem = item;
+            document.getElementById('backlog-reply-target').textContent = String(item.target_label || item.target_id || '-');
+            document.getElementById('backlog-reply-original').textContent = String(item.original_message || '');
+            document.getElementById('backlog-reply-input').value = '';
+            document.getElementById('backlog-reply-modal-overlay').classList.add('show');
+            document.getElementById('backlog-reply-modal').classList.add('show');
+        }
+
+        function closeBacklogReplyModal() {
+            state.activeReplyItem = null;
+            document.getElementById('backlog-reply-modal').classList.remove('show');
+            document.getElementById('backlog-reply-modal-overlay').classList.remove('show');
+        }
+
+        async function sendBacklogReply() {
+            const item = state.activeReplyItem;
+            if (!item) {
+                return;
+            }
+            const replyText = String(document.getElementById('backlog-reply-input').value || '').trim();
+            if (!replyText) {
+                showToast(t('ui.backlog.reply.required', '请先填写回复内容'));
+                return;
+            }
+            try {
+                await callPlugin('send_backlog_reply_direct', {
+                    source_type: String(item.source_type || ''),
+                    target_id: String(item.target_id || ''),
+                    sender_id: String(item.sender_id || ''),
+                    original_message: String(item.original_message || ''),
+                    reply_text: replyText,
+                });
+                await reloadDashboard();
+                closeBacklogReplyModal();
+                showToast(t('ui.backlog.reply.sent', '回复已发送'));
+            } catch (error) {
+                showToast(error.message || t('ui.toast.save_failed', '保存失败'));
+            }
         }
 
         function renderBacklogSummary() {
@@ -977,6 +1051,7 @@ const pluginId = 'qq_auto_reply';
         window.addNewEntity = addNewEntity;
         window.deleteItem = deleteItem;
         window.editEntity = editEntity;
+        window.openBacklogReplyModal = openBacklogReplyModal;
         window.openBacklogLabelEditModal = openBacklogLabelEditModal;
         window.updateBacklogLabelDraft = updateBacklogLabelDraft;
         window.addBacklogLabelDraft = addBacklogLabelDraft;
@@ -1025,6 +1100,13 @@ const pluginId = 'qq_auto_reply';
         document.getElementById('backlog-label-modal-overlay').addEventListener('click', (event) => {
             if (event.target === event.currentTarget) {
                 closeBacklogLabelModal();
+            }
+        });
+        document.getElementById('backlog-reply-send').addEventListener('click', sendBacklogReply);
+        document.getElementById('backlog-reply-cancel').addEventListener('click', closeBacklogReplyModal);
+        document.getElementById('backlog-reply-modal-overlay').addEventListener('click', (event) => {
+            if (event.target === event.currentTarget) {
+                closeBacklogReplyModal();
             }
         });
         document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
