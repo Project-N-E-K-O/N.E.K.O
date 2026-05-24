@@ -161,3 +161,20 @@ def test_device_hw_preserve_known(tmp_path):
         "SELECT device_hw FROM devices WHERE device_id=?", (dev,)
     ).fetchone()
     assert row["device_hw"] == "mac|arm64|ge32|5to8"
+
+
+def test_device_hw_degraded_does_not_overwrite(tmp_path):
+    """硬件静态：含更多 unknown 段的退化 profile 不得覆盖已知更完整的。"""
+    import json
+    st = _make_storage(tmp_path)
+    dev = "deviceHWDEGXXXXXX"
+    # 已知完整 profile（0 个 unknown）
+    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="win|x86_64|16to32|9to16")
+    # 退化 profile（检测临时失败，2 个 unknown）不得覆写
+    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="win|x86_64|unknown|unknown")
+    row = st._get_conn().execute("SELECT device_hw FROM devices WHERE device_id=?", (dev,)).fetchone()
+    assert row["device_hw"] == "win|x86_64|16to32|9to16", "退化 profile 覆盖了已知完整 profile"
+    # 检测恢复（unknown 更少）正常覆写
+    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="win|x86_64|ge32|gt16")
+    row = st._get_conn().execute("SELECT device_hw FROM devices WHERE device_id=?", (dev,)).fetchone()
+    assert row["device_hw"] == "win|x86_64|ge32|gt16"

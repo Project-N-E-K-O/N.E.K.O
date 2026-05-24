@@ -438,7 +438,17 @@ class TelemetryStorage:
                     timezone      = CASE WHEN excluded.timezone      = 'unknown' THEN devices.timezone      ELSE excluded.timezone      END,
                     distribution  = CASE WHEN excluded.distribution  = 'unknown' THEN devices.distribution  ELSE excluded.distribution  END,
                     steam_user_id = CASE WHEN excluded.steam_user_id = ''        THEN devices.steam_user_id ELSE excluded.steam_user_id END,
-                    device_hw     = CASE WHEN excluded.device_hw     = ''        THEN devices.device_hw     ELSE excluded.device_hw     END,
+                    -- device_hw 硬件静态：空 sentinel 不覆写；且"退化" profile（含更多
+                    -- unknown 段，多半是某次 psutil/cpu 检测临时失败）不得覆盖已知更完整
+                    -- 的 profile —— 用 'unknown' 出现次数（length diff）粗比，incoming 更
+                    -- 多就保留历史。检测变好（unknown 更少）或首次（历史空）正常覆写。
+                    device_hw     = CASE
+                        WHEN excluded.device_hw = '' THEN devices.device_hw
+                        WHEN devices.device_hw != ''
+                             AND (length(excluded.device_hw) - length(replace(excluded.device_hw, 'unknown', '')))
+                               > (length(devices.device_hw) - length(replace(devices.device_hw, 'unknown', '')))
+                        THEN devices.device_hw
+                        ELSE excluded.device_hw END,
                     last_seen = strftime('%Y-%m-%dT%H:%M:%f+08:00', 'now', '+8 hours'),
                     event_count = event_count + 1
             """, (device_id, app_version, branch, locale, timezone, distribution, steam_user_id, device_hw))
