@@ -2869,7 +2869,8 @@ async def _bootstrap_embedding_worker() -> None:
                 except Exception:
                     return []
 
-            resolver = FactDedupResolver(fact_store)
+            bound_fact_store = fact_store
+            resolver = FactDedupResolver(bound_fact_store)
             worker = EmbeddingWarmupWorker(
                 get_persona_manager=lambda: persona_manager,
                 get_reflection_engine=lambda: reflection_engine,
@@ -2878,11 +2879,20 @@ async def _bootstrap_embedding_worker() -> None:
                 warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
                 get_dedup_resolver=lambda: fact_dedup_resolver,
             )
-            return worker, resolver
+            return worker, resolver, bound_fact_store
 
-        worker, resolver = await asyncio.to_thread(_build)
-        fact_dedup_resolver = resolver
+        worker, resolver, bound_fact_store = await asyncio.to_thread(_build)
+        # worker 用 getter 读全局，天然 reload-safe，直接发布。
         embedding_warmup_worker = worker
+        # 但 resolver 是绑定到具体 fact_store 的实例：若 await（重 import + 构造）期间
+        # reload_memory_components() 换了 fact_store 并重绑了 fact_dedup_resolver，
+        # 这里再无条件赋值会用绑旧 store 的 resolver 覆盖掉 reload 的新 resolver，
+        # 导致 worker 的 get_fact_store 读新 store、get_dedup_resolver 读旧 resolver 错配。
+        # 因此只在当前全局 fact_store 仍是 resolver 绑定的那个时才发布。
+        if fact_store is bound_fact_store:
+            fact_dedup_resolver = resolver
+        else:
+            logger.info("[Memory] embedding worker bootstrap 与 reload 竞争，沿用 reload 已重绑的 fact_dedup_resolver")
         embedding_warmup_worker.start()
     except Exception as e:
         logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
