@@ -6367,6 +6367,15 @@ async def proactive_chat(request: Request):
             elif cleaned.strip():
                 await _emit_safe(cleaned)
         
+        # 没有解析到合法来源标签（[CHAT]/[WEB]/[MUSIC]/[MEME]）→ 输出不符合格式。
+        # 弱模型（free-model）常把人设里的 Format / 约束块当正文吐出来——线上见过
+        # "No Markdown: Yes."、"* No stage directions/parentheses"、"完全不同的角度或主题"
+        # 这类脚手架泄漏。合法搭话必然以 tag 起头，缺 tag 即判格式泄漏，drop 整轮，
+        # 不要把脚手架念给博士听。（TTS 在本函数后段才真正投递，此处 abort 安全。）
+        if not aborted and full_text.strip() and not source_tag:
+            print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，判为格式泄漏，drop")
+            aborted = True
+
         # --- 结果处理 ---
         # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
         # full_text 是去标签后真正投递给 TTS / send_lanlan_response 的内容。
@@ -6515,7 +6524,8 @@ async def proactive_chat(request: Request):
             # 让下面的 "MUSIC→非MUSIC clear" 不触发、music 候选继续注入 → 复读
             # 又出去（CodeRabbit Major）。规则：
             #   regen 解析出 tag → 用该 tag
-            #   regen 非空但没 tag → 当成 CHAT（model 偏离格式但产出有效正文）
+            #   regen 非空但没 tag → drop（与初稿同款格式泄漏防护：弱模型常把人设
+            #     Format/约束块当正文吐出来，缺 tag 一律判泄漏，不再当成 CHAT 投递）
             #   regen 空 / [PASS] → 上面 drop 分支拦掉
             _cleaned = (regen_text or "").strip()
             regen_source_tag = ""
@@ -6532,8 +6542,8 @@ async def proactive_chat(request: Request):
             # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop——前面剥过 [TAG]
             # 前缀，剩下的 _cleaned 已经不含 "[PASS]" 字面量，但 regen_source_tag
             # 已经记下这是 PASS，与"内嵌 [PASS]"等价拦掉（CodeRabbit Minor）。
-            if regen_source_tag == "PASS" or not _cleaned.strip() or "[PASS]" in _cleaned.upper():
-                logger.info("[%s] proactive BM25 regen returned empty/PASS, drop", lanlan_name)
+            if regen_source_tag in ("", "PASS") or not _cleaned.strip() or "[PASS]" in _cleaned.upper():
+                logger.info("[%s] proactive BM25 regen returned empty/PASS/untagged, drop", lanlan_name)
                 if not mgr.state.is_proactive_preempted(proactive_sid):
                     await mgr.handle_new_message()
                 return await _end_proactive(JSONResponse({
@@ -6581,10 +6591,8 @@ async def proactive_chat(request: Request):
                     "similarity": _regen_sim,
                     "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
                 }))
-            # regen 非空 + 没 tag → 视为 CHAT。沿用初稿 tag 会让初稿 [MUSIC]
-            # 但 regen 偏离格式产出纯文本时仍走音乐通道——既不是 user-visible
-            # bug，但与 regen 的语义"换话题"相违（CodeRabbit Major）。
-            source_tag = regen_source_tag or "CHAT"
+            # 走到这里 regen_source_tag 必为合法非 PASS tag（无 tag 已在上面 drop）。
+            source_tag = regen_source_tag
             # regen 后只要最终不是 MUSIC，就清掉本轮 music 候选。
             # 之前的版本只在 _initial_source_tag == "MUSIC" 时清，但 tagless
             # 初稿（_initial 为空）+ phase1 只有 music topic 的场景下，
