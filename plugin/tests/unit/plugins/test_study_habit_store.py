@@ -243,3 +243,73 @@ def test_memory_habit_bridge_summarizes_recitation_and_deck_focus(
         assert summary["decks"][0]["deck_id"] == deck["id"]
     finally:
         store.close()
+
+
+def test_memory_habit_bridge_reuses_existing_focus_goal_without_shrinking(
+    tmp_path: Path,
+) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        memory = MemoryDeckStore(store)
+        bridge = MemoryHabitBridge(store=store, memory=memory, habits=habits)
+        deck = memory.create_deck(name="Long Review", deck_type="word")
+        existing = bridge.create_deck_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            target_amount=120,
+            unit="minutes",
+        )
+
+        resolved = bridge.resolve_focus_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            focus_minutes=25,
+        )
+        goal = habits.get_goal(existing["goal"]["id"])
+
+        assert resolved["created"] is False
+        assert resolved["goal"]["id"] == existing["goal"]["id"]
+        assert goal is not None
+        assert goal["target_amount"] == 120
+    finally:
+        store.close()
+
+
+def test_memory_habit_bridge_summary_uses_configured_local_day(
+    tmp_path: Path,
+) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        memory = MemoryDeckStore(store)
+        bridge = MemoryHabitBridge(
+            store=store,
+            memory=memory,
+            habits=habits,
+            checkin_timezone="Asia/Shanghai",
+        )
+        deck = memory.create_deck(name="Boundary Words", deck_type="word")
+        word = memory.add_word(
+            deck_id=deck["id"],
+            word="boundary",
+            meaning="edge",
+        )["item"]
+        reviewed = memory.review_item(item_id=word["id"], rating="good")
+        review_id = int(reviewed["review_record"]["id"])
+        with store._lock:  # noqa: SLF001 - test fixture controls row timestamp.
+            conn = store._require_conn()
+            conn.execute(
+                "UPDATE review_records SET reviewed_at = ? WHERE id = ?",
+                ("2026-05-23 16:30:00", review_id),
+            )
+            conn.commit()
+
+        summary = bridge.memory_summary(date="2026-05-24")
+        previous = bridge.memory_summary(date="2026-05-23")
+
+        assert summary["reviewed_items"] == 1
+        assert summary["decks"][0]["deck_id"] == deck["id"]
+        assert previous["reviewed_items"] == 0
+    finally:
+        store.close()

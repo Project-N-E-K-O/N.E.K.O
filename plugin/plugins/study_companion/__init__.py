@@ -147,6 +147,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 store=self._store,
                 memory=self._memory_deck_store,
                 habits=self._habit_store,
+                checkin_timezone=self._cfg.checkin.streak_timezone,
             )
             restored = await asyncio.to_thread(
                 self._store.load_state, build_initial_state(mode=self._cfg.mode)

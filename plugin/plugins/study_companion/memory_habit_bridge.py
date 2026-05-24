@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .memory_deck_store import MemoryDeckStore
 from .study_habit_store import StudyHabitStore
@@ -20,6 +21,23 @@ def _date_key(value: str) -> str:
     return str(value or _now_iso()[:10])[:10]
 
 
+def _date_utc_bounds(value: str, timezone_name: str) -> tuple[str, str]:
+    zone_name = str(timezone_name or "local").strip()
+    zone = datetime.now().astimezone().tzinfo or timezone.utc
+    if zone_name and zone_name.lower() != "local":
+        try:
+            zone = ZoneInfo(zone_name)
+        except ZoneInfoNotFoundError:
+            zone = datetime.now().astimezone().tzinfo or timezone.utc
+    target_date = datetime.strptime(_date_key(value), "%Y-%m-%d").date()
+    start = datetime.combine(target_date, time.min, tzinfo=zone)
+    end = start + timedelta(days=1)
+    return (
+        start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
 class MemoryHabitBridge:
     """Phase 7 memory deck integration for Phase 6 habit tables."""
 
@@ -29,10 +47,12 @@ class MemoryHabitBridge:
         store: StudyStore,
         memory: MemoryDeckStore,
         habits: StudyHabitStore,
+        checkin_timezone: str = "local",
     ) -> None:
         self._store = store
         self._memory = memory
         self._habits = habits
+        self._checkin_timezone = str(checkin_timezone or "local").strip() or "local"
         self.ensure_tables()
 
     def ensure_tables(self) -> None:
@@ -110,6 +130,14 @@ class MemoryHabitBridge:
         deck_id: str,
         focus_minutes: float,
     ) -> dict[str, Any]:
+        deck = self._memory.get_deck(deck_id)
+        if deck is None:
+            raise ValueError("memory deck not found")
+        existing = self._find_deck_goal(
+            date=_date_key(date), deck_id=str(deck["id"]), unit="minutes"
+        )
+        if existing is not None:
+            return {"goal": existing, "deck": deck, "created": False}
         return self.create_deck_goal(
             date=date,
             deck_id=deck_id,
@@ -306,6 +334,7 @@ class MemoryHabitBridge:
         }
 
     def _review_rows(self, date: str) -> list[Any]:
+        start_utc, end_utc = _date_utc_bounds(date, self._checkin_timezone)
         with self._store._lock:  # noqa: SLF001
             return (
                 self._store._require_conn()
@@ -318,15 +347,17 @@ class MemoryHabitBridge:
                     FROM review_records rr
                     JOIN memory_items mi ON mi.id = rr.item_id
                     LEFT JOIN decks d ON d.id = mi.deck_id
-                    WHERE substr(rr.reviewed_at, 1, 10) = ?
+                    WHERE datetime(rr.reviewed_at) >= ?
+                      AND datetime(rr.reviewed_at) < ?
                     GROUP BY mi.deck_id, d.name
                     """,
-                    (date,),
+                    (start_utc, end_utc),
                 )
                 .fetchall()
             )
 
     def _recitation_rows(self, date: str) -> list[Any]:
+        start_utc, end_utc = _date_utc_bounds(date, self._checkin_timezone)
         with self._store._lock:  # noqa: SLF001
             return (
                 self._store._require_conn()
@@ -338,10 +369,11 @@ class MemoryHabitBridge:
                     FROM recitation_attempts ra
                     JOIN memory_items mi ON mi.id = ra.passage_item_id
                     LEFT JOIN decks d ON d.id = mi.deck_id
-                    WHERE substr(ra.reviewed_at, 1, 10) = ?
+                    WHERE datetime(ra.reviewed_at) >= ?
+                      AND datetime(ra.reviewed_at) < ?
                     GROUP BY mi.deck_id, d.name
                     """,
-                    (date,),
+                    (start_utc, end_utc),
                 )
                 .fetchall()
             )
