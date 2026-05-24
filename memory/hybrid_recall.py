@@ -693,8 +693,8 @@ async def recall_by_time(
     from memory.recall import MemoryRecallReranker
     pool = MemoryRecallReranker._hard_filter(pool_raw)
 
-    # (距离秒数, -事件起点 epoch, doc) —— 距离近优先、同距离时近发生的优先。
-    scored: list[tuple[float, float, dict]] = []
+    # (距离秒数, 事件起点 s, doc) —— 距离近优先、同距离时近发生（s 大）优先。
+    scored: list[tuple[float, datetime, dict]] = []
     for d in pool:
         win = _entry_event_window(d)
         if win is None:
@@ -708,9 +708,13 @@ async def recall_by_time(
             dist = (win_start - e).total_seconds()
         else:
             dist = (s - win_end).total_seconds()
-        scored.append((dist, -s.timestamp(), d))
+        scored.append((dist, s, d))
 
-    scored.sort(key=lambda t: (t[0], t[1]))
+    # 次键用 (win_start - s) 这个 timedelta 升序 = s 降序（近发生的在前），
+    # 不用 datetime.timestamp()——naive datetime 的 timestamp 走本地时区、
+    # DST 边界含糊、pre-1970 在 Windows 还会 OSError，纯排序没必要冒这风险
+    # （Codex）。timedelta 直接可比，doc 不进 key 避免比较 dict。
+    scored.sort(key=lambda t: (t[0], win_start - t[1]))
     top = scored[:HYBRID_RECALL_TIME_BUDGET]
     results = [
         {
