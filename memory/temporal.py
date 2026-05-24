@@ -279,27 +279,34 @@ def _token_window(token: str) -> tuple[datetime, datetime] | None:
     token = (token or "").strip()
     if not token:
         return None
+    # 各分支把"窗口右界"的日期运算（+1 天 / 年月进位）也圈进 try：边界输入
+    # 如 9999-12-31 / 9999-12 / 9999 会让 timedelta / replace 越过 datetime.max
+    # 抛 OverflowError / ValueError，应当作"解析不出窗口"返回 None，而不是
+    # 把异常冒到上层（Codex）。
     try:
         d = datetime.strptime(token, '%Y-%m-%d')
         return (d, d + timedelta(days=1))
-    except ValueError:
+    except (ValueError, OverflowError):
         pass
     try:
         m = datetime.strptime(token, '%Y-%m')
         nxt = m.replace(year=m.year + 1, month=1) if m.month == 12 \
             else m.replace(month=m.month + 1)
         return (m, nxt)
-    except ValueError:
+    except (ValueError, OverflowError):
         pass
     try:
         y = datetime.strptime(token, '%Y')
         return (y, y.replace(year=y.year + 1))
-    except ValueError:
+    except (ValueError, OverflowError):
         pass
     parsed = to_naive_local(_parse_iso_safe(token))
     if parsed is not None:
         day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
-        return (day, day + timedelta(days=1))
+        try:
+            return (day, day + timedelta(days=1))
+        except OverflowError:
+            return None
     return None
 
 

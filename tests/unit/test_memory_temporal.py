@@ -194,6 +194,14 @@ def test_to_naive_local_converts_then_strips():
     assert to_naive_local(None) is None
 
 
+def test_parse_time_window_boundary_overflow_returns_none():
+    """边界输入让窗口右界越过 datetime.max（+1 天 / 年月进位）时返回 None，
+    不冒 OverflowError/ValueError 到上层（Codex）。"""
+    from memory.temporal import parse_time_window
+    for tok in ('9999-12-31', '9999-12', '9999', '9999-12-31T23:59:59'):
+        assert parse_time_window(tok) is None, tok
+
+
 def test_parse_time_window_tz_aware_token_returns_naive():
     """带 tz 的 ISO time token 不该崩，且返回 naive 区间。"""
     from memory.temporal import parse_time_window
