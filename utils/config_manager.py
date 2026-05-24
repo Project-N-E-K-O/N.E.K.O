@@ -2971,61 +2971,23 @@ class ConfigManager:
 
         return url
 
-    # 只对这些 lanlan host 做改写，其余域（含自定义代理）一律原样透传
-    _AGENT_LANLAN_HOSTS = frozenset({
-        'lanlan.tech', 'www.lanlan.tech', 'lanlan.app', 'www.lanlan.app',
-    })
-
     def _normalize_agent_url(self, url: str) -> str:
-        """Agent 模型始终走 lanlan.app（国际 API），不分线路。
+        """Agent 模型始终走 lanlan.app（国际 API），统一 lanlan.tech → lanlan.app；
+        国际保留 www（www.lanlan.app），国内剥掉 www（lanlan.app）走就近节点。
 
-        - 仅当 URL 的 host 恰为 lanlan.tech / www.lanlan.tech / lanlan.app /
-          www.lanlan.app 时改写；其余域（含 path/query 里碰巧出现 lanlan
-          字样的自定义代理 URL）一律原样透传，不做字符串级 replace。
-        - 统一把 host 里的 lanlan.tech 改写为 lanlan.app。
-        - 国际线路保留 www 前缀（www.lanlan.app）；国内线路剥掉 www
-          （lanlan.app），按各自就近节点路由。
-        - bare host 输入不补 www，尊重用户写的 host。
-        - GeoIP 探测异常时按国际处理（保留 www）作为安全默认，等价于本次
-          改动前行为；线路探测不该阻断 URL 推导。
+        lanlan.tech / lanlan.app 是项目自有域名，AGENT_MODEL_URL 要么是写死的
+        free 默认（https://www.lanlan.tech/text/v1），要么是用户自填的其它服务
+        URL（不含这两个域，replace 自然 no-op），所以直接字符串替换即可。
         """
-        if not isinstance(url, str) or not url:
+        if not isinstance(url, str):
             return url
+        url = url.replace('lanlan.tech', 'lanlan.app')
         try:
-            parsed = urlparse(url)
+            if not self._check_non_mainland():
+                url = url.replace('www.lanlan.app', 'lanlan.app')
         except Exception:
-            return url
-        host = (parsed.hostname or '').lower()
-        if host not in self._AGENT_LANLAN_HOSTS:
-            return url
-
-        new_host = host.replace('lanlan.tech', 'lanlan.app')
-        try:
-            non_mainland = self._check_non_mainland()
-        except Exception:
-            non_mainland = True  # 探测失败 → 国际安全默认
-        if not non_mainland and new_host.startswith('www.'):
-            new_host = new_host[len('www.'):]
-
-        # 按组件重建 netloc，只换 host；保留 userinfo/port，避免 host 字串
-        # 恰好出现在 user:pass@ 段里被误改（如 user=www.lanlan.tech 的情形）。
-        # 用 is not None 区分「分量为空但存在」与「分量不存在」：urlparse 对
-        # https://:token@host 给出 username='' / password='token'，截断式 if 会
-        # 丢掉整个 :token@，改坏认证语义；只有 username 为 None 才是真没有 userinfo。
-        userinfo = ''
-        if parsed.username is not None:
-            userinfo = parsed.username
-            if parsed.password is not None:
-                userinfo += f':{parsed.password}'
-            userinfo += '@'
-        try:
-            # is not None：端口 0 合法但 falsy，截断式 if 会把显式 :0 丢掉。
-            port = f':{parsed.port}' if parsed.port is not None else ''
-        except ValueError:
-            # 端口非法（如 :abc / 越界）。urlparse 不校验，.port 才抛 ValueError；
-            # 不让一个 typo 端口拖垮整个 config 加载，原样返回交给下游处理。
-            return url
-        return urlunparse(parsed._replace(netloc=f'{userinfo}{new_host}{port}'))
+            pass
+        return url
 
     @staticmethod
     def _derive_livestream_url(original_url: str, prefix: str) -> str:

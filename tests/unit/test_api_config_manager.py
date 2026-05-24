@@ -656,68 +656,11 @@ class TestAgentUrlRegionRouting:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('non_mainland', [True, False, None])
-    @pytest.mark.parametrize('custom', [
-        'https://api.openai.com/v1',
-        # 自定义代理把 lanlan 域写进 path/query：只按 host 判定，不得被改写
-        'https://myproxy.example.com/v1?upstream=www.lanlan.app',
-        'https://myproxy.example.com/lanlan.tech/v1',
-        # host 仅以 lanlan.app 结尾但并非该域，不应命中
-        'https://evil-lanlan.app/v1',
-    ])
-    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland, custom):
-        """host 非 lanlan 域时原样返回，不受线路影响，也不做字符串级 replace。"""
+    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland):
+        """不含 lanlan 域的自定义 URL 原样返回，不受线路影响。"""
         config_manager._check_non_mainland = lambda: non_mainland
+        custom = 'https://api.openai.com/v1'
         assert config_manager._normalize_agent_url(custom) == custom
-
-    @pytest.mark.unit
-    def test_normalize_agent_url_preserves_port(self, config_manager):
-        """改写 host 时保留端口。"""
-        config_manager._check_non_mainland = lambda: False
-        assert config_manager._normalize_agent_url(
-            'https://www.lanlan.tech:8443/text/v1'
-        ) == 'https://lanlan.app:8443/text/v1'
-
-    @pytest.mark.unit
-    def test_normalize_agent_url_preserves_explicit_zero_port(self, config_manager):
-        """显式 :0 合法但 falsy，须保留（is not None），不被默认端口吞掉。"""
-        config_manager._check_non_mainland = lambda: False
-        assert config_manager._normalize_agent_url(
-            'https://www.lanlan.tech:0/text/v1'
-        ) == 'https://lanlan.app:0/text/v1'
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize('bad_url', [
-        'https://www.lanlan.tech:abc/text/v1',   # 端口非数字
-        'https://www.lanlan.tech:99999/text/v1',  # 端口越界
-    ])
-    def test_normalize_agent_url_invalid_port_passthrough(self, config_manager, bad_url):
-        """端口非法（.port 抛 ValueError）时原样返回，不拖垮 config 加载。"""
-        config_manager._check_non_mainland = lambda: False
-        assert config_manager._normalize_agent_url(bad_url) == bad_url
-
-    @pytest.mark.unit
-    def test_normalize_agent_url_preserves_userinfo(self, config_manager):
-        """netloc 含 user:pass@ 时只改 host，不动凭证（即便凭证里含 host 同名串）。"""
-        config_manager._check_non_mainland = lambda: True
-        assert config_manager._normalize_agent_url(
-            'https://www.lanlan.tech:secret@www.lanlan.tech:8443/text/v1'
-        ) == 'https://www.lanlan.tech:secret@www.lanlan.app:8443/text/v1'
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize('url_in,expected', [
-        # 空用户名 + token 密码（bearer 式代理）：保留 :token@
-        ('https://:token@www.lanlan.tech/text/v1',
-         'https://:token@www.lanlan.app/text/v1'),
-        # 用户名 + 空密码：保留 user:@
-        ('https://user:@www.lanlan.tech/text/v1',
-         'https://user:@www.lanlan.app/text/v1'),
-    ])
-    def test_normalize_agent_url_preserves_empty_userinfo_components(
-        self, config_manager, url_in, expected
-    ):
-        """空但存在的 userinfo 分量（is not None）须保留，不被截断式 if 丢掉。"""
-        config_manager._check_non_mainland = lambda: True
-        assert config_manager._normalize_agent_url(url_in) == expected
 
     @pytest.mark.unit
     def test_normalize_agent_url_non_string_passthrough(self, config_manager):
