@@ -78,14 +78,22 @@ _PYNCM_AVAILABLE: bool | None = None  # None = 尚未尝试导入
 def _ensure_pyncm() -> bool:
     """首次调用时打补丁并 import pyncm_async，缓存结果。返回是否可用。"""
     global pyncm_async, GetTrackAudio, _PYNCM_AVAILABLE
-    if _PYNCM_AVAILABLE is not None:
-        return _PYNCM_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if _PYNCM_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if pyncm_async is not None and GetTrackAudio is not None:
+        _PYNCM_AVAILABLE = True
+        return True
     _patch_pyncm_async()
     try:
         import pyncm_async as _pyncm
         from pyncm_async.apis.track import GetTrackAudio as _GetTrackAudio
-        pyncm_async = _pyncm
-        GetTrackAudio = _GetTrackAudio
+        # 只补缺失的，保住测试可能注入的 mock。
+        if pyncm_async is None:
+            pyncm_async = _pyncm
+        if GetTrackAudio is None:
+            GetTrackAudio = _GetTrackAudio
         _PYNCM_AVAILABLE = True
     except Exception as _pyncm_err:
         pyncm_async = None  # type: ignore[assignment]

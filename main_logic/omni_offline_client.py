@@ -34,13 +34,13 @@ def _ensure_genai() -> bool:
     让其幂等，无副作用。
     """
     global _genai, _genai_types, _GENAI_AVAILABLE
+    # 显式强制不可用优先级最高（测试用它当强制降级开关）→ 即便对象已塞进全局也降级。
+    if _GENAI_AVAILABLE is False:
+        return False
     # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
     if _genai is not None and _genai_types is not None:
         _GENAI_AVAILABLE = True
         return True
-    # 已明确判定不可用 → 保持降级，不再尝试。
-    if _GENAI_AVAILABLE is False:
-        return False
     try:
         from google import genai as genai_mod
         from google.genai import types as genai_types_mod
@@ -56,7 +56,9 @@ def _ensure_genai() -> bool:
             _genai = None
             _genai_types = None
             _GENAI_AVAILABLE = False
-    return bool(_GENAI_AVAILABLE)
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让调用点在 None 上解引用 _genai_types。
+    return bool(_GENAI_AVAILABLE) and _genai is not None and _genai_types is not None
 
 
 # Hostname / model fragments that indicate the request should go through

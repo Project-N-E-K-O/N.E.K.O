@@ -49,13 +49,13 @@ def _ensure_gemini_sdk() -> bool:
     返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次（Python 模块缓存幂等）。
     """
     global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
+    # 显式强制不可用优先级最高 → 即便对象已塞进全局也降级。
+    if GEMINI_AVAILABLE is False:
+        return False
     # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
     if genai is not None and types is not None:
         GEMINI_AVAILABLE = True
         return True
-    # 已明确判定不可用 → 保持降级。
-    if GEMINI_AVAILABLE is False:
-        return False
     try:
         from google import genai as genai_mod
         from google.genai import types as types_mod
@@ -74,7 +74,9 @@ def _ensure_gemini_sdk() -> bool:
             genai = None
             types = None
             _emit_gemini_import_diagnostic(e)
-    return bool(GEMINI_AVAILABLE)
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让 _connect_gemini 在 None 上解引用 genai/types。
+    return bool(GEMINI_AVAILABLE) and genai is not None and types is not None
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")

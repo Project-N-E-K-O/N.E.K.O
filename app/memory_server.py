@@ -2842,7 +2842,7 @@ async def _periodic_reflection_synthesis_loop():
         await asyncio.sleep(interval)
 
 
-async def _bootstrap_embedding_worker(fact_store, persona_manager, reflection_engine) -> None:
+async def _bootstrap_embedding_worker() -> None:
     """ready 后在后台 bootstrap 向量预热 / 去重 worker。
 
     重 import（``memory.embedding_worker`` 拉起 embedding 栈 ~0.6s）和服务构造
@@ -2850,6 +2850,10 @@ async def _bootstrap_embedding_worker(fact_store, persona_manager, reflection_en
     不阻塞 event loop；``start()`` 是轻量的（只 ``create_task``），回到 loop 上调。
     worker 自带 warmup 延迟、向量不可用也会降级，所以从 memory 启动关键路径移出来
     对 greeting 零影响。
+
+    ⚠️ 故意**不**把 manager 作为参数传入：worker 的 getter（``lambda: persona_manager``
+    等）必须解析到模块全局，这样 /reload 重绑全局后下一轮 sweep 能看到新实例。
+    传参会让闭包捕获启动期的旧实例，绕过 worker 设计的 reload-staleness 防护。
     """
     global embedding_warmup_worker, fact_dedup_resolver
     try:
@@ -3037,9 +3041,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         # 就绪足足推后 ~1.3s（合并单进程下又被串行放大）。worker 本身是可选的、
         # 自带 warmup 延迟，greeting 不依赖向量——所以挪到后台 task，重活全程
         # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
-        _spawn_background_task(
-            _bootstrap_embedding_worker(fact_store, persona_manager, reflection_engine)
-        )
+        _spawn_background_task(_bootstrap_embedding_worker())
 
         _memory_runtime_init_completed = True
         logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")

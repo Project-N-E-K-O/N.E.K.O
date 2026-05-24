@@ -565,8 +565,13 @@ TRANSLATEPY_AVAILABLE: bool | None = None
 def _ensure_googletrans() -> bool:
     """首次调用时 import googletrans，缓存结果。返回是否可用。"""
     global Translator, GOOGLETRANS_AVAILABLE
-    if GOOGLETRANS_AVAILABLE is not None:
-        return GOOGLETRANS_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if GOOGLETRANS_AVAILABLE is False:
+        return False
+    # 已注入/导入过 Translator → 信任，不重导入。
+    if Translator is not None:
+        GOOGLETRANS_AVAILABLE = True
+        return True
     try:
         from googletrans import Translator as _GTrans
         Translator = _GTrans
@@ -584,8 +589,13 @@ def _ensure_googletrans() -> bool:
 def _ensure_translatepy() -> bool:
     """首次调用时 import translatepy 及中国大陆可访问的翻译器，缓存结果。"""
     global TranslatepyTranslator, CHINA_ACCESSIBLE_SERVICES, TRANSLATEPY_AVAILABLE
-    if TRANSLATEPY_AVAILABLE is not None:
-        return TRANSLATEPY_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if TRANSLATEPY_AVAILABLE is False:
+        return False
+    # 已注入/导入过（翻译器 + 服务列表都就位）→ 信任，不重导入。
+    if TranslatepyTranslator is not None and CHINA_ACCESSIBLE_SERVICES is not None:
+        TRANSLATEPY_AVAILABLE = True
+        return True
     try:
         from translatepy import Translator as _TPyTrans
         # 导入在中国大陆可直接访问的翻译服务
