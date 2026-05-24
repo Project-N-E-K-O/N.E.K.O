@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 from fastapi.testclient import TestClient
 
@@ -385,13 +385,17 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         mock_sync_reload.assert_awaited_once_with(fake_import_result)
         mock_set_root_mode.assert_called_once()
         mock_init_steam.assert_called_once_with()
-        mock_set_steamworks.assert_called_once_with(None)
+        # set_steamworks is wired twice on startup: init_shared_state seeds the
+        # shared registry with the current (None) handle, then runtime init
+        # publishes the freshly initialized handle. Under this mock
+        # initialize_steamworks returns None, so both calls carry None.
+        assert mock_set_steamworks.call_args_list == [call(None), call(None)]
         mock_default_steam_info.assert_called_once_with()
         bridge_start.assert_awaited_once_with()
         mock_set_main_bridge.assert_called_once()
         mock_mount_workshop.assert_awaited_once_with()
         fake_tracker.start_periodic_save.assert_called_once_with()
-        fake_tracker.record_app_start.assert_called_once_with()
+        fake_tracker.record_app_start.assert_called_once_with(process="main_server")
         assert main_server._preload_task is not None
 
 
