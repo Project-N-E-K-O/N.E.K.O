@@ -305,3 +305,111 @@ async def test_synth_concurrent_dedup_returns_empty(tmp_path):
         )
         # 我们这次没真正 save（dedup 命中跳过 append+save）
         assert save_called["n"] == 0
+
+
+# ── synth 失败退避 / dead-letter（用户审计 #2）────────────────────
+
+
+@pytest.mark.asyncio
+async def test_synth_failure_bumps_backoff_and_dead_letters(tmp_path):
+    """LLM 持续失败 → 每次 bump synth_backoff，达 MEMORY_LIVENESS_MAX_ATTEMPTS
+    后 synthesize 不再调 LLM（dead-letter），不再每 180s 原样空烧。"""
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+
+    mock_cm = _build_mock_cm(str(tmp_path))
+    _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
+
+    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        llm_call_count = {"n": 0}
+
+        async def _fake_ainvoke(self, prompt):
+            llm_call_count["n"] += 1
+            resp = MagicMock()
+            # 非 dict → 触发失败分支（non-dict response）
+            resp.content = "not a json object at all"
+            return resp
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw): pass
+            ainvoke = _fake_ainvoke
+
+            async def aclose(self):
+                return None
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("utils.language_utils.get_global_language", return_value="zh"):
+            # 调用 MAX + 3 次：前 MAX 次真正打 LLM 并 bump，之后 dead-letter 跳过
+            for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS + 3):
+                out = await re.synthesize_reflections("小天")
+                assert out == []
+
+        assert llm_call_count["n"] == MEMORY_LIVENESS_MAX_ATTEMPTS, (
+            f"dead-letter 后不应再调 LLM；实际调了 {llm_call_count['n']} 次"
+        )
+
+        # backoff 文件落了该 rid 的计数
+        from memory.reflection import _reflection_id_from_facts
+        rid = _reflection_id_from_facts(sorted(f"f{i}" for i in range(6)))
+        backoff = await re._aload_synth_backoff("小天")
+        assert backoff.get(rid) == MEMORY_LIVENESS_MAX_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_synth_success_clears_backoff(tmp_path):
+    """一次成功合成必须清掉该 rid 的失败退避记录（输入恢复正常即复活）。"""
+    mock_cm = _build_mock_cm(str(tmp_path))
+    fact_ids = [f"f{i}" for i in range(6)]
+    _write_unabsorbed_facts(str(tmp_path), "小天", fact_ids)
+
+    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine, _reflection_id_from_facts
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        rid = _reflection_id_from_facts(sorted(fact_ids))
+        # 预置一条失败退避记录
+        await re._abump_synth_backoff("小天", rid, "seed failure")
+        assert (await re._aload_synth_backoff("小天")).get(rid) == 1
+
+        async def _fake_ainvoke(self, prompt):
+            resp = MagicMock()
+            resp.content = '{"reflection": "主人 likes tea", "entity": "master"}'
+            return resp
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw): pass
+            ainvoke = _fake_ainvoke
+
+            async def aclose(self):
+                return None
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("utils.language_utils.get_global_language", return_value="zh"):
+            out = await re.synthesize_reflections("小天")
+            assert len(out) == 1
+
+        assert rid not in (await re._aload_synth_backoff("小天")), (
+            "成功合成后应清掉该 rid 的失败退避记录"
+        )

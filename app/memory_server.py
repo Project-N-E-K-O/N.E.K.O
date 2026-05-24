@@ -3271,6 +3271,30 @@ async def maybe_spawn_review(name: str) -> None:
                 f"[Review/spawn] {name}: 长挂机 bypass MIN_NEW_MSGS_FOR_REVIEW "
                 f"(new_msgs={new_msg_count}, idle={idle_secs:.0f}s)"
             )
+        # Gate 6: 失败退避（dead-letter）。review 连续失败 ≥
+        # MEMORY_LIVENESS_MAX_ATTEMPTS 次且**输入未变**（当前 history 末尾 K 条
+        # fingerprint == 上次失败时记下的）→ 跳过本次 spawn，不再每轮空烧
+        # 3×110s 超时。输入一变（master 发了新消息，尾部 fingerprint 变）→ 视为
+        # 新输入，清掉失败计数放行重试。
+        # 必须放在 Gate 5 之后：长挂机 bypass 在 correction 模型持续超时时会
+        # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.recent import build_review_fingerprint
+        state = _maint_state.setdefault(name, {})
+        fail_attempts = state.get('review_fail_attempts', 0) or 0
+        if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+            cur_fp = build_review_fingerprint(history)
+            if state.get('review_fail_fp') == cur_fp:
+                logger.debug(
+                    f"[Review/spawn] {name}: 失败退避 dead-letter "
+                    f"(连续失败 {fail_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS} "
+                    f"且输入未变)，跳过本轮"
+                )
+                return
+            # 输入已变 → 旧失败计数过期，复位后放行重试
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
+            await _asave_maint_state()
         # 全过 → spawn
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
@@ -3324,6 +3348,9 @@ async def _run_review_in_background(
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
             state['last_reviewed_cutoff_tail'] = fingerprint
+            # 成功 → 清掉失败退避计数（Gate 6）
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
         elif status == 'white':
             logger.info(
@@ -3332,9 +3359,27 @@ async def _run_review_in_background(
             state['last_reviewed_cutoff_tail'] = None
             # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
             # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
+            # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
+        elif cancel_event.is_set():
+            # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
+            # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
+            # 失败退避——否则用户频繁编辑记忆会被误判成 poison。
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理被取消（不计入失败退避）")
         else:
-            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
+            # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
+            # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
+            # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
+            from memory.recent import build_review_fingerprint
+            state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
+            state['review_fail_fp'] = build_review_fingerprint(snapshot)
+            logger.info(
+                f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
+                f"失败退避计数 → {state['review_fail_attempts']}"
+            )
+            await _asave_maint_state()
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:

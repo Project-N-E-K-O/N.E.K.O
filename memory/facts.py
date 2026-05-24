@@ -1410,6 +1410,12 @@ class FactStore:
             ok = await asyncio.to_thread(_apply_update)
         except Exception as e:
             logger.warning(f"[Recheck-Fact] {name} {fid}: save 失败: {e}")
+            # 落盘失败也计入 recheck_attempts：否则 cloudsave 维护态 / 只读 FS /
+            # 权限导致的持续写盘失败会让同一条 fact 每 30s 原样重判、熔断永不
+            # 触发（对齐上面 LLM 失败路径的 bump）。
+            await asyncio.to_thread(
+                self._bump_fact_recheck_attempts, name, fid, f"save failed: {e}",
+            )
             return False
         if ok:
             logger.info(
