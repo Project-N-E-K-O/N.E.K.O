@@ -169,6 +169,16 @@ def test_time_since_unknown_lang_falls_back_zh():
     assert out == '3 天前'
 
 
+def test_time_since_tz_aware_anchor_does_not_crash():
+    """tz-aware anchor（import/迁移路径会写 +00:00 / Z）不能因为和 naive
+    now 相减而 TypeError —— days_since 内部把 aware 转本地剥 tz（Codex）。"""
+    from memory.temporal import days_since, time_since_label
+    now = datetime(2026, 5, 20)
+    # 3 天前的 UTC aware 时间戳；只要不抛异常且落进合理桶即可
+    assert days_since('2026-05-17T00:00:00+00:00', now=now) is not None
+    assert time_since_label('2026-05-17T00:00:00+00:00', now=now, lang='zh').endswith('天前')
+
+
 # ── weighted sampling ──────────────────────────────────────────────
 
 

@@ -422,6 +422,20 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         res = await self._run_windowed("旅行 计划", facts, [], window)
         self.assertIn("by_created", [r["id"] for r in res["results"]])
 
+    async def test_time_window_anchor_prefers_event_end_over_created_at(self):
+        """锚点优先级 event_end_at → event_start_at → created_at：只有
+        event_end_at（无 start）的条目应按 end 入窗，不能拿写盘时间 created_at
+        误判。这里 event_end_at 在窗口内、created_at 在窗口外，必须命中。"""
+        from datetime import datetime
+        facts = [
+            {"id": "end_only", "text": "博士的旅行计划", "score": 1.0,
+             "event_end_at": "2026-05-20T10:00:00",   # 在五月窗口内
+             "created_at": "2026-07-01T10:00:00"},      # 写盘时间在窗口外
+        ]
+        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))
+        res = await self._run_windowed("旅行 计划", facts, [], window)
+        self.assertIn("end_only", [r["id"] for r in res["results"]])
+
     async def test_time_window_drops_entry_without_parseable_time(self):
         """无可解析时间戳的条目在时间检索下判为不在窗口内（宁漏不错挂）。"""
         from datetime import datetime

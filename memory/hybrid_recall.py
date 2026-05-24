@@ -423,21 +423,37 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
 
 
 def _entry_event_window(entry: dict):
-    """取条目的事件时间区间 ``(start, end)``（naive 本地，缺 start 退回
-    ``created_at``，缺 end 退回 start）。无可解析时间戳返回 None。
+    """取条目的事件时间区间 ``(start, end)``（naive 本地）。无可解析时间戳
+    返回 None。
 
-    fact / reflection 共用同一套锚点字段（schema v2），所以按时间过滤 /
-    排序时口径统一。归档 fact 也走这套。
+    锚点优先级和 persona 过时 block / ``temporal._past_anchor`` 一致——
+    ``event_end_at → event_start_at → created_at``。``created_at``（写盘时间）
+    只在完全没有事件时间时才兜底；只有 ``event_end_at`` 的条目用 end 当锚点，
+    不会被误判成无时间、也不会拿写盘时间入窗/排序（CodeRabbit）。
+
+    - 双端齐全 → [start, end]
+    - 只有 start → [start, start]
+    - 只有 end   → [end, end]
+    - 都没有     → [created_at, created_at]
+
+    fact / reflection 共用同一套锚点字段（schema v2），按时间过滤/排序口径
+    统一。归档 fact 也走这套。
     """
     from memory.temporal import _parse_iso_safe
-    s = _parse_iso_safe(entry.get('event_start_at')) or _parse_iso_safe(entry.get('created_at'))
-    if s is None:
+    start = _parse_iso_safe(entry.get('event_start_at'))
+    end = _parse_iso_safe(entry.get('event_end_at'))
+    created = _parse_iso_safe(entry.get('created_at'))
+    anchor = end or start or created
+    if anchor is None:
         return None
-    e = _parse_iso_safe(entry.get('event_end_at')) or s
+    s = start or anchor
+    e = end or anchor
     if s.tzinfo is not None:
         s = s.replace(tzinfo=None)
     if e.tzinfo is not None:
         e = e.replace(tzinfo=None)
+    if e < s:  # 防 manual edit / 迁移把 start/end 写反
+        s, e = e, s
     return (s, e)
 
 

@@ -192,12 +192,21 @@ def is_past_for_render(entry: dict, now: datetime | None = None) -> bool:
 # ── 距今多久 label（per Q-α: 0-6d 天 / 7-29d 周 / 30d+ 月） ──────────
 
 def days_since(anchor_iso: str | None, now: datetime | None = None) -> int | None:
-    """Return integer days from anchor to now（向下取整，0 day 也合法）。"""
+    """Return integer days from anchor to now（向下取整，0 day 也合法）。
+
+    anchor 可能是 tz-aware（import / 迁移路径会写 ``...+00:00`` / ``...Z``），
+    而 ``now`` 是 naive 本地时钟——直接相减会 ``TypeError``。这里把 aware
+    anchor 先转本地再剥 tz，naive 的照旧，保证两侧同为 naive 可减（Codex）。
+    """
     if now is None:
         now = datetime.now()
     anchor = _parse_iso_safe(anchor_iso)
     if anchor is None:
         return None
+    if anchor.tzinfo is not None:
+        anchor = anchor.astimezone().replace(tzinfo=None)
+    if now.tzinfo is not None:
+        now = now.astimezone().replace(tzinfo=None)
     return max(0, int((now - anchor).total_seconds() // 86400))
 
 
