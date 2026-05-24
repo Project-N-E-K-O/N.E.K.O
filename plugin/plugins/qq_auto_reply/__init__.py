@@ -19,12 +19,16 @@ from urllib.parse import urlparse
 
 from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin, plugin_entry, Ok, Err, SdkError, tr, ui
 
+from .feedback_classifier import QQFeedbackClassifier
+from .backlog_models import QQBacklogMessage
+from .backlog_store import QQBacklogStore
 from .config_store import QQAutoReplyConfigStore
 from .group_permission import GroupPermissionManager
 from .permission import PermissionManager
 from .prompting import QQAutoReplyPromptingMixin
 from .qq_client import QQClient
 from .session import QQAutoReplySessionMixin
+from .summary_builder import QQSummaryBuilder
 from .targets import QQAutoReplyTargetsMixin, QQAutoReplyValidationError
 
 
@@ -51,6 +55,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.logger = self.file_logger
         self.config_store = QQAutoReplyConfigStore(self.data_path())
         self._qq_settings: dict[str, Any] = self.config_store.default_config()
+        self.backlog_store = QQBacklogStore(
+            self.data_path(),
+            retention_limit=int(self._qq_settings.get("backlog_retention_limit", 200) or 200),
+        )
         self.qq_client: Optional[QQClient] = None
         self.permission_mgr: Optional[PermissionManager] = None
         self.group_permission_mgr: Optional[GroupPermissionManager] = None
@@ -75,6 +83,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._last_proactive_enabled = False
         self._last_proactive_send_at = 0.0
         self._last_proactive_greeting_at = 0.0
+        self._backlog_summary_threshold = 10
+        self._backlog_notify_cooldown_seconds = 900
+        self._backlog_issue_notify_threshold = 1
 
     def _refresh_admin_qq(self) -> None:
         self._admin_qq = None
@@ -89,6 +100,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _load_business_config(self) -> dict[str, Any]:
         self._qq_settings = await self.config_store.load()
+        self.backlog_store = QQBacklogStore(
+            self.data_path(),
+            retention_limit=int(self._qq_settings.get("backlog_retention_limit", 200) or 200),
+        )
         return dict(self._qq_settings)
 
     async def _ensure_business_config_initialized(self) -> dict[str, Any]:
@@ -126,6 +141,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._ai_connect_timeout_seconds = max(1.0, float(settings.get("ai_connect_timeout_seconds", 10.0) or 10.0))
         self._ai_turn_timeout_seconds = max(5.0, float(settings.get("ai_turn_timeout_seconds", 60.0) or 60.0))
         self._handler_shutdown_timeout_seconds = max(1.0, float(settings.get("handler_shutdown_timeout_seconds", 10.0) or 10.0))
+        self._backlog_summary_threshold = max(1, int(settings.get("backlog_summary_threshold", 10) or 10))
+        self._backlog_notify_cooldown_seconds = max(60, int(settings.get("backlog_notify_cooldown_seconds", 900) or 900))
+        self._backlog_issue_notify_threshold = max(1, int(settings.get("backlog_issue_notify_threshold", 1) or 1))
         self.qq_client = QQClient(
             onebot_url=str(settings.get("onebot_url") or "ws://127.0.0.1:3001"),
             token=str(settings.get("token") or ""),
@@ -322,6 +340,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "guide_step_runtime_done": bool(settings.get("guide_step_runtime_done", False)),
                 "normal_relay_probability": float(self._normal_relay_probability),
                 "truth_reply_probability": float(self._truth_reply_probability),
+                "backlog_labels": list(settings.get("backlog_labels") or []),
             },
             "guide": {
                 "step_napcat_done": bool(settings.get("napcat_directory")) and bool(self._napcat_process and self._napcat_process.returncode is None),
@@ -413,8 +432,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(f"REFRESH_FAILED: {self.i18n.t('errors.refresh_failed', default='{error}', error=str(e))}"))
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 OneBot、NapCat 与 UI 相关设置到 JSON 配置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_settings_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}}, "additionalProperties": False})
-    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_settings_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, **_):
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 OneBot、NapCat 与 UI 相关设置到 JSON 配置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_settings_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
+    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_settings_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
         if onebot_url is not None:
             self._qq_settings["onebot_url"] = str(onebot_url or "").strip()
         if token is not None:
@@ -444,6 +463,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._qq_settings["open_reply_probability"] = value
             self._qq_settings["truth_reply_probability"] = value
             self._truth_reply_probability = value
+        if backlog_labels is not None:
+            self._qq_settings["backlog_labels"] = self.config_store.normalize_backlog_labels(backlog_labels)
         success = await self._persist_business_config()
         if self.qq_client:
             self.qq_client.onebot_url = self._qq_settings.get("onebot_url", self.qq_client.onebot_url)
@@ -457,12 +478,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="add_trusted_user", label=tr("entries.add_trusted_user.name", default="添加信任用户"), refresh_context=True)
-    @plugin_entry(id="add_trusted_user", name=tr("entries.add_trusted_user.name", default="添加信任用户"), description=tr("entries.add_trusted_user.description", default="添加一个信任的 QQ 号到白名单。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "level": {"type": "string", "default": "trusted"}, "nickname": {"type": "string", "default": ""}}, "required": ["qq_number"]})
-    async def add_trusted_user(self, qq_number: str, level: str = "trusted", nickname: str = "", **_):
+    @plugin_entry(id="add_trusted_user", name=tr("entries.add_trusted_user.name", default="添加信任用户"), description=tr("entries.add_trusted_user.description", default="添加一个信任的 QQ 号到白名单。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "level": {"type": "string", "default": "trusted"}, "nickname": {"type": "string", "default": ""}, "normal_relay_probability": {"type": "number"}}, "required": ["qq_number"]})
+    async def add_trusted_user(self, qq_number: str, level: str = "trusted", nickname: str = "", normal_relay_probability: Optional[float] = None, **_):
         if not self.permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.permission_manager_not_initialized', default='权限管理器未初始化')}"))
         normalized_nickname = "" if level == "admin" else nickname
-        self.permission_mgr.add_user(qq_number, level, normalized_nickname)
+        if normal_relay_probability is not None:
+            value = float(normal_relay_probability)
+            if value < 0.0 or value > 1.0:
+                return Err(SdkError(f"INVALID_ARGUMENT: {self.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
+        self.permission_mgr.add_user(qq_number, level, normalized_nickname, normal_relay_probability=normal_relay_probability)
         self._refresh_admin_qq()
         await self._invalidate_private_session(qq_number)
         success = await self._persist_business_config()
@@ -502,11 +527,19 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="add_trusted_group", label=tr("entries.add_trusted_group.name", default="添加信任群聊"), refresh_context=True)
-    @plugin_entry(id="add_trusted_group", name=tr("entries.add_trusted_group.name", default="添加信任群聊"), description=tr("entries.add_trusted_group.description", default="添加一个信任的 QQ 群到白名单。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "level": {"type": "string", "default": "normal"}}, "required": ["group_id"]})
-    async def add_trusted_group(self, group_id: str, level: str = "normal", **_):
+    @plugin_entry(id="add_trusted_group", name=tr("entries.add_trusted_group.name", default="添加信任群聊"), description=tr("entries.add_trusted_group.description", default="添加一个信任的 QQ 群到白名单。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "level": {"type": "string", "default": "normal"}, "normal_relay_probability": {"type": "number"}, "open_reply_probability": {"type": "number"}}, "required": ["group_id"]})
+    async def add_trusted_group(self, group_id: str, level: str = "normal", normal_relay_probability: Optional[float] = None, open_reply_probability: Optional[float] = None, **_):
         if not self.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
-        self.group_permission_mgr.add_group(group_id, level)
+        if normal_relay_probability is not None:
+            value = float(normal_relay_probability)
+            if value < 0.0 or value > 1.0:
+                return Err(SdkError(f"INVALID_ARGUMENT: {self.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
+        if open_reply_probability is not None:
+            value = float(open_reply_probability)
+            if value < 0.0 or value > 1.0:
+                return Err(SdkError(f"INVALID_ARGUMENT: {self.i18n.t('errors.invalid_probability', default='open_reply_probability 必须在 0 到 1 之间')}"))
+        self.group_permission_mgr.add_group(group_id, level, normal_relay_probability=normal_relay_probability, open_reply_probability=open_reply_probability)
         success = await self._persist_business_config()
         payload = await self._build_dashboard_state()
         payload["persisted"] = success
@@ -673,6 +706,164 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         except Exception as exc:
             self.logger.error(f"Message handler task failed: {exc}")
 
+    async def _record_backlog_message(self, message: Dict[str, Any]) -> None:
+        message_type = str(message.get("message_type") or "").strip()
+        sender_id = str(message.get("user_id") or "").strip()
+        if not sender_id:
+            return
+        message_text = self._sanitize_message_text(str(message.get("content") or "").strip())
+        if not message_text:
+            return
+        sender_name = str(message.get("user_nickname") or sender_id).strip() or sender_id
+        message_id = str(message.get("message_id") or "")
+        timestamp = int(message.get("timestamp") or 0)
+        backlog_labels = list((self._qq_settings or {}).get("backlog_labels") or [])
+        category = QQFeedbackClassifier.classify(message_text, backlog_labels)
+
+        if message_type == "private":
+            permission_level = self.permission_mgr.get_permission_level(sender_id) if self.permission_mgr else "none"
+            if permission_level == "none":
+                return
+            conversation_key = self._build_session_key(sender_id=sender_id, is_group=False)
+            backlog_message = QQBacklogMessage(
+                conversation_key=conversation_key,
+                conversation_type="private",
+                source_id=sender_id,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                text=message_text,
+                message_id=message_id,
+                timestamp=timestamp,
+                permission_level=permission_level,
+                category=category,
+                raw=dict(message.get("raw") or {}),
+            )
+            display_name = self.permission_mgr.get_nickname(sender_id) if self.permission_mgr else None
+            await self.backlog_store.append_message(
+                backlog_message,
+                conversation_display_name=display_name or sender_name or sender_id,
+            )
+            return
+
+        if message_type != "group":
+            return
+        group_id = str(message.get("group_id") or "").strip()
+        if not group_id:
+            return
+        group_level = self.group_permission_mgr.get_group_level(group_id) if self.group_permission_mgr else "none"
+        if group_level == "none":
+            return
+        conversation_key = self._build_session_key(sender_id=sender_id, is_group=True, group_id=group_id)
+        backlog_message = QQBacklogMessage(
+            conversation_key=conversation_key,
+            conversation_type="group",
+            source_id=group_id,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            text=message_text,
+            message_id=message_id,
+            timestamp=timestamp,
+            group_id=group_id,
+            group_level=group_level,
+            is_at_bot=bool(message.get("is_at_bot")),
+            category=category,
+            raw=dict(message.get("raw") or {}),
+        )
+        display_name = self.permission_mgr.get_nickname(sender_id) if self.permission_mgr else None
+        await self.backlog_store.append_message(
+            backlog_message,
+            conversation_display_name=display_name or sender_name or sender_id,
+            group_display_name=f"QQ群 {group_id}",
+        )
+
+    @plugin_entry(id="get_backlog_summary", name=tr("entries.get_backlog_summary.name", default="获取 QQ backlog 摘要"), description=tr("entries.get_backlog_summary.description", default="返回当前按群聚合的未审阅消息与重点反馈摘要。"), input_schema={"type": "object", "properties": {}})
+    async def get_backlog_summary(self, **_):
+        state = await self.backlog_store.load()
+        label_defs = list((self._qq_settings or {}).get("backlog_labels") or [])
+        label_map = {str(item.get("id") or "").strip(): str(item.get("label") or item.get("id") or "").strip() for item in label_defs if isinstance(item, dict) and str(item.get("id") or "").strip()}
+        configured_groups = self.group_permission_mgr.list_groups() if self.group_permission_mgr else []
+        summaries = QQSummaryBuilder.build_all_group_summaries(state, label_map=label_map, configured_groups=configured_groups)
+        label_counts: dict[str, int] = {}
+        for item in summaries:
+            for label_id, count in dict(item.get("label_counts") or {}).items():
+                normalized_label_id = str(label_id or "").strip()
+                if not normalized_label_id:
+                    continue
+                label_counts[normalized_label_id] = label_counts.get(normalized_label_id, 0) + int(count or 0)
+        return Ok({
+            "groups": summaries,
+            "group_count": len(summaries),
+            "unread_count": sum(int(item.get("unread_count") or 0) for item in summaries),
+            "label_counts": label_counts,
+            "labels": [{
+                "id": str(item.get("id") or "").strip(),
+                "label": str(item.get("label") or item.get("id") or "").strip(),
+                "priority": int(item.get("priority") or 0),
+            } for item in label_defs if isinstance(item, dict) and str(item.get("id") or "").strip()],
+        })
+
+    @plugin_entry(id="get_group_backlog_detail", name=tr("entries.get_group_backlog_detail.name", default="获取群 backlog 详情"), description=tr("entries.get_group_backlog_detail.description", default="返回指定群当前未审阅 backlog 明细。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
+    async def get_group_backlog_detail(self, group_id: str, **_):
+        normalized_group_id = self._validate_group_id(group_id)
+        detail = await self.backlog_store.get_group_detail(normalized_group_id)
+        label_defs = list((self._qq_settings or {}).get("backlog_labels") or [])
+        detail["labels"] = [{
+            "id": str(item.get("id") or "").strip(),
+            "label": str(item.get("label") or item.get("id") or "").strip(),
+            "priority": int(item.get("priority") or 0),
+        } for item in label_defs if isinstance(item, dict) and str(item.get("id") or "").strip()]
+        return Ok(detail)
+
+    @plugin_entry(id="mark_group_backlog_reviewed", name=tr("entries.mark_group_backlog_reviewed.name", default="标记群 backlog 已审阅"), description=tr("entries.mark_group_backlog_reviewed.description", default="将指定群当前 backlog 标记为已审阅。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
+    async def mark_group_backlog_reviewed(self, group_id: str, **_):
+        normalized_group_id = self._validate_group_id(group_id)
+        state = await self.backlog_store.mark_group_reviewed(normalized_group_id)
+        configured_groups = self.group_permission_mgr.list_groups() if self.group_permission_mgr else []
+        summaries = QQSummaryBuilder.build_all_group_summaries(state, configured_groups=configured_groups)
+        return Ok({
+            "status": "reviewed",
+            "group_id": normalized_group_id,
+            "groups": summaries,
+        })
+
+    async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
+        if not self.qq_client or not self._admin_qq:
+            return
+        state = await self.backlog_store.load()
+        groups = dict(state.get("groups") or {})
+        conversations = dict(state.get("conversations") or {})
+        group = groups.get(group_id)
+        if not isinstance(group, dict):
+            return
+        unread_count = int(group.get("unread_count") or 0)
+        label_counts = dict(group.get("label_counts") or {})
+        issue_count = int(label_counts.get("issue") or 0)
+        feedback_count = int(label_counts.get("feedback") or 0)
+        mention_count = int(label_counts.get("mention") or 0)
+        if unread_count < self._backlog_summary_threshold and issue_count < self._backlog_issue_notify_threshold:
+            return
+        last_notified_at = int(group.get("last_notified_at") or 0)
+        now = int(time.time())
+        if now - last_notified_at < self._backlog_notify_cooldown_seconds:
+            return
+        summary = QQSummaryBuilder.build_group_summary(group, conversations, label_map={
+            str(item.get("id") or "").strip(): str(item.get("label") or item.get("id") or "").strip()
+            for item in list((self._qq_settings or {}).get("backlog_labels") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        })
+        highlights = list(summary.get("highlights") or [])[:3]
+        highlight_text = "；".join(highlights) if highlights else "暂无具体摘要"
+        notify_text = (
+            f"[QQ backlog 提醒] {summary.get('display_name') or ('QQ群 ' + group_id)}："
+            f"未审阅 {unread_count} 条，问题 {issue_count} 条，反馈 {feedback_count} 条，点名 {mention_count} 条。"
+            f"重点：{highlight_text}"
+        )
+        await self.qq_client.send_message(self._admin_qq, notify_text)
+        group["last_notified_at"] = now
+        groups[group_id] = group
+        state["groups"] = groups
+        await self.backlog_store.save(state)
+
     async def _process_messages(self):
         while self._running:
             try:
@@ -687,6 +878,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 await asyncio.sleep(1)
 
     async def _handle_message(self, message: Dict[str, Any]):
+        await self._record_backlog_message(message)
         message_type = message.get("message_type")
         sender_id = str(message.get("user_id") or "").strip()
         message_text = message.get("content", "")
@@ -703,13 +895,15 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             if session_key in self._user_sessions:
                 self._user_sessions[session_key]["last_activity_at"] = time.time()
             await self._handle_group_message(group_id, sender_id, message_text, is_at_bot, user_nickname)
+            await self._maybe_notify_backlog_summary(group_id=group_id)
 
     async def _handle_private_message(self, sender_id: str, message_text: str, user_nickname: Optional[str] = None):
         permission_level = self.permission_mgr.get_permission_level(sender_id)
         if permission_level == "none":
             return
         if permission_level == "normal":
-            await self._handle_normal_relay(message_text, sender_id, source_type="private", source_id=sender_id)
+            relay_probability = self.permission_mgr.get_normal_relay_probability(sender_id) if self.permission_mgr else None
+            await self._handle_normal_relay(message_text, sender_id, source_type="private", source_id=sender_id, relay_probability=relay_probability)
             return
         reply_text = await self._generate_reply(message_text, permission_level, sender_id, is_group=False, user_nickname=user_nickname)
         if reply_text:
@@ -720,12 +914,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if group_level == "none":
             return
         if group_level == "normal":
-            await self._handle_normal_relay(message_text, sender_id, source_type="group", source_id=group_id)
+            relay_probability = self.group_permission_mgr.get_normal_relay_probability(group_id) if self.group_permission_mgr else None
+            await self._handle_normal_relay(message_text, sender_id, source_type="group", source_id=group_id, relay_probability=relay_probability)
             return
         if group_level == "trusted" and not is_at_bot:
             return
-        if group_level == "open" and not is_at_bot and random.random() >= self._truth_reply_probability:
-            return
+        if group_level == "open" and not is_at_bot:
+            reply_probability = self.group_permission_mgr.get_open_reply_probability(group_id) if self.group_permission_mgr else None
+            effective_reply_probability = self._truth_reply_probability if reply_probability is None else reply_probability
+            if effective_reply_probability <= 0.0 or random.random() >= effective_reply_probability:
+                return
         reply_text = await self._generate_reply(message_text, group_level, sender_id, is_group=True, group_id=group_id, user_nickname=user_nickname)
         if reply_text:
             await self.qq_client.send_group_message(group_id, reply_text)
@@ -737,10 +935,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         text = re.sub(r"\[CQ:at,qq=(\d+)\]", r"@用户\1", text)
         return text
 
-    async def _handle_normal_relay(self, message_text: str, sender_id: str, source_type: str, source_id: str):
+    async def _handle_normal_relay(self, message_text: str, sender_id: str, source_type: str, source_id: str, relay_probability: Optional[float] = None):
         if not self.qq_client or not self._admin_qq or sender_id == self._admin_qq:
             return None
-        if self._normal_relay_probability <= 0.0 or random.random() >= self._normal_relay_probability:
+        effective_probability = self._normal_relay_probability if relay_probability is None else float(relay_probability)
+        if effective_probability <= 0.0 or random.random() >= effective_probability:
             return None
         message_text = self._sanitize_message_text(message_text)
         if source_type == "group":
