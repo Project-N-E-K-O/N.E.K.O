@@ -5481,7 +5481,6 @@ async def proactive_chat(request: Request):
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
             dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
             """
-            actual_model = (vision_model_name if use_vision and has_vision_model else conversation_model)
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
             human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
