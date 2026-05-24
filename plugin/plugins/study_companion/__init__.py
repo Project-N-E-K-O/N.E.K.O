@@ -2672,7 +2672,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._rapidocr_models_in_progress = True
         run_id = self._resolve_current_run_id(kwargs)
         try:
-            from plugin.plugins.galgame_plugin.rapidocr_support import (
+            from plugin.plugins._shared.rapidocr.rapidocr_support import (
                 download_rapidocr_models,
             )
 
