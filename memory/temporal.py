@@ -268,55 +268,63 @@ def time_since_label(
 def _token_window(token: str) -> tuple[datetime, datetime] | None:
     """把单个时间 token 解析成 [start, end) 半开区间（naive 本地时钟）。
 
-    粒度由 token 形态决定：
+    粒度由 token 形态决定（从细到粗）：
+      - ``YYYY-MM-DDTHH`` / ``YYYY-MM-DD HH`` → 整点小时 [HH:00, HH+1:00)
+      - 带分秒的 ISO（``2026-05-01T14:30:00``）→ 向下取整到所在那一小时
       - ``YYYY-MM-DD`` → 当日 [d 00:00, 次日 00:00)
       - ``YYYY-MM``    → 整月 [月初, 次月初)
       - ``YYYY``       → 整年 [年初, 次年初)
-      - 带时间的 ISO（``2026-05-01T14:00``）→ 退化成"所在那一天"
 
     无法解析返回 None。
     """
     token = (token or "").strip()
     if not token:
         return None
-    # 各分支把"窗口右界"的日期运算（+1 天 / 年月进位）也圈进 try：边界输入
-    # 如 9999-12-31 / 9999-12 / 9999 会让 timedelta / replace 越过 datetime.max
-    # 抛 OverflowError / ValueError，应当作"解析不出窗口"返回 None，而不是
-    # 把异常冒到上层（Codex）。
-    try:
-        d = datetime.strptime(token, '%Y-%m-%d')
-        return (d, d + timedelta(days=1))
-    except (ValueError, OverflowError):
-        pass
-    try:
-        m = datetime.strptime(token, '%Y-%m')
-        nxt = m.replace(year=m.year + 1, month=1) if m.month == 12 \
-            else m.replace(month=m.month + 1)
-        return (m, nxt)
-    except (ValueError, OverflowError):
-        pass
-    try:
-        y = datetime.strptime(token, '%Y')
-        return (y, y.replace(year=y.year + 1))
-    except (ValueError, OverflowError):
-        pass
+
+    def _next_month(x: datetime) -> datetime:
+        return x.replace(year=x.year + 1, month=1) if x.month == 12 \
+            else x.replace(month=x.month + 1)
+
+    def _commit(start: datetime, end_fn) -> tuple[datetime, datetime] | None:
+        # 一旦某个格式 strptime 命中，就锁定该粒度：右界运算（+1 小时/天 /
+        # 年月进位）越过 datetime.max 抛 OverflowError/ValueError 时返回 None，
+        # 不再降级到更细粒度（否则 9999-12-31 会被下面的小时兜底误救成 1 小时
+        # 窗），也不把异常冒到上层（Codex）。
+        try:
+            return (start, end_fn(start))
+        except (ValueError, OverflowError):
+            return None
+
+    # 精确格式从粗到细试，strptime 命中即 _commit 锁定粒度。
+    for fmt, end_fn in (
+        ('%Y-%m-%d',     lambda x: x + timedelta(days=1)),    # 整日
+        ('%Y-%m-%dT%H',  lambda x: x + timedelta(hours=1)),   # 整点小时（T）
+        ('%Y-%m-%d %H',  lambda x: x + timedelta(hours=1)),   # 整点小时（空格）
+        ('%Y-%m',        _next_month),                        # 整月
+        ('%Y',           lambda x: x.replace(year=x.year + 1)),  # 整年
+    ):
+        try:
+            start = datetime.strptime(token, fmt)
+        except ValueError:
+            continue
+        return _commit(start, end_fn)
+
+    # 兜底：带分秒的完整 ISO（含 tz）→ 向下取整到所在那一小时，精度到小时。
     parsed = to_naive_local(_parse_iso_safe(token))
     if parsed is not None:
-        day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
-        try:
-            return (day, day + timedelta(days=1))
-        except OverflowError:
-            return None
+        hour = parsed.replace(minute=0, second=0, microsecond=0)
+        return _commit(hour, lambda x: x + timedelta(hours=1))
     return None
 
 
 def parse_time_window(spec: str | None) -> tuple[datetime, datetime] | None:
     """把 recall 的 ``time`` 参数解析成 [start, end) 半开区间。
 
-    支持单 token（见 ``_token_window``）或日期区间——用 ``/`` 或 ``..``
-    分隔两个 token，窗口取两端的并集 [min(start), max(end))，所以
-    ``2026-05-01/2026-05-07`` 是含两端的整周、``2026-05/2026-06`` 是两个
-    整月。任一端解析失败则整体返回 None（调用方据此回退到语义检索）。
+    支持单 token（见 ``_token_window``，粒度可到小时如 ``2026-05-01T14``）或
+    区间——用 ``/`` 或 ``..`` 分隔两个 token，窗口取两端的并集
+    [min(start), max(end))，所以 ``2026-05-01/2026-05-07`` 是含两端的整周、
+    ``2026-05/2026-06`` 是两个整月、``2026-05-01T09/2026-05-01T18`` 是当天
+    9 点到 19 点。任一端解析失败则整体返回 None（调用方据此回退语义检索）。
     """
     if not isinstance(spec, str):
         return None

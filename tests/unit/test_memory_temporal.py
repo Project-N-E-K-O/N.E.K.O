@@ -194,6 +194,39 @@ def test_to_naive_local_converts_then_strips():
     assert to_naive_local(None) is None
 
 
+def test_parse_time_window_hour_granularity():
+    """整点小时 token → 1 小时窗口 [HH:00, HH+1:00)；T 和空格分隔都认。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    for tok in ('2026-05-01T14', '2026-05-01 14'):
+        assert parse_time_window(tok) == (
+            datetime(2026, 5, 1, 14), datetime(2026, 5, 1, 15)), tok
+
+
+def test_parse_time_window_iso_with_minutes_floors_to_hour():
+    """带分秒的 ISO 向下取整到所在那一小时（精度到小时）。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    assert parse_time_window('2026-05-01T14:37:12') == (
+        datetime(2026, 5, 1, 14), datetime(2026, 5, 1, 15))
+
+
+def test_parse_time_window_hour_range_union():
+    """小时区间取两端并集：当天 9 点到 19 点。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    assert parse_time_window('2026-05-01T09/2026-05-01T18') == (
+        datetime(2026, 5, 1, 9), datetime(2026, 5, 1, 19))
+
+
+def test_parse_time_window_date_still_whole_day():
+    """纯日期不带时间仍是整日窗口（不被小时分支误抢）。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    assert parse_time_window('2026-05-01') == (
+        datetime(2026, 5, 1), datetime(2026, 5, 2))
+
+
 def test_parse_time_window_boundary_overflow_returns_none():
     """边界输入让窗口右界越过 datetime.max（+1 天 / 年月进位）时返回 None，
     不冒 OverflowError/ValueError 到上层（Codex）。"""
@@ -203,13 +236,14 @@ def test_parse_time_window_boundary_overflow_returns_none():
 
 
 def test_parse_time_window_tz_aware_token_returns_naive():
-    """带 tz 的 ISO time token 不该崩，且返回 naive 区间。"""
+    """带 tz 的 ISO time token 不该崩，且返回 naive 区间。带分秒 → 精度到
+    小时（1 小时窗口），tz 先转本地再 floor。"""
     from memory.temporal import parse_time_window
     win = parse_time_window('2026-05-01T23:30:00+00:00')
     assert win is not None
     start, end = win
     assert start.tzinfo is None and end.tzinfo is None
-    assert (end - start).total_seconds() == 86400  # 仍是整一天窗口
+    assert (end - start).total_seconds() == 3600  # 精度到小时
 
 
 def test_time_since_tz_aware_anchor_does_not_crash():

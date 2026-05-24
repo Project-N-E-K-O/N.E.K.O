@@ -3839,7 +3839,8 @@ class QueryMemoryRequest(BaseModel):
     # 可选时间回溯：填了就把检索限定在该时间窗口。配合 query 时做"语义 +
     # 时间"联合检索（窗口内按 query 排序）；只给 time 时按事件时间返回最
     # 接近的 fact + reflection。格式见 memory.temporal.parse_time_window
-    # （单日 / 整月 / 整年 / 日期区间）。不填或解析失败则走常规全量语义检索。
+    # （整点小时 / 单日 / 整月 / 整年 / 区间）。不填或解析失败则走常规全量
+    # 语义检索。
     time: str | None = None
 
 
