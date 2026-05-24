@@ -542,6 +542,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             if value < 0.0 or value > 1.0:
                 return Err(SdkError(f"INVALID_ARGUMENT: {self.i18n.t('errors.invalid_probability', default='open_reply_probability 必须在 0 到 1 之间')}"))
         self.group_permission_mgr.add_group(group_id, level, normal_relay_probability=normal_relay_probability, open_reply_probability=open_reply_probability)
+        await self.backlog_store.ensure_group_placeholder(group_id, group_display_name=f"QQ群 {group_id}")
         success = await self._persist_business_config()
         payload = await self._build_dashboard_state()
         payload["persisted"] = success
@@ -553,6 +554,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not self.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
         self.group_permission_mgr.remove_group(group_id)
+        await self.backlog_store.remove_group_placeholder(group_id)
         success = await self._persist_business_config()
         payload = await self._build_dashboard_state()
         payload["persisted"] = success

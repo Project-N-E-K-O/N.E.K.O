@@ -150,6 +150,44 @@ class QQBacklogStore:
             await atomic_write_json_async(self._path, state)
             return state
 
+    async def ensure_group_placeholder(self, group_id: str, *, group_display_name: str | None = None) -> dict[str, Any]:
+        async with self._lock:
+            state = await self.load()
+            groups = state["groups"]
+            normalized_group_id = str(group_id or "").strip()
+            if not normalized_group_id:
+                return state
+            group = groups.get(normalized_group_id)
+            if not isinstance(group, dict):
+                group = QQGroupBacklog(
+                    group_id=normalized_group_id,
+                    display_name=group_display_name or f"QQ群 {normalized_group_id}",
+                ).to_dict()
+            else:
+                group["display_name"] = group_display_name or group.get("display_name") or f"QQ群 {normalized_group_id}"
+            groups[normalized_group_id] = group
+            state["groups"] = groups
+            await atomic_write_json_async(self._path, state)
+            return state
+
+    async def remove_group_placeholder(self, group_id: str) -> dict[str, Any]:
+        async with self._lock:
+            state = await self.load()
+            groups = state["groups"]
+            normalized_group_id = str(group_id or "").strip()
+            if not normalized_group_id:
+                return state
+            group = groups.get(normalized_group_id)
+            if not isinstance(group, dict):
+                return state
+            keys = list(group.get("conversation_keys") or [])
+            if keys:
+                return state
+            groups.pop(normalized_group_id, None)
+            state["groups"] = groups
+            await atomic_write_json_async(self._path, state)
+            return state
+
     async def get_group_detail(self, group_id: str) -> dict[str, Any]:
         state = await self.load()
         groups = state["groups"]

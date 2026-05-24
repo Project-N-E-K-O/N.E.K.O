@@ -221,7 +221,6 @@ const pluginId = 'qq_auto_reply';
             updateConfigGate();
             refreshGuideProgress();
             renderList();
-            renderBacklogReplyList();
             renderBacklogSummary();
             if (state.selectedBacklogGroupId) {
                 const exists = Array.isArray(state.backlogSummary?.groups) && state.backlogSummary.groups.some((item) => String(item.group_id || '') === state.selectedBacklogGroupId);
@@ -597,31 +596,6 @@ const pluginId = 'qq_auto_reply';
             renderBacklogLabelEditor();
         }
 
-        function renderBacklogReplyList() {
-            const container = document.getElementById('backlog-reply-list');
-            if (!container) {
-                return;
-            }
-            if (!state.backlogItems.length) {
-                container.innerHTML = `<div class="empty-state">${t('ui.backlog.reply.empty', '暂时没有可快捷回复的消息。')}</div>`;
-                return;
-            }
-            container.innerHTML = state.backlogItems.map((item, index) => {
-                const targetLabel = String(item.target_label || item.target_id || '-');
-                const originalMessage = String(item.original_message || '').trim() || t('ui.backlog.empty_message', '（空消息）');
-                const dateText = item.timestamp ? new Date(Number(item.timestamp) * 1000).toLocaleString() : t('ui.backlog.unknown_time', '未知时间');
-                return `
-                    <button class="backlog-message-item reply-action" type="button" onclick="openBacklogReplyModal(${index})">
-                        <div class="backlog-message-top">
-                            <span>${escapeHtml(targetLabel)}</span>
-                            <span>${escapeHtml(dateText)}</span>
-                        </div>
-                        <div class="backlog-message-text">${escapeHtml(originalMessage)}</div>
-                    </button>
-                `;
-            }).join('');
-        }
-
         function openBacklogReplyModal(index) {
             const item = state.backlogItems[index];
             if (!item) {
@@ -630,6 +604,22 @@ const pluginId = 'qq_auto_reply';
             state.activeReplyItem = item;
             document.getElementById('backlog-reply-target').textContent = String(item.target_label || item.target_id || '-');
             document.getElementById('backlog-reply-original').textContent = String(item.original_message || '');
+            document.getElementById('backlog-reply-input').value = '';
+            document.getElementById('backlog-reply-modal-overlay').classList.add('show');
+            document.getElementById('backlog-reply-modal').classList.add('show');
+        }
+
+        function openBacklogDetailReply(payload) {
+            try {
+                state.activeReplyItem = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            } catch {
+                state.activeReplyItem = null;
+            }
+            if (!state.activeReplyItem) {
+                return;
+            }
+            document.getElementById('backlog-reply-target').textContent = String(state.activeReplyItem.target_label || state.activeReplyItem.target_id || '-');
+            document.getElementById('backlog-reply-original').textContent = String(state.activeReplyItem.original_message || '');
             document.getElementById('backlog-reply-input').value = '';
             document.getElementById('backlog-reply-modal-overlay').classList.add('show');
             document.getElementById('backlog-reply-modal').classList.add('show');
@@ -778,7 +768,15 @@ const pluginId = 'qq_auto_reply';
                     return;
                 }
                 const sender = String(message.sender_name || message.sender_id || t('ui.backlog.unknown_sender', '未知用户'));
-                highlights.push(`${sender}（${labelMap[category] || category}）：${text}`);
+                highlights.push({
+                    sender,
+                    sender_id: String(message.sender_id || ''),
+                    category,
+                    categoryLabel: labelMap[category] || category,
+                    text,
+                    target_id: groupId,
+                    target_label: displayName,
+                });
             });
             const topHighlights = highlights.slice(0, 5);
             const messageItems = messages.length ? messages.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0)).map((message) => {
@@ -790,7 +788,13 @@ const pluginId = 'qq_auto_reply';
                 const dateText = timestamp ? new Date(timestamp * 1000).toLocaleString() : t('ui.backlog.unknown_time', '未知时间');
                 const meta = message._conversationName ? `${sender} · ${message._conversationName}` : sender;
                 return `
-                    <div class="backlog-message-item">
+                    <button class="backlog-message-item reply-action" type="button" onclick="openBacklogDetailReply(${escapeHtml(JSON.stringify({
+                        source_type: 'group',
+                        target_id: groupId,
+                        sender_id: String(message.sender_id || ''),
+                        target_label: displayName,
+                        original_message: text,
+                    }).replace(/"/g, '&quot;'))})">
                         <div class="backlog-message-top">
                             <span>${escapeHtml(meta)}</span>
                             <span>${escapeHtml(dateText)}</span>
@@ -799,11 +803,17 @@ const pluginId = 'qq_auto_reply';
                             <span class="backlog-chip ${escapeHtml(category)}">${escapeHtml(categoryLabel)}</span>
                         </div>
                         <div class="backlog-message-text">${escapeHtml(text)}</div>
-                    </div>
+                    </button>
                 `;
             }).join('') : `<div class="empty-state">${t('ui.backlog.no_messages', '这个群当前没有待审阅消息。')}</div>`;
             const highlightsHtml = topHighlights.length
-                ? `<div class="backlog-highlight-list">${topHighlights.map((item) => `<div class="backlog-highlight-item">${escapeHtml(item)}</div>`).join('')}</div>`
+                ? `<div class="backlog-highlight-list">${topHighlights.map((item) => `<button class="backlog-highlight-item reply-action" type="button" onclick="openBacklogDetailReply(${escapeHtml(JSON.stringify({
+                    source_type: 'group',
+                    target_id: item.target_id,
+                    sender_id: item.sender_id,
+                    target_label: item.target_label,
+                    original_message: item.text,
+                }).replace(/"/g, '&quot;'))})">${escapeHtml(`${item.sender}（${item.categoryLabel}）：${item.text}`)}</button>`).join('')}</div>`
                 : `<div class="empty-state">${t('ui.backlog.no_highlights', '暂时没有提炼出的重点摘要。')}</div>`;
             container.innerHTML = `
                 <div class="backlog-detail-header">
@@ -989,6 +999,65 @@ const pluginId = 'qq_auto_reply';
             openEntityForm(state.currentTab, item);
         }
 
+        function optimisticUpsertGroup(group) {
+            const normalizedGroupId = String(group?.group_id || '').trim();
+            if (!normalizedGroupId) {
+                return;
+            }
+            const nextGroup = {
+                ...group,
+                group_id: normalizedGroupId,
+            };
+            const existingIndex = state.groups.findIndex((item) => String(item.group_id || '') === normalizedGroupId);
+            if (existingIndex >= 0) {
+                state.groups[existingIndex] = { ...state.groups[existingIndex], ...nextGroup };
+            } else {
+                state.groups = [...state.groups, nextGroup];
+            }
+            const summary = state.backlogSummary || { groups: [], group_count: 0, unread_count: 0, label_counts: {}, labels: state.backlogLabels || [] };
+            const summaryGroups = Array.isArray(summary.groups) ? [...summary.groups] : [];
+            const summaryIndex = summaryGroups.findIndex((item) => String(item.group_id || '') === normalizedGroupId);
+            const summaryItem = {
+                group_id: normalizedGroupId,
+                display_name: String(group.display_name || group.group_name || `QQ群 ${normalizedGroupId}`),
+                unread_count: 0,
+                label_counts: {},
+                highlights: [],
+            };
+            if (summaryIndex >= 0) {
+                summaryGroups[summaryIndex] = { ...summaryGroups[summaryIndex], ...summaryItem };
+            } else {
+                summaryGroups.push(summaryItem);
+            }
+            state.backlogSummary = {
+                ...summary,
+                groups: summaryGroups,
+                group_count: summaryGroups.length,
+                unread_count: summaryGroups.reduce((sum, item) => sum + Number(item.unread_count || 0), 0),
+            };
+        }
+
+        function optimisticRemoveGroup(groupId) {
+            const normalizedGroupId = String(groupId || '').trim();
+            if (!normalizedGroupId) {
+                return;
+            }
+            state.groups = state.groups.filter((item) => String(item.group_id || '') !== normalizedGroupId);
+            if (state.backlogSummary && Array.isArray(state.backlogSummary.groups)) {
+                const nextGroups = state.backlogSummary.groups.filter((item) => String(item.group_id || '') !== normalizedGroupId);
+                state.backlogSummary = {
+                    ...state.backlogSummary,
+                    groups: nextGroups,
+                    group_count: nextGroups.length,
+                    unread_count: nextGroups.reduce((sum, item) => sum + Number(item.unread_count || 0), 0),
+                };
+            }
+            if (state.selectedBacklogGroupId === normalizedGroupId) {
+                state.selectedBacklogGroupId = '';
+                state.backlogDetail = null;
+            }
+        }
+
         async function submitEntityForm() {
             const number = document.getElementById('entity-number').value.trim();
             const level = document.getElementById('entity-level').value;
@@ -1028,9 +1097,18 @@ const pluginId = 'qq_auto_reply';
                     payload.open_reply_probability = openReplyProbability;
                 }
                 await callPlugin('add_trusted_group', payload);
-                await reloadDashboard();
+                optimisticUpsertGroup({
+                    group_id: groupId,
+                    level,
+                    ...(level === 'normal' && normalRelayProbability !== undefined ? { normal_relay_probability: normalRelayProbability } : {}),
+                    ...(level === 'open' && openReplyProbability !== undefined ? { open_reply_probability: openReplyProbability } : {}),
+                });
+                renderList();
+                renderBacklogSummary();
                 closeEntityForm();
                 showToast(t('ui.toast.saved', '设置已保存'));
+                await reloadDashboard();
+                await loadBacklogSummary();
             } catch (error) { showToast(error.message || t('ui.toast.save_failed', '保存失败')); }
         }
         async function deleteItem(index) {
@@ -1040,10 +1118,16 @@ const pluginId = 'qq_auto_reply';
                 if (!item) return;
                 if (state.currentTab === 'users') {
                     await callPlugin('remove_trusted_user', { qq_number: item.qq });
+                    await reloadDashboard();
                 } else {
                     await callPlugin('remove_trusted_group', { group_id: item.group_id });
+                    optimisticRemoveGroup(item.group_id);
+                    renderList();
+                    renderBacklogSummary();
+                    renderBacklogDetail();
+                    await reloadDashboard();
+                    await loadBacklogSummary();
                 }
-                await reloadDashboard();
                 showToast(t('ui.toast.saved', '设置已保存'));
             } catch (error) { showToast(error.message || t('ui.toast.save_failed', '保存失败')); }
         }
@@ -1051,7 +1135,7 @@ const pluginId = 'qq_auto_reply';
         window.addNewEntity = addNewEntity;
         window.deleteItem = deleteItem;
         window.editEntity = editEntity;
-        window.openBacklogReplyModal = openBacklogReplyModal;
+        window.openBacklogDetailReply = openBacklogDetailReply;
         window.openBacklogLabelEditModal = openBacklogLabelEditModal;
         window.updateBacklogLabelDraft = updateBacklogLabelDraft;
         window.addBacklogLabelDraft = addBacklogLabelDraft;

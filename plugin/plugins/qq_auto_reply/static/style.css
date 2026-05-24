@@ -89,6 +89,8 @@
         .backlog-detail-meta { color: var(--text-sub); font-size: 12px; }
         .backlog-highlight-list, .backlog-message-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
         .backlog-highlight-item { background: white; border-radius: 16px; padding: 12px 14px; border: 1px solid var(--border); line-height: 1.6; }
+        .backlog-highlight-item.reply-action { width: 100%; text-align: left; cursor: pointer; appearance: none; -webkit-appearance: none; transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
+        .backlog-highlight-item.reply-action:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(251,113,133,0.08); border-color: var(--primary); }
         .backlog-message-item { background: white; border-radius: 16px; padding: 12px 14px; border: 1px solid var(--border); }
         .backlog-message-item.reply-action { width: 100%; text-align: left; cursor: pointer; appearance: none; -webkit-appearance: none; transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
         .backlog-message-item.reply-action:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(251,113,133,0.08); border-color: var(--primary); }
