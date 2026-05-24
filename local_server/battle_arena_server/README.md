@@ -25,7 +25,8 @@ uv run local_server/battle_arena_server/server.py
 | POST | `/arena/join` | 上传羁绊列表，加入匹配队列 |
 | GET  | `/arena/status/{player_id}` | 轮询匹配结果 |
 | POST | `/arena/leave/{player_id}` | 离开房间 |
-| GET  | `/arena/forge-facts` | 奇遇铸造机：从 facts 随机抽取最多 5 条（`id` 唯一、`hash` 去重） |
+| GET  | `/arena/forge-facts` | 奇遇铸造机：从 NEKO 当前猫娘的 active facts 随机抽取 5 条候选（`id`/`hash` 去重，可排除已铸造来源） |
+| POST | `/arena/forge-card-story` | 奇遇铸造机：用 NEKO 核心 LLM 配置把 `storyLead` 生成卡牌专属小故事 |
 | GET  | `/health` | 健康检查 |
 
 ### `/arena/forge-facts`（奇遇铸造机卡池）
@@ -34,19 +35,23 @@ uv run local_server/battle_arena_server/server.py
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `character` | — | 猫娘名，与 NEKO 记忆目录 `{NEKO_MEMORY_DIR}/{character}/facts.json` 一致 |
+| `character` | — | 调试兼容参数；默认会被忽略，实际猫娘由 NEKO 当前选择解析。仅设置 `NEKO_BRAWL_ALLOW_CHARACTER_OVERRIDE=1` 时才允许覆盖 |
 | `min_importance` | `5` | 最低 importance |
-| `include_absorbed` | `false` | 是否包含已 `absorbed` 的事实 |
+| `include_absorbed` | `true` | 是否包含已 `absorbed` 的事实；active `facts.json` 中的 absorbed 不等于归档 |
+| `limit` | `5` | 本轮抽取候选事实数量，奇遇铸造机默认固定使用 5 条 |
+| `exclude_fact_ids` | — | 逗号分隔，排除已铸造过的 fact id，避免重复来源 |
+| `exclude_hashes` | — | 逗号分隔，排除已铸造过的 fact hash，避免不同 id 但内容重复 |
 
 **环境变量（二选一配置数据源；均未设置且无 URL 时返回空 `facts` + `error`）**
 
 | 变量 | 说明 |
 |------|------|
 | `NEKO_FACTS_JSON` | 指向单个 `facts.json` 的绝对路径（例如导出文件） |
-| `NEKO_MEMORY_DIR` | 记忆根目录；与 `character` 组合为 `{dir}/{character}/facts.json` |
-| `NEKO_FORGE_FACTS_URL` | （可选）优先 `GET` 该 URL；支持 `{character}` 占位；失败或空则回退读盘 |
+| `NEKO_MEMORY_DIR` | 调试/迁移用记忆根目录；正常情况下优先使用 NEKO 配置管理器当前 memory_dir |
+| `NEKO_BRAWL_ALLOW_CHARACTER_OVERRIDE` | 调试开关；设为 `1` 时才允许 `character` 覆盖当前猫娘 |
+| `NEKO_FORGE_FACTS_URL` | （可选）优先 `GET` 该 URL；支持 `{character}` 占位，占位值为解析后的当前猫娘；失败或空则回退读盘 |
 
-**响应** `application/json`：`{ "facts": [ { "id", "text", "importance", "entity" } ] }`，最多 5 条。无数据时可能含 `"error": "facts_source_not_configured"` 等。
+**响应** `application/json`：`{ "character": "当前猫娘", "factsSource": "neko-config", "facts": [ { "id", "text", "importance", "entity", "tags", "created_at", "hash" } ], "requestedLimit": 5, "returnedCount": 5 }`。无数据时可能含 `"error": "facts_source_not_configured"` 等。
 
 **curl 示例**
 
@@ -54,10 +59,67 @@ uv run local_server/battle_arena_server/server.py
 $env:NEKO_FACTS_JSON="C:\Users\你\Downloads\facts.json"
 uv run local_server/battle_arena_server/server.py
 # 另开终端
-curl "http://127.0.0.1:3001/arena/forge-facts?character=Yui"
+curl "http://127.0.0.1:3001/arena/forge-facts?limit=5"
 ```
 
+正常铸造流程不要传 `character`。NEKO 本体运行时的当前猫娘才是记忆归属来源，因为大乱斗邀请来自这只猫娘；前端展示名只用于 UI，不用于选择 facts 目录。
+
 **私密性**：facts 含个人化内容；请勿把本服务暴露到公网；日志不打印完整 `text`。
+
+### `/arena/forge-card-story`（卡牌故事生成）
+
+该接口的 LLM 调用逻辑集中在 `forge_story_generator.py`，`server.py` 只做路由转发。它复用 NEKO 主服务的模型配置与 `utils.llm_client.create_chat_llm()`，不在大乱斗内硬编码 OpenAI、Gemini、DeepSeek 等服务商差异。生成时会重新解析 NEKO 当前猫娘，并用这只猫娘的人格 prompt 与主人名写入故事提示词。
+
+**请求** `application/json`：
+
+```json
+{
+  "character": "N.E.K.O",
+  "storyLead": "从 active fact 抽取出的故事引子",
+  "sourceFactId": "fact_xxx",
+  "card": {
+    "baseCode": "C005",
+    "name": "还没认输呢(Forged)",
+    "type": "攻击",
+    "cost": 2,
+    "attrName": "热情",
+    "comboAttrName": "温柔",
+    "mainText": "对Boss造成2点伤害",
+    "comboText": "额外造成1点伤害"
+  }
+}
+```
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "story": "生成后的卡牌专属小故事",
+  "storyGenerationStatus": "ready",
+  "provider": "neko-core-summary",
+  "model": "当前 summary 模型",
+  "sourceFactId": "fact_xxx"
+}
+```
+
+`character` 只作为旧调用兼容字段；正常情况下故事生成仍以 NEKO 当前猫娘为准。如果模型未配置、超时或生成失败，会返回 `success: false`；前端会把该卡标记为 `failed`，成功时才把 LLM 返回内容写入 `story` / `summary` 作为真正卡牌故事。
+
+### 真实奇遇铸卡接入说明
+
+当前 `/arena/forge-facts` 只负责把可用的 facts / 自身故事候选项读出来，返回给前端作为“奇遇铸造机”的事件卡槽；真正的 Forged 战斗卡仍由前端 `createForgedBrawlCard()` 根据选中的事件生成。
+
+现阶段的铸卡规则是原型实现：
+
+- 奇遇事件优先来自 `/arena/forge-facts` 返回的 `text`，前端会把它映射成卡牌的 `storyLead`，即“故事引子”，不会直接当作最终 `story`。
+- 当前已经接入 NEKO 核心 LLM：使用 `storyLead` + 基础卡信息（卡名、费用、主属性、主效果、Combo 效果）生成卡牌专属小故事，再写入 `story` / `summary`。
+- 如果 facts 未配置、匹配服务未启动或没有可用数据，前端会回退到硬编码的临时事件池。
+- 战斗卡效果暂时从 C001-C013 基础卡中选择；卡名、费用、主属性、主效果和 Combo 效果跟随基础卡编号。
+- Combo 属性目前随机；后续可以改成由 facts 内容、规则表或 LLM 评估决定。
+- Forged 卡名必须保留 `(Forged)` 后缀，方便在组卡、战斗和日志中识别。
+- 当前 Forged 卡保存在浏览器 localStorage，后续需要确认是否改为角色/账户级持久化，并决定同一 fact 是否允许重复铸造。
+
+facts 的真实位置已经由后端统一解析：默认读取 NEKO 配置管理器里的 memory_dir 和当前猫娘，组合为 `{memory_dir}/{当前猫娘}/facts.json`。NEKO 本体需要运行或至少保持当前配置准确，是因为“当前猫娘”代表这次邀请玩家进入大乱斗的主体；铸造机抽取记忆时必须跟随这只猫娘，而不是跟随前端临时展示名或硬编码路径。
 
 ## 本地调试
 

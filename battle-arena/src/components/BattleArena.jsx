@@ -5,8 +5,11 @@ import NekoCard from './NekoCard'
 import BattleLog from './BattleLog'
 import BottomTicker from './BottomTicker'
 import CardGamePanel from './CardGamePanel'
-import DeckBuilderPanel from './DeckBuilderPanel'
+import DeckBuilderPanel from './neko-brawl/DeckBuilderPanel'
+import DeckLibraryPanel from './neko-brawl/DeckLibraryPanel'
+import { playNekoBrawlSceneBgm, stopNekoBrawlBgm } from './neko-brawl/nekoBrawlAudio'
 import {
+  composeForgedCardStory,
   createForgedBrawlCard,
   loadForgedBrawlCards,
   saveForgedBrawlCards,
@@ -187,16 +190,28 @@ function pickUniqueForgeSlots() {
     .slice(0, 5)
 }
 
-/** 将 /arena/forge-facts 返回项映射为铸造机卡槽（与 FORGE_EVENT_POOL 项同形） */
-function mapApiFactsToForgeSlots(facts) {
+/** 将 /arena/forge-facts 返回项映射为铸造机卡槽：fact 只作为故事引子，不直接当作最终卡牌故事。 */
+function mapApiFactsToForgeSlots(facts, source = {}) {
   return facts.map((f) => {
     const text = typeof f.text === 'string' ? f.text : ''
-    const name = text.length > 36 ? `${text.slice(0, 36)}…` : text || '（无文案）'
+    const shortText = text.length > 24 ? `${text.slice(0, 24)}…` : text || '（无文案）'
     const rawId = f.id != null && f.id !== '' ? String(f.id) : ''
     return {
-      id: rawId || `fact-${Date.now()}-${Math.random()}`,
-      name,
-      summary: text,
+      id: rawId ? `fact-slot-${rawId}` : `fact-${Date.now()}-${Math.random()}`,
+      name: `记忆事件：${shortText}`,
+      summary: `故事引子：${text || '暂无可用 fact 文本'}`,
+      storyLead: text,
+      factText: text,
+      sourceKind: 'fact',
+      sourceCharacter: source.character || '',
+      sourceFactId: rawId || null,
+      sourceFactHash: f.hash || '',
+      factMeta: {
+        entity: f.entity || '',
+        importance: f.importance ?? null,
+        tags: Array.isArray(f.tags) ? f.tags : [],
+        createdAt: f.created_at || null,
+      },
     }
   })
 }
@@ -215,6 +230,68 @@ function rollForgeRarity() {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
+}
+
+function buildForgeStoryRequest(card, event, character) {
+  return {
+    character: character || event?.sourceCharacter || '',
+    storyLead: card?.storyLead || event?.storyLead || event?.factText || event?.summary || '',
+    sourceFactId: card?.sourceFactId || event?.sourceFactId || null,
+    sourceEventName: card?.sourceEventName || event?.name || '',
+    card: {
+      baseCode: card?.baseCode || '',
+      name: card?.name || card?.title || '',
+      type: card?.type || '',
+      cost: card?.cost ?? '',
+      attrName: card?.attrName || card?.attribute || '',
+      comboAttrName: card?.comboAttrName || '',
+      mainText: card?.mainText || '',
+      comboText: card?.comboText || '',
+    },
+  }
+}
+
+async function requestForgeCardStory(card, event, character) {
+  if (!card?.storyLead && !event?.storyLead && !event?.factText && !event?.summary) return null
+  try {
+    const res = await fetch('/arena/forge-card-story', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildForgeStoryRequest(card, event, character)),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data?.success || !data?.story) return null
+    const story = composeForgedCardStory(card?.storyLead || event?.storyLead || event?.factText || event?.summary || '', data.story, card)
+    return {
+      story,
+      summary: story,
+      storyGenerationStatus: data.storyGenerationStatus || 'ready',
+      storyGeneratedAt: Date.now(),
+      storyModel: data.model || '',
+      storyProvider: data.provider || '',
+    }
+  } catch {
+    return null
+  }
+}
+
+async function createForgedCardWithLlmStory(event, character, options = {}) {
+  const card = createForgedBrawlCard(event, options)
+  const storyPatch = await requestForgeCardStory(card, event, character)
+  if (!storyPatch) {
+    const story = composeForgedCardStory(card.storyLead, '', card)
+    return {
+      ...card,
+      story,
+      summary: story,
+      storyGenerationStatus: 'temporary-fallback',
+      storyError: 'LLM story generation failed',
+    }
+  }
+  return {
+    ...card,
+    ...storyPatch,
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,7 +320,8 @@ export default function BattleArena() {
   const [forgedBondCard, setForgedBondCard] = useState(null)
   const [showForgeMachine, setShowForgeMachine] = useState(false)
   const [forgeMachineSlots, setForgeMachineSlots] = useState(() => pickUniqueForgeSlots())
-  const [machinePhase, setMachinePhase] = useState('idle') // idle | confirming | burning | floating | flipping | revealed
+  const [machinePhase, setMachinePhase] = useState('idle') // idle | confirming | burning | floating | storyGenerating | flipping | revealed
+  const [machineStoryStatus, setMachineStoryStatus] = useState('')
   const [machinePickedId, setMachinePickedId] = useState(null)
   const [machineForgedCard, setMachineForgedCard] = useState(null)
   const [forgedInventory, setForgedInventory] = useState(() => loadForgedBrawlCards()) // 铸造完成的卡片仓库
@@ -256,6 +334,7 @@ export default function BattleArena() {
   const [showIdlePicker, setShowIdlePicker] = useState(false)
   const [showCardGame, setShowCardGame] = useState(false) // 猫娘大乱斗(卡牌)面板
   const [showDeckBuilder, setShowDeckBuilder] = useState(false) // 猫娘大乱斗战斗前组卡界面
+  const [showDeckLibrary, setShowDeckLibrary] = useState(false) // 猫娘大乱斗卡组仓库界面
   const [cardGameSession, setCardGameSession] = useState(0)
   const [cardGameLoading, setCardGameLoading] = useState(false)
   const [cardGameLoadProgress, setCardGameLoadProgress] = useState(0)
@@ -289,13 +368,28 @@ export default function BattleArena() {
 
   const openDeckBuilder = useCallback(() => {
     if (cardGameLoading) return
+    setShowDeckLibrary(false)
     setShowDeckBuilder(true)
+  }, [cardGameLoading])
+
+  const openDeckLibrary = useCallback(() => {
+    if (cardGameLoading) return
+    setShowDeckBuilder(false)
+    setShowDeckLibrary(true)
   }, [cardGameLoading])
 
   const startCardGameFromDeckBuilder = useCallback(() => {
     setShowDeckBuilder(false)
     openCardGame()
   }, [openCardGame])
+
+  const handleDeleteForgedCard = useCallback((card) => {
+    if (!card) return
+    setForgedInventory(prev => prev.filter(item => (
+      item.id !== card.id &&
+      item.code !== card.code
+    )))
+  }, [])
 
   useEffect(() => {
     if (!cardGameLoading) return
@@ -335,20 +429,66 @@ export default function BattleArena() {
     }
   }, [cardGameLoading])
 
+  const activeNekoBgmScene = cardGameLoading || showCardGame
+    ? 'battle'
+    : showDeckBuilder
+      ? 'deckBuilder'
+      : showDeckLibrary
+        ? 'deckLibrary'
+        : 'home'
+
+  useEffect(() => {
+    // 当前场景 BGM 是暂时占位实装用声音，不是最终结果；替换正式版 BGM 时请注明“正式版 BGM”。
+    playNekoBrawlSceneBgm(activeNekoBgmScene)
+  }, [activeNekoBgmScene])
+
+  useEffect(() => {
+    return () => stopNekoBrawlBgm()
+  }, [])
+
   const handleMachineCardClick = useCallback(async (slotId) => {
     if (machinePhase === 'idle') {
       setMachinePickedId(slotId)
+      setMachineStoryStatus('')
       setMachinePhase('confirming')
     } else if (machinePhase === 'confirming' && machinePickedId === slotId) {
+      const pickedSlot = forgeMachineSlots.find(s => s.id === slotId)
+      if (!pickedSlot || hasForgedRef.current) return
+      hasForgedRef.current = true
       setMachinePhase('burning')
       await sleep(900)
       setMachinePhase('floating')
       await sleep(800)
+      setMachineStoryStatus('正在根据原始引子生成卡牌故事…')
+      setMachinePhase('storyGenerating')
+      // TODO: [铸造任务兜底持久化]
+      // 当前前端只通过禁用关闭按钮避免普通点击打断，但无法防止刷新、强制关闭窗口、浏览器崩溃等情况。
+      // 后续服务端化时，进入 storyGenerating 前应创建可恢复的 forge job，并记录事件引子、基础卡、token 调用状态和生成结果。
+      // 即使用户强制关闭页面，只要 token 已消耗或故事已生成，也必须由后端兜底把成品卡写入组卡可见的卡牌收藏/仓库，避免“调用成功但卡丢失”。
+      const rarity = rollForgeRarity()
+      const [forgedCard] = await Promise.all([
+        createForgedCardWithLlmStory(pickedSlot, pickedSlot.sourceCharacter || ''),
+        sleep(1400),
+      ])
+      const storedCard = {
+        ...forgedCard,
+        attribute: forgedCard.attrName,
+        rarity: rarity.name,
+        rarityStyle: rarity.tagStyle,
+        rarityFrame: rarity.frame,
+      }
+      setMachineStoryStatus('故事已写入卡面，准备完成铸造…')
+      setMachineForgedCard(storedCard)
+      setForgedInventory(prev => [
+        ...prev,
+        storedCard,
+      ])
       setMachinePhase('flipping')
-      await sleep(1200)
+      await sleep(650)
       setMachinePhase('revealed')
     } else if (machinePhase === 'confirming') {
       setMachinePickedId(slotId)
+      setMachineStoryStatus('')
     }
   }, [machinePhase, machinePickedId, forgeMachineSlots])
 
@@ -371,51 +511,38 @@ export default function BattleArena() {
 
   const loadForgeMachineSlots = useCallback(async () => {
     const qs = new URLSearchParams()
-    if (nameLeft) qs.set('character', nameLeft)
+    // 不传 character：奇遇铸造机的记忆来源必须由后端从 NEKO 当前猫娘解析，
+    // 避免大厅展示名、旧状态或测试名误导 facts 读取。
+    // active facts 里的 absorbed 只表示已进入长期事实层，不代表归档；奇遇铸造机应读取当前 facts.json 的可用事实。
+    qs.set('include_absorbed', 'true')
+    // 奇遇铸造机默认每轮抽取 5 条候选 fact；已铸造过的 fact id/hash 会排除，避免重复生成同一记忆来源。
+    qs.set('limit', '5')
+    const usedFactIds = forgedInventory.map(card => card.sourceFactId).filter(Boolean)
+    const usedFactHashes = forgedInventory.map(card => card.sourceFactHash).filter(Boolean)
+    if (usedFactIds.length > 0) qs.set('exclude_fact_ids', Array.from(new Set(usedFactIds)).join(','))
+    if (usedFactHashes.length > 0) qs.set('exclude_hashes', Array.from(new Set(usedFactHashes)).join(','))
     try {
       const res = await fetch(`/arena/forge-facts?${qs.toString()}`)
       if (!res.ok) throw new Error('forge-facts http')
       const data = await res.json()
       const facts = Array.isArray(data.facts) ? data.facts : []
       if (facts.length > 0) {
-        return mapApiFactsToForgeSlots(facts)
+        return mapApiFactsToForgeSlots(facts, { character: data.character || '' })
       }
     } catch {
       /* 匹配服未配置或未启动 */
     }
     return pickUniqueForgeSlots()
-  }, [nameLeft])
+  }, [forgedInventory])
 
   const resetForgeMachine = useCallback(() => {
     setMachinePhase('idle')
     setMachinePickedId(null)
     setMachineForgedCard(null)
+    setMachineStoryStatus('')
     hasForgedRef.current = false
     void loadForgeMachineSlots().then(setForgeMachineSlots)
   }, [loadForgeMachineSlots])
-
-  useEffect(() => {
-    if (machinePhase === 'revealed' && machinePickedId && !hasForgedRef.current) {
-      hasForgedRef.current = true
-      const pickedSlot = forgeMachineSlots.find(s => s.id === machinePickedId)
-      if (pickedSlot) {
-        const rarity = rollForgeRarity()
-        const forgedCard = createForgedBrawlCard(pickedSlot)
-        const storedCard = {
-          ...forgedCard,
-          attribute: forgedCard.attrName,
-          rarity: rarity.name,
-          rarityStyle: rarity.tagStyle,
-          rarityFrame: rarity.frame,
-        }
-        setMachineForgedCard(storedCard)
-        setForgedInventory(prev => [
-          ...prev,
-          storedCard,
-        ])
-      }
-    }
-  }, [machinePhase, machinePickedId, forgeMachineSlots])
 
   useEffect(() => {
     saveForgedBrawlCards(forgedInventory)
@@ -651,8 +778,8 @@ export default function BattleArena() {
     const enchantment = FORGE_ENCHANTMENTS[Math.floor(Math.random() * FORGE_ENCHANTMENTS.length)]
     const attribute = FORGE_CARD_ATTRIBUTES[Math.floor(Math.random() * FORGE_CARD_ATTRIBUTES.length)]
     const rarity = rollForgeRarity()
-    const forgedCard = createForgedBrawlCard(selectedForgeEvent)
-    setForgedBondCard({
+    const forgedCard = await createForgedCardWithLlmStory(selectedForgeEvent, selectedForgeEvent.sourceCharacter || '')
+    const displayCard = {
       ...forgedCard,
       id: `${selectedForgeEvent.id}-${Date.now()}`,
       title: `${selectedForgeEvent.name}（${attribute}）+${enchantment}`,
@@ -665,18 +792,20 @@ export default function BattleArena() {
       attribute,
       counterRule: FORGE_ATTRIBUTE_COUNTERS[attribute],
       enchantment,
-    })
+    }
+    const storedCard = {
+      ...forgedCard,
+      attribute,
+      rarity: rarity.name,
+      rarityStyle: rarity.tagStyle,
+      rarityFrame: rarity.frame,
+      enchantment,
+      counterRule: FORGE_ATTRIBUTE_COUNTERS[attribute],
+    }
+    setForgedBondCard(displayCard)
     setForgedInventory(prev => [
       ...prev,
-      {
-        ...forgedCard,
-        attribute,
-        rarity: rarity.name,
-        rarityStyle: rarity.tagStyle,
-        rarityFrame: rarity.frame,
-        enchantment,
-        counterRule: FORGE_ATTRIBUTE_COUNTERS[attribute],
-      },
+      storedCard,
     ])
     setForging(false)
   }
@@ -758,6 +887,17 @@ export default function BattleArena() {
           >
             <span className="text-sm">▦</span>
             <span>组卡</span>
+          </motion.button>
+
+          {/* 猫娘大乱斗 - 卡组仓库 */}
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={openDeckLibrary}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-orange-50 border border-orange-200 text-xs text-orange-700 hover:bg-orange-100 transition-all"
+          >
+            <span className="text-sm">▣</span>
+            <span>卡组仓库</span>
           </motion.button>
 
           {/* 猫猫的地牢探险(beta) */}
@@ -1350,46 +1490,69 @@ export default function BattleArena() {
                 <button
                   type="button"
                   onClick={() => {
+                    if (machinePhase !== 'idle' && machinePhase !== 'confirming' && machinePhase !== 'revealed') return
                     setShowForgeMachine(false)
                     resetForgeMachine()
                   }}
-                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+                  disabled={machinePhase !== 'idle' && machinePhase !== 'confirming' && machinePhase !== 'revealed'}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   关闭
                 </button>
               </div>
 
-              {/* 卡片区 — floating/flipping/revealed 阶段只显示选中卡 */}
-              {(machinePhase === 'floating' || machinePhase === 'flipping' || machinePhase === 'revealed') ? (
+              {/* 卡片区：floating/storyGenerating/flipping/revealed 阶段只显示选中卡 */}
+              {(machinePhase === 'floating' || machinePhase === 'storyGenerating' || machinePhase === 'flipping' || machinePhase === 'revealed') ? (
                 <div className="flex flex-col items-center justify-center px-5 pb-8 pt-4 min-h-[400px]">
                   <motion.div
                     initial={{ y: 0, scale: 1 }}
                     animate={
                       machinePhase === 'floating'
                         ? { y: -20, scale: 1.15 }
+                        : machinePhase === 'storyGenerating'
+                        ? { y: -28, scale: 1.18, rotateY: [0, 360], boxShadow: '0 0 60px rgba(168,85,247,0.45)' }
                         : machinePhase === 'flipping'
-                        ? { y: -20, scale: 1.15, rotateY: 180 }
+                        ? { y: -20, scale: 1.15, rotateY: 360 }
                         : { y: 0, scale: 1.1, rotateY: 360 }
                     }
-                    transition={{ duration: machinePhase === 'flipping' ? 1.0 : 0.6, ease: 'easeInOut' }}
+                    transition={
+                      machinePhase === 'storyGenerating'
+                        ? { rotateY: { duration: 0.9, repeat: Infinity, ease: 'linear' }, y: { duration: 0.45 }, scale: { duration: 0.45 }, boxShadow: { duration: 0.45 } }
+                        : { duration: machinePhase === 'flipping' ? 0.65 : 0.6, ease: 'easeInOut' }
+                    }
                     style={{ perspective: 800 }}
                     className="w-[180px] rounded-2xl border border-violet-400/50 bg-slate-950/80 p-4 flex flex-col items-center min-h-[300px] shadow-2xl shadow-violet-900/40"
                   >
                     <span className="text-[10px] font-semibold text-violet-400 uppercase tracking-widest mb-2">
-                      {machinePhase === 'revealed' ? '✦ 铸造完成' : '铸造中…'}
+                      {machinePhase === 'revealed' ? '✦ 铸造完成' : machinePhase === 'storyGenerating' ? '故事注入中…' : '铸造中…'}
                     </span>
                     <div className="flex-1 w-full rounded-xl border border-violet-400/20 bg-violet-500/5 flex flex-col items-center justify-center p-3">
                       <div className="w-12 h-12 rounded-full bg-violet-500/20 flex items-center justify-center text-2xl mb-3">
-                        {machinePhase === 'revealed' ? '✨' : '🎴'}
+                        {machinePhase === 'revealed' ? '✨' : machinePhase === 'storyGenerating' ? '✍' : '🎴'}
                       </div>
                       <p className="text-sm font-bold text-white text-center">
                         {machineForgedCard?.name || forgeMachineSlots.find(s => s.id === machinePickedId)?.name}
                       </p>
                       <p className="text-[10px] text-gray-400 text-center mt-2 leading-relaxed">
-                        {machineForgedCard?.story || forgeMachineSlots.find(s => s.id === machinePickedId)?.summary}
+                        {machinePhase === 'storyGenerating'
+                          ? (machineStoryStatus || '正在等待故事生成完成…')
+                          : (machineForgedCard?.story || forgeMachineSlots.find(s => s.id === machinePickedId)?.summary)}
                       </p>
                     </div>
                   </motion.div>
+
+                  {machinePhase === 'storyGenerating' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mt-5 w-full max-w-md rounded-2xl border border-violet-400/30 bg-violet-500/10 p-3 text-center"
+                    >
+                      <p className="text-xs font-black text-violet-100">故事必须先写入卡面，才会完成铸造</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-violet-200/80">
+                        原始引子：{forgeMachineSlots.find(s => s.id === machinePickedId)?.storyLead || forgeMachineSlots.find(s => s.id === machinePickedId)?.summary}
+                      </p>
+                    </motion.div>
+                  )}
 
                   <AnimatePresence>
                     {machinePhase === 'revealed' && (
@@ -1611,8 +1774,24 @@ export default function BattleArena() {
       <AnimatePresence>
         {showDeckBuilder && (
           <DeckBuilderPanel
-            onClose={() => setShowDeckBuilder(false)}
+            onClose={() => {
+              setShowDeckBuilder(false)
+            }}
             onStartBattle={startCardGameFromDeckBuilder}
+            onOpenDeckLibrary={openDeckLibrary}
+            onDeleteForgedCard={handleDeleteForgedCard}
+            forgedCards={forgedInventory}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showDeckLibrary && (
+          <DeckLibraryPanel
+            onClose={() => {
+              setShowDeckLibrary(false)
+            }}
+            onOpenDeckBuilder={openDeckBuilder}
             forgedCards={forgedInventory}
           />
         )}
@@ -1622,7 +1801,9 @@ export default function BattleArena() {
         {showCardGame && (
           <CardGamePanel
             key={cardGameSession}
-            onClose={() => setShowCardGame(false)}
+            onClose={() => {
+              setShowCardGame(false)
+            }}
             nekoName={nameLeft || NEKO_LEFT.name}
             nekoAvatar={avatarLeft}
           />

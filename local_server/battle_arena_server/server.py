@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +24,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger("battle_arena_server")
+SERVER_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+if str(SERVER_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVER_ROOT))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # ---------------------------------------------------------------------------
 # 占位数据
@@ -137,17 +145,40 @@ def _safe_character_segment(name: Optional[str]) -> Optional[str]:
     return s
 
 
+def _resolve_runtime_memory_dir() -> Optional[Path]:
+    env_memory_dir = os.environ.get("NEKO_MEMORY_DIR", "").strip()
+    if env_memory_dir:
+        return Path(env_memory_dir)
+
+    try:
+        from utils.config_manager import get_config_manager
+
+        return Path(get_config_manager().memory_dir)
+    except Exception as exc:
+        logger.warning("forge-facts: failed to resolve runtime memory_dir: %s", type(exc).__name__)
+        return None
+
+
 def _resolve_facts_path(character: Optional[str]) -> Optional[Path]:
     direct = os.environ.get("NEKO_FACTS_JSON", "").strip()
     if direct:
         return Path(direct)
-    base = os.environ.get("NEKO_MEMORY_DIR", "").strip()
+    base = _resolve_runtime_memory_dir()
     if not base or not character:
         return None
     safe = _safe_character_segment(character)
     if not safe:
         return None
-    return Path(base) / safe / "facts.json"
+    return base / safe / "facts.json"
+
+
+async def _resolve_active_facts_context(character: Optional[str] = None):
+    from active_neko_context import resolve_active_neko_context
+
+    # 默认必须跟随 NEKO 当前猫娘。character 只作为显式调试开关保留，避免旧前端
+    # 或大厅展示名误导铸造机读取另一只猫娘的 facts。
+    allow_override = os.environ.get("NEKO_BRAWL_ALLOW_CHARACTER_OVERRIDE", "").strip() == "1"
+    return await resolve_active_neko_context(character if allow_override else None)
 
 
 def _load_facts_json(path: Path) -> list[dict[str, Any]]:
@@ -191,15 +222,23 @@ def _select_forge_facts(
     raw: list[dict[str, Any]],
     *,
     min_importance: int = 5,
-    include_absorbed: bool = False,
+    include_absorbed: bool = True,
     limit: int = 5,
+    exclude_ids: Optional[set[str]] = None,
+    exclude_hashes: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
+    exclude_ids = exclude_ids or set()
+    exclude_hashes = exclude_hashes or set()
     filtered: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
         fid = item.get("id")
         if not fid:
+            continue
+        fid_key = str(fid)
+        hash_key = str(item.get("hash") or "")
+        if fid_key in exclude_ids or (hash_key and hash_key in exclude_hashes):
             continue
         if not include_absorbed and item.get("absorbed"):
             continue
@@ -214,12 +253,17 @@ def _select_forge_facts(
     random.shuffle(filtered)
     deduped: list[dict[str, Any]] = []
     seen_hash: set[str] = set()
+    seen_id: set[str] = set()
     for item in filtered:
+        fid_key = str(item.get("id", ""))
         h = item.get("hash")
-        key = str(h) if h else str(item.get("id", ""))
-        if key in seen_hash:
+        hash_key = str(h) if h else ""
+        if fid_key in seen_id or (hash_key and hash_key in seen_hash):
             continue
-        seen_hash.add(key)
+        if fid_key:
+            seen_id.add(fid_key)
+        if hash_key:
+            seen_hash.add(hash_key)
         deduped.append(item)
 
     random.shuffle(deduped)
@@ -232,9 +276,18 @@ def _select_forge_facts(
                 "text": str(x.get("text", "")),
                 "importance": int(x.get("importance") or 0),
                 "entity": str(x.get("entity", "")),
+                "tags": x.get("tags") if isinstance(x.get("tags"), list) else [],
+                "created_at": x.get("created_at"),
+                "hash": str(x.get("hash") or ""),
             }
         )
     return out
+
+
+def _parse_csv_set(value: Optional[str]) -> set[str]:
+    if not value or not isinstance(value, str):
+        return set()
+    return {part.strip() for part in value.split(",") if part.strip()}
 
 
 # ---------------------------------------------------------------------------
@@ -244,18 +297,31 @@ def _select_forge_facts(
 
 @app.get("/arena/forge-facts")
 async def arena_forge_facts(
-    character: Optional[str] = Query(None, description="猫娘名，与 NEKO memory 子目录名一致"),
+    character: Optional[str] = Query(None, description="调试用猫娘名；默认忽略，实际读取 NEKO 当前猫娘"),
     min_importance: int = Query(5, ge=0, le=10),
-    include_absorbed: bool = Query(False),
+    include_absorbed: bool = Query(True),
+    limit: int = Query(5, ge=1, le=10, description="抽取候选事实数量；奇遇铸造机默认使用 5 条"),
+    exclude_fact_ids: Optional[str] = Query(None, description="逗号分隔，排除已经铸造过的 fact id"),
+    exclude_hashes: Optional[str] = Query(None, description="逗号分隔，排除已经铸造过的 fact hash"),
 ):
-    """从本机 facts.json（或可选 HTTP）抽取最多 5 条事实，按 hash 去重后随机返回。"""
+    """从当前 active facts.json（或可选 HTTP）抽取事实，按 id/hash 去重后随机返回。"""
     error: Optional[str] = None
     raw: list[dict[str, Any]] = []
+    try:
+        context = await _resolve_active_facts_context(character)
+    except Exception as exc:
+        logger.warning("forge-facts: failed to resolve active NEKO context: %s", type(exc).__name__)
+        context = None
+        error = "active_neko_context_unavailable"
+
+    resolved_character = context.lanlan_name if context else ""
+    facts_source = context.source if context else "unresolved"
+    override_ignored = bool(character and character != resolved_character and os.environ.get("NEKO_BRAWL_ALLOW_CHARACTER_OVERRIDE", "").strip() != "1")
 
     url_template = os.environ.get("NEKO_FORGE_FACTS_URL", "").strip()
     if url_template:
         try:
-            url = url_template.format(character=character or "")
+            url = url_template.format(character=resolved_character or "")
         except (KeyError, IndexError, ValueError):
             url = url_template
         fetched = await _fetch_facts_from_url(url)
@@ -263,7 +329,7 @@ async def arena_forge_facts(
             raw = fetched
 
     if not raw:
-        path = _resolve_facts_path(character)
+        path = context.facts_path if context else None
         if path is None:
             error = "facts_source_not_configured"
         else:
@@ -275,13 +341,52 @@ async def arena_forge_facts(
         raw,
         min_importance=min_importance,
         include_absorbed=include_absorbed,
-        limit=5,
+        limit=limit,
+        exclude_ids=_parse_csv_set(exclude_fact_ids),
+        exclude_hashes=_parse_csv_set(exclude_hashes),
     )
 
-    payload: dict[str, Any] = {"facts": facts}
+    payload: dict[str, Any] = {
+        "character": resolved_character,
+        "factsSource": facts_source,
+        "characterOverrideIgnored": override_ignored,
+        "facts": facts,
+        "requestedLimit": limit,
+        "returnedCount": len(facts),
+    }
     if error and not facts:
         payload["error"] = error
     return JSONResponse(payload)
+
+
+@app.post("/arena/forge-card-story")
+async def arena_forge_card_story(body: dict[str, Any]):
+    """用 NEKO 核心 LLM 配置把故事引子生成 Forged 卡牌专属小故事。"""
+    try:
+        from forge_story_generator import ForgeStoryGenerationError, generate_forge_card_story
+
+        result = await generate_forge_card_story(body if isinstance(body, dict) else {})
+        return JSONResponse(
+            {
+                "success": True,
+                "story": result.story,
+                "storyGenerationStatus": "ready",
+                "provider": result.provider,
+                "model": result.model,
+                "sourceFactId": result.source_fact_id,
+            }
+        )
+    except Exception as exc:
+        error = str(exc) or type(exc).__name__
+        if exc.__class__.__name__ != "ForgeStoryGenerationError":
+            logger.warning("forge-card-story: generation failed: %s", error)
+        return JSONResponse(
+            {
+                "success": False,
+                "storyGenerationStatus": "failed",
+                "error": error,
+            }
+        )
 
 
 @app.post("/arena/join")

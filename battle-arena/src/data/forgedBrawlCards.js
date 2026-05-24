@@ -25,15 +25,31 @@ export const BRAWL_CARD_EFFECT_POOL = [
   { code: 'C013', name: '完全⭐奇迹', attrId: 'passion', cost: 4, type: '控制', mainText: '对Boss造成3点伤害，并封锁boss下回合行动', comboText: '自身获得2点护盾', main: { damage: 3, skipBossNext: true }, combo: { shieldSelf: 2 } },
 ]
 
-// 临时故事池：自身故事系统还没有实装，先用硬编码随机事件占位。
-// 后续接入真实“自身故事”后，只需要替换 createForgedBrawlCard 里的 story 来源。
-const TEMP_FORGED_CARD_STORIES = [
-  '午后练习室里，猫娘把一次差点失败的配合记成了新的战斗灵感。',
-  '深夜便利店门口，一句没说出口的鼓励被锻造成了卡牌的底色。',
-  '雨后的屋檐下，短暂的并肩等待让这张卡拥有了奇怪的默契。',
-  '自动贩卖机前的最后一罐饮料，被当作胜利前的小小约定保存下来。',
-  '走错路的地铁站里，绕远的时间反而给了这张卡新的 Combo 方向。',
-  '停电时借来的手电光，把普通回忆照成了可以出牌的奇遇。',
+// 临时事件池：真实 fact / 自身故事系统不可用时，先用硬编码事件引子占位。
+// 后续接入真实“自身故事”后，只需要替换传入 createForgedBrawlCard 的 event 来源。
+//
+// TODO: [真实奇遇铸卡接入]
+// 当前 Forged 卡是原型实现，不代表最终铸卡规则。
+// 真正版本中，奇遇事件应来自 NEKO 的 active facts / 自身故事 / 记忆系统，而不是本文件的临时事件池。
+// 注意 facts 的真实落盘位置和用户电脑、角色名、NEKO 配置强相关，不能在前端或卡牌逻辑里硬编码绝对路径。
+// 推荐由后端通过配置项、环境变量或 NEKO 既有设置解析 facts 位置，再把选中的事件 storyLead 传给 createForgedBrawlCard。
+// 当前暂定卡牌规则如下：
+// 1. 基础卡效果从 C001-C013 中选择；name、cost、type、主属性、主效果、Combo 效果跟随基础卡编号。
+// 2. Forged 卡名保留 "(Forged)" 后缀，便于在组卡页面和战斗日志中识别来源。
+// 3. Combo 属性目前随机；后续可改为由 facts 内容、LLM 评估或规则表决定。
+// 4. storyLead 是 fact 抽取出的“故事引子”；story 是卡牌专属小故事，且正文必须显式包含原始引子。
+// 5. TODO: [LLM 卡牌故事生成]
+//    接入 LLM 后，用 storyLead + 基础卡信息（卡名、主属性、费用、主效果、Combo 效果）作为提示词，
+//    在不改变原有记忆基调的前提下生成卡牌专属小故事，再写入 story / summary。
+//    当前后端故事接口不可用时，前端只生成明确标注的临时占位故事，不能伪装为正式 LLM 故事。
+// 6. 持久化目前使用 localStorage，后续需要确认是否写入角色/账户级存储，以及是否允许同一 fact 重复铸造。
+const TEMP_FORGED_CARD_EVENTS = [
+  { name: '临时练习室事件', storyLead: '午后练习室里，猫娘把一次差点失败的配合记成了新的战斗灵感。' },
+  { name: '临时便利店事件', storyLead: '深夜便利店门口，一句没说出口的鼓励被锻造成了卡牌的底色。' },
+  { name: '临时屋檐事件', storyLead: '雨后的屋檐下，短暂的并肩等待让这张卡拥有了奇怪的默契。' },
+  { name: '临时贩卖机事件', storyLead: '自动贩卖机前的最后一罐饮料，被当作胜利前的小小约定保存下来。' },
+  { name: '临时地铁站事件', storyLead: '走错路的地铁站里，绕远的时间反而给了这张卡新的 Combo 方向。' },
+  { name: '临时手电光事件', storyLead: '停电时借来的手电光，把普通回忆照成了可以出牌的奇遇。' },
 ]
 
 function pickRandom(list) {
@@ -44,6 +60,45 @@ function normalizeEffect(effect = {}) {
   return { ...effect }
 }
 
+function getEventStoryLead(event = {}) {
+  if (typeof event.storyLead === 'string' && event.storyLead.trim()) return event.storyLead.trim()
+  if (typeof event.factText === 'string' && event.factText.trim()) return event.factText.trim()
+  if (typeof event.text === 'string' && event.text.trim()) return event.text.trim()
+  if (typeof event.summary === 'string' && event.summary.trim()) return event.summary.trim()
+  return pickRandom(TEMP_FORGED_CARD_EVENTS).storyLead
+}
+
+function getEventName(event = {}, storyLead = '') {
+  if (typeof event.name === 'string' && event.name.trim()) return event.name.trim()
+  if (typeof event.sourceEventName === 'string' && event.sourceEventName.trim()) return event.sourceEventName.trim()
+  if (storyLead) return storyLead.length > 24 ? `${storyLead.slice(0, 24)}…` : storyLead
+  return pickRandom(TEMP_FORGED_CARD_EVENTS).name
+}
+
+function buildTemporaryForgedStory(storyLead, card = {}) {
+  const lead = storyLead || '这段记忆暂时还没有完整记录。'
+  const cardName = card.name || card.title || '这张卡'
+  const mainText = card.mainText || '主效果待确认'
+  const comboText = card.comboText || 'Combo效果待确认'
+  return [
+    `${lead}`,
+    `${cardName} 从这段记忆里抽取出一瞬间的情绪：它不改变原本的事件，只把那份记忆折成可以在对局中打出的动作。`,
+    `因此它保留基础牌效果“${mainText}”，并把“${comboText}”作为这段回忆在连携时的回响。`,
+    '【临时前端占位】后续接入正式故事生成后，请用真实生成结果替换本段，并继续让故事自然包含原本的事件内容。',
+  ].join('\n')
+}
+
+export function composeForgedCardStory(storyLead, generatedStory, card = {}) {
+  const lead = storyLead || ''
+  const story = typeof generatedStory === 'string' ? generatedStory.trim() : ''
+  if (!story) return buildTemporaryForgedStory(lead, card)
+  if (lead && story.includes(lead)) return story
+  return [
+    lead || '这段记忆暂时还没有完整记录。',
+    story,
+  ].join('\n')
+}
+
 export function createForgedBrawlCard(event = {}, options = {}) {
   const base = options.baseCode
     ? BRAWL_CARD_EFFECT_POOL.find(card => card.code === options.baseCode)
@@ -51,7 +106,9 @@ export function createForgedBrawlCard(event = {}, options = {}) {
   const source = base || pickRandom(BRAWL_CARD_EFFECT_POOL)
   const comboAttr = pickRandom(BRAWL_ATTRS)
   const id = `forged-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const story = event.summary || pickRandom(TEMP_FORGED_CARD_STORIES)
+  const storyLead = getEventStoryLead(event)
+  const sourceEventName = getEventName(event, storyLead)
+  const story = composeForgedCardStory(storyLead, event.story || event.generatedStory, source)
 
   return {
     id,
@@ -72,7 +129,13 @@ export function createForgedBrawlCard(event = {}, options = {}) {
     combo: normalizeEffect(source.combo),
     story,
     summary: story,
-    sourceEventName: event.name || '临时奇遇事件',
+    storyLead,
+    sourceFactId: event.sourceFactId || event.factId || null,
+    sourceFactHash: event.sourceFactHash || event.factHash || null,
+    sourceCharacter: event.sourceCharacter || null,
+    sourceKind: event.sourceKind || (event.sourceFactId || event.factId ? 'fact' : 'temporary'),
+    sourceEventName,
+    storyGenerationStatus: event.story || event.generatedStory ? 'ready' : 'pending-llm',
     forgedAt: Date.now(),
   }
 }
@@ -85,6 +148,9 @@ export function normalizeForgedBrawlCard(card) {
   const comboAttrId = BRAWL_ATTRS.some(attr => attr.id === card.comboAttrId)
     ? card.comboAttrId
     : pickRandom(BRAWL_ATTRS).id
+
+  const storyLead = card.storyLead || card.factText || card.text || card.eventLead || card.summary || ''
+  const story = composeForgedCardStory(storyLead, card.story, base)
 
   return {
     ...card,
@@ -104,8 +170,15 @@ export function normalizeForgedBrawlCard(card) {
     comboText: base.comboText,
     main: normalizeEffect(base.main),
     combo: normalizeEffect(base.combo),
-    story: card.story || card.summary || pickRandom(TEMP_FORGED_CARD_STORIES),
-    summary: card.summary || card.story || pickRandom(TEMP_FORGED_CARD_STORIES),
+    story,
+    summary: card.summary || story,
+    storyLead,
+    sourceFactId: card.sourceFactId || card.factId || null,
+    sourceFactHash: card.sourceFactHash || card.factHash || null,
+    sourceCharacter: card.sourceCharacter || null,
+    sourceKind: card.sourceKind || (card.sourceFactId || card.factId ? 'fact' : 'temporary'),
+    sourceEventName: card.sourceEventName || '临时奇遇事件',
+    storyGenerationStatus: card.storyGenerationStatus || (card.story ? 'ready' : 'pending-llm'),
   }
 }
 
@@ -126,4 +199,14 @@ export function saveForgedBrawlCards(cards) {
     FORGED_BRAWL_CARDS_STORAGE_KEY,
     JSON.stringify((Array.isArray(cards) ? cards : []).map(normalizeForgedBrawlCard).filter(Boolean))
   )
+}
+
+export function deleteForgedBrawlCard(cardRef) {
+  if (!cardRef) return loadForgedBrawlCards()
+  const next = loadForgedBrawlCards().filter(card => (
+    card.id !== cardRef.id &&
+    card.code !== cardRef.code
+  ))
+  saveForgedBrawlCards(next)
+  return next
 }

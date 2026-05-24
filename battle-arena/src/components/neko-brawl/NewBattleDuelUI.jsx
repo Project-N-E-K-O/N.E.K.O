@@ -1,0 +1,1423 @@
+import { useEffect, useRef, useState } from 'react'
+import { ArrowLeft, BookOpen, Clock3, FileText, Flame, Heart, Layers, RotateCcw, Shield, Snowflake, Sparkles, Star, Wind, X, Zap } from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
+import NekoAvatar from '../NekoAvatar'
+import CardInspectModal from './CardInspectModal'
+import BattleResultOverlay from './BattleResultOverlay'
+import BattleTutorialPanel from './BattleTutorialPanel'
+import NekoCardBack from './NekoCardBack'
+import { playNekoBrawlCardSfx } from './nekoBrawlAudio'
+
+const BATTLE_BACKGROUND_SRC = '/neko-brawl/Background_forest.png'
+
+const LOG_HIGHLIGHT_RULES = [
+  { pattern: /造成\s*\d+\s*点(?:（[^）]+）)?|受到\s*\d+\s*点伤害|追加伤害\s*\+\d+/y, className: 'font-black text-red-600' },
+  { pattern: /回复低生命角色\s*\d+|(?:你|队友|双方)回复\s*\d+/y, className: 'font-black text-emerald-600' },
+  { pattern: /(?:你|队友|双方)?护盾\s*\+\d+|护盾抵消\s*\d+/y, className: 'font-black text-sky-600' },
+  { pattern: /Combo(?:效果)?：[^；]+|连续Combo\s*\d+\s*回合/y, className: 'font-black text-fuchsia-600' },
+  { pattern: /抽\s*\d+/y, className: 'font-black text-cyan-600' },
+  { pattern: /封锁Boss下回合行动|行动被封锁/y, className: 'font-black text-violet-600' },
+  { pattern: /弱化|只能出1张牌/y, className: 'font-black text-amber-600' },
+  { pattern: /Boss生命上限\s*\+\d+/y, className: 'font-black text-rose-600' },
+  { pattern: /能量不足|跳过出牌|无牌可出/y, className: 'font-black text-orange-600' },
+]
+
+const CARD_TEXT_HIGHLIGHT_RULES = [
+  { pattern: /(?:对Boss)?造成\d+点伤害|额外造成\d+点伤害|伤害[+-]\d+/y, className: 'font-black text-red-600' },
+  { pattern: /回复(?:生命最低的己方玩家|双方玩家各|自身|队友)?\d+点生命/y, className: 'font-black text-emerald-600' },
+  { pattern: /(?:获得|提供)\d+点护盾|为(?:自己|队友|双方各)获得\d+点护盾/y, className: 'font-black text-sky-600' },
+  { pattern: /抽\d+张牌/y, className: 'font-black text-cyan-600' },
+  { pattern: /封锁boss下回合行动|封锁Boss下回合行动/y, className: 'font-black text-violet-600' },
+  { pattern: /清除\d+个负面状态/y, className: 'font-black text-amber-600' },
+]
+
+function renderHighlightedText(text, rules) {
+  const source = String(text || '')
+  const nodes = []
+  let index = 0
+
+  while (index < source.length) {
+    let matched = null
+    for (const rule of rules) {
+      rule.pattern.lastIndex = index
+      const result = rule.pattern.exec(source)
+      if (result?.index === index) {
+        matched = { text: result[0], className: rule.className }
+        break
+      }
+    }
+
+    if (matched) {
+      nodes.push(
+        <span key={`${index}-${matched.text}`} className={matched.className}>
+          {matched.text}
+        </span>
+      )
+      index += matched.text.length
+    } else {
+      nodes.push(source[index])
+      index += 1
+    }
+  }
+
+  return nodes
+}
+
+function renderBattleLogText(text) {
+  return renderHighlightedText(text, LOG_HIGHLIGHT_RULES)
+}
+
+function renderCardEffectText(text) {
+  return renderHighlightedText(text, CARD_TEXT_HIGHLIGHT_RULES)
+}
+
+function MiniCard({ card, selected, disabled, dimmed = disabled, dragging, onClick, onPointerDown }) {
+  const AttrIcon = card?.attr?.icon || Sparkles
+  const power = card?.power ?? 0
+  const cost = card?.cost ?? Math.max(1, Math.ceil(power / 3))
+  const attrName = card?.attr?.name || '羁绊'
+  const hasDebuff = card?.debuffs?.length > 0
+  const clickable = typeof onClick === 'function'
+  const draggable = !disabled && typeof onPointerDown === 'function'
+  return (
+    <motion.button
+      type="button"
+      disabled={disabled && !clickable}
+      whileHover={!disabled && !dragging ? { y: -12, rotate: 0, scale: 1.03 } : {}}
+      whileTap={!disabled && !dragging ? { scale: 0.96 } : {}}
+      onClick={clickable ? onClick : undefined}
+      onPointerDown={draggable ? onPointerDown : undefined}
+      className={`relative h-44 w-32 shrink-0 select-none overflow-hidden rounded-md border-[3px] bg-white shadow-lg transition-all ${
+        selected
+          ? 'border-sky-500 ring-4 ring-sky-300/60'
+          : 'border-neutral-600'
+      } ${disabled ? (dimmed ? `opacity-45 ${clickable ? 'cursor-zoom-in' : 'cursor-not-allowed'}` : clickable ? 'cursor-zoom-in' : 'cursor-default') : clickable && !draggable ? 'cursor-zoom-in hover:shadow-2xl' : 'cursor-grab hover:shadow-2xl'} ${dragging ? 'opacity-25' : ''}`}
+      style={{ touchAction: 'none' }}
+    >
+      <div className={`absolute inset-x-0 top-0 h-16 ${card?.attr?.bg || 'bg-neutral-100'}`} />
+      <div className="absolute inset-x-0 top-16 h-px bg-neutral-200" />
+
+      <div className="absolute left-2 top-2 flex h-9 w-9 items-center justify-center rounded-full border-2 border-orange-400 bg-neutral-950 text-white shadow-md">
+        <span className="text-lg font-black leading-none">{cost}</span>
+      </div>
+
+      <div className="absolute right-2 top-2 flex items-center gap-1 rounded-full border border-white/80 bg-white/90 px-2 py-1 text-[10px] font-black text-neutral-800 shadow-sm">
+        <AttrIcon className={`h-3 w-3 ${card?.attr?.text || 'text-neutral-500'}`} />
+        {attrName}
+      </div>
+
+      <div className="absolute inset-x-2 top-12 flex justify-center">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-white bg-white shadow-sm">
+          <AttrIcon className={`h-8 w-8 ${card?.attr?.text || 'text-neutral-500'}`} />
+        </div>
+      </div>
+
+      <div className="absolute left-2 right-2 top-[6.6rem]">
+        <div className="truncate text-left text-xs font-black text-neutral-950">
+          {card?.name || (hasDebuff ? '弱化羁绊' : '羁绊打击')}
+        </div>
+        <div className="mt-1 min-h-12 rounded-sm bg-neutral-100 px-2 py-1 text-left text-[10px] leading-tight text-neutral-600">
+          {renderCardEffectText(card?.mainText || '卡牌主效果')}
+        </div>
+      </div>
+
+      {card?.temp && (
+        <div className="absolute bottom-2 right-2 rounded-full bg-amber-400 px-1.5 py-0.5 text-[9px] font-black text-neutral-900">
+          临时
+        </div>
+      )}
+    </motion.button>
+  )
+}
+
+const COMBO_ATTR_META = {
+  passion: {
+    name: '热情',
+    icon: Flame,
+    text: 'text-red-500',
+    bg: 'bg-red-50',
+    border: 'border-red-300',
+    activeText: 'text-red-600',
+    activeBg: 'bg-red-100',
+    activeBorder: 'border-red-500',
+    activeRing: 'ring-red-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(239,68,68,0.72)]',
+  },
+  gentle: {
+    name: '温柔',
+    icon: Heart,
+    text: 'text-pink-500',
+    bg: 'bg-pink-50',
+    border: 'border-pink-300',
+    activeText: 'text-pink-600',
+    activeBg: 'bg-pink-100',
+    activeBorder: 'border-pink-500',
+    activeRing: 'ring-pink-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(236,72,153,0.7)]',
+  },
+  cool: {
+    name: '高冷',
+    icon: Snowflake,
+    text: 'text-cyan-500',
+    bg: 'bg-cyan-50',
+    border: 'border-cyan-300',
+    activeText: 'text-cyan-600',
+    activeBg: 'bg-cyan-100',
+    activeBorder: 'border-cyan-500',
+    activeRing: 'ring-cyan-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(6,182,212,0.72)]',
+  },
+  natural: {
+    name: '天然',
+    icon: Wind,
+    text: 'text-emerald-500',
+    bg: 'bg-emerald-50',
+    border: 'border-emerald-300',
+    activeText: 'text-emerald-600',
+    activeBg: 'bg-emerald-100',
+    activeBorder: 'border-emerald-500',
+    activeRing: 'ring-emerald-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(16,185,129,0.72)]',
+  },
+  fire: {
+    name: '炎',
+    icon: Flame,
+    text: 'text-red-500',
+    bg: 'bg-red-50',
+    border: 'border-red-300',
+    activeText: 'text-red-600',
+    activeBg: 'bg-red-100',
+    activeBorder: 'border-red-500',
+    activeRing: 'ring-red-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(239,68,68,0.72)]',
+  },
+  ice: {
+    name: '冰',
+    icon: Snowflake,
+    text: 'text-cyan-500',
+    bg: 'bg-cyan-50',
+    border: 'border-cyan-300',
+    activeText: 'text-cyan-600',
+    activeBg: 'bg-cyan-100',
+    activeBorder: 'border-cyan-500',
+    activeRing: 'ring-cyan-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(6,182,212,0.72)]',
+  },
+  wind: {
+    name: '风',
+    icon: Wind,
+    text: 'text-emerald-500',
+    bg: 'bg-emerald-50',
+    border: 'border-emerald-300',
+    activeText: 'text-emerald-600',
+    activeBg: 'bg-emerald-100',
+    activeBorder: 'border-emerald-500',
+    activeRing: 'ring-emerald-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(16,185,129,0.72)]',
+  },
+  thunder: {
+    name: '雷',
+    icon: Zap,
+    text: 'text-amber-500',
+    bg: 'bg-amber-50',
+    border: 'border-amber-300',
+    activeText: 'text-amber-600',
+    activeBg: 'bg-amber-100',
+    activeBorder: 'border-amber-500',
+    activeRing: 'ring-amber-300/80',
+    activeShadow: 'shadow-[0_0_18px_rgba(245,158,11,0.78)]',
+  },
+  spirit: {
+    name: '灵',
+    icon: Sparkles,
+    text: 'text-violet-500',
+    bg: 'bg-violet-50',
+    border: 'border-violet-300',
+    activeText: 'text-violet-600',
+    activeBg: 'bg-violet-100',
+    activeBorder: 'border-violet-500',
+    activeRing: 'ring-violet-300/75',
+    activeShadow: 'shadow-[0_0_18px_rgba(139,92,246,0.72)]',
+  },
+}
+
+function PlayerHeader({ align = 'left', name, hp = 6, shield = 0, deckCount = 0, label }) {
+  const infoNode = (
+    <div className={align === 'right' ? 'text-right' : 'text-left'}>
+      <p className="text-xs text-neutral-500">{label}</p>
+      <p className="text-lg font-black text-neutral-950">{name}</p>
+      <p className="mt-1 text-xl tracking-wide text-neutral-800">{'♡'.repeat(Math.max(0, hp))}</p>
+      <p className="mt-1 text-xs font-black text-sky-700">护盾：{shield}</p>
+      <p className="mt-2 text-xs font-bold text-neutral-600">剩余卡牌数：{deckCount}</p>
+    </div>
+  )
+
+  return (
+    <div className={`flex items-center gap-3 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
+      {infoNode}
+    </div>
+  )
+}
+
+function CornerNekoAvatar({ align = 'left', name, avatar, label }) {
+  return (
+    <section className={`absolute bottom-24 z-20 flex w-52 flex-col ${align === 'right' ? 'right-6 items-end' : 'left-6 items-start'}`}>
+      <div className="w-40 lg:w-52">
+        <NekoAvatar avatar={avatar} name={name} side={align === 'right' ? 'right' : 'left'} />
+      </div>
+      <div className={`mt-2 rounded-sm border border-neutral-300 bg-white/90 px-3 py-1.5 text-xs shadow-sm ${align === 'right' ? 'text-right' : 'text-left'}`}>
+        <p className="font-black text-neutral-900">{name}</p>
+        <p className="text-[10px] font-bold text-neutral-500">{label}</p>
+      </div>
+    </section>
+  )
+}
+
+function SideBattleRail({
+  align = 'left',
+  name,
+  label,
+  avatar,
+  hp = 6,
+  shield = 0,
+  deckCount = 0,
+  handCount,
+  energyCount,
+  zoneRef,
+  avatarRef,
+  statusRef,
+  zoneCards = [],
+  maxCards = 1,
+  zoneTitle,
+  zoneHint,
+  zoneReady = false,
+  zoneThinking = false,
+  zonePreview = false,
+  zoneCardsDraggable = false,
+  returningZoneCardId = null,
+  onZoneCardPointerDown,
+  onInspectCard,
+  isAlly = false,
+}) {
+  const isRight = align === 'right'
+  const sideClass = isRight ? 'right-0 border-l' : 'left-0 border-r'
+  const textAlign = 'text-left'
+  const avatarSide = 'left'
+  const displayHp = Math.max(0, hp)
+  const hpPercent = Math.max(0, Math.min(100, (displayHp / 6) * 100))
+  const shieldPercent = Math.max(0, Math.min(100, (shield / 6) * 100))
+
+  return (
+    <aside className={`absolute bottom-0 top-0 z-20 flex w-[18rem] flex-col items-start ${sideClass} border-neutral-800/70 bg-[#171814]/95 px-7 pb-6 pt-24 shadow-[0_0_48px_rgba(0,0,0,0.34)]`}>
+      <section
+        ref={zoneRef}
+        className={`flex h-[18rem] w-full flex-col items-center justify-center rounded-[2.1rem] border-4 border-dashed bg-transparent px-4 transition-all duration-200 ${
+          zoneReady
+            ? 'border-amber-400 shadow-[0_0_28px_rgba(245,158,11,0.18)]'
+            : 'border-neutral-500'
+        }`}
+      >
+        <p className={`mb-5 text-xl font-black ${zoneReady ? 'text-amber-300' : zoneThinking ? 'text-neutral-300' : 'text-neutral-300'}`}>
+          {zoneReady ? '准备出击！' : zoneThinking ? '还在思考中' : zoneTitle}
+        </p>
+        {zoneCards.length > 0 ? (
+          <div className="relative h-40 w-36">
+            {zoneCards.slice(0, Math.max(1, maxCards)).map((card, index, cards) => {
+              const spread = (index - (cards.length - 1) / 2) * 34
+              const rotate = (index - (cards.length - 1) / 2) * 7
+              const cardNode = (
+                <div
+                  className="absolute left-1/2 top-1/2"
+                  style={{
+                    transform: `translate(calc(-50% + ${spread}px), -50%) rotate(${rotate}deg) scale(0.82)`,
+                    opacity: returningZoneCardId === card.id ? 0.2 : 1,
+                  }}
+                >
+                  <MiniCard
+                    card={card}
+                    selected
+                    disabled={!zoneCardsDraggable}
+                    dimmed={false}
+                    dragging={returningZoneCardId === card.id}
+                    onClick={!zoneCardsDraggable ? () => onInspectCard?.(card, isAlly ? 'ally-zone' : 'player-zone') : undefined}
+                    onPointerDown={zoneCardsDraggable ? (event) => onZoneCardPointerDown?.(event, card) : undefined}
+                  />
+                </div>
+              )
+
+              return isAlly ? (
+                <motion.div
+                  key={card.id}
+                  className="absolute inset-0"
+                  initial={{ opacity: 0, x: 140, y: 160, rotate: 16, scale: 0.62 }}
+                  animate={{ opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 250, damping: 24 }}
+                >
+                  {cardNode}
+                </motion.div>
+              ) : (
+                <div key={card.id}>
+                  {cardNode}
+                </div>
+              )
+            })}
+            {zonePreview && (
+              <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-sky-300 bg-white px-2 py-1 text-[10px] font-black text-sky-700 shadow-sm">
+                待确认
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex h-48 w-36 items-center justify-center bg-transparent px-4 text-center text-sm font-black text-neutral-300">
+            {zoneHint}
+          </div>
+        )}
+      </section>
+
+      <section className="mt-6 flex w-full flex-col items-start">
+        <div ref={avatarRef} className="w-56">
+          <NekoAvatar avatar={avatar} name={name} side={avatarSide} />
+        </div>
+
+        <div className={`mt-3 border border-white/10 bg-neutral-950/70 px-4 py-3 shadow-lg ${textAlign}`}>
+          <p className="text-sm font-black text-white">{name}</p>
+          <p className="mt-1 text-[11px] font-bold text-neutral-300">{label}</p>
+        </div>
+
+        <div ref={statusRef} className={`mt-4 w-56 rounded-sm bg-neutral-950/88 px-6 py-5 shadow-[0_16px_36px_rgba(0,0,0,0.42)] ${textAlign}`}>
+          <p className="text-sm font-bold text-neutral-400">玩家</p>
+          <p className="mt-2 text-2xl font-black text-white">{name}</p>
+          <p className="mt-3 whitespace-nowrap text-2xl leading-none tracking-wide text-white">{'♡'.repeat(displayHp)}</p>
+          <div className="mt-4">
+            <div className="mb-1 flex items-center justify-between text-xs font-black text-rose-200">
+              <span>生命</span>
+              <span>{displayHp} / 6</span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-rose-400" style={{ width: `${hpPercent}%` }} />
+            </div>
+          </div>
+          <div className="mt-3">
+            <div className="mb-1 flex items-center justify-between text-xs font-black text-sky-300">
+              <span>护盾</span>
+              <span>{shield}</span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-sky-400" style={{ width: `${shieldPercent}%` }} />
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex items-center gap-2 text-neutral-300">
+              <NekoCardBack size="tiny" count={deckCount} muted={deckCount <= 0} />
+              <p className="text-sm font-black">剩余卡牌数：{deckCount}</p>
+            </div>
+            {typeof handCount === 'number' && (
+              <div className="flex items-center gap-2 text-neutral-300">
+                <div className="relative h-10 w-11">
+                  <div className="absolute left-0 top-0 rotate-[-8deg] scale-75">
+                    <NekoCardBack size="tiny" muted={handCount <= 0} />
+                  </div>
+                  <div className="absolute left-4 top-0 rotate-[8deg] scale-75">
+                    <NekoCardBack size="tiny" count={handCount} muted={handCount <= 0} />
+                  </div>
+                </div>
+                <p className="text-sm font-black">手牌数：{handCount}</p>
+              </div>
+            )}
+            {typeof energyCount === 'number' && (
+              <p className="text-sm font-black text-amber-300">能量数：{energyCount}</p>
+            )}
+          </div>
+        </div>
+      </section>
+    </aside>
+  )
+}
+
+export default function NewBattleDuelUI({
+  nekoName,
+  nekoAvatar,
+  boss,
+  bossImageSrc,
+  bossImageState = 'normal',
+  bossDamagePopup,
+  comboPopup,
+  comboAttrs: comboAttrsProp,
+  bossBreakValue = 0,
+  bossBreakGoal = 0,
+  round,
+  currentActor,
+  myDeck,
+  myHand,
+  myDiscard,
+  myPlayed = [],
+  mySelected,
+  myMaxPlay,
+  playerEnergy,
+  allyDeck,
+  allyHand,
+  allyPlayed = [],
+  allyEnergy,
+  playerHp = 6,
+  playerShield = 0,
+  allyHp = 6,
+  allyShield = 0,
+  bossBreakPercent,
+  gameOver,
+  outcome = 'playing',
+  comboStats,
+  playedCardStats = [],
+  isPlayerTurn,
+  onSetPreviewCard,
+  onConfirmPlay,
+  onSkipTurn,
+  onRestart,
+  onBackToClassic,
+  onClose,
+  gameLog = [],
+  comboReference = [],
+}) {
+  const [showBattleLog, setShowBattleLog] = useState(false)
+  const [showComboList, setShowComboList] = useState(false)
+  const [showBattleTutorial, setShowBattleTutorial] = useState(false)
+  const [dragState, setDragState] = useState(null)
+  const [dragOverBoss, setDragOverBoss] = useState(false)
+  const [dragLeftHandZone, setDragLeftHandZone] = useState(false)
+  const [returnDragState, setReturnDragState] = useState(null)
+  const [returnFlyingCard, setReturnFlyingCard] = useState(null)
+  const [flyingCard, setFlyingCard] = useState(null)
+  const [starStrike, setStarStrike] = useState(null)
+  const [inspectedCard, setInspectedCard] = useState(null)
+  const playZoneRef = useRef(null)
+  const bossStageRef = useRef(null)
+  const playerAvatarRef = useRef(null)
+  const playerStatusRef = useRef(null)
+  const handZoneRef = useRef(null)
+  const comboAttrs = comboAttrsProp?.length ? comboAttrsProp : boss?.weakness?.weak || []
+  const getCardCost = (card) => card?.cost ?? Math.max(1, Math.ceil((card?.power || 0) / 3))
+  const selectedCards = mySelected
+    .map(id => myHand.find(card => card.id === id))
+    .filter(Boolean)
+    .slice(0, 1)
+  const energyBase = typeof playerEnergy === 'number' ? playerEnergy : 3 + round
+  const selectedCost = selectedCards.reduce((sum, card) => sum + getCardCost(card), 0)
+  const energy = Math.max(0, energyBase - selectedCost)
+  const energyTooLow = selectedCost > energyBase
+  const allyCommitted = allyPlayed.length > 0
+  const allyThinking = currentActor?.type === 'ally' && !allyCommitted && !gameOver
+  const damageText = bossDamagePopup ? `${bossDamagePopup.amount}${bossDamagePopup.weak ? '!' : ''}` : ''
+  const damagePopupMinWidth = bossDamagePopup
+    ? `${Math.max(10, damageText.length * (bossDamagePopup.weak ? 2.1 : 1.55))}rem`
+    : '10rem'
+  const comboPopupText = comboPopup
+    ? `${comboPopup.count} ${comboPopup.count === 1 ? 'Combo' : 'Combos'}!`
+    : ''
+  const comboPopupFontSize = comboPopup
+    ? `${3.4 + (Math.min(5, comboPopup.sizeLevel || comboPopup.count) - 1) * 0.72}rem`
+    : '3.4rem'
+  const bossHpValue = Math.max(0, bossBreakGoal - bossBreakValue)
+  const bossHpPercent = bossBreakGoal > 0
+    ? Math.max(0, Math.min(100, Math.round((bossHpValue / bossBreakGoal) * 100)))
+    : 0
+  const bossImageTone = {
+    attack: 'border-rose-300/50 shadow-[inset_0_0_0_1px_rgba(244,63,94,0.18)]',
+    damageTaken: 'border-amber-300/50 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.16)]',
+    weakDamageTaken: 'border-sky-300/55 shadow-[inset_0_0_0_1px_rgba(14,165,233,0.2)]',
+    normal: 'border-neutral-200/35',
+  }[bossImageState] || 'border-neutral-200/35'
+  const starStrikeIsAttack = starStrike?.kind === 'boss'
+  const starStrikeIsSupport = Boolean(starStrike && !starStrikeIsAttack)
+
+  const playedPlayerCards = myPlayed
+  const playerZoneCards = playedPlayerCards.length > 0 ? playedPlayerCards : selectedCards
+  const playerZoneIsPreview = playedPlayerCards.length === 0 && selectedCards.length > 0
+  const activeComboCodes = new Set(
+    playerZoneCards
+      .filter(card => comboAttrs.includes(card?.comboAttr?.id || card?.comboAttrId || card?.attr?.id))
+      .map(card => card.code)
+      .filter(Boolean)
+  )
+  const comboListItems = [...comboReference].sort((a, b) => {
+    const aActive = activeComboCodes.has(a.code) ? 1 : 0
+    const bActive = activeComboCodes.has(b.code) ? 1 : 0
+    return bActive - aActive || a.cost - b.cost || a.code.localeCompare(b.code)
+  })
+  const activeComboCard = dragState?.card || flyingCard?.card || (playerZoneIsPreview ? selectedCards[0] : null)
+  const activeComboAttrId = activeComboCard?.comboAttr?.id || activeComboCard?.comboAttrId || activeComboCard?.attr?.id
+  const visibleHandCards = myHand.filter(card => (
+    !mySelected.includes(card.id) &&
+    flyingCard?.card?.id !== card.id &&
+    !(dragLeftHandZone && dragState?.card?.id === card.id)
+  ))
+  const isPointInBossZone = (x, y) => {
+    const rect = bossStageRef.current?.getBoundingClientRect()
+    if (!rect) return false
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+  }
+  const isPointInHandZone = (x, y) => {
+    const rect = handZoneRef.current?.getBoundingClientRect()
+    if (!rect) return false
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+  }
+
+  const getCardEffectTarget = (card) => {
+    const effectBlocks = [card?.effects?.main]
+    if (comboAttrs.includes(card?.comboAttr?.id || card?.comboAttrId || card?.attr?.id)) effectBlocks.push(card?.effects?.combo)
+    const effects = effectBlocks.filter(Boolean)
+    const targetsBoss = effects.some(effect => (
+      effect.damage ||
+      effect.skipBossNext ||
+      effect.bossDamageReductionNext ||
+      effect.bossDamageReductionThisRound
+    ))
+    const targetsHeal = effects.some(effect => effect.healLowest || effect.healSelf || effect.healBoth)
+    const targetsShield = effects.some(effect => (
+      effect.shieldSelf ||
+      effect.shieldOther ||
+      effect.shieldBoth ||
+      effect.reduceSelfDamageThisRound ||
+      effect.reduceOtherDamageThisRound
+    ))
+    const targetsDraw = effects.some(effect => effect.draw)
+
+    // 临时目标分类：正式版建议在卡牌数据里写入 target 字段，避免通过效果字段推断。
+    if (targetsBoss) return 'boss'
+    if (targetsHeal) return 'heal'
+    if (targetsShield) return 'shield'
+    if (targetsDraw) return 'draw'
+    return 'support'
+  }
+
+  const isCardComboActive = (card) => (
+    comboAttrs.includes(card?.comboAttr?.id || card?.comboAttrId || card?.attr?.id)
+  )
+
+  const handleConfirmPlay = () => {
+    if (!isPlayerTurn || selectedCards.length === 0 || energyTooLow) return
+
+    const selectedCard = selectedCards[0]
+    const sourceRect = playZoneRef.current?.getBoundingClientRect()
+    const effectTarget = getCardEffectTarget(selectedCard)
+    // 当前卡牌 SFX 是暂时占位实装用声音，不是最终结果；替换正式版音效时请注明“正式版音效”。
+    playNekoBrawlCardSfx(effectTarget, { comboActive: isCardComboActive(selectedCard) })
+    const targetRect = {
+      boss: bossStageRef.current?.getBoundingClientRect(),
+      heal: playerAvatarRef.current?.getBoundingClientRect() || playerStatusRef.current?.getBoundingClientRect(),
+      shield: playerStatusRef.current?.getBoundingClientRect() || playerAvatarRef.current?.getBoundingClientRect(),
+      draw: handZoneRef.current?.getBoundingClientRect(),
+      support: playerStatusRef.current?.getBoundingClientRect() || playerAvatarRef.current?.getBoundingClientRect(),
+    }[effectTarget]
+    const sourceX = sourceRect ? sourceRect.left + sourceRect.width / 2 : window.innerWidth * 0.24
+    const sourceY = sourceRect ? sourceRect.top + sourceRect.height / 2 : window.innerHeight * 0.38
+    const targetX = targetRect
+      ? targetRect.left + targetRect.width * (effectTarget === 'boss' ? 0.56 : 0.5)
+      : window.innerWidth * (effectTarget === 'boss' ? 0.56 : effectTarget === 'draw' ? 0.5 : 0.16)
+    const targetY = targetRect
+      ? targetRect.top + targetRect.height * (effectTarget === 'boss' ? 0.43 : 0.5)
+      : window.innerHeight * (effectTarget === 'boss' ? 0.42 : effectTarget === 'draw' ? 0.78 : 0.64)
+
+    // 临时特效：按效果类型飞向不同区域，后续可替换为正式动画素材。
+    setStarStrike({
+      id: `star-strike-${Date.now()}`,
+      kind: effectTarget,
+      fromX: sourceX - 32,
+      fromY: sourceY - 32,
+      midX: (sourceX + targetX) / 2 - 32,
+      midY: effectTarget !== 'boss'
+        ? Math.min(sourceY, targetY) - 72
+        : Math.min(sourceY, targetY) - 150,
+      toX: targetX - 32,
+      toY: targetY - 32,
+    })
+    onConfirmPlay?.()
+  }
+
+  const inspectCard = (card, source = 'hand') => {
+    setInspectedCard({ card, source })
+  }
+
+  const handleCardPointerDown = (event, card) => {
+    if (!isPlayerTurn) return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    setDragLeftHandZone(false)
+    setDragState({
+      card,
+      x: event.clientX,
+      y: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      moved: false,
+    })
+  }
+
+  const handleZoneCardPointerDown = (event, card) => {
+    if (!isPlayerTurn || !playerZoneIsPreview) return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    setReturnDragState({
+      card,
+      x: event.clientX,
+      y: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      moved: false,
+      overHand: false,
+    })
+  }
+
+  useEffect(() => {
+    if (!dragState) return undefined
+
+    const handlePointerMove = (event) => {
+      event.preventDefault()
+      const moved = dragState.moved || Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY) > 8
+      const nextDragOverBoss = isPointInBossZone(event.clientX, event.clientY)
+      setDragOverBoss(prev => prev === nextDragOverBoss ? prev : nextDragOverBoss)
+      const nextLeftHandZone = moved && !isPointInHandZone(event.clientX, event.clientY)
+      setDragLeftHandZone(prev => prev === nextLeftHandZone ? prev : nextLeftHandZone)
+      setDragState(prev => prev ? {
+        ...prev,
+        x: event.clientX,
+        y: event.clientY,
+        moved,
+      } : prev)
+    }
+
+    const handlePointerUp = (event) => {
+      const moved = dragState.moved || Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY) > 8
+      const droppedOnBoss = moved && isPointInBossZone(event.clientX, event.clientY)
+
+      if (droppedOnBoss) {
+        const targetRect = playZoneRef.current?.getBoundingClientRect()
+        const fromX = event.clientX - dragState.offsetX
+        const fromY = event.clientY - dragState.offsetY
+        setFlyingCard({
+          id: `${dragState.card.id}-${Date.now()}`,
+          card: dragState.card,
+          fromX,
+          fromY,
+          toX: targetRect ? targetRect.left + targetRect.width / 2 - 64 : fromX,
+          toY: targetRect ? targetRect.top + targetRect.height / 2 - 88 : fromY,
+        })
+      } else if (!moved) {
+        inspectCard(dragState.card, 'hand')
+      }
+
+      setDragOverBoss(false)
+      setDragLeftHandZone(false)
+      setDragState(null)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [dragState])
+
+  useEffect(() => {
+    if (!returnDragState) return undefined
+
+    const handlePointerMove = (event) => {
+      event.preventDefault()
+      const moved = returnDragState.moved || Math.hypot(event.clientX - returnDragState.startX, event.clientY - returnDragState.startY) > 8
+      setReturnDragState(prev => prev ? {
+        ...prev,
+        x: event.clientX,
+        y: event.clientY,
+        moved,
+        overHand: moved,
+      } : prev)
+    }
+
+    const handlePointerUp = (event) => {
+      const moved = returnDragState.moved || Math.hypot(event.clientX - returnDragState.startX, event.clientY - returnDragState.startY) > 8
+      if (moved) {
+        const targetRect = handZoneRef.current?.getBoundingClientRect()
+        const fromX = event.clientX - returnDragState.offsetX
+        const fromY = event.clientY - returnDragState.offsetY
+        setReturnFlyingCard({
+          id: `${returnDragState.card.id}-return-${Date.now()}`,
+          card: returnDragState.card,
+          fromX,
+          fromY,
+          toX: targetRect ? targetRect.left + targetRect.width / 2 - 64 : fromX,
+          toY: targetRect ? targetRect.top + targetRect.height / 2 - 88 : fromY,
+        })
+      } else {
+        inspectCard(returnDragState.card, 'player-zone')
+      }
+      setReturnDragState(null)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerUp)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerUp)
+    }
+  }, [returnDragState, onSetPreviewCard])
+
+  return (
+    <motion.div
+      key="new-battle-duel-ui"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="fixed inset-0 z-[100] overflow-hidden text-neutral-950"
+      style={{ background: '#eaf6dd' }}
+    >
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage: `linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.28)), url("${BATTLE_BACKGROUND_SRC}")`,
+          backgroundPosition: 'center center',
+          backgroundSize: 'cover',
+        }}
+      />
+
+      <header className="relative z-10 flex h-16 items-center justify-between border-b-2 border-neutral-200 bg-white px-6">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-10 w-10 items-center justify-center rounded-sm border border-neutral-300 bg-white text-neutral-700 shadow-sm hover:bg-neutral-100"
+            title="返回大厅"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onBackToClassic}
+            className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2 text-xs font-bold text-neutral-700 hover:bg-neutral-200"
+          >
+            返回经典UI
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowBattleTutorial(true)}
+            className="flex items-center gap-1 rounded-sm border border-neutral-300 bg-white px-3 py-2 text-xs font-bold text-neutral-700 shadow-sm hover:bg-neutral-100"
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            教程
+          </button>
+          <div>
+            <h2 className="text-xl font-black tracking-wide text-neutral-950">猫娘大乱斗 · 新版对局UI</h2>
+            <p className="text-xs text-neutral-500">同步出牌 · Combo 属性 · 白底模块原型</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs font-bold text-neutral-700">
+          <span className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2">当前行动：{currentActor?.name || '整备'}</span>
+          <span className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2">手牌 {myHand.length}</span>
+        </div>
+      </header>
+
+      <main className="relative z-10 h-[calc(100vh-64px)]">
+        <SideBattleRail
+          name={nekoName || '猫娘 A'}
+          label="玩家头像"
+          avatar={nekoAvatar}
+          hp={playerHp}
+          shield={playerShield}
+          deckCount={myDeck.length}
+          zoneRef={playZoneRef}
+          avatarRef={playerAvatarRef}
+          statusRef={playerStatusRef}
+          zoneCards={playerZoneCards}
+          maxCards={myMaxPlay}
+          zoneTitle="玩家出牌区"
+          zoneHint="拖到Boss区打出"
+          zonePreview={playerZoneIsPreview}
+          zoneCardsDraggable={playerZoneIsPreview && isPlayerTurn}
+          returningZoneCardId={returnDragState?.card?.id || returnFlyingCard?.card?.id}
+          onZoneCardPointerDown={handleZoneCardPointerDown}
+          onInspectCard={inspectCard}
+        />
+
+        <div className="absolute left-1/2 top-6 z-30 w-44 -translate-x-1/2 select-none border-2 border-neutral-300 bg-neutral-100 text-center shadow-sm">
+          <div className="border-b border-neutral-300 py-1 text-[11px] font-bold text-neutral-600">当前回合数</div>
+          <div className="py-2 text-5xl font-light text-neutral-950">{round}</div>
+        </div>
+
+        <SideBattleRail
+          align="right"
+          name="猫娘 B"
+          label="队友头像"
+          hp={allyHp}
+          shield={allyShield}
+          deckCount={allyDeck.length}
+          handCount={allyHand.length}
+          energyCount={typeof allyEnergy === 'number' ? allyEnergy : 3 + round}
+          zoneCards={allyPlayed}
+          maxCards={Math.max(1, allyPlayed.length)}
+          zoneTitle="队友出牌区"
+          zoneHint={allyThinking ? '还在思考中' : '队友预出牌'}
+          zoneReady={allyCommitted}
+          zoneThinking={allyThinking}
+          onInspectCard={inspectCard}
+          isAlly
+        />
+
+        <section
+          ref={bossStageRef}
+          className={`pointer-events-none absolute bottom-0 left-[18rem] right-[18rem] top-0 z-0 overflow-hidden border-x border-b bg-transparent transition-all duration-200 ${
+            dragOverBoss ? 'ring-4 ring-sky-300/70' : ''
+          } ${bossImageTone}`}
+        >
+          <div className="absolute inset-0 flex items-center justify-center">
+            {bossImageSrc ? (
+              <motion.img
+                key={bossImageState}
+                src={bossImageSrc}
+                alt={boss?.name || 'Boss'}
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{
+                  opacity: 1,
+                  scale: bossImageState === 'attack' ? 1.04 : 1,
+                  x: bossImageState === 'damageTaken' ? [0, -7, 7, 0] : 0,
+                }}
+                transition={{ duration: 0.18 }}
+                className="h-full w-full object-cover drop-shadow-[0_24px_56px_rgba(15,23,42,0.24)]"
+                draggable={false}
+              />
+            ) : (
+              <div className="text-8xl">{boss?.emoji}</div>
+            )}
+          </div>
+
+          <AnimatePresence>
+            {comboPopup && (
+              <motion.div
+                key={comboPopup.id}
+                initial={{ opacity: 0, scale: 0.45, rotate: -10, y: 28 }}
+                animate={{
+                  opacity: [0, 1, 1],
+                  scale: [0.45, 1.18, 1],
+                  rotate: [-10, 4, -3],
+                  y: [28, -8, 0],
+                }}
+                exit={{ opacity: 0, scale: 0.92, y: -26 }}
+                transition={{ duration: 0.42, ease: 'easeOut' }}
+                className="absolute right-8 top-8 z-20 whitespace-nowrap text-right font-black leading-none text-yellow-300 drop-shadow-[0_7px_0_rgba(127,29,29,0.95)]"
+                style={{
+                  fontSize: comboPopupFontSize,
+                  WebkitTextStroke: '2px #991b1b',
+                }}
+              >
+                {comboPopupText}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {bossDamagePopup && (
+              <motion.div
+                key={bossDamagePopup.id}
+                initial={{ opacity: 0, scale: 0.55, rotate: -8, y: 18 }}
+                animate={{ opacity: 1, scale: 1, rotate: -5, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: -18 }}
+                transition={{ type: 'spring', stiffness: 360, damping: 20 }}
+                className="absolute right-8 top-28 text-center"
+                style={{
+                  minWidth: damagePopupMinWidth,
+                }}
+              >
+                <div
+                  className={`absolute inset-0 border-4 shadow-[0_16px_42px_rgba(15,23,42,0.22)] ${
+                    bossDamagePopup.weak
+                      ? 'border-red-500 bg-yellow-100'
+                      : 'border-neutral-800 bg-white'
+                  }`}
+                  style={{
+                    clipPath: 'polygon(50% 0%, 61% 18%, 82% 9%, 78% 32%, 100% 42%, 80% 55%, 91% 78%, 66% 73%, 50% 100%, 35% 73%, 9% 78%, 20% 55%, 0% 42%, 22% 32%, 18% 9%, 39% 18%)',
+                  }}
+                />
+                <div className={`relative z-10 flex min-h-28 flex-col items-center justify-center px-12 py-5 ${
+                  bossDamagePopup.weak ? 'text-red-600' : 'text-neutral-950'
+                }`}>
+                  <p className="whitespace-nowrap text-[11px] font-black text-inherit opacity-75">本次伤害</p>
+                  <p className={`${bossDamagePopup.weak ? 'text-6xl' : 'text-4xl'} mt-1 whitespace-nowrap font-black leading-none`}>
+                    {damageText}
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <motion.div
+            drag
+            dragMomentum={false}
+            dragElastic={0.06}
+            whileDrag={{ scale: 1.03 }}
+            className="pointer-events-auto absolute left-1/2 top-24 z-10 w-[min(34rem,42vw)] -translate-x-1/2 cursor-grab select-none border border-neutral-300/80 bg-white/90 px-5 py-4 text-center shadow-[0_14px_42px_rgba(15,23,42,0.14)] active:cursor-grabbing"
+            style={{ touchAction: 'none' }}
+            title="临时可拖拽：用于评估 Boss 状态栏位置"
+          >
+            <div className="text-lg font-black text-red-700 drop-shadow-sm">{boss?.name || 'Boss'}</div>
+            <div className="mt-3 w-full px-2">
+              <div className="mb-1 flex justify-between text-xs font-black text-red-700">
+                <span>Boss生命</span>
+                <span>{bossHpValue} / {bossBreakGoal}</span>
+              </div>
+              <div className="h-3 rounded-full bg-red-100">
+                <div
+                  className="h-full rounded-full bg-red-600"
+                  style={{ width: `${bossHpPercent}%` }}
+                />
+              </div>
+            </div>
+            <div className="mt-3 w-full border-t border-neutral-300/70 pt-3">
+              <p className="text-[11px] font-black text-red-700">当前Combo属性</p>
+              <div className="mt-2 flex justify-center gap-2">
+                {comboAttrs.map(attr => {
+                  const meta = COMBO_ATTR_META[attr] || {
+                    name: attr,
+                    icon: Sparkles,
+                    text: 'text-neutral-600',
+                    bg: 'bg-white',
+                    border: 'border-neutral-300',
+                    activeText: 'text-neutral-900',
+                    activeBg: 'bg-neutral-100',
+                    activeBorder: 'border-neutral-700',
+                    activeRing: 'ring-neutral-300/75',
+                    activeShadow: 'shadow-[0_0_18px_rgba(82,82,82,0.45)]',
+                  }
+                  const AttrIcon = meta.icon
+                  const isComboMatchedByActiveCard = activeComboAttrId === attr
+                  return (
+                    <div
+                      key={attr}
+                      className={`flex h-9 w-9 items-center justify-center rounded-full border-2 transition-all duration-150 ${
+                        isComboMatchedByActiveCard
+                          ? `scale-110 ${meta.activeBorder} ${meta.activeBg} ${meta.activeShadow} ring-4 ${meta.activeRing}`
+                          : `${meta.border} ${meta.bg} shadow-sm`
+                      }`}
+                      title={meta.name}
+                    >
+                      <AttrIcon className={`${isComboMatchedByActiveCard ? `h-6 w-6 ${meta.activeText} drop-shadow-sm` : `h-5 w-5 ${meta.text}`} transition-all duration-150`} />
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </motion.div>
+        </section>
+
+        <section ref={handZoneRef} className="absolute bottom-[5.8rem] left-1/2 z-20 flex min-h-56 -translate-x-1/2 items-end gap-4 px-5 py-3">
+          {visibleHandCards.map((card, index) => (
+            <div
+              key={card.id}
+              style={{ transform: `rotate(${(index - (visibleHandCards.length - 1) / 2) * 4}deg)` }}
+              className="-mx-1"
+            >
+              <MiniCard
+                card={card}
+                selected={mySelected.includes(card.id)}
+                disabled={!isPlayerTurn || getCardCost(card) > energyBase}
+                dragging={dragState?.card?.id === card.id || flyingCard?.card?.id === card.id}
+                onClick={() => inspectCard(card, 'hand')}
+                onPointerDown={(event) => handleCardPointerDown(event, card)}
+              />
+            </div>
+          ))}
+        </section>
+
+        <CardInspectModal
+          open={Boolean(inspectedCard)}
+          card={inspectedCard?.card}
+          source={inspectedCard?.source}
+          onClose={() => setInspectedCard(null)}
+        />
+
+        <BattleTutorialPanel
+          open={showBattleTutorial}
+          onClose={() => setShowBattleTutorial(false)}
+        />
+
+        <section className="absolute bottom-[6.2rem] left-[calc(18rem+2rem)] z-20 flex flex-col items-center gap-2">
+          <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-orange-400 bg-white text-xl font-black shadow-sm">
+            <div className="text-center">
+              <Zap className="mx-auto h-5 w-5" />
+              <p>{energy}</p>
+              <p className="text-[10px] font-bold">能量</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowBattleLog(true)}
+            className="flex items-center gap-1 rounded-sm border border-neutral-300 bg-white/90 px-3 py-1.5 text-[11px] font-bold text-neutral-700 shadow-sm hover:bg-neutral-100"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            战斗日志
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowComboList(prev => !prev)}
+            className={`flex items-center gap-1 rounded-sm border px-3 py-1.5 text-[11px] font-bold shadow-sm hover:bg-neutral-100 ${
+              showComboList
+                ? 'border-amber-400 bg-amber-50 text-amber-800 ring-2 ring-amber-200'
+                : 'border-neutral-300 bg-white/90 text-neutral-700'
+            }`}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Combo列表
+          </button>
+        </section>
+
+        <section className="pointer-events-none absolute bottom-3 left-[18rem] right-[18rem] z-30 flex items-center justify-center gap-4">
+          <button
+            type="button"
+            onClick={handleConfirmPlay}
+            disabled={!isPlayerTurn || selectedCards.length === 0 || energyTooLow}
+            className={`pointer-events-auto h-14 w-80 rounded-md border-2 text-sm font-black shadow-sm ${
+              isPlayerTurn && selectedCards.length > 0 && !energyTooLow
+                ? 'border-neutral-900 bg-neutral-900 text-white'
+                : 'border-neutral-300 bg-neutral-200 text-neutral-500'
+            }`}
+          >
+            {energyTooLow ? `能量不足 ${selectedCost}/${energyBase}` : '确认出牌'}
+          </button>
+          <button
+            type="button"
+            onClick={onSkipTurn}
+            disabled={!isPlayerTurn}
+            className="pointer-events-auto h-14 rounded-md border-2 border-neutral-300 bg-white px-5 text-sm font-bold text-neutral-700 shadow-sm disabled:opacity-40"
+          >
+            跳过
+          </button>
+          <button
+            type="button"
+            onClick={onRestart}
+            className="pointer-events-auto flex h-14 items-center gap-2 rounded-md border-2 border-neutral-300 bg-white px-5 text-sm font-bold text-neutral-700 shadow-sm"
+          >
+            <RotateCcw className="h-4 w-4" />
+            重开
+          </button>
+          <button
+            type="button"
+            className="pointer-events-auto flex h-14 items-center gap-2 rounded-md border-2 border-neutral-300 bg-white px-5 text-sm font-bold text-neutral-700 shadow-sm"
+          >
+            <Clock3 className="h-4 w-4" />
+            自动战斗
+          </button>
+        </section>
+
+        <AnimatePresence>
+          {gameOver && (
+            <BattleResultOverlay
+              outcome={outcome}
+              round={round}
+              boss={boss}
+              bossHp={bossHpValue}
+              playerHp={playerHp}
+              playerShield={playerShield}
+              allyHp={allyHp}
+              allyShield={allyShield}
+              comboStats={comboStats}
+              playedCardStats={playedCardStats}
+              onRestart={onRestart}
+              onClose={onClose}
+              onInspectCard={inspectCard}
+            />
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {showBattleLog && (
+            <motion.div
+              key="battle-log-drawer"
+              className="absolute inset-0 z-40 bg-transparent"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowBattleLog(false)}
+            >
+              <motion.aside
+                initial={{ x: '-105%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-105%' }}
+                transition={{ type: 'spring', stiffness: 320, damping: 34 }}
+                onClick={(event) => event.stopPropagation()}
+                className="flex h-full w-[min(380px,82vw)] flex-col border-r-2 border-neutral-300 bg-white shadow-2xl"
+              >
+                <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-neutral-700" />
+                    <p className="text-sm font-black text-neutral-900">战斗日志</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowBattleLog(false)}
+                    className="flex h-8 w-8 items-center justify-center rounded-sm border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100"
+                    title="关闭战斗日志"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+                  {gameLog.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-sm text-neutral-400">
+                      暂无战斗记录
+                    </div>
+                  ) : (
+                    gameLog.map(item => (
+                      <div
+                        key={item.id}
+                        className={`rounded-sm border px-3 py-2 text-xs leading-relaxed ${
+                          item.type === 'round'
+                            ? 'border-neutral-300 bg-white text-center font-black text-neutral-950'
+                            : 'border-neutral-200 bg-neutral-50 text-neutral-700'
+                        }`}
+                      >
+                        {item.type === 'round' ? item.text : renderBattleLogText(item.text)}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </motion.aside>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {showComboList && (
+            <motion.div
+              key="combo-list-drawer"
+              className="pointer-events-none absolute inset-0 z-40 bg-transparent"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <motion.aside
+                initial={{ x: '-105%', opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: '-105%', opacity: 0 }}
+                transition={{ type: 'spring', stiffness: 320, damping: 34 }}
+                className="pointer-events-auto absolute bottom-0 left-0 top-[24rem] flex w-[18rem] flex-col border-r-2 border-t-2 border-neutral-300 bg-white shadow-2xl"
+              >
+                <div className="flex items-center border-b border-neutral-200 px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-neutral-700" />
+                    <p className="text-sm font-black text-neutral-900">Combo效果列表</p>
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+                  {comboListItems.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-sm text-neutral-400">
+                      暂无Combo资料
+                    </div>
+                  ) : (
+                    comboListItems.map(card => {
+                      const isActive = activeComboCodes.has(card.code)
+                      const comboAttrId = card.comboAttrId || card.attrId
+                      const meta = COMBO_ATTR_META[comboAttrId] || {
+                        name: card.comboAttrName || card.attrName || comboAttrId,
+                        icon: Sparkles,
+                        text: 'text-neutral-600',
+                        bg: 'bg-neutral-50',
+                        border: 'border-neutral-300',
+                        activeBg: 'bg-neutral-100',
+                        activeBorder: 'border-neutral-700',
+                        activeRing: 'ring-neutral-300/75',
+                        activeShadow: 'shadow-[0_0_18px_rgba(82,82,82,0.45)]',
+                      }
+                      const AttrIcon = meta.icon
+                      return (
+                        <article
+                          key={card.code}
+                          className={`rounded-sm border-2 px-3 py-2 text-left transition-all duration-150 ${
+                            isActive
+                              ? `${meta.activeBorder} ${meta.activeBg} ${meta.activeShadow} ring-4 ${meta.activeRing}`
+                              : 'border-neutral-200 bg-neutral-50'
+                          }`}
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <p className="min-w-0 flex-1 truncate text-sm font-black text-neutral-950">
+                              {card.code} · {card.name}
+                              <span className="ml-2 text-[11px] font-black text-neutral-500">Cost {card.cost}</span>
+                              {isActive && <span className="ml-2 text-[10px] font-black text-amber-700">可触发</span>}
+                            </p>
+                            <div className={`flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-black ${isActive ? `${meta.activeBorder} bg-white/80 ${meta.activeText || meta.text}` : `${meta.border} ${meta.bg} ${meta.text}`}`}>
+                              <AttrIcon className="h-3.5 w-3.5" />
+                              {meta.name}
+                            </div>
+                          </div>
+                          <p className={`mt-1 truncate text-xs font-black leading-relaxed ${isActive ? 'text-neutral-950' : 'text-neutral-700'}`}>
+                            Combo：{card.comboText}
+                          </p>
+                        </article>
+                      )
+                    })
+                  )}
+                </div>
+              </motion.aside>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {dragState && (
+          <div
+            className="pointer-events-none fixed z-[180]"
+            style={{
+              left: dragState.x - dragState.offsetX,
+              top: dragState.y - dragState.offsetY,
+              transform: `rotate(${dragOverBoss ? 0 : -5}deg) scale(${dragOverBoss ? 1.08 : 1.02})`,
+              transition: 'transform 120ms ease',
+            }}
+          >
+            <MiniCard card={dragState.card} selected={dragOverBoss} />
+          </div>
+        )}
+
+        {returnDragState && (
+          <div
+            className="pointer-events-none fixed z-[185]"
+            style={{
+              left: returnDragState.x - returnDragState.offsetX,
+              top: returnDragState.y - returnDragState.offsetY,
+              transform: `rotate(${returnDragState.overHand ? -2 : 4}deg) scale(${returnDragState.overHand ? 1.02 : 0.96})`,
+              transition: 'transform 120ms ease',
+            }}
+          >
+            <MiniCard card={returnDragState.card} selected={returnDragState.overHand} />
+          </div>
+        )}
+
+        {returnFlyingCard && (
+          <motion.div
+            key={returnFlyingCard.id}
+            className="pointer-events-none fixed left-0 top-0 z-[190] will-change-transform"
+            initial={{
+              x: returnFlyingCard.fromX,
+              y: returnFlyingCard.fromY,
+              rotate: 4,
+              scale: 0.96,
+              opacity: 1,
+            }}
+            animate={{
+              x: returnFlyingCard.toX,
+              y: returnFlyingCard.toY,
+              rotate: -4,
+              scale: 0.86,
+              opacity: 1,
+            }}
+            transition={{ type: 'spring', stiffness: 300, damping: 28, mass: 0.72 }}
+            onAnimationComplete={() => {
+              setReturnFlyingCard(null)
+              onSetPreviewCard?.(null)
+            }}
+          >
+            <MiniCard card={returnFlyingCard.card} selected disabled dimmed={false} />
+          </motion.div>
+        )}
+
+        {flyingCard && (
+          <motion.div
+            key={flyingCard.id}
+            className="pointer-events-none fixed left-0 top-0 z-[190] will-change-transform"
+            initial={{
+              x: flyingCard.fromX,
+              y: flyingCard.fromY,
+              rotate: -5,
+              scale: 1.02,
+              opacity: 1,
+            }}
+            animate={{
+              x: flyingCard.toX,
+              y: flyingCard.toY,
+              rotate: 0,
+              scale: 0.82,
+              opacity: 1,
+            }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30, mass: 0.75 }}
+            onAnimationComplete={() => {
+              const previewCardId = flyingCard.card.id
+              setFlyingCard(null)
+              onSetPreviewCard?.(previewCardId)
+            }}
+          >
+            <MiniCard card={flyingCard.card} selected disabled dimmed={false} />
+          </motion.div>
+        )}
+
+        {starStrike && (
+          <motion.div
+            key={starStrike.id}
+            className="pointer-events-none fixed left-0 top-0 z-[195] h-16 w-16 will-change-transform"
+            initial={{
+              x: starStrike.fromX,
+              y: starStrike.fromY,
+              rotate: 0,
+              scale: starStrikeIsSupport ? 0.54 : 0.72,
+              opacity: 0,
+            }}
+            animate={{
+              x: [starStrike.fromX, starStrike.midX, starStrike.toX],
+              y: [starStrike.fromY, starStrike.midY, starStrike.toY],
+              rotate: starStrikeIsSupport ? [0, 90, 180] : [0, 520, 920],
+              scale: starStrikeIsSupport ? [0.54, 1.05, 1.18] : [0.72, 1.25, 0.82],
+              opacity: starStrikeIsSupport ? [0, 0.92, 0.96] : [0, 1, 1],
+            }}
+            transition={{
+              duration: starStrikeIsSupport ? 0.86 : 0.62,
+              times: [0, 0.55, 1],
+              ease: 'easeInOut',
+            }}
+            onAnimationComplete={() => setStarStrike(null)}
+          >
+            {starStrike.kind === 'heal' ? (
+              <>
+                <div className="absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 rounded-full bg-rose-200/30 blur-xl" />
+                <div className="absolute -left-10 top-1/2 h-3 w-16 -translate-y-1/2 rounded-full bg-gradient-to-l from-rose-200/80 to-transparent blur-[2px]" />
+                <Heart className="absolute left-2 top-2 h-10 w-10 fill-rose-200 text-rose-400 drop-shadow-[0_0_14px_rgba(251,113,133,0.75)]" />
+                <Sparkles className="absolute right-1 top-7 h-6 w-6 text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.95)]" />
+              </>
+            ) : starStrike.kind === 'shield' ? (
+              <>
+                <div className="absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sky-200/25 blur-xl" />
+                <div className="absolute -left-10 top-1/2 h-3 w-16 -translate-y-1/2 rounded-full bg-gradient-to-l from-sky-200/80 to-transparent blur-[2px]" />
+                <Shield className="absolute left-2 top-1 h-11 w-11 fill-sky-100 text-sky-300 drop-shadow-[0_0_14px_rgba(125,211,252,0.78)]" />
+                <Star className="absolute right-2 bottom-1 h-5 w-5 fill-white text-white drop-shadow-[0_0_9px_rgba(255,255,255,0.85)]" />
+              </>
+            ) : starStrike.kind === 'draw' ? (
+              <>
+                <div className="absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-200/25 blur-xl" />
+                <div className="absolute -left-10 top-1/2 h-3 w-16 -translate-y-1/2 rounded-full bg-gradient-to-l from-cyan-200/80 to-transparent blur-[2px]" />
+                <Layers className="absolute left-2 top-2 h-10 w-10 text-cyan-200 drop-shadow-[0_0_14px_rgba(103,232,249,0.78)]" />
+                <Sparkles className="absolute right-1 top-7 h-6 w-6 text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.95)]" />
+              </>
+            ) : starStrike.kind === 'support' ? (
+              <>
+                <div className="absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 rounded-full bg-pink-200/30 blur-xl" />
+                <div className="absolute -left-10 top-1/2 h-3 w-16 -translate-y-1/2 rounded-full bg-gradient-to-l from-pink-200/70 to-transparent blur-[2px]" />
+                <Sparkles className="absolute left-1 top-1 h-8 w-8 text-pink-200 drop-shadow-[0_0_12px_rgba(251,207,232,0.95)]" />
+                <Star className="absolute left-7 top-5 h-7 w-7 fill-sky-100 text-sky-200 drop-shadow-[0_0_12px_rgba(186,230,253,0.95)]" />
+                <Star className="absolute right-2 top-8 h-5 w-5 fill-emerald-100 text-emerald-200 drop-shadow-[0_0_10px_rgba(187,247,208,0.95)]" />
+                <Sparkles className="absolute bottom-1 right-5 h-6 w-6 text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.95)]" />
+              </>
+            ) : (
+              <>
+                <div className="absolute -left-14 top-1/2 h-3 w-20 -translate-y-1/2 rounded-full bg-gradient-to-l from-amber-300/80 to-transparent blur-[1px]" />
+                <div className="absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2 rounded-full bg-amber-300/25 blur-md" />
+                <Star className="relative h-16 w-16 fill-amber-300 text-amber-500 drop-shadow-[0_0_18px_rgba(245,158,11,0.95)]" />
+                <Sparkles className="absolute -right-2 -top-2 h-6 w-6 text-yellow-100 drop-shadow-[0_0_10px_rgba(255,255,255,0.9)]" />
+              </>
+            )}
+          </motion.div>
+        )}
+      </main>
+    </motion.div>
+  )
+}

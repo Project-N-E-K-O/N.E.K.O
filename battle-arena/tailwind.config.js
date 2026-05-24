@@ -12,7 +12,7 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Noto Sans SC"', 'sans-serif'],
+        display: ['"Microsoft YaHei"', '"PingFang SC"', '"Noto Sans SC"', 'system-ui', 'sans-serif'],
       },
       keyframes: {
         ticker: {

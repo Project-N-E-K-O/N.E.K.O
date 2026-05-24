@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles, Swords, Zap, Heart, Wind, Flame, Snowflake, Star, RotateCcw, SkipForward, X, Combine, ArrowLeft, Shield, Activity, Target, Timer, BookOpen, Layers } from 'lucide-react'
-import NewBattleDuelUI from './NewBattleDuelUI'
+import NewBattleDuelUI from './neko-brawl/NewBattleDuelUI'
 import { loadForgedBrawlCards } from '../data/forgedBrawlCards'
 
 // ─────────────────────────────────────────────────────────────────
@@ -144,6 +144,8 @@ function makeCardFromDefinition(def) {
     comboText: def.comboText,
     effects: { main: { ...def.main }, combo: { ...def.combo } },
     story: def.story,
+    summary: def.summary,
+    sourceEventName: def.sourceEventName,
     debuffs: [],
   }
 }
@@ -203,10 +205,10 @@ const MAX_PLAYER_HP = 6
 const BOSS_MAX_HP = 30
 const BOSS_MAX_TURNS = 20
 const BOSS_IMAGE_SOURCES = {
-  normal: '/@fs/F:/NEKO_bugfix/NekoBrawl/Gif_source/Boss_normal_transparent.png?v=transparent-bg-1',
-  attack: '/@fs/F:/NEKO_bugfix/NekoBrawl/Gif_source/Boss_attack_transparent.png?v=transparent-bg-1',
-  damageTaken: '/@fs/F:/NEKO_bugfix/NekoBrawl/Gif_source/Boss_damagetaken_transparent.png?v=transparent-bg-1',
-  weakDamageTaken: '/@fs/F:/NEKO_bugfix/NekoBrawl/Gif_source/Boss_WeakDamageTaken_transparent.png?v=transparent-bg-2',
+  normal: '/neko-brawl/Boss_normal_transparent.png?v=transparent-bg-restore',
+  attack: '/neko-brawl/Boss_attack_transparent.png?v=transparent-bg-restore',
+  damageTaken: '/neko-brawl/Boss_damagetaken_transparent.png?v=transparent-bg-restore',
+  weakDamageTaken: '/neko-brawl/Boss_WeakDamageTaken_transparent.png?v=transparent-bg-restore',
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -486,6 +488,7 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
   const [bossDamageReduction, setBossDamageReduction] = useState(0)
   const [bossSkipNext, setBossSkipNext] = useState(false)
   const comboStatsRef = useRef({ total: 0, streak: 0, best: 0, lastRound: 0 })
+  const [playedCardStats, setPlayedCardStats] = useState([])
   const [turnOrder, setTurnOrder] = useState([])
   const [nextTurnOrder, setNextTurnOrder] = useState([])
   const [turnIdx, setTurnIdx] = useState(0)
@@ -849,9 +852,37 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
                      boss.weakness.resist.includes(card.attr.id) ? '（抗性）' :
                      card.attr.id === 'spirit' ? '（灵）' : ''
     const resultText = dmg > 0 ? `造成 ${dmg} 点${relation}` : '支援'
-    addActionLog(`${actionLabel} 打出 [${card.code} ${card.name}]：${joinActionParts(resultText, detailParts)}`, actionType)
-    return { damage: dmg, comboActive, comboStreak: comboInfo?.streak || 0 }
+    const effectSummary = joinActionParts(resultText, detailParts)
+    addActionLog(`${actionLabel} 打出 [${card.code} ${card.name}]：${effectSummary}`, actionType)
+    return { damage: dmg, comboActive, comboStreak: comboInfo?.streak || 0, effectSummary }
   }, [addActionLog, allyDamageBonusNext, applyCardEffectBlock, boss, calcDamage, comboAttrs, describeEffect, joinActionParts, playerDamageBonusNext, registerCombo, resetComboVisualChain, showComboPopup, sideLabel])
+
+  const recordPlayedCardStats = useCallback((cards, owner, results) => {
+    if (!cards.length) return
+    const stamp = Date.now()
+    setPlayedCardStats(prev => [
+      ...prev,
+      ...cards.map((card, index) => ({
+        id: `${card.id || card.code}-${owner}-${round}-${stamp}-${index}`,
+        cardSnapshot: {
+          ...card,
+          attr: card.attr ? { ...card.attr } : card.attr,
+          comboAttr: card.comboAttr ? { ...card.comboAttr } : card.comboAttr,
+          debuffs: Array.isArray(card.debuffs) ? [...card.debuffs] : [],
+          effects: {
+            main: { ...(card.effects?.main || {}) },
+            combo: { ...(card.effects?.combo || {}) },
+          },
+        },
+        owner,
+        damage: results[index]?.damage || 0,
+        comboActive: Boolean(results[index]?.comboActive),
+        comboStreak: results[index]?.comboStreak || 0,
+        effectSummary: results[index]?.effectSummary || '',
+        round,
+      })),
+    ])
+  }, [round])
 
   // ── 选牌 ──
   const toggleCard = useCallback((cardId) => {
@@ -896,10 +927,12 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     setMySelected([])
 
     let totalDmg = 0
-    played.forEach(card => {
+    const results = played.map(card => {
       const result = resolvePlayedCard(card, 'player')
       totalDmg += result.damage
+      return result
     })
+    recordPlayedCardStats(played, 'player', results)
 
     if (totalDmg > 0) {
       const hitWeakness = played.some(card => boss.weakness.weak.includes(card.attr.id))
@@ -908,7 +941,7 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     }
     setBoss(prev => ({ ...prev, breakPoints: prev.breakPoints + totalDmg }))
     setTurnIdx(prev => prev + 1)
-  }, [mySelected, myHand, playerEnergy, boss, resolvePlayedCard, showBossImageState, showBossDamagePopup])
+  }, [mySelected, myHand, playerEnergy, boss, resolvePlayedCard, recordPlayedCardStats, showBossImageState, showBossDamagePopup])
 
   // ── 跳过回合 ──
   const skipTurn = useCallback(() => {
@@ -1114,10 +1147,12 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     setAllyDiscard(prev => [...prev, ...toPlay.map(c => ({ ...c, debuffs: [] }))])
 
     let totalDmg = 0
-    toPlay.forEach(card => {
+    const results = toPlay.map(card => {
       const result = resolvePlayedCard(card, 'ally')
       totalDmg += result.damage
+      return result
     })
+    recordPlayedCardStats(toPlay, 'ally', results)
 
     if (totalDmg > 0) {
       const hitWeakness = toPlay.some(card => boss.weakness.weak.includes(card.attr.id))
@@ -1126,7 +1161,7 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     }
     setBoss(prev => ({ ...prev, breakPoints: prev.breakPoints + totalDmg }))
     setTurnIdx(prev => prev + 1)
-  }, [allyHand, allyMaxPlay, allyEnergyValue, boss, comboAttrs, addActionLog, resetComboVisualChain, resolvePlayedCard, showBossImageState, showBossDamagePopup])
+  }, [allyHand, allyMaxPlay, allyEnergyValue, boss, comboAttrs, addActionLog, resetComboVisualChain, resolvePlayedCard, recordPlayedCardStats, showBossImageState, showBossDamagePopup])
 
   const damageSide = useCallback((side, amount) => {
     const shield = side === 'player' ? playerShield : allyShield
@@ -1294,6 +1329,7 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     setBossDamageReduction(0)
     setBossSkipNext(false)
     comboStatsRef.current = { total: 0, streak: 0, best: 0, lastRound: 0 }
+    setPlayedCardStats([])
     resetComboVisualChain()
     showBossImageState('normal')
     setBossDamagePopup(null)
@@ -1405,6 +1441,9 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
         allyShield={allyShield}
         bossBreakPercent={breakPercent}
         gameOver={gameOver}
+        outcome={phase}
+        comboStats={comboStatsRef.current}
+        playedCardStats={playedCardStats}
         isPlayerTurn={isPlayerTurn}
         onToggleCard={toggleCard}
         onSetPreviewCard={setPreviewCard}

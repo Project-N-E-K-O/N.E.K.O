@@ -51,7 +51,7 @@ echo ====================================================
 echo   Startup commands have been sent to 3 windows.
 echo ====================================================
 echo URLs:
-echo   battle-arena: http://localhost:5173
+echo   battle-arena: http://127.0.0.1:5173
 echo   N.E.K.O main: http://localhost:48911
 echo   Match server: http://localhost:3001/health
 echo.
