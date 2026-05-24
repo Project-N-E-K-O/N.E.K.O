@@ -350,8 +350,20 @@ async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     client.on_tool_call = handler
 
     messages = [{"role": "user", "content": "我生日是什么时候？"}]
-    async for _ in client._astream_with_tools(messages):
-        pass
+    out_chunks = []
+    async for ch in client._astream_with_tools(messages):
+        out_chunks.append(ch)
+
+    # 纯 reasoning chunk（content 空 + 无 tool/finish/usage）不得向下游转发，
+    # 否则 stream_text 会把首个推理 chunk 误记成 TTFT 首 token（Codex P2）。
+    assert not any(
+        getattr(ch, "reasoning_content", None)
+        and not getattr(ch, "content", None)
+        and not ch.tool_call_deltas
+        and not ch.finish_reason
+        and not ch.usage_metadata
+        for ch in out_chunks
+    ), "reasoning-only chunk 不应 surface 给通用流式消费者（TTFT 会被拉低）"
 
     assistant_with_tool_calls = next(
         m for m in messages

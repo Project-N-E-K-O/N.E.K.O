@@ -808,6 +808,18 @@ class OmniOfflineClient:
                     pt = chunk.usage_metadata.get("prompt_tokens")
                     if pt:
                         self._last_prompt_tokens = pt
+                # 纯 reasoning chunk（thinking 模型先吐推理链，content 为空、无
+                # tool delta / finish / usage）只在上面累积进 buffer，不向下游
+                # 转发：``stream_text`` 在首个 yield 的 chunk 上记 TTFT，放行
+                # reasoning-only 会把"首推理 token"误当首 token，拉低延迟埋点。
+                if (
+                    getattr(chunk, "reasoning_content", None)
+                    and not getattr(chunk, "content", None)
+                    and not chunk.tool_call_deltas
+                    and not chunk.finish_reason
+                    and not chunk.usage_metadata
+                ):
+                    continue
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
                 yield chunk
