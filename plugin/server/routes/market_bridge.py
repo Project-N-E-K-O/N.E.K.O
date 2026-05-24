@@ -102,6 +102,21 @@ def get_bridge_token() -> str:
     return _BRIDGE_TOKEN
 
 
+def _main_server_port() -> int:
+    """返回主服务的运行时端口；按 config.MAIN_SERVER_PORT 动态读取。
+
+    launcher 会在端口冲突时把 ``config.MAIN_SERVER_PORT`` 改成 fallback 端口，
+    所以这里始终通过 ``import config`` 拿最新值，而不是在模块加载时锁死。
+    """
+
+    try:
+        import config
+
+        return int(config.MAIN_SERVER_PORT)
+    except Exception:  # pragma: no cover - 兜底，避免 bridge 写文件因配置异常崩溃
+        return 48911
+
+
 def write_bridge_token_file(directory: Path) -> Path:
     """将 bridge token 写入文件，供外部进程读取。"""
     directory.mkdir(parents=True, exist_ok=True)
@@ -111,7 +126,7 @@ def write_bridge_token_file(directory: Path) -> Path:
         json.dumps(
             {
                 "token": _BRIDGE_TOKEN,
-                "port": 48911,
+                "port": _main_server_port(),
                 "one_time_code": one_time_code,
                 "one_time_code_expires_in": _ONE_TIME_CODE_TTL_SECONDS,
             },
@@ -531,7 +546,7 @@ async def market_bridge_token(request: Request):
     if client_host not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
-    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=48911)
+    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
 
 
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)
@@ -758,7 +773,7 @@ def _pkce_s256_challenge(code_verifier: str) -> str:
 
 
 def _oauth_default_redirect_uri() -> str:
-    return f"http://127.0.0.1:48911{_OAUTH_REDIRECT_PATH}"
+    return f"http://127.0.0.1:{_main_server_port()}{_OAUTH_REDIRECT_PATH}"
 
 
 def _oauth_redirect_uri_for_request(request: Request) -> str:

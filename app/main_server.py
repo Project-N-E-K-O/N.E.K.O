@@ -1622,10 +1622,24 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         "host",
         "content-length",
     }
+    # Request-side filter additionally drops Accept-Encoding so the upstream
+    # is asked for an *uncompressed* response. We can't safely forward the
+    # client's Accept-Encoding because httpx auto-decompresses on
+    # ``upstream.content`` access — which would leave the response body
+    # decompressed but the upstream's ``Content-Encoding: gzip`` header
+    # intact, and the browser would double-decompress
+    # (ERR_CONTENT_DECODING_FAILED). See bugfix.md §1.1 / §2.1.
+    #
+    # CC-1 LOCK (PR #1480 review-fix Phase 3): do **NOT** add ``authorization``
+    # to ``hop_by_hop_request``. The /market/oauth/* endpoints will (post
+    # 2.3.1 / 2.3.2) accept the bridge token via ``Authorization: Bearer``,
+    # and that header MUST survive this proxy. Stripping it would silently
+    # break Market login.
+    hop_by_hop_request = hop_by_hop | {"accept-encoding"}
     headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in hop_by_hop
+        if key.lower() not in hop_by_hop_request
     }
 
     try:
@@ -1643,10 +1657,16 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             content={"detail": "Market bridge unavailable", "error": str(exc)},
         )
 
+    # Response-side filter additionally drops Content-Encoding so the body
+    # bytes (already decompressed by httpx when we read ``upstream.content``)
+    # and the response headers stay consistent. ``Content-Length`` is also
+    # dropped because httpx may have changed the byte count during
+    # decompression; FastAPI / Starlette will recompute it from the body.
+    hop_by_hop_response = hop_by_hop | {"content-encoding", "content-length"}
     response_headers = {
         key: value
         for key, value in upstream.headers.items()
-        if key.lower() not in hop_by_hop
+        if key.lower() not in hop_by_hop_response
     }
     return Response(
         content=upstream.content,

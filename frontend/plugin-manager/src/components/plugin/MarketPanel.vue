@@ -249,6 +249,7 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { usePluginStore } from '@/stores/plugin'
 import { useUserPreferenceStore } from '@/stores/userPreference'
+import { openExternalUrl } from '@/utils/openExternal'
 
 interface Props {
   embedded?: boolean
@@ -734,14 +735,14 @@ function handlePageChange(page: number) {
 function handlePluginClick(plugin: MarketWorkbenchItem): void {
   if (marketBaseUrl.value) {
     const path = `/#/plugin/${encodeURIComponent(String(plugin.rawId))}`
-    window.open(`${marketBaseUrl.value}${path}`, '_blank')
+    openExternalUrl(`${marketBaseUrl.value}${path}`)
   } else if (plugin.github_repo) {
-    window.open(plugin.github_repo, '_blank')
+    openExternalUrl(plugin.github_repo)
   }
 }
 
 function openMarketExternal() {
-  if (marketBaseUrl.value) window.open(marketBaseUrl.value, '_blank')
+  if (marketBaseUrl.value) openExternalUrl(marketBaseUrl.value)
 }
 
 // ─── 安装流程（与之前一致，换成新的 MarketPlugin id 类型） ───────
@@ -911,7 +912,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
       ElMessage.error(err.detail || t('market.installFailed'))
     }
   } catch {
-    window.open(payload.package_url, '_blank')
+    openExternalUrl(payload.package_url)
   } finally {
     installingId.value = null
   }

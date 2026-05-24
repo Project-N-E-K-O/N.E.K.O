@@ -20,7 +20,15 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
 
 def handle(args: argparse.Namespace) -> int:
     defaults: CliDefaults = args._defaults
-    package_path = resolve_package_path(args.package, defaults=defaults)
+    try:
+        package_path = resolve_package_path(args.package, defaults=defaults)
+    except Exception as exc:
+        # Mirror the user-friendly error format used by ``install_cmd.handle``
+        # rather than letting the resolver's exception escape and dump a raw
+        # traceback. ``args.package`` is the user-typed input which makes the
+        # message actionable for "did you typo the filename?" cases.
+        print(f"[FAIL] {args.package}: {exc}", file=sys.stderr)
+        return 1
 
     try:
         result = inspect_package(package_path)

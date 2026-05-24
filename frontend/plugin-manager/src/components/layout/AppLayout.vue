@@ -5,7 +5,13 @@
         <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
         <span class="titlebar-text">{{ t('app.titleSuffix') }}</span>
       </div>
-      <button class="titlebar-close" :title="t('common.close')" @click="closeWindow">
+      <button
+        class="titlebar-close"
+        type="button"
+        :title="t('common.close')"
+        :aria-label="t('common.close')"
+        @click="closeWindow"
+      >
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
           <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>

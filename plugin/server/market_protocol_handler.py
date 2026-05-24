@@ -17,13 +17,63 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from plugin.logging_config import get_logger
 
 logger = get_logger("server.market_protocol_handler")
+
+# Plugin Server 启动时通过 ``write_bridge_token_file`` 把 bridge token 和监听
+# 端口落到这个文件，供独立运行的 URI handler 进程读取。两边共享文件，避免
+# handler 重新 import market_bridge 时生成另一份内存 token。
+_BRIDGE_FILE = Path.home() / ".neko" / "bridge.json"
+
+
+def _load_bridge_info() -> dict[str, Any] | None:
+    """读取 bridge.json，返回 ``{"token": ..., "port": ...}`` 或 None。"""
+
+    try:
+        raw = _BRIDGE_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.error(
+            "Bridge token file not found at {}. 请先启动 N.E.K.O 主程序后再使用 neko:// 链接。",
+            _BRIDGE_FILE,
+        )
+        return None
+    except OSError as exc:
+        logger.error("Failed to read bridge token file {}: {}", _BRIDGE_FILE, exc)
+        return None
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.error("Bridge token file is not valid JSON ({}): {}", _BRIDGE_FILE, exc)
+        return None
+
+    if not isinstance(data, dict):
+        logger.error("Bridge token file payload is not a JSON object: {}", _BRIDGE_FILE)
+        return None
+
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        logger.error("Bridge token file missing 'token' field: {}", _BRIDGE_FILE)
+        return None
+
+    port_value = data.get("port", 48911)
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Bridge token file has invalid 'port' value {!r}; falling back to 48911",
+            port_value,
+        )
+        port = 48911
+
+    return {"token": token, "port": port}
 
 
 def handle_uri(uri: str) -> int:
@@ -101,10 +151,14 @@ async def _call_local_install(
 ) -> int:
     """调用本地 Plugin Server 的 /market/install 端点。"""
     import httpx
-    from plugin.server.routes.market_bridge import get_bridge_token
 
-    token = get_bridge_token()
-    base_url = "http://127.0.0.1:48911"
+    bridge = _load_bridge_info()
+    if bridge is None:
+        _show_notification("无法读取 N.E.K.O bridge 凭据，请确认客户端正在运行", "N.E.K.O")
+        return 1
+
+    token = bridge["token"]
+    base_url = f"http://127.0.0.1:{bridge['port']}"
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
@@ -189,7 +243,6 @@ def _handle_auth_callback(params: dict) -> int:
     callback_file = Path.home() / ".neko" / "oauth_callback.json"
     callback_file.parent.mkdir(parents=True, exist_ok=True)
 
-    import json
     import time
     callback_file.write_text(
         json.dumps({"code": code, "state": state, "timestamp": time.time()}),

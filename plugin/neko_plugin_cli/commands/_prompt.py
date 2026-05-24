@@ -88,6 +88,13 @@ def _fallback_text(message: str, *, default: str = "") -> str | None:
 
 
 def _fallback_select(message: str, choices: list[dict[str, str]], *, default: str | None) -> str | None:
+    if not choices:
+        # Defensive early return: an empty `choices` list would otherwise spin
+        # the prompt loop forever (no number ever maps to a valid index).
+        # Returning the caller-provided ``default`` (which may be ``None``)
+        # keeps behaviour aligned with the questionary-backed branch when no
+        # selection is possible.
+        return default
     while True:
         print(f"{message}")
         for i, c in enumerate(choices, 1):

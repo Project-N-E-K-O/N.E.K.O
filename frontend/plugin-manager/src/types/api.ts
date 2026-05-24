@@ -165,8 +165,13 @@ export interface PluginInstallSourceDetailMarket {
   plugin_market_id: string
   version: string
   /** v2 (neko-market-version-sync §3.1.1):
-   *  Market 的发布渠道，"stable" | "beta"。lock 解析失败时会回退到 "stable"。 */
-  channel?: string
+   *  Market 的发布渠道。后端按 Pydantic ``Literal["stable", "beta"]`` 返回；
+   *  lock 解析失败时会回退到 ``"stable"``。前端代码把任何非 stable / beta
+   *  的字符串（含 ``undefined`` 转出来的容错值）统一映射为 ``"unknown"``，
+   *  这样 channel 的取值集合在 TypeScript 层面是封闭的，加新值时编译器
+   *  会强制检查所有消费点。具体收窄走 ``frontend/plugin-manager/src/utils/
+   *  narrowChannel.ts::narrowMarketChannel``。 */
+  channel?: 'stable' | 'beta' | 'unknown'
   package_url: string
   /** v2: Market 上分发的 .neko-plugin 包 sha256（64 hex）。v1 entry
    *  parser 升上来时为空字符串。 */

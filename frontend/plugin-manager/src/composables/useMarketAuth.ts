@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import { openExternalUrl } from '@/utils/openExternal'
 
 interface MarketAuthStatus {
   authenticated: boolean
@@ -127,7 +128,7 @@ export function useMarketAuth() {
       }
       const data = await res.json()
       if (data.auth_url) {
-        window.open(data.auth_url, '_blank')
+        openExternalUrl(data.auth_url)
         ElMessage.info(t('market.loginStarted'))
         startMarketAuthPolling()
       } else {
