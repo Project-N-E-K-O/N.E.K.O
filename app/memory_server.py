@@ -65,6 +65,7 @@ from config.prompts.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+    RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
 )
 # Negative-intent prompts/scanner 已迁到 ``prompts_directives``（与 ban-topic
 # regex 同源——同是"用户负面 / 回避指令"的语义层）。``prompts_memory`` 保留
@@ -3924,21 +3925,22 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _lang = get_global_language()
     # 检查角色是否存在于配置中
     try:
         character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空历史记录")
-            return "开始聊天前，没有历史记录。\n"
+            return _loc(NO_RECENT_HISTORY, _lang)
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
-        return "开始聊天前，没有历史记录。\n"
+        return _loc(NO_RECENT_HISTORY, _lang)
 
     history = await recent_history_manager.aget_recent_history(lanlan_name)
     _, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
-    result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
+    result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
     for i in history:
         if i.type == 'system':
             result += i.content + "\n"

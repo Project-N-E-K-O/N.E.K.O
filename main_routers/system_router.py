@@ -126,6 +126,7 @@ from config.prompts.prompts_proactive import (
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
     MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
+    get_meme_topic_line,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -5322,28 +5323,24 @@ async def proactive_chat(request: Request):
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         
-        # 解析 new_dialog 响应
+        # 解析 new_dialog 响应：把"内心活动"与"对话历史"切开。
+        # 切分逻辑（locale 无关）集中在 prompts_memory.split_inner_thoughts_and_history，
+        # 以 INNER_THOUGHTS_DYNAMIC 的多语言模板为准；任一 locale 都匹配不到时返回
+        # None，这里兜底为"全部当历史、内心活动留空"并打 warning（不再静默错位）。
         def _parse_new_dialog(text: str) -> tuple[str, str]:
-            """
-            解析 new_dialog 的文本响应，尝试分离内心活动和对话历史。
-             - 如果包含分割线 "整理了近期发生的事情"，则将其前部分作为内心活动，后部分作为对话历史。
-             - 该函数的目的是为了在 Phase 1 后能够清晰地获取到内心活动和对话历史，以便在 Phase 2 中更好地生成搭话内容。
-             - 内心活动通常包含角色的当前状态、情绪、想法等信息，而对话历史则是与用户的过去交流记录。
-             - 通过这种方式，我们可以在 Phase 1 中分析内心活动来选择搭话话题，在 Phase 2 中结合对话历史生成更符合上下文的搭话内容。
-            """
             if not text:
                 return "", ""
-            # 尝试找到分割线 "整理了近期发生的事情"
-            split_keyword = "整理了近期发生的事情"
-            if split_keyword in text:
-                parts = text.split(split_keyword, 1)
-                # part[0] 是内心活动+时间，part[1] 是对话历史
-                # 提取内心活动 (去除首尾空白)
-                inner_thoughts_part = parts[0].strip()
-                # 提取对话历史 (去除首尾空白)
-                history_part = parts[1].strip()
-                return history_part, inner_thoughts_part
-            return text, ""
+            from config.prompts.prompts_memory import split_inner_thoughts_and_history
+            split = split_inner_thoughts_and_history(text)
+            if split is None:
+                logger.warning(
+                    "[%s] new_dialog 未匹配到内心活动分隔句（任一 locale），"
+                    "整段归入对话历史，当前内心留空",
+                    lanlan_name,
+                )
+                return text, ""
+            inner_thoughts_part, history_part = split
+            return history_part, inner_thoughts_part
 
         memory_context, inner_thoughts = _parse_new_dialog(raw_memory_context)
 
@@ -5827,22 +5824,31 @@ async def proactive_chat(request: Request):
                 return None
 
         async def _fetch_meme_with_fallback(kw: str):
-            """用 LLM 关键词搜索表情包，失败则随机热词"""
+            """用 LLM 关键词搜索表情包，失败则随机热词。
+
+            ``effective_keyword`` 标注本次实际生效的搜索词：关键词命中时即 kw
+            （描述了梗内容，下游话题会带上它）；走随机热词兜底时置空，避免谎报
+            "这是关于 X 的图"。
+            """
             try:
                 raw = await asyncio.wait_for(
                     fetch_meme_content(keyword=kw, limit=_PHASE1_FETCH_PER_SOURCE),
                     timeout=12.0
                 )
                 if raw and raw.get('success'):
+                    raw['effective_keyword'] = kw
                     return raw
             except Exception as e:
                 logger.warning(f"[{lanlan_name}] 表情包关键词 '{kw}' 搜索异常: {e}")
             logger.warning(f"[{lanlan_name}] 表情包关键词 '{kw}' 搜索失败，尝试随机热词")
             try:
-                return await asyncio.wait_for(
+                raw = await asyncio.wait_for(
                     fetch_meme_content(keyword="", limit=_PHASE1_FETCH_PER_SOURCE),
                     timeout=12.0
                 )
+                if raw:
+                    raw['effective_keyword'] = ""
+                return raw
             except Exception:
                 return None
 
@@ -5883,6 +5889,7 @@ async def proactive_chat(request: Request):
                         'data': result_p1.get('data', []),
                         'raw_data': result_p1,
                         'source': result_p1.get('source', '表情包'),
+                        'keyword': result_p1.get('effective_keyword', ''),
                     }
                     print(f"[{lanlan_name}] 成功获取 {len(result_p1.get('data', []))} 个表情包 (来源: {result_p1.get('source', '?')})")
 
@@ -5965,7 +5972,12 @@ async def proactive_chat(request: Request):
                     if meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
-                    single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
+                    single_meme_topic = get_meme_topic_line(
+                        proactive_lang,
+                        keyword=meme_content.get('keyword', ''),
+                        title=meme_title,
+                        source=meme_source,
+                    )
                     logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
                     phase1_topics.append(('meme', single_meme_topic))
                     selected_meme_link = {
@@ -6444,8 +6456,23 @@ async def proactive_chat(request: Request):
                 f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
                 f"(score={_bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, 避开={avoid_terms})"
             )
-            avoid_msg = render_regen_avoid_instruction(avoid_terms, proactive_lang)
-            regen_messages = list(messages) + [HumanMessage(content=avoid_msg)]
+            avoid_msg = render_regen_avoid_instruction(
+                avoid_terms, proactive_lang, master_name_current,
+            )
+            # 不再把 avoid 指令作为独立的最后一条 HumanMessage 追加在 12.5k 末尾
+            # （弱模型容易把这条 meta 指令的原文/脚手架当正文吐出来）。改为**重建
+            # 同一个 Human turn**：avoid 约束在前、BEGIN 触发句在最后，让模型看到的
+            # 最后一句是中性的"请开始"而非可照抄的指令文本。System 段（generate_prompt）
+            # 原样复用；vision 图保留。
+            regen_human_text = f"{avoid_msg}\n\n{begin_text}"
+            if phase2_use_vision:
+                regen_human_content = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
+                    {"type": "text", "text": regen_human_text},
+                ]
+            else:
+                regen_human_content = regen_human_text
+            regen_messages = [messages[0], HumanMessage(content=regen_human_content)]
             regen_text = ""
             # 进入 regen 前再读一次 sticky preempt：与上方流式循环 / Phase1 各
             # 长 await 入口保持一致——用户在初稿出来到这里之间接管的话，免去

@@ -466,55 +466,104 @@ def render_recent_topics_block(terms: List[str], lang: str) -> str:
 # Proactive regen 指令 — 给重 sample 用
 # ---------------------------------------------------------------------------
 # 当 BM25 总分超 REGEN_THRESHOLD 时，``main_routers/system_router`` 在第二次
-# Phase 2 LLM 调用前把这段塞到 messages 末尾，告诉 LLM 哪些 term 必须避开。
+# Phase 2 LLM 调用前注入这段，告诉 LLM 哪些 term 必须避开。
+#
+# ⚠️ 措辞刻意做成"结构化指令 + 显式反复述约束"：早期版本是一句散文式祈使
+# （"换一个完全不同的角度或主题"），弱模型在超长上下文末尾收到后，容易把指令
+# 原文/规划脚手架当成正文吐出来（线上见过 "完全不同的角度或主题"、"括号、Emoji"
+# 这类泄漏）。现在每条都：(1) 用方括号小标题标明这是改写要求而非对话；(2) 末尾
+# 明确"不要复述/解释本要求、不要输出标签化回复以外的任何东西"。注入侧还会把
+# BEGIN 触发句放在最后（见 system_router），使指令本身不是模型看到的最后一句。
+# 占位符：{terms} 要避开的词；{master_name} 搭话对象。
 
 PROACTIVE_REGEN_AVOID_INSTRUCTION = {
     'zh': (
-        "你上一次输出过于贴近最近重复说过的话题（{terms}）。"
-        "请重新生成一次，刻意避开这些词与话题，换一个完全不同的角度或主题。"
+        "【改写要求】这些词和话题最近已经聊得太多，本次必须避开：{terms}。"
+        "换个角度或换个话题，直接写一句全新的搭话。"
+        "输出严格遵守上面的格式：第一行写来源标签，第二行起只写要对{master_name}说的原话；"
+        "如果想不出新角度，就只输出 [PASS]。"
+        "不要复述或解释本要求，不要输出任何思考过程、清单或标签化回复以外的内容。"
     ),
     'en': (
-        "Your previous draft circled back to topics you've already covered "
-        "recently ({terms}). Please regenerate, deliberately avoiding these "
-        "terms and topics, and pick a completely different angle or subject."
+        "[Rewrite] These words and topics have been used too much recently and MUST be "
+        "avoided: {terms}. Pick a different angle or topic and write one brand-new line. "
+        "Keep strictly to the format above: the first line is the source tag, then write "
+        "only the actual words you'd say to {master_name}; if you have no fresh angle, output "
+        "only [PASS]. Do NOT restate or explain this instruction, and do NOT output any "
+        "reasoning, lists, or anything other than the tagged reply."
     ),
     'ja': (
-        "先ほどの出力は最近繰り返している話題（{terms}）に近すぎました。"
-        "これらの語と話題を意図的に避けて、まったく違う切り口や主題で"
-        "もう一度生成してください。"
+        "【書き直し】次の語と話題は最近使いすぎているので必ず避けてください：{terms}。"
+        "切り口か話題を変えて、新しい一言を書いてください。"
+        "出力は上の形式を厳守：1行目に来源タグ、その後は{master_name}に実際に言う言葉だけ。"
+        "新しい切り口が思いつかなければ [PASS] だけを出力。"
+        "この指示を復唱・説明せず、思考過程やリスト、タグ付き発言以外のものを出力しないこと。"
     ),
     'ko': (
-        "방금 생성한 응답이 최근에 반복된 화제（{terms}）와 너무 가깝습니다。"
-        "이 단어와 주제를 의도적으로 피해 완전히 다른 관점이나 주제로 "
-        "다시 생성해 주세요."
+        "【다시 쓰기】다음 단어와 화제는 최근에 너무 많이 다뤘으니 반드시 피하세요: {terms}. "
+        "관점이나 화제를 바꿔 완전히 새로운 한마디를 쓰세요. "
+        "출력은 위 형식을 엄격히 따르세요: 첫 줄은 출처 태그, 이후에는 {master_name}에게 실제로 "
+        "할 말만 쓰세요; 새 관점이 없으면 [PASS]만 출력하세요. 이 지시를 되풀이하거나 설명하지 "
+        "말고, 사고 과정·목록·태그 외의 어떤 것도 출력하지 마세요."
     ),
     'ru': (
-        "Ваш предыдущий черновик слишком близок к темам, которые недавно "
-        "повторялись ({terms}). Сгенерируйте ещё раз, намеренно избегая этих "
-        "слов и тем, выберите совершенно другой ракурс или предмет."
+        "[Перепиши] Эти слова и темы в последнее время используются слишком часто, их "
+        "обязательно нужно избегать: {terms}. Выбери другой угол или тему и напиши одну "
+        "совершенно новую реплику. Строго соблюдай формат выше: первая строка — тег источника, "
+        "далее — только сами слова, которые ты скажешь {master_name}; если нового угла нет, "
+        "выведи только [PASS]. Не пересказывай и не объясняй эту инструкцию, не выводи "
+        "рассуждения, списки или что-либо кроме реплики с тегом."
     ),
     'es': (
-        "Tu borrador anterior se acercó demasiado a temas ya repetidos "
-        "({terms}). Regenera evitando deliberadamente esos términos y temas, "
-        "y elige un ángulo o asunto completamente distinto."
+        "[Reescribe] Estas palabras y temas se han usado demasiado últimamente y DEBES "
+        "evitarlos: {terms}. Elige otro ángulo o tema y escribe una frase totalmente nueva. "
+        "Respeta estrictamente el formato de arriba: la primera línea es la etiqueta de "
+        "fuente, luego escribe solo lo que le dirías a {master_name}; si no tienes un ángulo "
+        "nuevo, responde solo [PASS]. No repitas ni expliques esta instrucción, y no muestres "
+        "razonamientos, listas ni nada que no sea la respuesta con etiqueta."
     ),
     'pt': (
-        "Seu rascunho anterior se aproximou demais de tópicos já repetidos "
-        "({terms}). Regenere evitando deliberadamente esses termos e tópicos, "
-        "e escolha um ângulo ou assunto completamente diferente."
+        "[Reescreva] Estas palavras e temas foram usados demais recentemente e você DEVE "
+        "evitá-los: {terms}. Escolha outro ângulo ou tema e escreva uma fala totalmente nova. "
+        "Siga estritamente o formato acima: a primeira linha é a etiqueta de fonte, depois "
+        "escreva apenas o que você diria a {master_name}; se não tiver um ângulo novo, "
+        "responda apenas [PASS]. Não repita nem explique esta instrução, e não exiba "
+        "raciocínio, listas ou qualquer coisa além da resposta com etiqueta."
     ),
 }
 
 
-def render_regen_avoid_instruction(terms: List[str], lang: str) -> str:
-    """把 regen 用的 "避开 X / Y" 指令渲染成单行文本。空列表 → ""。"""
+# render_regen_avoid_instruction 缺省称呼（master_name 未传时的中性占位）。
+# 不用"主人/master"等物化称呼（见项目约定）。
+_DEFAULT_ADDRESSEE = {
+    "zh": "对方",
+    "en": "them",
+    "ja": "相手",
+    "ko": "상대",
+    "ru": "собеседника",
+    "es": "la otra persona",
+    "pt": "a outra pessoa",
+}
+
+
+def render_regen_avoid_instruction(terms: List[str], lang: str, master_name: str = "") -> str:
+    """把 regen 用的"避开 X / Y"指令渲染成文本。空列表 → ""。
+
+    ``master_name`` 用于把"对谁说"写进指令；缺省退化为中性占位符，避免 KeyError。
+    """
     if not terms:
         return ""
     short = _norm_lang(lang)
     template = PROACTIVE_REGEN_AVOID_INSTRUCTION.get(short) or PROACTIVE_REGEN_AVOID_INSTRUCTION['en']
-    # 用各 locale 的"、/、/ , / etc" 列表分隔符
+    # 每个词单独括起来，让模型清楚哪些是要避开的离散词（CJK 用「」，其余用双引号），
+    # 再用各 locale 的列表分隔符拼接。
+    lq, rq = ("「", "」") if short in ("zh", "ja") else ('"', '"')
     sep = "、" if short in ("zh", "ja") else ", "
-    return template.format(terms=sep.join(terms))
+    quoted_terms = sep.join(f"{lq}{t}{rq}" for t in terms)
+    return template.format(
+        terms=quoted_terms,
+        master_name=master_name or _DEFAULT_ADDRESSEE.get(short, "them"),
+    )
 
 
 # =====================================================================

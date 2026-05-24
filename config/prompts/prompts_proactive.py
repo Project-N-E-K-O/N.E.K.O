@@ -3194,6 +3194,40 @@ MEME_SECTION_FOOTER = {
     "pt": "======Acima está o material de meme======",
 }
 
+# ---------- 表情包话题描述 ----------
+# 抓取源（尤其国内站）常常没返回有意义的标题，title 退化成占位符 "表情包_N"，
+# 模型完全不知道这张图是关于什么的梗。LLM 当初搜图用的 keyword（如"开心猫咪"）
+# 才是对图片内容/情绪的描述，必须带进话题里，模型才能"利用图片情绪表达"。
+# keyword 为空（fallback 随机热词，无法对应具体描述）时退回不带 keyword 的措辞。
+MEME_TOPIC_WITH_KEYWORD = {
+    "zh": "发现一个关于「{keyword}」的[表情包]：'{title}'（来自 {source}）",
+    "en": "Found a [meme] about \"{keyword}\": '{title}' (from {source})",
+    "ja": "「{keyword}」に関する[ミーム]を見つけた：'{title}'（{source} より）",
+    "ko": "'{keyword}'에 관한 [밈]을 발견했어: '{title}' ({source} 출처)",
+    "ru": "Нашла [мем] про «{keyword}»: '{title}' (из {source})",
+    "es": "Encontré un [meme] sobre «{keyword}»: '{title}' (de {source})",
+    "pt": "Encontrei um [meme] sobre «{keyword}»: '{title}' (de {source})",
+}
+
+MEME_TOPIC_NO_KEYWORD = {
+    "zh": "发现一个很有意思的[表情包]：'{title}'（来自 {source}）",
+    "en": "Found an interesting [meme]: '{title}' (from {source})",
+    "ja": "面白い[ミーム]を見つけた：'{title}'（{source} より）",
+    "ko": "재미있는 [밈]을 발견했어: '{title}' ({source} 출처)",
+    "ru": "Нашла интересный [мем]: '{title}' (из {source})",
+    "es": "Encontré un [meme] interesante: '{title}' (de {source})",
+    "pt": "Encontrei um [meme] interessante: '{title}' (de {source})",
+}
+
+
+def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> str:
+    """组装表情包话题行；keyword 非空时带上它（描述梗内容），否则退回通用措辞。"""
+    if keyword:
+        return _loc(MEME_TOPIC_WITH_KEYWORD, lang).format(
+            keyword=keyword, title=title, source=source
+        )
+    return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
+
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
     "zh": {

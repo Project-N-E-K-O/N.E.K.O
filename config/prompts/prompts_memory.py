@@ -8,6 +8,8 @@ inner-thoughts injection fragments, and chat-gap notices.
 
 from __future__ import annotations
 
+import re
+
 from config.prompts.prompts_sys import _loc
 
 # =====================================================================
@@ -869,6 +871,66 @@ INNER_THOUGHTS_DYNAMIC = {
     "es": "La hora actual es {time}. Antes de iniciar la conversación, {name} repasa mentalmente los acontecimientos recientes.\n",
     "pt": "A hora atual é {time}. Antes de iniciar a conversa, {name} revisa mentalmente os acontecimentos recentes.\n",
 }
+
+# ---------- /get_recent_history 端点文案（game/galgame 流程消费，须 i18n） ----------
+# 这两条历史上硬编码成中文，非中文用户的游戏流程会读到中文引导句。
+RECENT_HISTORY_INTRO = {
+    "zh": "开始聊天前，{name}又在脑海内整理了近期发生的事情。\n",
+    "en": "Before the chat begins, {name} mentally reviews recent events.\n",
+    "ja": "会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n",
+    "ko": "대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n",
+    "ru": "Перед началом разговора {name} мысленно перебирает последние события.\n",
+    "es": "Antes de iniciar la conversación, {name} repasa mentalmente los acontecimientos recientes.\n",
+    "pt": "Antes de iniciar a conversa, {name} revisa mentalmente os acontecimentos recentes.\n",
+}
+
+NO_RECENT_HISTORY = {
+    "zh": "开始聊天前，没有历史记录。\n",
+    "en": "Before the chat begins, there is no history.\n",
+    "ja": "会話を始める前、履歴はありません。\n",
+    "ko": "대화를 시작하기 전, 기록이 없습니다.\n",
+    "ru": "Перед началом разговора истории нет.\n",
+    "es": "Antes de iniciar la conversación, no hay historial.\n",
+    "pt": "Antes de iniciar a conversa, não há histórico.\n",
+}
+
+
+# ---------- Locale-independent /new_dialog splitter ----------
+# new_dialog 的文本结构固定为三段拼接：
+#   [PERSONA_HEADER + 长期记忆] + [INNER_THOUGHTS_HEADER + INNER_THOUGHTS_DYNAMIC] + [对话历史]
+# 下游（proactive Phase 2）需要把"内心活动"与"对话历史"切开。历史实现硬编码
+# 单一中文哨兵 "整理了近期发生的事情" 来 split，但该句来自上面的多语言
+# INNER_THOUGHTS_DYNAMIC，非中文渲染时哨兵不存在 → 切分静默失效（内心活动恒空，
+# 整段被当历史）。这里改成：用所有 locale 的 DYNAMIC 模板各编一条正则（{time}/
+# {name} 占位转成通配），命中即在该句**结尾**切开——locale 无关、不删句、不留断标点。
+def _build_inner_thoughts_dynamic_patterns() -> list[re.Pattern[str]]:
+    patterns: list[re.Pattern[str]] = []
+    for template in INNER_THOUGHTS_DYNAMIC.values():
+        escaped = re.escape(template.strip())
+        escaped = escaped.replace(re.escape("{time}"), ".+?")
+        escaped = escaped.replace(re.escape("{name}"), ".+?")
+        patterns.append(re.compile(escaped, re.DOTALL))
+    return patterns
+
+
+_INNER_THOUGHTS_DYNAMIC_PATTERNS = _build_inner_thoughts_dynamic_patterns()
+
+
+def split_inner_thoughts_and_history(text: str) -> tuple[str, str] | None:
+    """把 /new_dialog 文本切成 ``(inner_thoughts, history)``。
+
+    在 INNER_THOUGHTS_DYNAMIC 那句话（任一支持的 locale）**结尾处**切开：
+    其前（含长期记忆 + 内心活动引语）归 inner_thoughts，其后（对话历史）归 history。
+    任何 locale 都找不到该句 → 返回 ``None``，由调用方决定兜底并打日志（不要静默错位）。
+    """
+    if not text:
+        return None
+    for pattern in _INNER_THOUGHTS_DYNAMIC_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return text[: match.end()].strip(), text[match.end():].strip()
+    return None
+
 
 # =====================================================================
 # ======= Chat gap notices ===========================================

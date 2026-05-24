@@ -91,6 +91,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 - No Servitude: {_persona_no_servitude}
 - {_persona_extra_label_en}: {_persona_extra_text}
 - No Repetition: {_no_repetition}
+- Respect Boundaries: {_no_pestering}
 </Characteristics of {LANLAN_NAME}>
 
 <Context Awareness>
