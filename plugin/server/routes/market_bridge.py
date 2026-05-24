@@ -25,7 +25,7 @@ from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -552,14 +552,18 @@ async def market_bridge_token(request: Request):
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)
 async def market_oauth_start(
     request: Request,
-    token: str = Query(..., description="Bridge token"),
+    token: str | None = Query(
+        None,
+        description="(legacy) Bridge token; prefer Authorization: Bearer header",
+    ),
+    authorization: str | None = Header(None),
 ):
     """启动 N.E.K.O → Market OAuth 登录。
 
     本地服务生成 PKCE verifier/challenge 并只把 verifier 存到本机文件；
     前端只拿授权 URL，避免把可换 token 的 secret 暴露到浏览器状态里。
     """
-    _verify_token(token)
+    _verify_token(token, authorization=authorization)
     if not MARKET_URL or not MARKET_WEB_URL:
         raise HTTPException(status_code=400, detail="Market URL 未配置")
 
@@ -664,10 +668,14 @@ async def market_oauth_callback(
 
 @router.get("/oauth/status", response_model=MarketOAuthStatusResponse)
 async def market_oauth_status(
-    token: str = Query(..., description="Bridge token"),
+    token: str | None = Query(
+        None,
+        description="(legacy) Bridge token; prefer Authorization: Bearer header",
+    ),
+    authorization: str | None = Header(None),
 ):
     """返回本地保存的 Market 登录状态。"""
-    _verify_token(token)
+    _verify_token(token, authorization=authorization)
     token_data = _read_json_file(_OAUTH_TOKEN_FILE)
     if not token_data:
         return MarketOAuthStatusResponse(
@@ -685,10 +693,14 @@ async def market_oauth_status(
 
 @router.post("/oauth/complete", response_model=MarketOAuthCompleteResponse)
 async def market_oauth_complete(
-    token: str = Query(..., description="Bridge token"),
+    token: str | None = Query(
+        None,
+        description="(legacy) Bridge token; prefer Authorization: Bearer header",
+    ),
+    authorization: str | None = Header(None),
 ):
     """消费浏览器回调写入的授权码并换取 Market token。"""
-    _verify_token(token)
+    _verify_token(token, authorization=authorization)
 
     pending = _read_json_file(_OAUTH_PENDING_FILE)
     if not pending:
@@ -748,10 +760,14 @@ async def market_oauth_complete(
 
 @router.post("/oauth/logout", response_model=MarketOAuthLogoutResponse)
 async def market_oauth_logout(
-    token: str = Query(..., description="Bridge token"),
+    token: str | None = Query(
+        None,
+        description="(legacy) Bridge token; prefer Authorization: Bearer header",
+    ),
+    authorization: str | None = Header(None),
 ):
     """清除本地保存的 Market OAuth token。"""
-    _verify_token(token)
+    _verify_token(token, authorization=authorization)
     _unlink_if_exists(_OAUTH_TOKEN_FILE)
     _unlink_if_exists(_OAUTH_PENDING_FILE)
     _unlink_if_exists(_OAUTH_CALLBACK_FILE)
@@ -761,9 +777,50 @@ async def market_oauth_logout(
 # ─── 内部实现 ──────────────────────────────────────────────────────
 
 
-def _verify_token(token: str) -> None:
-    """验证 bridge token。"""
-    if not secrets.compare_digest(token, _BRIDGE_TOKEN):
+def _verify_token(
+    token: str | None = None,
+    *,
+    authorization: str | None = None,
+) -> None:
+    """验证 bridge token。
+
+    Phase 3 dual-accept window (PR #1480 review-fix bug 1.6): the
+    bridge token is accepted from EITHER the legacy ``?token=...``
+    query parameter OR an ``Authorization: Bearer <token>`` HTTP
+    header, with the header winning when both are present. Currently
+    used only by the four ``/market/oauth/*`` endpoints; the rest of
+    the bridge surface still uses the positional-query path.
+
+    Why dual-accept (vs. flipping to header-only):
+
+    * Old plugin-manager bundles still in the field send ``?token=``;
+      cutting them over before the frontend ships in the same release
+      would 403 every login they attempt during the upgrade window.
+    * The header path is preferred and we want new code to use it,
+      so when both are present (which should not happen in normal
+      traffic) we lock to ``Authorization`` to avoid silently
+      tolerating leaked query-string tokens.
+
+    The header MUST be of the form ``Bearer <token>`` (case-insensitive
+    on the ``Bearer`` keyword); anything else falls through to the
+    query parameter as if no header had been sent. ``compare_digest``
+    against ``_BRIDGE_TOKEN`` is the final gate either way.
+    """
+
+    candidate: str | None = None
+    if authorization:
+        # Spec: scheme must be Bearer, case-insensitive; whitespace
+        # between scheme and token allowed per RFC 7235 §2.1.
+        parts = authorization.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            candidate = parts[1].strip()
+    if candidate is None:
+        # Treat empty string the same as missing — secrets.compare_digest
+        # would happily compare two empty strings as equal if _BRIDGE_TOKEN
+        # were ever empty, but we'd rather 403 explicitly.
+        candidate = (token or "").strip() or None
+
+    if not candidate or not secrets.compare_digest(candidate, _BRIDGE_TOKEN):
         raise HTTPException(status_code=403, detail="无效的 bridge token")
 
 

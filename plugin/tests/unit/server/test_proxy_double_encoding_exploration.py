@@ -76,7 +76,28 @@ def test_proxy_forwards_decompressed_body_with_stale_content_encoding(body: byte
     confirmation we want for this exploration test.
     """
 
-    asyncio.run(_run_one(body))
+    # Run the async coroutine in a private event loop and tear it down
+    # cleanly. We deliberately don't use ``asyncio.run`` because it
+    # blanks the thread's "current loop" via ``set_event_loop(None)``
+    # on close — Python 3.11+ no longer auto-creates a fresh one for the
+    # next ``asyncio.get_event_loop()`` caller, so a downstream pytest
+    # fixture (e.g. the bridge e2e fixture in
+    # ``plugin/tests/integration/test_market_bridge_e2e.py`` which still
+    # uses the deprecated ``get_event_loop()`` API) would error with
+    # "There is no current event loop in thread 'MainThread'." after
+    # this Hypothesis test ran.
+    prev_loop: asyncio.AbstractEventLoop | None
+    try:
+        prev_loop = asyncio.get_event_loop_policy().get_event_loop()
+    except RuntimeError:
+        prev_loop = None
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_run_one(body))
+    finally:
+        loop.close()
+        asyncio.set_event_loop(prev_loop)
 
 
 async def _run_one(body: bytes) -> None:

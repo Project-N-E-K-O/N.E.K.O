@@ -116,7 +116,26 @@ def test_oauth_endpoints_accept_authorization_header_only(endpoint: str) -> None
     ``Query(...)`` validation fires first and returns 422 — the bug.
     """
 
-    asyncio.run(_run_one(endpoint))
+    # Run the async coroutine in a private event loop and tear it down
+    # cleanly. We deliberately don't use ``asyncio.run`` because it
+    # blanks the thread's "current loop" via ``set_event_loop(None)``
+    # on close — Python 3.11+ no longer auto-creates a fresh one for the
+    # next ``asyncio.get_event_loop()`` caller, so a downstream pytest
+    # fixture that still uses the deprecated ``get_event_loop()`` API
+    # would error with "There is no current event loop in thread
+    # 'MainThread'." after this Hypothesis test ran.
+    prev_loop: asyncio.AbstractEventLoop | None
+    try:
+        prev_loop = asyncio.get_event_loop_policy().get_event_loop()
+    except RuntimeError:
+        prev_loop = None
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_run_one(endpoint))
+    finally:
+        loop.close()
+        asyncio.set_event_loop(prev_loop)
 
 
 async def _run_one(endpoint: str) -> None:

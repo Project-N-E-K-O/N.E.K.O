@@ -54,11 +54,46 @@ export function useMarketAuth() {
     return bridgeToken.value
   }
 
+  /**
+   * Wrap ``fetch`` with the bridge ``Authorization: Bearer`` header.
+   *
+   * Phase 3 of the PR-1480 review-fix work (bug 1.6 / req 2.6): all
+   * ``/market/oauth/*`` calls used to attach the bridge token via
+   * ``?token=...`` query string, which leaks the token into:
+   *   - browser history,
+   *   - ``Referer`` headers when the page navigates,
+   *   - reverse-proxy / CDN access logs.
+   *
+   * The backend (see ``plugin/server/routes/market_bridge.py::_verify_token``)
+   * accepts BOTH the legacy ``?token=...`` query parameter and the
+   * preferred ``Authorization: Bearer <token>`` header, with the header
+   * winning when both are present. This helper enforces "header always,
+   * never query" on the frontend side.
+   *
+   * Scope is intentionally narrow — only ``/market/oauth/*`` is migrated.
+   * ``/market/install``, ``/market/tasks/*``, ``/market/installed``,
+   * ``/market/token-exchange``, and ``/market/bridge-token`` are NOT
+   * migrated in this PR (see design.md § Out of Scope) because they are
+   * not the leakage vector and changing them would expand the cross-
+   * process blast radius without proportional benefit.
+   *
+   * If ``ensureBridgeToken`` returns an empty string the helper still
+   * issues the request without the header — callers handle the resulting
+   * 403 the same way they handled the legacy "no token" case (typically
+   * by surfacing ``market.pairRequired``).
+   */
+  async function authedFetch(input: string, init: RequestInit = {}): Promise<Response> {
+    const token = await ensureBridgeToken()
+    const headers = new Headers(init.headers)
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    return fetch(input, { ...init, headers })
+  }
+
   async function loadMarketAuthStatus(): Promise<void> {
     const token = await ensureBridgeToken({ forceRefresh: true })
     if (!token) return
     try {
-      const res = await fetch(`/market/oauth/status?token=${encodeURIComponent(token)}`)
+      const res = await authedFetch('/market/oauth/status')
       if (!res.ok) return
       marketAuth.value = await res.json()
     } catch {
@@ -128,7 +163,7 @@ export function useMarketAuth() {
 
       inFlight = true
       try {
-        const res = await fetch(`/market/oauth/complete?token=${encodeURIComponent(token)}`, {
+        const res = await authedFetch('/market/oauth/complete', {
           method: 'POST',
         })
         if (!res.ok) {
@@ -174,7 +209,7 @@ export function useMarketAuth() {
     }
     marketAuthBusy.value = true
     try {
-      const res = await fetch(`/market/oauth/start?token=${encodeURIComponent(token)}`, {
+      const res = await authedFetch('/market/oauth/start', {
         method: 'POST',
       })
       if (res.status === 403) {
@@ -206,7 +241,7 @@ export function useMarketAuth() {
     if (!token) return
     marketAuthBusy.value = true
     try {
-      await fetch(`/market/oauth/logout?token=${encodeURIComponent(token)}`, {
+      await authedFetch('/market/oauth/logout', {
         method: 'POST',
       })
       marketAuth.value = { authenticated: false }
