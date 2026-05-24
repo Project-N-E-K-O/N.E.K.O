@@ -174,6 +174,17 @@ class CheckinConfig:
 
 
 @dataclass(slots=True)
+class CommunicationConfig:
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class StudyConfig:
     mode: StudyMode = MODE_COMPANION
     default_mode: StudyMode = MODE_COMPANION
@@ -205,6 +216,7 @@ class StudyConfig:
     pomodoro: PomodoroConfig = field(default_factory=PomodoroConfig)
     supervision: SupervisionConfig = field(default_factory=SupervisionConfig)
     checkin: CheckinConfig = field(default_factory=CheckinConfig)
+    communication: CommunicationConfig = field(default_factory=CommunicationConfig)
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
@@ -261,6 +273,12 @@ class StudyConfig:
                 CheckinConfig(**self.checkin)
                 if isinstance(self.checkin, dict)
                 else CheckinConfig()
+            )
+        if not isinstance(self.communication, CommunicationConfig):
+            self.communication = (
+                CommunicationConfig(**self.communication)
+                if isinstance(self.communication, dict)
+                else CommunicationConfig()
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -350,6 +368,11 @@ class TutorReply:
 
 def build_config(raw: dict[str, Any]) -> StudyConfig:
     study = raw.get("study") if isinstance(raw.get("study"), dict) else {}
+    study_companion = (
+        raw.get("study_companion")
+        if isinstance(raw.get("study_companion"), dict)
+        else {}
+    )
     llm = raw.get("llm") if isinstance(raw.get("llm"), dict) else {}
     ocr = raw.get("ocr_reader") if isinstance(raw.get("ocr_reader"), dict) else {}
     rapidocr = raw.get("rapidocr") if isinstance(raw.get("rapidocr"), dict) else {}
@@ -367,6 +390,13 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         study.get("supervision") if isinstance(study.get("supervision"), dict) else {}
     )
     checkin = study.get("checkin") if isinstance(study.get("checkin"), dict) else {}
+    communication = (
+        study_companion.get("communication")
+        if isinstance(study_companion.get("communication"), dict)
+        else raw.get("communication")
+        if isinstance(raw.get("communication"), dict)
+        else {}
+    )
 
     def _raw(
         section: dict[str, Any], key: str, default: Any, flat_key: str | None = None
@@ -607,6 +637,14 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "auto_derive_from_session",
                 True,
                 "checkin_auto_derive_from_session",
+            ),
+        ),
+        communication=CommunicationConfig(
+            enabled=_bool(
+                communication,
+                "enabled",
+                True,
+                "communication_enabled",
             ),
         ),
     )

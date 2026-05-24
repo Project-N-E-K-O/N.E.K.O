@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -170,6 +171,23 @@ class _Ctx:
         self.status_updates.append(dict(status))
 
 
+def _study_push_texts(ctx: _Ctx) -> list[str]:
+    texts: list[str] = []
+    for message in ctx.pushed_messages:
+        if message.get("source") != "study_companion":
+            continue
+        parts = message.get("parts") or []
+        if not parts:
+            continue
+        texts.append(str(parts[0].get("text") or ""))
+    return texts
+
+
+async def _drain_scheduled_events() -> None:
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+
 class _FakeOcrBackend:
     def __init__(self, result):
         self.result = result
@@ -202,6 +220,7 @@ class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
         self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
+        self.summaries: list[tuple[list[dict[str, object]], dict[str, object], str]] = []
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
@@ -249,6 +268,27 @@ class _FakeTutorAgent:
 
     async def shutdown(self) -> None:
         return None
+
+    async def summarize_session(
+        self,
+        history: list[dict[str, object]],
+        *,
+        mode: str = MODE_COMPANION,
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.summaries.append((list(history), dict(context or {}), mode))
+        return TutorReply(
+            operation="summarize_session",
+            input_text="session",
+            reply="Study session summary",
+            payload={
+                "summary": "Study session summary",
+                "key_insight": "Derivative rules improved.",
+                "questions_attempted": 2,
+                "correct_rate": 0.5,
+            },
+            created_at="2026-05-11T00:00:00Z",
+        )
 
 
 def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
@@ -3074,6 +3114,348 @@ async def test_study_status_degrades_when_habit_payload_fails(
         assert status.value["status"] == "ready"
         assert status.value["habit"]["available"] is False
         assert "habit db unavailable" in status.value["habit"]["error"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_communication_disabled_skips_eventbus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        status = await plugin.study_neko_communication_status()
+        assert isinstance(status, Ok)
+        assert status.value == {
+            "available": False,
+            "events_emitted": 0,
+            "events_blocked": 0,
+        }
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_screen_classification_change_emits_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        study_companion_module,
+        "classify_screen_from_ocr",
+        lambda *_args, **_kwargs: ScreenClassification(
+            screen_type="question",
+            confidence=0.95,
+            reason="unit-test",
+        ),
+    )
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        for _ in range(3):
+            plugin._update_screen_classification("Question: solve x + 1 = 2")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        texts = _study_push_texts(ctx)
+        assert len(texts) == 1
+        assert "[Screen Context Changed]" in texts[0]
+        assert "question" in texts[0]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_screen_classification_no_change_skips_duplicate_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        study_companion_module,
+        "classify_screen_from_ocr",
+        lambda *_args, **_kwargs: ScreenClassification(
+            screen_type="question",
+            confidence=0.95,
+            reason="unit-test",
+        ),
+    )
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        for _ in range(4):
+            plugin._update_screen_classification("Question: solve x + 1 = 2")
+        await _drain_scheduled_events()
+
+        assert len(_study_push_texts(ctx)) == 1
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_emits_answer_evaluated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+    try:
+        evaluated = await plugin.study_evaluate_answer(
+            question="What is a derivative?",
+            answer="A slope.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        await _drain_scheduled_events()
+        texts = _study_push_texts(ctx)
+        assert any("[Answer Evaluated]" in text for text in texts)
+        assert any("What is a derivative?" in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_emits_answer_evaluated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(
+            name="Exam Words", deck_type="word", language="en"
+        )
+        item = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )["item"]
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=item["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        await _drain_scheduled_events()
+        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_review_due_background_task_emits_without_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        study_companion_module,
+        "_REVIEW_DUE_INTERVAL_SECONDS",
+        0.01,
+    )
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        assert plugin._review_due_task is not None
+        assert not plugin._review_due_task.done()
+        deck = plugin._memory_deck_store.create_deck(
+            name="Exam Words", deck_type="word", language="en"
+        )
+        plugin._memory_deck_store.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )
+
+        await asyncio.sleep(0.05)
+        await _drain_scheduled_events()
+
+        assert any("[Review Due]" in text for text in _study_push_texts(ctx))
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_status_does_not_drive_review_due_emission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        await plugin._cancel_review_due_task()
+        calls = 0
+
+        async def _count_review_due() -> None:
+            nonlocal calls
+            calls += 1
+
+        plugin._emit_review_due_if_needed = (  # type: ignore[method-assign]
+            _count_review_due
+        )
+
+        status = await plugin.study_status()
+
+        assert isinstance(status, Ok)
+        assert calls == 0
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recitation_emits_answer_evaluated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(name="Texts", deck_type="passage")
+        imported = plugin._memory_deck_store.import_passage(
+            deck_id=deck["id"],
+            title="Short Text",
+            text="First sentence. Second sentence.",
+        )
+
+        recited = await plugin.study_memory_recitation_attempt(
+            item_id=imported["items"][0]["id"],
+            user_input_text="First sentence.",
+        )
+
+        assert isinstance(recited, Ok)
+        await _drain_scheduled_events()
+        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_emits_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+    try:
+        summarized = await plugin.study_summarize_session()
+
+        assert isinstance(summarized, Ok)
+        await _drain_scheduled_events()
+        texts = _study_push_texts(ctx)
+        assert any("[Session Summarized]" in text for text in texts)
+        assert any("Derivative rules improved." in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_emits_mastery_updated_on_threshold_cross(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CorrectTrackingAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append(
+                (question, answer, expected_answer, dict(context or {}), mode)
+            )
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="Correct.",
+                payload={
+                    "verdict": "correct",
+                    "score": 100,
+                    "feedback": "Correct.",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="derivatives",
+                payload={"topic": "derivatives"},
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _CorrectTrackingAgent()
+    try:
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+
+        evaluated = await plugin.study_evaluate_answer(
+            question="What is d/dx x^2?",
+            expected_answer="2x",
+            answer="2x",
+        )
+
+        assert isinstance(evaluated, Ok)
+        await _drain_scheduled_events()
+        texts = _study_push_texts(ctx)
+        assert any("[Mastery Updated]" in text for text in texts)
     finally:
         await plugin.shutdown()
 

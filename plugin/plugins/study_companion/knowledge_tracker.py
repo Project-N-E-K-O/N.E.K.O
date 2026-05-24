@@ -388,6 +388,10 @@ class KnowledgeTracker:
     ) -> None:
         self._memory_deck_summary_provider = provider
 
+    def get_mastery(self, topic_id: str) -> float:
+        latest = self.store.get_latest_mastery(topic_id)
+        return float((latest or {}).get("mastery") or 0.0)
+
     def on_answer(
         self,
         *,

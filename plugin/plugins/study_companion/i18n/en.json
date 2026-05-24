@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "Return the static UI path for study_companion.",
     "entries.status.name":  "Study Companion Status",
     "entries.status.description":  "Return runtime status, dependencies, and recent study interactions.",
+    "entries.neko_communication_status.name":  "Neko Communication Status",
+    "entries.neko_communication_status.description":  "Return whether real-time neko communication is active.",
     "entries.dependency_status.name":  "Study OCR Dependency Status",
     "entries.dependency_status.description":  "Inspect RapidOCR, Tesseract, and capture dependencies used by study_companion.",
     "entries.ocr_snapshot.name":  "Study OCR Snapshot",
