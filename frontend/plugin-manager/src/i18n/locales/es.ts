@@ -218,11 +218,13 @@ export default {
         manual: 'Manual',
         imported: 'Importado',
         market: 'Mercado',
+        unknown: 'Desconocido',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
-        stable: 'Stable',
+        stable: 'Estable',
         beta: 'Beta',
+        unknown: 'Desconocido',
       },
       updateAvailable: 'Actualización disponible',
       labels: {
@@ -416,6 +418,56 @@ export default {
       verify: 'Verificar',
       install: 'Instalar',
       analyze: 'Analizar'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: 'Tipo',
+        success: 'Correctos',
+        failed: 'Fallidos',
+        included: 'Plugins incluidos',
+        status: 'Estado',
+        completed: 'Completado',
+        partialFailure: 'Fallo parcial',
+        pluginCount: 'Plugins',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: 'Plugins procesados',
+        conflictStrategy: 'Estrategia de conflicto',
+        commonDeps: 'Dependencias comunes',
+        sharedDeps: 'Dependencias compartidas'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: 'ID del bundle',
+        bundleName: 'Nombre del bundle',
+        bundleVersion: 'Versión del bundle',
+        outputPath: 'Ruta de salida',
+        firstPlugin: 'Primer plugin',
+        latestPath: 'Ruta del paquete más reciente',
+        packageId: 'ID del paquete',
+        packageType: 'Tipo de paquete',
+        version: 'Versión',
+        pluginsRoot: 'Directorio de plugins',
+        profilesRoot: 'Directorio de Profiles',
+        currentSdk: 'Compatibilidad con el SDK actual',
+        recommendedIntersection: 'Intersección recomendada'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: 'Bundle',
+        plugin: 'Paquete de plugin',
+        sdkAllSupported: '{version} totalmente compatible',
+        sdkPartiallyIncompatible: '{version} tiene incompatibilidades'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: 'Un bundle normalmente debería contener al menos dos plugins',
+        verifyHashFailed: 'El paquete no superó la verificación de hash; no lo importes directamente en un entorno de ejecución',
+        inspectHashFailed: 'La verificación de hash del paquete falló; el contenido puede haberse modificado',
+        sdkNotSupportedByAll: 'La versión actual del SDK no es compatible con todos los plugins',
+        sharedDepsDetected: 'Se detectaron {count} dependencias compartidas; revisa las restricciones de versión al crear el bundle'
+      }
     }
   },
   metrics: {

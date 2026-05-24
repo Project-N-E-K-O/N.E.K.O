@@ -32,8 +32,8 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
-      // Market Bridge 端点（/market/status, /market/bridge-token, /market/install, /market/tasks/*, /market/installed, /market/token-exchange）
-      '/market': {
+      // Market Bridge API endpoints only. Keep the SPA route /market on Vite.
+      '^/market/(status|bridge-token|install|installed|token-exchange|oauth(?:/.*)?|tasks(?:/.*)?)(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false

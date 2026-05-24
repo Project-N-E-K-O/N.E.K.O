@@ -218,11 +218,13 @@ export default {
         manual: '수동',
         imported: '가져옴',
         market: '마켓',
+        unknown: '알 수 없음',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
-        stable: 'Stable',
-        beta: 'Beta',
+        stable: '안정',
+        beta: '베타',
+        unknown: '알 수 없음',
       },
       updateAvailable: '업데이트 사용 가능',
       labels: {
@@ -416,6 +418,56 @@ export default {
       verify: '검증',
       install: '설치',
       analyze: '분석'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: '유형',
+        success: '성공',
+        failed: '실패',
+        included: '포함된 플러그인',
+        status: '상태',
+        completed: '완료',
+        partialFailure: '부분 실패',
+        pluginCount: '플러그인 수',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: '처리된 플러그인',
+        conflictStrategy: '충돌 전략',
+        commonDeps: '공통 의존성',
+        sharedDeps: '공유 의존성'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: '번들 ID',
+        bundleName: '번들 이름',
+        bundleVersion: '번들 버전',
+        outputPath: '출력 경로',
+        firstPlugin: '첫 번째 플러그인',
+        latestPath: '최신 패키지 경로',
+        packageId: '패키지 ID',
+        packageType: '패키지 유형',
+        version: '버전',
+        pluginsRoot: '플러그인 디렉터리',
+        profilesRoot: 'Profiles 디렉터리',
+        currentSdk: '현재 SDK 지원',
+        recommendedIntersection: '권장 교집합'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: '번들',
+        plugin: '플러그인 패키지',
+        sdkAllSupported: '{version} 완전 지원',
+        sdkPartiallyIncompatible: '{version}에 호환되지 않는 항목이 있습니다'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: '번들은 일반적으로 최소 두 개의 플러그인을 포함해야 합니다',
+        verifyHashFailed: '패키지가 hash 검증을 통과하지 못했습니다. 런타임 환경에 직접 가져오지 마세요',
+        inspectHashFailed: '현재 패키지의 hash 검증에 실패했습니다. 내용이 수정되었을 수 있습니다',
+        sdkNotSupportedByAll: '현재 SDK 버전은 모든 플러그인에서 공통으로 지원되지 않습니다',
+        sharedDepsDetected: '공유 의존성 {count}개가 감지되었습니다. 번들링 시 버전 제약을 중점적으로 확인하세요'
+      }
     }
   },
   metrics: {

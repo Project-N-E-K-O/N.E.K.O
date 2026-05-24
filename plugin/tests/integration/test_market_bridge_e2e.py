@@ -957,6 +957,106 @@ async def test_upgrade_happy_path_replaces_lock_entry(
 
 
 @pytest.mark.asyncio
+async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """Upgrade must reject a package whose plugin.toml id changes identity."""
+
+    plugin_id = "e2e_upgrade_identity"
+    intruder_id = "e2e_upgrade_intruder"
+    v1_zip, v1_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="1.0.0",
+    )
+    intruder_zip, intruder_payload_hash = _build_neko_plugin_zip(
+        plugin_id=intruder_id, version="2.0.0",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    user_root: Path = bridge_e2e_env["user_root"]
+    mgr: InstallSourceManager = bridge_e2e_env["manager"]
+
+    async def _wait_task(task_id: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                return body
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"task {task_id} did not finish")
+
+    v1_sha = hashlib.sha256(v1_zip).hexdigest()
+    with _serve_bytes(
+        filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": v1_sha,
+                "payload_hash": v1_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "1.0.0",
+                "channel": "stable",
+                "mode": "install",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        install_status = await _wait_task(resp.json()["task_id"])
+
+    assert install_status["status"] == "completed", install_status
+    [v1_entry] = [
+        e for e in mgr.snapshot().entries
+        if e.plugin_id == plugin_id and not e.removed
+    ]
+    v1_installed_at = v1_entry.installed_at
+
+    intruder_sha = hashlib.sha256(intruder_zip).hexdigest()
+    with _serve_bytes(
+        filename=f"{intruder_id}-2.0.0.neko-plugin", content=intruder_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": intruder_sha,
+                "payload_hash": intruder_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "2.0.0",
+                "channel": "stable",
+                "mode": "upgrade",
+                "on_conflict": "fail",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        upgrade_status = await _wait_task(resp.json()["task_id"])
+
+    assert upgrade_status["status"] == "failed", upgrade_status
+    assert upgrade_status["error_code"] == "upgrade_rollback_completed"
+    assert "plugin identity mismatch" in upgrade_status["error"]
+    assert plugin_id in upgrade_status["error"]
+    assert intruder_id in upgrade_status["error"]
+
+    [restored_entry] = [
+        e for e in mgr.snapshot().entries
+        if e.plugin_id == plugin_id and not e.removed
+    ]
+    from plugin.server.application.install_source.models import SourceDetailMarket
+
+    assert isinstance(restored_entry.source_detail, SourceDetailMarket)
+    assert restored_entry.source_detail.version == "1.0.0"
+    assert restored_entry.installed_at == v1_installed_at
+    assert (user_root / plugin_id / "plugin.toml").is_file()
+    assert "1.0.0" in (user_root / plugin_id / "plugin.toml").read_text(
+        encoding="utf-8",
+    )
+    assert not (user_root / intruder_id).exists()
+
+
+@pytest.mark.asyncio
 async def test_upgrade_rejects_when_not_installed(
     bridge_e2e_env: dict[str, Any],
 ) -> None:

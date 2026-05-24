@@ -218,11 +218,13 @@ export default {
         manual: '手動',
         imported: '匯入',
         market: '市集',
+        unknown: '未知',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: '穩定版',
         beta: '測試版',
+        unknown: '未知',
       },
       updateAvailable: '有新版本',
       labels: {
@@ -416,6 +418,56 @@ export default {
       verify: '校驗',
       install: '安裝',
       analyze: '分析'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: '類型',
+        success: '成功',
+        failed: '失敗',
+        included: '包含外掛',
+        status: '狀態',
+        completed: '完成',
+        partialFailure: '部分失敗',
+        pluginCount: '外掛數',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: '已處理外掛',
+        conflictStrategy: '衝突策略',
+        commonDeps: '共同依賴',
+        sharedDeps: '共享依賴'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: '整合包 ID',
+        bundleName: '整合包名稱',
+        bundleVersion: '整合包版本',
+        outputPath: '輸出路徑',
+        firstPlugin: '首個外掛',
+        latestPath: '最新包路徑',
+        packageId: '包 ID',
+        packageType: '包類型',
+        version: '版本',
+        pluginsRoot: '外掛目錄',
+        profilesRoot: 'Profiles 目錄',
+        currentSdk: '目前 SDK 支援',
+        recommendedIntersection: '建議交集'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: '整合包',
+        plugin: '外掛包',
+        sdkAllSupported: '{version} 全部支援',
+        sdkPartiallyIncompatible: '{version} 存在不相容'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: '整合包通常應至少包含兩個外掛',
+        verifyHashFailed: '包未通過 hash 校驗，請不要直接匯入執行環境',
+        inspectHashFailed: '目前包 hash 校驗失敗，內容可能已被修改',
+        sdkNotSupportedByAll: '目前 SDK 版本不被所有外掛共同支援',
+        sharedDepsDetected: '偵測到 {count} 個共享依賴，整合時需要重點檢查版本約束'
+      }
     }
   },
   metrics: {

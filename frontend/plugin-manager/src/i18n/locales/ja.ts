@@ -218,11 +218,13 @@ export default {
         manual: '手動',
         imported: 'インポート',
         market: 'マーケット',
+        unknown: '不明',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
-        stable: 'Stable',
-        beta: 'Beta',
+        stable: '安定版',
+        beta: 'ベータ版',
+        unknown: '不明',
       },
       updateAvailable: '更新があります',
       labels: {
@@ -416,6 +418,56 @@ export default {
       verify: '検証',
       install: 'インストール',
       analyze: '解析'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: 'タイプ',
+        success: '成功',
+        failed: '失敗',
+        included: '含まれるプラグイン',
+        status: 'ステータス',
+        completed: '完成',
+        partialFailure: '一部失敗',
+        pluginCount: 'プラグイン数',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: '処理済みプラグイン',
+        conflictStrategy: '競合戦略',
+        commonDeps: '共通依存関係',
+        sharedDeps: '共有依存関係'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: 'バンドル ID',
+        bundleName: 'バンドル名',
+        bundleVersion: 'バンドルバージョン',
+        outputPath: '出力パス',
+        firstPlugin: '最初のプラグイン',
+        latestPath: '最新パッケージのパス',
+        packageId: 'パッケージ ID',
+        packageType: 'パッケージタイプ',
+        version: 'バージョン',
+        pluginsRoot: 'プラグインディレクトリ',
+        profilesRoot: 'Profiles ディレクトリ',
+        currentSdk: '現在の SDK サポート',
+        recommendedIntersection: '推奨交差範囲'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: 'バンドル',
+        plugin: 'プラグインパッケージ',
+        sdkAllSupported: '{version} は完全対応',
+        sdkPartiallyIncompatible: '{version} に非互換があります'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: 'バンドルには通常少なくとも 2 つのプラグインが必要です',
+        verifyHashFailed: 'パッケージの hash 検証に失敗しました。実行環境へ直接インポートしないでください',
+        inspectHashFailed: '現在のパッケージの hash 検証に失敗しました。内容が変更されている可能性があります',
+        sdkNotSupportedByAll: '現在の SDK バージョンはすべてのプラグインで共通対応されていません',
+        sharedDepsDetected: '{count} 個の共有依存関係を検出しました。バンドル時はバージョン制約を重点的に確認してください'
+      }
     }
   },
   metrics: {

@@ -301,16 +301,14 @@ class PluginCliService:
                     warnings=warnings,
                 )
 
-            # Step 4b — plugin identity consistency check (soft).
+            # Step 4b — plugin identity consistency check.
             # When Market tells us "this is plugin X" by passing
             # ``expected_plugin_toml_id`` (the Market plugin slug),
             # the unpacked package's plugin.toml [plugin].id is expected
-            # to match. Mismatch is a soft warning rather than a hard
-            # failure because Market currently does not enforce
-            # ``Plugin.slug == plugin.toml.id``. The lock entry still
-            # records the actual unpacked id; the warning surfaces the
-            # divergence so the user can decide whether to trust the
-            # package.
+            # to match. Fresh installs keep the historic soft-warning
+            # behavior because Market may still publish legacy slugs, but
+            # upgrade/reinstall must fail fast: the bridge rollback flow is
+            # keyed to the original plugin id and directory.
             expected_toml_id = market_detail.get("expected_plugin_toml_id")
             if (
                 isinstance(expected_toml_id, str)
@@ -318,11 +316,16 @@ class PluginCliService:
                 and target_plugin_id
                 and expected_toml_id != target_plugin_id
             ):
-                warnings.append(
+                message = (
                     f"plugin identity mismatch: Market declared "
                     f"'{expected_toml_id}' but the package contains "
-                    f"plugin id '{target_plugin_id}'; install proceeds "
-                    "but please verify the package source"
+                    f"plugin id '{target_plugin_id}'"
+                )
+                if install_mode in ("upgrade", "reinstall"):
+                    raise ValueError(message)
+                warnings.append(
+                    f"{message}; install proceeds but please verify the "
+                    "package source"
                 )
             # ``expected_plugin_toml_id`` is informational only — drop it
             # before passing market_detail to ISM so it does not leak into
@@ -362,8 +365,7 @@ class PluginCliService:
                 user_root=mgr.user_root,
             )
 
-            mode = install_source_override.get("mode") or "install"
-            if mode in ("upgrade", "reinstall"):
+            if install_mode in ("upgrade", "reinstall"):
                 entry, ism_warnings = mgr.record_market_upgrade(
                     root_id=root_id,
                     directory_name=directory_name,

@@ -218,11 +218,13 @@ export default {
         manual: 'Manual',
         imported: 'Imported',
         market: 'Market',
+        unknown: 'Unknown',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: 'Stable',
         beta: 'Beta',
+        unknown: 'Unknown',
       },
       updateAvailable: 'Update available',
       labels: {

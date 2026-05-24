@@ -218,11 +218,13 @@ export default {
         manual: '手动',
         imported: '导入',
         market: '市场',
+        unknown: '未知',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: '稳定版',
         beta: '测试版',
+        unknown: '未知',
       },
       updateAvailable: '有新版本',
       labels: {

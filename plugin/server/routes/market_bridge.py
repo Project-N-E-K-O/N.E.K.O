@@ -240,12 +240,14 @@ class MarketInstallRequest(BaseModel):
         description="install=全新安装；upgrade=覆盖旧版本；reinstall=同版本重装",
     )
     # v2 (Option C): plugin 身份一致性校验 —— Market slug 透传给客户端，
-    # 客户端 unpack 后比对包内 plugin.toml [plugin].id；不一致时附 warning。
+    # 客户端 unpack 后比对包内 plugin.toml [plugin].id；install 不一致时
+    # 附 warning，upgrade/reinstall 不一致时拒绝并回滚。
     expected_plugin_toml_id: str | None = Field(
         default=None,
         description=(
             "Market 上的 plugin.slug；客户端 unpack 后会和包内 plugin.toml "
-            "的 id 字段比对。不一致只 warn 不阻塞，给用户审视空间"
+            "的 id 字段比对。install 不一致只 warn；upgrade/reinstall "
+            "不一致会拒绝并回滚"
         ),
     )
     on_conflict: str = Field(default="rename", pattern=r"^(rename|fail)$")

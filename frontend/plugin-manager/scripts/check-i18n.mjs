@@ -13,6 +13,7 @@
 
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+import { readdir } from 'node:fs/promises'
 import process from 'node:process'
 import { createJiti } from 'jiti'
 
@@ -20,7 +21,6 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const LOCALES_DIR = resolve(__dirname, '../src/i18n/locales')
 
-const LOCALE_NAMES = ['en-US', 'zh-CN', 'zh-TW', 'es', 'pt', 'ko', 'ja', 'ru']
 const REFERENCE = 'en-US'
 const PLACEHOLDER_REGEX = /\{(\w+)\}/g
 
@@ -76,6 +76,19 @@ async function loadLocale(name) {
   }
 }
 
+async function discoverLocaleNames() {
+  const entries = await readdir(LOCALES_DIR, { withFileTypes: true })
+  const names = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+    .map((entry) => entry.name.slice(0, -3))
+    .sort()
+
+  if (!names.includes(REFERENCE)) {
+    throw new Error(`reference locale '${REFERENCE}' not found in ${LOCALES_DIR}`)
+  }
+  return names
+}
+
 function setDifference(a, b) {
   const out = []
   for (const x of a) if (!b.has(x)) out.push(x)
@@ -83,8 +96,9 @@ function setDifference(a, b) {
 }
 
 async function main() {
+  const localeNames = await discoverLocaleNames()
   const locales = {}
-  for (const name of LOCALE_NAMES) {
+  for (const name of localeNames) {
     locales[name] = await loadLocale(name)
   }
 
@@ -94,7 +108,7 @@ async function main() {
   let warnings = 0
   const totalKeys = refMap.size
 
-  for (const name of LOCALE_NAMES) {
+  for (const name of localeNames) {
     if (name === REFERENCE) continue
     const localeMap = new Map()
     walk(locales[name], '', localeMap)
@@ -126,7 +140,7 @@ async function main() {
     }
   }
 
-  const totalLocales = LOCALE_NAMES.length
+  const totalLocales = localeNames.length
   if (warnings === 0) {
     process.stdout.write(
       `[i18n] OK: ${totalKeys} keys checked across ${totalLocales} locales, no placeholder mismatches.\n`

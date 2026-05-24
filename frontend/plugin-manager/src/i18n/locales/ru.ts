@@ -218,11 +218,13 @@ export default {
         manual: 'Вручную',
         imported: 'Импортированный',
         market: 'Маркет',
+        unknown: 'Неизвестно',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
-        stable: 'Stable',
-        beta: 'Beta',
+        stable: 'Стабильный',
+        beta: 'Бета',
+        unknown: 'Неизвестно',
       },
       updateAvailable: 'Доступно обновление',
       labels: {
@@ -416,6 +418,56 @@ export default {
       verify: 'Верификация',
       install: 'Установка',
       analyze: 'Анализ'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: 'Тип',
+        success: 'Успешно',
+        failed: 'Ошибки',
+        included: 'Плагины включены',
+        status: 'Статус',
+        completed: 'Завершено',
+        partialFailure: 'Частичная ошибка',
+        pluginCount: 'Плагины',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: 'Обработано плагинов',
+        conflictStrategy: 'Стратегия конфликтов',
+        commonDeps: 'Общие зависимости',
+        sharedDeps: 'Разделяемые зависимости'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: 'ID бандла',
+        bundleName: 'Название бандла',
+        bundleVersion: 'Версия бандла',
+        outputPath: 'Путь вывода',
+        firstPlugin: 'Первый плагин',
+        latestPath: 'Путь к последнему пакету',
+        packageId: 'ID пакета',
+        packageType: 'Тип пакета',
+        version: 'Версия',
+        pluginsRoot: 'Каталог плагинов',
+        profilesRoot: 'Каталог Profiles',
+        currentSdk: 'Поддержка текущего SDK',
+        recommendedIntersection: 'Рекомендуемое пересечение'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: 'Бандл',
+        plugin: 'Пакет плагина',
+        sdkAllSupported: '{version} полностью поддерживается',
+        sdkPartiallyIncompatible: 'В {version} есть несовместимости'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: 'Бандл обычно должен содержать как минимум два плагина',
+        verifyHashFailed: 'Пакет не прошёл проверку hash; не импортируйте его напрямую в среду выполнения',
+        inspectHashFailed: 'Проверка hash текущего пакета не пройдена; содержимое могло быть изменено',
+        sdkNotSupportedByAll: 'Текущая версия SDK поддерживается не всеми плагинами',
+        sharedDepsDetected: 'Обнаружено разделяемых зависимостей: {count}; при сборке бандла проверьте ограничения версий'
+      }
     }
   },
   metrics: {

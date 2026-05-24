@@ -1,59 +1,36 @@
 /**
- * Bug-condition exploration property test for ReDoS in `useGridWorkbench`
- * (PR-1480 review-fix bugfix Requirement 1.5 — `isReDoSPattern`).
+ * Regression property tests for ReDoS protection in `useGridWorkbench`
+ * (PR-1480 review-fix Requirement 1.5 — `isReDoSPattern`).
  *
  * Goal:
- *   Surface the ReDoS bug in
- *   ``frontend/plugin-manager/src/composables/useGridWorkbench.ts:239-245``.
- *   The current implementation feeds the user-supplied filter text directly
- *   into ``new RegExp(text, 'i').test(item.searchIndex)`` with no length
- *   guard, no nested-quantifier heuristic, and no time budget. Catastrophic
- *   backtracking patterns such as ``(a+)+$`` against an input of the form
- *   ``'a'.repeat(n) + 'b'`` cause the JavaScript engine to enumerate ``2^n``
- *   alternations on the main thread, freezing the UI for seconds-to-minutes.
+ *   Keep the fixed filter path fast when users enter catastrophic
+ *   backtracking patterns such as ``(a+)+$``. A prior implementation fed the
+ *   user-supplied filter text directly into
+ *   ``new RegExp(text, 'i').test(item.searchIndex)``; against an input like
+ *   ``'a'.repeat(n) + 'b'`` that sends V8 into exponential backtracking.
  *
- * Why we exercise the underlying ``new RegExp(...).test(...)`` call directly
- * instead of mounting the composable:
- *   ``useGridWorkbench`` provides zero protection layer between
- *   ``state.filterText`` and ``new RegExp(text, 'i').test(...)`` — the bug
- *   IS that there is no protection. Reaching into ``computed(filteredItems)``
- *   would add Vue reactivity bookkeeping on top of an already
- *   exponential-time call, making the test noisier without changing what is
- *   being measured. The exact line being measured here is the line being
- *   patched by Task 2.4.2 (``tryCompileSafeRegex`` + substring fallback).
+ * Test shape:
+ *   - ``timeFilterPath`` mirrors the current guarded path:
+ *     ``tryCompileSafeRegex`` rejects risky patterns and the composable falls
+ *     back to case-insensitive substring matching.
+ *   - ``timeUnsafeRegexMatch`` intentionally exercises the raw regex engine
+ *     as a baseline, documenting why the guard exists.
  *
- * Expected outcome on UNFIXED code:
- *   - The property test below MUST FAIL: ``expect(elapsed).toBeLessThan(100)``
- *     fires for every ``n`` in the 20..30 range because the V8 regex engine
- *     spends seconds (often > 1 s) on a single ``.test()`` call.
- *   - fast-check will report the first failing ``n`` as the counterexample.
- *   - The "documented counterexample" `it()` reproduces the specific
- *     ``n = 25`` case and likewise fails on unfixed code with elapsed
- *     time > 1000 ms.
- *
- * Expected outcome AFTER Task 2.4.2 lands:
- *   - The property test and the documented counterexample MUST start
- *     passing because ``tryCompileSafeRegex('(a+)+')`` will return ``null``
- *     (rejected by the nested-quantifier heuristic), ``useGridWorkbench``
- *     will fall back to case-insensitive substring matching, and the
- *     measured ``new RegExp(...).test(...)`` call will never be reached on
- *     this input — i.e. the post-fix budget of < 100 ms holds trivially.
- *   - The "buggy-state baseline" `it()` (which asserts ``elapsed > 100``)
- *     MUST start failing — that is the positive signal that the fix is in
- *     place.
+ * Current expectations:
+ *   - The guarded property and documented counterexample stay below the
+ *     100 ms budget.
+ *   - The unguarded baseline remains slow for the canonical pattern.
+ *   - ``tryCompileSafeRegex`` returns ``null`` for ``(a+)+$``.
  *
  * Validates: Requirements 1.5
  *
- * NOTE: This file is a Phase-4 exploration test. It is intentionally calibrated
- * so that a single failing run terminates the property quickly:
- *   - ``numRuns: 3`` with ``endOnFailure: true`` so we exit after the first
- *     failing example rather than blocking the runner on multiple
- *     multi-second backtracking runs.
- *   - The per-test timeout is raised to 30 s because a single backtracking
+ * NOTE: This file remains calibrated for quick feedback:
+ *   - ``numRuns: 3`` with ``endOnFailure: true`` avoids repeated
+ *     multi-second backtracking runs if the guard regresses.
+ *   - The per-test timeout is raised to 30 s because a single unguarded
  *     run at ``n = 30`` can exceed 10 s on slower V8 builds.
- *   - ``n`` ∈ [20, 30] is the sweet spot: 2^20 ≈ 1e6 backtracks (≈ tens of
- *     ms, already over budget), 2^30 ≈ 1e9 backtracks (seconds). Larger n
- *     would risk wedging CI; smaller n might not exceed the 100 ms budget.
+ *   - ``n`` ∈ [20, 30] is the range where unguarded matching reliably
+ *     demonstrates the hazard without wedging CI.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -68,18 +45,11 @@ const POST_FIX_BUDGET_MS = 100
 /**
  * Reproduce the on-screen filter path used by ``useGridWorkbench``.
  *
- * Post-fix (Task 2.4.2) the composable runs the user's regex through
- * ``tryCompileSafeRegex`` first; if that returns ``null`` (because the
- * pattern hits the ReDoS heuristic), the composable falls back to a
- * case-insensitive substring match and never executes the dangerous
- * ``.test()`` call. We mirror that exact decision tree here so the
- * test measures what the user actually experiences.
- *
- * On UNFIXED code there is no ``tryCompileSafeRegex`` — the composable
- * called ``new RegExp(text, 'i').test(item.searchIndex)`` directly, so
- * the equivalent simulation is to also call ``new RegExp`` directly.
- * That branch is preserved in ``timeUnsafeRegexMatch`` below for the
- * buggy-state baseline.
+ * The composable runs the user's regex through ``tryCompileSafeRegex`` first;
+ * if that returns ``null`` (because the pattern hits the ReDoS heuristic), the
+ * composable falls back to a case-insensitive substring match and never
+ * executes the dangerous ``.test()`` call. We mirror that decision tree here
+ * so the test measures what the user actually experiences.
  */
 function timeFilterPath(n: number): number {
   const idx = 'a'.repeat(n) + 'b'
