@@ -506,7 +506,6 @@ async def test_synth_dead_letter_self_heals_after_cooldown(tmp_path):
     模拟方式：把失败记录的时间戳手动改成 6h 前，再调 synthesize，断言 LLM
     被重新调用（cooldown_elapsed → 不再跳过）。
     """
-    import json
     from datetime import datetime, timedelta
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
 
@@ -548,17 +547,67 @@ async def test_synth_dead_letter_self_heals_after_cooldown(tmp_path):
                 assert await re.synthesize_reflections("小天") == []
             assert llm_calls["n"] == MEMORY_LIVENESS_MAX_ATTEMPTS  # 已 dead-letter
 
-            # 把失败时间戳改到 6h 前（池子完全不变）
+            # 把失败时间戳改到 6h 前（池子完全不变）。退避现在以进程内镜像为准，
+            # 改镜像而非磁盘文件。
             key = _reflection_id_from_facts(sorted(f"f{i}" for i in range(6)))
-            bpath = re._synth_backoff_path("小天")
-            with open(bpath, encoding="utf-8") as f:
-                backoff = json.load(f)
-            backoff[key]["at"] = (datetime.now() - timedelta(hours=6)).isoformat()
-            with open(bpath, "w", encoding="utf-8") as f:
-                json.dump(backoff, f, ensure_ascii=False)
+            re._synth_backoff_mem["小天"][key]["at"] = (
+                datetime.now() - timedelta(hours=6)
+            ).isoformat()
 
             calls_before = llm_calls["n"]
             await re.synthesize_reflections("小天")
             assert llm_calls["n"] == calls_before + 1, (
                 "冷却期已过应放行一次 probe（时间自愈），即使池子没变"
             )
+
+
+@pytest.mark.asyncio
+async def test_synth_backoff_survives_disk_write_failure(tmp_path):
+    """synth_backoff 写盘一直失败（只读 FS / 权限）时，进程内镜像仍累计失败
+    计数 → dead-letter 照常在 MAX 次后生效，不会每 180s 重打 LLM（Codex P2）。"""
+    from unittest.mock import AsyncMock
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+
+    mock_cm = _build_mock_cm(str(tmp_path))
+    _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
+
+    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        llm_calls = {"n": 0}
+
+        async def _fail_ainvoke(self, prompt):
+            llm_calls["n"] += 1
+            resp = MagicMock()
+            resp.content = "not json"
+            return resp
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw): pass
+            ainvoke = _fail_ainvoke
+
+            async def aclose(self):
+                return None
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("utils.language_utils.get_global_language", return_value="zh"), \
+             patch("memory.reflection.atomic_write_json_async",
+                   AsyncMock(side_effect=OSError("read-only fs"))):
+            for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS + 3):
+                assert await re.synthesize_reflections("小天") == []
+
+        assert llm_calls["n"] == MEMORY_LIVENESS_MAX_ATTEMPTS, (
+            f"写盘失败不应丢失失败计数；dead-letter 应在 MAX 次后生效，"
+            f"实际调了 {llm_calls['n']} 次 LLM"
+        )

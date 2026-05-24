@@ -238,6 +238,11 @@ class ReflectionEngine:
         # threading.Lock guards the dict itself (reads/writes of _alocks are
         # pure Python, no await inside this critical section).
         self._alocks_guard = threading.Lock()
+        # synth 失败退避的进程内镜像 {name: {key: {"n", "at"}}}。它是 session 内
+        # 的权威工作副本，磁盘只是持久化 + 重启恢复。这样即使 synth_backoff.json
+        # 写盘失败（只读 FS / 权限），失败计数也不会丢、dead-letter 闸门照常生效
+        # （Codex P2）。对齐 review 的 _maint_state 进程内持久语义。
+        self._synth_backoff_mem: dict[str, dict] = {}
 
     def _get_alock(self, name: str) -> asyncio.Lock:
         """Get (or lazily create) the per-character asyncio.Lock.
@@ -310,8 +315,8 @@ class ReflectionEngine:
             'synth_backoff.json',
         )
 
-    async def _aload_synth_backoff(self, name: str) -> dict:
-        """读 {key: {"n": attempts(int), "at": last_fail_iso|None}} map；
+    async def _aload_synth_backoff_from_disk(self, name: str) -> dict:
+        """从磁盘读 {key: {"n": attempts(int), "at": last_fail_iso|None}} map；
         缺文件 / 损坏 → 空 dict。兼容旧格式 {key: int}（at 补 None）。"""
         path = self._synth_backoff_path(name)
         if not await asyncio.to_thread(os.path.exists, path):
@@ -337,23 +342,40 @@ class ReflectionEngine:
                     continue
         return out
 
+    async def _aload_synth_backoff(self, name: str) -> dict:
+        """返回失败退避 map。优先用进程内镜像（最新工作副本，即使上次写盘
+        失败也不丢计数）；首次访问该角色时从磁盘加载并缓存。"""
+        cached = self._synth_backoff_mem.get(name)
+        if cached is not None:
+            return cached
+        loaded = await self._aload_synth_backoff_from_disk(name)
+        self._synth_backoff_mem[name] = loaded
+        return loaded
+
     async def _asave_synth_backoff(self, name: str, backoff: dict) -> None:
-        """best-effort 落盘——维护态 / 只读 FS 写失败不抛（这条只是熔断辅助，
-        丢了下次重算，不影响主数据）。"""
+        """先更新进程内镜像（session 内权威，保证写盘失败也不丢 throttle），
+        再 best-effort 落盘。写盘失败 WARN 但不抛——镜像已生效，dead-letter
+        闸门照常工作；重启才会从磁盘读，那时已是另一种恢复语境（Codex P2）。"""
+        self._synth_backoff_mem[name] = backoff
         try:
             await atomic_write_json_async(
                 self._synth_backoff_path(name), backoff,
                 indent=2, ensure_ascii=False,
             )
         except Exception as e:
-            logger.debug(f"[Reflection] {name}: synth_backoff 写盘失败: {e}")
+            logger.warning(
+                f"[Reflection] {name}: synth_backoff 写盘失败（进程内镜像仍生效，"
+                f"throttle 不受影响）: {e}"
+            )
 
     async def _abump_synth_backoff(self, name: str, key: str, reason: str) -> int:
         """记 key 一次合成失败，返回累计次数并戳上失败时刻（供时间自愈）。
         caller 不持锁（失败分支都在 post-LLM 锁之外），这里自取 _get_alock
         做 read-modify-write。"""
         async with self._get_alock(name):
-            backoff = await self._aload_synth_backoff(name)
+            # 拷贝一份再改：_aload_synth_backoff 返回的是进程内镜像引用，
+            # 由 _asave_synth_backoff 统一回写，避免半改状态被并发读看到。
+            backoff = dict(await self._aload_synth_backoff(name))
             attempts = backoff.get(key, {}).get("n", 0) + 1
             entry = {"n": attempts, "at": datetime.now().isoformat()}
             backoff[key] = entry
@@ -373,7 +395,7 @@ class ReflectionEngine:
     async def _aclear_synth_backoff(self, name: str, key: str) -> None:
         """key 成功落盘后清掉其失败记录。caller 不持锁。"""
         async with self._get_alock(name):
-            backoff = await self._aload_synth_backoff(name)
+            backoff = dict(await self._aload_synth_backoff(name))
             if key in backoff:
                 del backoff[key]
                 await self._asave_synth_backoff(name, backoff)
