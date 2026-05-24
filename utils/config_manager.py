@@ -3015,7 +3015,12 @@ class ConfigManager:
             if parsed.password:
                 userinfo += f':{parsed.password}'
             userinfo += '@'
-        port = f':{parsed.port}' if parsed.port else ''
+        try:
+            port = f':{parsed.port}' if parsed.port else ''
+        except ValueError:
+            # 端口非法（如 :abc / 越界）。urlparse 不校验，.port 才抛 ValueError；
+            # 不让一个 typo 端口拖垮整个 config 加载，原样返回交给下游处理。
+            return url
         return urlunparse(parsed._replace(netloc=f'{userinfo}{new_host}{port}'))
 
     @staticmethod
