@@ -137,6 +137,27 @@ async def test_emit_mastery_updated_ignores_small_changes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_emit_mastery_updated_preserves_small_threshold_crossing() -> None:
+    ctx = _Ctx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(
+        StudyEvent(
+            name="mastery_updated",
+            payload={
+                "topic": "derivatives",
+                "mastery": 0.51,
+                "mastery_before": 0.49,
+                "crossed_threshold": "0.5",
+            },
+        )
+    )
+
+    assert len(ctx.messages) == 1
+    assert "[Mastery Updated]" in ctx.messages[0]["parts"][0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_emit_mastery_updated_10min_cooldown_per_topic() -> None:
     ctx = _Ctx()
     bus = StudyEventBus(plugin_ctx=ctx)
@@ -173,6 +194,55 @@ async def test_emit_review_due_30min_cooldown() -> None:
 
     assert len(ctx.messages) == 1
     assert ctx.messages[0]["ai_behavior"] == "respond"
+
+
+@pytest.mark.asyncio
+async def test_emit_failure_does_not_consume_review_due_cooldown() -> None:
+    ctx = _Ctx(fail=True)
+    bus = StudyEventBus(plugin_ctx=ctx)
+    event = StudyEvent(
+        name="review_due",
+        payload={"due_count": 2, "urgent_count": 0, "topics": ["math"]},
+    )
+
+    with pytest.raises(RuntimeError, match="push failed"):
+        await bus.emit(event)
+
+    assert bus.emit_count == 0
+    assert "review_due" not in bus._throttle
+    ctx.fail = False
+
+    await bus.emit(event)
+
+    assert len(ctx.messages) == 1
+    assert bus.emit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_failure_does_not_consume_answer_respond_cooldown() -> None:
+    ctx = _Ctx(fail=True)
+    bus = StudyEventBus(plugin_ctx=ctx)
+    event = StudyEvent(
+        name="answer_evaluated",
+        payload={
+            "verdict": "incorrect",
+            "score": 0.1,
+            "question_summary": "Q",
+            "user_answer_summary": "A",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="push failed"):
+        await bus.emit(event)
+
+    assert bus.emit_count == 0
+    assert bus._last_respond_at == -bus._RESPOND_COOLDOWN
+    ctx.fail = False
+
+    await bus.emit(event)
+
+    assert ctx.messages[0]["ai_behavior"] == "respond"
+    assert bus.emit_count == 1
 
 
 @pytest.mark.asyncio

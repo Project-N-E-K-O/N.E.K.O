@@ -1150,7 +1150,9 @@ class StudyCompanionPlugin(NekoPluginBase):
     ) -> None:
         item = payload.get("item") or {}
         review = payload.get("review_record") or {}
-        deck = self._memory_deck_store.get_deck(str(item.get("deck_id") or "")) or {}
+        deck = await asyncio.to_thread(
+            self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
+        ) or {}
         correct = bool(review.get("correct"))
         rating = payload.get("rating") or review.get("rating") or ""
         await self._emit_answer_evaluated_event(
@@ -1168,7 +1170,9 @@ class StudyCompanionPlugin(NekoPluginBase):
         diff_data = payload.get("diff") or {}
         review = payload.get("review") or {}
         item = review.get("item") or {}
-        deck = self._memory_deck_store.get_deck(str(item.get("deck_id") or "")) or {}
+        deck = await asyncio.to_thread(
+            self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
+        ) or {}
         score = _event_ratio(diff_data.get("score"))
         if score >= 0.8:
             verdict = "correct"
