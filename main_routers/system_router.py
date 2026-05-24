@@ -6602,10 +6602,17 @@ async def proactive_chat(request: Request):
                 regen_source_tag = _tag_m.group(1).upper()
                 _cleaned = _cleaned[_tag_m.end():]
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
-            # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop——前面剥过 [TAG]
-            # 前缀，剩下的 _cleaned 已经不含 "[PASS]" 字面量，但 regen_source_tag
-            # 已经记下这是 PASS，与"内嵌 [PASS]"等价拦掉（CodeRabbit Minor）。
-            if regen_source_tag in ("", "PASS") or not _cleaned.strip() or "[PASS]" in _cleaned.upper():
+            # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
+            # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。
+            # 无 tag 是否算 drop 与初稿 gate 同款守卫：仅当本轮启用 tag 系统
+            # (_expects_source_tag) 时，无 tag 才判格式泄漏 drop；_of_none 纯文本模式
+            # 无 tag 是合法的，留空交给下游 source_tag='CHAT' 兜底（Codex P2）。
+            if (
+                regen_source_tag == "PASS"
+                or (_expects_source_tag and not regen_source_tag)
+                or not _cleaned.strip()
+                or "[PASS]" in _cleaned.upper()
+            ):
                 logger.info("[%s] proactive BM25 regen returned empty/PASS/untagged, drop", lanlan_name)
                 if not mgr.state.is_proactive_preempted(proactive_sid):
                     await mgr.handle_new_message()
@@ -6654,7 +6661,8 @@ async def proactive_chat(request: Request):
                     "similarity": _regen_sim,
                     "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
                 }))
-            # 走到这里 regen_source_tag 必为合法非 PASS tag（无 tag 已在上面 drop）。
+            # _expects_source_tag 时 regen_source_tag 必为合法非 PASS tag；_of_none
+            # 模式可能为空（合法无 tag），留空交给下游 source_tag='CHAT' 兜底。
             source_tag = regen_source_tag
             # regen 后只要最终不是 MUSIC，就清掉本轮 music 候选。
             # 之前的版本只在 _initial_source_tag == "MUSIC" 时清，但 tagless
