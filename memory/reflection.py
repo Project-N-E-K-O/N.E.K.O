@@ -311,7 +311,8 @@ class ReflectionEngine:
         )
 
     async def _aload_synth_backoff(self, name: str) -> dict:
-        """读 {rid: attempts(int)} map；缺文件 / 损坏 → 空 dict。"""
+        """读 {key: {"n": attempts(int), "at": last_fail_iso|None}} map；
+        缺文件 / 损坏 → 空 dict。兼容旧格式 {key: int}（at 补 None）。"""
         path = self._synth_backoff_path(name)
         if not await asyncio.to_thread(os.path.exists, path):
             return {}
@@ -321,12 +322,19 @@ class ReflectionEngine:
             return {}
         if not isinstance(data, dict):
             return {}
-        out: dict[str, int] = {}
+        out: dict[str, dict] = {}
         for k, v in data.items():
-            try:
-                out[str(k)] = int(v)
-            except (TypeError, ValueError):
-                continue
+            if isinstance(v, dict):
+                try:
+                    out[str(k)] = {"n": int(v.get("n", 0)), "at": v.get("at")}
+                except (TypeError, ValueError):
+                    continue
+            else:
+                # 旧格式 {key: int}
+                try:
+                    out[str(k)] = {"n": int(v), "at": None}
+                except (TypeError, ValueError):
+                    continue
         return out
 
     async def _asave_synth_backoff(self, name: str, backoff: dict) -> None:
@@ -340,30 +348,34 @@ class ReflectionEngine:
         except Exception as e:
             logger.debug(f"[Reflection] {name}: synth_backoff 写盘失败: {e}")
 
-    async def _abump_synth_backoff(self, name: str, rid: str, reason: str) -> int:
-        """记 rid 一次合成失败，返回累计次数。caller 不持锁（失败分支都在
-        post-LLM 锁之外），这里自取 _get_alock 做 read-modify-write。"""
+    async def _abump_synth_backoff(self, name: str, key: str, reason: str) -> int:
+        """记 key 一次合成失败，返回累计次数并戳上失败时刻（供时间自愈）。
+        caller 不持锁（失败分支都在 post-LLM 锁之外），这里自取 _get_alock
+        做 read-modify-write。"""
         async with self._get_alock(name):
             backoff = await self._aload_synth_backoff(name)
-            attempts = backoff.get(rid, 0) + 1
-            backoff[rid] = attempts
-            # 防失败 rid 长期累积：超阈值时只留 attempts 最高的若干条
-            # （dead-letter 候选优先保活，被丢的低分 rid 下次失败重新计起）。
+            attempts = backoff.get(key, {}).get("n", 0) + 1
+            entry = {"n": attempts, "at": datetime.now().isoformat()}
+            backoff[key] = entry
+            # 防失败 key 长期累积：超阈值时只留 attempts 最高的若干条
+            # （dead-letter 候选优先保活，被丢的低分 key 下次失败重新计起）。
             if len(backoff) > 64:
-                backoff = dict(sorted(backoff.items(), key=lambda kv: -kv[1])[:64])
-                backoff[rid] = attempts
+                backoff = dict(
+                    sorted(backoff.items(), key=lambda kv: -kv[1].get("n", 0))[:64]
+                )
+                backoff[key] = entry  # 确保当前 key 不被裁掉
             await self._asave_synth_backoff(name, backoff)
         logger.debug(
-            f"[Reflection] {name}: rid {rid} 合成失败退避 → {attempts} ({reason})"
+            f"[Reflection] {name}: key {key} 合成失败退避 → {attempts} ({reason})"
         )
         return attempts
 
-    async def _aclear_synth_backoff(self, name: str, rid: str) -> None:
-        """rid 成功落盘后清掉其失败记录。caller 不持锁。"""
+    async def _aclear_synth_backoff(self, name: str, key: str) -> None:
+        """key 成功落盘后清掉其失败记录。caller 不持锁。"""
         async with self._get_alock(name):
             backoff = await self._aload_synth_backoff(name)
-            if rid in backoff:
-                del backoff[rid]
+            if key in backoff:
+                del backoff[key]
                 await self._asave_synth_backoff(name, backoff)
 
     # ── persistence ──────────────────────────────────────────────────
@@ -780,12 +792,22 @@ class ReflectionEngine:
         # 失败退避（dead-letter）：同一批 unabsorbed facts(backoff_key) 合成已连续
         # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 次 → 不再每 180s 原样重抽空跑 LLM。
         # 任一 unabsorbed fact 增减 → backoff_key 变、计数天然复位（用户审计 #2）。
-        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
-        synth_attempts = (await self._aload_synth_backoff(lanlan_name)).get(backoff_key, 0)
-        if synth_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+        # 时间自愈：池子不变（挂机）时，每过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性模型宕机恢复后自愈，poison 批仍被压到每 5h 一次。
+        from config import (
+            MEMORY_LIVENESS_MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        )
+        from memory.temporal import cooldown_elapsed
+        synth_entry = (await self._aload_synth_backoff(lanlan_name)).get(backoff_key, {})
+        synth_attempts = synth_entry.get("n", 0)
+        if synth_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS and not cooldown_elapsed(
+            synth_entry.get("at"), MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        ):
             logger.debug(
                 f"[Reflection] {lanlan_name}: backoff_key {backoff_key} 合成连续失败 "
                 f"{synth_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，dead-letter 跳过"
+                f"（未到 {MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS}s 自愈窗口）"
             )
             return []
 
@@ -1403,6 +1425,9 @@ class ReflectionEngine:
                     continue
                 new_attempts = safe_int_field(r, 'refine_attempts') + 1
                 r['refine_attempts'] = new_attempts
+                # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed），对偶
+                # persona 侧——一次性宕机顶到 MAX 后过 5h 冷却重新 probe。
+                r['last_refine_attempt_at'] = datetime.now().isoformat()
                 modified = True
                 if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
                     logger.warning(
@@ -2570,6 +2595,8 @@ class ReflectionEngine:
                 for r in current:
                     if r.get('id') == rid:
                         r['recheck_attempts'] = (r.get('recheck_attempts') or 0) + 1
+                        # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+                        r['last_recheck_attempt_at'] = datetime.now().isoformat()
                         await self.asave_reflections(lanlan_name, current)
                         logger.debug(
                             f"[Recheck-Reflection] {lanlan_name} {rid}: "
@@ -2600,6 +2627,7 @@ class ReflectionEngine:
         from config import (
             MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
             MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS as _SELF_HEAL,
         )
         from config.prompts.prompts_memory import (
             MEMORY_RECHECK_REFLECTION_PROMPT,
@@ -2607,6 +2635,7 @@ class ReflectionEngine:
         from memory.temporal import (
             normalize_event_when as _norm_when,
             compute_event_timestamps as _compute_ts,
+            cooldown_elapsed,
             ACTIVE_TEMPORAL_SCOPES,
         )
 
@@ -2617,8 +2646,12 @@ class ReflectionEngine:
             if (r.get('schema_version') or 1) < _SCHEMA_V
             and r.get('status') not in REFLECTION_TERMINAL_STATUSES
             # 重试预算：LLM 持续给出无效 temporal_scope 或抛异常的 entry
-            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）
-            and (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）。
+            # 时间自愈：达上限的 entry 过 _SELF_HEAL 后放行一次 probe。
+            and (
+                (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+                or cooldown_elapsed(r.get('last_recheck_attempt_at'), _SELF_HEAL)
+            )
         ]
         if not candidates:
             return False

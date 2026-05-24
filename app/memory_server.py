@@ -2600,8 +2600,12 @@ async def _amaybe_trigger_negative_keyword_hook(
 async def _run_persona_refine_for_character(character: str) -> None:
     """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
     skip / 候选不足 → 整 pass no-op。"""
-    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
     from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2619,14 +2623,22 @@ async def _run_persona_refine_for_character(character: str) -> None:
         # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
         # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
         # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
-        # stamp 成功时会清回 0；或人工编辑 persona.json。
+        # stamp 成功时会清回 0；或人工编辑 persona.json；或时间自愈——
+        # 冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 放行一次 probe，让
+        # 一次性 correction 模型宕机恢复后自愈（不再永久冻死无辜 entry）。
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
             if isinstance(e, dict)
             and not e.get('protected')
             and e.get('id')
-            and safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and (
+                safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    e.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         if entries:
             candidates_by_entity[entity] = entries
@@ -2693,8 +2705,12 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     """单角色 reflection refine pass。cluster 内可混入同 entity 的
     absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
     层代码兜底）。"""
-    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
     from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2718,14 +2734,21 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
         # reflection 不再进 cluster gather（同 persona refine）。fact 不算
         # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
-        # attempts。
+        # attempts。时间自愈：冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性宕机恢复后自愈。
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
-            and safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and (
+                safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    r.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         entity_facts = [
             annotate_entry(f, type_='fact', entity=entity)

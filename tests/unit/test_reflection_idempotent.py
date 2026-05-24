@@ -360,11 +360,12 @@ async def test_synth_failure_bumps_backoff_and_dead_letters(tmp_path):
             f"dead-letter 后不应再调 LLM；实际调了 {llm_call_count['n']} 次"
         )
 
-        # backoff 文件落了该 rid 的计数
+        # backoff 文件落了该 rid 的计数（新格式 {key: {"n", "at"}}）
         from memory.reflection import _reflection_id_from_facts
         rid = _reflection_id_from_facts(sorted(f"f{i}" for i in range(6)))
         backoff = await re._aload_synth_backoff("小天")
-        assert backoff.get(rid) == MEMORY_LIVENESS_MAX_ATTEMPTS
+        assert backoff.get(rid, {}).get("n") == MEMORY_LIVENESS_MAX_ATTEMPTS
+        assert backoff.get(rid, {}).get("at"), "失败应戳上时间戳供自愈"
 
 
 @pytest.mark.asyncio
@@ -390,7 +391,7 @@ async def test_synth_success_clears_backoff(tmp_path):
         rid = _reflection_id_from_facts(sorted(fact_ids))
         # 预置一条失败退避记录
         await re._abump_synth_backoff("小天", rid, "seed failure")
-        assert (await re._aload_synth_backoff("小天")).get(rid) == 1
+        assert (await re._aload_synth_backoff("小天")).get(rid, {}).get("n") == 1
 
         async def _fake_ainvoke(self, prompt):
             resp = MagicMock()
@@ -495,4 +496,69 @@ async def test_synth_dead_letter_resets_when_full_input_changes(tmp_path):
             assert llm_calls["n"] == calls_before + 1, (
                 "新 fact 改变 unabsorbed 全集 → 退避 key 变 → 应复位重试，"
                 "而不是按旧 rid 永久跳过"
+            )
+
+
+@pytest.mark.asyncio
+async def test_synth_dead_letter_self_heals_after_cooldown(tmp_path):
+    """池子不变（挂机）时，dead-letter 过 5h 冷却后应放行一次 probe。
+
+    模拟方式：把失败记录的时间戳手动改成 6h 前，再调 synthesize，断言 LLM
+    被重新调用（cooldown_elapsed → 不再跳过）。
+    """
+    import json
+    from datetime import datetime, timedelta
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+
+    mock_cm = _build_mock_cm(str(tmp_path))
+    _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
+
+    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine, _reflection_id_from_facts
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        llm_calls = {"n": 0}
+
+        async def _fail_ainvoke(self, prompt):
+            llm_calls["n"] += 1
+            resp = MagicMock()
+            resp.content = "not json"
+            return resp
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw): pass
+            ainvoke = _fail_ainvoke
+
+            async def aclose(self):
+                return None
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("utils.language_utils.get_global_language", return_value="zh"):
+            for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS + 2):
+                assert await re.synthesize_reflections("小天") == []
+            assert llm_calls["n"] == MEMORY_LIVENESS_MAX_ATTEMPTS  # 已 dead-letter
+
+            # 把失败时间戳改到 6h 前（池子完全不变）
+            key = _reflection_id_from_facts(sorted(f"f{i}" for i in range(6)))
+            bpath = re._synth_backoff_path("小天")
+            with open(bpath, encoding="utf-8") as f:
+                backoff = json.load(f)
+            backoff[key]["at"] = (datetime.now() - timedelta(hours=6)).isoformat()
+            with open(bpath, "w", encoding="utf-8") as f:
+                json.dump(backoff, f, ensure_ascii=False)
+
+            calls_before = llm_calls["n"]
+            await re.synthesize_reflections("小天")
+            assert llm_calls["n"] == calls_before + 1, (
+                "冷却期已过应放行一次 probe（时间自愈），即使池子没变"
             )

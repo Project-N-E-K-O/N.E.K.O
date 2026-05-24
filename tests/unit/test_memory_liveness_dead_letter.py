@@ -523,6 +523,10 @@ async def test_persona_abump_refine_attempts_at_threshold_warns():
 
     # 最终 refine_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS
     assert persona['master']['facts'][0]['refine_attempts'] == MEMORY_LIVENESS_MAX_ATTEMPTS
+    # 每次 bump 都戳失败时刻，供 dead-letter 时间自愈（cooldown_elapsed）
+    assert persona['master']['facts'][0].get('last_refine_attempt_at'), (
+        "bump 必须戳 last_refine_attempt_at，否则 dead-letter 无法时间自愈"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────
