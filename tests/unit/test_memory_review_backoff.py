@@ -104,6 +104,56 @@ async def test_run_review_patched_clears_backoff():
     memory_server._maint_state.pop(name, None)
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_review_patched_save_failure_does_not_bump():
+    """成功 review（patched）的 state 落盘抖动不得被误判成失败 bump（Codex P2）。"""
+    from app import memory_server
+
+    name = "测试角色保存抖动"
+    snapshot = _history(10)
+    memory_server._maint_state.pop(name, None)
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(return_value=("patched", [{"type": "ai", "content": "x"}]))
+    cancel_event = asyncio.Event()
+
+    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server, "_asave_maint_state",
+                      AsyncMock(side_effect=RuntimeError("disk full"))):
+        await memory_server._run_review_in_background(name, snapshot, cancel_event)
+
+    state = memory_server._maint_state.get(name, {})
+    assert state.get("review_fail_attempts", 0) == 0, (
+        "成功 review 的 save 失败被外层 except 当成 review 失败 bump 了"
+    )
+    memory_server._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_run_review_failed_save_failure_counts_once():
+    """'failed' 分支 save 抛异常时只记一次，不被外层 except 重复 bump（Codex P2）。"""
+    from app import memory_server
+
+    name = "测试角色失败保存"
+    snapshot = _history(10)
+    memory_server._maint_state.pop(name, None)
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(return_value=("failed", None))
+    cancel_event = asyncio.Event()
+
+    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server, "_asave_maint_state",
+                      AsyncMock(side_effect=RuntimeError("disk full"))):
+        await memory_server._run_review_in_background(name, snapshot, cancel_event)
+
+    # _record_review_failure 在落盘前已把内存计数 +1；外层 except 不再重复 bump
+    assert memory_server._maint_state.get(name, {}).get("review_fail_attempts", 0) == 1, (
+        "save 失败导致 _record_review_failure 抛出后被外层 except 重复计数了"
+    )
+    memory_server._maint_state.pop(name, None)
+
+
 async def _drive_spawn(memory_server, name, history):
     """跑 maybe_spawn_review，gate 1-5 全开（patch 掉），只测 Gate 6。"""
     fake_mgr = MagicMock()

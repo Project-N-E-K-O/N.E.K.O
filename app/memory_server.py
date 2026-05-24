@@ -3374,9 +3374,20 @@ async def _run_review_in_background(
       race，但身份检查是廉价的防御。
     """
     try:
-        result = await recent_history_manager.review_history(
-            lanlan_name, snapshot, cancel_event=cancel_event,
-        )
+        # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
+        # 收口成 ('failed', None) 走下面统一的失败分支记一次退避。成功后的 result
+        # 处理 / state 落盘异常**不**能被当成 review 失败（否则 patched/white 的
+        # save 抖动会误判成失败、误触 Gate 6 dead-letter；'failed' 分支自己 save
+        # 抛异常也会被重复记一次）——那类异常交给外层 except 纯兜底、不 bump。
+        # 注：asyncio.CancelledError 是 BaseException，不被 except Exception 捕获，
+        # 会正常冒泡到外层 CancelledError 分支。
+        try:
+            result = await recent_history_manager.review_history(
+                lanlan_name, snapshot, cancel_event=cancel_event,
+            )
+        except Exception as e:
+            logger.error(f"❌ {lanlan_name} 的 review_history 抛异常，按失败处理: {e}")
+            result = ('failed', None)
         # 兼容意外的返回类型，统一解包
         if isinstance(result, tuple) and len(result) == 2:
             status, fingerprint = result
@@ -3421,19 +3432,11 @@ async def _run_review_in_background(
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        # review_history 正常会把内部异常收口成 ('failed', None)；但万一它直接
-        # 抛（try 外的初始化 / SDK 内部 / 未来重构），这里也要把失败计入退避，
-        # 否则 Gate 6 永远拿不到预算、持续重烧仍会发生（CodeRabbit Major）。
-        # 落盘失败本身不应再掀翻 finally 的清理。
-        try:
-            attempts = await _record_review_failure(lanlan_name, snapshot)
-            logger.error(
-                f"❌ {lanlan_name} 的记忆整理任务出错（失败退避计数 → {attempts}）: {e}"
-            )
-        except Exception as se:
-            logger.error(
-                f"❌ {lanlan_name} 的记忆整理任务出错: {e}（退避计数落盘失败: {se}）"
-            )
+        # 纯兜底：能到这里的只剩 result 处理 / state 持久化等"非 review 失败"
+        # 的异常（review_history 自身抛已在内层收口成 'failed'）。这类异常**不**
+        # 计入失败退避——否则成功 review 的 save 抖动会被误判成失败、误触
+        # Gate 6 dead-letter 压住后续 review（Codex P2）。
+        logger.error(f"❌ {lanlan_name} 的记忆整理后处理出错（不计入失败退避）: {e}")
     finally:
         # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
         # 新 event，本 task 不应该把它们清掉。
