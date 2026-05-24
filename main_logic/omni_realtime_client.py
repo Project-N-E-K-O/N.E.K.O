@@ -67,12 +67,11 @@ def _ensure_gemini_sdk() -> bool:
         GEMINI_AVAILABLE = True
         _GEMINI_IMPORT_ERROR = None
     except Exception as e:
-        # 不覆盖外部强制设过的可用性标志。
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 genai/types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
         if GEMINI_AVAILABLE is None:
             GEMINI_AVAILABLE = False
             _GEMINI_IMPORT_ERROR = e
-            genai = None
-            types = None
             _emit_gemini_import_diagnostic(e)
     # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
     # 谎报可用、让 _connect_gemini 在 None 上解引用 genai/types。

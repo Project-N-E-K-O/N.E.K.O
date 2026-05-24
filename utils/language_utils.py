@@ -574,7 +574,9 @@ def _ensure_googletrans() -> bool:
         return True
     try:
         from googletrans import Translator as _GTrans
-        Translator = _GTrans
+        # 只补缺失，保住测试可能注入的 Translator mock。
+        if Translator is None:
+            Translator = _GTrans
         GOOGLETRANS_AVAILABLE = True
         logger.debug("googletrans 导入成功")
     except ImportError as e:
@@ -605,16 +607,19 @@ def _ensure_translatepy() -> bool:
         from translatepy.translators.libre import LibreTranslate
         from translatepy.translators.mymemory import MyMemoryTranslate
         from translatepy.translators.translatecom import TranslateComTranslate
-        TranslatepyTranslator = _TPyTrans
-        # 定义在中国大陆可直接访问的翻译服务列表（排除需要代理的 Google、Yandex、DeepL）
-        CHINA_ACCESSIBLE_SERVICES = [
-            MicrosoftTranslate,
-            BingTranslate,
-            ReversoTranslate,
-            LibreTranslate,
-            MyMemoryTranslate,
-            TranslateComTranslate,
-        ]
+        # 只补缺失，保住测试可能注入的 TranslatepyTranslator / 服务列表 mock。
+        if TranslatepyTranslator is None:
+            TranslatepyTranslator = _TPyTrans
+        if CHINA_ACCESSIBLE_SERVICES is None:
+            # 中国大陆可直接访问的翻译服务（排除需要代理的 Google、Yandex、DeepL）
+            CHINA_ACCESSIBLE_SERVICES = [
+                MicrosoftTranslate,
+                BingTranslate,
+                ReversoTranslate,
+                LibreTranslate,
+                MyMemoryTranslate,
+                TranslateComTranslate,
+            ]
         TRANSLATEPY_AVAILABLE = True
         logger.debug("translatepy 导入成功，已配置中国大陆可访问的翻译服务")
     except ImportError as e:

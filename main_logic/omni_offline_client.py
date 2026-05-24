@@ -51,10 +51,9 @@ def _ensure_genai() -> bool:
             _genai_types = genai_types_mod
         _GENAI_AVAILABLE = True
     except Exception:  # pragma: no cover — environment-specific
-        # 不覆盖外部强制设过的可用性标志（测试会 force _GENAI_AVAILABLE）。
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 _genai/_genai_types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
         if _GENAI_AVAILABLE is None:
-            _genai = None
-            _genai_types = None
             _GENAI_AVAILABLE = False
     # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
     # 谎报可用、让调用点在 None 上解引用 _genai_types。
