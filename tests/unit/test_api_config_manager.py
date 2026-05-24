@@ -678,6 +678,14 @@ class TestAgentUrlRegionRouting:
         ) == 'https://lanlan.app:8443/text/v1'
 
     @pytest.mark.unit
+    def test_normalize_agent_url_preserves_explicit_zero_port(self, config_manager):
+        """显式 :0 合法但 falsy，须保留（is not None），不被默认端口吞掉。"""
+        config_manager._check_non_mainland = lambda: False
+        assert config_manager._normalize_agent_url(
+            'https://www.lanlan.tech:0/text/v1'
+        ) == 'https://lanlan.app:0/text/v1'
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('bad_url', [
         'https://www.lanlan.tech:abc/text/v1',   # 端口非数字
         'https://www.lanlan.tech:99999/text/v1',  # 端口越界

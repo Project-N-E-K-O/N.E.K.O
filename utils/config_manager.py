@@ -3019,7 +3019,8 @@ class ConfigManager:
                 userinfo += f':{parsed.password}'
             userinfo += '@'
         try:
-            port = f':{parsed.port}' if parsed.port else ''
+            # is not None：端口 0 合法但 falsy，截断式 if 会把显式 :0 丢掉。
+            port = f':{parsed.port}' if parsed.port is not None else ''
         except ValueError:
             # 端口非法（如 :abc / 越界）。urlparse 不校验，.port 才抛 ValueError；
             # 不让一个 typo 端口拖垮整个 config 加载，原样返回交给下游处理。
