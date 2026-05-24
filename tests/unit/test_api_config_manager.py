@@ -644,6 +644,10 @@ class TestAgentUrlRegionRouting:
             (False, 'https://www.lanlan.app/text/v1', 'https://lanlan.app/text/v1'),
             # 国际下 www.lanlan.app 保持不变
             (True, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
+            # bare host 输入（无 www，仅可能来自自定义 URL）：尊重原样，不补 www，
+            # 两区都落到 bare lanlan.app（仅做 tech→app）
+            (True, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            (False, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
         ],
     )
     def test_normalize_agent_url_by_region(self, config_manager, non_mainland, url_in, expected):
