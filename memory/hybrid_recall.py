@@ -439,19 +439,17 @@ def _entry_event_window(entry: dict):
     fact / reflection 共用同一套锚点字段（schema v2），按时间过滤/排序口径
     统一。归档 fact 也走这套。
     """
-    from memory.temporal import _parse_iso_safe
-    start = _parse_iso_safe(entry.get('event_start_at'))
-    end = _parse_iso_safe(entry.get('event_end_at'))
-    created = _parse_iso_safe(entry.get('created_at'))
+    from memory.temporal import _parse_iso_safe, to_naive_local
+    # aware（import/迁移的 +00:00 / Z）统一先转本地再剥 tz，避免 day 级窗口
+    # 在日界处归错天（Codex）。to_naive_local 对 naive / None 是 no-op。
+    start = to_naive_local(_parse_iso_safe(entry.get('event_start_at')))
+    end = to_naive_local(_parse_iso_safe(entry.get('event_end_at')))
+    created = to_naive_local(_parse_iso_safe(entry.get('created_at')))
     anchor = end or start or created
     if anchor is None:
         return None
     s = start or anchor
     e = end or anchor
-    if s.tzinfo is not None:
-        s = s.replace(tzinfo=None)
-    if e.tzinfo is not None:
-        e = e.replace(tzinfo=None)
     if e < s:  # 防 manual edit / 迁移把 start/end 写反
         s, e = e, s
     return (s, e)

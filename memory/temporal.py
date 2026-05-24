@@ -144,6 +144,20 @@ def _parse_iso_safe(iso: str | None) -> datetime | None:
         return None
 
 
+def to_naive_local(dt: datetime | None) -> datetime | None:
+    """aware datetime → 本地 naive（先 astimezone 转本地再剥 tz，保留瞬时
+    而非墙钟）；naive / None 原样返回。
+
+    全项目 tz 归一口径：本仓库时间戳都按 naive 本地时钟写盘，但 import /
+    迁移路径可能塞进 ``+00:00`` / ``Z`` 的 aware 值。直接 ``replace(tzinfo
+    =None)`` 会把 UTC 墙钟当本地用，在非 UTC 机器上整体偏移一个 offset，
+    害 day 级窗口/排序在日界处归错天（Codex）。这里统一转换。
+    """
+    if dt is not None and dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
 def _past_anchor(entry: dict) -> datetime | None:
     """past 判定用的时间锚点（end > start > added > created）。
 
@@ -200,13 +214,10 @@ def days_since(anchor_iso: str | None, now: datetime | None = None) -> int | Non
     """
     if now is None:
         now = datetime.now()
-    anchor = _parse_iso_safe(anchor_iso)
+    anchor = to_naive_local(_parse_iso_safe(anchor_iso))
     if anchor is None:
         return None
-    if anchor.tzinfo is not None:
-        anchor = anchor.astimezone().replace(tzinfo=None)
-    if now.tzinfo is not None:
-        now = now.astimezone().replace(tzinfo=None)
+    now = to_naive_local(now)
     return max(0, int((now - anchor).total_seconds() // 86400))
 
 
@@ -282,10 +293,8 @@ def _token_window(token: str) -> tuple[datetime, datetime] | None:
         return (y, y.replace(year=y.year + 1))
     except ValueError:
         pass
-    parsed = _parse_iso_safe(token)
+    parsed = to_naive_local(_parse_iso_safe(token))
     if parsed is not None:
-        if parsed.tzinfo is not None:
-            parsed = parsed.replace(tzinfo=None)
         day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
         return (day, day + timedelta(days=1))
     return None

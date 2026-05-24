@@ -169,6 +169,32 @@ def test_time_since_unknown_lang_falls_back_zh():
     assert out == '3 天前'
 
 
+def test_to_naive_local_converts_then_strips():
+    """aware → 转本地再剥 tz（保留瞬时，不是直接 replace 丢墙钟）；naive /
+    None 原样返回。"""
+    from datetime import datetime, timezone, timedelta
+    from memory.temporal import to_naive_local
+    aware = datetime(2026, 5, 1, 8, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+    out = to_naive_local(aware)
+    assert out.tzinfo is None
+    # 等价于先 astimezone 本地再剥 tz —— 即保留的是同一瞬时的本地墙钟
+    assert out == aware.astimezone().replace(tzinfo=None)
+    # naive / None 不动
+    naive = datetime(2026, 5, 1, 8, 0, 0)
+    assert to_naive_local(naive) == naive
+    assert to_naive_local(None) is None
+
+
+def test_parse_time_window_tz_aware_token_returns_naive():
+    """带 tz 的 ISO time token 不该崩，且返回 naive 区间。"""
+    from memory.temporal import parse_time_window
+    win = parse_time_window('2026-05-01T23:30:00+00:00')
+    assert win is not None
+    start, end = win
+    assert start.tzinfo is None and end.tzinfo is None
+    assert (end - start).total_seconds() == 86400  # 仍是整一天窗口
+
+
 def test_time_since_tz_aware_anchor_does_not_crash():
     """tz-aware anchor（import/迁移路径会写 +00:00 / Z）不能因为和 naive
     now 相减而 TypeError —— days_since 内部把 aware 转本地剥 tz（Codex）。"""
