@@ -82,19 +82,56 @@ def handle_add(args: argparse.Namespace) -> int:
         return 1
 
     pyproject_path = plugin_dir / "pyproject.toml"
-    packages: list[str] = args.packages
+    requested: list[str] = args.packages
 
     # 1. Ensure pyproject.toml exists
     if not pyproject_path.is_file():
         print(f"[FAIL] {plugin_dir.name}: pyproject.toml not found. Run 'neko-plugin init' first.", file=sys.stderr)
         return 1
 
-    # 2. Read current dependencies
+    # 2. Filter out host-provided packages BEFORE we touch pyproject.toml or
+    #    pip. Bug 1.22 (PR #1480 review-fix): the previous flow merged
+    #    ``packages`` into ``existing_deps`` via ``_merge_new_packages``, which
+    #    silently dropped host-provided packages (canonical name in
+    #    ``_HOST_PROVIDED``) inside its loop. The merge logic kept those
+    #    packages out of ``vendor/`` and out of ``pyproject.toml`` correctly,
+    #    but the success message ``added {requested}`` still echoed them
+    #    back to the user — making it look like they had been installed when
+    #    they had been silently discarded. Hoisting the filter here means the
+    #    user sees an explicit ``[WARN]`` for each dropped package and the
+    #    success message only lists what actually took effect.
+    import re as _re
+    _name_re = _re.compile(r"[-_.]+")
+
+    def _canonical(spec: str) -> str:
+        name = _re.split(r"[<>=!~;\[\s@]", spec, maxsplit=1)[0].strip()
+        return _name_re.sub("-", name).lower()
+
+    effective: list[str] = []
+    for pkg in requested:
+        if _canonical(pkg) in _HOST_PROVIDED:
+            print(
+                f"[WARN] {plugin_dir.name}: skipping host-provided package: {pkg}",
+                file=sys.stderr,
+            )
+            continue
+        effective.append(pkg)
+
+    if not effective:
+        # All packages were host-provided. Nothing to install or write — but
+        # the user did request a no-op explicitly, so the exit code is 0.
+        print(
+            f"[OK] {plugin_dir.name}: no packages to add "
+            f"(all {len(requested)} requested package(s) are host-provided)"
+        )
+        return 0
+
+    # 3. Read current dependencies
     existing_deps = _read_dependencies(pyproject_path)
 
-    # 3. Install into vendor/
+    # 4. Install into vendor/
     vendor_dir = plugin_dir / "vendor"
-    all_deps = _merge_new_packages(existing_deps, packages)
+    all_deps = _merge_new_packages(existing_deps, effective)
     exit_code = _pip_install_to_vendor(
         all_deps,
         vendor_dir=vendor_dir,
@@ -103,13 +140,13 @@ def handle_add(args: argparse.Namespace) -> int:
     if exit_code != 0:
         return exit_code
 
-    # 4. Update pyproject.toml
+    # 5. Update pyproject.toml
     _update_pyproject_dependencies(pyproject_path, all_deps)
 
-    # 5. Clean vendor artifacts
+    # 6. Clean vendor artifacts
     _clean_vendor(vendor_dir)
 
-    print(f"[OK] {plugin_dir.name}: added {', '.join(packages)}")
+    print(f"[OK] {plugin_dir.name}: added {', '.join(effective)}")
     print(f"  vendor={vendor_dir}")
     print(f"  dependencies={all_deps}")
     return 0
@@ -249,37 +286,112 @@ def _pip_install_to_vendor(
 
 
 def _update_pyproject_dependencies(pyproject_path: Path, deps: list[str]) -> None:
-    """Rewrite the dependencies list in pyproject.toml preserving structure."""
+    """Rewrite ``[project].dependencies`` preserving file structure.
+
+    Bug 1.23 (PR #1480 review-fix): the previous implementation used a
+    single unscoped regex ``dependencies\\s*=\\s*\\[...\\]`` and called
+    ``pattern.sub(..., count=1)``, which matched the FIRST occurrence in
+    document order. TOML allows the literal substring ``dependencies =
+    [...]`` in many other tables (``[tool.uv]``, ``[tool.poetry.group.*]``,
+    arbitrary ``[tool.<vendor>]`` tables, ...). Whenever any such table
+    appeared *before* ``[project]`` in source order, the rewrite clobbered
+    the unrelated section while ``[project].dependencies`` itself stayed
+    untouched. The exploration test
+    ``plugin/tests/unit/test_neko_plugin_cli_deps_regex_unscoped_exploration.py``
+    pins the failure mode.
+
+    Strategy
+    --------
+
+    1. Locate the ``[project]`` section header and its end (next top-level
+       ``^\\[`` table header or end of file).
+    2. Within that range — and ONLY that range — locate the existing
+       ``dependencies = [...]`` field, multi-line aware. Replace just
+       that field. If absent, append a ``dependencies = ...`` line at
+       the end of the section.
+    3. Re-parse the rewritten content with ``tomllib`` and assert that
+       ``data['project']['dependencies']`` equals the sorted ``deps``
+       list. If the rewrite failed for any reason (mis-scoped match,
+       malformed TOML, ...), raise ``RuntimeError`` and DO NOT write the
+       file. This makes silent corruption of pyproject.toml impossible.
+    """
+
     content = pyproject_path.read_text(encoding="utf-8")
-
-    # Simple approach: find and replace the dependencies = [...] block
-    import re
-
-    # Match dependencies = [...] (possibly multiline)
-    pattern = re.compile(
-        r"(dependencies\s*=\s*)\[([^\]]*)\]",
-        re.DOTALL,
+    sorted_deps = sorted(deps, key=str.lower)
+    deps_body = (
+        "[]"
+        if not sorted_deps
+        else "[\n" + ",\n".join(f'  "{d}"' for d in sorted_deps) + ",\n]"
     )
 
-    if pattern.search(content):
-        # Format new dependencies list
-        if not deps:
-            replacement = r"\g<1>[]"
-        else:
-            lines = ",\n".join(f'  "{d}"' for d in sorted(deps, key=str.lower))
-            replacement = f"\\g<1>[\n{lines},\n]"
-        content = pattern.sub(replacement, content, count=1)
-    else:
-        # No dependencies field found — append under [project]
-        project_pattern = re.compile(r"(\[project\][^\[]*)", re.DOTALL)
-        match = project_pattern.search(content)
-        if match:
-            section = match.group(1).rstrip()
-            lines = ",\n".join(f'  "{d}"' for d in sorted(deps, key=str.lower))
-            section += f"\ndependencies = [\n{lines},\n]\n"
-            content = project_pattern.sub(section, content, count=1)
+    import re
 
-    pyproject_path.write_text(content, encoding="utf-8", newline="\n")
+    # Locate the [project] table. ``(?ms)`` enables multi-line and
+    # dot-all so ``.*?`` consumes newlines lazily up to the next ``^[``
+    # header (any TOML table) or end of file. Section bounds are
+    # captured for slice-and-rewrite below.
+    section_re = re.compile(
+        r"(?ms)^\[project\]\s*\n(?P<body>.*?)(?=^\[|\Z)"
+    )
+    section_match = section_re.search(content)
+    if section_match is None:
+        # No [project] section at all. PEP 621 requires one for any
+        # reasonable plugin pyproject, but we also can't safely fabricate
+        # the rest of the metadata block, so append a minimal table.
+        appended_section = f"\n[project]\ndependencies = {deps_body}\n"
+        new_content = content.rstrip() + appended_section + "\n"
+    else:
+        section_text = section_match.group(0)
+        body_start, body_end = section_match.start(), section_match.end()
+
+        # Scoped regex: only matches ``dependencies = [...]`` when it sits
+        # at the start of a line (after optional whitespace) inside the
+        # ``[project]`` body. ``re.MULTILINE | re.DOTALL`` so ``^`` is
+        # line-start and ``.*?`` can span quoted multi-line arrays.
+        deps_re = re.compile(
+            r"(?ms)^(?P<lead>[ \t]*)dependencies\s*=\s*\[.*?\]"
+        )
+        deps_match = deps_re.search(section_text)
+        if deps_match is not None:
+            lead = deps_match.group("lead")
+            replacement = f"{lead}dependencies = {deps_body}"
+            new_section = (
+                section_text[: deps_match.start()]
+                + replacement
+                + section_text[deps_match.end():]
+            )
+        else:
+            # Section exists but no dependencies field. Append on its
+            # own line, preserving the trailing newline before the next
+            # section header (or EOF).
+            stripped = section_text.rstrip()
+            new_section = stripped + f"\ndependencies = {deps_body}\n"
+            # Preserve the original whitespace after the section so we
+            # don't collapse blank lines that separated sections.
+            trailing = section_text[len(stripped):]
+            if not trailing.endswith("\n"):
+                trailing = trailing + "\n"
+            new_section = stripped + f"\ndependencies = {deps_body}" + trailing
+
+        new_content = content[:body_start] + new_section + content[body_end:]
+
+    # Defensive re-parse: if any of the above branches produced something
+    # that doesn't round-trip through tomllib, abort BEFORE writing so we
+    # don't leave the user's pyproject.toml in a half-rewritten state.
+    try:
+        parsed = tomllib.loads(new_content)
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(
+            f"deps_cmd: rewrite produced invalid TOML for {pyproject_path}: {exc}"
+        ) from exc
+    actual = parsed.get("project", {}).get("dependencies")
+    if not isinstance(actual, list) or list(actual) != sorted_deps:
+        raise RuntimeError(
+            f"deps_cmd: rewrite mismatch for {pyproject_path}: "
+            f"expected [project].dependencies={sorted_deps!r}, got {actual!r}"
+        )
+
+    pyproject_path.write_text(new_content, encoding="utf-8", newline="\n")
 
 
 def _clean_vendor(vendor_dir: Path) -> None:

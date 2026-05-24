@@ -116,6 +116,7 @@ def _fallback_select(message: str, choices: list[dict[str, str]], *, default: st
 
 
 def _fallback_checkbox(message: str, choices: list[dict[str, str]], *, defaults: list[str] | None) -> list[str] | None:
+    valid_values = {c["value"] for c in choices}
     default_set = set(defaults or [])
     print(f"{message} (comma-separated numbers)")
     for i, c in enumerate(choices, 1):
@@ -126,15 +127,27 @@ def _fallback_checkbox(message: str, choices: list[dict[str, str]], *, defaults:
     except (EOFError, KeyboardInterrupt):
         return None
     if not raw:
-        return list(default_set)
+        # Bug 1.24 (PR #1480 review-fix): the previous implementation returned
+        # ``list(default_set)``, which (a) lost the caller's intended order
+        # because ``set`` is unordered and (b) propagated invalid defaults
+        # (values not in ``choices``) silently. Mirror the questionary-backed
+        # branch instead: keep the original ``defaults`` order and drop
+        # entries not present in the offered choices.
+        return [v for v in (defaults or []) if v in valid_values]
     selected: list[str] = []
+    seen: set[str] = set()
     for part in raw.split(","):
         try:
             idx = int(part.strip()) - 1
-            if 0 <= idx < len(choices):
-                selected.append(choices[idx]["value"])
         except ValueError:
-            pass  # skip non-numeric tokens silently
+            continue  # skip non-numeric tokens silently
+        if not (0 <= idx < len(choices)):
+            continue  # skip out-of-range indices silently
+        value = choices[idx]["value"]
+        if value in seen:
+            continue  # dedupe repeated indices (e.g. "1,1,2")
+        seen.add(value)
+        selected.append(value)
     return selected
 
 

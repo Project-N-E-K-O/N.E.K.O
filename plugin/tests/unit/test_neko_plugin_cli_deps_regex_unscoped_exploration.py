@@ -232,23 +232,13 @@ def test_deps_regex_documented_counterexample(tmp_path: Path) -> None:
 
 
 @pytest.mark.plugin_unit
-def test_deps_regex_unfixed_state_baseline(tmp_path: Path) -> None:
-    """Bug-condition baseline: pin the **wrong** clobber pattern.
+def test_deps_regex_post_fix_baseline(tmp_path: Path) -> None:
+    """Post-fix baseline: pin the **correct** scoped-rewrite outcome.
 
-    This test PASSES on unfixed code and FAILS once req 2.23 lands.
-    It exists purely to document the precise misbehaviour we observe
-    today (and so the orchestrator can record the counterexample). Once
-    task 2.6.3 ships the scoped rewrite, this test should be deleted —
-    its fix-checking equivalent lives in
-    ``plugin/neko_plugin_cli/tests/test_pyproject_update_scoped.py``
-    (per tasks.md §3.6).
-
-    Documented counterexample (unfixed):
-
-    * ``[tool.uv].dependencies``     becomes ``["existing", "foo>=1"]``
-      (wrongly clobbered with the new project-dep list)
-    * ``[project].dependencies``     remains ``["existing"]``
-      (regex never reached this section because ``count=1``)
+    Mirror of ``test_deps_regex_documented_counterexample`` — kept so a
+    future regression that brings the bug back (e.g. by reverting the
+    scoped regex in ``_update_pyproject_dependencies``) is caught even
+    if the property test gets thinned out or skipped on slower CI.
     """
 
     path = tmp_path / "pyproject.toml"
@@ -259,17 +249,12 @@ def test_deps_regex_unfixed_state_baseline(tmp_path: Path) -> None:
     with path.open("rb") as f:
         data = tomllib.load(f)
 
-    # Buggy state: the new deps were written into [tool.uv], not [project].
-    assert data["tool"]["uv"]["dependencies"] == ["existing", "foo>=1"], (
-        "Buggy-state baseline expected [tool.uv].dependencies to have been "
-        "wrongly clobbered with the new project-dep list. If this assertion "
-        "fails, the scoping fix (req 2.23) has likely landed — delete this "
-        "baseline and rely on the Phase 6 fix-checking tests instead.\n"
-        f"  observed: {data['tool']['uv']['dependencies']!r}"
+    assert data["tool"]["uv"]["dependencies"] == ["red-herring"], (
+        "[tool.uv].dependencies must NOT be rewritten — the scoped regex "
+        "must operate inside [project] only. Observed clobber: "
+        f"{data['tool']['uv']['dependencies']!r}"
     )
-    assert data["project"]["dependencies"] == ["existing"], (
-        "Buggy-state baseline expected [project].dependencies to be left "
-        "untouched at ['existing']. If this assertion fails, the scoping "
-        "fix (req 2.23) has likely landed — delete this baseline.\n"
-        f"  observed: {data['project']['dependencies']!r}"
+    assert data["project"]["dependencies"] == ["existing", "foo>=1"], (
+        "[project].dependencies must be rewritten to include the new "
+        f"package, but observed: {data['project']['dependencies']!r}"
     )
