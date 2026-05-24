@@ -2365,7 +2365,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
             let foundGroupName = null;
             const normalizeMotionFileName = (file) => {
                 const normalized = String(file || '').replace(/\\/g, '/');
-                const relativePath = normalized.replace(/^motions\//i, '');
+                const relativePath = normalized.replace(/^(?:\.\/)?motions\//i, '');
                 return relativePath.replace(/\.motion3\.json$/i, '').replace(/\.motion3$/i, '').replace(/\.json$/i, '');
             };
 
