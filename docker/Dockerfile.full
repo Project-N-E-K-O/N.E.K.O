@@ -202,7 +202,29 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
-# 8b. Fix ownership after root operations (uv sync creates files as root)
+# 8b. Bundle the local embedding model so vectors work out-of-the-box (offline).
+# Without this the image ships no weights and EmbeddingService sticky-disables
+# at first load (NO_MODEL_FILE) — vector recall / fact dedup silently degrade.
+# repo+revision are pinned identically to .github/workflows/build-desktop.yml so
+# every build path resolves the same on-disk profile. `--variant both` ships the
+# int8 (default) AND fp32 weights so a VECTORS_QUANTIZATION=fp32 override also
+# works. Pure-stdlib downloader; needs network (honors the proxy ARGs).
+ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
+ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
+ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    uv run python scripts/prepare_embedding_model.py \
+        --repo "$EMBEDDING_MODEL_REPO" \
+        --revision "$EMBEDDING_MODEL_REVISION" \
+        --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+        --output-root data/embedding_models \
+        --variant both && \
+    unset http_proxy && \
+    unset https_proxy
+
+# 8c. Fix ownership after root operations (uv sync + model download create files as root)
 RUN chown -R neko:neko /app
 
 # 9. Set Playwright environment variable BEFORE installing browsers
