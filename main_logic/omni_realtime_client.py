@@ -416,12 +416,21 @@ class OmniRealtimeClient:
             and not bool(livestream_mode)
         )
 
+        # free 经 Gemini 代理（OpenAI-realtime 协议，发图走 input_image_buffer.append、
+        # 服务端 VAD 由代理吞掉）：lanlan.app 海外节点，或 livestream 主播自建 server_prefix。
+        # 二者上游同为 Gemini 系，原生视觉与发图协议一致；lanlan.tech free 上游是
+        # StepFun（无原生视觉，走 VISION_MODEL 分析通道），不在此列。
+        self._is_free_proxy = 'free' in self._model_lower and (
+            'lanlan.app' in (base_url or '')
+            or bool(livestream_mode)
+        )
+
         # Whether this client supports native image input
-        # qwen/glm/gpt/gemini have native vision; lanlan.app replacement server (free, non-mainland) also does
+        # qwen/glm/gpt/gemini have native vision; free Gemini-proxy (lanlan.app / livestream) also does
         self._supports_native_image = (
             any(m in self._model_lower for m in ['qwen', 'glm', 'gpt'])
             or self._is_gemini
-            or ('lanlan.app' in (base_url or '') and 'free' in self._model_lower)
+            or self._is_free_proxy
         )
         self._gemini_client = None  # genai.Client instance
         self._gemini_session = None  # Live session from SDK
@@ -1372,7 +1381,7 @@ class OmniRealtimeClient:
                             self._fatal_error_occurred = True
                 return
 
-            if ('lanlan.app' in self.base_url and 'free' in self._model_lower):
+            if self._is_free_proxy:
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
@@ -1787,7 +1796,7 @@ class OmniRealtimeClient:
                                 }],
                             },
                         })
-                    elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
+                    elif "qwen" in self._model_lower or self._is_free_proxy:
                         await self.send_event({
                             "type": "input_image_buffer.append",
                             "image": snapshot_image_b64,
