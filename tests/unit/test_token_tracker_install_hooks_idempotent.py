@@ -88,3 +88,31 @@ def test_install_hooks_records_once_after_single_install(restore_openai_create):
         Completions.create(SimpleNamespace(), model="fake-model", stream=False)
 
     assert rec.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_install_hooks_idempotent_async_path(restore_openai_create):
+    """异步路径同样不叠层。
+
+    生产里 conversation 走 LangChain astream → AsyncCompletions.create，异步分支
+    才是主路径；它与同步分支共用 _neko_token_tracker_hooked 守卫，但单独钉一遍，
+    避免将来有人只改其中一条分支时静默漏掉。
+    """
+    _Completions, AsyncCompletions = restore_openai_create
+
+    async def fake_async_create(self, *args, **kwargs):
+        return _fake_usage_response()
+
+    AsyncCompletions.create = fake_async_create
+    rec = MagicMock()
+
+    with patch.object(
+        tt.TokenTracker, "get_instance", return_value=SimpleNamespace(record=rec)
+    ):
+        # 合并模式：main / memory / agent 三个 startup 各装一次
+        tt.install_hooks()
+        tt.install_hooks()
+        tt.install_hooks()
+        await AsyncCompletions.create(SimpleNamespace(), model="fake-model", stream=False)
+
+    assert rec.call_count == 1, f"expected 1 record, got {rec.call_count}（async wrapper 叠层）"
