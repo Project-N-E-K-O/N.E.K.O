@@ -4,6 +4,9 @@ import { callPlugin, errorMessage, text } from './memory_shared';
 
 type RecitationPayload = {
   diff?: unknown;
+  habit_progress?: {
+    applied?: number;
+  };
 };
 
 export default function PassageRecitation(props: PluginSurfaceProps) {
@@ -25,7 +28,8 @@ export default function PassageRecitation(props: PluginSurfaceProps) {
         user_input_text: userInput,
         hint_count: hintCount,
       });
-      setResult(JSON.stringify(payload.diff || payload, null, 2));
+      const resultText = JSON.stringify(payload.diff || payload, null, 2);
+      setResult(payload.habit_progress?.applied ? `${text(props, 'ui.memory.review_goal_updated', 'Goal updated')}\n${resultText}` : resultText);
     } catch (error) {
       setResult(errorMessage(error));
     } finally {

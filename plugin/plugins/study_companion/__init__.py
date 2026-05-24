@@ -61,6 +61,7 @@ from .mode_manager import (
 from .knowledge_contribution import PublicGraphContributionBuilder
 from .knowledge_tracker import KnowledgeTracker
 from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
+from .memory_habit_bridge import MemoryHabitBridge
 from .state import build_initial_state
 from .store import StudyStore
 from .study_habit_store import StudyHabitStore
@@ -109,6 +110,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         self._checkin_manager: CheckinManager | None = None
         self._pomodoro_timer: PomodoroTimer | None = None
         self._supervision: SupervisionController | None = None
+        self._memory_habit_bridge: MemoryHabitBridge | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -141,6 +143,11 @@ class StudyCompanionPlugin(NekoPluginBase):
                 checkin_timezone=self._cfg.checkin.streak_timezone,
             )
             self._supervision = SupervisionController(self._cfg.supervision)
+            self._memory_habit_bridge = MemoryHabitBridge(
+                store=self._store,
+                memory=self._memory_deck_store,
+                habits=self._habit_store,
+            )
             restored = await asyncio.to_thread(
                 self._store.load_state, build_initial_state(mode=self._cfg.mode)
             )
@@ -352,6 +359,10 @@ class StudyCompanionPlugin(NekoPluginBase):
                 if self._supervision is not None
                 else {},
             )
+            if self._memory_habit_bridge is not None:
+                payload["summary"]["memory_summary"] = (
+                    self._memory_habit_bridge.memory_summary(date=today)
+                )
             payload["available"] = True
             return payload
         except Exception as exc:
@@ -883,6 +894,28 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._supervision,
         )
 
+    def _require_memory_habit_bridge(self) -> MemoryHabitBridge:
+        if self._memory_habit_bridge is None:
+            raise RuntimeError("memory habit bridge is not initialized")
+        return self._memory_habit_bridge
+
+    @plugin_entry(
+        id="study_memory_habit_status",
+        name=tr("entries.memory_habit_status.name", default="Memory Habit Bridge Status"),
+        description=tr(
+            "entries.memory_habit_status.description",
+            default="Return whether memory deck habit integration is available.",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["available", "supports_deck_goals", "supports_deck_focus"],
+    )
+    async def study_memory_habit_status(self, **_):
+        try:
+            self._require_habit_components()
+            return Ok(self._require_memory_habit_bridge().status())
+        except Exception as exc:
+            return Ok({"available": False, "error": str(exc)})
+
     @plugin_entry(
         id="study_pomodoro_status",
         name="Study Pomodoro Status",
@@ -916,21 +949,52 @@ class StudyCompanionPlugin(NekoPluginBase):
     @plugin_entry(
         id="study_pomodoro_start",
         name="Start Study Pomodoro",
-        description="Start a focus pomodoro for an optional daily goal.",
+        description=(
+            "Start a focus pomodoro. goal_id is used as-is when provided; "
+            "deck_id resolves a memory deck minutes goal only when goal_id is empty."
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "focus_minutes": {"type": "integer"},
-                "goal_id": {"type": "string", "default": ""},
+                "focus_minutes": {
+                    "type": "integer",
+                    "description": "Focus duration in minutes.",
+                },
+                "goal_id": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Existing daily goal id. Takes precedence over deck_id.",
+                },
+                "deck_id": {
+                    "type": "string",
+                    "default": "",
+                    "description": (
+                        "Memory deck id used to create or reuse a minutes goal when "
+                        "goal_id is empty."
+                    ),
+                },
             },
         },
         llm_result_fields=["state", "remaining_seconds", "goal_id"],
     )
     async def study_pomodoro_start(
-        self, focus_minutes: int | None = None, goal_id: str = "", **_
+        self,
+        focus_minutes: int | None = None,
+        goal_id: str = "",
+        deck_id: str = "",
+        **_,
     ):
         try:
             habits, _, timer, supervision = self._require_habit_components()
+            if deck_id and not goal_id:
+                bridge = self._require_memory_habit_bridge()
+                goal_payload = await asyncio.to_thread(
+                    bridge.resolve_focus_goal,
+                    date=self._today(),
+                    deck_id=deck_id,
+                    focus_minutes=float(focus_minutes or self._cfg.pomodoro.focus_minutes),
+                )
+                goal_id = str((goal_payload.get("goal") or {}).get("id") or "")
             before_status = await asyncio.to_thread(timer.status)
             before_session_id = str(
                 before_status.get("current_focus_session", {}).get("id") or ""
@@ -1087,6 +1151,51 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError(str(exc)))
 
     @plugin_entry(
+        id="study_memory_set_deck_goal",
+        name=tr("entries.memory_set_deck_goal.name", default="Set Memory Deck Goal"),
+        description=tr(
+            "entries.memory_set_deck_goal.description",
+            default="Create or update today's daily goal for a memory deck.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "deck_id": {"type": "string"},
+                "date": {"type": "string", "default": ""},
+                "target_amount": {"type": "number", "default": 10},
+                "unit": {
+                    "type": "string",
+                    "enum": ["cards", "minutes", "attempts"],
+                    "default": "cards",
+                },
+            },
+            "required": ["deck_id"],
+        },
+        llm_result_fields=["goal", "deck", "created"],
+    )
+    async def study_memory_set_deck_goal(
+        self,
+        deck_id: str,
+        date: str = "",
+        target_amount: float = 10,
+        unit: str = "cards",
+        **_,
+    ):
+        try:
+            self._require_habit_components()
+            bridge = self._require_memory_habit_bridge()
+            payload = await asyncio.to_thread(
+                bridge.create_deck_goal,
+                date=str(date or self._today())[:10],
+                deck_id=deck_id,
+                target_amount=target_amount,
+                unit=unit,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return Err(SdkError(str(exc)))
+
+    @plugin_entry(
         id="study_goal_update",
         name="Update Study Daily Goal",
         description="Update a local daily study goal.",
@@ -1209,12 +1318,17 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_session_summary(self, date: str = "", **_):
         try:
             _, manager, _, _ = self._require_habit_components()
-            return Ok(
-                await asyncio.to_thread(
-                    manager.daily_summary,
-                    date=str(date or self._today())[:10],
-                )
+            target_date = str(date or self._today())[:10]
+            summary = await asyncio.to_thread(
+                manager.daily_summary,
+                date=target_date,
             )
+            if self._memory_habit_bridge is not None:
+                summary["memory_summary"] = await asyncio.to_thread(
+                    self._memory_habit_bridge.memory_summary,
+                    date=target_date,
+                )
+            return Ok(summary)
         except Exception as exc:
             return Err(SdkError(str(exc)))
 
@@ -1822,6 +1936,21 @@ class StudyCompanionPlugin(NekoPluginBase):
                 elapsed_ms=int(elapsed_ms or 0) or None,
                 session_id=session_id,
             )
+            if self._memory_habit_bridge is not None:
+                try:
+                    payload["habit_progress"] = await asyncio.to_thread(
+                        self._memory_habit_bridge.apply_review_progress,
+                        payload,
+                        date=self._today(),
+                    )
+                except Exception as bridge_exc:
+                    self.logger.warning(
+                        "memory habit review progress degraded: {}", bridge_exc
+                    )
+                    payload["habit_progress"] = {
+                        "applied": 0,
+                        "error": str(bridge_exc),
+                    }
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
@@ -1867,6 +1996,21 @@ class StudyCompanionPlugin(NekoPluginBase):
                 elapsed_ms=int(elapsed_ms or 0) or None,
                 session_id=session_id,
             )
+            if self._memory_habit_bridge is not None:
+                try:
+                    payload["habit_progress"] = await asyncio.to_thread(
+                        self._memory_habit_bridge.apply_recitation_progress,
+                        payload,
+                        date=self._today(),
+                    )
+                except Exception as bridge_exc:
+                    self.logger.warning(
+                        "memory habit recitation progress degraded: {}", bridge_exc
+                    )
+                    payload["habit_progress"] = {
+                        "applied": 0,
+                        "error": str(bridge_exc),
+                    }
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))

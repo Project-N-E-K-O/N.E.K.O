@@ -15,6 +15,12 @@ type DueReview = {
   };
 };
 
+type ReviewResult = {
+  habit_progress?: {
+    applied?: number;
+  };
+};
+
 export default function WordReview(props: PluginSurfaceProps) {
   const [reviews, setReviews] = useState<DueReview[]>([]);
   const [showAnswer, setShowAnswer] = useState(false);
@@ -36,8 +42,11 @@ export default function WordReview(props: PluginSurfaceProps) {
     }
     setSubmitting(true);
     try {
-      await callPlugin('study_memory_review_item', { item_id: current.item_id, rating });
+      const payload = await callPlugin<ReviewResult>('study_memory_review_item', { item_id: current.item_id, rating });
       await refresh();
+      if (payload.habit_progress?.applied) {
+        setStatus(text(props, 'ui.memory.review_goal_updated', 'Goal updated'));
+      }
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {
@@ -70,7 +79,7 @@ export default function WordReview(props: PluginSurfaceProps) {
         </button>
         {['again', 'hard', 'good', 'easy'].map((rating) => (
           <button key={rating} type="button" disabled={!current || submitting} onClick={() => rate(rating)}>
-            {rating}
+            {text(props, `ui.memory.rating.${rating}`, rating)}
           </button>
         ))}
       </div>

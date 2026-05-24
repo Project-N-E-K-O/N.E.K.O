@@ -4,6 +4,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from plugin.plugins.study_companion.checkin_manager import CheckinManager
+from plugin.plugins.study_companion.memory_deck_store import MemoryDeckStore
+from plugin.plugins.study_companion.memory_habit_bridge import MemoryHabitBridge
 from plugin.plugins.study_companion.study_habit_store import StudyHabitStore
 from plugin.plugins.study_companion.store import StudyStore
 
@@ -144,5 +146,100 @@ def test_checkin_streak_is_not_truncated_at_default_checked_dates_limit(
         status = manager.checkin_status(date="2026-02-09", today="2026-02-09")
 
         assert status["streak_days"] == 405
+    finally:
+        store.close()
+
+
+def test_memory_habit_bridge_updates_deck_goals_idempotently(
+    tmp_path: Path,
+) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        memory = MemoryDeckStore(store)
+        bridge = MemoryHabitBridge(store=store, memory=memory, habits=habits)
+        deck = memory.create_deck(name="Exam Words", deck_type="word")
+        word = memory.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )["item"]
+        goal_payload = bridge.create_deck_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            target_amount=2,
+            unit="cards",
+        )
+
+        reviewed = memory.review_item(item_id=word["id"], rating="good")
+        progress = bridge.apply_review_progress(reviewed, date="2026-05-24")
+        duplicate = bridge.apply_review_progress(reviewed, date="2026-05-24")
+        goal = habits.get_goal(goal_payload["goal"]["id"])
+
+        assert progress["applied"] == 1
+        assert duplicate["applied"] == 0
+        assert goal is not None
+        assert goal["target_type"] == "deck"
+        assert goal["target_id"] == deck["id"]
+        assert goal["progress_amount"] == 1
+        assert habits.list_checkins(date="2026-05-24")[0]["source"] == "session_derived"
+    finally:
+        store.close()
+
+
+def test_memory_habit_bridge_summarizes_recitation_and_deck_focus(
+    tmp_path: Path,
+) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        memory = MemoryDeckStore(store)
+        bridge = MemoryHabitBridge(store=store, memory=memory, habits=habits)
+        deck = memory.create_deck(name="Textbook", deck_type="passage")
+        imported = memory.import_passage(
+            deck_id=deck["id"],
+            title="Short Text",
+            text="First sentence. Second sentence.",
+        )
+        attempt_goal = bridge.create_deck_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            target_amount=1,
+            unit="attempts",
+        )
+        focus_goal = bridge.resolve_focus_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            focus_minutes=25,
+        )
+        focus = habits.create_focus_session(
+            goal_id=focus_goal["goal"]["id"],
+            mode="focus",
+            planned_minutes=25,
+            started_at="2026-05-24T09:00:00+08:00",
+        )
+        habits.finish_focus_session(
+            focus["id"],
+            ended_at="2026-05-24T09:25:00+08:00",
+            actual_minutes=25,
+            status="completed",
+        )
+
+        recited = memory.add_recitation_attempt(
+            item_id=imported["items"][0]["id"],
+            user_input_text="First sentence.",
+        )
+        progress = bridge.apply_recitation_progress(recited, date="2026-05-24")
+        summary = bridge.memory_summary(date="2026-05-24")
+        attempt_goal_updated = habits.get_goal(attempt_goal["goal"]["id"])
+
+        assert progress["applied"] == 1
+        assert attempt_goal_updated is not None
+        assert attempt_goal_updated["progress_amount"] == 1
+        assert summary["reviewed_items"] == 1
+        assert summary["recitation_attempts"] == 1
+        assert summary["focus_minutes"] == 25
+        assert summary["deck_count"] == 1
+        assert summary["decks"][0]["deck_id"] == deck["id"]
     finally:
         store.close()
