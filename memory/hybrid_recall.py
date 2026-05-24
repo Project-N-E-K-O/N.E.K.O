@@ -693,28 +693,30 @@ async def recall_by_time(
     from memory.recall import MemoryRecallReranker
     pool = MemoryRecallReranker._hard_filter(pool_raw)
 
-    # (距离秒数, 事件起点 s, doc) —— 距离近优先、同距离时近发生（s 大）优先。
-    scored: list[tuple[float, datetime, dict]] = []
+    # (是否窗口外 0/1, 距离秒数, 事件起点 s, doc)。
+    scored: list[tuple[int, float, datetime, dict]] = []
     for d in pool:
         win = _entry_event_window(d)
         if win is None:
             continue
         s, e = win
-        # 事件闭区间 [s, e] 到半开窗口 [win_start, win_end) 的距离：
-        # 有重叠 → 0；事件整体早于窗口 → win_start - e；整体晚于 → s - win_end。
-        if s < win_end and e >= win_start:
+        # 半开窗口 [win_start, win_end)：事件闭区间 [s, e] 与之有交即在窗口内。
+        in_window = s < win_end and e >= win_start
+        if in_window:
             dist = 0.0
-        elif e < win_start:
+        elif e < win_start:          # 整体早于窗口
             dist = (win_start - e).total_seconds()
-        else:
+        else:                        # 整体在右界 win_end 当点或之后
             dist = (s - win_end).total_seconds()
-        scored.append((dist, s, d))
+        # 主键 in_window 摆第一位：右界事件（s == win_end，半开窗口判为窗口
+        # 外）的 dist 也是 0，若只按 dist 排会和真窗口内条目并列、再被次键
+        # 顶到前面——给个 0/1 主键保证"窗口内永远排在窗口外前面"（Codex）。
+        scored.append((0 if in_window else 1, dist, s, d))
 
-    # 次键用 (win_start - s) 这个 timedelta 升序 = s 降序（近发生的在前），
-    # 不用 datetime.timestamp()——naive datetime 的 timestamp 走本地时区、
-    # DST 边界含糊、pre-1970 在 Windows 还会 OSError，纯排序没必要冒这风险
-    # （Codex）。timedelta 直接可比，doc 不进 key 避免比较 dict。
-    scored.sort(key=lambda t: (t[0], win_start - t[1]))
+    # 次键 dist 升序；三键用 (win_start - s) timedelta 升序 = s 降序（近发生
+    # 的在前），不用 datetime.timestamp()（naive 走本地时区、DST 含糊、
+    # pre-1970 Windows 会 OSError）。doc 不进 key 避免比较 dict。
+    scored.sort(key=lambda t: (t[0], t[1], win_start - t[2]))
     top = scored[:HYBRID_RECALL_TIME_BUDGET]
     results = [
         {
@@ -727,7 +729,7 @@ async def recall_by_time(
             "event_start_at": d.get('event_start_at'),
             "event_end_at": d.get('event_end_at'),
         }
-        for _, _, d in top
+        for _, _, _, d in top
     ]
     elapsed_ms = (time.time() - start_t) * 1000.0
     logger.info(

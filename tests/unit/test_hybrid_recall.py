@@ -499,6 +499,21 @@ class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
         tiers = {r["tier"] for r in res["results"]}
         self.assertEqual(tiers, {"fact", "reflection"})
 
+    async def test_right_boundary_event_ranks_behind_in_window(self):
+        """半开窗口右界：事件正好起于 win_end（如 time='2026-05-01' 时的
+        2026-05-02T00:00:00）虽 dist=0 也算窗口外，必须排在真窗口内条目之后
+        （Codex）。"""
+        facts = [
+            {"id": "boundary", "text": "正好五月二号零点", "score": 1.0,
+             "event_start_at": "2026-05-02T00:00:00"},
+            {"id": "in_may1", "text": "五月一号上午", "score": 1.0,
+             "event_start_at": "2026-05-01T09:00:00"},
+        ]
+        res = await self._run("2026-05-01", facts, [])
+        ids = [r["id"] for r in res["results"]]
+        # 窗口内的 in_may1 必须在右界 boundary 之前
+        self.assertLess(ids.index("in_may1"), ids.index("boundary"))
+
     async def test_unparseable_time_returns_empty(self):
         res = await self._run("上周", [{"id": "x", "text": "y", "score": 1.0,
                                         "created_at": "2026-05-01T10:00:00"}], [])
