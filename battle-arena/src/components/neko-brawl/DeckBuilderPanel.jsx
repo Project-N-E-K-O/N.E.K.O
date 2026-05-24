@@ -32,6 +32,7 @@ import { playNekoBrawlSceneBgm, stopNekoBrawlBgm } from './nekoBrawlAudio'
 
 const DECK_SIZE = 18
 const MAX_CARD_COPIES = 3
+const FORGED_CARD_COPIES = 1
 const CURRENT_DECK_STORAGE_KEY = 'neko-brawl-deck'
 const DECK_LIBRARY_STORAGE_KEY = 'neko-brawl-deck-library'
 const FAVORITE_CARDS_STORAGE_KEY = 'neko-brawl-favorite-cards'
@@ -109,6 +110,10 @@ function cardCopies(deck, code) {
   return deck.filter(item => item === code).length
 }
 
+function maxCopiesForCard(card) {
+  return card?.forged ? FORGED_CARD_COPIES : MAX_CARD_COPIES
+}
+
 function compactDeck(deck, cardPool = CARD_POOL) {
   return cardPool
     .map(card => ({ ...card, copies: cardCopies(deck, card.code), attr: attrById[card.attrId] }))
@@ -122,13 +127,25 @@ function makeAutoDeck(cardPool = CARD_POOL) {
 
   while (picks.length < DECK_SIZE) {
     const card = sorted[cursor % sorted.length]
-    if (cardCopies(picks, card.code) < MAX_CARD_COPIES) {
+    if (cardCopies(picks, card.code) < maxCopiesForCard(card)) {
       picks.push(card.code)
     }
     cursor += 1
   }
 
   return picks
+}
+
+function normalizeDeckCodes(deckCodes, cardPool = CARD_POOL) {
+  const picked = []
+  for (const code of Array.isArray(deckCodes) ? deckCodes : []) {
+    if (picked.length >= DECK_SIZE) break
+    const card = cardPool.find(item => item.code === code)
+    if (!card) continue
+    if (cardCopies(picked, code) >= maxCopiesForCard(card)) continue
+    picked.push(code)
+  }
+  return picked
 }
 
 export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLibrary, onDeleteForgedCard, forgedCards = [] }) {
@@ -149,7 +166,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
     try {
       const saved = JSON.parse(window.localStorage.getItem(CURRENT_DECK_STORAGE_KEY) || '[]')
       const initialCards = [...CARD_POOL, ...loadForgedBrawlCards()]
-      const valid = Array.isArray(saved) ? saved.filter(code => initialCards.some(card => card.code === code)) : []
+      const valid = normalizeDeckCodes(saved, initialCards)
       return valid.length > 0 ? valid.slice(0, DECK_SIZE) : makeAutoDeck()
     } catch {
       return makeAutoDeck()
@@ -217,7 +234,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
 
   const addCard = (card) => {
     if (deck.length >= DECK_SIZE) return
-    if (cardCopies(deck, card.code) >= MAX_CARD_COPIES) return
+    if (cardCopies(deck, card.code) >= maxCopiesForCard(card)) return
     setDeck(prev => [...prev, card.code])
   }
 
@@ -510,7 +527,8 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
               <div className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-3 pb-6">
               {filteredCards.map(card => {
                 const copies = cardCopies(deck, card.code)
-                const locked = fullDeck || copies >= MAX_CARD_COPIES
+                const maxCopies = maxCopiesForCard(card)
+                const locked = fullDeck || copies >= maxCopies
                 const Icon = card.attr.icon
                 const favorite = favoriteSet.has(card.code)
 
@@ -568,7 +586,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
                       >
                         {favorite ? '\u2665' : '\u2661'}
                       </button>
-                      <span>已选 x{copies}</span>
+                      <span>已选 x{copies}/{maxCopies}</span>
                       <button
                         type="button"
                         onClick={(event) => {
@@ -633,7 +651,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
             </div>
             <div className="space-y-2 text-sm font-bold leading-relaxed text-zinc-700">
               <p>卡组需要 {DECK_SIZE} 张卡。</p>
-              <p>同名卡暂定最多 {MAX_CARD_COPIES} 张。</p>
+              <p>普通同名卡暂定最多 {MAX_CARD_COPIES} 张；Forged 铸造卡是具体实例，只能加入 {FORGED_CARD_COPIES} 张。</p>
               <p>保存后会记录到本地，方便后续接入真实战斗牌库。</p>
             </div>
           </div>
