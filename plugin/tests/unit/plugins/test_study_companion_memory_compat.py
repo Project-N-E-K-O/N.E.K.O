@@ -56,6 +56,21 @@ def test_compat_card_payload_handles_missing_card_and_metadata() -> None:
     assert payload["tags"] == []
 
 
+def test_compat_card_payload_falls_back_to_fsrs_card_faces() -> None:
+    card = create_card("item-blank", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    card.front = "Fallback front"
+    card.back = "Fallback back"
+
+    payload = compat_card_payload(
+        {"id": "item-blank", "prompt": "", "answer": ""},
+        get_fsrs_card=lambda item_id: {"card": card.to_dict(), "last_rating": 0},
+        fsrs=FSRSBridge(),
+    )
+
+    assert payload["front"] == "Fallback front"
+    assert payload["back"] == "Fallback back"
+
+
 def test_compat_card_payload_normalizes_string_tags() -> None:
     payload = compat_card_payload(
         {"id": "item-3", "metadata": {"tags": "math, science math"}},

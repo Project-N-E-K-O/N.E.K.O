@@ -199,7 +199,7 @@ jobs:
 
       - name: Run Study Companion coverage gate
         run: >
-          uv run python -m pytest -c pytest.ini
+          uv run python -m pytest -c plugin/tests/pytest.ini
           plugin/tests/unit/plugins/test_study_companion*.py
           plugin/tests/unit/plugins/test_study_habit_store.py
           plugin/tests/unit/plugins/test_pomodoro_timer.py

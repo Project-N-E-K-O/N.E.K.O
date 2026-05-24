@@ -25,8 +25,12 @@ def compat_card_payload(
         "topic_id": topic_id,
         "item_id": str(item.get("id") or ""),
         "deck_id": str(item.get("deck_id") or ""),
-        "front": str(item.get("prompt") or ""),
-        "back": str(item.get("answer") or ""),
+        "front": str(
+            item.get("prompt") or raw_card.get("front") or raw_card.get("prompt") or ""
+        ),
+        "back": str(
+            item.get("answer") or raw_card.get("back") or raw_card.get("answer") or ""
+        ),
         "tags": normalize_tags(metadata.get("tags")),
         "source": str(metadata.get("source") or ""),
         "card_type": "memory",

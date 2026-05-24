@@ -23,6 +23,8 @@ def _store(tmp_path: Path) -> StudyStore:
 
 
 def test_integration_export_pipeline_builds_markdown_pdf_docx_and_xmind(tmp_path: Path) -> None:
+    pytest.importorskip("reportlab")
+    pytest.importorskip("docx")
     store = _store(tmp_path)
     try:
         store.append_interaction(
