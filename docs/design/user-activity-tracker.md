@@ -794,7 +794,7 @@ and to weigh conversation signals more heavily.
 `UserActivityTracker.push_external_system_signal(...)` accepts OS
 signals from outside the backend — designed for a frontend (Electron
 app, browser via WebSocket, mobile shell) to read its local OS state
-and POST it on a heartbeat. When fresh (≤ 30s), pushed signals
+and POST it on a heartbeat. When fresh (≤ 15s), pushed signals
 override the local collector entirely. When stale (heartbeat stops),
 the tracker falls back to the local collector and the degraded marker
 re-appears.

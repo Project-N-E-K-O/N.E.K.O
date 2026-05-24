@@ -4225,7 +4225,7 @@ async def push_activity_signal(request: Request):
     ``powerMonitor.getSystemIdleTime`` + npm ``active-win`` +
     ``os.cpus()`` + ``nvidia-smi``) POSTs here every ``~5s``; the
     tracker treats anything fresher than ``_EXTERNAL_SIGNAL_TTL_SECONDS``
-    (30s) as the authoritative OS view, falling back to the local
+    (15s) as the authoritative OS view, falling back to the local
     collector when the heartbeat stops. Same fresh-then-fallback path
     feeds both the async ``get_snapshot`` and the sync variant — see
     ``tracker._select_system_snapshot``.
@@ -4381,9 +4381,10 @@ async def push_activity_signal(request: Request):
         )
 
     # Per-lanlan throttle — matches the frontend's 5s heartbeat. TTL
-    # is 30s so even if 5 of every 6 pushes get rate-limited the
-    # tracker stays inside its freshness window. Spam control, not
-    # auth — the character lookup below is the real integrity check.
+    # is 15s (3× this interval) so even if 2 of every 3 pushes get
+    # rate-limited the tracker stays inside its freshness window. Spam
+    # control, not auth — the character lookup below is the real
+    # integrity check.
     now = time.time()
     last_push = _ACTIVITY_SIGNAL_THROTTLE.get(lanlan_name)
     if last_push is not None and (now - last_push) < _EXTERNAL_SIGNAL_MIN_INTERVAL:
