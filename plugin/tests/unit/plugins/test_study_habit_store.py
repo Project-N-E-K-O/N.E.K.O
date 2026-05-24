@@ -295,13 +295,44 @@ def test_memory_habit_bridge_summary_uses_configured_local_day(
             word="boundary",
             meaning="edge",
         )["item"]
+        bridge.create_deck_goal(
+            date="2026-05-23",
+            deck_id=deck["id"],
+            target_amount=1,
+            unit="cards",
+        )
+        bridge.create_deck_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            target_amount=1,
+            unit="cards",
+        )
         reviewed = memory.review_item(item_id=word["id"], rating="good")
         review_id = int(reviewed["review_record"]["id"])
         with store._lock:  # noqa: SLF001 - test fixture controls row timestamp.
             conn = store._require_conn()
+            card_row = conn.execute(
+                "SELECT card_data FROM memory_fsrs_cards WHERE item_id = ?",
+                (word["id"],),
+            ).fetchone()
+            card = store._json_loads(card_row["card_data"], {})  # noqa: SLF001
+            card["due"] = "2026-05-24T08:00:00Z"
+            card["created_at"] = "2026-05-24T08:00:00Z"
             conn.execute(
                 "UPDATE review_records SET reviewed_at = ? WHERE id = ?",
                 ("2026-05-23 16:30:00", review_id),
+            )
+            conn.execute(
+                """
+                UPDATE memory_fsrs_cards
+                SET card_data = ?, next_due = ?
+                WHERE item_id = ?
+                """,
+                (
+                    store._json_dumps(card),  # noqa: SLF001
+                    "2026-05-24T08:00:00Z",
+                    word["id"],
+                ),
             )
             conn.commit()
 
@@ -309,7 +340,9 @@ def test_memory_habit_bridge_summary_uses_configured_local_day(
         previous = bridge.memory_summary(date="2026-05-23")
 
         assert summary["reviewed_items"] == 1
+        assert summary["due_remaining"] == 1
         assert summary["decks"][0]["deck_id"] == deck["id"]
         assert previous["reviewed_items"] == 0
+        assert previous["due_remaining"] == 0
     finally:
         store.close()

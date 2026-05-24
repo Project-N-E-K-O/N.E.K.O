@@ -27,7 +27,7 @@ export async function setDeckGoal(
 ): Promise<MemoryDeckGoalPayload> {
   return await callPlugin<MemoryDeckGoalPayload>('study_memory_set_deck_goal', {
     deck_id: deckId,
-    target_amount: targetAmount,
+    target_amount: normalizePositiveInteger(targetAmount, 1),
     unit,
   });
 }
@@ -35,7 +35,7 @@ export async function setDeckGoal(
 export async function startDeckFocus(deckId: string, focusMinutes: number) {
   return await callPlugin('study_pomodoro_start', {
     deck_id: deckId,
-    focus_minutes: focusMinutes,
+    focus_minutes: normalizePositiveInteger(focusMinutes, 1),
   });
 }
 
@@ -43,14 +43,32 @@ export function habitBridgeAvailable(status: MemoryHabitStatus): boolean {
   return Boolean(status.available);
 }
 
+export function normalizePositiveInteger(value: unknown, fallback = 1): number {
+  const parsed = Math.floor(Number(value));
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+export function deckGoalUnitLabel(props: PluginSurfaceProps, unit: unknown): string {
+  const normalized = String(unit || '').trim().toLowerCase();
+  if (normalized === 'minutes') {
+    return text(props, 'ui.daily_goal.deck_unit_minutes', 'minutes');
+  }
+  if (normalized === 'attempts') {
+    return text(props, 'ui.daily_goal.deck_unit_attempts', 'attempts');
+  }
+  return text(props, 'ui.daily_goal.deck_unit_cards', 'cards');
+}
+
 export function deckGoalSavedMessage(
   props: PluginSurfaceProps,
   payload: MemoryDeckGoalPayload,
 ): string {
   const goal = payload.goal || {};
+  const progress = Number.isFinite(Number(goal.progress_amount)) ? Number(goal.progress_amount) : 0;
+  const target = Number.isFinite(Number(goal.target_amount)) ? Number(goal.target_amount) : 0;
   return text(
     props,
     'ui.memory.goal_saved',
     'Goal saved',
-  ) + ` ${goal.progress_amount || 0}/${goal.target_amount || 0} ${goal.unit || ''}`.trimEnd();
+  ) + ` ${progress}/${target} ${deckGoalUnitLabel(props, goal.unit)}`.trimEnd();
 }

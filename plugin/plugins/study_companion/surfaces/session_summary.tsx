@@ -16,6 +16,8 @@ export default function SessionSummary(props: PluginSurfaceProps) {
   const completed = Array.isArray(summary.completed_goals) ? summary.completed_goals : [];
   const incomplete = Array.isArray(summary.incomplete_goals) ? summary.incomplete_goals : [];
   const memory = summary.memory_summary && summary.memory_summary.available ? summary.memory_summary : null;
+  const memoryCorrectRate = Number(memory?.correct_rate);
+  const memoryCorrectPercent = Number.isFinite(memoryCorrectRate) ? Math.round(memoryCorrectRate * 100) : 0;
   return (
     <div className="study-panel">
       <header className="study-panel__header">
@@ -34,7 +36,7 @@ export default function SessionSummary(props: PluginSurfaceProps) {
         <section className="study-panel__state">
           <div><span>{text(props, 'ui.summary.memory_block_title', 'Memory')}</span><strong>{memory.deck_count || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_reviewed', 'Reviewed')}</span><strong>{memory.reviewed_items || 0}</strong></div>
-          <div><span>{text(props, 'ui.summary.memory_correct_rate', 'Correct')}</span><strong>{Math.round(Number(memory.correct_rate || 0) * 100)}%</strong></div>
+          <div><span>{text(props, 'ui.summary.memory_correct_rate', 'Correct')}</span><strong>{memoryCorrectPercent}%</strong></div>
           <div><span>{text(props, 'ui.summary.memory_recitation', 'Recitation')}</span><strong>{memory.recitation_attempts || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_focus_minutes', 'Focus minutes')}</span><strong>{memory.focus_minutes || 0}</strong></div>
           <div><span>{text(props, 'ui.summary.memory_due_remaining', 'Due')}</span><strong>{memory.due_remaining || 0}</strong></div>

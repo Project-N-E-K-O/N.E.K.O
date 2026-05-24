@@ -5,6 +5,7 @@ import {
   deckGoalSavedMessage,
   getMemoryHabitStatus,
   habitBridgeAvailable,
+  normalizePositiveInteger,
   setDeckGoal,
   type MemoryHabitStatus,
 } from './memory_habit_bridge';
@@ -64,7 +65,9 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   async function saveDeckGoal(deckId: string) {
     setBusy(true);
     try {
-      const payload = await setDeckGoal(deckId, goalAmount, goalUnit);
+      const amount = normalizePositiveInteger(goalAmount, 1);
+      setGoalAmount(amount);
+      const payload = await setDeckGoal(deckId, amount, goalUnit);
       setStatus(deckGoalSavedMessage(props, payload));
       await refresh();
     } catch (error) {
@@ -113,7 +116,7 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
           <>
             <label>
               <span>{text(props, 'ui.daily_goal.set_for_deck', 'Deck goal')}</span>
-              <input type="number" value={goalAmount} disabled={busy} min={1} onChange={(event) => setGoalAmount(Number(event.target.value) || 1)} />
+              <input type="number" value={goalAmount} disabled={busy} min={1} step={1} onChange={(event) => setGoalAmount(normalizePositiveInteger(event.target.value, 1))} />
             </label>
             <label>
               <span>{text(props, 'ui.memory.deck_goal_unit', 'Unit')}</span>

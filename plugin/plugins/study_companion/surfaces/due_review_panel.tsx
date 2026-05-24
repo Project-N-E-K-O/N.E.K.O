@@ -4,6 +4,7 @@ import { callPlugin, errorMessage, text } from './memory_shared';
 import {
   getMemoryHabitStatus,
   habitBridgeAvailable,
+  normalizePositiveInteger,
   startDeckFocus,
   type MemoryHabitStatus,
 } from './memory_habit_bridge';
@@ -46,7 +47,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
   async function handleStartFocus(deckId: string) {
     setBusy(true);
     try {
-      await startDeckFocus(deckId, focusMinutes);
+      await startDeckFocus(deckId, normalizePositiveInteger(focusMinutes, 1));
       setStatus(text(props, 'ui.memory.focus_started', 'Focus started'));
     } catch (error) {
       setStatus(errorMessage(error));
@@ -81,7 +82,7 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
         {habitBridgeAvailable(habitStatus) ? (
           <label>
             <span>{text(props, 'ui.summary.memory_focus_minutes', 'Focus minutes')}</span>
-            <input type="number" min={1} value={focusMinutes} disabled={busy} onChange={(event) => setFocusMinutes(Number(event.target.value) || 1)} />
+            <input type="number" min={1} step={1} value={focusMinutes} disabled={busy} onChange={(event) => setFocusMinutes(normalizePositiveInteger(event.target.value, 1))} />
           </label>
         ) : null}
       </div>

@@ -6,6 +6,7 @@ import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .memory_deck_store import MemoryDeckStore
+from .memory_queries import active_item_card_rows
 from .study_habit_store import StudyHabitStore
 from .store import StudyStore, safe_float
 
@@ -210,8 +211,9 @@ class MemoryHabitBridge:
                 str(row["deck_name"] or ""),
             )
         for deck in decks.values():
-            deck["due_remaining"] = self._memory.count_due_reviews(
-                deck_id=str(deck["deck_id"])
+            deck["due_remaining"] = self._count_due_reviews(
+                deck_id=str(deck["deck_id"]),
+                date=target_date,
             )
             deck["correct_rate"] = (
                 deck["correct_items"] / deck["reviewed_items"]
@@ -420,6 +422,21 @@ class MemoryHabitBridge:
                 )
                 .fetchall()
             )
+
+    def _count_due_reviews(self, *, deck_id: str, date: str) -> int:
+        _, end_utc = _date_utc_bounds(date, self._checkin_timezone)
+        target_now = datetime.strptime(end_utc, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+        with self._store._lock:  # noqa: SLF001
+            rows = active_item_card_rows(
+                self._store._require_conn(), deck_id=str(deck_id)
+            )
+            cards = [
+                self._store._json_loads(row["card_data"], {})  # noqa: SLF001
+                for row in rows
+            ]
+        return len(self._memory.fsrs.get_due_reviews(cards, now=target_now))
 
     @staticmethod
     def _deck_summary_item(

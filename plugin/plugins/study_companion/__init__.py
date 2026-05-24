@@ -205,6 +205,13 @@ class StudyCompanionPlugin(NekoPluginBase):
         agent = self._agent
         self._agent = None
         self._ocr_pipeline = None
+        self._knowledge_tracker = None
+        self._memory_deck_store = None
+        self._habit_store = None
+        self._checkin_manager = None
+        self._pomodoro_timer = None
+        self._supervision = None
+        self._memory_habit_bridge = None
         try:
             self.clear_list_actions()
         except Exception as exc:
@@ -987,7 +994,16 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             habits, _, timer, supervision = self._require_habit_components()
-            if deck_id and not goal_id:
+            before_status = await asyncio.to_thread(timer.status)
+            before_session_id = str(
+                before_status.get("current_focus_session", {}).get("id") or ""
+            )
+            before_state = str(before_status.get("state") or "")
+            if (
+                deck_id
+                and not goal_id
+                and before_state not in {"focusing", "paused", "short_break", "long_break"}
+            ):
                 bridge = self._require_memory_habit_bridge()
                 goal_payload = await asyncio.to_thread(
                     bridge.resolve_focus_goal,
@@ -996,10 +1012,6 @@ class StudyCompanionPlugin(NekoPluginBase):
                     focus_minutes=float(focus_minutes or self._cfg.pomodoro.focus_minutes),
                 )
                 goal_id = str((goal_payload.get("goal") or {}).get("id") or "")
-            before_status = await asyncio.to_thread(timer.status)
-            before_session_id = str(
-                before_status.get("current_focus_session", {}).get("id") or ""
-            )
             status = await asyncio.to_thread(
                 timer.start, goal_id=goal_id, focus_minutes=focus_minutes
             )
