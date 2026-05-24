@@ -201,6 +201,9 @@ jobs:
         run: >
           uv run python -m pytest -c pytest.ini
           plugin/tests/unit/plugins/test_study_companion*.py
+          plugin/tests/unit/plugins/test_study_habit_store.py
+          plugin/tests/unit/plugins/test_pomodoro_timer.py
+          plugin/tests/unit/plugins/test_supervision.py
           --cov=plugin/plugins/study_companion
           --cov-report=term-missing:skip-covered
           --cov-fail-under=80
