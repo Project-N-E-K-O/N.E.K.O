@@ -626,6 +626,49 @@ class TestGetModelApiConfig:
 
 
 # ---------------------------------------------------------------------------
+# 7b. Agent URL region routing: 国内 lanlan.app / 国际 www.lanlan.app
+# ---------------------------------------------------------------------------
+class TestAgentUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 国际：保留 www 前缀
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
+            # 国内：剥掉 www
+            (False, 'https://www.lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            # GeoIP 不确定（按国内处理）：同样剥 www
+            (None, 'https://www.lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            # 已经是 www.lanlan.app 的国内输入：仍剥 www（幂等）
+            (False, 'https://www.lanlan.app/text/v1', 'https://lanlan.app/text/v1'),
+            # 国际下 www.lanlan.app 保持不变
+            (True, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
+            # bare host 输入（无 www，仅可能来自自定义 URL）：尊重原样，不补 www，
+            # 两区都落到 bare lanlan.app（仅做 tech→app）
+            (True, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            (False, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+        ],
+    )
+    def test_normalize_agent_url_by_region(self, config_manager, non_mainland, url_in, expected):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._normalize_agent_url(url_in) == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('non_mainland', [True, False, None])
+    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland):
+        """不含 lanlan 域的自定义 URL 原样返回，不受线路影响。"""
+        config_manager._check_non_mainland = lambda: non_mainland
+        custom = 'https://api.openai.com/v1'
+        assert config_manager._normalize_agent_url(custom) == custom
+
+    @pytest.mark.unit
+    def test_normalize_agent_url_non_string_passthrough(self, config_manager):
+        config_manager._check_non_mainland = lambda: True
+        assert config_manager._normalize_agent_url(None) is None
+
+
+# ---------------------------------------------------------------------------
 # 8. MiniMax / Qwen voice clone key resolution
 # ---------------------------------------------------------------------------
 class TestVoiceCloneKeyResolution:

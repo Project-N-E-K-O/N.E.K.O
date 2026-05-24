@@ -837,6 +837,7 @@ class PollMixin:
                     extraction,
                     target=target,
                     now=now,
+                    image=getattr(extraction, "captured_image", None),
                 )
                 if screen_event_emitted:
                     result.should_rescan = True

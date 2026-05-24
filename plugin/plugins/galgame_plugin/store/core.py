@@ -166,7 +166,13 @@ class GalgameStore:
                 tmp_file.write("\n")
                 tmp_file.flush()
                 os.fsync(tmp_file.fileno())
-            self._refresh_backup()
+            try:
+                self._refresh_backup()
+            except Exception as exc:
+                self._logger.warning(
+                    "failed to refresh galgame store backup before save; continuing write: {}",
+                    exc,
+                )
             os.replace(tmp_path, self._store_path)
         finally:
             tmp_path.unlink(missing_ok=True)

@@ -34,11 +34,25 @@ def test_study_fsrs_rating_updates_stability_difficulty_and_due() -> None:
 def test_study_fsrs_retrievability_and_due_sorting() -> None:
     now = datetime(2026, 5, 12, tzinfo=timezone.utc)
     fresh = create_card("fresh", now)
-    fresh = fresh.__class__.from_dict({**fresh.to_dict(), "due": (now + timedelta(days=2)).isoformat()})
+    fresh = fresh.__class__.from_dict(
+        {**fresh.to_dict(), "due": (now + timedelta(days=2)).isoformat()}
+    )
     old = create_card("old", now - timedelta(days=20))
-    old = old.__class__.from_dict({**old.to_dict(), "stability": 2.0, "due": (now - timedelta(days=1)).isoformat()})
+    old = old.__class__.from_dict(
+        {
+            **old.to_dict(),
+            "stability": 2.0,
+            "due": (now - timedelta(days=1)).isoformat(),
+        }
+    )
     weak = create_card("weak", now - timedelta(days=8))
-    weak = weak.__class__.from_dict({**weak.to_dict(), "stability": 3.0, "due": (now + timedelta(days=2)).isoformat()})
+    weak = weak.__class__.from_dict(
+        {
+            **weak.to_dict(),
+            "stability": 3.0,
+            "due": (now + timedelta(days=2)).isoformat(),
+        }
+    )
 
     assert retrievability(fresh, now) == 1.0
     assert retrievability(old, now) < retrievability(weak, now)
@@ -68,3 +82,26 @@ def test_study_fsrs_bridge_wraps_card_rating_and_due_review_methods() -> None:
     assert schedule["topic_id"] == "bridge_topic"
     assert updated.reps == 1
     assert reviews and reviews[0]["topic_id"] == "bridge_topic"
+
+
+def test_study_fsrs_preserves_memory_card_metadata_after_review() -> None:
+    now = datetime(2026, 5, 12, tzinfo=timezone.utc)
+    card = create_card("phase7_memory", now).__class__.from_dict(
+        {
+            **create_card("phase7_memory", now).to_dict(),
+            "card_type": "memory",
+            "front": "What does FSRS schedule?",
+            "back": "Memory card reviews.",
+            "source": "manual",
+            "tags": ["phase7", "memory"],
+        }
+    )
+
+    updated, schedule = rate_answer(card, StudyFsrsRating.Good, now + timedelta(days=1))
+
+    assert schedule["topic_id"] == "phase7_memory"
+    assert updated.card_type == "memory"
+    assert updated.front == "What does FSRS schedule?"
+    assert updated.back == "Memory card reviews."
+    assert updated.source == "manual"
+    assert updated.tags == ["phase7", "memory"]

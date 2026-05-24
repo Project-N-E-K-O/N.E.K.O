@@ -865,7 +865,7 @@
         "coreApiKey": "Core API Key",
         "freeVersionHint": "(Not required for Free Version)",
         "coreApiPlaceholder": "Please enter your API Key",
-        "coreApiProvider": "Core API (Voice Chat)",
+        "coreApiProvider": "Core API (Voice Chat, omni-modal only)",
         "assistApiProvider": "Assist API (Memory/Agent/Text Chat/Custom Voice)",
         "saveSettings": "Save Settings",
         "closeSettings": "Close",

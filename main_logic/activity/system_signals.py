@@ -42,23 +42,47 @@ logger = logging.getLogger(__name__)
 _IS_WINDOWS = platform.system() == 'Windows'
 
 
-def _force_degraded_from_env() -> bool:
+def is_remote_backend_deployment() -> bool:
     """Honour ``NEKO_ACTIVITY_TRACKER_REMOTE`` / ``ACTIVITY_TRACKER_REMOTE``.
 
-    Set to ``1`` / ``true`` / ``yes`` when the backend is on a different
-    machine from the user — covers the Windows-remote edge case where
-    the local OS APIs would happily report the server's foreground
-    window (since pygetwindow technically works), but those signals
-    are about the server, not the user.
+    Single source of truth for the "is the backend running on a different
+    machine from the user" question. Two unrelated consumers used to keep
+    their own copies of this env-var check and drifted:
+
+      * the activity collector here — flips the OS-signal pipeline into
+        degraded mode (window/idle/CPU/GPU come from frontend push or
+        not at all).
+      * ``main_routers/system_router._is_remote_backend_deployment`` —
+        blocks local-machine operations like ``/api/screenshot`` from
+        accidentally capturing the *server's* desktop and returning it
+        to the user. ``main_routers/agent_router`` follows the same
+        rule for ``computer_use`` / agent commands.
+
+    Both now call into this function. The check itself is intentionally
+    cheap (env lookup) so it's safe to call inline on every request.
+
+    Set to ``1`` / ``true`` / ``yes`` / ``on`` when the backend is on a
+    different machine from the user — covers the Windows-remote edge
+    case where the local OS APIs would happily report the server's
+    foreground window (since pygetwindow technically works), but those
+    signals are about the server, not the user. Same applies to
+    pyautogui screenshots and computer_use commands — they target the
+    backend machine, which is wrong when that machine isn't the user's.
 
     Default off — most users run backend on their own PC where local
-    OS signals are correct.
+    OS signals / screenshots / computer_use are correct.
     """
     for key in ('NEKO_ACTIVITY_TRACKER_REMOTE', 'ACTIVITY_TRACKER_REMOTE'):
         raw = os.getenv(key, '').strip().lower()
         if raw in ('1', 'true', 'yes', 'on'):
             return True
     return False
+
+
+# Legacy private alias — keeps in-flight callers (and tests that patch
+# the private name) working without a sweep. New code calls
+# ``is_remote_backend_deployment`` directly.
+_force_degraded_from_env = is_remote_backend_deployment
 
 
 # ── Public snapshot dataclass ───────────────────────────────────────
@@ -185,7 +209,7 @@ class SystemSignalCollector:
         # for the case where the backend is a Windows server and the user
         # is on a different machine — local OS APIs would technically
         # work but report data about the server, not the user.
-        env_force_degraded = _force_degraded_from_env()
+        env_force_degraded = is_remote_backend_deployment()
         self._os_signals_available: bool = bool(
             _IS_WINDOWS and self._gw is not None and not env_force_degraded
         )

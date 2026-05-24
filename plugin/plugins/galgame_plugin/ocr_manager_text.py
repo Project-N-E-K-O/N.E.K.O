@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -149,6 +150,137 @@ class TextMixin:
 
     def _log_info(self, message: str, *args: Any) -> None:
         self._call_log_method("info", message, *args)
+
+    def _emit_screen_classification_event(
+        self,
+        classification: ScreenClassification,
+        *,
+        now: float,
+    ) -> bool:
+        if classification.screen_type in {
+            OCR_CAPTURE_PROFILE_STAGE_DEFAULT,
+            OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
+        }:
+            if self._should_emit_dialogue_screen_transition(classification):
+                return self._writer.emit_screen_classified(
+                    screen_type=classification.screen_type,
+                    confidence=classification.confidence,
+                    ui_elements=classification.ui_elements,
+                    raw_ocr_text=classification.raw_ocr_text,
+                    screen_debug=classification.debug,
+                    ts=utc_now_iso(now),
+                )
+            return False
+        return self._writer.emit_screen_classified(
+            screen_type=classification.screen_type,
+            confidence=classification.confidence,
+            ui_elements=classification.ui_elements,
+            raw_ocr_text=classification.raw_ocr_text,
+            screen_debug=classification.debug,
+            ts=utc_now_iso(now),
+        )
+
+    def _classification_from_vision_result(
+        self,
+        result: dict[str, Any],
+        *,
+        extraction: OcrExtractionResult,
+    ) -> ScreenClassification:
+        debug = {
+            "source": "cnn_primary",
+            "reason": "cnn_high_confidence",
+            "label": str(result.get("label") or ""),
+            "model_name": str(result.get("model_name") or ""),
+            "latency_ms": result.get("latency_ms"),
+            "all_scores": json_copy(result.get("all_scores") or {}),
+        }
+        raw_lines = [
+            line.strip()
+            for line in str(extraction.text or "").splitlines()
+            if line.strip()
+        ][:20]
+        return ScreenClassification(
+            screen_type=normalize_screen_type(result.get("screen_type")),
+            confidence=round(
+                max(0.0, min(float(result.get("confidence") or 0.0), 0.99)),
+                4,
+            ),
+            ui_elements=[],
+            raw_ocr_text=raw_lines,
+            debug=debug,
+        )
+
+    def _classify_screen_with_vision(
+        self,
+        extraction: OcrExtractionResult,
+        *,
+        image: Any | None,
+    ) -> ScreenClassification | None:
+        if not bool(getattr(self._config, "vision_classifier_enabled", False)):
+            self._vision_classifier_detail = "disabled"
+            return None
+        classifier = getattr(self, "vision_classifier", None)
+        if classifier is None:
+            self._vision_classifier_detail = "unavailable"
+            return None
+        if image is None:
+            self._vision_classifier_detail = "no_image"
+            return None
+        self._vision_classifier_tick_count = int(
+            getattr(self, "_vision_classifier_tick_count", 0) or 0
+        ) + 1
+        interval = max(
+            1,
+            int(getattr(self._config, "vision_classifier_tick_interval", 1) or 1),
+        )
+        if (self._vision_classifier_tick_count - 1) % interval != 0:
+            self._vision_classifier_detail = "skipped_interval"
+            return None
+        try:
+            result = classifier.classify(image)
+        except Exception as exc:
+            self._vision_classifier_detail = "classify_failed"
+            self._log_warning("galgame vision classifier failed: {}", exc)
+            return None
+        if not isinstance(result, dict):
+            last_error = str(getattr(classifier, "last_error", "") or "").strip()
+            self._vision_classifier_detail = (
+                f"no_result:{last_error[:120]}" if last_error else "no_result"
+            )
+            if last_error:
+                self._log_debug("galgame vision classifier returned no result: {}", last_error)
+            return None
+        try:
+            raw_confidence = float(result.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            self._vision_classifier_detail = "invalid_confidence"
+            return None
+        if not math.isfinite(raw_confidence):
+            self._vision_classifier_detail = "invalid_confidence"
+            return None
+        confidence = max(0.0, min(raw_confidence, 1.0))
+        self._vision_classifier_last_label = str(result.get("label") or "")
+        self._vision_classifier_last_confidence = confidence
+        self._vision_classifier_last_latency_ms = max(
+            0.0,
+            float(result.get("latency_ms") or 0.0),
+        )
+        threshold = max(
+            0.0,
+            min(
+                float(getattr(self._config, "vision_classifier_threshold", 0.75) or 0.75),
+                0.99,
+            ),
+        )
+        if confidence < threshold:
+            self._vision_classifier_detail = "low_confidence"
+            return None
+        classification = self._classification_from_vision_result(result, extraction=extraction)
+        if classification.screen_type == OCR_CAPTURE_PROFILE_STAGE_DEFAULT:
+            self._vision_classifier_detail = "unknown"
+            return None
+        self._vision_classifier_detail = "matched"
+        return classification
 
     def _rapidocr_cache_key(self) -> tuple[str, str, str, str, str]:
         return _rapidocr_runtime_cache_key(
@@ -706,7 +838,40 @@ class TextMixin:
         *,
         target: DetectedGameWindow,
         now: float,
+        image: Any | None = None,
     ) -> tuple[ScreenClassification, bool]:
+        vision_image = (
+            image
+            if image is not None
+            else getattr(extraction, "captured_image", None)
+        )
+        vision_classification = self._classify_screen_with_vision(
+            extraction,
+            image=vision_image,
+        )
+        if vision_classification is not None:
+            vision_classification = self._apply_screen_classification_stability(
+                vision_classification
+            )
+            self._screen_awareness_model_detail = "skipped_cnn_primary"
+            self._update_capture_profile_recommendation(
+                extraction,
+                classification=vision_classification,
+                target=target,
+                now=now,
+            )
+            self._collect_screen_awareness_sample(
+                extraction,
+                classification=vision_classification,
+                target=target,
+                now=now,
+            )
+            emitted = self._emit_screen_classification_event(
+                vision_classification,
+                now=now,
+            )
+            return vision_classification, emitted
+
         classification = classify_screen_from_ocr(
             extraction.text,
             boxes=extraction.boxes,
@@ -734,28 +899,9 @@ class TextMixin:
             target=target,
             now=now,
         )
-        if classification.screen_type in {
-            OCR_CAPTURE_PROFILE_STAGE_DEFAULT,
-            OCR_CAPTURE_PROFILE_STAGE_DIALOGUE,
-        }:
-            if self._should_emit_dialogue_screen_transition(classification):
-                emitted = self._writer.emit_screen_classified(
-                    screen_type=classification.screen_type,
-                    confidence=classification.confidence,
-                    ui_elements=classification.ui_elements,
-                    raw_ocr_text=classification.raw_ocr_text,
-                    screen_debug=classification.debug,
-                    ts=utc_now_iso(now),
-                )
-                return classification, emitted
-            return classification, False
-        emitted = self._writer.emit_screen_classified(
-            screen_type=classification.screen_type,
-            confidence=classification.confidence,
-            ui_elements=classification.ui_elements,
-            raw_ocr_text=classification.raw_ocr_text,
-            screen_debug=classification.debug,
-            ts=utc_now_iso(now),
+        emitted = self._emit_screen_classification_event(
+            classification,
+            now=now,
         )
         return classification, emitted
 

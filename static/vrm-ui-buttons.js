@@ -704,7 +704,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                                 }
                             }
                         });
-                        lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
+                        // 与角色形象半透明状态完全同步：容器淡化(opacity<1)时锁图标镜像同一透明度
+                        const vrmFadeContainer = document.getElementById('vrm-container');
+                        const vrmFadeOpacity = vrmFadeContainer ? parseFloat(vrmFadeContainer.style.opacity) : NaN;
+                        lockIcon.style.opacity = (Number.isFinite(vrmFadeOpacity) && vrmFadeOpacity < 1)
+                            ? String(vrmFadeOpacity)
+                            : (isLockOverlapped ? '0.3' : '');
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

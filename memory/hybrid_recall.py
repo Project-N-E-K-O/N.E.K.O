@@ -544,6 +544,19 @@ async def hybrid_recall(
     ]
 
     elapsed_ms = (time.time() - start) * 1000.0
+    # 嵌入服务状态：把 emb 路径"为啥是 0"直接写进这条 log。否则
+    # ``emb=0`` 在"服务没起来(disabled)"和"服务起来了但池子里一条向量都没
+    # 缓存"两种情况下长得一模一样，排障时必须翻 embeddings.py 的日志才能区分
+    # —— 而那条历史上还进不了 Memory 日志文件。读 service 状态不触发加载、
+    # 不抛异常（纯属性读），失败也只是降级成 "unknown"，不影响召回结果。
+    try:
+        from memory.embeddings import get_embedding_service
+        _svc = get_embedding_service()
+        emb_state = "ready" if _svc.is_available() else (
+            "disabled:%s" % _svc.disable_reason() if _svc.is_disabled() else "not_ready"
+        )
+    except Exception as exc:  # noqa: BLE001
+        emb_state = "unknown(%s)" % type(exc).__name__
     # union pool size for observability — bm25 pool is the superset.
     # `passed` = items surviving the per-side threshold; `thresh` is the
     # cutoff constant. 历史上这条 log 把 `passed` 数挂在 `(>thresh %d)`
@@ -551,11 +564,12 @@ async def hybrid_recall(
     logger.info(
         "[hybrid_recall] %s: pool bm25=%d emb=%d | "
         "scored bm25=%d (passed %d, thresh=%.2f) "
-        "emb=%d (passed %d, thresh=%.2f) | fused=%d | %.0fms",
+        "emb=%d (passed %d, thresh=%.2f) | emb_svc=%s | fused=%d | %.0fms",
         lanlan_name,
         len(bm25_pool), len(embedding_pool),
         len(bm25_scored), len(bm25_top), HYBRID_RECALL_BM25_THRESHOLD,
         len(cosine_scored), len(cosine_top), HYBRID_RECALL_COSINE_THRESHOLD,
+        emb_state,
         len(results), elapsed_ms,
     )
     return {

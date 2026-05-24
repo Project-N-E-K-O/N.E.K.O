@@ -1991,7 +1991,8 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
                 install_hooks()
                 TokenTracker.get_instance().start_periodic_save()
-                TokenTracker.get_instance().record_app_start()
+                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+                TokenTracker.get_instance().record_app_start(process="main_server")
                 logger.info("Token usage tracker initialized")
             except Exception as e:
                 logger.warning(f"Token tracker initialization failed (non-critical): {e}")

@@ -1544,22 +1544,30 @@ class GalgamePlugin(
             if changed:
                 self._state_dirty = True
                 self._cached_snapshot = None
-        try:
-            if cross_scene_memory_to_persist is not None:
+        if cross_scene_memory_to_persist is not None:
+            try:
                 self._persist.persist_config_override(
                     STORE_CROSS_SCENE_MEMORY,
                     cross_scene_memory_to_persist,
                 )
-            if character_runtime_state_to_persist is not None:
+            except Exception:  # noqa: BLE001
+                self.logger.warning(
+                    "failed to persist galgame strategy memory state key=%s",
+                    STORE_CROSS_SCENE_MEMORY,
+                    exc_info=True,
+                )
+        if character_runtime_state_to_persist is not None:
+            try:
                 self._persist.persist_config_override(
                     STORE_CHARACTER_RUNTIME_STATE,
                     character_runtime_state_to_persist,
                 )
-        except Exception:  # noqa: BLE001
-            self.logger.warning(
-                "failed to persist galgame strategy memory state",
-                exc_info=True,
-            )
+            except Exception:  # noqa: BLE001
+                self.logger.warning(
+                    "failed to persist galgame strategy memory state key=%s",
+                    STORE_CHARACTER_RUNTIME_STATE,
+                    exc_info=True,
+                )
 
     def _record_error(self, error: dict[str, Any]) -> None:
         with self._state_lock:

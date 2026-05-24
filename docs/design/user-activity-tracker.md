@@ -794,7 +794,7 @@ and to weigh conversation signals more heavily.
 `UserActivityTracker.push_external_system_signal(...)` accepts OS
 signals from outside the backend — designed for a frontend (Electron
 app, browser via WebSocket, mobile shell) to read its local OS state
-and POST it on a heartbeat. When fresh (≤ 30s), pushed signals
+and POST it on a heartbeat. When fresh (≤ 15s), pushed signals
 override the local collector entirely. When stale (heartbeat stops),
 the tracker falls back to the local collector and the degraded marker
 re-appears.
@@ -815,10 +815,53 @@ All fields optional — pass whatever the frontend can read on each
 platform. The push primes `os_signals_available=True` so the AI sees
 non-degraded state.
 
-The HTTP endpoint to receive these pushes hasn't been added yet — when
-the frontend implementation lands, wire it via something like
-`POST /api/activity_signal/{lanlan_name}` in `system_router.py`.
-Until then, the API surface exists for whoever builds it.
+#### HTTP endpoint
+
+`POST /api/activity_signal` (in `main_routers/system_router.py`) is the
+public surface. Body is a JSON object with `lanlan_name` (required)
+plus any subset of the snake_case fields above. The endpoint enforces:
+
+- 400 on malformed body / out-of-range fields
+- 404 when `lanlan_name` isn't registered
+- 429 when pushed faster than 5s per lanlan_name (matches the heartbeat
+  cadence — `_EXTERNAL_SIGNAL_MIN_INTERVAL` in `tracker.py`). Honour
+  `Retry-After`.
+- 503 if the character's tracker hasn't initialised yet (boot race —
+  retry on the next heartbeat)
+- 500 if the tracker raises
+
+No auth header today — defended by the per-character `lanlan_name`
+lookup + rate limit. A stricter CSRF/Origin guard is tracked for a
+follow-up PR; the threat model write-up lives in issue #1023.
+
+#### Renderer client
+
+`static/app-activity-signal.js` does the 5s heartbeat in the desktop
+pet window. It reads OS signals through the Electron preload bridge
+(`window.nekoActivitySignal.read()` — exposed by the NEKO-PC sibling
+repo), normalises camelCase → snake_case, and POSTs to the endpoint
+above. The module is defensive: when the bridge isn't exposed
+(non-Electron dev runs, mobile browser shell, NEKO-PC older than the
+companion PR), it logs once and stays silent — the backend tracker's
+local collector handles the rest in degraded mode.
+
+#### Electron bridge contract (NEKO-PC side)
+
+The companion PR in NEKO-PC adds an IPC handler that returns:
+
+```js
+{
+    windowTitle: "VS Code — neko",  // active-win → activeWindow.title
+    processName: "Code.exe",        // active-win → activeWindow.owner.name
+    idleSeconds: 12,                // powerMonitor.getSystemIdleTime() (seconds, not ms)
+    cpuAvg30s: 27.5,                // os.cpus() rolling diff, [0, 100]
+    gpuUtilization: 65.0,           // nvidia-smi (optional — None on AMD/Intel)
+}
+```
+
+The renderer (`app-activity-signal.js`) drops any field that fails
+type/range validation and POSTs the rest. A partial snapshot is still
+better than no push.
 
 ### What works in fully-degraded remote mode
 

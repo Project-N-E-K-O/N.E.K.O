@@ -459,9 +459,15 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
             data.append(global_pref)
 
         atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
+        # 注意：settings_state telemetry **不**在这里打。instrument_counters 按
+        # (stat_date, device_id, metric_key) 累加 UPSERT，若每次 save 都打点，
+        # 同一设备一天内切几次设置就会给多个 settings_state|... key 各 +1，
+        # dashboard 看到的是"观测次数"而非"用户当前/惯用设置"（CodeRabbit 指出）。
+        # 改为只在 record_app_start 打一次启动快照——"用户本次启动时的设置"，
+        # 跨多次启动按 device 看 mode 即可反推惯用档，语义干净得多。
         return True
     except MaintenanceModeError:
         raise
     except Exception as e:
         print(f"保存全局对话设置失败: {e}")
-        return False 
+        return False

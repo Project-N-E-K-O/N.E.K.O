@@ -101,7 +101,12 @@ class _Logger:
 
 class _CapturingLogger(_Logger):
     def __init__(self) -> None:
+        self.infos: list[tuple[object, ...]] = []
         self.warnings: list[tuple[object, ...]] = []
+
+    def info(self, *args, **kwargs):
+        del kwargs
+        self.infos.append(args)
 
     def warning(self, *args, **kwargs):
         del kwargs
@@ -2315,6 +2320,8 @@ def test_background_hash_excludes_bottom_dialogue_region() -> None:
         cropped_first.info["galgame_source_background_hash"]
         == cropped_second.info["galgame_source_background_hash"]
     )
+    assert cropped_first.info["galgame_full_frame_image"] is first
+    assert cropped_second.info["galgame_full_frame_image"] is second
 
 
 def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
@@ -2594,6 +2601,39 @@ def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path:
     assert second.timing["background_hash_skipped"] is True
     assert third.timing["background_hash_skipped"] is False
     assert len(capture_backend.capture_calls) == 4
+
+
+def test_ocr_capture_keeps_full_frame_for_vision_classifier(tmp_path: Path) -> None:
+    from PIL import Image
+
+    full_frame = Image.new("RGB", (200, 120), "navy")
+    cropped_frame = Image.new("RGB", (200, 48), "black")
+    cropped_frame.info["galgame_full_frame_image"] = full_frame
+
+    class _ImageCaptureBackend(_FakeCaptureBackend):
+        def capture_frame(self, target: DetectedGameWindow, profile) -> object:
+            self.capture_calls.append((target.hwnd, profile.to_dict()))
+            return cropped_frame
+
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(tmp_path / "bridge"),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_ImageCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["我和她相识在十三年前。"]),
+    )
+
+    extraction = manager._capture_and_extract_text(
+        _window()[0],
+        OcrCaptureProfile(top_ratio=0.6),
+        SelectedOcrBackendPlan(),
+        collect_background_hash=False,
+        allow_separate_background_capture=False,
+    )
+
+    assert extraction.captured_image is full_frame
+    assert extraction.text == "我和她相识在十三年前。"
 
 
 def test_mouse_monitor_drains_pending_events_outside_hook_callback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4459,6 +4499,12 @@ def test_ocr_reader_runtime_groups_fields_and_keeps_flat_compatibility() -> None
         foreground_advance_matched_count=3,
         foreground_advance_coalesced_count=2,
         foreground_advance_last_event_age_seconds=0.25,
+        vision_classifier_enabled=True,
+        vision_classifier_available=True,
+        vision_classifier_detail="loaded",
+        vision_classifier_last_label="dialogue",
+        vision_classifier_last_confidence=0.91,
+        vision_classifier_last_latency_ms=1.25,
     )
 
     assert len(fields(OcrReaderRuntime)) == 9
@@ -4472,12 +4518,19 @@ def test_ocr_reader_runtime_groups_fields_and_keeps_flat_compatibility() -> None
     assert runtime.to_dict()["foreground_advance_matched_count"] == 3
     assert runtime.to_dict()["foreground_advance_coalesced_count"] == 2
     assert runtime.to_dict()["foreground_advance_last_event_age_seconds"] == 0.25
+    assert runtime.capture.vision_classifier_detail == "loaded"
+    assert runtime.to_dict()["vision_classifier_available"] is True
+    assert runtime.to_dict()["vision_classifier_last_label"] == "dialogue"
+    assert runtime.to_dict()["vision_classifier_last_confidence"] == 0.91
+    assert runtime.to_dict()["vision_classifier_last_latency_ms"] == 1.25
 
     restored = OcrReaderRuntime(**runtime.to_dict())
 
     assert restored.foreground_advance_consumed_count == 4
     assert restored.foreground_advance_matched_count == 3
     assert restored.foreground_advance_coalesced_count == 2
+    assert restored.vision_classifier_available is True
+    assert restored.vision_classifier_detail == "loaded"
 
     runtime.status = "idle"
 
@@ -4535,6 +4588,145 @@ def test_ocr_reader_build_runtime_uses_config_enabled_state(tmp_path: Path) -> N
     )
 
     assert rebuilt.enabled is False
+
+
+def test_ocr_reader_build_runtime_exposes_vision_classifier_status(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+    manager._config.vision_classifier_enabled = True
+    manager.vision_classifier = object()
+    manager._vision_classifier_detail = "loaded"
+    manager._vision_classifier_last_label = "dialogue"
+    manager._vision_classifier_last_confidence = 0.97
+    manager._vision_classifier_last_latency_ms = 1.4
+
+    rebuilt = manager._build_runtime(
+        status="active",
+        detail="",
+        plan=SelectedOcrBackendPlan(),
+    )
+
+    assert rebuilt.vision_classifier_enabled is True
+    assert rebuilt.vision_classifier_available is True
+    assert rebuilt.vision_classifier_detail == "loaded"
+    assert rebuilt.vision_classifier_last_label == "dialogue"
+    assert rebuilt.vision_classifier_last_confidence == 0.97
+    assert rebuilt.vision_classifier_last_latency_ms == 1.4
+
+
+def test_ocr_reader_logs_when_vision_classifier_loads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            self.loader = loader
+            self.input_size = input_size
+            self.latency_check_ms = latency_check_ms
+
+        def load(self, model_name: str) -> bool:
+            self.model_name = model_name
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    logger = _CapturingLogger()
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = logger
+    manager.vision_classifier = None
+    manager._vision_classifier_detail = ""
+    manager._config = SimpleNamespace(
+        vision_classifier_enabled=True,
+        vision_classifier_model_dir=str(
+            Path("plugin")
+            / "plugins"
+            / "galgame_plugin"
+            / "models"
+            / "vision"
+            / "screen_classifier"
+        ),
+        vision_classifier_input_size=[224, 224],
+        vision_classifier_inference_timeout_ms=200.0,
+        vision_classifier_model_name="v1_galgame",
+    )
+
+    manager._initialize_vision_classifier()
+
+    assert manager._vision_classifier_detail == "loaded"
+    assert manager.vision_classifier is not None
+    assert logger.infos
+    assert logger.infos[0][0] == "galgame vision classifier loaded: model_dir={} model_name={}"
+
+
+def test_ocr_reader_update_config_reloads_vision_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            self.loader = loader
+            self.input_size = input_size
+            self.latency_check_ms = latency_check_ms
+            self.model_name = ""
+
+        def load(self, model_name: str) -> bool:
+            self.model_name = model_name
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True, rapidocr_enabled=False),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+    assert manager.vision_classifier is None
+
+    enabled_config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+    enabled_config.vision_classifier_enabled = True
+    enabled_config.vision_classifier_model_dir = str(tmp_path / "models")
+    enabled_config.vision_classifier_model_name = "v2_galgame"
+    enabled_config.vision_classifier_input_size = [192, 192]
+    enabled_config.vision_classifier_inference_timeout_ms = 123.0
+
+    manager.update_config(enabled_config)
+
+    assert isinstance(manager.vision_classifier, _FakeVisionScreenClassifier)
+    assert manager.vision_classifier.input_size == (192, 192)
+    assert manager.vision_classifier.latency_check_ms == 123.0
+    assert manager.vision_classifier.model_name == "v2_galgame"
+    assert manager._vision_classifier_detail == "loaded"
+
+    manager._vision_classifier_last_label = "dialogue"
+    disabled_config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+
+    manager.update_config(disabled_config)
+
+    assert manager.vision_classifier is None
+    assert manager._vision_classifier_detail == "disabled"
+    assert manager._vision_classifier_last_label == ""
 
 
 @pytest.mark.asyncio

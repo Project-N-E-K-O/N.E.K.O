@@ -17,8 +17,11 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
-    // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）
-    const _PRIVACY_OFF_BRANCH = 'privacy_default_off_v1';
+    // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
+    // v2 实验组把隐私默认「打开」（vision=false）：国外用户控制组本就隐私开，对其是
+    // no-op；国内用户控制组默认隐私关，实验组翻成隐私开——即国外恒隐私开、A/B 差异只
+    // 体现在国内。命名方向中性，避免 v1/v2 反向后再次过时
+    const _PRIVACY_AB_BRANCH = 'privacy_default_off_v2';
     // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
     // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
@@ -452,7 +455,7 @@
                 });
             } else {
                 // 首次启动：默认按 A/B 控制组行为——隐私模式按用户地区分流（仅中国
-                // 地区默认关闭）。实验组（privacy_default_off_v1）的「一律默认关闭」
+                // 地区默认关闭）。实验组（privacy_default_off_v2）的「国内默认打开隐私」
                 // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
                 // 异步合并块。
                 if (_isUserRegionChina()) {
@@ -523,10 +526,12 @@
                 // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
                 // 分支 = 实验组 + 服务器没有云端 vision 偏好 + 用户没在 fetch 间隙
                 // 手动切 toggle + 本地 vision 值仍等于控制组默认（即用户也没在之前的
-                // offline session 里改过），才把隐私模式默认关掉。升级用户没有 pending
-                // marker 不会被误覆写；offline 首启把 marker 留在 localStorage，下次
-                // 在线启动再补；offline 期间用户改过 toggle 时本地值跟控制组默认会拉
-                // 开差距，保留用户选择
+                // offline session 里改过），才套实验组默认。v2 实验组把隐私默认「打开」
+                // （vision=false）：对国内用户（控制组默认隐私关 vision=true）是真翻转，
+                // 对国外用户（控制组默认本就隐私开 vision=false）是 no-op——即国外恒隐
+                // 私开、国内做 A/B。升级用户没有 pending marker 不会被误覆写；offline
+                // 首启把 marker 留在 localStorage，下次在线启动再补；offline 期间用户改
+                // 过 toggle 时本地值跟控制组默认会拉开差距，保留用户选择
                 const noServerVisionPref = !serverSettings ||
                     serverSettings.proactiveVisionEnabled === undefined;
                 const userToggledDuringFetch = S.proactiveVisionEnabled !== _visionAtFetchStart;
@@ -534,14 +539,14 @@
                 const localVisionMatchesControlDefault =
                     S.proactiveVisionEnabled === controlGroupDefaultVision;
                 if (_firstLaunchPending
-                        && telemetryBranch === _PRIVACY_OFF_BRANCH
+                        && telemetryBranch === _PRIVACY_AB_BRANCH
                         && noServerVisionPref
                         && !userToggledDuringFetch
                         && localVisionMatchesControlDefault) {
-                    if (S.proactiveVisionEnabled !== true) {
-                        S.proactiveVisionEnabled = true;
+                    if (S.proactiveVisionEnabled !== false) {
+                        S.proactiveVisionEnabled = false;
                         hasUpdate = true;
-                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认关闭');
+                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认开启');
                     }
                 }
                 // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、

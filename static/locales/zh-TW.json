@@ -865,7 +865,7 @@
         "coreApiKey": "核心API Key",
         "freeVersionHint": "（免費版無需填寫）",
         "coreApiPlaceholder": "請輸入您的API Key",
-        "coreApiProvider": "核心API（語音對話）",
+        "coreApiProvider": "核心API（語音對話，僅支援全模態，DeepSeek 為純文字不可用）",
         "assistApiProvider": "輔助API（記憶/Agent/文本聊天/自定義語音）",
         "saveSettings": "保存設置",
         "closeSettings": "關閉",

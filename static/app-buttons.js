@@ -12,9 +12,16 @@
     const S = window.appState;
     const C = window.appConst;
     const U = window.appUtils;
-    const PENDING_IMAGE_MAX_ENCODED_BYTES = 10 * 1024 * 1024;
+    // 待发送图片编码后的字节上限：1MB。720p 截图通常 150~400KB，普通上传图压到
+    // 长边 1920 后也基本在此之下；超标才逐步降采样/降质。
+    const PENDING_IMAGE_MAX_ENCODED_BYTES = 1 * 1024 * 1024;
     const PENDING_IMAGE_MIN_LONG_SIDE = 320;
+    // 手动上传图首次超出字节上限时，一步到位把长边压到 ≤1920px，再走后续逐步降采样。
+    const PENDING_IMAGE_FIRST_STEP_LONG_SIDE = 1920;
     const PENDING_IMAGE_JPEG_QUALITIES = [0.92, 0.86, 0.78, 0.7, 0.62, 0.52, 0.42, 0.32];
+    // 手动截图入列前压缩用的质量阶梯：主质量 0.8（与屏幕分享、后端 vision 分析一致），
+    // 720p 下若仍超 1MB 再逐步降质兜底。
+    const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
     function isHomeTutorialInteractionLocked() {
         try {
@@ -138,6 +145,7 @@
         var width = natural.width;
         var height = natural.height;
         var bestDataUrl = '';
+        var firstStepApplied = false;
 
         for (var pass = 0; pass < 6; pass += 1) {
             for (var i = 0; i < PENDING_IMAGE_JPEG_QUALITIES.length; i += 1) {
@@ -145,6 +153,18 @@
                 bestDataUrl = dataUrl;
                 if (getDataUrlEncodedBytes(dataUrl) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
                     return dataUrl;
+                }
+            }
+
+            // 首次超标：先一步到位把长边压到 ≤1920px，再继续后续的逐步降采样。
+            if (!firstStepApplied) {
+                firstStepApplied = true;
+                var curLongSide = Math.max(width, height);
+                if (curLongSide > PENDING_IMAGE_FIRST_STEP_LONG_SIDE) {
+                    var firstScale = PENDING_IMAGE_FIRST_STEP_LONG_SIDE / curLongSide;
+                    width = Math.max(1, Math.floor(width * firstScale));
+                    height = Math.max(1, Math.floor(height * firstScale));
+                    continue;
                 }
             }
 
@@ -210,6 +230,43 @@
         return compressLoadedImageToPendingDataUrl(image);
     };
 
+    // 手动截图入列前的压缩：捕获/裁剪叠层保留全分辨率（清晰），裁剪结束后调用这里统一
+    // 压成 720p / 0.8 JPEG，并保证编码字节 ≤ 1MB（与屏幕分享、后端 vision 分析口径一致）。
+    mod.compressScreenshotDataUrlTo720p = async function compressScreenshotDataUrlTo720p(dataUrl) {
+        var src = String(dataUrl || '');
+        if (!/^data:image\//i.test(src)) {
+            throw new Error('INVALID_IMAGE_DATA_URL');
+        }
+
+        var image = await loadImageFromSource(src);
+        var natural = getImageNaturalSize(image);
+        if (!natural.width || !natural.height) {
+            throw new Error('INVALID_IMAGE_SIZE');
+        }
+
+        var maxW = (C && C.MAX_SCREENSHOT_WIDTH) || 1280;
+        var maxH = (C && C.MAX_SCREENSHOT_HEIGHT) || 720;
+        var scale = Math.min(1, maxW / natural.width, maxH / natural.height);
+        var width = Math.max(1, Math.round(natural.width * scale));
+        var height = Math.max(1, Math.round(natural.height * scale));
+
+        var bestDataUrl = '';
+        for (var i = 0; i < SCREENSHOT_JPEG_QUALITIES.length; i += 1) {
+            var encoded = drawImageToJpegDataUrl(image, width, height, SCREENSHOT_JPEG_QUALITIES[i]);
+            bestDataUrl = encoded;
+            if (getDataUrlEncodedBytes(encoded) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+                return encoded;
+            }
+        }
+        // 720p 下极少触达这里；兜底返回最低质量结果，不再硬抛错以免阻塞发送。
+        // 真触达说明这张图异常难压，加条 warn 记录尺寸，方便事后发现"列表混入超 1MB"的个例。
+        console.warn(
+            '[截图] 720p 最低质量仍超出 1MB 上限（' +
+            Math.round(getDataUrlEncodedBytes(bestDataUrl) / 1024) + 'KB），仍按兜底入列'
+        );
+        return bestDataUrl;
+    };
+
     mod.normalizePendingAttachmentItem = async function normalizePendingAttachmentItem(item) {
         if (!item || !item.querySelector) {
             throw new Error('INVALID_ATTACHMENT_ITEM');
@@ -220,6 +277,7 @@
             throw new Error('INVALID_ATTACHMENT_IMAGE');
         }
 
+        // 截图入列前已压到 720p JPEG（≤1MB），这里会原样透传；上传图按字节上限压缩。
         var normalized = await mod.normalizeImageDataUrlForPendingList(img.src);
         if (normalized && normalized !== img.src) {
             img.src = normalized;
@@ -2190,41 +2248,9 @@
             }
         });
 
-        // 工具：将 dataUrl 图片降采样到 720p 上限并重新编码为 JPEG 0.8，保持与既有流水线一致。
-        // 如果图片本身已经在 720p 以内，直接返回原 dataUrl，避免无谓的解码/再编码。
-        // 返回 { dataUrl, width, height }：width/height 始终是"返回的这张图"的实际尺寸，
-        // 避免调用方把源尺寸误当成最终尺寸写进日志/UI。
-        async function downscaleDataUrlTo720p(srcDataUrl) {
-            if (!srcDataUrl) return { dataUrl: null, width: 0, height: 0 };
-            var maxW = (window.appConst && window.appConst.MAX_SCREENSHOT_WIDTH) || 1280;
-            var maxH = (window.appConst && window.appConst.MAX_SCREENSHOT_HEIGHT) || 720;
-            return await new Promise(function (resolve) {
-                var img = new Image();
-                img.onload = function () {
-                    var w = img.naturalWidth, h = img.naturalHeight;
-                    if (!w || !h) { resolve({ dataUrl: srcDataUrl, width: 0, height: 0 }); return; }
-                    if (w <= maxW && h <= maxH) { resolve({ dataUrl: srcDataUrl, width: w, height: h }); return; }
-                    var scale = Math.min(maxW / w, maxH / h);
-                    var tw = Math.max(1, Math.round(w * scale));
-                    var th = Math.max(1, Math.round(h * scale));
-                    try {
-                        var cv = document.createElement('canvas');
-                        cv.width = tw; cv.height = th;
-                        var cx = cv.getContext('2d');
-                        cx.drawImage(img, 0, 0, tw, th);
-                        resolve({ dataUrl: cv.toDataURL('image/jpeg', 0.8), width: tw, height: th });
-                    } catch (e) {
-                        console.warn('[截图] 降采样失败，使用原图:', e);
-                        resolve({ dataUrl: srcDataUrl, width: w, height: h });
-                    }
-                };
-                img.onerror = function (e) {
-                    console.warn('[截图] 图片加载失败，使用原图:', e);
-                    resolve({ dataUrl: srcDataUrl, width: 0, height: 0 });
-                };
-                img.src = srcDataUrl;
-            });
-        }
+        // 手动截图链路在捕获/裁剪阶段一律保留原始分辨率，不再实时压缩，让裁剪在全分辨率上
+        // 进行、保住细节；720p / 0.8 JPEG 的压缩在裁剪结束、入待发送列表前统一做
+        // （captureScreenshotToPendingList → compressScreenshotDataUrlTo720p）。
 
         // ----------------------------------------------------------------
         // Hide NEKO UI, recapture screen, then restore
@@ -2359,15 +2385,14 @@
                 throw new Error(normalized.error || 'DESKTOP_REGION_CAPTURE_FAILED');
             }
 
-            var scaled = await downscaleDataUrlTo720p(normalized.dataUrl);
-            console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (scaled.width || normalized.width || 0) + 'x' + (scaled.height || normalized.height || 0));
+            console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (normalized.width || 0) + 'x' + (normalized.height || 0));
             return {
-                dataUrl: scaled.dataUrl,
+                dataUrl: normalized.dataUrl,
                 originalDataUrl: normalized.originalDataUrl || normalized.dataUrl,
                 avatarPos: normalized.avatarPos || null,
                 captureType: normalized.captureType || 'desktop-region',
-                width: scaled.width || normalized.width || 0,
-                height: scaled.height || normalized.height || 0
+                width: normalized.width || 0,
+                height: normalized.height || 0
             };
         }
 
@@ -2382,8 +2407,7 @@
                 try {
                     var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId);
                     if (atomic && atomic.success && atomic.dataUrl) {
-                        var atomicScaled = await downscaleDataUrlTo720p(atomic.dataUrl);
-                        if (atomicScaled && atomicScaled.dataUrl) return atomicScaled.dataUrl;
+                        return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
                         console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
                         if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -2425,8 +2449,7 @@
                     try {
                         var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
                         if (direct && direct.success && direct.dataUrl) {
-                            var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
-                            if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                            return direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
                             window.maybeClearSourceOnNotFound(direct, 'recaptureWithoutNeko Priority 1 Source not found');
                         }
@@ -2440,7 +2463,12 @@
                         if (acqStream) {
                             var isCached = (acqStream === S.screenCaptureStream);
                             try {
-                                var frame = await window.captureFrameFromStream(acqStream, 0.8);
+                                var frame = await window.captureFrameFromStream(acqStream, 0.8, true);
+                                if (!frame) {
+                                    // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
+                                    // 保住正确的窗口内容（优于后端 pyautogui 抓整屏）。
+                                    frame = await window.captureFrameFromStream(acqStream, 0.8, false);
+                                }
                                 if (frame && frame.dataUrl) return frame.dataUrl;
                             } finally {
                                 if (!isCached && acqStream instanceof MediaStream) {
@@ -2454,7 +2482,11 @@
                         if (S.screenCaptureStream && S.screenCaptureStream.active) {
                             var tracks = S.screenCaptureStream.getVideoTracks();
                             if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
+                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, true);
+                                if (!cachedFrame) {
+                                    // 同上：全分辨率失败时用同一条流退回 720p，保住正确窗口内容
+                                    cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, false);
+                                }
                                 if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
                             }
                         }
@@ -2464,8 +2496,7 @@
                 // Priority 3: backend pyautogui
                 var result = await window.fetchBackendScreenshot();
                 if (result && result.dataUrl) {
-                    var beScaled = await downscaleDataUrlTo720p(result.dataUrl);
-                    return (beScaled && beScaled.dataUrl) || null;
+                    return result.dataUrl || null;
                 }
                 return null;
             } finally {
@@ -2512,7 +2543,11 @@
                         throw mobileErr;
                     }
                     if (acquiredStream) {
-                        var mframe = await window.captureFrameFromStream(acquiredStream, 0.8);
+                        var mframe = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                        if (!mframe) {
+                            // 全分辨率编码失败（超大画面等）时，用同一条流退回 720p 再试
+                            mframe = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                        }
                         if (mframe) {
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
@@ -2527,9 +2562,8 @@
                             return null;
                         }
                         if (interactiveBackendResult && interactiveBackendResult.dataUrl) {
-                            var interactiveScaled = await downscaleDataUrlTo720p(interactiveBackendResult.dataUrl);
                             return {
-                                dataUrl: (interactiveScaled && interactiveScaled.dataUrl) || interactiveBackendResult.dataUrl,
+                                dataUrl: interactiveBackendResult.dataUrl,
                                 originalDataUrl: interactiveBackendResult.dataUrl,
                                 avatarPos: null
                             };
@@ -2554,10 +2588,9 @@
                         try {
                             var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
                             if (direct && direct.success && direct.dataUrl) {
-                                var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
-                                dataUrl = scaled.dataUrl;
-                                width = scaled.width || direct.width || 0;
-                                height = scaled.height || direct.height || 0;
+                                dataUrl = direct.dataUrl;
+                                width = direct.width || 0;
+                                height = direct.height || 0;
                                 captureType = window.detectScreenshotCaptureType
                                     ? window.detectScreenshotCaptureType(null, selectedSourceId)
                                     : null;
@@ -2584,7 +2617,12 @@
 
                         if (acquiredStream) {
                             isCachedStream = (acquiredStream === S.screenCaptureStream);
-                            var frame = await window.captureFrameFromStream(acquiredStream, 0.8);
+                            var frame = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                            if (!frame) {
+                                // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
+                                // 保住正确的窗口内容（优于后端 pyautogui 抓整屏的兜底）。
+                                frame = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                            }
                             if (frame) {
                                 dataUrl = frame.dataUrl;
                                 width = frame.width;
@@ -2604,10 +2642,9 @@
                         try {
                             var backendResult = await window.fetchBackendScreenshot();
                             if (backendResult && backendResult.dataUrl) {
-                                var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
-                                dataUrl = beScaled.dataUrl;
-                                width = beScaled.width || 0;
-                                height = beScaled.height || 0;
+                                dataUrl = backendResult.dataUrl;
+                                width = 0;
+                                height = 0;
                             }
                         } catch (beErr) {
                             console.warn('[截图] 后端兜底失败:', beErr);
@@ -2699,7 +2736,26 @@
                     return;
                 }
 
-                mod.addScreenshotToList(result.dataUrl, result.dataUrl === result.originalDataUrl ? result.avatarPos : null);
+                // Capture/crop overlay keeps full resolution (crisp); cropping is done here,
+                // so compress to 720p / 0.8 right before queueing. This keeps the pending list
+                // holding only the compressed copy (low memory) and lets send pass it through
+                // without re-encoding.
+                var avatarPos = result.dataUrl === result.originalDataUrl ? result.avatarPos : null;
+                var compactDataUrl;
+                try {
+                    compactDataUrl = await mod.compressScreenshotDataUrlTo720p(result.dataUrl);
+                } catch (compressErr) {
+                    // Compression only throws when the image can't be decoded/encoded (the 720p
+                    // canvas is small enough that size limits never apply). Don't fall back to the
+                    // full-res original -- that would break the "list holds only compressed <=1MB"
+                    // invariant and pin a huge dataUrl in memory, and a broken image would fail at
+                    // send anyway. Abort queueing and surface an error toast instead.
+                    console.warn('[\u622A\u56FE] 720p \u538B\u7F29\u5931\u8D25\uFF0C\u53D6\u6D88\u5165\u5217:', compressErr);
+                    window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
+                    return false;
+                }
+
+                mod.addScreenshotToList(compactDataUrl, avatarPos);
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
             } catch (err) {
                 console.error(window.t('console.screenshotFailed'), err);
