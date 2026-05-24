@@ -1,4 +1,5 @@
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import {
   analyzePluginBundle,
@@ -45,6 +46,12 @@ export type PackageResultRecord = {
 
 export function usePackageManager() {
   const pluginStore = usePluginStore()
+  // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
+  // timestamp must follow the active i18n locale. ``t`` reads from the
+  // ``package.summary.*`` namespace defined in the locale files; ``locale``
+  // drives ``Intl.DateTimeFormat`` in ``setResult`` so the recorded creation
+  // time matches whatever language the user is currently viewing.
+  const { t, locale } = useI18n()
 
   const activeTab = ref('build')
   const buildMode = ref<BuildMode>('selected')
@@ -196,41 +203,47 @@ export function usePackageManager() {
       const primaryBuilt = createPrimaryBuildResult(data, kind)
       return [
         {
-          label: '类型',
-          value: primaryBuilt?.package_type === 'bundle' ? '整合包' : '插件包',
+          label: t('package.summary.metrics.type'),
+          value: primaryBuilt?.package_type === 'bundle'
+            ? t('package.summary.values.bundle')
+            : t('package.summary.values.plugin'),
         },
-        { label: '成功', value: String(data.built_count ?? 0) },
-        { label: '失败', value: String(data.failed_count ?? 0) },
+        { label: t('package.summary.metrics.success'), value: String(data.built_count ?? 0) },
+        { label: t('package.summary.metrics.failed'), value: String(data.failed_count ?? 0) },
         {
-          label: primaryBuilt?.package_type === 'bundle' ? '包含插件' : '状态',
+          label: primaryBuilt?.package_type === 'bundle'
+            ? t('package.summary.metrics.included')
+            : t('package.summary.metrics.status'),
           value: primaryBuilt?.package_type === 'bundle'
             ? String(primaryBuilt?.plugin_ids?.length ?? 0)
-            : data.ok ? '完成' : '部分失败',
+            : data.ok
+              ? t('package.summary.metrics.completed')
+              : t('package.summary.metrics.partialFailure'),
         },
       ]
     }
 
     if (kind === 'inspect' || kind === 'verify') {
       return [
-        { label: '插件数', value: String(data.plugin_count ?? 0) },
-        { label: 'Profiles', value: String(data.profile_count ?? 0) },
-        { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
+        { label: t('package.summary.metrics.pluginCount'), value: String(data.plugin_count ?? 0) },
+        { label: t('package.summary.metrics.profiles'), value: String(data.profile_count ?? 0) },
+        { label: t('package.summary.metrics.hash'), value: formatHashStatus(data.payload_hash_verified) },
       ]
     }
 
     if (kind === 'install') {
       return [
-        { label: '已处理插件', value: String(data.installed_plugin_count ?? 0) },
-        { label: '冲突策略', value: String(data.conflict_strategy ?? '-') },
-        { label: 'Hash', value: formatHashStatus(data.payload_hash_verified) },
+        { label: t('package.summary.metrics.installedPluginCount'), value: String(data.installed_plugin_count ?? 0) },
+        { label: t('package.summary.metrics.conflictStrategy'), value: String(data.conflict_strategy ?? '-') },
+        { label: t('package.summary.metrics.hash'), value: formatHashStatus(data.payload_hash_verified) },
       ]
     }
 
     const kindData = data
     return [
-      { label: '插件数', value: String(kindData.plugin_count ?? 0) },
-      { label: '共同依赖', value: String(kindData.common_dependencies?.length ?? 0) },
-      { label: '共享依赖', value: String(kindData.shared_dependencies?.length ?? 0) },
+      { label: t('package.summary.metrics.pluginCount'), value: String(kindData.plugin_count ?? 0) },
+      { label: t('package.summary.metrics.commonDeps'), value: String(kindData.common_dependencies?.length ?? 0) },
+      { label: t('package.summary.metrics.sharedDeps'), value: String(kindData.shared_dependencies?.length ?? 0) },
     ]
   }
 
@@ -243,31 +256,31 @@ export function usePackageManager() {
       const latestBuilt = data.built?.[data.built?.length - 1]
       if (primaryBuilt?.package_type === 'bundle') {
         return [
-          primaryBuilt?.plugin_id ? { label: '整合包 ID', value: primaryBuilt.plugin_id } : null,
-          primaryBuilt?.package_name ? { label: '整合包名称', value: primaryBuilt.package_name } : null,
-          primaryBuilt?.version ? { label: '整合包版本', value: primaryBuilt.version } : null,
-          latestBuilt?.package_path ? { label: '输出路径', value: latestBuilt.package_path } : null,
+          primaryBuilt?.plugin_id ? { label: t('package.summary.highlights.bundleId'), value: primaryBuilt.plugin_id } : null,
+          primaryBuilt?.package_name ? { label: t('package.summary.highlights.bundleName'), value: primaryBuilt.package_name } : null,
+          primaryBuilt?.version ? { label: t('package.summary.highlights.bundleVersion'), value: primaryBuilt.version } : null,
+          latestBuilt?.package_path ? { label: t('package.summary.highlights.outputPath'), value: latestBuilt.package_path } : null,
         ].filter(Boolean) as Array<{ label: string; value: string }>
       }
       return [
-        firstBuilt?.plugin_id ? { label: '首个插件', value: firstBuilt.plugin_id } : null,
-        latestBuilt?.package_path ? { label: '最新包路径', value: latestBuilt.package_path } : null,
+        firstBuilt?.plugin_id ? { label: t('package.summary.highlights.firstPlugin'), value: firstBuilt.plugin_id } : null,
+        latestBuilt?.package_path ? { label: t('package.summary.highlights.latestPath'), value: latestBuilt.package_path } : null,
       ].filter(Boolean) as Array<{ label: string; value: string }>
     }
 
     if (kind === 'inspect' || kind === 'verify') {
       return [
-        data.package_id ? { label: '包 ID', value: data.package_id } : null,
-        data.package_type ? { label: '包类型', value: data.package_type } : null,
-        data.version ? { label: '版本', value: data.version } : null,
+        data.package_id ? { label: t('package.summary.highlights.packageId'), value: data.package_id } : null,
+        data.package_type ? { label: t('package.summary.highlights.packageType'), value: data.package_type } : null,
+        data.version ? { label: t('package.summary.highlights.version'), value: data.version } : null,
       ].filter(Boolean) as Array<{ label: string; value: string }>
     }
 
     if (kind === 'install') {
       return [
-        data.package_id ? { label: '包 ID', value: data.package_id } : null,
-        data.plugins_root ? { label: '插件目录', value: data.plugins_root } : null,
-        data.profile_dir ? { label: 'Profiles 目录', value: data.profile_dir } : null,
+        data.package_id ? { label: t('package.summary.highlights.packageId'), value: data.package_id } : null,
+        data.plugins_root ? { label: t('package.summary.highlights.pluginsRoot'), value: data.plugins_root } : null,
+        data.profile_dir ? { label: t('package.summary.highlights.profilesRoot'), value: data.profile_dir } : null,
       ].filter(Boolean) as Array<{ label: string; value: string }>
     }
 
@@ -276,12 +289,14 @@ export function usePackageManager() {
     return [
       sdkSupported?.current_sdk_version
         ? {
-            label: '当前 SDK 支持',
-            value: sdkSupported.current_sdk_supported_by_all ? `${sdkSupported.current_sdk_version} 全部支持` : `${sdkSupported.current_sdk_version} 存在不兼容`,
+            label: t('package.summary.highlights.currentSdk'),
+            value: sdkSupported.current_sdk_supported_by_all
+              ? t('package.summary.values.sdkAllSupported', { version: sdkSupported.current_sdk_version })
+              : t('package.summary.values.sdkPartiallyIncompatible', { version: sdkSupported.current_sdk_version }),
           }
         : null,
       sdkRecommended?.matching_versions?.length
-        ? { label: '推荐交集', value: sdkRecommended.matching_versions.join(', ') }
+        ? { label: t('package.summary.highlights.recommendedIntersection'), value: sdkRecommended.matching_versions.join(', ') }
         : null,
     ].filter(Boolean) as Array<{ label: string; value: string }>
   }
@@ -321,26 +336,26 @@ export function usePackageManager() {
       const warnings = (data.failed ?? []).map((item: Record<string, any>) => `${item.plugin}: ${item.error}`)
       const primaryBuilt = createPrimaryBuildResult(data, kind)
       if (primaryBuilt?.package_type === 'bundle' && (primaryBuilt.plugin_ids?.length ?? 0) < 2) {
-        warnings.push('整合包通常应至少包含两个插件')
+        warnings.push(t('package.summary.warnings.bundleNeedsTwoPlugins'))
       }
       return warnings
     }
 
     if (kind === 'verify' && data.ok === false) {
-      return ['包未通过 hash 校验，请不要直接导入运行环境']
+      return [t('package.summary.warnings.verifyHashFailed')]
     }
 
     if (kind === 'inspect' && data.payload_hash_verified === false) {
-      return ['当前包 hash 校验失败，内容可能已被修改']
+      return [t('package.summary.warnings.inspectHashFailed')]
     }
 
     if (kind === 'analyze') {
       const warnings: string[] = []
       if (data.sdk_supported_analysis && data.sdk_supported_analysis.current_sdk_supported_by_all === false) {
-        warnings.push('当前 SDK 版本不被所有插件共同支持')
+        warnings.push(t('package.summary.warnings.sdkNotSupportedByAll'))
       }
       if ((data.shared_dependencies?.length ?? 0) > 0) {
-        warnings.push(`检测到 ${data.shared_dependencies.length} 个共享依赖，整合时需要重点检查版本约束`)
+        warnings.push(t('package.summary.warnings.sharedDepsDetected', { count: data.shared_dependencies.length }))
       }
       return warnings
     }
@@ -362,7 +377,20 @@ export function usePackageManager() {
     resultText.value = JSON.stringify(payload, null, 2)
     const record: PackageResultRecord = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+      // PR #1480 review-fix 1.31 (Phase 7): use ``Intl.DateTimeFormat``
+      // bound to the active vue-i18n locale so the recorded creation time
+      // follows the user's current language instead of being locked to
+      // ``zh-CN``. Options preserve the original 24-hour, two-digit shape so
+      // existing UI table widths still fit.
+      createdAt: new Intl.DateTimeFormat(locale.value, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(new Date()),
       kind,
       resultText: resultText.value,
       inspectResult: kind === 'inspect' || kind === 'verify' ? (resultData.value as PluginCliInspectResponse | null) : null,
@@ -377,9 +405,12 @@ export function usePackageManager() {
   }
 
   function formatHashStatus(value: boolean | null | undefined): string {
-    if (value === true) return '通过'
-    if (value === false) return '失败'
-    return '未校验'
+    // PR #1480 review-fix 1.31 (Phase 7): reuse the existing
+    // ``package.hash.*`` keys (already i18n-ed for en-US / zh-CN by Phase 2)
+    // so the metric value matches the dialog label vocabulary.
+    if (value === true) return t('package.hash.passed')
+    if (value === false) return t('package.hash.failed')
+    return t('package.hash.notVerified')
   }
 
   function togglePlugin(pluginId: string) {

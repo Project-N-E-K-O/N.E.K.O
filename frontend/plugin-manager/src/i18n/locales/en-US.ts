@@ -416,6 +416,56 @@ export default {
       verify: 'Verify',
       install: 'Install',
       analyze: 'Analyze'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: 'Type',
+        success: 'Succeeded',
+        failed: 'Failed',
+        included: 'Plugins included',
+        status: 'Status',
+        completed: 'Completed',
+        partialFailure: 'Partial failure',
+        pluginCount: 'Plugins',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: 'Plugins processed',
+        conflictStrategy: 'Conflict strategy',
+        commonDeps: 'Common dependencies',
+        sharedDeps: 'Shared dependencies'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: 'Bundle ID',
+        bundleName: 'Bundle name',
+        bundleVersion: 'Bundle version',
+        outputPath: 'Output path',
+        firstPlugin: 'First plugin',
+        latestPath: 'Latest package path',
+        packageId: 'Package ID',
+        packageType: 'Package type',
+        version: 'Version',
+        pluginsRoot: 'Plugins root',
+        profilesRoot: 'Profiles root',
+        currentSdk: 'Current SDK support',
+        recommendedIntersection: 'Recommended intersection'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: 'Bundle',
+        plugin: 'Plugin package',
+        sdkAllSupported: '{version} fully supported',
+        sdkPartiallyIncompatible: '{version} has incompatibilities'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: 'A bundle should typically contain at least two plugins',
+        verifyHashFailed: 'Package failed hash verification, do not import directly into a runtime',
+        inspectHashFailed: 'Package hash check failed, contents may have been modified',
+        sdkNotSupportedByAll: 'The current SDK version is not supported by all plugins',
+        sharedDepsDetected: '{count} shared dependency/dependencies detected, version constraints need review when bundling'
+      }
     }
   },
   metrics: {

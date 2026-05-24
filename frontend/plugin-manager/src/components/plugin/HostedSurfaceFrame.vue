@@ -107,6 +107,40 @@ const surfaceUrl = computed(() => {
   return ''
 })
 
+// PR #1480 review-fix 1.30: trust boundary for postMessage between this
+// component and the embedded iframe. Two iframe modes coexist:
+//
+//   - ``surface.mode === 'static'``: iframe loads ``surfaceUrl`` (an http(s)
+//     URL or a same-origin path). The trusted origin is parsed from that URL
+//     and resolved against ``window.location.origin`` for relative paths.
+//
+//   - ``hosted-tsx`` / ``markdown``: iframe is loaded via ``srcdoc=...``. The
+//     spec mandates these iframes report ``event.origin === 'null'`` (an opaque
+//     origin), so we accept the literal string ``'null'`` as the trusted
+//     origin sentinel for srcdoc iframes.
+//
+// ``handleMessage`` rejects any message whose ``event.origin`` does not match
+// this value, and ``handleHostedRequest`` posts responses with this origin
+// rather than ``'*'``. The fallback to ``'*'`` is intentional and only used
+// for the srcdoc case where the standard requires ``'*'`` because the child
+// is in an opaque origin and cannot be addressed by name; in that branch the
+// inbound origin check (combined with ``event.source ===
+// iframeRef.value.contentWindow``) is what enforces the trust boundary.
+const trustedIframeOrigin = computed(() => {
+  if (props.surface.mode === 'static') {
+    const url = surfaceUrl.value
+    if (!url) return window.location.origin
+    try {
+      return new URL(url, window.location.origin).origin
+    } catch {
+      return window.location.origin
+    }
+  }
+  // srcdoc iframes (hosted-tsx / markdown). Per HTML spec the resulting origin
+  // is opaque and is reported as the literal string 'null'.
+  return 'null'
+})
+
 const placeholderTitle = computed(() => {
   if (loading.value) return t('plugins.ui.loading')
   if (error.value) return t('plugins.ui.loadError')
@@ -347,7 +381,16 @@ async function loadHostedTsx() {
 }
 
 function handleMessage(event: MessageEvent) {
+  // PR #1480 review-fix 1.30: enforce the trust boundary on inbound messages.
+  // Both checks are required:
+  //   - ``event.source`` ensures the message comes from THIS iframe (not from
+  //     some other iframe that happens to share an origin).
+  //   - ``event.origin`` ensures the iframe has not been redirected to a
+  //     third-party origin since it was loaded; without this, a malicious
+  //     navigation inside the iframe could let attacker code act as the
+  //     plugin.
   if (event.source !== iframeRef.value?.contentWindow) return
+  if (event.origin !== trustedIframeOrigin.value) return
   const data = event.data
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-error') {
     const message = typeof data.payload?.message === 'string' ? data.payload.message : t('plugins.ui.loadError')
@@ -384,11 +427,16 @@ async function handleHostedRequest(data: any) {
   const requestId = typeof data.requestId === 'string' ? data.requestId : ''
   const method = typeof data.method === 'string' ? data.method : ''
   const respond = (payload: Record<string, any>) => {
+    // PR #1480 review-fix 1.30: target the trusted origin instead of '*'.
+    // For srcdoc iframes (opaque origin, reported as 'null'), the postMessage
+    // spec rejects 'null' as a target; the standard idiom is to use '*' and
+    // rely on the source/origin checks in handleMessage to enforce trust.
+    const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
     iframeRef.value?.contentWindow?.postMessage({
       type: 'neko-hosted-surface-response',
       requestId,
       ...payload,
-    }, '*')
+    }, targetOrigin)
   }
   if (!requestId) return
   try {

@@ -416,6 +416,56 @@ export default {
       verify: '校验',
       install: '安装',
       analyze: '分析'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: '类型',
+        success: '成功',
+        failed: '失败',
+        included: '包含插件',
+        status: '状态',
+        completed: '完成',
+        partialFailure: '部分失败',
+        pluginCount: '插件数',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: '已处理插件',
+        conflictStrategy: '冲突策略',
+        commonDeps: '共同依赖',
+        sharedDeps: '共享依赖'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: '整合包 ID',
+        bundleName: '整合包名称',
+        bundleVersion: '整合包版本',
+        outputPath: '输出路径',
+        firstPlugin: '首个插件',
+        latestPath: '最新包路径',
+        packageId: '包 ID',
+        packageType: '包类型',
+        version: '版本',
+        pluginsRoot: '插件目录',
+        profilesRoot: 'Profiles 目录',
+        currentSdk: '当前 SDK 支持',
+        recommendedIntersection: '推荐交集'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: '整合包',
+        plugin: '插件包',
+        sdkAllSupported: '{version} 全部支持',
+        sdkPartiallyIncompatible: '{version} 存在不兼容'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: '整合包通常应至少包含两个插件',
+        verifyHashFailed: '包未通过 hash 校验，请不要直接导入运行环境',
+        inspectHashFailed: '当前包 hash 校验失败，内容可能已被修改',
+        sdkNotSupportedByAll: '当前 SDK 版本不被所有插件共同支持',
+        sharedDepsDetected: '检测到 {count} 个共享依赖，整合时需要重点检查版本约束'
+      }
     }
   },
   metrics: {
