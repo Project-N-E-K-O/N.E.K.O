@@ -635,6 +635,7 @@ class OmniOfflineClient:
         messages,
         calls,
         assistant_text: str = "",
+        assistant_reasoning: str = "",
     ) -> None:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
@@ -647,6 +648,12 @@ class OmniOfflineClient:
         某些 OpenAI-compat provider 会"先吐文字再进 tool_calls"。和 Gemini
         路径的 streamed_text_buffer 一样，这条 text 必须一起写进历史，否则
         下一轮上下文丢前缀，模型重复 / 改口。
+
+        ``assistant_reasoning`` 是 thinking 模型本轮的推理链（``reasoning_content``）。
+        DeepSeek-R / Qwen / GLM thinking 等端点在多轮 tool calling 时要求把发起
+        tool_calls 那条 assistant 消息的 ``reasoning_content`` 原样回填，否则下一轮
+        报 400 "The `reasoning_content` in the thinking mode must be passed back to
+        the API."。非 thinking 端点恒为空，此时不写该字段以免污染普通会话。
         """
         # 防御性过滤：``ChatOpenAI.collect_tool_calls`` 已会丢弃空 name 槽位，
         # 但万一调用方直接构造（或上游聚合实现替换），这里再兜一层 ——
@@ -655,7 +662,7 @@ class OmniOfflineClient:
         calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
         if not calls:
             return
-        messages.append({
+        assistant_turn = {
             "role": "assistant",
             "content": assistant_text or "",
             "tool_calls": [
@@ -669,7 +676,10 @@ class OmniOfflineClient:
                 }
                 for i, c in enumerate(calls)
             ],
-        })
+        }
+        if assistant_reasoning:
+            assistant_turn["reasoning_content"] = assistant_reasoning
+        messages.append(assistant_turn)
         for i, c in enumerate(calls):
             tool_call = ToolCall(
                 name=c.name,
@@ -778,9 +788,15 @@ class OmniOfflineClient:
             # 一 turn 既有 content 又有 tool_calls；某些兼容 provider 真会
             # 先吐文字再进 tool_calls。和 Gemini 路径完全对偶。
             streamed_text_buffer = ""
+            # Thinking 模型本轮的推理链：finish_reason=tool_calls 时必须随
+            # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
+            # 400（reasoning_content must be passed back）。普通端点恒为空。
+            streamed_reasoning_buffer = ""
             async for chunk in self.llm.astream(messages, **overrides):
                 if getattr(chunk, "content", None):
                     streamed_text_buffer += chunk.content
+                if getattr(chunk, "reasoning_content", None):
+                    streamed_reasoning_buffer += chunk.reasoning_content
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
@@ -828,7 +844,9 @@ class OmniOfflineClient:
                 from utils.llm_client import LLMStreamChunk as _LLMStreamChunk
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 await self._execute_and_append_openai_tool_calls(
-                    messages, calls, assistant_text=streamed_text_buffer,
+                    messages, calls,
+                    assistant_text=streamed_text_buffer,
+                    assistant_reasoning=streamed_reasoning_buffer,
                 )
                 # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
                 # 已经写进 history（assistant turn）。stream_text 据此清空

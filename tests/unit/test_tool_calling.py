@@ -296,6 +296,134 @@ async def test_offline_openai_path_runs_tool_then_text():
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
+    """Thinking 模型（DeepSeek-R / Qwen / GLM thinking 等 OpenAI-compat 端点）
+    在多轮 tool calling 时，发起 tool_calls 的那条 assistant 消息必须把本轮流出的
+    ``reasoning_content`` 原样回填，否则下一轮报 400 "The `reasoning_content` in the
+    thinking mode must be passed back to the API."（触发 memory_recall 时复现过）。
+
+    本测试 script 一个带 reasoning_content 的 tool-call 轮，断言写回历史的
+    assistant tool_calls 消息里 reasoning_content 被保留。"""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    tool_def = ToolDefinition(
+        name="memory_recall",
+        description="recall",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+        handler=lambda args: {"hits": []},
+    )
+
+    # 第一轮：先流推理链，再流 tool_call，finish_reason=tool_calls。
+    chunks_call_1 = [
+        LLMStreamChunk(content="", reasoning_content="用户问起以前的事，"),
+        LLMStreamChunk(content="", reasoning_content="我得查一下记忆。"),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "memory_recall", "arguments": '{"q":"生日"}'},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", tool_call_deltas=None, finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [
+        LLMStreamChunk(content="我记得是夏天。", finish_reason="stop"),
+    ]
+
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"hits": []})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "我生日是什么时候？"}]
+    async for _ in client._astream_with_tools(messages):
+        pass
+
+    assistant_with_tool_calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool_calls.get("reasoning_content") == "用户问起以前的事，我得查一下记忆。", (
+        "thinking 模型发起 tool_calls 那轮的 reasoning_content 必须累积并回填进历史，"
+        "否则部分 provider 下一轮报 400"
+    )
+    # 第二轮请求确实带上了含 reasoning_content 的历史
+    second_call_messages = fake_llm.calls[1][0]
+    assert any(
+        isinstance(m, dict) and m.get("reasoning_content")
+        for m in second_call_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_path_omits_reasoning_when_absent():
+    """非 thinking 端点（delta 不带 reasoning_content）时，assistant tool_calls
+    消息不应凭空塞入 reasoning_content 字段，免得污染普通会话 / 触发某些 provider
+    对 reasoning_content 的反向校验。"""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    tool_def = ToolDefinition(
+        name="memory_recall",
+        description="recall",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+        handler=lambda args: {"hits": []},
+    )
+    chunks_call_1 = [
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "memory_recall", "arguments": "{}"},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", tool_call_deltas=None, finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content="好的喵。", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"hits": []})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in client._astream_with_tools(messages):
+        pass
+
+    assistant_with_tool_calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "reasoning_content" not in assistant_with_tool_calls
+
+
+@pytest.mark.asyncio
 async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
     """switch_model 切到不同 endpoint 后必须重新计算 _use_genai_sdk，
     并清空 _genai_client，否则会沿用旧 conversation 的路由判断。
