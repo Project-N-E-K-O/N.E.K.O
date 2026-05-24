@@ -891,7 +891,10 @@ export default function App({
   const compactInputToolFanRef = useRef<HTMLDivElement | null>(null);
   const compactInputToolWheelPointerRef = useRef<CompactToolWheelPointerState | null>(null);
   const compactInputToolWheelSuppressClickRef = useRef(false);
+  const compactInputToolTogglePointerHandledRef = useRef(false);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
+  const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
+  const compactInputToolFanOpenIntentRef = useRef<'click' | 'hover' | 'focus' | null>(null);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
   const composerLayoutRef = useRef<ComposerLayout>('expanded');
@@ -1941,10 +1944,18 @@ export default function App({
     };
   }, [applyCompactSurfaceResizeWidthVar, getClampedCompactSurfaceResizeWidth, isCompactSurface]);
 
+  const clearCompactInputToolFanCloseTimer = useCallback(() => {
+    if (compactInputToolFanCloseTimerRef.current === null) return;
+    window.clearTimeout(compactInputToolFanCloseTimerRef.current);
+    compactInputToolFanCloseTimerRef.current = null;
+  }, []);
+
   const closeCompactInputToolFan = useCallback((options?: {
     afterClose?: () => void;
     deferDesktopAction?: boolean;
   }) => {
+    clearCompactInputToolFanCloseTimer();
+    compactInputToolFanOpenIntentRef.current = null;
     compactInputToolFanPositionSyncRef.current?.();
     setCompactInputToolFanOpen(false);
     if (!options?.afterClose) return;
@@ -1958,6 +1969,41 @@ export default function App({
       return;
     }
     options.afterClose();
+  }, [clearCompactInputToolFanCloseTimer]);
+
+  const updateCompactInputToolFanPosition = useCallback(() => {}, []);
+
+  const isCompactToolFanFocusWithin = useCallback(() => {
+    const activeElement = document.activeElement;
+    return activeElement instanceof Node
+      && (
+        !!compactInputToolToggleRef.current?.contains(activeElement)
+        || !!compactInputToolFanRef.current?.contains(activeElement)
+      );
+  }, []);
+
+  const scheduleCompactInputToolFanTransientClose = useCallback(() => {
+    if (compactInputToolFanOpenIntentRef.current === 'click') return;
+    clearCompactInputToolFanCloseTimer();
+    compactInputToolFanCloseTimerRef.current = window.setTimeout(() => {
+      compactInputToolFanCloseTimerRef.current = null;
+      if (isCompactToolFanFocusWithin()) return;
+      closeCompactInputToolFan();
+    }, 160);
+  }, [clearCompactInputToolFanCloseTimer, closeCompactInputToolFan, isCompactToolFanFocusWithin]);
+
+  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover' | 'focus') => {
+    if (composerDisabled || compactInputHasPayload) return;
+    clearCompactInputToolFanCloseTimer();
+    compactInputToolFanOpenIntentRef.current = intent;
+    updateCompactInputToolFanPosition();
+    setCompactInputToolFanOpen(true);
+  }, [clearCompactInputToolFanCloseTimer, compactInputHasPayload, composerDisabled, updateCompactInputToolFanPosition]);
+
+  const shouldOpenCompactToolFanOnHover = useCallback((event: ReactPointerEvent) => {
+    if (event.pointerType !== 'mouse') return false;
+    if (typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
   }, []);
 
   const rotateCompactInputToolWheel = useCallback((direction: 1 | -1) => {
@@ -1997,14 +2043,16 @@ export default function App({
     compactInputToolWheelPointerRef.current = null;
   }, []);
 
-  const updateCompactInputToolFanPosition = useCallback(() => {}, []);
-
   useEffect(() => {
     compactInputToolFanPositionSyncRef.current = () => updateCompactInputToolFanPosition();
     return () => {
       compactInputToolFanPositionSyncRef.current = null;
     };
   }, [updateCompactInputToolFanPosition]);
+
+  useEffect(() => () => {
+    clearCompactInputToolFanCloseTimer();
+  }, [clearCompactInputToolFanCloseTimer]);
 
   const handleComposerBottomBarRef = useCallback((node: HTMLDivElement | null) => {
     composerBottomBarRef.current = node;
@@ -2108,9 +2156,11 @@ export default function App({
 
   useEffect(() => {
     if (compactInputToolFanOpen) return;
+    clearCompactInputToolFanCloseTimer();
+    compactInputToolFanOpenIntentRef.current = null;
     compactInputToolWheelPointerRef.current = null;
     compactInputToolWheelSuppressClickRef.current = false;
-  }, [compactInputToolFanOpen]);
+  }, [clearCompactInputToolFanCloseTimer, compactInputToolFanOpen]);
 
   useEffect(() => {
     if (!isCompactSurface) return;
@@ -3084,12 +3134,12 @@ export default function App({
 
   const getCompactToolWheelTabIndex = (toolIndex: number): number => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1 ? 0 : -1;
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2 ? 0 : -1;
   };
 
   const getCompactToolWheelAriaHidden = (toolIndex: number): 'true' | 'false' => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1 ? 'false' : 'true';
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2 ? 'false' : 'true';
   };
 
   const getCompactToolWheelSlotValue = (toolIndex: number): string => {
@@ -3107,20 +3157,49 @@ export default function App({
       data-compact-geometry-owner="surface"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
+      onPointerEnter={() => {
+        clearCompactInputToolFanCloseTimer();
+      }}
+      onPointerLeave={() => {
+        scheduleCompactInputToolFanTransientClose();
+      }}
+      onFocus={() => {
+        clearCompactInputToolFanCloseTimer();
+        if (compactInputToolFanOpenIntentRef.current !== 'click') {
+          compactInputToolFanOpenIntentRef.current = 'focus';
+        }
+      }}
+      onBlur={() => {
+        scheduleCompactInputToolFanTransientClose();
+      }}
       onPointerDown={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
         if (event.target === event.currentTarget) {
           const fanRect = event.currentTarget.getBoundingClientRect();
           const localX = event.clientX - fanRect.left;
           const localY = event.clientY - fanRect.top;
-          if (
-            localX >= 0
-            && localY >= 0
-            && localX <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
-            && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
-          ) {
+          const toggleRect = compactInputToolToggleRef.current?.getBoundingClientRect();
+          const isOriginClick = toggleRect && toggleRect.width > 0 && toggleRect.height > 0
+            ? (
+              event.clientX >= toggleRect.left
+              && event.clientX <= toggleRect.right
+              && event.clientY >= toggleRect.top
+              && event.clientY <= toggleRect.bottom
+            )
+            : (
+              localX >= 0
+              && localY >= 0
+              && localX <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
+              && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
+            );
+          if (isOriginClick) {
             event.preventDefault();
             event.stopPropagation();
+            if (compactInputToolFanOpenIntentRef.current !== 'click') {
+              clearCompactInputToolFanCloseTimer();
+              compactInputToolFanOpenIntentRef.current = 'click';
+              return;
+            }
             closeCompactInputToolFan();
             return;
           }
@@ -3808,12 +3887,44 @@ export default function App({
                         disabled={compactInputHasPayload ? !canSubmit : composerDisabled}
                         onPointerDown={compactInputHasPayload ? undefined : (event) => {
                           event.preventDefault();
+                          compactInputToolTogglePointerHandledRef.current = true;
+                          if (compactInputToolFanOpen && compactInputToolFanOpenIntentRef.current === 'click') {
+                            closeCompactInputToolFan();
+                            return;
+                          }
+                          openCompactInputToolFan('click');
+                        }}
+                        onPointerEnter={compactInputHasPayload ? undefined : (event) => {
+                          if (!shouldOpenCompactToolFanOnHover(event)) return;
+                          openCompactInputToolFan('hover');
+                        }}
+                        onPointerLeave={compactInputHasPayload ? undefined : () => {
+                          scheduleCompactInputToolFanTransientClose();
+                        }}
+                        onFocus={compactInputHasPayload ? undefined : () => {
+                          openCompactInputToolFan('focus');
+                        }}
+                        onBlur={compactInputHasPayload ? scheduleCompactInputCollapse : () => {
+                          scheduleCompactInputToolFanTransientClose();
+                          scheduleCompactInputCollapse();
                         }}
                         onClick={compactInputHasPayload ? undefined : () => {
+                          if (compactInputToolTogglePointerHandledRef.current) {
+                            compactInputToolTogglePointerHandledRef.current = false;
+                            return;
+                          }
+                          clearCompactInputToolFanCloseTimer();
                           updateCompactInputToolFanPosition();
-                          setCompactInputToolFanOpen(open => !open);
+                          setCompactInputToolFanOpen(open => {
+                            if (open && compactInputToolFanOpenIntentRef.current !== 'click') {
+                              compactInputToolFanOpenIntentRef.current = 'click';
+                              return true;
+                            }
+                            const nextOpen = !open;
+                            compactInputToolFanOpenIntentRef.current = nextOpen ? 'click' : null;
+                            return nextOpen;
+                          });
                         }}
-                        onBlur={scheduleCompactInputCollapse}
                       >
                         <img
                           className={compactInputHasPayload ? undefined : 'compact-input-tool-toggle-icon'}

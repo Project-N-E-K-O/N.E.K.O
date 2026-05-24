@@ -1795,6 +1795,7 @@ svg {
 .chat-window.chat-surface-mode-compact {
   height: auto;
   grid-template-rows: auto auto;
+  overflow: visible;
   background: transparent;
 }
 
@@ -2112,16 +2113,16 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
   );
   --compact-export-history-viewport-gutter: 24px;
-  --compact-export-history-width-ratio: 1;
+  --compact-export-history-width-ratio: 1.28;
   --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
   --compact-export-history-inline-size: min(
     calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
     var(--compact-export-history-max-inline-size)
   );
-  --compact-export-history-bubble-max-ratio: 82%;
-  --compact-export-history-system-bubble-max-ratio: 92%;
-  --compact-export-preview-bubble-max-ratio: 88%;
-  --compact-export-preview-system-bubble-max-ratio: 94%;
+  --compact-export-history-bubble-max-ratio: 86%;
+  --compact-export-history-system-bubble-max-ratio: 94%;
+  --compact-export-preview-bubble-max-ratio: 90%;
+  --compact-export-preview-system-bubble-max-ratio: 95%;
   width: var(--compact-export-history-inline-size);
   max-height: min(calc(var(--compact-export-surface-width) * 1.46), 78vh);
   transform: translateX(-50%);
@@ -2970,16 +2971,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan {
   --compact-tool-button-size: 38px;
+  --compact-tool-fan-hit-outset: 52px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
   --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
-  left: calc(100% - 30px);
-  top: 31px;
-  width: 126px;
-  height: 126px;
+  left: calc(100% - 30px - var(--compact-tool-fan-hit-outset));
+  top: calc(31px - var(--compact-tool-fan-hit-outset));
+  width: calc(126px + var(--compact-tool-fan-hit-outset));
+  height: calc(126px + var(--compact-tool-fan-hit-outset));
   pointer-events: none;
   z-index: 100003;
   overflow: visible;
@@ -3096,7 +3098,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
-  transform: translate(-35px, 70px) scale(0.86);
+  transform: translate(17px, 122px) scale(0.86);
+  pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"]::after,
@@ -3115,25 +3118,26 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
   opacity: 1;
-  transform: translate(12px, 77px) scale(0.98);
+  transform: translate(64px, 129px) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
   opacity: 1;
-  transform: translate(55px, 55px) scale(1.04);
+  transform: translate(107px, 107px) scale(1.04);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
   opacity: 1;
-  transform: translate(77px, 12px) scale(0.98);
+  transform: translate(129px, 64px) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
   opacity: 1;
-  transform: translate(70px, -35px) scale(0.86);
+  transform: translate(122px, 17px) scale(0.86);
+  pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"]::after,
