@@ -2459,6 +2459,11 @@
                             var isCached = (acqStream === S.screenCaptureStream);
                             try {
                                 var frame = await window.captureFrameFromStream(acqStream, 0.8, true);
+                                if (!frame) {
+                                    // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
+                                    // 保住正确的窗口内容（优于后端 pyautogui 抓整屏）。
+                                    frame = await window.captureFrameFromStream(acqStream, 0.8, false);
+                                }
                                 if (frame && frame.dataUrl) return frame.dataUrl;
                             } finally {
                                 if (!isCached && acqStream instanceof MediaStream) {
@@ -2473,6 +2478,10 @@
                             var tracks = S.screenCaptureStream.getVideoTracks();
                             if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
                                 var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, true);
+                                if (!cachedFrame) {
+                                    // 同上：全分辨率失败时用同一条流退回 720p，保住正确窗口内容
+                                    cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, false);
+                                }
                                 if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
                             }
                         }
