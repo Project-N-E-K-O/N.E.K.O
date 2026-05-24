@@ -240,6 +240,72 @@ def time_since_label(
     return table['month'].format(n=days // 30)
 
 
+# ── 时间窗口解析（recall_memory 的 time 参数 / 按时间回溯反思） ────────
+
+def _token_window(token: str) -> tuple[datetime, datetime] | None:
+    """把单个时间 token 解析成 [start, end) 半开区间（naive 本地时钟）。
+
+    粒度由 token 形态决定：
+      - ``YYYY-MM-DD`` → 当日 [d 00:00, 次日 00:00)
+      - ``YYYY-MM``    → 整月 [月初, 次月初)
+      - ``YYYY``       → 整年 [年初, 次年初)
+      - 带时间的 ISO（``2026-05-01T14:00``）→ 退化成"所在那一天"
+
+    无法解析返回 None。
+    """
+    token = (token or "").strip()
+    if not token:
+        return None
+    try:
+        d = datetime.strptime(token, '%Y-%m-%d')
+        return (d, d + timedelta(days=1))
+    except ValueError:
+        pass
+    try:
+        m = datetime.strptime(token, '%Y-%m')
+        nxt = m.replace(year=m.year + 1, month=1) if m.month == 12 \
+            else m.replace(month=m.month + 1)
+        return (m, nxt)
+    except ValueError:
+        pass
+    try:
+        y = datetime.strptime(token, '%Y')
+        return (y, y.replace(year=y.year + 1))
+    except ValueError:
+        pass
+    parsed = _parse_iso_safe(token)
+    if parsed is not None:
+        if parsed.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=None)
+        day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+        return (day, day + timedelta(days=1))
+    return None
+
+
+def parse_time_window(spec: str | None) -> tuple[datetime, datetime] | None:
+    """把 recall 的 ``time`` 参数解析成 [start, end) 半开区间。
+
+    支持单 token（见 ``_token_window``）或日期区间——用 ``/`` 或 ``..``
+    分隔两个 token，窗口取两端的并集 [min(start), max(end))，所以
+    ``2026-05-01/2026-05-07`` 是含两端的整周、``2026-05/2026-06`` 是两个
+    整月。任一端解析失败则整体返回 None（调用方据此回退到语义检索）。
+    """
+    if not isinstance(spec, str):
+        return None
+    s = spec.strip()
+    if not s:
+        return None
+    sep = '/' if '/' in s else ('..' if '..' in s else None)
+    if sep:
+        left, _, right = s.partition(sep)
+        lw = _token_window(left)
+        rw = _token_window(right)
+        if lw is None or rw is None:
+            return None
+        return (min(lw[0], rw[0]), max(lw[1], rw[1]))
+    return _token_window(s)
+
+
 # ── weighted followup sampling (Q1) ───────────────────────────────────
 
 def weighted_sample_no_replace(

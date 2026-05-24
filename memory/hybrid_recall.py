@@ -71,6 +71,7 @@ from config import (
     HYBRID_RECALL_BUDGET_TOTAL,
     HYBRID_RECALL_COSINE_THRESHOLD,
     HYBRID_RECALL_RRF_K,
+    HYBRID_RECALL_TIME_BUDGET,
 )
 from utils.logger_config import get_module_logger
 
@@ -538,7 +539,13 @@ async def hybrid_recall(
             "tier": d.get('_tier') or 'unknown',
             "entity": d.get('entity'),
             "score": round(d.get('_rrf_score', 0.0), 6),
+            # created_at = 记忆写盘时间；event_start/end_at = 事件真正发生
+            # 的时间锚点（schema v2，由 event_when_raw 解算）。两者可能差很
+            # 远（"上周通宵"今天才被写进记忆），所以都带上，渲染侧优先用
+            # event 锚点回答"事件什么时候发生"。
             "created_at": d.get('created_at'),
+            "event_start_at": d.get('event_start_at'),
+            "event_end_at": d.get('event_end_at'),
         }
         for d in fused
     ]
@@ -576,5 +583,108 @@ async def hybrid_recall(
         "results": results,
         "query": query,
         "candidates_total": len(bm25_pool),
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+
+
+async def recall_by_time(
+    *,
+    lanlan_name: str,
+    time_spec: str,
+    fact_store,
+    reflection_engine,
+) -> dict[str, Any]:
+    """按时间回溯——返回离 ``time_spec`` 窗口**最接近的若干条**记忆
+    （fact + reflection 混合）。
+
+    这是 ``recall_memory(time=...)`` 走的路径：不做 BM25 / cosine 语义打分，
+    纯按事件时间锚点排序，所以"那天/那周/那段时间"的记忆都能被拎出来，不会
+    因为语义不匹配 query 而漏掉，且不需要 query —— 只给 time 即可。
+
+    排序口径：取每条的事件窗口 ``[event_start_at, event_end_at]``（缺 start
+    退回 ``created_at``，缺 end 退回 start），算它与 ``parse_time_window``
+    解出的 ``[win_start, win_end)`` 的时间距离——落在窗口内距离为 0，否则
+    取到最近窗口边界的秒数。按 (距离 ASC, 事件起点 DESC) 排序后取前
+    ``HYBRID_RECALL_TIME_BUDGET`` 条。所以窗口内的条目（距离 0）天然排在
+    最前，窗口为空时则回落到时间上最邻近的几条。
+
+    候选池 = 活跃 facts + 活跃 reflections + 归档 facts（归档对老时间回溯
+    有用），再过 ``_hard_filter`` 丢 score<0 / suppressed / 终态，口径与
+    ``hybrid_recall`` 一致。``time_spec`` 解析失败时返回空 results。
+    """
+    from memory.temporal import parse_time_window, _parse_iso_safe
+    start_t = time.time()
+    window = parse_time_window(time_spec)
+    if window is None:
+        logger.info(
+            "[recall_by_time] %s: unparseable time=%r → empty", lanlan_name, time_spec,
+        )
+        return {
+            "results": [], "query": "", "time": time_spec or "",
+            "candidates_total": 0, "elapsed_ms": 0.0,
+        }
+    win_start, win_end = window
+
+    active_facts, active_reflections, archive_facts = await asyncio.gather(
+        fact_store.aload_facts(lanlan_name),
+        reflection_engine.aload_reflections(lanlan_name),
+        _aload_archive_facts(fact_store, lanlan_name),
+    )
+    pool_raw = (
+        _tag_tier(active_facts or [], 'fact')
+        + _tag_tier(active_reflections or [], 'reflection')
+        + _tag_tier(archive_facts or [], 'fact_archive')
+    )
+    from memory.recall import MemoryRecallReranker
+    pool = MemoryRecallReranker._hard_filter(pool_raw)
+
+    # (距离秒数, -事件起点 epoch, doc) —— 距离近优先、同距离时近发生的优先。
+    scored: list[tuple[float, float, dict]] = []
+    for d in pool:
+        s = _parse_iso_safe(d.get('event_start_at')) or _parse_iso_safe(d.get('created_at'))
+        if s is None:
+            continue
+        e = _parse_iso_safe(d.get('event_end_at')) or s
+        if s.tzinfo is not None:
+            s = s.replace(tzinfo=None)
+        if e.tzinfo is not None:
+            e = e.replace(tzinfo=None)
+        # 事件闭区间 [s, e] 到半开窗口 [win_start, win_end) 的距离：
+        # 有重叠 → 0；事件整体早于窗口 → win_start - e；整体晚于 → s - win_end。
+        if s < win_end and e >= win_start:
+            dist = 0.0
+        elif e < win_start:
+            dist = (win_start - e).total_seconds()
+        else:
+            dist = (s - win_end).total_seconds()
+        scored.append((dist, -s.timestamp(), d))
+
+    scored.sort(key=lambda t: (t[0], t[1]))
+    top = scored[:HYBRID_RECALL_TIME_BUDGET]
+    results = [
+        {
+            "id": d.get('id') or '',
+            "text": d.get('text') or '',
+            "tier": d.get('_tier') or 'unknown',
+            "entity": d.get('entity'),
+            "score": None,  # 时间路径无语义打分
+            "created_at": d.get('created_at'),
+            "event_start_at": d.get('event_start_at'),
+            "event_end_at": d.get('event_end_at'),
+        }
+        for _, _, d in top
+    ]
+    elapsed_ms = (time.time() - start_t) * 1000.0
+    logger.info(
+        "[recall_by_time] %s: time=%s window=[%s,%s) pool=%d returned=%d | %.0fms",
+        lanlan_name, time_spec,
+        win_start.isoformat(), win_end.isoformat(),
+        len(pool), len(results), elapsed_ms,
+    )
+    return {
+        "results": results,
+        "query": "",
+        "time": time_spec,
+        "candidates_total": len(pool),
         "elapsed_ms": round(elapsed_ms, 1),
     }

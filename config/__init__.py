@@ -1001,6 +1001,7 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 # 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
 HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
 HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
+HYBRID_RECALL_TIME_BUDGET = 8            # 按时间回溯（recall_memory time 参数）返回的最接近条数上限
 HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
 HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
 HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
