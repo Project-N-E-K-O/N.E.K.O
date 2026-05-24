@@ -2819,8 +2819,10 @@ class LLMSessionManager:
             logger.debug("[recall_memory] empty-query args=%s", args_dict)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # POST 到 memory_server。time 非空 → memory_server 改走按时间回溯
-        # 列全部反思的路径（忽略 query 语义匹配）。
+        # POST 到 memory_server。query 始终原样下传，不能因为带了 time 就清空
+        # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
+        # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
+        # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
         post_body = {"query": query}
         if time_arg:
             post_body["time"] = time_arg
