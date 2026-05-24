@@ -111,8 +111,16 @@ async def test_install_hooks_idempotent_async_path(restore_openai_create):
     ):
         # 合并模式：main / memory / agent 三个 startup 各装一次
         tt.install_hooks()
+        installed_once = AsyncCompletions.create
         tt.install_hooks()
         tt.install_hooks()
+
+        # 与同步测试对称：第 2、3 次安装是 no-op，异步函数对象不变（没有重新包一层），
+        # 且守卫标记已设。缺这两个断言时，若将来异步分支的守卫被误删而 wrapper 恰好
+        # 还能跑一次，仅 record 计数无法发现。
+        assert AsyncCompletions.create is installed_once
+        assert getattr(AsyncCompletions.create, "_neko_token_tracker_hooked", False) is True
+
         await AsyncCompletions.create(SimpleNamespace(), model="fake-model", stream=False)
 
     assert rec.call_count == 1, f"expected 1 record, got {rec.call_count}（async wrapper 叠层）"
