@@ -3867,13 +3867,23 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
         # 直接 500 把 tool call 整死。
+        #
+        # time 只在「能解析成时间窗口」时才走 recall_by_time；解析失败
+        # （模型塞了自然语言 / 格式错的 time）就回落到常规语义检索，不能让
+        # 一个坏 time 把 query 的语义召回也一起吞掉返回空（Codex P2）。
         if time_spec:
-            from memory.hybrid_recall import recall_by_time
-            return await recall_by_time(
-                lanlan_name=lanlan_name,
-                time_spec=time_spec,
-                fact_store=fact_store,
-                reflection_engine=reflection_engine,
+            from memory.temporal import parse_time_window
+            if parse_time_window(time_spec) is not None:
+                from memory.hybrid_recall import recall_by_time
+                return await recall_by_time(
+                    lanlan_name=lanlan_name,
+                    time_spec=time_spec,
+                    fact_store=fact_store,
+                    reflection_engine=reflection_engine,
+                )
+            logger.info(
+                "[query_memory] %s: time=%r 无法解析为时间窗口，回落语义检索",
+                lanlan_name, time_spec,
             )
         from memory.hybrid_recall import hybrid_recall
         return await hybrid_recall(
