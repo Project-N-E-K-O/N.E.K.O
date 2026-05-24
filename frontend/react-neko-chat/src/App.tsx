@@ -91,6 +91,10 @@ type CompactSurfaceResizeState = {
   startPointerX: number;
   startWidth: number;
   lastWidth: number;
+  anchorLeftScreen: number;
+  anchorRightScreen: number;
+  anchorTopScreen: number;
+  surfaceHeight: number;
   captureTarget: Element | null;
 };
 
@@ -1715,8 +1719,17 @@ export default function App({
     width: number,
     phase: 'start' | 'move' | 'end',
   ) => {
+    const resizeState = compactSurfaceResizeStateRef.current;
+    const screenRect = resizeState ? {
+      left: side === 'left' ? resizeState.anchorRightScreen - width : resizeState.anchorLeftScreen,
+      top: resizeState.anchorTopScreen,
+      width,
+      height: resizeState.surfaceHeight,
+      right: side === 'left' ? resizeState.anchorRightScreen : resizeState.anchorLeftScreen + width,
+      bottom: resizeState.anchorTopScreen + resizeState.surfaceHeight,
+    } : undefined;
     window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-request', {
-      detail: { side, width, phase },
+      detail: { side, width, phase, screenRect },
     }));
   }, []);
 
@@ -1747,12 +1760,41 @@ export default function App({
     event.preventDefault();
     event.stopPropagation();
     const startWidth = compactSurfaceEffectiveWidth ?? getCurrentCompactSurfaceWidth();
+    const shellRect = compactInputShellRef.current?.getBoundingClientRect();
+    const desktopLayout = (window as typeof window & {
+      __nekoDesktopCompactLayout?: {
+        surfaceScreenRect?: {
+          left?: number;
+          top?: number;
+          width?: number;
+          height?: number;
+          right?: number;
+        };
+      };
+    }).__nekoDesktopCompactLayout;
+    const desktopSurface = desktopLayout?.surfaceScreenRect;
+    const anchorLeftScreen = Number.isFinite(desktopSurface?.left)
+      ? Number(desktopSurface?.left)
+      : (shellRect ? window.screenX + shellRect.left : 0);
+    const anchorRightScreen = Number.isFinite(desktopSurface?.right)
+      ? Number(desktopSurface?.right)
+      : anchorLeftScreen + startWidth;
+    const anchorTopScreen = Number.isFinite(desktopSurface?.top)
+      ? Number(desktopSurface?.top)
+      : (shellRect ? window.screenY + shellRect.top : 0);
+    const surfaceHeight = Number.isFinite(desktopSurface?.height) && Number(desktopSurface?.height) > 0
+      ? Number(desktopSurface?.height)
+      : Math.max(1, shellRect?.height ?? 58);
     compactSurfaceResizeStateRef.current = {
       pointerId: event.pointerId,
       side,
       startPointerX: getCompactSurfaceResizePointerX(event),
       startWidth,
       lastWidth: startWidth,
+      anchorLeftScreen,
+      anchorRightScreen,
+      anchorTopScreen,
+      surfaceHeight,
       captureTarget: event.currentTarget,
     };
     applyCompactSurfaceResizeWidthVar(startWidth);

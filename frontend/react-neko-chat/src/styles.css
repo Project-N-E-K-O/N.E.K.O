@@ -1806,8 +1806,8 @@ svg {
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   position: fixed;
-  left: calc(var(--compact-surface-left, 50vw) + (var(--compact-surface-width, 430px) / 2));
-  width: min(var(--compact-surface-width, 430px), 420px);
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)) / 2));
+  width: min(var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)), 420px);
   max-height: min(240px, calc(100vh - 96px));
   height: max-content;
   transform: translateX(-50%);
@@ -1829,11 +1829,11 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
   top: auto;
-  bottom: calc(100vh - var(--compact-surface-top, 0px) + 16px);
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 0px)) + 16px);
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
-  top: calc(var(--compact-surface-top, 0px) + var(--compact-surface-height, 58px) + 16px);
+  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 0px)) + var(--desktop-compact-surface-height, var(--compact-surface-height, 58px)) + 16px);
   bottom: auto;
 }
 
@@ -1881,6 +1881,13 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   z-index: 4;
   margin: 0 auto;
   -webkit-app-region: no-drag;
+}
+
+body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
+  position: fixed;
+  left: var(--desktop-compact-surface-left, var(--compact-surface-left, 0px));
+  top: var(--desktop-compact-surface-top, var(--compact-surface-top, 0px));
+  margin: 0;
 }
 
 .compact-chat-surface-frame {
@@ -2063,7 +2070,7 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   opacity: 0;
   pointer-events: auto;
   touch-action: none;
-  z-index: 9;
+  z-index: 100004;
   -webkit-app-region: no-drag;
 }
 
@@ -2083,9 +2090,9 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
 
 .compact-export-history-anchor {
   position: fixed;
-  --compact-export-surface-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
-  left: calc(var(--compact-surface-left, 50vw) + (var(--compact-export-surface-width) / 2));
-  bottom: calc(100vh - var(--compact-surface-top, 68vh) + 12px);
+  --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 12px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
@@ -2961,9 +2968,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
-  position: fixed;
-  left: 0;
-  top: 0;
+  position: absolute;
+  left: calc(100% - 30px);
+  top: 31px;
   width: 126px;
   height: 126px;
   pointer-events: none;

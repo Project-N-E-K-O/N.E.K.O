@@ -92,7 +92,7 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     )
 
     assert "--compact-export-history-width-ratio:" in anchor_block
-    assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));" in anchor_block
+    assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));" in anchor_block
     assert "--compact-export-history-inline-size: min(" in anchor_block
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
@@ -120,16 +120,33 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     resize_shell_block = css_block(styles, ".compact-chat-surface-shell {", ".compact-chat-surface-frame")
     frame_block = css_block(styles, ".compact-chat-surface-frame {", ".compact-chat-surface-frame[data-compact-chat-state")
     handle_block = css_block(styles, ".compact-chat-resize-handle {", ".compact-chat-resize-handle-left")
+    resize_clamp_block = script.split("function clampCompactSurfaceResizeWidthForSide", 1)[1].split(
+        "function applyCompactSurfaceResizeRequest",
+        1,
+    )[0]
 
     assert "var measuredWidth = rect && rect.width > 0 ? rect.width : 0;" in metrics_block
     assert "var storedWidth = loadCompactSurfaceStoredWidth();" in metrics_block
     assert "getCompactSurfaceResizeMaxWidth()" in metrics_block
     assert "item !== 'resizeHandle'" in include_block
     assert "function applyCompactSurfaceResizeRequest(detail)" in script
+    assert "function isDesktopHomeCompactSurfaceRoute()" in script
+    assert "if (!isHomeCompactSurfaceRoute() && !isDesktopHomeCompactSurfaceRoute()) return;" in script
     assert "var compactSurfaceResizeSession = null;" in script
+    assert "surfaceScreenRect: surfaceScreenRect" in script
     assert "function getCompactSurfaceDesktopWindowX()" in script
-    assert "anchorLeftScreen: currentRect.left + windowX" in script
-    assert "anchorRightScreen: currentRect.left + currentRect.width + windowX" in script
+    assert "function getCompactSurfaceDesktopScreenRect()" in script
+    assert "function getCompactDesktopWorkAreaEdge(workArea, edge)" in script
+    assert "if (edge === 'right' && Number.isFinite(x) && Number.isFinite(width)) return x + width;" in script
+    assert ": currentRect.left + windowX" in script
+    assert ": currentRect.left + currentRect.width + windowX" in script
+    assert "var desktopSurfaceRect = getCompactSurfaceDesktopScreenRect();" in script
+    assert "anchorTopScreen: desktopSurfaceRect" in script
+    assert "var workAreaLeft = getCompactDesktopWorkAreaEdge(workArea, 'left');" in script
+    assert "var workAreaRight = getCompactDesktopWorkAreaEdge(workArea, 'right');" in script
+    assert "workArea.left + COMPACT_SURFACE_VIEWPORT_PAD_X" not in resize_clamp_block
+    assert "workArea.right - COMPACT_SURFACE_VIEWPORT_PAD_X" not in resize_clamp_block
+    assert "if (!Number.isFinite(sideMax) || sideMax <= 0)" in resize_clamp_block
     assert "? compactSurfaceResizeSession.anchorRightScreen - windowX - width" in script
     assert ": compactSurfaceResizeSession.anchorLeftScreen - windowX;" in script
     assert "persist: phase === 'end'" in script
@@ -146,9 +163,22 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "cursor: ew-resize;" in handle_block
     assert "pointer-events: auto;" in handle_block
     assert "touch-action: none;" in handle_block
+    assert "z-index: 100004;" in handle_block
     assert ".compact-chat-resize-handle::before" not in styles
     assert "left: -4px;" in styles
     assert "right: -4px;" in styles
+
+
+def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
+
+    assert "position: absolute;" in fan_block
+    assert "left: calc(100% - 30px);" in fan_block
+    assert "top: 31px;" in fan_block
+    assert "position: fixed;" not in fan_block
+    assert "--compact-input-tool-fan-origin-left" not in fan_block
 
 
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
