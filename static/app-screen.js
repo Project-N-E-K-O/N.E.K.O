@@ -223,7 +223,7 @@
      * @param {boolean} detectBlack - 是否检测纯黑帧（窗口最小化等），默认false
      * @returns {{dataUrl: string, width: number, height: number}|null}
      */
-    function captureCanvasFrame(video, jpegQuality, detectBlack) {
+    function captureCanvasFrame(video, jpegQuality, detectBlack, fullResolution) {
         if (jpegQuality === undefined) jpegQuality = 0.8;
 
         // 流无效时 videoWidth/videoHeight 为 0，直接返回 null 避免生成空图
@@ -234,11 +234,13 @@
         var canvas = document.createElement('canvas');
         var ctx = canvas.getContext('2d');
 
-        // 计算缩放后的尺寸（保持宽高比，限制到720p）
+        // 计算缩放后的尺寸（保持宽高比，限制到720p）。
+        // fullResolution=true 时保留原生分辨率不缩放 —— 手动截图走这条路，让裁剪在全
+        // 分辨率上进行，720p 压缩在裁剪后入列前统一做（见 compressScreenshotDataUrlTo720p）。
         var targetWidth = video.videoWidth;
         var targetHeight = video.videoHeight;
 
-        if (targetWidth > C.MAX_SCREENSHOT_WIDTH || targetHeight > C.MAX_SCREENSHOT_HEIGHT) {
+        if (!fullResolution && (targetWidth > C.MAX_SCREENSHOT_WIDTH || targetHeight > C.MAX_SCREENSHOT_HEIGHT)) {
             var widthRatio = C.MAX_SCREENSHOT_WIDTH / targetWidth;
             var heightRatio = C.MAX_SCREENSHOT_HEIGHT / targetHeight;
             var scale = Math.min(widthRatio, heightRatio);
@@ -279,9 +281,10 @@
      * 从MediaStream提取单帧截图（创建临时video元素，用后即销毁）
      * @param {MediaStream} stream - 媒体流
      * @param {number} jpegQuality - JPEG压缩质量 (0-1)
+     * @param {boolean} [fullResolution] - true 时保留原生分辨率（手动截图用），不缩放到720p
      * @returns {Promise<{dataUrl: string, width: number, height: number}|null>}
      */
-    async function captureFrameFromStream(stream, jpegQuality) {
+    async function captureFrameFromStream(stream, jpegQuality, fullResolution) {
         if (!stream || !stream.active) return null;
         var video = document.createElement('video');
         video.srcObject = stream;
@@ -293,7 +296,7 @@
                 video.addEventListener('loadeddata', resolve, { once: true });
             });
         }
-        var frame = captureCanvasFrame(video, jpegQuality, true); // detectBlack=true
+        var frame = captureCanvasFrame(video, jpegQuality, true, fullResolution); // detectBlack=true
         video.srcObject = null;
         video.remove();
         return frame; // {dataUrl, width, height} or null
