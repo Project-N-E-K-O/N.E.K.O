@@ -6461,10 +6461,12 @@ async def proactive_chat(request: Request):
             )
             # 不再把 avoid 指令作为独立的最后一条 HumanMessage 追加在 12.5k 末尾
             # （弱模型容易把这条 meta 指令的原文/脚手架当正文吐出来）。改为**重建
-            # 同一个 Human turn**：avoid 约束在前、BEGIN 触发句在最后，让模型看到的
-            # 最后一句是中性的"请开始"而非可照抄的指令文本。System 段（generate_prompt）
-            # 原样复用；vision 图保留。
-            regen_human_text = f"{avoid_msg}\n\n{begin_text}"
+            # 同一个 Human turn**：avoid 约束在前，后接原始 human_text。human_text 本身
+            # = dynamic_context_for_phase2 + BEGIN 触发句，所以一来保留了音乐 tag、
+            # 模糊匹配披露、"正在放歌时禁止再推歌"等运行时约束（否则 regen 可能回出被
+            # 禁止的内容，Codex P1 / CodeRabbit），二来它仍以 BEGIN 句结尾，模型看到的
+            # 最后一句还是中性的"请开始"而非可照抄的指令文本。System 段原样复用；vision 图保留。
+            regen_human_text = f"{avoid_msg}\n\n{human_text}"
             if phase2_use_vision:
                 regen_human_content = [
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},

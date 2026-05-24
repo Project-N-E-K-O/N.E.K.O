@@ -3222,9 +3222,11 @@ MEME_TOPIC_NO_KEYWORD = {
 
 def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> str:
     """组装表情包话题行；keyword 非空时带上它（描述梗内容），否则退回通用措辞。"""
-    if keyword:
+    # 先归一化空白：纯空白关键词（"   "）应视为无关键词，否则会误走带关键词模板。
+    normalized_keyword = " ".join((keyword or "").split())
+    if normalized_keyword:
         return _loc(MEME_TOPIC_WITH_KEYWORD, lang).format(
-            keyword=keyword, title=title, source=source
+            keyword=normalized_keyword, title=title, source=source
         )
     return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
 
