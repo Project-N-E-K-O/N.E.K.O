@@ -3180,6 +3180,10 @@ async def startup():
     except Exception as e:
         logger.warning(f"[Agent] Token tracker init failed: {e}")
 
+    # 注：模块预热统一由 main_server 在其 runtime init 完成后触发（见
+    # _ensure_main_server_runtime_initialized 末尾）。合并模式下三个 app 同进程，
+    # 那一处覆盖本进程全部 lazy 模块；不在这里另起，避免与启动期抢 GIL。
+
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
     Modules.openclaw = OpenClawAdapter()

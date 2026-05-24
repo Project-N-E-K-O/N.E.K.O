@@ -20,10 +20,22 @@ import re
 import json
 import time
 import urllib.parse
-from bs4 import BeautifulSoup
 from typing import List, Dict, Any
 from collections import Counter
 from utils.logger_config import get_module_logger
+
+
+# bs4 import 偏重且只在抓取解析时用到，不在启动链上：首次使用时再 import，
+# 由 module_warmup 预热。
+_BeautifulSoup = None
+
+
+def _get_beautifulsoup():
+    global _BeautifulSoup
+    if _BeautifulSoup is None:
+        from bs4 import BeautifulSoup
+        _BeautifulSoup = BeautifulSoup
+    return _BeautifulSoup
 
 
 # ==================================================
@@ -746,7 +758,7 @@ class MusopenCrawler(BaseMusicCrawler):
             response = await self.client.get(url)
             response.raise_for_status()
             # === Musopen 封面抓取 ===
-            soup = await asyncio.to_thread(BeautifulSoup, response.text, 'lxml')
+            soup = await asyncio.to_thread(_get_beautifulsoup(), response.text, 'lxml')
             cover_url = ""
             
             # 1. 提取网页头部的 Open Graph 图片 (最清晰的原版封面或肖像)
@@ -819,7 +831,7 @@ class FMACrawler(BaseMusicCrawler):
             # 交给 httpx 自动进行 URL 安全编码
             response = await self.client.get(search_url, params=params)
             response.raise_for_status()
-            soup = await asyncio.to_thread(BeautifulSoup, response.text, 'lxml')
+            soup = await asyncio.to_thread(_get_beautifulsoup(), response.text, 'lxml')
 
             # FMA 将音轨信息存在 `data-track-info` 属性中
             play_items = soup.find_all(attrs={"data-track-info": True})
@@ -898,7 +910,7 @@ class BandcampCrawler(BaseMusicCrawler):
             if response.status_code != 200:
                 return []
 
-            soup = await asyncio.to_thread(BeautifulSoup, response.text, 'lxml')
+            soup = await asyncio.to_thread(_get_beautifulsoup(), response.text, 'lxml')
             
             # 搜索页的链接藏在 .heading a 里面
             items = soup.select('.heading a')
@@ -919,7 +931,7 @@ class BandcampCrawler(BaseMusicCrawler):
                 
                 try:
                     track_res = await self.client.get(target_url)
-                    track_soup = await asyncio.to_thread(BeautifulSoup, track_res.text, 'lxml')
+                    track_soup = await asyncio.to_thread(_get_beautifulsoup(), track_res.text, 'lxml')
                     
                     script_data = track_soup.find('script', attrs={'data-tralbum': True})
                     if not script_data:

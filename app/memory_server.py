@@ -2842,6 +2842,50 @@ async def _periodic_reflection_synthesis_loop():
         await asyncio.sleep(interval)
 
 
+async def _bootstrap_embedding_worker(fact_store, persona_manager, reflection_engine) -> None:
+    """ready 后在后台 bootstrap 向量预热 / 去重 worker。
+
+    重 import（``memory.embedding_worker`` 拉起 embedding 栈 ~0.6s）和服务构造
+    （``get_embedding_service()`` 可能 probe/load 模型）全程在 ``to_thread`` 里跑，
+    不阻塞 event loop；``start()`` 是轻量的（只 ``create_task``），回到 loop 上调。
+    worker 自带 warmup 延迟、向量不可用也会降级，所以从 memory 启动关键路径移出来
+    对 greeting 零影响。
+    """
+    global embedding_warmup_worker, fact_dedup_resolver
+    try:
+        def _build():
+            from memory.embedding_worker import EmbeddingWarmupWorker
+            from memory.fact_dedup import FactDedupResolver
+            from config import VECTORS_WARMUP_DELAY_SECONDS
+
+            def _current_catgirl_names() -> list[str]:
+                try:
+                    data = _config_manager.load_characters()
+                    return list((data or {}).get('猫娘', {}).keys())
+                except Exception:
+                    return []
+
+            resolver = FactDedupResolver(fact_store)
+            worker = EmbeddingWarmupWorker(
+                get_persona_manager=lambda: persona_manager,
+                get_reflection_engine=lambda: reflection_engine,
+                get_fact_store=lambda: fact_store,
+                get_character_names=_current_catgirl_names,
+                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+                get_dedup_resolver=lambda: fact_dedup_resolver,
+            )
+            return worker, resolver
+
+        worker, resolver = await asyncio.to_thread(_build)
+        fact_dedup_resolver = resolver
+        embedding_warmup_worker = worker
+        embedding_warmup_worker.start()
+    except Exception as e:
+        logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
+        embedding_warmup_worker = None
+        fact_dedup_resolver = None
+
+
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -2988,35 +3032,14 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
-        # The worker is optional; startup should continue if vectors are
-        # unavailable or its bootstrap fails.
-        try:
-            from memory.embedding_worker import EmbeddingWarmupWorker
-            from memory.fact_dedup import FactDedupResolver
-            from config import VECTORS_WARMUP_DELAY_SECONDS
-
-            def _current_catgirl_names() -> list[str]:
-                try:
-                    data = _config_manager.load_characters()
-                    return list((data or {}).get('猫娘', {}).keys())
-                except Exception:
-                    return list(catgirl_names)
-
-            fact_dedup_resolver = FactDedupResolver(fact_store)
-
-            embedding_warmup_worker = EmbeddingWarmupWorker(
-                get_persona_manager=lambda: persona_manager,
-                get_reflection_engine=lambda: reflection_engine,
-                get_fact_store=lambda: fact_store,
-                get_character_names=_current_catgirl_names,
-                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
-                get_dedup_resolver=lambda: fact_dedup_resolver,
-            )
-            embedding_warmup_worker.start()
-        except Exception as e:
-            logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
-            embedding_warmup_worker = None
-            fact_dedup_resolver = None
+        # 这块的 import（embedding 栈 ~0.6s）+ 服务构造原本同步跑在 startup
+        # handler 里，uvicorn 要等 handler 返回才开端口，于是把 memory 端口
+        # 就绪足足推后 ~1.3s（合并单进程下又被串行放大）。worker 本身是可选的、
+        # 自带 warmup 延迟，greeting 不依赖向量——所以挪到后台 task，重活全程
+        # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
+        _spawn_background_task(
+            _bootstrap_embedding_worker(fact_store, persona_manager, reflection_engine)
+        )
 
         _memory_runtime_init_completed = True
         logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")

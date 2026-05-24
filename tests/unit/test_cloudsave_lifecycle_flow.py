@@ -331,7 +331,6 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
-        stack.enter_context(patch.object(main_server, "_heavy_import_prewarm_started", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
         stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
@@ -433,7 +432,6 @@ async def test_main_server_startup_does_not_mark_normal_when_character_init_fail
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
-        stack.enter_context(patch.object(main_server, "_maybe_schedule_heavy_import_prewarm", Mock()))
         stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
         stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
         stack.enter_context(
@@ -477,7 +475,6 @@ async def test_main_server_startup_aborts_when_root_mode_persist_fails():
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
-        stack.enter_context(patch.object(main_server, "_heavy_import_prewarm_started", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
         stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))

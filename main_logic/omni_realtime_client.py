@@ -34,17 +34,47 @@ from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
 from utils.stepfun_tts_voices import get_stepfun_tts_default_voice
 
-# Gemini Live API SDK (startup-time import)
-try:
-    from google import genai
-    from google.genai import types
-    GEMINI_AVAILABLE = True
-    _GEMINI_IMPORT_ERROR = None
-except Exception as e:
-    GEMINI_AVAILABLE = False
-    _GEMINI_IMPORT_ERROR = e
-    genai = None
-    types = None
+# Gemini Live API SDK 懒加载。该 SDK import 很重（~0.6s）且捎带 mcp（~0.5s），
+# 但只有用户真的用 Gemini Live 语音会话时才需要。改成首次连接时再 import，并由
+# utils.module_warmup 在 ready 后预热，让常规启动（含 greeting）不付这笔钱。
+genai = None
+types = None
+GEMINI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+_GEMINI_IMPORT_ERROR = None
+
+
+def _ensure_gemini_sdk() -> bool:
+    """首次调用时 import google-genai，缓存结果；失败时落一份 SSL 诊断。
+
+    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次（Python 模块缓存幂等）。
+    """
+    global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if genai is not None and types is not None:
+        GEMINI_AVAILABLE = True
+        return True
+    # 已明确判定不可用 → 保持降级。
+    if GEMINI_AVAILABLE is False:
+        return False
+    try:
+        from google import genai as genai_mod
+        from google.genai import types as types_mod
+        # 只补缺失的，保住测试可能注入的 genai mock。
+        if genai is None:
+            genai = genai_mod
+        if types is None:
+            types = types_mod
+        GEMINI_AVAILABLE = True
+        _GEMINI_IMPORT_ERROR = None
+    except Exception as e:
+        # 不覆盖外部强制设过的可用性标志。
+        if GEMINI_AVAILABLE is None:
+            GEMINI_AVAILABLE = False
+            _GEMINI_IMPORT_ERROR = e
+            genai = None
+            types = None
+            _emit_gemini_import_diagnostic(e)
+    return bool(GEMINI_AVAILABLE)
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -82,7 +112,8 @@ class TurnDetectionMode(Enum):
 
 _config_manager = get_config_manager()
 
-if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
+def _emit_gemini_import_diagnostic(import_error) -> None:
+    """genai SDK 首次 import 失败时落一份 SSL 诊断（带 24h 节流去重）。"""
     diagnostics_dir = Path(_config_manager.app_docs_dir) / "logs" / "diagnostics"
     sentinel_path = diagnostics_dir / "gemini_sdk_import_failed.last.json"
     throttle_window_seconds = 24 * 60 * 60
@@ -134,8 +165,8 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
             diag_path = write_ssl_diagnostic(
                 event="gemini_sdk_import_failed",
                 output_dir=str(diagnostics_dir),
-                error=_GEMINI_IMPORT_ERROR,
-                extra={"stage": "module_import"},
+                error=import_error,
+                extra={"stage": "first_use_import"},
             )
             if diag_path:
                 logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
@@ -863,7 +894,7 @@ class OmniRealtimeClient:
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
-        if not GEMINI_AVAILABLE or genai is None or types is None:
+        if not _ensure_gemini_sdk() or genai is None or types is None:
             detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
             raise RuntimeError(
                 "google-genai SDK unavailable. "

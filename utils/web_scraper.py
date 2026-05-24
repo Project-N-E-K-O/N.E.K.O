@@ -138,8 +138,18 @@ def _fix_bilibili_api_env():
         # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
         logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
 
-# 在模块加载时立即执行
-_fix_bilibili_api_env()
+# bilibili_api import 偏重（捎带 apscheduler 等）且该修复还做文件系统初始化，
+# 原本在模块加载时同步执行、拖慢启动。改成首次用到 B 站功能时再跑一次（带守卫），
+# 由 module_warmup 在 ready 后预热。
+_bilibili_env_fixed = False
+
+
+def _ensure_bilibili_env() -> None:
+    global _bilibili_env_fixed
+    if _bilibili_env_fixed:
+        return
+    _bilibili_env_fixed = True
+    _fix_bilibili_api_env()
 
 # ==================================================
 # 从 language_utils 导入区域检测功能
@@ -219,6 +229,7 @@ def get_random_user_agent() -> str:
 
 def _get_bilibili_credential() -> Any | None:
     try:
+        _ensure_bilibili_env()
         from bilibili_api import Credential
         cookies = _get_platform_cookies('bilibili')
         if not cookies:
@@ -250,8 +261,9 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     支持个性化推荐（如果提供了认证信息）
     """
     try:
+        _ensure_bilibili_env()
         from bilibili_api import homepage
-        
+
         # 获取认证信息（如果有）
         credential = _get_bilibili_credential()
         
