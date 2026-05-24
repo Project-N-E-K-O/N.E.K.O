@@ -696,6 +696,22 @@ class TestAgentUrlRegionRouting:
         ) == 'https://www.lanlan.tech:secret@www.lanlan.app:8443/text/v1'
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('url_in,expected', [
+        # 空用户名 + token 密码（bearer 式代理）：保留 :token@
+        ('https://:token@www.lanlan.tech/text/v1',
+         'https://:token@www.lanlan.app/text/v1'),
+        # 用户名 + 空密码：保留 user:@
+        ('https://user:@www.lanlan.tech/text/v1',
+         'https://user:@www.lanlan.app/text/v1'),
+    ])
+    def test_normalize_agent_url_preserves_empty_userinfo_components(
+        self, config_manager, url_in, expected
+    ):
+        """空但存在的 userinfo 分量（is not None）须保留，不被截断式 if 丢掉。"""
+        config_manager._check_non_mainland = lambda: True
+        assert config_manager._normalize_agent_url(url_in) == expected
+
+    @pytest.mark.unit
     def test_normalize_agent_url_non_string_passthrough(self, config_manager):
         config_manager._check_non_mainland = lambda: True
         assert config_manager._normalize_agent_url(None) is None

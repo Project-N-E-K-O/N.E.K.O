@@ -3009,10 +3009,13 @@ class ConfigManager:
 
         # 按组件重建 netloc，只换 host；保留 userinfo/port，避免 host 字串
         # 恰好出现在 user:pass@ 段里被误改（如 user=www.lanlan.tech 的情形）。
+        # 用 is not None 区分「分量为空但存在」与「分量不存在」：urlparse 对
+        # https://:token@host 给出 username='' / password='token'，截断式 if 会
+        # 丢掉整个 :token@，改坏认证语义；只有 username 为 None 才是真没有 userinfo。
         userinfo = ''
-        if parsed.username:
+        if parsed.username is not None:
             userinfo = parsed.username
-            if parsed.password:
+            if parsed.password is not None:
                 userinfo += f':{parsed.password}'
             userinfo += '@'
         try:
