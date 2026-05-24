@@ -2530,6 +2530,10 @@
                     }
                     if (acquiredStream) {
                         var mframe = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                        if (!mframe) {
+                            // 全分辨率编码失败（超大画面等）时，用同一条流退回 720p 再试
+                            mframe = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                        }
                         if (mframe) {
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
@@ -2600,6 +2604,11 @@
                         if (acquiredStream) {
                             isCachedStream = (acquiredStream === S.screenCaptureStream);
                             var frame = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                            if (!frame) {
+                                // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
+                                // 保住正确的窗口内容（优于后端 pyautogui 抓整屏的兜底）。
+                                frame = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                            }
                             if (frame) {
                                 dataUrl = frame.dataUrl;
                                 width = frame.width;
