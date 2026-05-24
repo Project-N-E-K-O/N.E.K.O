@@ -3298,10 +3298,50 @@ async def test_review_due_background_task_emits_without_status(
             meaning="give up",
         )
 
-        await asyncio.sleep(0.05)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            await _drain_scheduled_events()
+            if any("[Review Due]" in text for text in _study_push_texts(ctx)):
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("timed out waiting for review due push")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_review_due_event_includes_knowledge_tracker_cards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        await plugin._cancel_review_due_task()
+        plugin._store.ensure_topic(
+            topic_id="derivatives",
+            name="Derivatives",
+            subject="math",
+            chapter="calculus",
+        )
+        card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+            "derivatives"
+        ).to_dict()
+        plugin._store.upsert_fsrs_card(
+            topic_id="derivatives", card=card, last_rating=0
+        )
+
+        await plugin._emit_review_due_if_needed()
         await _drain_scheduled_events()
 
-        assert any("[Review Due]" in text for text in _study_push_texts(ctx))
+        texts = _study_push_texts(ctx)
+        assert any("[Review Due]" in text for text in texts)
+        assert any("Derivatives" in text for text in texts)
     finally:
         await plugin.shutdown()
 

@@ -64,6 +64,7 @@ class StudyEventBus:
         self._lock = asyncio.Lock()
         self._throttle: dict[str, float] = {}
         self._last_respond_at = -self._RESPOND_COOLDOWN
+        self._last_screen_context_type = ""
         self._screen_buf: list[tuple[str, float]] = []
         self._emit_count = 0
         self._block_count = 0
@@ -76,14 +77,26 @@ class StudyEventBus:
     def block_count(self) -> int:
         return self._block_count
 
-    def schedule_emit(self, event: StudyEvent) -> None:
+    def schedule_emit(self, event: StudyEvent) -> asyncio.Task[None] | None:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             _logger.warning("StudyEventBus.schedule_emit() called outside event loop")
-            return
+            return None
         task = loop.create_task(self.emit(event))
         task.add_done_callback(_on_emit_done)
+        return task
+
+    def should_schedule_screen_context(
+        self, screen_type: str, previous_type: str = ""
+    ) -> bool:
+        normalized = str(screen_type or "").strip()
+        previous = str(previous_type or "").strip()
+        if not normalized:
+            return False
+        return not (
+            self._last_screen_context_type == normalized and previous == normalized
+        )
 
     async def emit(self, event: StudyEvent) -> None:
         async with self._lock:
@@ -143,10 +156,17 @@ class StudyEventBus:
             return False
 
         key = f"screen:{screen_type}"
+        previous_type = str(payload.get("previous_type") or "").strip()
+        if (
+            self._last_screen_context_type == screen_type
+            and previous_type == screen_type
+        ):
+            return False
         last = self._throttle.get(key)
         if last is not None and now - last < 300.0:
             return False
         self._throttle[key] = now
+        self._last_screen_context_type = screen_type
         return True
 
     def _throttle_answer_evaluated(self, event: StudyEvent, now: float) -> bool:

@@ -271,14 +271,17 @@ async def test_schedule_emit_logs_on_exception(caplog: pytest.LogCaptureFixture)
     caplog.set_level(logging.ERROR, logger=event_bus_module._logger.name)
     bus = StudyEventBus(plugin_ctx=_Ctx(fail=True))
 
-    bus.schedule_emit(
+    task = bus.schedule_emit(
         StudyEvent(
             name="session_summarized",
             payload={"duration_minutes": 1, "questions_attempted": 1},
         )
     )
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    assert task is not None
+    done, pending = await asyncio.wait({task}, timeout=1.0)
+    assert task in done
+    assert not pending
+    assert task.exception() is not None
 
     assert "StudyEventBus.schedule_emit() task failed" in caplog.text
 
@@ -294,13 +297,16 @@ async def test_schedule_emit_ignores_cancelled_error(
         raise asyncio.CancelledError
 
     monkeypatch.setattr(bus, "emit", _cancelled)
-    bus.schedule_emit(
+    task = bus.schedule_emit(
         StudyEvent(
             name="session_summarized",
             payload={"duration_minutes": 1, "questions_attempted": 1},
         )
     )
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    assert task is not None
+    done, pending = await asyncio.wait({task}, timeout=1.0)
+    assert task in done
+    assert not pending
+    assert task.cancelled()
 
     assert caplog.text == ""
