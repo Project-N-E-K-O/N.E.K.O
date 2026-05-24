@@ -59,24 +59,49 @@
 import { describe, expect, it } from 'vitest'
 import fc from 'fast-check'
 
+import { tryCompileSafeRegex } from '@/utils/safeRegex'
+
 const REDOS_PATTERN = '(a+)+$'
 const PER_TEST_TIMEOUT_MS = 30_000
 const POST_FIX_BUDGET_MS = 100
 
-function timeRegexMatch(n: number): number {
-  // Reproduces the exact unguarded call site:
-  //   useGridWorkbench.ts:239-245 →
-  //     const re = new RegExp(text, 'i')
-  //     re.test(item.searchIndex || '')
+/**
+ * Reproduce the on-screen filter path used by ``useGridWorkbench``.
+ *
+ * Post-fix (Task 2.4.2) the composable runs the user's regex through
+ * ``tryCompileSafeRegex`` first; if that returns ``null`` (because the
+ * pattern hits the ReDoS heuristic), the composable falls back to a
+ * case-insensitive substring match and never executes the dangerous
+ * ``.test()`` call. We mirror that exact decision tree here so the
+ * test measures what the user actually experiences.
+ *
+ * On UNFIXED code there is no ``tryCompileSafeRegex`` — the composable
+ * called ``new RegExp(text, 'i').test(item.searchIndex)`` directly, so
+ * the equivalent simulation is to also call ``new RegExp`` directly.
+ * That branch is preserved in ``timeUnsafeRegexMatch`` below for the
+ * buggy-state baseline.
+ */
+function timeFilterPath(n: number): number {
+  const idx = 'a'.repeat(n) + 'b'
+  const t0 = performance.now()
+  const re = tryCompileSafeRegex(REDOS_PATTERN, 'i')
+  if (re) {
+    re.test(idx)
+  } else {
+    // Substring fallback — same as useGridWorkbench's fallback branch.
+    idx.toLowerCase().includes(REDOS_PATTERN.toLowerCase())
+  }
+  return performance.now() - t0
+}
+
+function timeUnsafeRegexMatch(n: number): number {
+  // Pre-fix simulation: no guard, straight to V8's backtracker.
   const idx = 'a'.repeat(n) + 'b'
   const t0 = performance.now()
   try {
     new RegExp(REDOS_PATTERN, 'i').test(idx)
   } catch {
-    // Pattern compile errors are not the failure mode we are surfacing — the
-    // bug is that this pattern compiles and then runs for an unbounded time.
-    // Compile failures (which do not happen for `(a+)+$`) are silently
-    // swallowed so the exploration test stays focused on the runtime cost.
+    // Compile errors are not the failure mode we are surfacing.
   }
   return performance.now() - t0
 }
@@ -87,13 +112,10 @@ describe('Phase 4 exploration · useGridWorkbench ReDoS pattern stalls main thre
     () => {
       fc.assert(
         fc.property(fc.integer({ min: 20, max: 30 }), (n) => {
-          const elapsed = timeRegexMatch(n)
+          const elapsed = timeFilterPath(n)
           // Post-fix invariant (Task 2.4.2): the safe-regex guard rejects
           // `(a+)+$`, useGridWorkbench falls back to substring matching,
           // and the call returns in well under 100 ms.
-          //
-          // On UNFIXED code this fails because the V8 backtracker enumerates
-          // up to 2^n alternations on the main thread.
           expect(elapsed).toBeLessThan(POST_FIX_BUDGET_MS)
         }),
         { numRuns: 3, endOnFailure: true },
@@ -107,29 +129,33 @@ describe('Phase 4 exploration · useGridWorkbench ReDoS pattern stalls main thre
     () => {
       // Specific failing case captured for the bugfix log:
       //   n = 25 → searchIndex = 'a'.repeat(25) + 'b'
-      //   On unfixed code this single call takes > 1 s on V8 (≈ 2^25
-      //   backtracks). On post-fix code the safe-regex guard rejects the
-      //   pattern long before ``.test()`` is ever called, so elapsed
-      //   collapses to ~0 ms and this assertion holds.
-      const elapsed = timeRegexMatch(25)
+      //   On post-fix code the safe-regex guard rejects the pattern
+      //   long before ``.test()`` is ever called, so elapsed collapses
+      //   to ~0 ms and this assertion holds.
+      const elapsed = timeFilterPath(25)
       expect(elapsed).toBeLessThan(POST_FIX_BUDGET_MS)
     },
     PER_TEST_TIMEOUT_MS,
   )
 
   it(
-    'buggy-state baseline: `(a+)+$` against a 25-char "a"-padded input currently stalls > 100 ms (THE BUG)',
+    'unguarded baseline still confirms the underlying engine bug exists',
     () => {
-      // This test passes on the CURRENT (unfixed) implementation and
-      // documents the exponential blow-up: a single regex match against an
-      // adversarial 26-byte input exceeds the 100 ms main-thread budget.
-      // Once Requirement 2.5 / Task 2.4.2 lands, this assertion will start
-      // failing — that is the expected positive signal that the fix is in
-      // place (the safe-regex guard rejects `(a+)+$` and the fallback path
-      // returns in microseconds).
-      const elapsed = timeRegexMatch(25)
+      // Sanity check: even after the safe-regex guard ships, V8 still
+      // has the catastrophic-backtracking behaviour we were guarding
+      // against. If a future engine update made `(a+)+$` cheap, this
+      // assertion would flip and we'd want to revisit whether the
+      // guard is still needed. Until then it pins the rationale.
+      const elapsed = timeUnsafeRegexMatch(25)
       expect(elapsed).toBeGreaterThan(POST_FIX_BUDGET_MS)
     },
     PER_TEST_TIMEOUT_MS,
   )
+
+  it('safe-regex guard returns null for the canonical ReDoS pattern', () => {
+    // Direct unit-level pin: independently of timing, the guard MUST
+    // refuse to compile `(a+)+$`. Reproducible without timing flakes
+    // on slower CI runners.
+    expect(tryCompileSafeRegex(REDOS_PATTERN, 'i')).toBeNull()
+  })
 })

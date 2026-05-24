@@ -17,6 +17,7 @@ export default {
     back: '返回',
     submit: '提交',
     close: '关闭',
+    toggleSelection: '切换选中状态',
     success: '成功',
     error: '错误',
     warning: '警告',

@@ -52,9 +52,12 @@
           :style="itemMotionStyle(index)"
         >
           <Transition name="check-pop">
-            <div
+            <button
               v-if="multiSelectEnabled"
+              type="button"
               class="grid-section__select"
+              :aria-pressed="isItemSelected(item.id)"
+              :aria-label="t('common.toggleSelection')"
               @click.stop="$emit('toggle-selection', item.id)"
             >
               <div
@@ -76,7 +79,7 @@
                   />
                 </svg>
               </div>
-            </div>
+            </button>
           </Transition>
 
           <slot
@@ -95,6 +98,7 @@
 
 <script setup lang="ts" generic="T extends { id: string }">
 import { computed, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAnimatedGridTransition } from '@/composables/useAnimatedGridTransition'
 import type { LayoutMode } from '@/composables/useGridWorkbench'
 
@@ -118,6 +122,8 @@ const props = withDefaults(defineProps<{
 defineEmits<{
   'toggle-selection': [id: string]
 }>()
+
+const { t } = useI18n()
 
 const {
   itemMotionStyle,
@@ -241,6 +247,26 @@ function itemClass(item: T) {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  /* Native <button> reset so the new a11y semantics (Phase 4 task 2.4.1)
+     don't repaint the chip: el-style/font/spacing must stay identical to
+     the previous div implementation, otherwise multi-select mode would
+     visually flicker on rollout. */
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.grid-section__select:focus-visible {
+  /* Focus ring only on keyboard navigation. Mouse / touch users see no
+     focus outline (browser default for :focus-visible). */
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 4px;
+  border-radius: 11px;
 }
 
 .grid-section__check {

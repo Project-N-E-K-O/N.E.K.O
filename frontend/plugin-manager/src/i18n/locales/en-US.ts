@@ -17,6 +17,7 @@ export default {
     back: 'Back',
     submit: 'Submit',
     close: 'Close',
+    toggleSelection: 'Toggle selection',
     success: 'Success',
     error: 'Error',
     warning: 'Warning',

@@ -14,6 +14,8 @@
 import { computed, ref, toValue, type MaybeRefOrGetter, type Ref } from 'vue'
 import { pinyin } from 'pinyin-pro'
 
+import { tryCompileSafeRegex, warnReDoSOnce } from '@/utils/safeRegex'
+
 export type LayoutMode = 'list' | 'single' | 'double' | 'compact'
 export type FilterMode = 'whitelist' | 'blacklist'
 export type GroupSelectionMode = 'single' | 'multiple'
@@ -236,15 +238,24 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     if (!text) return visibleByGroup
 
     if (state.useRegex.value) {
-      try {
-        const re = new RegExp(text, 'i')
-        const matches = (item: T) => re.test(item.searchIndex || '')
+      const re = tryCompileSafeRegex(text, 'i')
+      if (!re) {
+        // ReDoS guard or compile error — fall back to case-insensitive
+        // substring matching so the user still gets *some* filtering
+        // instead of an unfiltered list (or a frozen UI on adversarial
+        // input). One-time console warn keeps devs aware without
+        // spamming the console on every keystroke.
+        warnReDoSOnce(text)
+        const lowered = text.toLowerCase()
+        const matches = (item: T) => (item.searchIndex || '').toLowerCase().includes(lowered)
         return state.filterMode.value === 'blacklist'
           ? visibleByGroup.filter((item) => !matches(item))
           : visibleByGroup.filter(matches)
-      } catch {
-        return visibleByGroup
       }
+      const matches = (item: T) => re.test(item.searchIndex || '')
+      return state.filterMode.value === 'blacklist'
+        ? visibleByGroup.filter((item) => !matches(item))
+        : visibleByGroup.filter(matches)
     }
 
     const lowered = text.toLowerCase()
