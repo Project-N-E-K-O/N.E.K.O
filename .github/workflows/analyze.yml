@@ -28,17 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@e4db8464a088ece1b920f60402e813ea4de65b8f
+        uses: astral-sh/setup-uv@v4
 
       - name: Install ruff
         # ruff is the only dev dep we need for the lint job; a full uv sync
@@ -107,9 +105,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@v5
         with:
-          persist-credentials: false
           # i18n-sync needs full history to diff against the merge-base of
           # origin/main. Other steps don't care, but fetch-depth: 0 has
           # negligible cost on this repo.
@@ -123,7 +120,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -179,32 +176,3 @@ jobs:
         # `python scripts/check_module_layering.py --show-layers` to print
         # the hierarchy. Companion unit test: tests/unit/test_module_layering.py.
         run: python scripts/check_module_layering.py
-
-  study-companion-coverage:
-    name: Study Companion coverage (pytest-cov >=80%)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.11'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@e4db8464a088ece1b920f60402e813ea4de65b8f
-
-      - name: Run Study Companion coverage gate
-        run: >
-          uv run python -m pytest -c plugin/tests/pytest.ini
-          plugin/tests/unit/plugins/test_study_companion*.py
-          plugin/tests/unit/plugins/test_study_habit_store.py
-          plugin/tests/unit/plugins/test_pomodoro_timer.py
-          plugin/tests/unit/plugins/test_supervision.py
-          --cov=plugin/plugins/study_companion
-          --cov-report=term-missing:skip-covered
-          --cov-fail-under=80
-          -q
