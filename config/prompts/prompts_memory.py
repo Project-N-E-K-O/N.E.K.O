@@ -585,6 +585,7 @@ HISTORY_REVIEW_PROMPT = {
 </问题3>
 <问题4> 人称错误的部分：对自己或对方的人称错误，或擅自生成了多轮对话 </问题4>
 <问题5> 角色错误的部分：认知失调，认为自己是大语言模型 </问题5>
+<问题6> 暴露内心独白的部分：把"思考过程／分析／应对策略／打算怎么回复"这类本该藏在心里的内容当成发言说了出来（例如"用户在质疑我的身份，我应该…策略：1.… 2.…"）。这不是真正说出口的台词，应整条删除，只保留角色真正说出口的话。 </问题6>
 
 请注意！
 <要点1> 这是一段情景对话，双方的回答应该是口语化的、自然的、拟人化的。</要点1>
@@ -626,6 +627,7 @@ HISTORY_REVIEW_PROMPT = {
 </Issue3>
 <Issue4> Pronoun errors: incorrect first/second/third person usage, or unauthorized multi-turn generation </Issue4>
 <Issue5> Role errors: cognitive dissonance, believing oneself to be a large language model </Issue5>
+<Issue6> Exposed inner monologue: content that is actually the character's thinking/analysis/response strategy spoken out loud as if it were dialogue (e.g. "The user is challenging my identity, I should… Strategy: 1.… 2.…"). This is not a real spoken line — delete such messages entirely, keeping only what the character actually says out loud. </Issue6>
 
 Important notes:
 <Point1> This is a situational dialogue — both sides should speak conversationally, naturally, and in-character. </Point1>
@@ -667,6 +669,7 @@ Notes:
 </問題3>
 <問題4> 人称の誤り：自分や相手の人称が間違っている、または勝手に複数ターンの会話を生成している </問題4>
 <問題5> 役割の誤り：認知の不一致、自分を大規模言語モデルだと思っている </問題5>
+<問題6> 内心の独白を露出した部分：「思考過程／分析／対応戦略／どう返すかの算段」など本来は心の中に留めるべき内容を、発言として口に出してしまっている（例：「ユーザーが私の正体を疑っている、私は…戦略：1.… 2.…」）。これは実際に口に出した台詞ではないので、その項目をまるごと削除し、キャラクターが本当に口に出した言葉だけを残してください。 </問題6>
 
 注意事項：
 <要点1> これは場面設定のある対話です。双方の返答は口語的で自然、キャラクターに沿ったものであるべきです。</要点1>
@@ -700,6 +703,7 @@ Notes:
 </문제3>
 <문제4> 인칭 오류: 자신이나 상대방의 인칭이 잘못되었거나 무단으로 여러 턴의 대화를 생성 </문제4>
 <문제5> 역할 오류: 인지 부조화, 자신을 대규모 언어 모델이라고 생각 </문제5>
+<문제6> 내면 독백을 드러낸 부분: "사고 과정／분석／대응 전략／어떻게 답할지에 대한 계획"처럼 원래 속으로만 두어야 할 내용을 발언으로 입 밖에 낸 경우(예: "사용자가 내 정체를 의심하고 있다, 나는… 전략: 1.… 2.…"). 이는 실제로 입 밖에 낸 대사가 아니므로 해당 항목을 통째로 삭제하고, 캐릭터가 실제로 말한 대사만 남기세요. </문제6>
 
 주의사항:
 <요점1> 이것은 상황 대화입니다. 양쪽의 답변은 구어체적이고 자연스러우며 캐릭터에 맞아야 합니다.</요점1>
@@ -733,6 +737,7 @@ Notes:
 </Проблема3>
 <Проблема4> Ошибки местоимений: неправильное использование первого/второго/третьего лица или несанкционированная генерация нескольких реплик </Проблема4>
 <Проблема5> Ошибки роли: когнитивный диссонанс, считая себя большой языковой моделью </Проблема5>
+<Проблема6> Раскрытый внутренний монолог: содержание, которое на самом деле является размышлением/анализом/стратегией ответа персонажа, произнесённое вслух как реплика (например, «Пользователь сомневается в моей личности, мне следует… Стратегия: 1.… 2.…»). Это не настоящая произнесённая реплика — удалите такие сообщения целиком, оставив только то, что персонаж действительно говорит вслух. </Проблема6>
 
 Важные замечания:
 <Пункт1> Это ситуативный диалог — обе стороны должны говорить разговорно, естественно и в образе.</Пункт1>
@@ -755,7 +760,7 @@ Notes:
         ...
     ]
 }""",
-    "es": """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona y errores de rol. Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
+    "es": """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona, errores de rol y monólogo interno expuesto (contenido que en realidad es el razonamiento/análisis/estrategia de respuesta del personaje dicho en voz alta como si fuera diálogo, p. ej. "El usuario cuestiona mi identidad, debería… Estrategia: 1.… 2.…"; no es una frase realmente dicha, elimina esos mensajes por completo y conserva solo lo que el personaje dice en voz alta). Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
 
 [Importante] NO elimines ni fusiones la retroalimentación negativa de {MASTER_NAME} (declaraciones imperativas como "no menciones X / deja de hacer Y / no quiero oír Z") — son señales de alto valor; el sistema de memoria aguas abajo depende de ellas para evitar volver a tropezar. Manténlas textualmente aunque te parezcan "redundantes" o "repetitivas".
 
@@ -777,7 +782,7 @@ Notas:
 - Conserva la información central y el contenido importante.
 - Asegura lógica clara y coherente.
 - Elimina redundancia, repetición y contradicciones evidentes.""",
-    "pt": """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa e erros de papel. Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
+    "pt": """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa, erros de papel e monólogo interno exposto (conteúdo que na verdade é o raciocínio/análise/estratégia de resposta do personagem dito em voz alta como se fosse diálogo, p. ex. "O usuário está questionando minha identidade, eu deveria… Estratégia: 1.… 2.…"; não é uma fala realmente dita, remova essas mensagens por completo e mantenha apenas o que o personagem realmente diz em voz alta). Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
 
 [Importante] NÃO remova nem mescle o feedback negativo de {MASTER_NAME} (declarações imperativas como "não mencione X / pare de fazer Y / não quero ouvir Z") — são sinais de alto valor; o sistema de memória downstream depende deles para evitar tropeçar de novo. Preserve-os literalmente mesmo que pareçam "redundantes" ou "repetitivos" para você.
 
