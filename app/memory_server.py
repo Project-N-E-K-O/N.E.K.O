@@ -3306,6 +3306,24 @@ async def maybe_spawn_review(name: str) -> None:
         correction_tasks[name] = task
 
 
+async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
+    """记一次 review 失败到失败退避计数（Gate 6 用），返回累计次数。
+
+    输入 fingerprint 与上次失败记录不同 → 先把预算归零再 +1，让每段
+    history tail 各享独立的 N 次预算，不跨输入累积（Codex P2）。'failed'
+    返回分支和 except 异常分支共用本函数，避免两处逻辑漂移。
+    """
+    from memory.recent import build_review_fingerprint
+    state = _maint_state.setdefault(lanlan_name, {})
+    cur_fp = build_review_fingerprint(snapshot)
+    if state.get('review_fail_fp') != cur_fp:
+        state['review_fail_attempts'] = 0
+    state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
+    state['review_fail_fp'] = cur_fp
+    await _asave_maint_state()
+    return state['review_fail_attempts']
+
+
 async def _run_review_in_background(
     lanlan_name: str, snapshot: list, cancel_event: asyncio.Event,
 ):
@@ -3372,24 +3390,27 @@ async def _run_review_in_background(
             # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
             # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
             # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
-            from memory.recent import build_review_fingerprint
-            cur_fp = build_review_fingerprint(snapshot)
-            # 输入已变（与上次失败记下的 fingerprint 不同）→ 这是新输入的第一次
-            # 失败，预算从 0 重新计起。否则不同 history tail 的失败会跨输入累积，
-            # 把只失败过一次的新对话提前 dead-letter（Codex P2）。
-            if state.get('review_fail_fp') != cur_fp:
-                state['review_fail_attempts'] = 0
-            state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
-            state['review_fail_fp'] = cur_fp
+            attempts = await _record_review_failure(lanlan_name, snapshot)
             logger.info(
                 f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
-                f"失败退避计数 → {state['review_fail_attempts']}"
+                f"失败退避计数 → {attempts}"
             )
-            await _asave_maint_state()
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
+        # review_history 正常会把内部异常收口成 ('failed', None)；但万一它直接
+        # 抛（try 外的初始化 / SDK 内部 / 未来重构），这里也要把失败计入退避，
+        # 否则 Gate 6 永远拿不到预算、持续重烧仍会发生（CodeRabbit Major）。
+        # 落盘失败本身不应再掀翻 finally 的清理。
+        try:
+            attempts = await _record_review_failure(lanlan_name, snapshot)
+            logger.error(
+                f"❌ {lanlan_name} 的记忆整理任务出错（失败退避计数 → {attempts}）: {e}"
+            )
+        except Exception as se:
+            logger.error(
+                f"❌ {lanlan_name} 的记忆整理任务出错: {e}（退避计数落盘失败: {se}）"
+            )
     finally:
         # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
         # 新 event，本 task 不应该把它们清掉。

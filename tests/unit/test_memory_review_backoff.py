@@ -202,6 +202,31 @@ async def test_failed_resets_budget_on_input_change():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_run_review_exception_bumps_backoff():
+    """review_history 直接抛异常（而非返回 ('failed', None)）也要计入失败退避，
+    否则 Gate 6 拿不到预算、持续重烧仍会发生（CodeRabbit Major）。"""
+    from app import memory_server
+    from memory.recent import build_review_fingerprint
+
+    name = "测试角色异常"
+    snapshot = _history(10)
+    memory_server._maint_state.pop(name, None)
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(side_effect=RuntimeError("boom"))
+    cancel_event = asyncio.Event()
+
+    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+        await memory_server._run_review_in_background(name, snapshot, cancel_event)
+
+    state = memory_server._maint_state[name]
+    assert state["review_fail_attempts"] == 1
+    assert state["review_fail_fp"] == build_review_fingerprint(snapshot)
+    memory_server._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_failed_same_input_accumulates_budget():
     """同一输入连续失败才累积预算（与跨输入复位对偶）。"""
     from app import memory_server
