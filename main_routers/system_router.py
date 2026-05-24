@@ -62,6 +62,8 @@ from cachetools import TTLCache
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.activity.system_signals import is_remote_backend_deployment
+from main_logic.activity.tracker import _EXTERNAL_SIGNAL_MIN_INTERVAL
 from config import (
     AUTOSTART_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
@@ -199,21 +201,16 @@ def _is_loopback_request(request: Request) -> bool:
         return False
 
 
-def _is_remote_backend_deployment() -> bool:
-    """``NEKO_ACTIVITY_TRACKER_REMOTE`` / ``ACTIVITY_TRACKER_REMOTE`` 兜底开关。
-
-    /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
-    远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
-    会被反向代理 / 隧道绕过，这条环境变量是运维显式声明"后端不在用户本机"
-    的硬开关，命中就直接拒绝本地截图。
-
-    用法和 PR #1015 的活动追踪器保持一致，避免再发明一套部署变量。
-    """
-    for key in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
-        raw = os.getenv(key, "").strip().lower()
-        if raw in ("1", "true", "yes", "on"):
-            return True
-    return False
+# /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
+# 远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
+# 会被反向代理 / 隧道绕过，``NEKO_ACTIVITY_TRACKER_REMOTE`` 是运维显式
+# 声明"后端不在用户本机"的硬开关，命中就直接拒绝本地截图。
+#
+# 真正的实现在 ``main_logic/activity/system_signals.is_remote_backend_deployment``
+# —— PR #1015 给 activity tracker 用的，这里直接复用避免再发明一套部署变量。
+# 私有别名保留是为了 ``tests/unit/test_system_screenshot_router.py`` 还
+# 在调 ``system_router_module._is_remote_backend_deployment()``。
+_is_remote_backend_deployment = is_remote_backend_deployment
 
 
 def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
@@ -1848,6 +1845,22 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
+
+    # Telemetry：主动搭话实际投递。channel 是低基数 enum（vision/news/video/
+    # personal/music/meme/mini_game/...），截断防意外高基数。配合 settings_state
+    # 的 proactive 配置档，能看深度用户每天实际被主动搭话几次。
+    #
+    # 不在这里做 responded 回应率配对：用户消息分发在 core.py（main_logic 层），
+    # 主动搭话在 main_routers 层，module-layering CI 禁止 core.py 反向 import
+    # system_router；跨层共享"上次投递时刻"状态会破坏分层。回应率由 server 端
+    # 用 proactive_fired 时刻与用户消息活动 timestamp 关联粗估即可，要精确配对
+    # 再单独开 PR。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("proactive_fired", channel=(str(channel) or "default")[:24])
+    except Exception:
+        # 埋点失败不能影响主动搭话投递
+        pass
 
 
 # ---------- Mini-game 邀请短路状态管理 ----------
@@ -4142,6 +4155,321 @@ async def backend_interactive_screenshot(request: Request):
                 os.remove(tmp_path)
         except Exception:
             logger.debug("清理交互截图临时文件失败: %s", tmp_path, exc_info=True)
+
+
+# ── Frontend-pushed activity signals (cross-platform OS signal channel) ──
+#
+# Per-lanlan throttle for ``/api/activity_signal``. Keyed by lanlan_name,
+# value is the timestamp of the last accepted push. Bounded — see
+# ``_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES`` — to defend against an
+# attacker spraying lanlan_names; in practice the dict has 1-3 entries.
+# Concurrent access from FastAPI's worker pool is safe because Python
+# dict ops are atomic under the GIL and we tolerate occasional rate-limit
+# slippage (worst case: an extra push slips through).
+_ACTIVITY_SIGNAL_THROTTLE: dict[str, float] = {}
+_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES = 64
+
+
+def _activity_signal_validate_float(
+    data: dict, key: str, lo: float | None, hi: float | None,
+) -> tuple[float | None, str | None]:
+    """Coerce ``data[key]`` to a bounded float; ``None`` means absent.
+
+    Tracker treats absent fields as neutral defaults (see
+    ``UserActivityTracker.push_external_system_signal`` docstring), so
+    we keep ``None`` distinct from a present-but-invalid value — the
+    latter is a 400 with a specific error.
+
+    Non-finite values (``NaN`` / ``±Infinity``) are rejected explicitly
+    before range comparison — ``float('nan') < lo`` is silently
+    ``False``, so they'd otherwise bypass the bounds check. Worse,
+    serialising them downstream (state-machine logs, JSON responses)
+    crashes since standard JSON forbids them. ``math.isfinite`` is the
+    correct guard: it rejects NaN and both infinities while accepting
+    every normal/subnormal float.
+    """
+    raw = data.get(key)
+    if raw is None:
+        return None, None
+    # Reject booleans before float coercion (Codex F8 on PR #1477).
+    # ``bool`` is a subclass of ``int`` in Python, so ``float(True)``
+    # silently returns ``1.0`` and ``float(False)`` returns ``0.0``,
+    # which would slip past the range checks below as legitimate signal
+    # values. ``isinstance(raw, bool)`` catches both before the int
+    # / float fast paths in ``float()``.
+    if isinstance(raw, bool):
+        return None, f"{key} must be a number"
+    try:
+        val = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is raised by ``float()`` when the integer is
+        # too large to fit in a C double (Codex F9 on PR #1477) —
+        # JSON allows arbitrary-precision ints which Python loads as
+        # native big ints, and ``float(10**400)`` blows up. Without
+        # this case the request becomes a 500 instead of a clean 400,
+        # giving a low-cost crash vector to anyone POSTing oversized
+        # numeric literals.
+        return None, f"{key} must be a number"
+    if not math.isfinite(val):
+        return None, f"{key} must be finite"
+    if lo is not None and val < lo:
+        return None, f"{key} must be >= {lo}"
+    if hi is not None and val > hi:
+        return None, f"{key} must be <= {hi}"
+    return val, None
+
+
+def _activity_signal_validate_str(
+    data: dict, key: str,
+) -> tuple[str | None, str | None]:
+    raw = data.get(key)
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str):
+        return None, f"{key} must be a string"
+    return raw, None
+
+
+@router.post('/activity_signal')
+async def push_activity_signal(request: Request):
+    """Accept OS-activity signals pushed by the frontend on a heartbeat.
+
+    Companion to ``UserActivityTracker.push_external_system_signal()``
+    (PR #1015 ``main_logic/activity/tracker.py:347``), exposing the
+    push channel as HTTP for the "backend doesn't run on the user's
+    machine" deployments. The frontend (Electron preload reading
+    ``powerMonitor.getSystemIdleTime`` + npm ``active-win`` +
+    ``os.cpus()`` + ``nvidia-smi``) POSTs here every ``~5s``; the
+    tracker treats anything fresher than ``_EXTERNAL_SIGNAL_TTL_SECONDS``
+    (15s) as the authoritative OS view, falling back to the local
+    collector when the heartbeat stops. Same fresh-then-fallback path
+    feeds both the async ``get_snapshot`` and the sync variant — see
+    ``tracker._select_system_snapshot``.
+
+    Auth:
+
+    * Origin-present same-origin gate (zero-frontend-cost defence,
+      suggested by CodeRabbit on PR #1477): when the request carries an
+      ``Origin`` / ``Referer`` header AND that origin isn't in
+      ``_get_allowed_local_origins`` (which always includes the current
+      ``request.base_url``), reject with 403. Browser-mediated requests
+      always carry ``Origin`` for POST, so this single check blocks
+      cross-site drive-by JS without breaking ``curl`` / Electron's
+      same-origin renderer / native scripts (no Origin → allowed).
+    * Per-lanlan 5s rate limit below + the tracker's per-character
+      lookup raise spam cost and bound the impact even if Origin
+      validation passes.
+    * A stricter CSRF token mechanism (parity with screenshot endpoints)
+      is tracked for a follow-up security-hardening PR; the threat
+      model write-up lives in issue #1023.
+
+    Body fields (all optional except ``lanlan_name``):
+      * ``lanlan_name`` (required) — which character's tracker to update
+      * ``window_title`` — string, raw active-window title
+      * ``process_name`` — string, owning process exe name (e.g. ``"Code.exe"``)
+      * ``idle_seconds`` — float ≥ 0, OS-wide keyboard/mouse idle
+      * ``cpu_avg_30s`` — float in ``[0, 100]``, rolling CPU average
+      * ``gpu_utilization`` — float in ``[0, 100]``, primary GPU utilisation
+
+    Returns 200 on success, 400 on malformed payload, 404 if
+    ``lanlan_name`` isn't registered, 429 if pushed faster than
+    ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
+    tracker hasn't initialised yet.
+    """
+    # ── Origin-present same-origin gate ────────────────────────────
+    # When the request carries an Origin (or Referer fallback) but it's
+    # not in our allowed-origins set, refuse — that's the drive-by CSRF
+    # signature. Missing Origin means a non-browser caller (curl, Node,
+    # native script) which we explicitly allow because there's no
+    # mandatory CSRF token yet. Same-origin browser requests pass
+    # naturally because their Origin matches ``request.base_url``,
+    # which ``_get_allowed_local_origins`` always includes.
+    #
+    # Opaque-origin guard (Codex F5 on PR #1477): browsers send the
+    # literal string ``"null"`` as Origin for sandboxed iframes,
+    # ``file://`` pages, and certain extension contexts. ``urlsplit``
+    # parses "null" into an empty scheme/netloc which
+    # ``_normalize_origin_value`` turns into ``""`` — without this
+    # check that bypasses to the no-Origin "allowed" branch. We
+    # explicitly reject the raw "null" string before normalisation, on
+    # both Origin and Referer (the latter is our fallback).
+    raw_origin = (request.headers.get("origin") or "").strip().lower()
+    raw_referer = (request.headers.get("referer") or "").strip().lower()
+    if raw_origin == "null" or raw_referer == "null":
+        return _json_no_store_response(
+            {"success": False, "error": "origin not allowed"},
+            status_code=403,
+        )
+
+    request_origin = _get_request_origin(request)
+    if request_origin:
+        allowed = _get_allowed_local_origins(request)
+        if request_origin not in allowed:
+            return _json_no_store_response(
+                {"success": False, "error": "origin not allowed"},
+                status_code=403,
+            )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return _json_no_store_response(
+            {"success": False, "error": "invalid JSON body"},
+            status_code=400,
+        )
+    if not isinstance(data, dict):
+        return _json_no_store_response(
+            {"success": False, "error": "body must be a JSON object"},
+            status_code=400,
+        )
+
+    lanlan_name = data.get("lanlan_name")
+    if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+        return _json_no_store_response(
+            {"success": False, "error": "lanlan_name required"},
+            status_code=400,
+        )
+    lanlan_name = lanlan_name.strip()
+
+    idle_seconds, err = _activity_signal_validate_float(
+        data, "idle_seconds", 0.0, None,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    cpu_avg_30s, err = _activity_signal_validate_float(
+        data, "cpu_avg_30s", 0.0, 100.0,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    gpu_utilization, err = _activity_signal_validate_float(
+        data, "gpu_utilization", 0.0, 100.0,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+
+    window_title, err = _activity_signal_validate_str(data, "window_title")
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    process_name, err = _activity_signal_validate_str(data, "process_name")
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+
+    # ── Empty-signal guard (Codex F6 + CodeRabbit F7 on PR #1477) ──
+    # If every signal field is absent, the tracker's
+    # ``push_external_system_signal`` would still mark
+    # ``os_signals_available=True`` and default missing numerics to
+    # ``0.0`` — i.e., a payload of ``{"lanlan_name": "X"}`` would
+    # silently overwrite real state with synthetic "idle=0 / cpu=0 /
+    # no window". The frontend client already skips empty bridge
+    # snapshots, but a malicious or buggy native caller could still
+    # POST an empty payload, so we reject server-side too.
+    #
+    # Blank-string handling (CodeRabbit F7): ``"window_title": ""`` or
+    # whitespace-only strings carry no information and have the same
+    # poisoning effect as ``None``. Treat them as absent for the
+    # all-empty check; non-blank strings (legit "no foreground window
+    # right now" semantics with explicit ``""``) would still trip the
+    # check if every other field is also None — which is the right
+    # outcome, that payload tells the tracker literally nothing.
+    if all(
+        v is None or (isinstance(v, str) and not v.strip())
+        for v in (
+            idle_seconds, cpu_avg_30s, gpu_utilization,
+            window_title, process_name,
+        )
+    ):
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "at least one signal field required",
+            },
+            status_code=400,
+        )
+
+    # Per-lanlan throttle — matches the frontend's 5s heartbeat. TTL
+    # is 15s (3× this interval) so even if 2 of every 3 pushes get
+    # rate-limited the tracker stays inside its freshness window. Spam
+    # control, not auth — the character lookup below is the real
+    # integrity check.
+    now = time.time()
+    last_push = _ACTIVITY_SIGNAL_THROTTLE.get(lanlan_name)
+    if last_push is not None and (now - last_push) < _EXTERNAL_SIGNAL_MIN_INTERVAL:
+        retry_after = max(
+            0.0, _EXTERNAL_SIGNAL_MIN_INTERVAL - (now - last_push),
+        )
+        resp = _json_no_store_response(
+            {
+                "success": False,
+                "error": "rate limited",
+                "retry_after_seconds": round(retry_after, 3),
+            },
+            status_code=429,
+        )
+        # Header is integer seconds per RFC 9110; round up so clients
+        # don't retry into the same window.
+        resp.headers["Retry-After"] = str(int(retry_after) + 1)
+        return resp
+
+    session_manager = get_session_manager()
+    mgr = session_manager.get(lanlan_name)
+    if not mgr:
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": f"lanlan_name {lanlan_name!r} not registered",
+            },
+            status_code=404,
+        )
+    tracker = getattr(mgr, "_activity_tracker", None)
+    if tracker is None:
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "activity tracker not initialised for this character",
+            },
+            status_code=503,
+        )
+
+    try:
+        tracker.push_external_system_signal(
+            window_title=window_title,
+            process_name=process_name,
+            idle_seconds=idle_seconds,
+            cpu_avg_30s=cpu_avg_30s,
+            gpu_utilization=gpu_utilization,
+            now=now,
+        )
+    except Exception as e:
+        logger.exception(
+            "push_external_system_signal failed for %s", lanlan_name,
+        )
+        return _json_no_store_response(
+            {"success": False, "error": f"tracker rejected push: {e}"},
+            status_code=500,
+        )
+
+    _ACTIVITY_SIGNAL_THROTTLE[lanlan_name] = now
+    # Bound the dict: in practice lanlan_names are 1-3, but if an
+    # attacker sprays unique names we trim oldest. Sorted ascending by
+    # timestamp; keep the freshest MAX entries.
+    if len(_ACTIVITY_SIGNAL_THROTTLE) > _ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES:
+        excess = sorted(
+            _ACTIVITY_SIGNAL_THROTTLE.items(), key=lambda kv: kv[1],
+        )[:-_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES]
+        for key, _ in excess:
+            _ACTIVITY_SIGNAL_THROTTLE.pop(key, None)
+
+    return _json_no_store_response({"success": True})
 
 
 # ================================================================

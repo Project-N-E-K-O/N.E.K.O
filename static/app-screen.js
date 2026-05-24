@@ -221,9 +221,11 @@
      * @param {HTMLVideoElement} video - 视频源元素
      * @param {number} jpegQuality - JPEG压缩质量 (0-1)，默认0.8
      * @param {boolean} detectBlack - 是否检测纯黑帧（窗口最小化等），默认false
+     * @param {boolean} [fullResolution] - true 时保留原生分辨率不缩放（手动截图用）
      * @returns {{dataUrl: string, width: number, height: number}|null}
+     *   canvas 绘制/编码失败（如超大虚拟显示器超出 canvas 上限）时返回 null，由调用方兜底
      */
-    function captureCanvasFrame(video, jpegQuality, detectBlack) {
+    function captureCanvasFrame(video, jpegQuality, detectBlack, fullResolution) {
         if (jpegQuality === undefined) jpegQuality = 0.8;
 
         // 流无效时 videoWidth/videoHeight 为 0，直接返回 null 避免生成空图
@@ -234,11 +236,13 @@
         var canvas = document.createElement('canvas');
         var ctx = canvas.getContext('2d');
 
-        // 计算缩放后的尺寸（保持宽高比，限制到720p）
+        // 计算缩放后的尺寸（保持宽高比，限制到720p）。
+        // fullResolution=true 时保留原生分辨率不缩放 —— 手动截图走这条路，让裁剪在全
+        // 分辨率上进行，720p 压缩在裁剪后入列前统一做（见 compressScreenshotDataUrlTo720p）。
         var targetWidth = video.videoWidth;
         var targetHeight = video.videoHeight;
 
-        if (targetWidth > C.MAX_SCREENSHOT_WIDTH || targetHeight > C.MAX_SCREENSHOT_HEIGHT) {
+        if (!fullResolution && (targetWidth > C.MAX_SCREENSHOT_WIDTH || targetHeight > C.MAX_SCREENSHOT_HEIGHT)) {
             var widthRatio = C.MAX_SCREENSHOT_WIDTH / targetWidth;
             var heightRatio = C.MAX_SCREENSHOT_HEIGHT / targetHeight;
             var scale = Math.min(widthRatio, heightRatio);
@@ -249,26 +253,41 @@
         canvas.width = targetWidth;
         canvas.height = targetHeight;
 
-        // 绘制视频帧到canvas（缩放绘制）并转换为JPEG
-        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+        // 绘制 + 黑帧检测 + 编码整段做防御：fullResolution 下 canvas 尺寸不再受 720p 约束，
+        // 超大/虚拟显示器可能超出浏览器 canvas 上限，导致 drawImage/getImageData/toDataURL
+        // 抛错或返回空。这里捕获后返回 null，让调用方走兜底（同流退 720p / 后端抓屏），
+        // 而不是把可恢复的失败变成硬失败。
+        var dataUrl;
+        try {
+            ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-        // 黑帧检测：采样中心16x16区域，全黑则返回null（窗口最小化等场景）
-        if (detectBlack) {
-            var sw = Math.min(16, targetWidth), sh = Math.min(16, targetHeight);
-            var sx = Math.floor((targetWidth - sw) / 2);
-            var sy = Math.floor((targetHeight - sh) / 2);
-            var sample = ctx.getImageData(sx, sy, sw, sh);
-            var allBlack = true;
-            for (var i = 0; i < sample.data.length; i += 4) {
-                if (sample.data[i] > 2 || sample.data[i + 1] > 2 || sample.data[i + 2] > 2) {
-                    allBlack = false;
-                    break;
+            // 黑帧检测：采样中心16x16区域，全黑则返回null（窗口最小化等场景）
+            if (detectBlack) {
+                var sw = Math.min(16, targetWidth), sh = Math.min(16, targetHeight);
+                var sx = Math.floor((targetWidth - sw) / 2);
+                var sy = Math.floor((targetHeight - sh) / 2);
+                var sample = ctx.getImageData(sx, sy, sw, sh);
+                var allBlack = true;
+                for (var i = 0; i < sample.data.length; i += 4) {
+                    if (sample.data[i] > 2 || sample.data[i + 1] > 2 || sample.data[i + 2] > 2) {
+                        allBlack = false;
+                        break;
+                    }
                 }
+                if (allBlack) return null;
             }
-            if (allBlack) return null;
+
+            dataUrl = canvas.toDataURL('image/jpeg', jpegQuality);
+        } catch (e) {
+            console.warn('[截图] canvas 绘制/编码失败（可能分辨率超出上限），返回 null 交由调用方兜底:', e);
+            return null;
         }
 
-        var dataUrl = canvas.toDataURL('image/jpeg', jpegQuality);
+        // toDataURL 在部分实现下对超限 canvas 不抛错而返回 'data:,' 空串，这里一并视为失败
+        if (!dataUrl || dataUrl.length < 'data:image/jpeg;base64,'.length) {
+            console.warn('[截图] canvas 编码返回空结果（可能分辨率超出上限），返回 null 交由调用方兜底');
+            return null;
+        }
 
         return { dataUrl: dataUrl, width: targetWidth, height: targetHeight };
     }
@@ -279,9 +298,10 @@
      * 从MediaStream提取单帧截图（创建临时video元素，用后即销毁）
      * @param {MediaStream} stream - 媒体流
      * @param {number} jpegQuality - JPEG压缩质量 (0-1)
+     * @param {boolean} [fullResolution] - true 时保留原生分辨率（手动截图用），不缩放到720p
      * @returns {Promise<{dataUrl: string, width: number, height: number}|null>}
      */
-    async function captureFrameFromStream(stream, jpegQuality) {
+    async function captureFrameFromStream(stream, jpegQuality, fullResolution) {
         if (!stream || !stream.active) return null;
         var video = document.createElement('video');
         video.srcObject = stream;
@@ -293,7 +313,7 @@
                 video.addEventListener('loadeddata', resolve, { once: true });
             });
         }
-        var frame = captureCanvasFrame(video, jpegQuality, true); // detectBlack=true
+        var frame = captureCanvasFrame(video, jpegQuality, true, fullResolution); // detectBlack=true
         video.srcObject = null;
         video.remove();
         return frame; // {dataUrl, width, height} or null

@@ -72,7 +72,30 @@ _ACTIVITY_GUESS_MIN_REFRESH_SECONDS = 30.0
 # seconds. After that the tracker falls back to the local collector
 # (which on remote deployments will be in degraded mode) — better to
 # advertise "no signal" than to keep using stale window data.
-_EXTERNAL_SIGNAL_TTL_SECONDS = 30.0
+#
+# 15s = 3× the 5s heartbeat. The push pipeline stacks two unsynchronised
+# 5s timers — the NEKO-PC bridge sampler (reads OS signals) and the
+# renderer heartbeat (reads the bridge's cached snapshot + POSTs) — so
+# worst-case data age can already approach ~10-12s before any loss. 15s
+# therefore tolerates ~2 consecutive dropped pushes before falling back.
+# Shorter (e.g. 10s) would thrash between fresh/degraded on a single
+# drop over a lossy remote link; 30s keeps trusting a stale "user
+# active" snapshot for too long after the heartbeat dies. 15s balances
+# faster stale-detection against fallback thrash.
+_EXTERNAL_SIGNAL_TTL_SECONDS = 15.0
+
+# Minimum interval between accepted external-signal pushes for a given
+# lanlan_name. Tuned together with the frontend heartbeat: the Electron
+# preload pushes every ~5s, so anything more frequent is either a buggy
+# client (re-entering the heartbeat) or spam. Enforced by the
+# ``/api/activity_signal`` endpoint, not the tracker itself — the
+# tracker is happily idempotent and just overwrites the last push.
+#
+# Pairs with TTL above: TTL is the "data freshness" window, this is the
+# "request frequency" cap. TTL is 3× this interval, so the tracker
+# tolerates ~2 consecutive rate-limited/dropped pushes and still has
+# data within the freshness window.
+_EXTERNAL_SIGNAL_MIN_INTERVAL = 5.0
 
 
 # ── Break-reminder defaults ─────────────────────────────────────────

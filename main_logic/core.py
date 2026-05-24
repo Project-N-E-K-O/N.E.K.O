@@ -1336,10 +1336,26 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
 
-    async def handle_text_data(self, text: str, is_first_chunk: bool = False):
-        """文本回调：处理文本显示和TTS（用于文本模式）"""
+    async def handle_text_data(
+        self,
+        text: str,
+        is_first_chunk: bool = False,
+        *,
+        ui_enabled: bool = True,
+        tts_enabled: bool = True,
+    ):
+        """文本回调：处理文本显示和 TTS（用于文本模式）。
+
+        ``ui_enabled`` / ``tts_enabled`` 拆分由 OmniOfflineClient 的长回复
+        summary 路径用：cutover 之后的 tail 文本只走 UI（保持前端"显示全文"），
+        summary LLM 算出来的浓缩版只走 TTS（保持 TTS 不读完整尾巴）。两个标
+        志互斥也成立——既不去 UI 又不去 TTS 等于丢弃整段，直接 return。
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
+            return
+
+        if not ui_enabled and not tts_enabled:
             return
 
         # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
@@ -1355,8 +1371,10 @@ class LLMSessionManager:
             )
             return
 
-        # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
-        if is_first_chunk and self.use_tts:
+        # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音。
+        # summary epilogue 触发的 TTS-only 注入 is_first_chunk=False，不会
+        # 误清掉本轮已经播放/排队的 prefix 音频。
+        if is_first_chunk and self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
                 self._discard_pending_ai_voice_echo()
@@ -1370,14 +1388,15 @@ class LLMSessionManager:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(
-            text,
-            is_first_chunk,
-            remember_voice_echo=not self.use_tts,
-        )
-        
+        if ui_enabled:
+            await self.send_lanlan_response(
+                text,
+                is_first_chunk,
+                remember_voice_echo=not self.use_tts,
+            )
+
         # 如果配置了TTS，将文本发送到TTS队列或缓存
-        if self.use_tts:
+        if self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
@@ -2000,6 +2019,18 @@ class LLMSessionManager:
             if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
                 self._session_turn_count += 1
+                # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
+                try:
+                    from utils.token_tracker import TokenTracker as _TT
+                    _tt = _TT.get_instance()
+                    _tt.note_first_user_message("voice")
+                    # 每条用户消息：user_message_sent counter（轮数 + voice/text 占比）
+                    # + 累加 per-session 轮数（session_end emit session_turn_count）。
+                    # 只在此真语音消息点调，避开 2041 openclaw 文本 handoff 复用，杜绝双计。
+                    _tt.note_user_message("voice")
+                except Exception:
+                    # 埋点 best-effort，绝不阻塞语音转录消息处理（同文本路径）。
+                    pass
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
@@ -3497,6 +3528,16 @@ class LLMSessionManager:
         self.session_start_failure_count += 1
         self.session_start_last_failure_time = datetime.now()
         logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - diag_start:.2f}秒): {e}")
+        # Telemetry：语音会话启动失败 —— 语音优先桌宠，voice 在用户开口前就坏掉
+        # = 静默 D1 流失（现在完全看不到）。reason 用异常类名（低基数 enum）。
+        # **仅 audio 模式计**：本收口对 text/audio 两种 start_session 都用，text
+        # 启动失败不该误标成 voice_setup_failed 污染该信号。best-effort 不阻塞收口。
+        if input_mode == 'audio':
+            try:
+                from utils.instrument import counter as _instr_counter
+                _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
+            except Exception:
+                pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
         error_str = str(e)
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(
@@ -3999,6 +4040,17 @@ class LLMSessionManager:
                         master_name=self.master_name,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
+                        # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
+                        # 文本是 `tts_enabled=True, ui_enabled=False` 注入的，若 TTS
+                        # 实际不发声它会被 handle_text_data 静默丢掉，但 history 仍被
+                        # 重写成 prefix+summary —— 静音会话会"live 看到全文、reload 看
+                        # 不到尾巴"，是隐性内容丢失。注意 `_resolve_session_use_tts` 对
+                        # text mode 永远返回 True；真正的"发声"还要 DISABLE_TTS=False，
+                        # 否则 tts_worker 会被换成 dummy_tts_worker。
+                        enable_long_response_summary=(
+                            self.use_tts
+                            and not core_config_snapshot.get('DISABLE_TTS', False)
+                        ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
                 else:
@@ -4453,6 +4505,14 @@ class LLMSessionManager:
                     master_name=self.master_name,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
+                    # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
+                    # （理由见 main session 构造点的注释）。pending_use_tts 是热切换
+                    # 准备时已 resolve 的下一轮 use_tts；DISABLE_TTS 仍需独立检查
+                    # 因为它会把 worker 换成 dummy_tts_worker。
+                    enable_long_response_summary=(
+                        self.pending_use_tts
+                        and not core_config_snapshot.get('DISABLE_TTS', False)
+                    ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
@@ -6080,6 +6140,18 @@ class LLMSessionManager:
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
                     self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
+                    # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
+                    try:
+                        from utils.token_tracker import TokenTracker as _TT
+                        _tt = _TT.get_instance()
+                        _tt.note_first_user_message("text")
+                        # 每条用户消息：user_message_sent counter + 累加 per-session 轮数。
+                        # 此处是文本侧 on_user_message 唯一入口，每条真实消息恰好一次。
+                        _tt.note_user_message("text")
+                    except Exception:
+                        # 埋点 best-effort，绝不阻塞用户消息处理；note_first_user_message
+                        # 自身幂等，丢一次也不影响 D1 漏斗统计。
+                        pass
                     # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                     # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
                     # 文本路径，避免 openclaw handoff（会再走一次 handle_input_transcript
@@ -6830,6 +6902,22 @@ class LLMSessionManager:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
+                        # Telemetry：TTS 失败。code 是已归一化的低基数枚举
+                        # （API_ARREARS / API_KEY_REJECTED / TTS_CONNECTION_FAILED ...）。
+                        # 首日听不到语音是核心体验断裂，D1 流失重要信号。
+                        try:
+                            from utils.instrument import counter as _instr_counter
+                            # before_first_loop：TTS 在用户体验到核心 loop 前就坏 =
+                            # 首次体验障碍（开了口但没听到回复）。低基数 true/false/unknown。
+                            try:
+                                from utils.token_tracker import TokenTracker as _TT
+                                _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
+                            except Exception:
+                                _bfl = "unknown"
+                            _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32], before_first_loop=_bfl)
+                        except Exception:
+                            # 埋点 best-effort，绝不影响 TTS 错误的重试/上报主流程。
+                            pass
                         # 可重试的错误：前2次静默重试，第3次失败时上报前端
                         if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
                             self._tts_retry_notify_count += 1
@@ -6842,6 +6930,16 @@ class LLMSessionManager:
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
                         self._confirm_pending_ai_voice_echo(speech_id)
+                        # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
+                        # note_core_loop_completed 的"用户已开口"前置，构成 D1
+                        # 核心 loop 完成信号（每进程一次，内部幂等）。
+                        try:
+                            from utils.token_tracker import TokenTracker as _TT
+                            _TT.get_instance().note_core_loop_completed()
+                        except Exception:
+                            # 埋点 best-effort，绝不影响音频投递主流程；
+                            # note_core_loop_completed 自身幂等。
+                            pass
                     else:
                         self._discard_pending_ai_voice_echo()
                     continue

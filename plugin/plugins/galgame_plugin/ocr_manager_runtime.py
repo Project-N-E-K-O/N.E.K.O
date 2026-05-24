@@ -713,6 +713,22 @@ class RuntimeMixin:
             screen_awareness_model_last_latency_seconds=float(
                 self._screen_awareness_model_last_latency_seconds or 0.0
             ),
+            vision_classifier_enabled=bool(
+                getattr(self._config, "vision_classifier_enabled", False)
+            ),
+            vision_classifier_available=getattr(self, "vision_classifier", None) is not None,
+            vision_classifier_detail=str(
+                getattr(self, "_vision_classifier_detail", "") or ""
+            ),
+            vision_classifier_last_label=str(
+                getattr(self, "_vision_classifier_last_label", "") or ""
+            ),
+            vision_classifier_last_confidence=float(
+                getattr(self, "_vision_classifier_last_confidence", 0.0) or 0.0
+            ),
+            vision_classifier_last_latency_ms=float(
+                getattr(self, "_vision_classifier_last_latency_ms", 0.0) or 0.0
+            ),
         )
 
 
@@ -1070,6 +1086,26 @@ class RuntimeMixin:
             return
         try:
             sample_path = self._screen_awareness_sample_file_path()
+            image_path = ""
+            image_save_error = ""
+            capture_image = getattr(extraction, "captured_image", None)
+            if hasattr(capture_image, "save"):
+                try:
+                    image_dir = sample_path.parent / "images"
+                    image_dir.mkdir(parents=True, exist_ok=True)
+                    screen_type = re.sub(
+                        r"[^a-zA-Z0-9_.-]+",
+                        "_",
+                        str(classification.screen_type or "unknown"),
+                    ).strip("_")[:48] or "unknown"
+                    hash_part = str(extraction.capture_image_hash or "").strip()[:12]
+                    if not hash_part:
+                        hash_part = uuid4().hex[:12]
+                    image_file = image_dir / f"{int(now * 1000)}_{screen_type}_{hash_part}.png"
+                    capture_image.save(image_file)
+                    image_path = str(image_file.relative_to(sample_path.parent))
+                except Exception as exc:
+                    image_save_error = str(exc)
             regions: list[dict[str, Any]] = []
             for region in list(extraction.screen_ocr_regions or [])[:8]:
                 if not isinstance(region, dict):
@@ -1090,6 +1126,8 @@ class RuntimeMixin:
                 "window_title": str(target.title or ""),
                 "width": int(target.width or 0),
                 "height": int(target.height or 0),
+                "image_path": image_path,
+                "image_save_error": image_save_error,
                 "ocr_lines": _stripped_ocr_lines(extraction.text)[:20],
                 "ocr_regions": regions,
                 "visual_features": json_copy(extraction.screen_visual_features or {}),

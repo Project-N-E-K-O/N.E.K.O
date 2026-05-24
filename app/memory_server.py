@@ -2889,7 +2889,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
             install_hooks()
             TokenTracker.get_instance().start_periodic_save()
-            TokenTracker.get_instance().record_app_start()
+            # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+            TokenTracker.get_instance().record_app_start(process="memory_server")
         except Exception as e:
             logger.warning(f"[Memory] Token tracker init failed: {e}")
 

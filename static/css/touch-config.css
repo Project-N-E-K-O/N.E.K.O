@@ -55,7 +55,6 @@
     background: var(--color-n-main);
     padding: var(--spacing-lg) var(--spacing-xl);
     border-radius: var(--radius-card) var(--radius-card) 0 0;
-    -webkit-app-region: drag;
     position: relative;
     display: flex;
     justify-content: space-between;

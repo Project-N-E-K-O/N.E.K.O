@@ -2971,6 +2971,26 @@ class ConfigManager:
 
         return url
 
+    def _normalize_agent_url(self, url: str) -> str:
+        """Agent 模型始终走 lanlan.app（国际 API），统一 lanlan.tech → lanlan.app；
+        国际保留 www（www.lanlan.app），国内剥掉 www（lanlan.app）走就近节点。
+
+        lanlan.tech / lanlan.app 是项目自有域名，AGENT_MODEL_URL 要么是写死的
+        free 默认（https://www.lanlan.tech/text/v1），要么是用户自填的其它服务
+        URL（不含这两个域，replace 自然 no-op），所以直接字符串替换即可。
+        """
+        if not isinstance(url, str):
+            return url
+        url = url.replace('lanlan.tech', 'lanlan.app')
+        try:
+            if not self._check_non_mainland():
+                url = url.replace('www.lanlan.app', 'lanlan.app')
+        except Exception:
+            # 仅 _check_non_mainland 可能抛（GeoIP 探测）。探测失败时不剥 www，
+            # 保留国际形态作安全默认；线路探测不该阻断 URL 推导。
+            pass
+        return url
+
     @staticmethod
     def _derive_livestream_url(original_url: str, prefix: str) -> str:
         """从 livestream server_prefix 派生 lanlan.tech URL 的等价地址。
@@ -3280,7 +3300,7 @@ class ConfigManager:
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
-        config['AGENT_MODEL_URL'] = config['AGENT_MODEL_URL'].replace('lanlan.tech', 'lanlan.app') # TODO: 先放这里
+        config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
         key_field = assist_api_key_fields.get(assist_api_value)
         derived_key = ''
@@ -3463,7 +3483,7 @@ class ConfigManager:
 
         # Agent model always uses international API regardless of region
         if isinstance(config.get('AGENT_MODEL_URL'), str):
-            config['AGENT_MODEL_URL'] = config['AGENT_MODEL_URL'].replace('lanlan.tech', 'lanlan.app')
+            config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
         return config
 

@@ -31,6 +31,7 @@ from .models import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     GalgameConfig,
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     OCR_CAPTURE_PROFILE_STAGE_CONFIG,
@@ -117,6 +118,19 @@ from .ocr_manager_text import TextMixin
 from .ocr_manager_poll import PollMixin
 from .ocr_manager_observe import ObserveMixin
 from .ocr_manager_runtime import RuntimeMixin
+
+
+def _coerce_vision_input_size(value: object) -> tuple[int, int]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            width = max(16, int(value[0]))
+            height = max(16, int(value[1]))
+            return width, height
+        except (TypeError, ValueError):
+            pass
+    return 224, 224
+
+
 class OcrReaderManager(
     CaptureMixin,
     TextMixin,
@@ -259,6 +273,13 @@ class OcrReaderManager(
         self._rapidocr_backend_cache: RapidOcrBackend | None = None
         self._ocr_lang_detector = _OcrLangDetector()
         self._ocr_lang_cooldown_seconds = 60.0
+        self.vision_classifier = None
+        self._vision_classifier_detail = "disabled"
+        self._vision_classifier_last_label = ""
+        self._vision_classifier_last_confidence = 0.0
+        self._vision_classifier_last_latency_ms = 0.0
+        self._vision_classifier_tick_count = 0
+        self._initialize_vision_classifier()
         self._backend_plan_cache_key: tuple[str, ...] | None = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache: SelectedOcrBackendPlan | None = None
@@ -276,6 +297,76 @@ class OcrReaderManager(
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
         self._start_rapidocr_warmup_if_configured()
+
+    def _initialize_vision_classifier(self) -> None:
+        self.vision_classifier = None
+        self._vision_classifier_detail = "disabled"
+        self._vision_classifier_last_label = ""
+        self._vision_classifier_last_confidence = 0.0
+        self._vision_classifier_last_latency_ms = 0.0
+        self._vision_classifier_tick_count = 0
+        if not bool(getattr(self._config, "vision_classifier_enabled", False)):
+            return
+        try:
+            from .core.vision import VisionModelLoader, VisionScreenClassifier
+
+            model_dir = self._resolve_vision_model_dir(
+                str(getattr(self._config, "vision_classifier_model_dir", "") or "")
+            )
+            input_size = _coerce_vision_input_size(
+                getattr(self._config, "vision_classifier_input_size", [224, 224])
+            )
+            classifier = VisionScreenClassifier(
+                VisionModelLoader(model_dir),
+                input_size=input_size,
+                latency_check_ms=float(
+                    getattr(self._config, "vision_classifier_inference_timeout_ms", 200.0)
+                    or 200.0
+                ),
+            )
+            model_name = str(
+                getattr(self._config, "vision_classifier_model_name", "v1_galgame")
+                or "v1_galgame"
+            )
+            if classifier.load(model_name):
+                self.vision_classifier = classifier
+                self._vision_classifier_detail = "loaded"
+                self._log_info(
+                    "galgame vision classifier loaded: model_dir={} model_name={}",
+                    str(model_dir),
+                    model_name,
+                )
+            else:
+                self._vision_classifier_detail = "model_unavailable"
+                self._log_warning(
+                    "galgame vision classifier unavailable: model_dir={} model_name={}",
+                    str(model_dir),
+                    model_name,
+                )
+        except ImportError as exc:
+            self._vision_classifier_detail = "dependency_unavailable"
+            self._log_warning("galgame vision classifier dependency unavailable: {}", exc)
+        except Exception as exc:
+            self._vision_classifier_detail = "load_failed"
+            self._log_warning("galgame vision classifier failed to load: {}", exc)
+
+    @staticmethod
+    def _vision_classifier_config_key(config: GalgameConfig) -> tuple[bool, str, str, tuple[int, int], float]:
+        return (
+            bool(getattr(config, "vision_classifier_enabled", False)),
+            str(getattr(config, "vision_classifier_model_dir", "") or ""),
+            str(getattr(config, "vision_classifier_model_name", "") or ""),
+            _coerce_vision_input_size(getattr(config, "vision_classifier_input_size", [224, 224])),
+            float(getattr(config, "vision_classifier_inference_timeout_ms", 200.0) or 200.0),
+        )
+
+    @staticmethod
+    def _resolve_vision_model_dir(raw_path: str) -> Path:
+        path = Path(raw_path or DEFAULT_VISION_CLASSIFIER_MODEL_DIR).expanduser()
+        if path.is_absolute():
+            return path
+        repo_root = Path(__file__).resolve().parents[3]
+        return (repo_root / path).resolve()
 
     def close(self) -> None:
         try:
@@ -347,8 +438,11 @@ class OcrReaderManager(
     def update_config(self, config: GalgameConfig) -> None:
         old_backend_plan_key = self._backend_plan_config_key(self._config)
         old_auto_detect_lang = bool(getattr(self._config, "rapidocr_auto_detect_lang", False))
+        old_vision_key = self._vision_classifier_config_key(self._config)
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
+        if old_vision_key != self._vision_classifier_config_key(config):
+            self._initialize_vision_classifier()
         if not bool(config.llm_vision_enabled):
             self._clear_vision_snapshot()
         if float(getattr(config, "ocr_reader_known_screen_timeout_seconds", 0.0) or 0.0) <= 0.0:

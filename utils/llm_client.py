@@ -224,6 +224,13 @@ class LLMStreamChunk:
     # ``"tool_calls"`` / ``"content_filter"`` / None. ``"tool_calls"`` signals
     # the caller should run the tool then continue the conversation.
     finish_reason: str | None = None
+    # Thinking-mode 模型（DeepSeek-R 系 / Qwen / GLM thinking 等 OpenAI-compat
+    # 端点）在 ``delta`` 里单独流出的推理链文本。普通对话用不到，但 **多轮
+    # tool calling** 时这些 provider 要求把发起 tool_calls 那条 assistant 消息的
+    # ``reasoning_content`` 原样回填，否则下一轮报 400 "The `reasoning_content`
+    # in the thinking mode must be passed back to the API."。tool 循环靠累积此
+    # 字段把它写回 assistant 历史。
+    reasoning_content: str | None = None
     # ``OmniOfflineClient`` tool-loop sentinel：``_astream_*_with_tools`` 在
     # 把当前 tool 轮（assistant tool_calls + tool result）inline 写进 history
     # 后会 yield 一个 ``LLMStreamChunk(content="", tool_round_persisted=True)``。
@@ -542,12 +549,19 @@ class ChatOpenAI:
                                 "arguments": getattr(fn, "arguments", "") if fn else "",
                             },
                         })
+            # Thinking 模型把推理链放在非标准的 ``delta.reasoning_content``
+            # 字段（openai-python 的 BaseModel extra=allow，未知字段照样可
+            # getattr）。普通端点没有这个字段，getattr 返回 None。
+            reasoning_content = (
+                getattr(delta, "reasoning_content", None) if delta else None
+            )
             finish_reason = getattr(choice, "finish_reason", None) if choice else None
-            if content or tool_call_deltas or finish_reason:
+            if content or tool_call_deltas or finish_reason or reasoning_content:
                 yield LLMStreamChunk(
                     content=content,
                     tool_call_deltas=tool_call_deltas,
                     finish_reason=finish_reason,
+                    reasoning_content=reasoning_content,
                 )
             # Terminal chunk with usage info (stream_options={"include_usage": True})
             if chunk.usage is not None:

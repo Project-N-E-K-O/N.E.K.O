@@ -812,6 +812,102 @@
         );
     }
 
+    // 一轮 AI 文本说完后的统一收尾：音乐指令（可选）+ 情感分析 + 字幕翻译。
+    // 'turn end'（用户发起）与 'turn end agent_callback'（主动消息 / 热切换回调）
+    // 两条路径共用，避免 emotion / 字幕逻辑再像以前那样在两个分支间悄悄走样
+    // ——旧版 agent_callback 分支漏掉了 emotion 分析，导致主动消息时头像表情僵住，
+    // 且这类用户在 telemetry 上表现为「有 galgame_options 调用却从无 emotion 调用」。
+    // 唯一保留的分支差异：
+    //   - music commands：proactive 轮默认关闭（主动消息自动放歌过于侵入）；
+    //   - proactive 调度：仅 'turn end' 分支 reschedule，agent_callback 不排，
+    //     防止 proactive 自己触发下一条 proactive。
+    // emotion 本身是只读的（仅向头像推一条表情，不触发对话 / 记忆 / 再投递），
+    // 没有自触发风险，因此 proactive 轮也应当照常触发。
+    function finalizeAssistantTurn(assistantTurnId, options) {
+        options = options || {};
+        var enableMusic = options.enableMusic !== false;
+
+        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
+            ? window._geminiTurnFullText
+            : '';
+        var fallbackFromBubble = (window.currentGeminiMessage &&
+            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+            window.currentGeminiMessage.isConnected &&
+            typeof window.currentGeminiMessage.textContent === 'string')
+            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
+            : '';
+
+        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+
+        // Trigger music bubble generation
+        if (enableMusic && typeof window.processMusicCommands === 'function' && fullText) {
+            window.processMusicCommands(fullText);
+        }
+
+        // Strip music commands before emotion analysis / subtitle translation
+        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+
+        if (!fullText || !fullText.trim()) {
+            return;
+        }
+
+        // Emotion analysis (5s timeout)
+        setTimeout(async function () {
+            try {
+                var emotionPromise = (typeof window.analyzeEmotion === 'function')
+                    ? window.analyzeEmotion(fullText)
+                    : Promise.resolve(null);
+                var timeoutPromise = new Promise(function (_, reject2) {
+                    setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
+                });
+                var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
+                if (emotionResult && emotionResult.emotion) {
+                    console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
+                    if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
+                    if (assistantTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                            turnId: assistantTurnId,
+                            emotion: emotionResult.emotion,
+                            source: 'emotion_analysis'
+                        });
+                    }
+                }
+            } catch (emotionError) {
+                if (emotionError.message === '情感分析超时') {
+                    console.warn(window.t('console.emotionAnalysisTimeout'));
+                } else {
+                    console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
+                }
+            }
+        }, 100);
+
+        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
+        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
+        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
+        if (window._turnIsStructured) {
+            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+            }
+            return;
+        }
+        (async function () {
+            try {
+                if (typeof window.translateAndShowSubtitle === 'function') {
+                    await window.translateAndShowSubtitle(fullText);
+                }
+            } catch (transError) {
+                console.error(window.t('console.translationProcessFailed'), {
+                    error: transError.message,
+                    stack: transError.stack,
+                    fullText: fullText.substring(0, 50) + '...'
+                });
+                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                    console.warn(window.t('console.translationUnavailable'));
+                }
+            }
+        })();
+    }
+
     function ensureAssistantTurnStarted(source, serverTurnId) {
         if (S.assistantTurnId) {
             clearPendingAssistantTurnStart();
@@ -2354,37 +2450,10 @@
                     clearPendingAssistantTurnStart();
 
                     // 主动消息 / 热切换回调也产生了 AI 文本（来自 send_lanlan_response），
-                    // 同样需要为字幕翻译。情感分析 / proactive backoff 维持原行为不动。
-                    (function () {
-                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
-                            ? window._geminiTurnFullText
-                            : '';
-                        var fallbackFromBubble = (window.currentGeminiMessage &&
-                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                            window.currentGeminiMessage.isConnected &&
-                            typeof window.currentGeminiMessage.textContent === 'string')
-                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
-                            : '';
-                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
-                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
-                        if (!fullText) return;
-                        // 结构化 turn（markdown/code/table/latex）→ 字幕收尾为 [markdown] 占位，不翻译
-                        if (window._turnIsStructured) {
-                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
-                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
-                            }
-                            return;
-                        }
-                        (async function () {
-                            try {
-                                if (typeof window.translateAndShowSubtitle === 'function') {
-                                    await window.translateAndShowSubtitle(fullText);
-                                }
-                            } catch (transError) {
-                                console.error('[Subtitle] agent_callback translate failed:', transError);
-                            }
-                        })();
-                    })();
+                    // 与正常 'turn end' 走同一套收尾（emotion + 字幕）。music 关闭——
+                    // 主动消息不自动放歌；也不在此调 scheduleProactiveChat（见上方
+                    // "skipping proactive chat schedule"），防 proactive 自触发。
+                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false });
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -2420,88 +2489,9 @@
                     }
                     clearPendingAssistantTurnStart();
 
-                    // Emotion analysis & translation on turn completion
-                    (function () {
-                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
-                            ? window._geminiTurnFullText
-                            : '';
-                        var fallbackFromBubble = (window.currentGeminiMessage &&
-                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                            window.currentGeminiMessage.isConnected &&
-                            typeof window.currentGeminiMessage.textContent === 'string')
-                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
-                            : '';
-
-                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
-
-                        // Trigger music bubble generation
-                        if (typeof window.processMusicCommands === 'function' && fullText) {
-                            window.processMusicCommands(fullText);
-                        }
-
-                        // Strip music commands before emotion analysis / subtitle translation
-                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
-
-                        if (!fullText || !fullText.trim()) {
-                            return;
-                        }
-
-                        // Emotion analysis (5s timeout)
-                        setTimeout(async function () {
-                            try {
-                                var emotionPromise = (typeof window.analyzeEmotion === 'function')
-                                    ? window.analyzeEmotion(fullText)
-                                    : Promise.resolve(null);
-                                var timeoutPromise = new Promise(function (_, reject2) {
-                                    setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
-                                });
-                                var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
-                                if (emotionResult && emotionResult.emotion) {
-                                    console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
-                                    if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
-                                    if (assistantTurnId) {
-                                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                                            turnId: assistantTurnId,
-                                            emotion: emotionResult.emotion,
-                                            source: 'emotion_analysis'
-                                        });
-                                    }
-                                }
-                            } catch (emotionError) {
-                                if (emotionError.message === '情感分析超时') {
-                                    console.warn(window.t('console.emotionAnalysisTimeout'));
-                                } else {
-                                    console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
-                                }
-                            }
-                        }, 100);
-
-                        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
-                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
-                        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
-                        if (window._turnIsStructured) {
-                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
-                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
-                            }
-                            return;
-                        }
-                        (async function () {
-                            try {
-                                if (typeof window.translateAndShowSubtitle === 'function') {
-                                    await window.translateAndShowSubtitle(fullText);
-                                }
-                            } catch (transError) {
-                                console.error(window.t('console.translationProcessFailed'), {
-                                    error: transError.message,
-                                    stack: transError.stack,
-                                    fullText: fullText.substring(0, 50) + '...'
-                                });
-                                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                                    console.warn(window.t('console.translationUnavailable'));
-                                }
-                            }
-                        })();
-                    })();
+                    // Emotion analysis & subtitle on turn completion —— 与
+                    // agent_callback 路径共用 finalizeAssistantTurn；正常轮启用 music。
+                    finalizeAssistantTurn(assistantTurnId);
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
                     // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，

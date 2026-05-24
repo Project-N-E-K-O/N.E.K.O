@@ -865,7 +865,7 @@
         "coreApiKey": "Основной API Key",
         "freeVersionHint": "(Не требуется для бесплатной версии)",
         "coreApiPlaceholder": "Введите ваш API Key",
-        "coreApiProvider": "Основной API (Голосовой чат)",
+        "coreApiProvider": "Основной API (голосовой чат, только омнимодальные модели)",
         "assistApiProvider": "Вспомогательный API (Память/Агент/Текстовый чат/Голос)",
         "saveSettings": "Сохранить настройки",
         "closeSettings": "Закрыть",
