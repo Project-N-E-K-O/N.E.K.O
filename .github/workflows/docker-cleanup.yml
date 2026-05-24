@@ -17,6 +17,14 @@ on:
         required: false
         default: '30'
 
+# 串行化：list-then-delete 式清理并发跑同一 package 会互相基于陈旧列表删，
+# 导致 404 / 误删——正是本 workflow 要修的那类竞态。schedule + 手动 dispatch
+# 可能重叠，加锁让多次运行排队而非并行。cancel-in-progress=false：不打断
+# 进行中的删除，让它跑完再排下一个。
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
 permissions:
   packages: write
   contents: read
