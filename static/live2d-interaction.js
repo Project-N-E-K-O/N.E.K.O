@@ -355,6 +355,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         clickStartX = globalPos.x;
         clickStartY = globalPos.y;
         hasMoved = false;
+        this._touchSetPointerSeq = (this._touchSetPointerSeq || 0) + 1;
+        this._lastTouchPointer = { x: clickStartX, y: clickStartY, time: clickStartTime, seq: this._touchSetPointerSeq };
+        this._lastTouchHitAreas = [];
+        this._lastTouchHitSeq = this._touchSetPointerSeq;
+        this._lastPointerDownCustomTouchAreaId = typeof this._getCustomTouchAreaIdAtPoint === 'function'
+            ? this._getCustomTouchAreaIdAtPoint(clickStartX, clickStartY)
+            : null;
 
         document.getElementById('live2d-canvas').style.cursor = 'grabbing';
 
@@ -382,39 +389,20 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
                 if(window.live2dManager.touchSetHitEventLock){
                     window.live2dManager.touchSetHitEventLock = false;
-                    return;
                 }
-                const UseBlock = "default";
-
-                // 滤波 毫秒
-                window.live2dManager.touchSetFilter = window.live2dManager.touchSetFilter || {};
-                if(!window.live2dManager.touchSetFilter[UseBlock]){
-                    window.live2dManager.touchSetFilter[UseBlock]= Date.now();
-                }else{
-                    let timenow = Date.now();
-                    if(timenow - window.live2dManager.touchSetFilter[UseBlock] > 500){
-                        window.live2dManager.touchSetFilter[UseBlock]= timenow;
-                    }else{
-                        // 似乎按下和松开都算一次触发?
-                        // console.error(timenow - window.live2dManager.touchSetFilter[UseBlock])
-                        return;
-                    }
-                }
-
-
-
-
-                const modelName = window.live2dManager.modelName;
-                const touchSet = window.live2dManager.touchSet && window.live2dManager.touchSet[modelName];
-
-                const d = touchSet && touchSet[UseBlock];
-
-                if (!d || (d.expressions.length == 0 && d.motions.length == 0)) {
-                    // 无配置或配置为空 → 随机播放表情+动作
-                    await window.live2dManager.triggerRandomEmotion();
-                } else {
-                    await window.live2dManager._playTouchSetAnimation(UseBlock);
-                }
+                const customAreaId = this._lastPointerDownCustomTouchAreaId ||
+                    (typeof this._getCustomTouchAreaIdAtPoint === 'function'
+                        ? this._getCustomTouchAreaIdAtPoint(clickStartX, clickStartY)
+                        : null);
+                const hitAreas = this._lastTouchHitSeq === (this._lastTouchPointer && this._lastTouchPointer.seq)
+                    && Array.isArray(this._lastTouchHitAreas)
+                    ? this._lastTouchHitAreas
+                    : [];
+                const UseBlock = typeof window.live2dManager._getPreferredTouchSetHitArea === 'function'
+                    ? window.live2dManager._getPreferredTouchSetHitArea(hitAreas, customAreaId)
+                    : (customAreaId || "default");
+                if (!window.live2dManager._canTriggerTouchSetArea(UseBlock)) return;
+                await window.live2dManager._playTouchSetWithFallback(UseBlock);
                 
                 return; // 点击不需要保存位置
             }
@@ -2023,6 +2011,264 @@ Live2DManager.prototype.triggerRandomEmotion = async function() {
     }, window.live2dManager.CLICK_EFFECT_DURATION);
 };
 
+Live2DManager.prototype._touchSetConfigHasAnimation = function(config) {
+    return !!(config
+        && ((Array.isArray(config.motions) && config.motions.length > 0)
+            || (Array.isArray(config.expressions) && config.expressions.length > 0)));
+};
+
+Live2DManager.prototype._getCurrentTouchSetConfig = function() {
+    const touchSet = this.touchSet;
+    if (!touchSet || typeof touchSet !== 'object') return null;
+
+    const modelName = this.modelName;
+    if (modelName && touchSet[modelName] && typeof touchSet[modelName] === 'object') {
+        return touchSet[modelName];
+    }
+
+    const looksLikeSingleModelConfig = this._touchSetConfigHasAnimation(touchSet.default)
+        || Object.values(touchSet).some(entry => entry
+            && typeof entry === 'object'
+            && (entry.customArea || this._touchSetConfigHasAnimation(entry)));
+
+    return looksLikeSingleModelConfig ? touchSet : null;
+};
+
+Live2DManager.prototype._getModelBoundsRect = function(model) {
+    if (!model || typeof model.getBounds !== 'function') return null;
+
+    let bounds = null;
+    try {
+        bounds = model.getBounds();
+    } catch (_) {
+        return null;
+    }
+    if (!bounds) return null;
+
+    const firstFiniteNumber = (...values) => {
+        for (const value of values) {
+            const n = Number(value);
+            if (Number.isFinite(n)) return n;
+        }
+        return null;
+    };
+
+    let width = firstFiniteNumber(bounds.width);
+    let height = firstFiniteNumber(bounds.height);
+    let left = firstFiniteNumber(bounds.left, bounds.x, bounds.minX);
+    let top = firstFiniteNumber(bounds.top, bounds.y, bounds.minY);
+    let right = firstFiniteNumber(
+        bounds.right,
+        bounds.maxX,
+        left !== null && width !== null ? left + width : null
+    );
+    let bottom = firstFiniteNumber(
+        bounds.bottom,
+        bounds.maxY,
+        top !== null && height !== null ? top + height : null
+    );
+
+    if ((width === null || width <= 0) && left !== null && right !== null) width = right - left;
+    if ((height === null || height <= 0) && top !== null && bottom !== null) height = bottom - top;
+    if (left === null && right !== null && width !== null) left = right - width;
+    if (top === null && bottom !== null && height !== null) top = bottom - height;
+    if (right === null && left !== null && width !== null) right = left + width;
+    if (bottom === null && top !== null && height !== null) bottom = top + height;
+
+    if (![left, top, right, bottom, width, height].every(Number.isFinite)) return null;
+    if (width <= 0 || height <= 0) return null;
+
+    return { left, top, right, bottom, width, height };
+};
+
+Live2DManager.prototype._getPreferredTouchSetHitArea = function(hitAreas, customAreaId) {
+    if (customAreaId) return customAreaId;
+
+    const areaList = Array.isArray(hitAreas)
+        ? hitAreas.filter(Boolean)
+        : (hitAreas ? [hitAreas] : []);
+    const touchSet = this._getCurrentTouchSetConfig();
+
+    if (touchSet) {
+        const configuredArea = areaList.find(hitAreaId => this._touchSetConfigHasAnimation(touchSet[hitAreaId]));
+        if (configuredArea) return configuredArea;
+    }
+
+    return areaList[0] || 'default';
+};
+
+Live2DManager.prototype._getCustomTouchAreaCreatedAt = function(area, fallbackId, fallbackIndex = 0) {
+    const explicitCreatedAt = Number(area && area.createdAt);
+    if (Number.isFinite(explicitCreatedAt) && explicitCreatedAt > 0) return explicitCreatedAt;
+
+    const id = String((area && area.id) || fallbackId || '').trim();
+    const match = id.match(/^custom_([0-9a-z]+)_/i);
+    if (match) {
+        const parsed = parseInt(match[1], 36);
+        if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+
+    return Number.MAX_SAFE_INTEGER + fallbackIndex;
+};
+
+Live2DManager.prototype._getSortedCustomTouchAreaEntries = function(touchSet) {
+    return Object.entries(touchSet || {})
+        .map(([id, config], index) => ({
+            id,
+            config,
+            index,
+            area: config && config.customArea
+        }))
+        .filter(entry => entry.area && entry.area.rect)
+        .sort((a, b) => {
+            const orderA = this._getCustomTouchAreaCreatedAt(a.area, a.id, a.index);
+            const orderB = this._getCustomTouchAreaCreatedAt(b.area, b.id, b.index);
+            if (orderA !== orderB) return orderA - orderB;
+            return a.index - b.index;
+        });
+};
+
+Live2DManager.prototype._normalizeCustomTouchAreaRect = function(rect) {
+    if (!rect || typeof rect !== 'object') return null;
+    const x = Math.max(0, Math.min(1, Number(rect.x)));
+    const y = Math.max(0, Math.min(1, Number(rect.y)));
+    const width = Math.max(0, Math.min(Number(rect.width), 1 - x));
+    const height = Math.max(0, Math.min(Number(rect.height), 1 - y));
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+    return { x, y, width, height };
+};
+
+Live2DManager.prototype._getRectIntersection = function(a, b) {
+    if (!a || !b) return null;
+    const left = Math.max(a.x, b.x);
+    const top = Math.max(a.y, b.y);
+    const right = Math.min(a.x + a.width, b.x + b.width);
+    const bottom = Math.min(a.y + a.height, b.y + b.height);
+    if (right <= left || bottom <= top) return null;
+    return { x: left, y: top, width: right - left, height: bottom - top };
+};
+
+Live2DManager.prototype._subtractCustomTouchRect = function(rect, cutter, minSize = 0.0001) {
+    const intersection = this._getRectIntersection(rect, cutter);
+    if (!intersection) return [rect];
+
+    const rectRight = rect.x + rect.width;
+    const rectBottom = rect.y + rect.height;
+    const cutRight = intersection.x + intersection.width;
+    const cutBottom = intersection.y + intersection.height;
+    const pieces = [];
+
+    if (intersection.y - rect.y > minSize) {
+        pieces.push({ x: rect.x, y: rect.y, width: rect.width, height: intersection.y - rect.y });
+    }
+    if (rectBottom - cutBottom > minSize) {
+        pieces.push({ x: rect.x, y: cutBottom, width: rect.width, height: rectBottom - cutBottom });
+    }
+    if (intersection.x - rect.x > minSize) {
+        pieces.push({ x: rect.x, y: intersection.y, width: intersection.x - rect.x, height: intersection.height });
+    }
+    if (rectRight - cutRight > minSize) {
+        pieces.push({ x: cutRight, y: intersection.y, width: rectRight - cutRight, height: intersection.height });
+    }
+
+    return pieces.filter(piece => piece.width > minSize && piece.height > minSize);
+};
+
+Live2DManager.prototype._subtractCustomTouchRects = function(rects, cutters, minSize = 0.0001) {
+    return cutters.reduce((remainingRects, cutter) => {
+        return remainingRects.flatMap(rect => this._subtractCustomTouchRect(rect, cutter, minSize));
+    }, rects).filter(rect => rect.width > minSize && rect.height > minSize);
+};
+
+Live2DManager.prototype._isPointInCustomTouchRect = function(point, rect) {
+    return !!(point && rect
+        && point.x >= rect.x && point.x <= rect.x + rect.width
+        && point.y >= rect.y && point.y <= rect.y + rect.height);
+};
+
+Live2DManager.prototype._canTriggerTouchSetArea = function(hitAreaId) {
+    const key = hitAreaId || 'default';
+    this.touchSetFilter = this.touchSetFilter || {};
+    const now = Date.now();
+    const pointerSeq = this._lastTouchPointer && this._lastTouchPointer.seq;
+    if (pointerSeq && this._lastTouchSetTriggerSeq === pointerSeq) {
+        return false;
+    }
+    if (this._lastTouchSetTriggerAt && now - this._lastTouchSetTriggerAt < 900) {
+        return false;
+    }
+    if (!this.touchSetFilter[key]) {
+        this.touchSetFilter[key] = now;
+        this._lastTouchSetTriggerAt = now;
+        this._lastTouchSetTriggerKey = key;
+        this._lastTouchSetTriggerSeq = pointerSeq || null;
+        return true;
+    }
+    if (now - this.touchSetFilter[key] > 900) {
+        this.touchSetFilter[key] = now;
+        this._lastTouchSetTriggerAt = now;
+        this._lastTouchSetTriggerKey = key;
+        this._lastTouchSetTriggerSeq = pointerSeq || null;
+        return true;
+    }
+    return false;
+};
+
+Live2DManager.prototype._playTouchSetWithFallback = async function(hitAreaId) {
+    const touchSet = this._getCurrentTouchSetConfig();
+    if (!touchSet) {
+        console.log('[TouchSet] touchSet 未配置，播放随机动画');
+        await this.triggerRandomEmotion();
+        return false;
+    }
+
+    const useBlock = hitAreaId || 'default';
+    if (this._touchSetConfigHasAnimation(touchSet[useBlock])) {
+        await this._playTouchSetAnimation(useBlock);
+        return true;
+    }
+
+    if (useBlock !== 'default' && this._touchSetConfigHasAnimation(touchSet.default)) {
+        await this._playTouchSetAnimation('default');
+        return true;
+    }
+
+    await this.triggerRandomEmotion();
+    return false;
+};
+
+Live2DManager.prototype._getCustomTouchAreaIdAtPoint = function(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !this.currentModel) return null;
+    const touchSet = this._getCurrentTouchSetConfig();
+    if (!touchSet) return null;
+
+    const bounds = this._getModelBoundsRect(this.currentModel);
+    if (!bounds) return null;
+
+    const customAreaEntries = typeof this._getSortedCustomTouchAreaEntries === 'function'
+        ? this._getSortedCustomTouchAreaEntries(touchSet)
+        : Object.entries(touchSet).map(([id, config], index) => ({ id, config, index, area: config && config.customArea }));
+
+    const normalizedPoint = {
+        x: (x - bounds.left) / bounds.width,
+        y: (y - bounds.top) / bounds.height
+    };
+    const previousRects = [];
+
+    for (const entry of customAreaEntries) {
+        const rect = this._normalizeCustomTouchAreaRect(entry.area && entry.area.rect);
+        if (!rect) continue;
+
+        const effectiveRects = this._subtractCustomTouchRects([rect], previousRects, 0.0001);
+        if (effectiveRects.some(piece => this._isPointInCustomTouchRect(normalizedPoint, piece))) {
+            return entry.id;
+        }
+        previousRects.push(rect);
+    }
+
+    return null;
+};
+
 /**
  * 设置 触摸/点击 交互
  * 使用 pixi-live2d-display 的 'hit' 事件来检测 HitArea 点击
@@ -2034,6 +2280,21 @@ Live2DManager.prototype.setupHitAreaInteraction = function(model) {
         return;
     }
 
+    if (this._touchSetHitHandler && this._touchSetHitModel) {
+        try {
+            if (typeof this._touchSetHitModel.off === 'function') {
+                this._touchSetHitModel.off('hit', this._touchSetHitHandler);
+            } else if (typeof this._touchSetHitModel.removeListener === 'function') {
+                this._touchSetHitModel.removeListener('hit', this._touchSetHitHandler);
+            }
+        } catch (_) {}
+        this._touchSetHitHandler = null;
+        this._touchSetHitModel = null;
+    }
+    if (typeof model.removeAllListeners === 'function') {
+        try { model.removeAllListeners('hit'); } catch (_) {}
+    }
+
     // 监听模型的 hit 事件
     function dd(hitAreas) {
         // 只在非教程模式下处理 hit 事件
@@ -2042,71 +2303,19 @@ Live2DManager.prototype.setupHitAreaInteraction = function(model) {
             return;
         }
 
-        window.live2dManager.touchSetHitEventLock = true
-
-        // 滤波 毫秒
-        window.live2dManager.touchSetFilter = window.live2dManager.touchSetFilter || {};
-        if(!window.live2dManager.touchSetFilter[hitAreas]){
-            window.live2dManager.touchSetFilter[hitAreas]= Date.now();
-        }else{
-            let timenow = Date.now();
-            if(timenow - window.live2dManager.touchSetFilter[hitAreas] > 500){
-                window.live2dManager.touchSetFilter[hitAreas]= timenow;
-            }else{
-                // 似乎按下和松开都算一次触发?
-                // console.error(timenow - window.live2dManager.touchSetFilter[hitAreas])
-                return;
-            }
-        }
-        console.log('[HitArea] 命中的区域:', hitAreas);
-        const modelName = window.live2dManager.modelName;
-        const touchSet = window.live2dManager.touchSet && window.live2dManager.touchSet[modelName];
-
-        // touchSet 未设置或当前模型无配置 → 直接随机播放
-        if (!touchSet) {
-            console.log('[HitArea] touchSet 未配置，播放随机动画');
-            window.live2dManager.triggerRandomEmotion();
-            return;
-        }
-
-        const UseBlock = touchSet[hitAreas[0]] ? hitAreas[0] : "default";
-        let d = touchSet[UseBlock];
-
-        if (UseBlock == "default") {
-            // 命中的是 default 区域
-            if (d && (d.motions.length > 0 || d.expressions.length > 0)) {
-                // default 有配置，播放 default 动画
-                console.log('[HitArea] 使用 default 配置');
-                window.live2dManager._playTouchSetAnimation("default");
-            } else {
-                // default 也没有配置，播放随机动画
-                console.log('[HitArea] default 无配置，播放随机动画');
-                window.live2dManager.triggerRandomEmotion();
-            }
-            return;
-
-        } else if (!d || (d.expressions.length == 0 && d.motions.length == 0)) {
-            // HitArea区点击 该区域无配置动画
-            if (touchSet["default"] && (touchSet["default"].motions.length > 0 || touchSet["default"].expressions.length > 0)) {
-                // 使用default配置
-                console.log('[HitArea] 区域未绑定touchSet，使用default配置');
-                window.live2dManager._playTouchSetAnimation("default");
-                return;
-            } else {
-                // default 也没有配置，播放随机动画
-                console.log('[HitArea] 区域未绑定 touchSet，播放随机动画');
-                window.live2dManager.triggerRandomEmotion();
-                return;
-            }
-        }
-
-        // 遍历所有命中的 HitArea，播放对应的动画
-        hitAreas.forEach(hitAreaId => {
-            window.live2dManager._playTouchSetAnimation(hitAreaId);
-        });
+        const manager = window.live2dManager;
+        const pointerSeq = manager._lastTouchPointer && manager._lastTouchPointer.seq;
+        manager._lastTouchHitAreas = Array.isArray(hitAreas)
+            ? hitAreas.filter(Boolean)
+            : (hitAreas ? [hitAreas] : []);
+        manager._lastTouchHitSeq = pointerSeq || null;
+        manager.touchSetHitEventLock = false;
+        console.log('[HitArea] 记录命中的区域:', manager._lastTouchHitAreas);
     }
 
-    model.on('hit',(hitAreas)=>{dd(hitAreas)});
+    this._touchSetHitHandler = dd;
+    this._touchSetHitModel = model;
+    model.on('hit', dd);
     
     console.log(`[HitArea] HitArea 交互已设置 : ${window.live2dManager.modelName}`);
 };
@@ -2129,8 +2338,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
         }
         let faceHoldingTime = window.live2dManager.CLICK_EFFECT_DURATION;
         let AnimHoldingTime = null;
-        const modelName = this.modelName;
-        const touchSet = this.touchSet && this.touchSet[modelName];
+        const touchSet = this._getCurrentTouchSetConfig();
 
         if (!touchSet || !touchSet[hitAreaId]) {
             console.log(`[TouchSet] 没有找到 ${hitAreaId} 的配置`);
@@ -2155,6 +2363,11 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
 
             let foundMotion = null;
             let foundGroupName = null;
+            const normalizeMotionFileName = (file) => {
+                const normalized = String(file || '').replace(/\\/g, '/');
+                const baseName = normalized.split('/').pop() || normalized;
+                return baseName.replace(/\.motion3$/i, '').replace(/\.motion3\.json$/i, '').replace(/\.json$/i, '');
+            };
 
             outerLoop:
             for (const motionSource of motionSources) {
@@ -2162,8 +2375,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     if (Array.isArray(motionList)) {
                         const motion = motionList.find(m => {
                             if (!m || !m.File) return false;
-                            const fileName = m.File.split("motions/")[1]?.replace(".motion3","").replace(".json","");
-                            return fileName === randomMotion;
+                            return normalizeMotionFileName(m.File) === randomMotion;
                         });
                         if (motion) {
                             foundMotion = motion;
