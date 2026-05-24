@@ -6121,6 +6121,12 @@ async def proactive_chat(request: Request):
             has_meme=bool(meme_section),
             lang=proactive_lang,
         )
+        # 本轮是否启用"来源标签系统"：有 web/music/meme 副作用通道时，
+        # get_proactive_format_sections 用 _of_header（要求第一行写 [TAG]）；三者全无
+        # 时用 _of_none（明确要求纯文本、无 tag，下游靠 source_tag='CHAT' 兜底投递）。
+        # 无 tag gate 只在前者生效，否则会把 _of_none 模式的合法纯文本搭话误判为
+        # 格式泄漏 drop（Codex P1）。
+        _expects_source_tag = bool(external_section) or bool(music_section) or bool(meme_section)
         music_playing_hint = ""
         if is_playing_music and current_track:
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
@@ -6380,8 +6386,10 @@ async def proactive_chat(request: Request):
         # "No Markdown: Yes."、"* No stage directions/parentheses"、"完全不同的角度或主题"
         # 这类脚手架泄漏。合法搭话必然以 tag 起头，缺 tag 即判格式泄漏，drop 整轮，
         # 不要把脚手架念给博士听。（TTS 在本函数后段才真正投递，此处 abort 安全。）
-        if not aborted and full_text.strip() and not source_tag:
+        if not aborted and full_text.strip() and not source_tag and _expects_source_tag:
             # 没解析到合法来源标签——多半是模型把人设 Format/约束块当正文吐了出来。
+            # （仅在本轮启用 tag 系统时才判泄漏；_of_none 纯文本模式无 tag 是合法的，
+            #  不进此分支，留给后面的 source_tag='CHAT' 兜底正常投递。）
             # 不直接 drop，先给一次"格式纠正"regen 自救：重建 Human turn（fix 指令 +
             # 原 human_text，末尾仍是 BEGIN 触发句），ainvoke 重跑一次再解析 tag。
             # 解析到合法非 PASS tag → 用自救结果接回主流程（下游 is_duplicate / BM25
