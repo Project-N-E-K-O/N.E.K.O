@@ -6307,6 +6307,9 @@ async def proactive_chat(request: Request):
                             if m:
                                 cleaned = cleaned[m.end():]
                             # 解析 [PASS] / [CHAT] / [WEB] / [MUSIC] / [MEME]
+                            # 先 lstrip：模型偶尔先吐换行/空格再吐 [CHAT]，不去前导空白
+                            # 会让 ^\[ 匹配失败、source_tag 误留空被当成无 tag（Codex P2）。
+                            cleaned = cleaned.lstrip()
                             tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
                             if tag_match:
                                 source_tag = tag_match.group(1).upper()
@@ -6362,6 +6365,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
+            cleaned = cleaned.lstrip()  # 同上：去前导空白再匹配 tag（Codex P2）
             tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
