@@ -60,7 +60,12 @@ def _include_optional_router(app: FastAPI, module_name: str, description: str) -
         )
         return
 
-    app.include_router(module.router)
+    router = getattr(module, "router", None)
+    if router is None:
+        logger.warning("{} unavailable, endpoints will be 404: missing router", description)
+        return
+
+    app.include_router(router)
 
 
 @asynccontextmanager
