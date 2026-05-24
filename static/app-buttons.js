@@ -259,6 +259,11 @@
             }
         }
         // 720p 下极少触达这里；兜底返回最低质量结果，不再硬抛错以免阻塞发送。
+        // 真触达说明这张图异常难压，加条 warn 记录尺寸，方便事后发现"列表混入超 1MB"的个例。
+        console.warn(
+            '[截图] 720p 最低质量仍超出 1MB 上限（' +
+            Math.round(getDataUrlEncodedBytes(bestDataUrl) / 1024) + 'KB），仍按兜底入列'
+        );
         return bestDataUrl;
     };
 
