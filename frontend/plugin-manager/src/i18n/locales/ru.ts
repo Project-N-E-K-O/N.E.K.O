@@ -17,6 +17,7 @@ export default {
     back: 'Назад',
     submit: 'Отправить',
     close: 'Закрыть',
+    toggleSelection: 'Переключить выбор',
     success: 'Успешно',
     error: 'Ошибка',
     warning: 'Предупреждение',
@@ -121,22 +122,22 @@ export default {
     sortMostDownloads: 'По загрузкам',
     sortTopRated: 'По рейтингу',
     sortName: 'По названию',
-    upgrading: 'Upgrading...',
-    upgradeTo: 'Upgrade to v{version}',
-    upgradeSuccess: 'Upgraded: {name}',
-    yanked: 'Yanked',
-    yankedDefault: 'This version has been yanked by its author',
-    noVersionAvailable: 'No release available',
-    upgradeRollback: 'Upgrade failed; rolled back to previous version',
-    upgradeAlreadyAtTarget: 'Already at the target version',
-    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
-    lockWriteFailed: 'Failed to write install record'
+    upgrading: 'Обновление...',
+    upgradeTo: 'Обновить до v{version}',
+    upgradeSuccess: 'Обновлено: {name}',
+    yanked: 'Отозвано',
+    yankedDefault: 'Эта версия была отозвана автором',
+    noVersionAvailable: 'Нет доступных релизов',
+    upgradeRollback: 'Не удалось обновить; выполнен откат к предыдущей версии',
+    upgradeAlreadyAtTarget: 'Уже установлена целевая версия',
+    pluginNotInstalled: 'Плагин не установлен; обновление невозможно',
+    lockWriteFailed: 'Не удалось записать запись установки'
   },
   settings: {
-    channel: 'Update channel',
-    channelStable: 'Stable',
-    channelBeta: 'Beta',
-    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
+    channel: 'Канал обновлений',
+    channelStable: 'Стабильный',
+    channelBeta: 'Бета',
+    channelHint: 'Переключение обновляет список плагинов в выбранном канале; установленные плагины продолжают работать'
   },
   auth: {
     unauthorized: 'Неавторизованный доступ',
@@ -209,30 +210,30 @@ export default {
     noEntries: 'Нет точек входа',
     showMetrics: 'Показать производительность',
     hideMetrics: 'Скрыть производительность',
-    showSourceDetail: 'Show Source Details',
-    hideSourceDetail: 'Hide Source Details',
+    showSourceDetail: 'Показать сведения об источнике',
+    hideSourceDetail: 'Скрыть сведения об источнике',
     installSource: {
       channel: {
-        builtin: 'Built-in',
-        manual: 'Manual',
-        imported: 'Imported',
-        market: 'Market',
+        builtin: 'Встроенный',
+        manual: 'Вручную',
+        imported: 'Импортированный',
+        market: 'Маркет',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: 'Stable',
         beta: 'Beta',
       },
-      updateAvailable: 'Update available',
+      updateAvailable: 'Доступно обновление',
       labels: {
-        installedAt: 'Installed',
-        packageFilename: 'Package',
+        installedAt: 'Установлено',
+        packageFilename: 'Пакет',
         sha256: 'SHA-256',
-        marketId: 'Market ID',
-        version: 'Version',
-        previousVersion: 'Previous',
-        latestAvailable: 'Latest available',
-        channel: 'Channel',
+        marketId: 'ID в Market',
+        version: 'Версия',
+        previousVersion: 'Предыдущая',
+        latestAvailable: 'Последняя доступная',
+        channel: 'Канал',
       },
     },
     filterPlaceholder: 'Фильтр по тексту, пиньиню и правилам is:/type:/has:',
@@ -381,6 +382,40 @@ export default {
       surfaceWarnings: 'В объявлении UI плагина есть проблемы, требующие внимания',
       controlError: 'Ошибка элемента управления UI плагина',
       hostedRuntimePending: 'Vue-контейнер распознал этот Surface. TSX, Markdown и Auto рендереры будут подключены позже.'
+    }
+  },
+  package: {
+    dialog: {
+      title: 'История операций с пакетами',
+      subtitle: 'Показаны последние {count} результат(ов)'
+    },
+    empty: 'Запустите операцию с пакетом, чтобы увидеть записи здесь.',
+    viewDetail: 'Подробнее',
+    detail: {
+      title: 'Подробности результата',
+      field: {
+        packageId: 'ID пакета',
+        kind: 'Тип',
+        version: 'Версия',
+        schema: 'Схема',
+        hashCheck: 'Проверка хеша',
+        profiles: 'Профили'
+      },
+      list: 'Элементы',
+      warning: 'Примечания',
+      rawJson: 'Исходный JSON результата'
+    },
+    hash: {
+      notVerified: 'Не проверено',
+      passed: 'Пройдена',
+      failed: 'Не пройдена'
+    },
+    kind: {
+      build: 'Сборка',
+      inspect: 'Проверка',
+      verify: 'Верификация',
+      install: 'Установка',
+      analyze: 'Анализ'
     }
   },
   metrics: {

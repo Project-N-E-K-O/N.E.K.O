@@ -17,6 +17,7 @@ export default {
     back: '戻る',
     submit: '送信',
     close: '閉じる',
+    toggleSelection: '選択を切り替え',
     success: '成功',
     error: 'エラー',
     warning: '警告',
@@ -121,22 +122,22 @@ export default {
     sortMostDownloads: 'ダウンロード数',
     sortTopRated: '評価',
     sortName: '名前',
-    upgrading: 'Upgrading...',
-    upgradeTo: 'Upgrade to v{version}',
-    upgradeSuccess: 'Upgraded: {name}',
-    yanked: 'Yanked',
-    yankedDefault: 'This version has been yanked by its author',
-    noVersionAvailable: 'No release available',
-    upgradeRollback: 'Upgrade failed; rolled back to previous version',
-    upgradeAlreadyAtTarget: 'Already at the target version',
-    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
-    lockWriteFailed: 'Failed to write install record'
+    upgrading: 'アップグレード中...',
+    upgradeTo: 'v{version} にアップグレード',
+    upgradeSuccess: 'アップグレード完了: {name}',
+    yanked: '取り下げ済み',
+    yankedDefault: 'このバージョンは作者により取り下げられました',
+    noVersionAvailable: '利用可能なリリースがありません',
+    upgradeRollback: 'アップグレードに失敗。前のバージョンへロールバックしました',
+    upgradeAlreadyAtTarget: '既に対象バージョンです',
+    pluginNotInstalled: 'プラグインがインストールされていないため、アップグレードできません',
+    lockWriteFailed: 'インストール記録の書き込みに失敗しました'
   },
   settings: {
-    channel: 'Update channel',
-    channelStable: 'Stable',
-    channelBeta: 'Beta',
-    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
+    channel: '更新チャネル',
+    channelStable: '安定版',
+    channelBeta: 'ベータ',
+    channelHint: '切り替えると選択したチャネルでプラグイン一覧が更新されます。インストール済みプラグインの動作には影響しません'
   },
   auth: {
     unauthorized: '未認証のアクセス',
@@ -209,30 +210,30 @@ export default {
     noEntries: 'エントリーポイントなし',
     showMetrics: 'パフォーマンスを表示',
     hideMetrics: 'パフォーマンスを非表示',
-    showSourceDetail: 'Show Source Details',
-    hideSourceDetail: 'Hide Source Details',
+    showSourceDetail: 'ソース詳細を表示',
+    hideSourceDetail: 'ソース詳細を隠す',
     installSource: {
       channel: {
-        builtin: 'Built-in',
-        manual: 'Manual',
-        imported: 'Imported',
-        market: 'Market',
+        builtin: '組み込み',
+        manual: '手動',
+        imported: 'インポート',
+        market: 'マーケット',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: 'Stable',
         beta: 'Beta',
       },
-      updateAvailable: 'Update available',
+      updateAvailable: '更新があります',
       labels: {
-        installedAt: 'Installed',
-        packageFilename: 'Package',
+        installedAt: 'インストール日時',
+        packageFilename: 'パッケージ',
         sha256: 'SHA-256',
-        marketId: 'Market ID',
-        version: 'Version',
-        previousVersion: 'Previous',
-        latestAvailable: 'Latest available',
-        channel: 'Channel',
+        marketId: 'マーケット ID',
+        version: 'バージョン',
+        previousVersion: '前のバージョン',
+        latestAvailable: '最新バージョン',
+        channel: 'チャネル',
       },
     },
     filterPlaceholder: 'テキスト・ピンイン・is:/type:/has: ルールでフィルター',
@@ -381,6 +382,40 @@ export default {
       surfaceWarnings: 'プラグイン UI 宣言に確認が必要な問題があります',
       controlError: 'プラグイン UI コントロールエラー',
       hostedRuntimePending: 'Vue コンテナはこの Surface を認識しています。TSX/Markdown/Auto レンダラーは後続フェーズで接続されます。'
+    }
+  },
+  package: {
+    dialog: {
+      title: 'パッケージ操作履歴',
+      subtitle: '最新の {count} 件の結果を表示中'
+    },
+    empty: 'パッケージ操作を実行すると、ここに履歴が表示されます。',
+    viewDetail: '詳細を表示',
+    detail: {
+      title: '結果の詳細',
+      field: {
+        packageId: 'パッケージ ID',
+        kind: '種別',
+        version: 'バージョン',
+        schema: 'スキーマ',
+        hashCheck: 'ハッシュ検証',
+        profiles: 'プロファイル'
+      },
+      list: '項目',
+      warning: '注意',
+      rawJson: '結果の生 JSON'
+    },
+    hash: {
+      notVerified: '未検証',
+      passed: '合格',
+      failed: '失敗'
+    },
+    kind: {
+      build: 'ビルド',
+      inspect: '検査',
+      verify: '検証',
+      install: 'インストール',
+      analyze: '解析'
     }
   },
   metrics: {

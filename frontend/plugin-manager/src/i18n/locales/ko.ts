@@ -17,6 +17,7 @@ export default {
     back: '뒤로',
     submit: '제출',
     close: '닫기',
+    toggleSelection: '선택 전환',
     success: '성공',
     error: '오류',
     warning: '경고',
@@ -121,22 +122,22 @@ export default {
     sortMostDownloads: '다운로드 수',
     sortTopRated: '평점',
     sortName: '이름',
-    upgrading: 'Upgrading...',
-    upgradeTo: 'Upgrade to v{version}',
-    upgradeSuccess: 'Upgraded: {name}',
-    yanked: 'Yanked',
-    yankedDefault: 'This version has been yanked by its author',
-    noVersionAvailable: 'No release available',
-    upgradeRollback: 'Upgrade failed; rolled back to previous version',
-    upgradeAlreadyAtTarget: 'Already at the target version',
-    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
-    lockWriteFailed: 'Failed to write install record'
+    upgrading: '업그레이드 중...',
+    upgradeTo: 'v{version}(으)로 업그레이드',
+    upgradeSuccess: '업그레이드 완료: {name}',
+    yanked: '철회됨',
+    yankedDefault: '이 버전은 작성자에 의해 철회되었습니다',
+    noVersionAvailable: '사용 가능한 릴리스가 없습니다',
+    upgradeRollback: '업그레이드 실패; 이전 버전으로 롤백되었습니다',
+    upgradeAlreadyAtTarget: '이미 대상 버전입니다',
+    pluginNotInstalled: '플러그인이 설치되지 않아 업그레이드할 수 없습니다',
+    lockWriteFailed: '설치 기록 쓰기에 실패했습니다'
   },
   settings: {
-    channel: 'Update channel',
-    channelStable: 'Stable',
-    channelBeta: 'Beta',
-    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
+    channel: '업데이트 채널',
+    channelStable: '안정판',
+    channelBeta: '베타',
+    channelHint: '채널을 전환하면 플러그인 목록이 선택한 채널로 새로고침되며, 설치된 플러그인은 계속 실행됩니다'
   },
   auth: {
     unauthorized: '인증되지 않은 접근',
@@ -209,30 +210,30 @@ export default {
     noEntries: '엔트리 포인트 없음',
     showMetrics: '성능 지표 표시',
     hideMetrics: '성능 지표 숨기기',
-    showSourceDetail: 'Show Source Details',
-    hideSourceDetail: 'Hide Source Details',
+    showSourceDetail: '출처 상세 표시',
+    hideSourceDetail: '출처 상세 숨기기',
     installSource: {
       channel: {
-        builtin: 'Built-in',
-        manual: 'Manual',
-        imported: 'Imported',
-        market: 'Market',
+        builtin: '내장',
+        manual: '수동',
+        imported: '가져옴',
+        market: '마켓',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: 'Stable',
         beta: 'Beta',
       },
-      updateAvailable: 'Update available',
+      updateAvailable: '업데이트 사용 가능',
       labels: {
-        installedAt: 'Installed',
-        packageFilename: 'Package',
+        installedAt: '설치 시간',
+        packageFilename: '패키지',
         sha256: 'SHA-256',
-        marketId: 'Market ID',
-        version: 'Version',
-        previousVersion: 'Previous',
-        latestAvailable: 'Latest available',
-        channel: 'Channel',
+        marketId: '마켓 ID',
+        version: '버전',
+        previousVersion: '이전 버전',
+        latestAvailable: '최신 버전',
+        channel: '채널',
       },
     },
     filterPlaceholder: '텍스트, 병음, is:/type:/has: 규칙으로 필터링',
@@ -381,6 +382,40 @@ export default {
       surfaceWarnings: '플러그인 UI 선언에 확인이 필요한 문제가 있습니다',
       controlError: '플러그인 UI 컨트롤 오류',
       hostedRuntimePending: 'Vue 컨테이너가 이 Surface를 인식했습니다. TSX/Markdown/Auto 렌더러는 이후 단계에서 연결됩니다.'
+    }
+  },
+  package: {
+    dialog: {
+      title: '패키지 작업 기록',
+      subtitle: '최근 {count}개의 결과를 표시합니다'
+    },
+    empty: '패키지 작업을 실행하면 여기에 기록이 표시됩니다.',
+    viewDetail: '상세 보기',
+    detail: {
+      title: '결과 상세',
+      field: {
+        packageId: '패키지 ID',
+        kind: '유형',
+        version: '버전',
+        schema: 'Schema',
+        hashCheck: '해시 검증',
+        profiles: '프로필'
+      },
+      list: '항목',
+      warning: '주의',
+      rawJson: '원본 결과 JSON'
+    },
+    hash: {
+      notVerified: '검증되지 않음',
+      passed: '통과',
+      failed: '실패'
+    },
+    kind: {
+      build: '빌드',
+      inspect: '검사',
+      verify: '검증',
+      install: '설치',
+      analyze: '분석'
     }
   },
   metrics: {

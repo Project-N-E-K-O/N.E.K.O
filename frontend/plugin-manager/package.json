@@ -17,6 +17,7 @@
     "test:hosted:watch": "vitest src/components/plugin/hosted --exclude \"src/components/plugin/hosted/e2e/**\"",
     "check:hosted": "npm run type-check && npm run check-hosted-tsx && npm run test:hosted && npm run test:hosted:e2e",
     "check-hosted-tsx": "node scripts/check-hosted-tsx.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "lint": "eslint . --fix --cache",
     "format": "prettier --write src/"
   },

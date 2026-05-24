@@ -17,6 +17,7 @@ export default {
     back: 'Voltar',
     submit: 'Enviar',
     close: 'Fechar',
+    toggleSelection: 'Alternar seleção',
     success: 'Sucesso',
     error: 'Erro',
     warning: 'Aviso',
@@ -121,22 +122,22 @@ export default {
     sortMostDownloads: 'Downloads',
     sortTopRated: 'Melhor avaliado',
     sortName: 'Nome',
-    upgrading: 'Upgrading...',
-    upgradeTo: 'Upgrade to v{version}',
-    upgradeSuccess: 'Upgraded: {name}',
-    yanked: 'Yanked',
-    yankedDefault: 'This version has been yanked by its author',
-    noVersionAvailable: 'No release available',
-    upgradeRollback: 'Upgrade failed; rolled back to previous version',
-    upgradeAlreadyAtTarget: 'Already at the target version',
-    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
-    lockWriteFailed: 'Failed to write install record'
+    upgrading: 'Atualizando...',
+    upgradeTo: 'Atualizar para v{version}',
+    upgradeSuccess: 'Atualizado: {name}',
+    yanked: 'Removido',
+    yankedDefault: 'Esta versão foi removida pelo autor',
+    noVersionAvailable: 'Nenhuma versão disponível',
+    upgradeRollback: 'Falha na atualização; revertido para a versão anterior',
+    upgradeAlreadyAtTarget: 'Já está na versão alvo',
+    pluginNotInstalled: 'Plugin não instalado; não é possível atualizar',
+    lockWriteFailed: 'Falha ao gravar registro de instalação'
   },
   settings: {
-    channel: 'Update channel',
-    channelStable: 'Stable',
+    channel: 'Canal de atualização',
+    channelStable: 'Estável',
     channelBeta: 'Beta',
-    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
+    channelHint: 'Ao alternar, a lista de plugins é atualizada com o canal selecionado; os plugins instalados continuam em execução'
   },
   auth: {
     unauthorized: 'Acesso não autorizado',
@@ -209,30 +210,30 @@ export default {
     noEntries: 'Sem pontos de entrada',
     showMetrics: 'Mostrar métricas',
     hideMetrics: 'Ocultar métricas',
-    showSourceDetail: 'Show Source Details',
-    hideSourceDetail: 'Hide Source Details',
+    showSourceDetail: 'Mostrar detalhes da origem',
+    hideSourceDetail: 'Ocultar detalhes da origem',
     installSource: {
       channel: {
-        builtin: 'Built-in',
+        builtin: 'Integrado',
         manual: 'Manual',
-        imported: 'Imported',
-        market: 'Market',
+        imported: 'Importado',
+        market: 'Mercado',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
         stable: 'Stable',
         beta: 'Beta',
       },
-      updateAvailable: 'Update available',
+      updateAvailable: 'Atualização disponível',
       labels: {
-        installedAt: 'Installed',
-        packageFilename: 'Package',
+        installedAt: 'Instalado em',
+        packageFilename: 'Pacote',
         sha256: 'SHA-256',
-        marketId: 'Market ID',
-        version: 'Version',
-        previousVersion: 'Previous',
-        latestAvailable: 'Latest available',
-        channel: 'Channel',
+        marketId: 'ID do mercado',
+        version: 'Versão',
+        previousVersion: 'Anterior',
+        latestAvailable: 'Mais recente',
+        channel: 'Canal',
       },
     },
     filterPlaceholder: 'Filtrar plugins por texto, pinyin e regras is:/type:/has:',
@@ -381,6 +382,40 @@ export default {
       surfaceWarnings: 'A declaração de UI do plugin precisa de atenção',
       controlError: 'Erro de controle da UI do plugin',
       hostedRuntimePending: 'O contêiner Vue reconheceu esta Surface. Renderizadores TSX, Markdown e Auto serão conectados em uma fase posterior.'
+    }
+  },
+  package: {
+    dialog: {
+      title: 'Histórico de operações de pacote',
+      subtitle: 'Mostrando os últimos {count} resultado(s)'
+    },
+    empty: 'Execute uma operação de pacote para ver os registros aqui.',
+    viewDetail: 'Ver detalhes',
+    detail: {
+      title: 'Detalhes do resultado',
+      field: {
+        packageId: 'ID do pacote',
+        kind: 'Tipo',
+        version: 'Versão',
+        schema: 'Schema',
+        hashCheck: 'Verificação de hash',
+        profiles: 'Perfis'
+      },
+      list: 'Itens',
+      warning: 'Notas',
+      rawJson: 'JSON bruto do resultado'
+    },
+    hash: {
+      notVerified: 'Não verificado',
+      passed: 'Aprovado',
+      failed: 'Falhou'
+    },
+    kind: {
+      build: 'Empacotar',
+      inspect: 'Inspecionar',
+      verify: 'Verificar',
+      install: 'Instalar',
+      analyze: 'Analisar'
     }
   },
   metrics: {

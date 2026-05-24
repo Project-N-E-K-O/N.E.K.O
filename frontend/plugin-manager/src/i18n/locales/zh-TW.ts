@@ -17,6 +17,7 @@ export default {
     back: '返回',
     submit: '提交',
     close: '關閉',
+    toggleSelection: '切換選取狀態',
     success: '成功',
     error: '錯誤',
     warning: '警告',
@@ -121,22 +122,22 @@ export default {
     sortMostDownloads: '下載量',
     sortTopRated: '評分',
     sortName: '名稱',
-    upgrading: 'Upgrading...',
-    upgradeTo: 'Upgrade to v{version}',
-    upgradeSuccess: 'Upgraded: {name}',
-    yanked: 'Yanked',
-    yankedDefault: 'This version has been yanked by its author',
-    noVersionAvailable: 'No release available',
-    upgradeRollback: 'Upgrade failed; rolled back to previous version',
-    upgradeAlreadyAtTarget: 'Already at the target version',
-    pluginNotInstalled: 'Plugin is not installed; cannot upgrade',
-    lockWriteFailed: 'Failed to write install record'
+    upgrading: '升級中...',
+    upgradeTo: '升級到 v{version}',
+    upgradeSuccess: '升級成功: {name}',
+    yanked: '已撤回',
+    yankedDefault: '此版本已被作者撤回',
+    noVersionAvailable: '暫無可用版本',
+    upgradeRollback: '升級失敗，已回復到舊版本',
+    upgradeAlreadyAtTarget: '目前已是目標版本',
+    pluginNotInstalled: '此外掛尚未安裝，無法升級',
+    lockWriteFailed: '安裝記錄寫入失敗'
   },
   settings: {
-    channel: 'Update channel',
-    channelStable: 'Stable',
-    channelBeta: 'Beta',
-    channelHint: 'Switching refreshes the plugin list with the selected channel; installed plugins keep running'
+    channel: '更新通道',
+    channelStable: '穩定版',
+    channelBeta: '測試版',
+    channelHint: '切換後所有外掛列表將依所選通道更新；不影響已安裝外掛運行'
   },
   auth: {
     unauthorized: '未授權存取',
@@ -209,30 +210,30 @@ export default {
     noEntries: '暫無進入點',
     showMetrics: '顯示效能指標',
     hideMetrics: '隱藏效能指標',
-    showSourceDetail: 'Show Source Details',
-    hideSourceDetail: 'Hide Source Details',
+    showSourceDetail: '顯示來源詳情',
+    hideSourceDetail: '隱藏來源詳情',
     installSource: {
       channel: {
-        builtin: 'Built-in',
-        manual: 'Manual',
-        imported: 'Imported',
-        market: 'Market',
+        builtin: '內建',
+        manual: '手動',
+        imported: '匯入',
+        market: '市集',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
       channelLabels: {
-        stable: 'Stable',
-        beta: 'Beta',
+        stable: '穩定版',
+        beta: '測試版',
       },
-      updateAvailable: 'Update available',
+      updateAvailable: '有新版本',
       labels: {
-        installedAt: 'Installed',
-        packageFilename: 'Package',
+        installedAt: '安裝時間',
+        packageFilename: '安裝包',
         sha256: 'SHA-256',
-        marketId: 'Market ID',
-        version: 'Version',
-        previousVersion: 'Previous',
-        latestAvailable: 'Latest available',
-        channel: 'Channel',
+        marketId: '市集 ID',
+        version: '目前版本',
+        previousVersion: '上一版本',
+        latestAvailable: '最新版本',
+        channel: '通道',
       },
     },
     filterPlaceholder: '篩選外掛（支援文字、拼音與 is:/type:/has: 規則）',
@@ -381,6 +382,40 @@ export default {
       surfaceWarnings: '外掛 UI 宣告存在需要處理的問題',
       controlError: '外掛介面控制項錯誤',
       hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
+    }
+  },
+  package: {
+    dialog: {
+      title: '包管理執行記錄',
+      subtitle: '保留最近 {count} 條執行結果'
+    },
+    empty: '執行包管理操作後，這裡會顯示記錄',
+    viewDetail: '查看詳情',
+    detail: {
+      title: '結果詳情',
+      field: {
+        packageId: '包 ID',
+        kind: '類型',
+        version: '版本',
+        schema: 'Schema',
+        hashCheck: 'Hash 校驗',
+        profiles: 'Profiles'
+      },
+      list: '明細',
+      warning: '注意',
+      rawJson: '原始結果 JSON'
+    },
+    hash: {
+      notVerified: '未校驗',
+      passed: '通過',
+      failed: '失敗'
+    },
+    kind: {
+      build: '建置',
+      inspect: '檢查',
+      verify: '校驗',
+      install: '安裝',
+      analyze: '分析'
     }
   },
   metrics: {
