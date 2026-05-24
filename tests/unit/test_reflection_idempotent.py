@@ -413,3 +413,86 @@ async def test_synth_success_clears_backoff(tmp_path):
         assert rid not in (await re._aload_synth_backoff("小天")), (
             "成功合成后应清掉该 rid 的失败退避记录"
         )
+
+
+def _write_facts_with_importance(tmpdir: str, character: str, specs: list[tuple[str, int]]):
+    """写 facts.json，每条带显式 importance，用于构造 top-N cap 场景。"""
+    import json
+
+    char_dir = os.path.join(tmpdir, character)
+    os.makedirs(char_dir, exist_ok=True)
+    facts = [
+        {"id": fid, "text": f"fact text {fid}", "entity": "master",
+         "importance": imp, "absorbed": False}
+        for fid, imp in specs
+    ]
+    with open(os.path.join(char_dir, "facts.json"), "w", encoding="utf-8") as f:
+        json.dump(facts, f, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_synth_dead_letter_resets_when_full_input_changes(tmp_path):
+    """Codex P2：退避 key 必须覆盖全部 unabsorbed，而非 capped top-N(rid)。
+
+    poison 的 top-20 dead-letter 后，新到的 fact（importance≥5 进得了
+    unabsorbed 池，但低于 top-20 那批、进不了 cap）不会改 rid——若按 rid 退避
+    会永久跳过、饿死整池。按全集 key 退避则新 fact 改 key → 预算复位 → 重试。
+
+    注：aget_unabsorbed_facts 有 min_importance=5 闸门，importance<5 的 fact
+    根本不进池，所以构造新 fact 用 importance=5（poison 批用 9 占满 top-20）。
+    """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS, REFLECTION_SYNTHESIS_FACTS_MAX
+
+    mock_cm = _build_mock_cm(str(tmp_path))
+    # 20 条高 importance（=top-N poison 批次）
+    poison = [(f"p{i:02d}", 9) for i in range(REFLECTION_SYNTHESIS_FACTS_MAX)]
+    _write_facts_with_importance(str(tmp_path), "小天", poison)
+
+    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        llm_calls = {"n": 0}
+
+        async def _fail_ainvoke(self, prompt):
+            llm_calls["n"] += 1
+            resp = MagicMock()
+            resp.content = "not json"  # 触发失败分支
+            return resp
+
+        class _FakeLLM:
+            def __init__(self, *a, **kw): pass
+            ainvoke = _fail_ainvoke
+
+            async def aclose(self):
+                return None
+
+        with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
+             patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
+             patch("utils.language_utils.get_global_language", return_value="zh"):
+            # 跑到 dead-letter：MAX 次真打 LLM，之后跳过
+            for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS + 2):
+                assert await re.synthesize_reflections("小天") == []
+            assert llm_calls["n"] == MEMORY_LIVENESS_MAX_ATTEMPTS
+
+            # 加一条 importance=5 的 fact：进得了 unabsorbed 池（≥min_importance），
+            # 但低于 poison 批的 9、挤不进 top-20，rid 不变，但全集 key 变
+            new_facts = poison + [("low0", 5)]
+            _write_facts_with_importance(str(tmp_path), "小天", new_facts)
+            fs._facts.pop("小天", None)
+
+            calls_before = llm_calls["n"]
+            await re.synthesize_reflections("小天")
+            assert llm_calls["n"] == calls_before + 1, (
+                "新 fact 改变 unabsorbed 全集 → 退避 key 变 → 应复位重试，"
+                "而不是按旧 rid 永久跳过"
+            )

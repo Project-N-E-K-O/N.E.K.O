@@ -735,6 +735,14 @@ class ReflectionEngine:
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
+        # 失败退避 key 必须覆盖**全部** unabsorbed facts，所以在 cap 之前先取。
+        # 不能用 rid（下面那个 capped top-N 子集的 hash）当退避 key：否则一个
+        # poison 的 top-N 批次 dead-letter 后，新到的低 importance facts 进不了
+        # top-N → rid 不变 → 合成被永久跳过，把整个 unabsorbed 池饿死（Codex P2）。
+        # 用全集 key 时任何新 fact 都会改 key → 预算复位 → 重试一次。
+        all_unabsorbed_ids = sorted(f['id'] for f in unabsorbed)
+        backoff_key = _reflection_id_from_facts(all_unabsorbed_ids)
+
         # Cap unabsorbed facts entering this synthesis call. 上游
         # aget_unabsorbed_facts 没有 limit 参数，长期不上线时可能堆几百
         # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
@@ -769,14 +777,14 @@ class ReflectionEngine:
             )
             return []
 
-        # 失败退避（dead-letter）：同批 facts(rid) 合成已连续失败 ≥
-        # MEMORY_LIVENESS_MAX_ATTEMPTS 次 → 不再每 180s 原样重抽空跑 LLM。
-        # facts 一变 rid 就变、计数天然复位（用户审计 #2）。
+        # 失败退避（dead-letter）：同一批 unabsorbed facts(backoff_key) 合成已连续
+        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 次 → 不再每 180s 原样重抽空跑 LLM。
+        # 任一 unabsorbed fact 增减 → backoff_key 变、计数天然复位（用户审计 #2）。
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
-        synth_attempts = (await self._aload_synth_backoff(lanlan_name)).get(rid, 0)
+        synth_attempts = (await self._aload_synth_backoff(lanlan_name)).get(backoff_key, 0)
         if synth_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
             logger.debug(
-                f"[Reflection] {lanlan_name}: rid {rid} 合成连续失败 "
+                f"[Reflection] {lanlan_name}: backoff_key {backoff_key} 合成连续失败 "
                 f"{synth_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，dead-letter 跳过"
             )
             return []
@@ -820,12 +828,12 @@ class ReflectionEngine:
             result = robust_json_loads(raw)
             if not isinstance(result, dict):
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
-                await self._abump_synth_backoff(lanlan_name, rid, "non-dict response")
+                await self._abump_synth_backoff(lanlan_name, backoff_key, "non-dict response")
                 return []
             reflection_text = result.get('reflection', '')
             if not isinstance(reflection_text, str):
                 logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
-                await self._abump_synth_backoff(lanlan_name, rid, "reflection field non-str")
+                await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
                 return []
             reflection_text = reflection_text.strip()
             reflection_entity = result.get('entity', 'relationship')
@@ -868,11 +876,11 @@ class ReflectionEngine:
                 subject = None
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
-            await self._abump_synth_backoff(lanlan_name, rid, f"LLM/parse exception: {e}")
+            await self._abump_synth_backoff(lanlan_name, backoff_key, f"LLM/parse exception: {e}")
             return []
 
         if not reflection_text:
-            await self._abump_synth_backoff(lanlan_name, rid, "empty reflection text")
+            await self._abump_synth_backoff(lanlan_name, backoff_key, "empty reflection text")
             return []
 
         # Create pending reflection — id 已在函数开头由 source_fact_ids 决定
@@ -945,9 +953,10 @@ class ReflectionEngine:
                 await self.asave_reflections(lanlan_name, reflections)
                 created = True
 
-        # rid 已落盘（本次 append 或并发对方先写），清掉其失败退避记录——
-        # 锁外调用（_aclear_synth_backoff 自取锁，避免 reentrant 死锁）。
-        await self._aclear_synth_backoff(lanlan_name, rid)
+        # reflection 已落盘（本次 append 或并发对方先写），清掉本次 unabsorbed
+        # 全集的失败退避记录——锁外调用（_aclear_synth_backoff 自取锁，避免
+        # reentrant 死锁）。
+        await self._aclear_synth_backoff(lanlan_name, backoff_key)
 
         # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
         # （fact_store 自己有锁，不需要在 reflection 锁内）
