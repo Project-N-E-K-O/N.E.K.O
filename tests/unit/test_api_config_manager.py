@@ -656,11 +656,26 @@ class TestAgentUrlRegionRouting:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('non_mainland', [True, False, None])
-    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland):
-        """不含 lanlan 域的自定义 URL 原样返回，不受线路影响。"""
+    @pytest.mark.parametrize('custom', [
+        'https://api.openai.com/v1',
+        # 自定义代理把 lanlan 域写进 path/query：只按 host 判定，不得被改写
+        'https://myproxy.example.com/v1?upstream=www.lanlan.app',
+        'https://myproxy.example.com/lanlan.tech/v1',
+        # host 仅以 lanlan.app 结尾但并非该域，不应命中
+        'https://evil-lanlan.app/v1',
+    ])
+    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland, custom):
+        """host 非 lanlan 域时原样返回，不受线路影响，也不做字符串级 replace。"""
         config_manager._check_non_mainland = lambda: non_mainland
-        custom = 'https://api.openai.com/v1'
         assert config_manager._normalize_agent_url(custom) == custom
+
+    @pytest.mark.unit
+    def test_normalize_agent_url_preserves_port(self, config_manager):
+        """改写 host 时保留端口。"""
+        config_manager._check_non_mainland = lambda: False
+        assert config_manager._normalize_agent_url(
+            'https://www.lanlan.tech:8443/text/v1'
+        ) == 'https://lanlan.app:8443/text/v1'
 
     @pytest.mark.unit
     def test_normalize_agent_url_non_string_passthrough(self, config_manager):

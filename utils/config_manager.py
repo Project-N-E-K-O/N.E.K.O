@@ -2971,27 +2971,46 @@ class ConfigManager:
 
         return url
 
+    # 只对这些 lanlan host 做改写，其余域（含自定义代理）一律原样透传
+    _AGENT_LANLAN_HOSTS = frozenset({
+        'lanlan.tech', 'www.lanlan.tech', 'lanlan.app', 'www.lanlan.app',
+    })
+
     def _normalize_agent_url(self, url: str) -> str:
         """Agent 模型始终走 lanlan.app（国际 API），不分线路。
 
-        - 统一把 lanlan.tech 域改写为 lanlan.app。
+        - 仅当 URL 的 host 恰为 lanlan.tech / www.lanlan.tech / lanlan.app /
+          www.lanlan.app 时改写；其余域（含 path/query 里碰巧出现 lanlan
+          字样的自定义代理 URL）一律原样透传，不做字符串级 replace。
+        - 统一把 host 里的 lanlan.tech 改写为 lanlan.app。
         - 国际线路保留 www 前缀（www.lanlan.app）；国内线路剥掉 www
           （lanlan.app），按各自就近节点路由。
-        - 不含 lanlan 域的自定义 URL 原样返回。
-        - GeoIP 不确定时按国内处理（剥 www），与 _adjust_free_api_url
-          “未确认非大陆即视为大陆”的口径保持一致。
+        - bare host 输入不补 www，尊重用户写的 host。
+        - GeoIP 探测异常时按国际处理（保留 www）作为安全默认，等价于本次
+          改动前行为；线路探测不该阻断 URL 推导。
         """
-        if not isinstance(url, str):
+        if not isinstance(url, str) or not url:
             return url
-        url = url.replace('lanlan.tech', 'lanlan.app')
         try:
-            if not self._check_non_mainland():
-                url = url.replace('www.lanlan.app', 'lanlan.app')
+            parsed = urlparse(url)
         except Exception:
-            # GeoIP 探测异常时不剥 www，保留国际形态（www.lanlan.app）作为安全
-            # 默认，等价于本次改动前的行为；线路探测不该阻断 URL 推导。
-            pass
-        return url
+            return url
+        host = (parsed.hostname or '').lower()
+        if host not in self._AGENT_LANLAN_HOSTS:
+            return url
+
+        new_host = host.replace('lanlan.tech', 'lanlan.app')
+        try:
+            non_mainland = self._check_non_mainland()
+        except Exception:
+            non_mainland = True  # 探测失败 → 国际安全默认
+        if not non_mainland and new_host.startswith('www.'):
+            new_host = new_host[len('www.'):]
+
+        # 仅替换 netloc 里的 host，保留可能存在的端口/用户信息
+        netloc = parsed.netloc.replace(parsed.hostname, new_host, 1) \
+            if parsed.hostname else new_host
+        return urlunparse(parsed._replace(netloc=netloc))
 
     @staticmethod
     def _derive_livestream_url(original_url: str, prefix: str) -> str:
