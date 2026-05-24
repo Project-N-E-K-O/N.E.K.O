@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from plugin.plugins.study_companion.knowledge_contribution import PublicGraphContributionBuilder
 from plugin.plugins.study_companion.knowledge_quality import KnowledgeCandidateType, KnowledgeEvidenceType, KnowledgeQualityStore
 from plugin.plugins.study_companion.models import StudyConfig

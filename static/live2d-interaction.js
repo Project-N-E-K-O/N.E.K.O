@@ -97,9 +97,6 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
 
         const threshold = customThreshold ?? SNAP_CONFIG.threshold;
         const margin = SNAP_CONFIG.margin;
-        const isDesktopPetWindow = Boolean(
-            window.electronScreen && typeof window.electronScreen.getCurrentDisplay === 'function'
-        );
 
         // 计算模型在屏幕内剩余的像素数
         const visibleLeft = Math.max(modelLeft, screenLeft);
@@ -109,8 +106,10 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         const visibleBottom = Math.min(modelBottom, screenBottom);
         const visibleHeight = Math.max(0, visibleBottom - visibleTop);
 
+        // 桌宠窗口与网页端统一按可见面积阈值吸附：只有模型绝大部分出屏才回弹，
+        // 贴边摆放不会被过度纠正。多屏切换后仍强制按安全边距吸回当前窗口。
         let needsSnapLeft, needsSnapRight, needsSnapTop, needsSnapBottom;
-        if (afterDisplaySwitch || isDesktopPetWindow) {
+        if (afterDisplaySwitch) {
             needsSnapLeft = overflowLeft > margin;
             needsSnapRight = overflowRight > margin;
             needsSnapTop = overflowTop > margin;

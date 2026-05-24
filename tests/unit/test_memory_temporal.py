@@ -19,6 +19,50 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+# ── cooldown_elapsed (dead-letter 时间自愈) ──────────────────────────
+
+
+def test_cooldown_elapsed_true_after_window():
+    from memory.temporal import cooldown_elapsed
+    last = (datetime.now() - timedelta(hours=6)).isoformat()
+    assert cooldown_elapsed(last, 5 * 3600) is True
+
+
+def test_cooldown_elapsed_false_within_window():
+    from memory.temporal import cooldown_elapsed
+    last = (datetime.now() - timedelta(hours=1)).isoformat()
+    assert cooldown_elapsed(last, 5 * 3600) is False
+
+
+def test_cooldown_elapsed_missing_or_garbage_is_eligible():
+    """无时间戳 / 无法解析 → True（给一次 probe，比永久冻死安全）。"""
+    from memory.temporal import cooldown_elapsed
+    assert cooldown_elapsed(None, 5 * 3600) is True
+    assert cooldown_elapsed("", 5 * 3600) is True
+    assert cooldown_elapsed("not-a-date", 5 * 3600) is True
+
+
+def test_cooldown_elapsed_respects_now_arg():
+    from memory.temporal import cooldown_elapsed
+    base = datetime(2026, 5, 24, 12, 0, 0)
+    last = (base - timedelta(hours=4)).isoformat()
+    # 4h < 5h 窗口
+    assert cooldown_elapsed(last, 5 * 3600, now=base) is False
+    # 同一时间戳，6h 窗口外
+    assert cooldown_elapsed(last, 3 * 3600, now=base) is True
+
+
+def test_cooldown_elapsed_handles_aware_timestamp():
+    """aware ISO（+00:00 / Z）不应让相减抛 TypeError（迁移/import 数据防御，
+    CodeRabbit）。aware 与 naive now 经 to_naive_local 归一后正常比较。"""
+    from datetime import timezone
+    from memory.temporal import cooldown_elapsed
+    last_aware_old = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    assert cooldown_elapsed(last_aware_old, 5 * 3600) is True
+    last_aware_recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    assert cooldown_elapsed(last_aware_recent, 5 * 3600) is False
+
+
 # ── memory.temporal helpers ─────────────────────────────────────────
 
 

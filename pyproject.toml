@@ -148,6 +148,7 @@ dev = [
     "playwright>=1.58.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
     "pytest-playwright>=0.7.2",
     "ruff>=0.15.4",
 ]
@@ -184,3 +185,11 @@ select = [
   "ASYNC222",  # Popen.wait / Popen.communicate
   "ASYNC251",  # time.sleep in async function
 ]
+
+[tool.coverage.run]
+source = ["plugin/plugins/study_companion"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true

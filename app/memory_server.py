@@ -2600,8 +2600,12 @@ async def _amaybe_trigger_negative_keyword_hook(
 async def _run_persona_refine_for_character(character: str) -> None:
     """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
     skip / 候选不足 → 整 pass no-op。"""
-    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
     from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2619,14 +2623,22 @@ async def _run_persona_refine_for_character(character: str) -> None:
         # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
         # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
         # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
-        # stamp 成功时会清回 0；或人工编辑 persona.json。
+        # stamp 成功时会清回 0；或人工编辑 persona.json；或时间自愈——
+        # 冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 放行一次 probe，让
+        # 一次性 correction 模型宕机恢复后自愈（不再永久冻死无辜 entry）。
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
             if isinstance(e, dict)
             and not e.get('protected')
             and e.get('id')
-            and safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and (
+                safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    e.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         if entries:
             candidates_by_entity[entity] = entries
@@ -2693,8 +2705,12 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     """单角色 reflection refine pass。cluster 内可混入同 entity 的
     absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
     层代码兜底）。"""
-    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
     from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2718,14 +2734,21 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
         # reflection 不再进 cluster gather（同 persona refine）。fact 不算
         # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
-        # attempts。
+        # attempts。时间自愈：冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性宕机恢复后自愈。
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
-            and safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and (
+                safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    r.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         entity_facts = [
             annotate_entry(f, type_='fact', entity=entity)
@@ -3271,6 +3294,30 @@ async def maybe_spawn_review(name: str) -> None:
                 f"[Review/spawn] {name}: 长挂机 bypass MIN_NEW_MSGS_FOR_REVIEW "
                 f"(new_msgs={new_msg_count}, idle={idle_secs:.0f}s)"
             )
+        # Gate 6: 失败退避（dead-letter）。review 连续失败 ≥
+        # MEMORY_LIVENESS_MAX_ATTEMPTS 次且**输入未变**（当前 history 末尾 K 条
+        # fingerprint == 上次失败时记下的）→ 跳过本次 spawn，不再每轮空烧
+        # 3×110s 超时。输入一变（master 发了新消息，尾部 fingerprint 变）→ 视为
+        # 新输入，清掉失败计数放行重试。
+        # 必须放在 Gate 5 之后：长挂机 bypass 在 correction 模型持续超时时会
+        # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.recent import build_review_fingerprint
+        state = _maint_state.setdefault(name, {})
+        fail_attempts = state.get('review_fail_attempts', 0) or 0
+        if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+            cur_fp = build_review_fingerprint(history)
+            if state.get('review_fail_fp') == cur_fp:
+                logger.debug(
+                    f"[Review/spawn] {name}: 失败退避 dead-letter "
+                    f"(连续失败 {fail_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS} "
+                    f"且输入未变)，跳过本轮"
+                )
+                return
+            # 输入已变 → 旧失败计数过期，复位后放行重试
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
+            await _asave_maint_state()
         # 全过 → spawn
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
@@ -3280,6 +3327,24 @@ async def maybe_spawn_review(name: str) -> None:
         # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
         task = asyncio.create_task(_run_review_in_background(name, snapshot, cancel_event))
         correction_tasks[name] = task
+
+
+async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
+    """记一次 review 失败到失败退避计数（Gate 6 用），返回累计次数。
+
+    输入 fingerprint 与上次失败记录不同 → 先把预算归零再 +1，让每段
+    history tail 各享独立的 N 次预算，不跨输入累积（Codex P2）。'failed'
+    返回分支和 except 异常分支共用本函数，避免两处逻辑漂移。
+    """
+    from memory.recent import build_review_fingerprint
+    state = _maint_state.setdefault(lanlan_name, {})
+    cur_fp = build_review_fingerprint(snapshot)
+    if state.get('review_fail_fp') != cur_fp:
+        state['review_fail_attempts'] = 0
+    state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
+    state['review_fail_fp'] = cur_fp
+    await _asave_maint_state()
+    return state['review_fail_attempts']
 
 
 async def _run_review_in_background(
@@ -3309,9 +3374,20 @@ async def _run_review_in_background(
       race，但身份检查是廉价的防御。
     """
     try:
-        result = await recent_history_manager.review_history(
-            lanlan_name, snapshot, cancel_event=cancel_event,
-        )
+        # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
+        # 收口成 ('failed', None) 走下面统一的失败分支记一次退避。成功后的 result
+        # 处理 / state 落盘异常**不**能被当成 review 失败（否则 patched/white 的
+        # save 抖动会误判成失败、误触 Gate 6 dead-letter；'failed' 分支自己 save
+        # 抛异常也会被重复记一次）——那类异常交给外层 except 纯兜底、不 bump。
+        # 注：asyncio.CancelledError 是 BaseException，不被 except Exception 捕获，
+        # 会正常冒泡到外层 CancelledError 分支。
+        try:
+            result = await recent_history_manager.review_history(
+                lanlan_name, snapshot, cancel_event=cancel_event,
+            )
+        except Exception as e:
+            logger.error(f"❌ {lanlan_name} 的 review_history 抛异常，按失败处理: {e}")
+            result = ('failed', None)
         # 兼容意外的返回类型，统一解包
         if isinstance(result, tuple) and len(result) == 2:
             status, fingerprint = result
@@ -3324,6 +3400,9 @@ async def _run_review_in_background(
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
             state['last_reviewed_cutoff_tail'] = fingerprint
+            # 成功 → 清掉失败退避计数（Gate 6）
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
         elif status == 'white':
             logger.info(
@@ -3332,13 +3411,32 @@ async def _run_review_in_background(
             state['last_reviewed_cutoff_tail'] = None
             # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
             # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
+            # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
+        elif cancel_event.is_set():
+            # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
+            # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
+            # 失败退避——否则用户频繁编辑记忆会被误判成 poison。
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理被取消（不计入失败退避）")
         else:
-            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
+            # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
+            # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
+            # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
+            attempts = await _record_review_failure(lanlan_name, snapshot)
+            logger.info(
+                f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
+                f"失败退避计数 → {attempts}"
+            )
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
+        # 纯兜底：能到这里的只剩 result 处理 / state 持久化等"非 review 失败"
+        # 的异常（review_history 自身抛已在内层收口成 'failed'）。这类异常**不**
+        # 计入失败退避——否则成功 review 的 save 抖动会被误判成失败、误触
+        # Gate 6 dead-letter 压住后续 review（Codex P2）。
+        logger.error(f"❌ {lanlan_name} 的记忆整理后处理出错（不计入失败退避）: {e}")
     finally:
         # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
         # 新 event，本 task 不应该把它们清掉。

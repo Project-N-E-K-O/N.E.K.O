@@ -149,6 +149,7 @@
     "ui.memory.reviewing":  "기억 카드 복습 중...",
     "ui.memory.review_saved_days":  "다음 복습은 {days}일 후",
     "ui.memory.review_saved":  "복습이 저장되었습니다",
+    "ui.memory.ratings_aria":  "기억 복습 평가",
     "ui.memory.deck_type":  "덱 유형",
     "ui.memory.deck":  "덱",
     "ui.memory.item_id":  "항목 ID",
@@ -185,5 +186,9 @@
     "ui.button.import":  "가져오기",
     "ui.button.refresh_deck":  "덱 새로고침",
     "ui.button.save_card":  "카드 저장",
+    "ui.button.rating.again":  "다시",
+    "ui.button.rating.hard":  "어려움",
+    "ui.button.rating.good":  "좋음",
+    "ui.button.rating.easy":  "쉬움",
     "ui.label.name":  "이름"
 }

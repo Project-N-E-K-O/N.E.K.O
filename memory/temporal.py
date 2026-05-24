@@ -56,6 +56,40 @@ ALL_TEMPORAL_SCOPES = (
 )
 
 
+def cooldown_elapsed(
+    last_at_iso: str | None,
+    cooldown_seconds: float,
+    now: datetime | None = None,
+) -> bool:
+    """dead-letter 时间冷却自愈判定：距上次失败是否已过 ``cooldown_seconds``。
+
+    用于 reflection synth / schema recheck / refine 这些"达 N 次冻结"的
+    dead-letter——冻结后每过冷却窗口放行一次 probe，让一次性持续故障
+    （模型宕机 / 维护态 / 只读 FS）恢复后自愈。memory_review **不**用本机制
+    （它靠 fingerprint 变化复位，挂机期间应一直停）。
+
+    返回 True = 冷却已过 / 无时间基准，可放行 probe。
+
+    ``last_at_iso`` 为空或无法解析 → 返回 True：没有时间戳通常是旧数据或
+    首次冻结前的遗留，给一次 probe 比永久冻死更安全（probe 失败会写回
+    时间戳，下次就按正常冷却计时）。
+    """
+    if not last_at_iso:
+        return True
+    try:
+        last = datetime.fromisoformat(last_at_iso)
+    except (ValueError, TypeError):
+        return True
+    if now is None:
+        now = datetime.now()
+    # aware/naive 归一：写入路径都用 datetime.now()（naive），但迁移 / import
+    # 数据可能塞进 +00:00 / Z 的 aware ISO，直接和 naive now 相减会抛
+    # TypeError 中断冷却判定。复用全项目 tz 归一口径 to_naive_local（保瞬时）。
+    last = to_naive_local(last)
+    now = to_naive_local(now)
+    return (now - last).total_seconds() >= cooldown_seconds
+
+
 # ── offset spec 解析 ──────────────────────────────────────────────────
 
 def _validate_offset_spec(spec: object) -> dict | None:
