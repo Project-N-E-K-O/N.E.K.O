@@ -2971,6 +2971,26 @@ class ConfigManager:
 
         return url
 
+    def _normalize_agent_url(self, url: str) -> str:
+        """Agent 模型始终走 lanlan.app（国际 API），不分线路。
+
+        - 统一把 lanlan.tech 域改写为 lanlan.app。
+        - 国际线路保留 www 前缀（www.lanlan.app）；国内线路剥掉 www
+          （lanlan.app），按各自就近节点路由。
+        - 不含 lanlan 域的自定义 URL 原样返回。
+        - GeoIP 不确定时按国内处理（剥 www），与 _adjust_free_api_url
+          “未确认非大陆即视为大陆”的口径保持一致。
+        """
+        if not isinstance(url, str):
+            return url
+        url = url.replace('lanlan.tech', 'lanlan.app')
+        try:
+            if not self._check_non_mainland():
+                url = url.replace('www.lanlan.app', 'lanlan.app')
+        except Exception:
+            pass
+        return url
+
     @staticmethod
     def _derive_livestream_url(original_url: str, prefix: str) -> str:
         """从 livestream server_prefix 派生 lanlan.tech URL 的等价地址。
@@ -3280,7 +3300,7 @@ class ConfigManager:
         # agent api 默认跟随辅助 API 的 agent_model，缺失时回退到 VISION_MODEL
         config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
         config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
-        config['AGENT_MODEL_URL'] = config['AGENT_MODEL_URL'].replace('lanlan.tech', 'lanlan.app') # TODO: 先放这里
+        config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
         key_field = assist_api_key_fields.get(assist_api_value)
         derived_key = ''
@@ -3463,7 +3483,7 @@ class ConfigManager:
 
         # Agent model always uses international API regardless of region
         if isinstance(config.get('AGENT_MODEL_URL'), str):
-            config['AGENT_MODEL_URL'] = config['AGENT_MODEL_URL'].replace('lanlan.tech', 'lanlan.app')
+            config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
 
         return config
 
