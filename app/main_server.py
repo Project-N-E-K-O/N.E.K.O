@@ -1910,11 +1910,11 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"Agent event bridge startup failed: {e}")
 
-            # 创意工坊不在 greeting 关键路径上：挂载要先做 Steam UGC 查询（IPC，
-            # 较慢），角色卡同步还要走网络。整段丢到后台 task，让服务尽快 ready；
-            # greeting 用默认角色，不依赖 /workshop 静态目录。mount→sync 的内部
-            # 顺序在 helper 内保留（sync 依赖 mount 先解析并持久化 workshop 路径）。
-            asyncio.create_task(_deferred_workshop_init(steamworks))
+            # 创意工坊：目录挂载保持同步（开销小，且必须在 ready 前完成，
+            # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
+            # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
+            await _init_and_mount_workshop()
+            _schedule_workshop_sync(steamworks)
 
             try:
                 from utils.token_tracker import TokenTracker, install_hooks
@@ -2315,15 +2315,14 @@ async def request_application_shutdown_async():
     await shutdown_server_async()
 
 
-async def _deferred_workshop_init(steamworks) -> None:
-    """ready 后在后台跑创意工坊初始化：先挂载目录，再（有 steamworks 时）预热
-    UGC 缓存并同步角色卡。从 ``_ensure_main_server_runtime_initialized`` 的关键
-    路径挪出来——greeting 不依赖创意工坊，而 Steam UGC 查询 / 网络同步偏慢。
-    mount 必须在 sync 之前完成（sync 依赖 mount 解析并持久化 workshop 路径）。
+def _schedule_workshop_sync(steamworks) -> None:
+    """把创意工坊里真正慢的部分（UGC 缓存预热 + 角色卡网络同步）丢到后台 task。
+
+    目录挂载已由调用方在 ready 前同步完成（``_init_and_mount_workshop``），这里
+    只调度网络密集的预热/同步——与本次重构前的原始行为一致（原本它们就是
+    ``create_task``）。greeting 不依赖这两步。
     """
     try:
-        await _init_and_mount_workshop()
-
         if not steamworks:
             return
 
@@ -2378,7 +2377,7 @@ async def _deferred_workshop_init(steamworks) -> None:
         _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
         _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
     except Exception as e:
-        logger.warning(f"创意工坊后台初始化失败（不影响启动）: {e}")
+        logger.warning(f"创意工坊 UGC 预热/同步调度失败（不影响启动）: {e}")
 
 
 async def _init_and_mount_workshop():
