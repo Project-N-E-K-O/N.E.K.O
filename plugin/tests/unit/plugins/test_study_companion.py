@@ -2751,6 +2751,107 @@ async def test_study_pomodoro_start_offloads_blocking_operations(
 
 
 @pytest.mark.asyncio
+async def test_study_pomodoro_start_sanitizes_deck_focus_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, goal_id: str) -> dict[str, object]:
+            return {"id": goal_id, "title": "deck"}
+
+    class _Timer:
+        def __init__(self) -> None:
+            self.started_focus_minutes = 0
+
+        def status(self) -> dict[str, object]:
+            return {"state": "idle", "current_focus_session": {}}
+
+        def start(self, **kwargs) -> dict[str, object]:
+            self.started_focus_minutes = int(kwargs["focus_minutes"])
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-3"},
+                "config": {"focus_minutes": self.started_focus_minutes},
+            }
+
+    class _Bridge:
+        def __init__(self) -> None:
+            self.focus_minutes = 0.0
+
+        def resolve_focus_goal(self, **kwargs) -> dict[str, object]:
+            self.focus_minutes = float(kwargs["focus_minutes"])
+            return {"goal": {"id": "deck-goal"}}
+
+    class _Supervision:
+        def on_focus_start(self, **_kwargs) -> None:
+            return None
+
+    async def _to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    timer = _Timer()
+    bridge = _Bridge()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = timer
+    plugin._supervision = _Supervision()
+    plugin._memory_habit_bridge = bridge
+
+    status = await plugin.study_pomodoro_start(deck_id="deck-1", focus_minutes=500)
+
+    assert isinstance(status, Ok)
+    assert bridge.focus_minutes == 25.0
+    assert timer.started_focus_minutes == 25
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_does_not_create_deck_goal_on_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, _goal_id: str) -> dict[str, object]:
+            return {}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {
+                "state": "focusing",
+                "current_focus_session": {"id": "focus-existing"},
+                "config": {"focus_minutes": 25},
+            }
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return self.status()
+
+    class _Bridge:
+        def resolve_focus_goal(self, **_kwargs) -> dict[str, object]:
+            raise AssertionError("deck goal should not be resolved for a no-op start")
+
+    class _Supervision:
+        def on_focus_start(self, **_kwargs) -> None:
+            raise AssertionError("supervision should not restart")
+
+    async def _to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = _Supervision()
+    plugin._memory_habit_bridge = _Bridge()
+
+    status = await plugin.study_pomodoro_start(deck_id="deck-1", focus_minutes=25)
+
+    assert isinstance(status, Ok)
+    assert status.value["current_focus_session"]["id"] == "focus-existing"
+
+
+@pytest.mark.asyncio
 async def test_study_supervision_toggle_respects_disable_guard() -> None:
     class _Supervision:
         def __init__(self) -> None:

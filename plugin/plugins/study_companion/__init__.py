@@ -74,6 +74,19 @@ from .ui_api import build_contribution_settings_payload, build_knowledge_map_pay
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 
 
+def _validated_pomodoro_focus_minutes(
+    config: StudyConfig, focus_minutes: Any | None
+) -> int:
+    default = int(config.pomodoro.focus_minutes or 25)
+    if not config.pomodoro.allow_custom_duration or focus_minutes is None:
+        return default
+    try:
+        parsed = int(focus_minutes)
+    except (TypeError, ValueError):
+        return default
+    return parsed if 1 <= parsed <= 120 else default
+
+
 @neko_plugin
 class StudyCompanionPlugin(NekoPluginBase):
     def __init__(self, ctx):
@@ -994,6 +1007,9 @@ class StudyCompanionPlugin(NekoPluginBase):
     ):
         try:
             habits, _, timer, supervision = self._require_habit_components()
+            planned_focus_minutes = _validated_pomodoro_focus_minutes(
+                self._cfg, focus_minutes
+            )
             before_status = await asyncio.to_thread(timer.status)
             before_session_id = str(
                 before_status.get("current_focus_session", {}).get("id") or ""
@@ -1009,11 +1025,11 @@ class StudyCompanionPlugin(NekoPluginBase):
                     bridge.resolve_focus_goal,
                     date=self._today(),
                     deck_id=deck_id,
-                    focus_minutes=float(focus_minutes or self._cfg.pomodoro.focus_minutes),
+                    focus_minutes=float(planned_focus_minutes),
                 )
                 goal_id = str((goal_payload.get("goal") or {}).get("id") or "")
             status = await asyncio.to_thread(
-                timer.start, goal_id=goal_id, focus_minutes=focus_minutes
+                timer.start, goal_id=goal_id, focus_minutes=planned_focus_minutes
             )
             after_session_id = str(
                 status.get("current_focus_session", {}).get("id") or ""
