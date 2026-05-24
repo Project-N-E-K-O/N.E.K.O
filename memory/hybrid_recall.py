@@ -422,6 +422,36 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
     return out
 
 
+def _entry_event_window(entry: dict):
+    """取条目的事件时间区间 ``(start, end)``（naive 本地，缺 start 退回
+    ``created_at``，缺 end 退回 start）。无可解析时间戳返回 None。
+
+    fact / reflection 共用同一套锚点字段（schema v2），所以按时间过滤 /
+    排序时口径统一。归档 fact 也走这套。
+    """
+    from memory.temporal import _parse_iso_safe
+    s = _parse_iso_safe(entry.get('event_start_at')) or _parse_iso_safe(entry.get('created_at'))
+    if s is None:
+        return None
+    e = _parse_iso_safe(entry.get('event_end_at')) or s
+    if s.tzinfo is not None:
+        s = s.replace(tzinfo=None)
+    if e.tzinfo is not None:
+        e = e.replace(tzinfo=None)
+    return (s, e)
+
+
+def _overlaps_window(entry: dict, win_start, win_end) -> bool:
+    """条目事件区间 [s, e] 与半开窗口 [win_start, win_end) 是否有交集。
+    无可解析时间戳的条目判为不在窗口内（时间检索下宁可漏不可错挂）。
+    """
+    win = _entry_event_window(entry)
+    if win is None:
+        return False
+    s, e = win
+    return s < win_end and e >= win_start
+
+
 # ── public entry ──────────────────────────────────────────────────────
 
 
@@ -432,6 +462,7 @@ async def hybrid_recall(
     fact_store,
     reflection_engine,
     config_manager,
+    time_window: tuple | None = None,
 ) -> dict[str, Any]:
     """End-to-end hybrid recall — the function the ``/query_memory``
     HTTP endpoint should call.
@@ -445,6 +476,11 @@ async def hybrid_recall(
       reflection_engine: ``memory.reflection.ReflectionEngine`` instance
       config_manager: needed by ``collect_stop_names`` to derive the
         master/lanlan name filter
+      time_window: 可选 ``(start, end)`` naive 时间区间（来自
+        ``recall_memory(query=..., time=...)`` 同时给两者的"语义 + 时间"
+        联合检索）。给了就把候选池**先按事件时间窗口硬过滤**，再在窗口内
+        条目上跑常规 BM25 + cosine + RRF —— 即"那段时间里和 query 相关的
+        记忆"。不给则全量语义检索（旧行为）。
 
     Returns:
       ::
@@ -486,15 +522,20 @@ async def hybrid_recall(
     active_facts = active_facts or []
     active_reflections = active_reflections or []
 
-    bm25_pool_raw = (
-        _tag_tier(active_facts, 'fact')
-        + _tag_tier(active_reflections, 'reflection')
-        + _tag_tier(archive_facts, 'fact_archive')
-    )
-    embedding_pool_raw = (
-        _tag_tier(active_facts, 'fact')
-        + _tag_tier(active_reflections, 'reflection')
-    )
+    facts_tagged = _tag_tier(active_facts, 'fact')
+    refl_tagged = _tag_tier(active_reflections, 'reflection')
+    arch_tagged = _tag_tier(archive_facts or [], 'fact_archive')
+
+    # "语义 + 时间"联合检索：给了 time_window 就先把候选池按事件时间窗口
+    # 硬过滤，只让落在该区间的条目进入后续 BM25 / cosine 打分。
+    if time_window is not None:
+        ws, we = time_window
+        facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
+        refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
+        arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged
 
     # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
     # Imported lazily so a circular-import-safe boot path stays viable.
@@ -612,7 +653,7 @@ async def recall_by_time(
     有用），再过 ``_hard_filter`` 丢 score<0 / suppressed / 终态，口径与
     ``hybrid_recall`` 一致。``time_spec`` 解析失败时返回空 results。
     """
-    from memory.temporal import parse_time_window, _parse_iso_safe
+    from memory.temporal import parse_time_window
     start_t = time.time()
     window = parse_time_window(time_spec)
     if window is None:
@@ -641,14 +682,10 @@ async def recall_by_time(
     # (距离秒数, -事件起点 epoch, doc) —— 距离近优先、同距离时近发生的优先。
     scored: list[tuple[float, float, dict]] = []
     for d in pool:
-        s = _parse_iso_safe(d.get('event_start_at')) or _parse_iso_safe(d.get('created_at'))
-        if s is None:
+        win = _entry_event_window(d)
+        if win is None:
             continue
-        e = _parse_iso_safe(d.get('event_end_at')) or s
-        if s.tzinfo is not None:
-            s = s.replace(tzinfo=None)
-        if e.tzinfo is not None:
-            e = e.replace(tzinfo=None)
+        s, e = win
         # 事件闭区间 [s, e] 到半开窗口 [win_start, win_end) 的距离：
         # 有重叠 → 0；事件整体早于窗口 → win_start - e；整体晚于 → s - win_end。
         if s < win_end and e >= win_start:

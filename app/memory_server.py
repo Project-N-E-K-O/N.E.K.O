@@ -3836,9 +3836,10 @@ class QueryMemoryRequest(BaseModel):
     # 把空结果翻成"没有找到相关记忆"——和本端点"绝不让召回失败/空入参把
     # tool call 整死"的设计一致，所以这里不做 422/400 硬校验。
     query: str | None = None
-    # 可选时间回溯：填了就走"按事件时间返回最接近的 fact + reflection"的
-    # 路径，忽略 query 语义匹配。格式见 memory.temporal.parse_time_window
-    # （单日 / 整月 / 整年 / 日期区间）。不填或解析失败则走常规混合语义检索。
+    # 可选时间回溯：填了就把检索限定在该时间窗口。配合 query 时做"语义 +
+    # 时间"联合检索（窗口内按 query 排序）；只给 time 时按事件时间返回最
+    # 接近的 fact + reflection。格式见 memory.temporal.parse_time_window
+    # （单日 / 整月 / 整年 / 日期区间）。不填或解析失败则走常规全量语义检索。
     time: str | None = None
 
 
@@ -3852,9 +3853,15 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
     docstring）。``main_server`` 的 ``recall_memory`` 工具 handler 调
     本端点拿结果，再格式化给模型看。
 
-    ``time`` 非空时改走 ``recall_by_time`` —— 按事件时间锚点返回离该窗口
-    最接近的若干条 fact + reflection，不做语义打分，也不需要 query
-    （"那天/那周发生的事"）。
+    路由（query / time 三种组合）：
+    - **query + time**：``hybrid_recall(query, time_window=...)`` —— 先按事件
+      时间窗口硬过滤候选池，再在窗口内条目上跑语义检索（"那段时间里和
+      query 相关的记忆"）。
+    - **只有 time**：``recall_by_time`` —— 按事件时间锚点返回离该窗口最接近
+      的若干条 fact + reflection，不做语义打分（"那天/那周发生的事"）。
+    - **只有 query**：``hybrid_recall(query)`` —— 全量语义检索。
+    - time 解析失败时按"没给 time"处理，回落到纯 query 语义检索（不能让
+      一个坏 time 把 query 的语义召回也一起吞掉返回空，Codex P2）。
 
     ⚠️ 候选范围、阈值、budget 都在 ``config.HYBRID_RECALL_*`` 里配置；
     persona 整段不入池（已经常态渲染进 system prompt），facts +
@@ -3867,17 +3874,22 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
     time_spec = (req.time or "").strip()
+    query_text = (req.query or "").strip()
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
         # 直接 500 把 tool call 整死。
-        #
-        # time 只在「能解析成时间窗口」时才走 recall_by_time；解析失败
-        # （模型塞了自然语言 / 格式错的 time）就回落到常规语义检索，不能让
-        # 一个坏 time 把 query 的语义召回也一起吞掉返回空（Codex P2）。
+        time_window = None
         if time_spec:
             from memory.temporal import parse_time_window
-            if parse_time_window(time_spec) is not None:
+            time_window = parse_time_window(time_spec)
+            if time_window is None:
+                logger.info(
+                    "[query_memory] %s: time=%r 无法解析为时间窗口，回落语义检索",
+                    lanlan_name, time_spec,
+                )
+            elif not query_text:
+                # 只给 time、没 query → 按时间邻近返回最接近的若干条。
                 from memory.hybrid_recall import recall_by_time
                 return await recall_by_time(
                     lanlan_name=lanlan_name,
@@ -3885,17 +3897,16 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
                     fact_store=fact_store,
                     reflection_engine=reflection_engine,
                 )
-            logger.info(
-                "[query_memory] %s: time=%r 无法解析为时间窗口，回落语义检索",
-                lanlan_name, time_spec,
-            )
+        # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
+        # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
         return await hybrid_recall(
             lanlan_name=lanlan_name,
-            query=req.query or "",
+            query=query_text,
             fact_store=fact_store,
             reflection_engine=reflection_engine,
             config_manager=_config_manager,
+            time_window=time_window,
         )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
