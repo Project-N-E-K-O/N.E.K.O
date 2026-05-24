@@ -2919,13 +2919,13 @@ def get_proactive_format_sections(
     }
 
     _of_header = {
-        "zh": "输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
-        "en": "Output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
-        "ja": "出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
-        "ko": "출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
-        "ru": "Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
-        "es": "Formato de salida (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
-        "pt": "Formato de saída (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
+        "zh": "最终输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
+        "en": "Final output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
+        "ja": "最終出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
+        "ko": "최종 출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
+        "ru": "Окончательный формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
+        "es": "Formato de salida final (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
+        "pt": "Formato de saída final (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
     }
 
     _of_example = {

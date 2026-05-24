@@ -842,13 +842,13 @@ emotion_analysis_prompt = EMOTION_ANALYSIS_PROMPT["zh"]
 
 # ---------- Inner thoughts block header ----------
 INNER_THOUGHTS_HEADER = {
-    "zh": "\n======以下是{name}的内心活动======\n",
-    "en": "\n======{name}'s Inner Thoughts======\n",
-    "ja": "\n======{name}の心の声======\n",
-    "ko": "\n======{name}의 내면 활동======\n",
-    "ru": "\n======Внутренние мысли {name}======\n",
-    "es": "\n======Pensamientos internos de {name}======\n",
-    "pt": "\n======Pensamentos internos de {name}======\n",
+    "zh": "\n\n======以下是{name}的内心活动======\n",
+    "en": "\n\n======{name}'s Inner Thoughts======\n",
+    "ja": "\n\n======{name}の心の声======\n",
+    "ko": "\n\n======{name}의 내면 활동======\n",
+    "ru": "\n\n======Внутренние мысли {name}======\n",
+    "es": "\n\n======Pensamientos internos de {name}======\n",
+    "pt": "\n\n======Pensamentos internos de {name}======\n",
 }
 
 INNER_THOUGHTS_BODY = {
