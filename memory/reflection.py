@@ -2619,7 +2619,14 @@ class ReflectionEngine:
                         r['recheck_attempts'] = (r.get('recheck_attempts') or 0) + 1
                         # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
                         r['last_recheck_attempt_at'] = datetime.now().isoformat()
-                        await self.asave_reflections(lanlan_name, current)
+                        # 传 active-only：对齐 _abump_refine_attempts / arecord_mentions
+                        # 的 save 约定，让 promoted/denied 等 terminal 条目正常归档，
+                        # 不被多留一个周期（CodeRabbit 一致性 nitpick）。
+                        active = [
+                            x for x in current
+                            if x.get('status') not in REFLECTION_TERMINAL_STATUSES
+                        ]
+                        await self.asave_reflections(lanlan_name, active)
                         logger.debug(
                             f"[Recheck-Reflection] {lanlan_name} {rid}: "
                             f"recheck_attempts → {r['recheck_attempts']} ({reason})"
