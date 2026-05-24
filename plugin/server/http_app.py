@@ -218,13 +218,16 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
             type(exc).__name__,
             str(exc),
         )
-    # bilibili_danmaku 插件 i18n / 测试接口
+    # bilibili_danmaku 插件 i18n / 测试接口同样是可选内置插件路由。
+    # AppImage/Nuitka 包会把 plugin.plugins 作为数据目录携带，并通过
+    # --nofollow-import-to=plugin.plugins 禁止编译期 import；此时 import 会抛
+    # 普通 ImportError 而不一定是 ModuleNotFoundError。
     try:
         from plugin.plugins.bilibili_danmaku.i18n_routes import (
             router as bilibili_i18n_router,
         )
         app.include_router(bilibili_i18n_router)
-    except ModuleNotFoundError as exc:
+    except ImportError as exc:
         logger.warning(
             "bilibili i18n routes unavailable: err_type={}, err={}",
             type(exc).__name__,

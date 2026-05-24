@@ -430,7 +430,7 @@ export default {
         completed: 'Завершено',
         partialFailure: 'Частичная ошибка',
         pluginCount: 'Плагины',
-        profiles: 'Profiles',
+        profiles: 'Профили',
         hash: 'Hash',
         installedPluginCount: 'Обработано плагинов',
         conflictStrategy: 'Стратегия конфликтов',
@@ -449,7 +449,7 @@ export default {
         packageType: 'Тип пакета',
         version: 'Версия',
         pluginsRoot: 'Каталог плагинов',
-        profilesRoot: 'Каталог Profiles',
+        profilesRoot: 'Каталог профилей',
         currentSdk: 'Поддержка текущего SDK',
         recommendedIntersection: 'Рекомендуемое пересечение'
       },

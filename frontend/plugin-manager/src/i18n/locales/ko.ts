@@ -430,7 +430,7 @@ export default {
         completed: '완료',
         partialFailure: '부분 실패',
         pluginCount: '플러그인 수',
-        profiles: 'Profiles',
+        profiles: '프로필',
         hash: 'Hash',
         installedPluginCount: '처리된 플러그인',
         conflictStrategy: '충돌 전략',
@@ -449,7 +449,7 @@ export default {
         packageType: '패키지 유형',
         version: '버전',
         pluginsRoot: '플러그인 디렉터리',
-        profilesRoot: 'Profiles 디렉터리',
+        profilesRoot: '프로필 디렉터리',
         currentSdk: '현재 SDK 지원',
         recommendedIntersection: '권장 교집합'
       },

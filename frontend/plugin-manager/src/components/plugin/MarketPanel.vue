@@ -539,8 +539,12 @@ function extractServerQuery(input: string): string {
   return terms.join(' ').trim()
 }
 
-async function ensureBridgeToken(): Promise<string> {
-  if (bridgeToken.value) return bridgeToken.value
+async function ensureBridgeToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
+  if (bridgeToken.value && !options.forceRefresh) return bridgeToken.value
+  if (options.forceRefresh) {
+    bridgeToken.value = ''
+    localStorage.removeItem('neko_bridge_token')
+  }
   try {
     const res = await fetch('/market/bridge-token')
     if (res.ok) {
@@ -557,6 +561,27 @@ async function ensureBridgeToken(): Promise<string> {
     bridgeToken.value = localStorage.getItem('neko_bridge_token') || ''
   }
   return bridgeToken.value
+}
+
+function bridgeUrl(path: string, token: string): string {
+  const separator = path.includes('?') ? '&' : '?'
+  return `${path}${separator}token=${encodeURIComponent(token)}`
+}
+
+async function fetchBridge(
+  path: string,
+  init?: RequestInit,
+  options: { retryOnForbidden?: boolean } = {},
+): Promise<Response | null> {
+  const token = await ensureBridgeToken()
+  if (!token) return null
+  let res = await fetch(bridgeUrl(path, token), init)
+  if (res.status !== 403 || options.retryOnForbidden === false) return res
+
+  const freshToken = await ensureBridgeToken({ forceRefresh: true })
+  if (!freshToken) return res
+  res = await fetch(bridgeUrl(path, freshToken), init)
+  return res
 }
 
 let loadSeq = 0
@@ -612,12 +637,9 @@ interface MarketInstalledItem {
 }
 
 async function fetchInstalledFromBridge(): Promise<MarketInstalledItem[]> {
-  const token = await ensureBridgeToken()
-  if (!token) return []
   try {
-    const res = await fetch(
-      `/market/installed?token=${encodeURIComponent(token)}`,
-    )
+    const res = await fetchBridge('/market/installed')
+    if (!res) return []
     if (!res.ok) return []
     const data = await res.json()
     return Array.isArray(data?.installed) ? data.installed : []
@@ -823,11 +845,11 @@ async function pollInstallTask(
   const mode = options.mode ?? 'install'
   beginInstallTaskTracking(taskId, pluginName, mode)
 
-  const token = await ensureBridgeToken()
   const deadline = Date.now() + 3 * 60 * 1000
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`/market/tasks/${taskId}?token=${encodeURIComponent(token)}`)
+      const res = await fetchBridge(`/market/tasks/${taskId}`)
+      if (!res) return false
       if (res.ok) {
         const task = (await res.json()) as MarketInstallTask
         activeInstallTask.value = task
@@ -882,8 +904,7 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   installingId.value = plugin.id
 
   try {
-    const token = await ensureBridgeToken()
-    const res = await fetch(`/market/install?token=${encodeURIComponent(token)}`, {
+    const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -901,6 +922,10 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
         on_conflict: 'rename',
       }),
     })
+    if (!res) {
+      ElMessage.warning(t('market.pairRequired'))
+      return
+    }
 
     if (res.ok) {
       const data = await res.json()
@@ -944,8 +969,7 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
 
   upgradingId.value = plugin.id
   try {
-    const token = await ensureBridgeToken()
-    const res = await fetch(`/market/install?token=${encodeURIComponent(token)}`, {
+    const res = await fetchBridge('/market/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -962,6 +986,10 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
         on_conflict: 'fail',
       }),
     })
+    if (!res) {
+      ElMessage.warning(t('market.pairRequired'))
+      return
+    }
 
     if (res.ok) {
       const data = await res.json()

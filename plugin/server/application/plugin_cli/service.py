@@ -240,7 +240,7 @@ class PluginCliService:
         warnings: list[str] = []
         saved: dict[str, object] | None = None
         unpack_result: dict[str, object] | None = None
-        unpacked_target_dir: Path | None = None
+        unpacked_target_dirs: list[Path] = []
         owns_saved_package = False
 
         try:
@@ -274,10 +274,10 @@ class PluginCliService:
                 on_conflict=on_conflict,
                 use_staging=use_staging,
             )
+            unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             target_dir, target_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
-            unpacked_target_dir = target_dir
 
             # Step 4 — degrade to imported when market_detail is incomplete.
             market_detail_raw = install_source_override.get("market_detail") or {}
@@ -420,38 +420,63 @@ class PluginCliService:
             # structured error so Bridge can map it to ``lock_write_failed``.
             self._cleanup_after_failure(
                 saved=saved,
-                unpacked_target_dir=unpacked_target_dir,
+                unpacked_target_dirs=unpacked_target_dirs,
                 delete_saved_package=owns_saved_package,
             )
             raise
         except Exception:
             self._cleanup_after_failure(
                 saved=saved,
-                unpacked_target_dir=unpacked_target_dir,
+                unpacked_target_dirs=unpacked_target_dirs,
                 delete_saved_package=owns_saved_package,
             )
             raise
 
     @staticmethod
-    def _extract_unpack_target(
-        unpack_result: dict[str, object],
-    ) -> tuple[Path, str]:
-        """Pull the unpacked plugin's target dir + plugin id from a dump.
-
-        The CLI returns potentially many ``unpacked_plugins`` for bundles,
-        but Market only ships single-plugin packages so we expect exactly
-        one entry. Empty / multi-entry results are programmer errors at
-        this layer.
-        """
-
+    def _extract_unpack_entries(unpack_result: dict[str, object]) -> list[dict[str, object]]:
         unpacked_plugins = unpack_result.get("unpacked_plugins")
         if unpacked_plugins is None:
             unpacked_plugins = unpack_result.get("installed_plugins")
         if not isinstance(unpacked_plugins, list) or not unpacked_plugins:
             raise ValueError("install returned no plugins")
+        entries: list[dict[str, object]] = []
+        for item in unpacked_plugins:
+            if not isinstance(item, dict):
+                raise ValueError("unpack returned malformed unpacked_plugins entry")
+            entries.append(item)
+        return entries
+
+    @classmethod
+    def _extract_unpack_target_dirs(cls, unpack_result: dict[str, object]) -> list[Path]:
+        """Return every target dir created by the unpack operation."""
+
+        target_dirs: list[Path] = []
+        for entry in cls._extract_unpack_entries(unpack_result):
+            target_dir_raw = entry.get("target_dir")
+            if isinstance(target_dir_raw, str) and target_dir_raw:
+                target_dirs.append(Path(target_dir_raw))
+        return target_dirs
+
+    @classmethod
+    def _extract_unpack_target(
+        cls,
+        unpack_result: dict[str, object],
+    ) -> tuple[Path, str]:
+        """Pull the single Market plugin's target dir + plugin id from a dump.
+
+        The CLI returns potentially many ``unpacked_plugins`` for bundles,
+        but Market install-source metadata and rollback are single-plugin
+        flows. Reject multi-plugin Market packages before recording any lock
+        entry so extra unpacked plugins cannot become untracked installs.
+        """
+
+        unpacked_plugins = cls._extract_unpack_entries(unpack_result)
+        if len(unpacked_plugins) != 1:
+            raise ValueError(
+                "Market packages must contain exactly one plugin; "
+                f"got {len(unpacked_plugins)}"
+            )
         first = unpacked_plugins[0]
-        if not isinstance(first, dict):
-            raise ValueError("unpack returned malformed unpacked_plugins entry")
         target_dir_raw = first.get("target_dir")
         if not isinstance(target_dir_raw, str) or not target_dir_raw:
             raise ValueError("unpack returned no target_dir for plugin")
@@ -513,7 +538,7 @@ class PluginCliService:
         self,
         *,
         saved: dict[str, object] | None,
-        unpacked_target_dir: Path | None,
+        unpacked_target_dirs: list[Path] | None = None,
         delete_saved_package: bool = True,
     ) -> None:
         """Best-effort fs cleanup on upload_and_install failure (R3.6).
@@ -525,7 +550,7 @@ class PluginCliService:
         get logged but don't shadow the real error.
         """
 
-        if unpacked_target_dir is not None:
+        for unpacked_target_dir in unpacked_target_dirs or []:
             self._cleanup_failed_unpack(unpacked_target_dir)
         if delete_saved_package and saved is not None:
             saved_path_raw = saved.get("path")

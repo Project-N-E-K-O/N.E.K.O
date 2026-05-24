@@ -430,7 +430,7 @@ export default {
         completed: 'Concluído',
         partialFailure: 'Falha parcial',
         pluginCount: 'Plugins',
-        profiles: 'Profiles',
+        profiles: 'Perfis',
         hash: 'Hash',
         installedPluginCount: 'Plugins processados',
         conflictStrategy: 'Estratégia de conflito',
@@ -449,7 +449,7 @@ export default {
         packageType: 'Tipo de pacote',
         version: 'Versão',
         pluginsRoot: 'Diretório de plugins',
-        profilesRoot: 'Diretório de Profiles',
+        profilesRoot: 'Diretório de perfis',
         currentSdk: 'Suporte ao SDK atual',
         recommendedIntersection: 'Interseção recomendada'
       },
