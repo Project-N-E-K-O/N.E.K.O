@@ -170,6 +170,53 @@ async def test_gate6_resets_and_spawns_when_input_changed():
     try:
         await task
     except asyncio.CancelledError:
+        # 预期内：上面刚 task.cancel()，await 必然抛 CancelledError，吞掉即可
         pass
     memory_server._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_resets_budget_on_input_change():
+    """不同 history tail 各失败一次不应跨输入累积（Codex P2）：每次输入变都从 1 计起。"""
+    from app import memory_server
+    from memory.recent import build_review_fingerprint
+
+    name = "测试角色累积"
+    memory_server._maint_state.pop(name, None)
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(return_value=("failed", None))
+    cancel_event = asyncio.Event()
+
+    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+        for n in (8, 10, 12):  # 三段 tail fingerprint 互不相同的输入
+            await memory_server._run_review_in_background(name, _history(n), cancel_event)
+
+    state = memory_server._maint_state[name]
+    assert state["review_fail_attempts"] == 1, "输入每次都变应复位，不该累积到 3"
+    assert state["review_fail_fp"] == build_review_fingerprint(_history(12))
+    memory_server._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_same_input_accumulates_budget():
+    """同一输入连续失败才累积预算（与跨输入复位对偶）。"""
+    from app import memory_server
+
+    name = "测试角色累积2"
+    memory_server._maint_state.pop(name, None)
+    same = _history(10)
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(return_value=("failed", None))
+    cancel_event = asyncio.Event()
+
+    with patch.object(memory_server, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server, "_asave_maint_state", AsyncMock()):
+        for _ in range(3):
+            await memory_server._run_review_in_background(name, same, cancel_event)
+
+    assert memory_server._maint_state[name]["review_fail_attempts"] == 3
+    memory_server._maint_state.pop(name, None)

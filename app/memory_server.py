@@ -3373,8 +3373,14 @@ async def _run_review_in_background(
             # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
             # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
             from memory.recent import build_review_fingerprint
+            cur_fp = build_review_fingerprint(snapshot)
+            # 输入已变（与上次失败记下的 fingerprint 不同）→ 这是新输入的第一次
+            # 失败，预算从 0 重新计起。否则不同 history tail 的失败会跨输入累积，
+            # 把只失败过一次的新对话提前 dead-letter（Codex P2）。
+            if state.get('review_fail_fp') != cur_fp:
+                state['review_fail_attempts'] = 0
             state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
-            state['review_fail_fp'] = build_review_fingerprint(snapshot)
+            state['review_fail_fp'] = cur_fp
             logger.info(
                 f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
                 f"失败退避计数 → {state['review_fail_attempts']}"
