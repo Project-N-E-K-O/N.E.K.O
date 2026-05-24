@@ -103,11 +103,10 @@ ApplyFn = Callable[[list[dict], list[dict], str], Awaitable[set[str]]]
 
 # Manager-supplied failure callback signature.
 # Args: cluster (annotated entries), cluster_hash.
-# Triggered ONLY when ``_resolve_cluster`` returns False (LLM 输出空 /
-# parse 失败 / 非 list 等 LLM-decision 持续性问题)。**Exception 路径不调**
-# ——`_resolve_cluster` 内部 `await apply_fn(...)` 的 manager 端持久化异常
-# （cloudsave 维护态 / atomic_write IO / 锁竞争）+ LLM 网络 transient
-# 都按 transient 处理，不触发该回调（Codex P1 round-3 on PR #1412）。
+# Triggered when ``_resolve_cluster`` returns False（LLM 输出空 / parse 失败 /
+# 非 list）**或**抛异常（LLM 超时 / apply_fn 持久化异常等）。先前只在 False
+# 时调、异常按 transient 不计（Codex P1 round-3 on PR #1412），但持续性故障
+# （模型快照下线一直超时）那样会变成每 30min 无限重打；现在异常也计入预算。
 # Manager bumps ``refine_attempts`` on each non-fact cluster member (and
 # saves persona/reflection file), so the next refine pass can filter
 # out entries that have repeatedly failed (Site 4 liveness 兜底)。
