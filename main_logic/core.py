@@ -2884,7 +2884,11 @@ class LLMSessionManager:
         # event_start_at → created_at（与 persona 过时 block / temporal
         # _past_anchor 同口径），让模型看到的是"事件什么时候发生"而不是
         # "记忆什么时候写下"；再附一个本地化相对标签（X 天/周/月前）。
-        from memory.temporal import time_since_label as _time_label
+        from memory.temporal import (
+            time_since_label as _time_label,
+            _parse_iso_safe,
+            to_naive_local,
+        )
         lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
         for i, r in enumerate(results, start=1):
             tier = r.get("tier") or "?"
@@ -2902,7 +2906,11 @@ class LLMSessionManager:
                 or r.get("created_at")
                 or ""
             )
-            date_part = anchor[:10]  # YYYY-MM-DD
+            # date_part 也走 to_naive_local 归一，否则 aware 锚点的日期切片
+            # （UTC 墙钟）会和 rel（time_since_label 已转本地）对不上、在日界
+            # 处差一天（Codex）。解析失败回退到原始切片。
+            anchor_dt = to_naive_local(_parse_iso_safe(anchor))
+            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else anchor[:10]
             rel = _time_label(anchor, lang=_lang)  # 无法解析 → ""
             if date_part and rel:
                 time_suffix = f"  ({date_part}, {rel})"

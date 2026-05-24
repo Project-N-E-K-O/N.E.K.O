@@ -187,6 +187,7 @@ def is_past_for_render(entry: dict, now: datetime | None = None) -> bool:
     from config import MEMORY_STATE_PAST_DAYS, MEMORY_EPISODE_PAST_DAYS
     if now is None:
         now = datetime.now()
+    now = to_naive_local(now)
     ts = entry.get('temporal_scope')
     if ts == 'past':
         return True
@@ -197,7 +198,9 @@ def is_past_for_render(entry: dict, now: datetime | None = None) -> bool:
     ttl_days = ttl_by_scope.get(ts)
     if ttl_days is None:
         return False
-    anchor = _past_anchor(entry)
+    # to_naive_local：anchor 可能是 import/迁移写进来的 aware 值，和 naive
+    # now 相减会 TypeError 把过时判定/渲染链路打断（CodeRabbit）。
+    anchor = to_naive_local(_past_anchor(entry))
     if anchor is None:
         return False
     return (now - anchor).total_seconds() > ttl_days * 86400

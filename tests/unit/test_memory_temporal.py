@@ -139,6 +139,15 @@ def test_past_anchor_prefers_event_end():
     assert is_past_for_render(e, now) is True
 
 
+def test_is_past_tz_aware_anchor_does_not_crash():
+    """aware anchor（import/迁移的 +00:00）和 naive now 相减不能 TypeError
+    把过时判定打断（CodeRabbit）。"""
+    from memory.temporal import is_past_for_render
+    now = datetime(2026, 5, 20)
+    old = _entry('episode', event_end_at='2026-05-10T00:00:00+00:00')  # 10d 前 aware
+    assert is_past_for_render(old, now) is True
+
+
 # ── time_since_label：Q-α 0-6d 天 / 7-29d 周 / 30d+ 月 ────────────────
 
 
