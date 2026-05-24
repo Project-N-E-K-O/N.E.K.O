@@ -1790,7 +1790,7 @@ async def _run_computer_use_task(
         from utils.instrument import counter as _ic
         _ic("agent_invoked", agent_type="cua")
     except Exception:
-        pass
+        pass  # 埋点 best-effort，不阻塞 cua 任务执行
     info = Modules.task_registry.get(task_id, {})
     lanlan_name = info.get("lanlan_name")
 
