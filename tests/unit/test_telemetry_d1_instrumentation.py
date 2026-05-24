@@ -106,16 +106,15 @@ def test_has_completed_core_loop(tmp_path, monkeypatch):
 
 
 def test_device_hw_format_low_cardinality():
-    """device_hw 是 5 段低基数 enum 复合串，绝不含原始值。"""
+    """device_hw 是 4 段低基数 enum 复合串（os|arch|ram|cpu），绝不含原始值。"""
     from utils.token_tracker import _get_device_hw
     hw = _get_device_hw()
     parts = hw.split("|")
-    assert len(parts) == 5, f"device_hw 应为 5 段 os|arch|ram|simd|cpu，实得 {hw!r}"
-    os_tag, arch, ram, simd, cpu = parts
+    assert len(parts) == 4, f"device_hw 应为 4 段 os|arch|ram|cpu，实得 {hw!r}"
+    os_tag, arch, ram, cpu = parts
     assert os_tag in ("win", "mac", "linux", "other")
     assert arch in ("x86_64", "arm64", "other")
     assert ram in ("lt8", "8to16", "16to32", "ge32", "unknown")
-    assert simd in ("vnni", "avx2", "baseline", "unknown")
     assert cpu in ("le4", "5to8", "9to16", "gt16", "unknown")
 
 
@@ -133,16 +132,16 @@ def test_device_hw_preserve_known(tmp_path):
     import json
     st = _make_storage(tmp_path)
     dev = "deviceHWXXXXXXXXX"
-    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="win|x86_64|16to32|avx2|9to16")
+    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="win|x86_64|16to32|9to16")
     # 后续上报 device_hw 为空（如检测失败）不得覆写已知值
     st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="")
     row = st._get_conn().execute(
         "SELECT device_hw FROM devices WHERE device_id=?", (dev,)
     ).fetchone()
-    assert row["device_hw"] == "win|x86_64|16to32|avx2|9to16"
+    assert row["device_hw"] == "win|x86_64|16to32|9to16"
     # 新的非空值正常覆写
-    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="mac|arm64|ge32|vnni|5to8")
+    st.store_event(dev, "1.0", json.dumps({"device_id": dev}), {}, device_hw="mac|arm64|ge32|5to8")
     row = st._get_conn().execute(
         "SELECT device_hw FROM devices WHERE device_id=?", (dev,)
     ).fetchone()
-    assert row["device_hw"] == "mac|arm64|ge32|vnni|5to8"
+    assert row["device_hw"] == "mac|arm64|ge32|5to8"

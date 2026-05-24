@@ -114,9 +114,9 @@ class TelemetryEvent(BaseModel):
     # Steamworks SDK 起来 + 拿到 Users.GetSteamID 时填值，否则为空 string。
     # max_length=24 给 u64 十进制（20 位）留余量，防止异常长串攻击。
     steam_user_id: str = Field(default="", max_length=24)
-    # 设备硬件画像（低基数 enum 复合串，形如 "win|x86_64|16to32|avx2|9to16"）。
-    # 设备属性，server preserve-known UPSERT；空 string 不覆写。max_length=64
-    # 够 5 个分桶 tag + 分隔符，挡异常长串。
+    # 设备硬件画像（低基数 enum 复合串，形如 "win|x86_64|16to32|9to16" =
+    # os|arch|ram_tier|cpu_tier）。设备属性，server preserve-known UPSERT；
+    # 空 string 不覆写。max_length=64 挡异常长串。
     device_hw: str = Field(default="", max_length=64)
     daily_stats: Dict[str, DailyStats] = Field(default_factory=dict)
     recent_records: List[RecentRecord] = Field(default_factory=list)

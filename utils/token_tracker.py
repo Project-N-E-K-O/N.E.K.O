@@ -644,14 +644,20 @@ _DEVICE_HW_CACHE: Optional[str] = None
 
 
 def _get_device_hw() -> str:
-    """设备硬件画像（低基数 enum 复合串），复用 embedding 侧检测，进程内只算一次。
+    """设备硬件画像（低基数 enum 复合串），进程内只算一次。
 
-    形如 ``win|x86_64|16to32|avx2|9to16``。作为 devices 表的**设备属性**（非计数）
-    上报，用来 JOIN 留存做"低配设备首日流失率"——区分"跑不动而走"与"不喜欢而走"。
+    形如 ``win|x86_64|16to32|9to16``（os|arch|ram_tier|cpu_tier）。作为 devices
+    表的**设备属性**（非计数）上报，用来 JOIN 留存做"低配设备首日流失率"——区分
+    "跑不动而走"与"不喜欢而走"。
 
     所有维度都是分桶 enum，**绝不发原始值**（RAM 字节 / GPU 型号 / 机器名）——
-    守 dim 低基数 + 零 PII（同 #1426 T3）。复用 memory.embeddings 的检测（其顶层
-    import 很轻，detect 函数内部才 lazy 加载重依赖，所以这里 import 成本可忽略）。
+    守 dim 低基数 + 零 PII（同 #1426 T3）。
+
+    检测全部 inline（psutil / platform / os）：不 import memory.embeddings —— 那会
+    触发 module-layering 的 utils(L1)→memory(L2) 反转 + 制造 memory↔utils 环
+    （check_module_layering 对函数内 lazy import 同样计）。RAM 检测本就是 psutil
+    一行、没复用价值；真正值得复用的 CPU AVX/VNNI cpuid 检测对"跑不动流失"是
+    二阶信号（多数用户走远程 LLM），暂不收，想要可把检测抽成 utils 层共享 util。
     任一维度失败回退 'unknown'，整体绝不抛（埋点不能挡上报）。
     """
     global _DEVICE_HW_CACHE
@@ -672,23 +678,10 @@ def _get_device_hw() -> str:
 
     ram_tag = "unknown"
     try:
-        from memory.embeddings import detect_total_ram_gb
-        gb = detect_total_ram_gb()
-        if gb is not None:
-            ram_tag = ("lt8" if gb < 8 else "8to16" if gb < 16
-                       else "16to32" if gb < 32 else "ge32")
-    except Exception:
-        pass
-
-    simd = "unknown"
-    try:
-        from memory.embeddings import detect_avx_vnni, detect_avx2_details
-        if detect_avx_vnni():
-            simd = "vnni"
-        elif detect_avx2_details()[0]:
-            simd = "avx2"
-        else:
-            simd = "baseline"
+        import psutil
+        gb = psutil.virtual_memory().total / (1024 ** 3)
+        ram_tag = ("lt8" if gb < 8 else "8to16" if gb < 16
+                   else "16to32" if gb < 32 else "ge32")
     except Exception:
         pass
 
@@ -701,7 +694,7 @@ def _get_device_hw() -> str:
     except Exception:
         pass
 
-    _DEVICE_HW_CACHE = f"{os_tag}|{arch}|{ram_tag}|{simd}|{cpu_tag}"
+    _DEVICE_HW_CACHE = f"{os_tag}|{arch}|{ram_tag}|{cpu_tag}"
     return _DEVICE_HW_CACHE
 
 
