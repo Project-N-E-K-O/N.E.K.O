@@ -207,6 +207,51 @@ def _read_list_env(var_name: str) -> tuple[str, ...]:
     return ()
 
 
+def _read_str_env(
+    var_name: str, default: str, *, allowed: tuple[str, ...] | None = None,
+) -> str:
+    """字符串型配置的 env 覆盖。键序同端口：``NEKO_<NAME>`` 优先，裸 ``<NAME>``
+    兼容。``allowed`` 非空时，越界值被忽略并 warning（回退 default），避免一个
+    typo 把功能整块带挂。空串视为未设置。"""
+    for key in (f"NEKO_{var_name}", var_name):
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        val = raw.strip()
+        if not val:
+            continue
+        if allowed is not None and val not in allowed:
+            logger.warning(
+                "Ignoring %s=%r (not in %s); using default %r",
+                key, val, allowed, default,
+            )
+            continue
+        return val
+    return default
+
+
+def _read_bool_env(var_name: str, default: bool) -> bool:
+    """布尔型配置的 env 覆盖。1/true/yes/on → True；0/false/no/off → False；
+    其余/未设置 → default。键序同上。"""
+    for key in (f"NEKO_{var_name}", var_name):
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        val = raw.strip().lower()
+        if val in ("1", "true", "yes", "on"):
+            return True
+        if val in ("0", "false", "no", "off"):
+            return False
+        if val:
+            # 非空但不可识别（如 typo "ture"）：警告并回退，别静默吞掉让用户
+            # 摸不着头脑"为什么开关没生效"。与 _read_str_env 的 allowed 行为一致。
+            logger.warning(
+                "Ignoring %s=%r (not a boolean); using default %s",
+                key, raw, default,
+            )
+    return default
+
+
 def _build_local_allowed_origins(port: int, *, extra_origins: tuple[str, ...] = ()) -> tuple[str, ...]:
     origins = [
         f"http://127.0.0.1:{port}",
@@ -1785,9 +1830,14 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # model file. See memory/embeddings.py docstring for the full fallback
 # matrix. Defaults are tuned so the feature is opt-out at the install
 # level (drop the model file → on; remove it → off) without a config edit.
-VECTORS_ENABLED = True                       # master kill switch
+# 默认值不变；额外支持 env 覆盖（opt-in 逃生口，不设就走原 auto 策略）。
+# 典型用途：无 AVX-VNNI 的老 CPU 上 auto 会自动关闭向量，用户可设
+# NEKO_VECTORS_QUANTIZATION=int8 强制照跑 int8（慢但正确），无需重新打包。
+VECTORS_ENABLED = _read_bool_env("VECTORS_ENABLED", True)        # master kill switch
 VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
-VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
+VECTORS_QUANTIZATION = _read_str_env(        # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
+    "VECTORS_QUANTIZATION", "auto", allowed=("auto", "int8", "fp32"),
+)
 VECTORS_MIN_RAM_GB = 4.0                     # below this → disabled regardless
 VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + local model folder
 # Warmup: the ONNX session (~150 MB unpack) loads on first triggering

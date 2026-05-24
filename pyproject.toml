@@ -50,6 +50,7 @@ dependencies = [
   "qrcode>=8.2",
   "httpx[socks]>=0.28.1",
   "psutil>=7.0.0",
+  "portalocker>=2.10.1",
   "pyncm-async==1.8.1",
   "tornado>=6.5.4",
   "jmespath>=1.1.0",
@@ -179,4 +180,3 @@ select = [
   "ASYNC222",  # Popen.wait / Popen.communicate
   "ASYNC251",  # time.sleep in async function
 ]
-

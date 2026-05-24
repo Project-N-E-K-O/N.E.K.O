@@ -2153,13 +2153,34 @@
         });
     }
 
+    function isMainUIHiddenByModelManager() {
+        try {
+            if (typeof window.isMainUIHiddenByModelManager === 'function') {
+                return window.isMainUIHiddenByModelManager();
+            }
+        } catch (_) {}
+        return !!(document.body && document.body.classList.contains('neko-main-ui-hidden-by-model-manager'));
+    }
+
+    var pendingOpenAfterModelManagerHidden = false;
+
     function openWindow() {
+        if (!isElectronChatWindow() && isMainUIHiddenByModelManager()) {
+            pendingOpenAfterModelManagerHidden = true;
+            return;
+        }
+        pendingOpenAfterModelManagerHidden = false;
+
         var overlay = getOverlay();
         if (!overlay) return;
 
         prewarmUserDisplayName();
         ensureBundleLoaded()
             .then(function () {
+                if (!isElectronChatWindow() && isMainUIHiddenByModelManager()) {
+                    pendingOpenAfterModelManagerHidden = true;
+                    return;
+                }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
@@ -2208,6 +2229,7 @@
     function closeWindow() {
         var overlay = getOverlay();
         if (!overlay) return;
+        pendingOpenAfterModelManagerHidden = false;
         // Closing the overlay should also abort any in-flight GalGame fetch
         // (parity with setGalgameModeEnabled(false) / setMessages /
         // clearMessages). Without this, a request that lands after close
@@ -2248,6 +2270,14 @@
             timestamp: Date.now()
         });
     }
+
+    window.addEventListener('neko:main-ui-hidden-by-model-manager-changed', function(event) {
+        if (isElectronChatWindow()) return;
+        var hidden = !!(event && event.detail && event.detail.hidden);
+        if (hidden || !pendingOpenAfterModelManagerHidden) return;
+        pendingOpenAfterModelManagerHidden = false;
+        openWindow();
+    });
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 

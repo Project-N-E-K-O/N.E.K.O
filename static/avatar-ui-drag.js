@@ -353,7 +353,7 @@ window.updateChatModeStyle = function(checkbox) {
         checkmark.style.opacity = '1';
     } else {
         indicator.style.backgroundColor = 'transparent';
-        indicator.style.borderColor = '#ccc';
+        indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
         checkmark.style.opacity = '0';
     }
 
@@ -408,7 +408,7 @@ window.createChatModeToggle = function(options) {
         width: '16px',
         height: '16px',
         borderRadius: '50%',
-        border: '2px solid #ccc',
+        border: '2px solid var(--neko-popup-indicator-border, #ccc)',
         backgroundColor: 'transparent',
         cursor: 'pointer',
         flexShrink: '0',
@@ -632,7 +632,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                 checkmark.style.opacity = '1';
             } else {
                 indicator.style.backgroundColor = 'transparent';
-                indicator.style.borderColor = '#ccc';
+                indicator.style.borderColor = 'var(--neko-popup-indicator-border, #ccc)';
                 checkmark.style.opacity = '0';
             }
             toggleItem.style.background = hovered

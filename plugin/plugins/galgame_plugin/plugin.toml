@@ -77,6 +77,19 @@ context_persist_require_game_id = true
 llm_repeat_detection_enabled = false
 llm_repeat_similarity_threshold = 0.85
 
+[vision]
+enabled = true
+model_dir = "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
+device = "auto"
+cnn_skip_ocr_threshold = 0.75
+classifier_tick_interval = 1
+inference_timeout_ms = 200
+
+[vision.classifier]
+model_name = "v1_galgame"
+input_size = [224, 224]
+input_size_low = [160, 160]
+
 [memory_reader]
 textractor_path = ""
 textractor_proxy = ""

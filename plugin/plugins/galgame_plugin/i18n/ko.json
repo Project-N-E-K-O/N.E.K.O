@@ -7,6 +7,8 @@
   "entries.galgame_install_textractor.description": "TextractorCLI.exe를 감지, 다운로드, 설치한 후 갈게임 플러그인 브리지와 메모리 리더 상태를 갱신한다.",
   "entries.galgame_download_rapidocr_models.name": "RapidOCR 모델 다운로드",
   "entries.galgame_download_rapidocr_models.description": "현재 RapidOCR 언어와 OCR 버전에 필요한 누락 모델 파일을 플러그인 모델 캐시에 다운로드한다.",
+  "entries.galgame_set_rapidocr_lang.name": "RapidOCR 언어 설정",
+  "entries.galgame_set_rapidocr_lang.description": "RapidOCR 텍스트 인식 언어 모델과 OCR 버전을 전환한다. 언어를 수동으로 변경하면 자동 감지가 비활성화된다.",
   "entries.galgame_install_dxcam.name": "DXcam 설치",
   "entries.galgame_install_dxcam.description": "DXcam 스크린샷 의존성을 감지, 설치한 후 갈게임 플러그인 OCR 캡처 백엔드 상태를 갱신한다.",
   "entries.galgame_get_snapshot.name": "갈게임 스냅샷 조회",

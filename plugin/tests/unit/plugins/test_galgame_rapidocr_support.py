@@ -104,6 +104,32 @@ def test_rapidocr_kwargs_resolves_server_variant_filenames(tmp_path: Path) -> No
     }
 
 
+def test_rapidocr_kwargs_sets_ppocrv5_cls_image_shape(tmp_path: Path) -> None:
+    model_cache_dir = tmp_path / "RapidOCR" / "models"
+    package_models_dir = tmp_path / "package" / "models"
+    det_path = _touch(model_cache_dir / "ch_PP-OCRv5_det_mobile.onnx")
+    rec_path = _touch(model_cache_dir / "ch_PP-OCRv5_rec_mobile.onnx")
+    cls_path = _touch(model_cache_dir / "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx")
+
+    kwargs = rapidocr_support._build_runtime_constructor_kwargs(
+        _RapidOcrWithKwargs,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        model_cache_dir=model_cache_dir,
+        package_models_dir=package_models_dir,
+    )
+
+    assert kwargs == {
+        "det_model_path": str(det_path),
+        "rec_model_path": str(rec_path),
+        "cls_model_path": str(cls_path),
+        "cls_image_shape": [3, 80, 160],
+        "engine_type": "onnxruntime",
+    }
+
+
 def test_rapidocr_kwargs_omits_model_paths_when_configured_model_is_missing(tmp_path: Path) -> None:
     model_cache_dir = tmp_path / "RapidOCR" / "models"
     package_models_dir = tmp_path / "package" / "models"

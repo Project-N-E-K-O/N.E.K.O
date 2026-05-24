@@ -306,6 +306,55 @@ async def test_game_llm_agent_records_cat_consultation_reply_for_strategy(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_game_llm_agent_receive_cat_opinion_merges_shared_history(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = {
+        "cat_opinions": [
+            {
+                "opinion": "shared opinion",
+                "scene_id": "scene-a",
+                "reason": "choice",
+                "ts": "2026-04-21T08:31:00Z",
+            }
+        ]
+    }
+    agent._cat_opinions = [
+        {
+            "opinion": "cached opinion",
+            "scene_id": "scene-a",
+            "reason": "choice",
+            "ts": "2026-04-21T08:31:01Z",
+        }
+    ]
+
+    record = agent.receive_cat_opinion(
+        shared,
+        "new opinion",
+        scene_id="scene-a",
+        reason="choice",
+    )
+
+    assert record is not None
+    assert [item["opinion"] for item in shared["cat_opinions"]] == [
+        "shared opinion",
+        "cached opinion",
+        "new opinion",
+    ]
+    assert agent._cat_opinions is shared["cat_opinions"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_game_llm_agent_reset_cancels_consultation_tasks(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
@@ -787,6 +836,54 @@ async def test_game_llm_agent_uses_cat_choice_advice_and_records_push_history(
         item for item in status["recent_pushes"] if item["kind"] == "choice_reason"
     )
     assert "推荐理由" in choice_reason_push["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_game_llm_agent_clears_pending_choice_advice_when_push_fails(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    shared = _shared_state(
+        snapshot=_session_state(
+            speaker="雪乃",
+            text="你要走哪边？",
+            scene_id="scene-a",
+            line_id="line-1",
+            choices=[
+                {"choice_id": "choice-1", "text": "左边", "index": 0, "enabled": True},
+                {"choice_id": "choice-2", "text": "右边", "index": 1, "enabled": True},
+            ],
+            is_menu_open=True,
+        ),
+        history_lines=[
+            {
+                "line_id": "line-1",
+                "speaker": "雪乃",
+                "text": "你要走哪边？",
+                "scene_id": "scene-a",
+                "route_id": "",
+                "ts": "2026-04-21T08:31:00Z",
+            }
+        ],
+    )
+
+    async def _undelivered(*args, **kwargs) -> bool:
+        return False
+
+    agent._push_agent_message = _undelivered
+
+    await agent.tick(shared)
+
+    assert agent._pending_choice_advice is None
 
 
 @pytest.mark.plugin_unit
@@ -4083,6 +4180,45 @@ async def test_game_llm_agent_retries_line_count_summary_after_task_cancel(
     )
 
 
+@pytest.mark.plugin_unit
+def test_game_llm_agent_restores_merged_scene_summary_schedule(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_tracker.state_for_scene("scene-a")["lines_since_push"] = 8
+    agent._scene_tracker.state_for_scene("scene-b")["lines_since_push"] = 3
+    agent._scene_tracker.mark_scene_summary_scheduled("scene-a", seq=8)
+    agent._scene_tracker.mark_scene_summary_scheduled("scene-b", seq=0)
+
+    agent._restore_failed_summary_schedule(
+        scene_id="scene-a",
+        scheduled_seq=8,
+        scheduled_line_count=8,
+        reason="task_returned_false",
+        delivery_key="scene-a:8",
+        merged_schedule_restore=[
+            {"scene_id": "scene-b", "scheduled_seq": 0, "lines_since_push": 3}
+        ],
+    )
+
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-a") == 8
+    assert agent._scene_tracker.current_scene_lines_since_push("scene-b") == 3
+    restored = agent._summary_debug["last_task_restored_schedule"]
+    assert restored["merged_scenes"] == [
+        {
+            "scene_id": "scene-b",
+            "scheduled_seq": 0,
+            "scheduled_line_count": 3,
+        }
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_game_llm_agent_drain_summary_tasks_completes_timer_scheduled_summary(
@@ -4348,6 +4484,65 @@ async def test_game_llm_agent_push_history_survives_session_reset(
         "scene_summary",
         "choice_reason",
     ]
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_router_reset_clears_push_history(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    outbound = agent._enqueue_outbound_message(
+        kind="scene_summary",
+        content="summary",
+        scene_id="scene-a",
+        route_id="",
+        priority=5,
+        metadata={},
+    )
+    agent._mark_message(outbound, status="delivered", delivered=True)
+    assert agent._recent_push_records()
+
+    agent._message_router.reset()
+
+    assert agent._recent_push_records() == []
+
+
+@pytest.mark.plugin_unit
+def test_game_llm_agent_scene_tracker_seen_keys_keep_recent_order(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    ctx = _Ctx(plugin_dir, _make_effective_config(bridge_root))
+    plugin = GalgameBridgePlugin(ctx)
+    agent = GameLLMAgent(
+        plugin=plugin,
+        logger=_Logger(),
+        llm_gateway=_FakeLLMGateway(),
+        host_adapter=_FakeHostAdapter(),
+    )
+    agent._scene_tracker._seen_line_limit = 3
+
+    for index in range(5):
+        assert agent._scene_tracker.remember_scene_line(
+            "scene-a",
+            f"line-{index}",
+            seq=index,
+            ts=f"ts-{index}",
+        )
+
+    state = agent._scene_tracker.state_for_scene("scene-a")
+    assert state["seen_line_key_order"] == ["line-2", "line-3", "line-4"]
+    assert state["seen_line_keys"] == {"line-2", "line-3", "line-4"}
+    assert not agent._scene_tracker.remember_scene_line(
+        "scene-a",
+        "line-3",
+        seq=6,
+        ts="ts-6",
+    )
 
 
 @pytest.mark.asyncio

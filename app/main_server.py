@@ -131,7 +131,17 @@ template_dir = _get_app_root()
 
 templates = Jinja2Templates(directory=template_dir)
 
-def initialize_steamworks():
+def initialize_steamworks(*, quiet: bool = False):
+    # quiet=True 供后台静默重试使用：无 Steam 环境（如远端服务器部署）下，
+    # 前端轮询会每隔几秒触发一次重试，若按 ERROR/print 输出会无限刷屏。静默
+    # 模式把进度与失败日志统一降到 DEBUG，只有首次启动的尝试保持可见。
+    def _trace(msg: str) -> None:
+        if quiet:
+            if 'logger' in globals():
+                logger.debug(msg)
+        else:
+            print(msg)
+
     try:
         # 明确读取steam_appid.txt文件以获取应用ID
         app_id = None
@@ -139,18 +149,18 @@ def initialize_steamworks():
         if os.path.exists(app_id_file):
             with open(app_id_file, 'r') as f:
                 app_id = f.read().strip()
-            print(f"从steam_appid.txt读取到应用ID: {app_id}")
+            _trace(f"从steam_appid.txt读取到应用ID: {app_id}")
         
         # 创建并初始化Steamworks实例
         from steamworks import STEAMWORKS
         steamworks = STEAMWORKS()
         # 显示Steamworks初始化过程的详细日志
-        print("正在初始化Steamworks...")
+        _trace("正在初始化Steamworks...")
         steamworks.initialize()
         steamworks.UserStats.RequestCurrentStats()
         # 初始化后再次获取应用ID以确认
         actual_app_id = steamworks.app_id
-        print(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
+        _trace(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
         
         # 检查全局logger是否已初始化，如果已初始化则记录成功信息
         if 'logger' in globals():
@@ -165,7 +175,10 @@ def initialize_steamworks():
     except Exception as e:
         # 检查全局logger是否已初始化，如果已初始化则记录错误，否则使用print
         error_msg = f"初始化Steamworks失败: {e}"
-        if 'logger' in globals():
+        if quiet:
+            if 'logger' in globals():
+                logger.debug(error_msg)
+        elif 'logger' in globals():
             logger.error(error_msg)
         else:
             print(error_msg)
@@ -178,8 +191,8 @@ def ensure_steamworks_initialized():
     if steamworks is not None:
         return steamworks
 
-    logger.info("尝试重新初始化 Steamworks...")
-    steamworks = initialize_steamworks()
+    logger.debug("尝试重新初始化 Steamworks...")
+    steamworks = initialize_steamworks(quiet=True)
     try:
         from main_routers.shared_state import set_steamworks
 
@@ -2011,7 +2024,8 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
                 install_hooks()
                 TokenTracker.get_instance().start_periodic_save()
-                TokenTracker.get_instance().record_app_start()
+                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+                TokenTracker.get_instance().record_app_start(process="main_server")
                 logger.info("Token usage tracker initialized")
             except Exception as e:
                 logger.warning(f"Token tracker initialization failed (non-critical): {e}")

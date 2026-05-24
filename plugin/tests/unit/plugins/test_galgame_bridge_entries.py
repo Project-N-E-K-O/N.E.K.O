@@ -412,6 +412,54 @@ async def test_phase2_entries_return_structured_degraded_results_without_target_
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_agent_list_messages_sanitizes_limit(tmp_path: Path) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+    seen_limits: list[int] = []
+
+    class _Agent:
+        async def list_messages(self, _shared, *, direction: str, limit: int):
+            seen_limits.append(limit)
+            return {"direction": direction, "limit": limit}
+
+    plugin._game_agent = _Agent()
+
+    invalid = await plugin.galgame_agent_command(action="list_messages", limit="bad")
+    low = await plugin.galgame_agent_command(action="list_messages", limit=-20)
+    high = await plugin.galgame_agent_command(action="list_messages", limit=9999)
+
+    assert isinstance(invalid, Ok)
+    assert isinstance(low, Ok)
+    assert isinstance(high, Ok)
+    assert seen_limits == [50, 1, 500]
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_get_history_sanitizes_limit_and_include_events(tmp_path: Path) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(
+            history_events=[{"seq": 1}, {"seq": 2}],
+            history_lines=[{"line_id": "a", "text": "a"}],
+            history_observed_lines=[{"line_id": "a", "text": "a"}],
+        ),
+    )
+
+    result = await plugin.galgame_get_history(limit="bad", include_events="false")
+    numeric_false = await plugin.galgame_get_history(limit=20, include_events=0)
+
+    assert isinstance(result, Ok)
+    assert result.value["events"] == []
+    assert "observed_lines" in result.value
+    assert isinstance(numeric_false, Ok)
+    assert numeric_false.value["events"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_get_story_so_far_uses_existing_scene_summaries(tmp_path: Path) -> None:
     plugin = _make_phase2_entry_plugin(
         tmp_path,
@@ -552,6 +600,31 @@ async def test_galgame_continue_auto_advance_sets_choice_advisor_and_resumes_age
     assert result.value["status"] == result.value["agent_result"]["status"]
     assert plugin._game_agent._explicit_standby is False
     assert plugin._game_agent._next_actuation_at == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_galgame_continue_auto_advance_propagates_agent_degraded(
+    tmp_path: Path,
+) -> None:
+    plugin = _make_phase2_entry_plugin(
+        tmp_path,
+        shared=_shared_state(),
+    )
+
+    async def _set_mode(**_kwargs):
+        return Ok({"mode": "choice_advisor"})
+
+    async def _agent_command(**_kwargs):
+        return Ok({"action": "send_message", "degraded": True})
+
+    plugin.galgame_set_mode = _set_mode  # type: ignore[method-assign]
+    plugin.galgame_agent_command = _agent_command  # type: ignore[method-assign]
+
+    result = await plugin.galgame_continue_auto_advance(message="继续")
+
+    assert isinstance(result, Ok)
+    assert result.value["degraded"] is True
 
 
 @pytest.mark.asyncio

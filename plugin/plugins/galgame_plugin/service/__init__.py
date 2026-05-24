@@ -6,7 +6,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import threading
 import time
@@ -23,6 +22,7 @@ from ..models import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
+    DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
@@ -58,6 +58,10 @@ from ..models import (
 from ..dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
+)
+from ..context_builder.builder import (
+    _looks_like_game_dialogue_context_line,
+    _looks_like_ocr_overlay_text,
 )
 from ..dxcam_support import inspect_dxcam_installation
 from ..reader import expand_bridge_root, normalize_text, read_session_json
@@ -210,103 +214,6 @@ def _current_process_performance() -> dict[str, Any]:
             }
 
 
-_OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS = (
-    ".agent",
-    ".codex",
-    ".codex_tmp",
-    ".codex_pytest_tmp",
-    "__pycache__",
-    "-pycache_",
-    "codex_tmp",
-    "documents\\code\\n.e.k.o",
-    "galgame plugin",
-    "n.e.k.o",
-    "plugin manager",
-    "plugin.plugins.galgame_plugin",
-    "uv run python",
-    "launcher.py",
-    "powershell",
-    "ps c:",
-    "插件设置",
-    "ocr 目标窗口",
-    "截图校准",
-)
-_DIALOGUE_PUNCTUATION_RE = re.compile(r"[。！？!?…]|[.](?:\s|$)|——|「|」|『|』|“|”")
-_DIALOGUE_WEAK_PUNCTUATION_RE = re.compile(r"[，,、：:]")
-_NON_DIALOGUE_CONTEXT_TOKENS = (
-    "agent",
-    "capture_failed",
-    "context_state=",
-    "dxcam:",
-    "galgame_",
-    "gateway_unavailable",
-    "http://",
-    "https://",
-    "last_error=",
-    "ocr_context_unavailable",
-    "plugin/",
-    "plugin\\",
-    "powershell",
-    "status=",
-    "stability",
-    "当前快照",
-    "场景 id",
-    "场景id",
-    "会话 id",
-    "会话id",
-    "游戏 id",
-    "游戏id",
-    "菜单是否打开",
-    "台词 id",
-    "台词id",
-    "路线 id",
-    "路线id",
-    "快照时间",
-    "是否过期",
-    "退出全屏",
-    "收起",
-    "全屏",
-    "ocr 诊断",
-    "recent raw ocr",
-    "最近 raw ocr",
-)
-
-
-def _looks_like_ocr_overlay_text(text: object) -> bool:
-    normalized = normalize_text(str(text or "")).strip().lower()
-    if not normalized:
-        return False
-    return any(token in normalized for token in _OCR_OVERLAY_TEXT_GUARD_SUBSTRINGS)
-
-
-def _significant_char_count(text: object) -> int:
-    return sum(1 for ch in str(text or "") if not ch.isspace())
-
-
-def _looks_like_game_dialogue_context_line(line: dict[str, Any]) -> bool:
-    if not isinstance(line, dict) or bool(line.get("is_diagnostic")):
-        return False
-    text = normalize_text(str(line.get("text") or "")).strip()
-    if not text or _looks_like_ocr_overlay_text(text):
-        return False
-    lowered = text.lower()
-    if any(token in lowered for token in _NON_DIALOGUE_CONTEXT_TOKENS):
-        return False
-    if text.startswith("{") or text.startswith("[") or ("{" in text and "}" in text):
-        return False
-    significant_chars = _significant_char_count(text)
-    if significant_chars < 2 or significant_chars > 220:
-        return False
-    has_dialogue_punctuation = bool(_DIALOGUE_PUNCTUATION_RE.search(text))
-    has_weak_dialogue_punctuation = bool(_DIALOGUE_WEAK_PUNCTUATION_RE.search(text))
-    has_speaker = bool(str(line.get("speaker") or "").strip())
-    if has_speaker:
-        return True
-    if has_dialogue_punctuation:
-        return True
-    return has_weak_dialogue_punctuation and significant_chars >= 8
-
-
 def _payload_is_game_dialogue_line(payload_obj: dict[str, Any], *, ts: str = "") -> bool:
     if _payload_is_untrusted_ocr_capture(payload_obj):
         return False
@@ -413,6 +320,35 @@ def _coerce_string_list(value: object) -> list[str]:
         seen.add(key)
         result.append(normalized)
     return result
+
+
+def _coerce_int_pair(
+    value: object,
+    default: list[int],
+    *,
+    minimum: int,
+) -> list[int]:
+    if (
+        isinstance(value, Iterable)
+        and not isinstance(value, (str, bytes, bytearray, dict))
+    ):
+        items = list(value)
+    else:
+        return list(default)
+    if len(items) != 2:
+        return list(default)
+    parsed: list[int] = []
+    for item in items:
+        if isinstance(item, bool):
+            return list(default)
+        try:
+            number = int(item)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return list(default)
+        if number < minimum:
+            return list(default)
+        parsed.append(number)
+    return parsed
 
 
 def _coerce_memory_reader_engine_hook_codes(value: object) -> dict[str, list[str]]:
@@ -559,7 +495,7 @@ def _coerce_ocr_capture_backend(value: object, default: str = "smart") -> str:
     # "imagegrab" so the rewritten value sticks once the config is re-saved.
     if normalized == "imagegrab":
         normalized = "mss"
-    if normalized in {"auto", "smart", "dxcam", "mss", "pyautogui", "printwindow"}:
+    if normalized in {"auto", "smart", "dxcam", "mss", "printwindow"}:
         return normalized
     return default
 
@@ -660,6 +596,10 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     ocr_reader_obj = ocr_reader if isinstance(ocr_reader, dict) else {}
     rapidocr = raw_config.get("rapidocr")
     rapidocr_obj = rapidocr if isinstance(rapidocr, dict) else {}
+    vision = raw_config.get("vision")
+    vision_obj = vision if isinstance(vision, dict) else {}
+    vision_classifier = vision_obj.get("classifier")
+    vision_classifier_obj = vision_classifier if isinstance(vision_classifier, dict) else {}
     rapidocr_lang_type_raw = str(rapidocr_obj.get("lang_type") or "").strip()
     if rapidocr_lang_type_raw == "ch":
         _logger.warning(
@@ -963,6 +903,44 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             ocr_reader_obj.get("known_screen_timeout_seconds"),
             5.0,
             minimum=0.0,
+        ),
+        vision_classifier_enabled=_coerce_bool(
+            vision_obj.get("enabled"),
+            False,
+        ),
+        vision_classifier_model_dir=str(
+            vision_obj.get("model_dir") or DEFAULT_VISION_CLASSIFIER_MODEL_DIR
+        ).strip(),
+        vision_classifier_model_name=str(
+            vision_classifier_obj.get("model_name") or "v1_galgame"
+        ).strip(),
+        vision_classifier_threshold=min(
+            0.99,
+            _coerce_float(
+                vision_obj.get("cnn_skip_ocr_threshold"),
+                0.75,
+                minimum=0.0,
+            ),
+        ),
+        vision_classifier_tick_interval=_coerce_int(
+            vision_obj.get("classifier_tick_interval"),
+            1,
+            minimum=1,
+        ),
+        vision_classifier_inference_timeout_ms=_coerce_float(
+            vision_obj.get("inference_timeout_ms"),
+            200.0,
+            minimum=1.0,
+        ),
+        vision_classifier_input_size=_coerce_int_pair(
+            vision_classifier_obj.get("input_size"),
+            [224, 224],
+            minimum=16,
+        ),
+        vision_classifier_input_size_low=_coerce_int_pair(
+            vision_classifier_obj.get("input_size_low"),
+            [160, 160],
+            minimum=16,
         ),
         rapidocr_enabled=_coerce_bool(
             rapidocr_obj.get("enabled"),
@@ -2383,10 +2361,10 @@ def build_status_payload(
             config=config,
             state_is_snapshot=state_is_snapshot,
         )
-    except Exception as exc:
+    except Exception:
         _logger.exception("build_status_payload failed")
         return {
-            "error": str(exc),
+            "error": "status payload construction failed",
             "degraded": True,
             "summary": {
                 "status": "error",
@@ -2710,6 +2688,31 @@ def _build_status_payload_unchecked(
         "ocr_screen_awareness_model_path": config.ocr_reader_screen_awareness_model_path,
         "ocr_screen_awareness_model_min_confidence": (
             config.ocr_reader_screen_awareness_model_min_confidence
+        ),
+        "vision_classifier_enabled": config.vision_classifier_enabled,
+        "vision_classifier_model_dir": config.vision_classifier_model_dir,
+        "vision_classifier_model_name": config.vision_classifier_model_name,
+        "vision_classifier_threshold": config.vision_classifier_threshold,
+        "vision_classifier_tick_interval": config.vision_classifier_tick_interval,
+        "vision_classifier_inference_timeout_ms": (
+            config.vision_classifier_inference_timeout_ms
+        ),
+        "vision_classifier_input_size": list(config.vision_classifier_input_size),
+        "vision_classifier_input_size_low": list(config.vision_classifier_input_size_low),
+        "vision_classifier_available": bool(
+            ocr_runtime_obj.get("vision_classifier_available")
+        ),
+        "vision_classifier_detail": str(
+            ocr_runtime_obj.get("vision_classifier_detail") or ""
+        ),
+        "vision_classifier_last_label": str(
+            ocr_runtime_obj.get("vision_classifier_last_label") or ""
+        ),
+        "vision_classifier_last_confidence": _coerce_float(
+            ocr_runtime_obj.get("vision_classifier_last_confidence"), 0.0, minimum=0.0
+        ),
+        "vision_classifier_last_latency_ms": _coerce_float(
+            ocr_runtime_obj.get("vision_classifier_last_latency_ms"), 0.0, minimum=0.0
         ),
         "rapidocr_enabled": config.rapidocr_enabled,
         "dxcam": dxcam,

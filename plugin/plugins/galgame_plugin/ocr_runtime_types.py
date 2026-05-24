@@ -1219,6 +1219,12 @@ class OcrReaderCaptureRuntime:
     screen_awareness_model_last_stage: str = ""
     screen_awareness_model_last_confidence: float = 0.0
     screen_awareness_model_last_latency_seconds: float = 0.0
+    vision_classifier_enabled: bool = False
+    vision_classifier_available: bool = False
+    vision_classifier_detail: str = ""
+    vision_classifier_last_label: str = ""
+    vision_classifier_last_confidence: float = 0.0
+    vision_classifier_last_latency_ms: float = 0.0
     screen_awareness_last_skip_reason: str = ""
     screen_awareness_last_region_count: int = 0
     screen_awareness_last_capture_duration_seconds: float = 0.0
@@ -1445,6 +1451,18 @@ class OcrReaderRuntime:
             "capture",
             "screen_awareness_model_last_latency_seconds",
         ),
+        "vision_classifier_enabled": ("capture", "vision_classifier_enabled"),
+        "vision_classifier_available": ("capture", "vision_classifier_available"),
+        "vision_classifier_detail": ("capture", "vision_classifier_detail"),
+        "vision_classifier_last_label": ("capture", "vision_classifier_last_label"),
+        "vision_classifier_last_confidence": (
+            "capture",
+            "vision_classifier_last_confidence",
+        ),
+        "vision_classifier_last_latency_ms": (
+            "capture",
+            "vision_classifier_last_latency_ms",
+        ),
         "last_poll_started_at": ("poll", "last_poll_started_at"),
         "last_poll_completed_at": ("poll", "last_poll_completed_at"),
         "last_poll_duration_seconds": ("poll", "last_poll_duration_seconds"),
@@ -1625,6 +1643,12 @@ class OcrReaderRuntime:
             "screen_awareness_model_last_latency_seconds": (
                 self.screen_awareness_model_last_latency_seconds
             ),
+            "vision_classifier_enabled": self.vision_classifier_enabled,
+            "vision_classifier_available": self.vision_classifier_available,
+            "vision_classifier_detail": self.vision_classifier_detail,
+            "vision_classifier_last_label": self.vision_classifier_last_label,
+            "vision_classifier_last_confidence": self.vision_classifier_last_confidence,
+            "vision_classifier_last_latency_ms": self.vision_classifier_last_latency_ms,
             "last_poll_started_at": self.last_poll_started_at,
             "last_poll_completed_at": self.last_poll_completed_at,
             "last_poll_duration_seconds": self.last_poll_duration_seconds,
@@ -1696,6 +1720,7 @@ class OcrExtractionResult:
     window_rect: dict[str, float] = field(default_factory=dict)
     capture_backend_kind: str = ""
     capture_backend_detail: str = ""
+    capture_image: Any | None = None
     capture_image_hash: str = ""
     background_hash: str = ""
     timing: dict[str, Any] = field(default_factory=dict)
@@ -1703,6 +1728,14 @@ class OcrExtractionResult:
     screen_visual_features: dict[str, Any] = field(default_factory=dict)
     ocr_confidence: float = 0.0
     text_source: str = "bottom_region"
+
+    @property
+    def captured_image(self) -> Any | None:
+        return self.capture_image
+
+    @captured_image.setter
+    def captured_image(self, value: Any | None) -> None:
+        self.capture_image = value
 
 
 @dataclass(slots=True)

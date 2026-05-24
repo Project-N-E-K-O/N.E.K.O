@@ -48,6 +48,7 @@ async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
 
         locale = _normalize_ui_locale(str(get_global_language_full()))
     except Exception:
+        logger.warning("galgame ui locale detection failed; falling back to en", exc_info=True)
         locale = "en"
     return JSONResponse({"locale": locale})
 
