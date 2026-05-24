@@ -3007,10 +3007,16 @@ class ConfigManager:
         if not non_mainland and new_host.startswith('www.'):
             new_host = new_host[len('www.'):]
 
-        # 仅替换 netloc 里的 host，保留可能存在的端口/用户信息
-        netloc = parsed.netloc.replace(parsed.hostname, new_host, 1) \
-            if parsed.hostname else new_host
-        return urlunparse(parsed._replace(netloc=netloc))
+        # 按组件重建 netloc，只换 host；保留 userinfo/port，避免 host 字串
+        # 恰好出现在 user:pass@ 段里被误改（如 user=www.lanlan.tech 的情形）。
+        userinfo = ''
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f':{parsed.password}'
+            userinfo += '@'
+        port = f':{parsed.port}' if parsed.port else ''
+        return urlunparse(parsed._replace(netloc=f'{userinfo}{new_host}{port}'))
 
     @staticmethod
     def _derive_livestream_url(original_url: str, prefix: str) -> str:

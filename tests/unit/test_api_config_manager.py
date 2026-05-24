@@ -678,6 +678,14 @@ class TestAgentUrlRegionRouting:
         ) == 'https://lanlan.app:8443/text/v1'
 
     @pytest.mark.unit
+    def test_normalize_agent_url_preserves_userinfo(self, config_manager):
+        """netloc 含 user:pass@ 时只改 host，不动凭证（即便凭证里含 host 同名串）。"""
+        config_manager._check_non_mainland = lambda: True
+        assert config_manager._normalize_agent_url(
+            'https://www.lanlan.tech:secret@www.lanlan.tech:8443/text/v1'
+        ) == 'https://www.lanlan.tech:secret@www.lanlan.app:8443/text/v1'
+
+    @pytest.mark.unit
     def test_normalize_agent_url_non_string_passthrough(self, config_manager):
         config_manager._check_non_mainland = lambda: True
         assert config_manager._normalize_agent_url(None) is None
