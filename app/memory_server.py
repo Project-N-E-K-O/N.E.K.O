@@ -2897,7 +2897,9 @@ async def _bootstrap_embedding_worker() -> None:
     except Exception as e:
         logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
         embedding_warmup_worker = None
-        fact_dedup_resolver = None
+        # 不清 fact_dedup_resolver：若 await 期间 reload 已重绑了一个绑定新 store 的
+        # resolver，这里清成 None 会把 reload 的成果抹掉。bootstrap 失败本就只代表
+        # "没有 warmup worker"，resolver 该保留（None 维持原样，reload 设的则保留）。
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:

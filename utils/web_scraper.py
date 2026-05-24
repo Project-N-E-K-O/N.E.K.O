@@ -148,8 +148,10 @@ def _ensure_bilibili_env() -> None:
     global _bilibili_env_fixed
     if _bilibili_env_fixed:
         return
-    _bilibili_env_fixed = True
+    # 先跑修复、成功后再置标志：万一 _fix_bilibili_api_env 抛错（理论上它内部已兜底，
+    # 但这里防御性处理），下次调用还能重试，不会被标志永久跳过。
     _fix_bilibili_api_env()
+    _bilibili_env_fixed = True
 
 # ==================================================
 # 从 language_utils 导入区域检测功能
