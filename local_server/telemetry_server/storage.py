@@ -99,6 +99,34 @@ def normalize_steam_id(raw) -> str:
     return ""
 
 
+# device_hw 服务端白名单：公开 ingest 边界上客户端串不可信（HMAC 密钥开源可读），
+# 伪造请求能把任意 64 字符 preserve-known 进 devices.device_hw，污染"设备画像"基数
+# 或注入 PII。只放行 os|arch|ram_tier|cpu_tier 四段、每段在已知 enum 内的串。
+_DEVICE_HW_ALLOWED = (
+    {"win", "mac", "linux", "other"},
+    {"x86_64", "arm64", "other"},
+    {"lt8", "8to16", "16to32", "ge32", "unknown"},
+    {"le4", "5to8", "9to16", "gt16", "unknown"},
+)
+
+
+def normalize_device_hw(raw) -> str:
+    """校验 device_hw 复合串（与客户端 _get_device_hw 同口径），非法回退 ''。
+
+    server 边界防伪造污染：只放行恰好 4 段、每段命中对应 enum 的串，其余一律 ''
+    （含 None / 非 str / 段数不符 / 任一段越界）。与 steam_user_id 同样在 ingest
+    边界做白名单，守 device_hw 的低基数 + 零 PII 契约。
+    """
+    if not isinstance(raw, str) or not raw:
+        return ""
+    parts = raw.split("|")
+    if len(parts) != len(_DEVICE_HW_ALLOWED):
+        return ""
+    if all(p in allowed for p, allowed in zip(parts, _DEVICE_HW_ALLOWED)):
+        return raw
+    return ""
+
+
 class TelemetryStorage:
     """线程安全的 SQLite 遥测存储。"""
 

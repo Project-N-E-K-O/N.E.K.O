@@ -125,6 +125,24 @@ def _make_storage(tmp_path):
     return TelemetryStorage(tmp_path / "t.db")
 
 
+def test_normalize_device_hw_whitelist(tmp_path):
+    """server 边界白名单：合法 4 段放行，伪造/越界/段数不符一律归 ''。"""
+    import sys
+    if str(_SRV_DIR) not in sys.path:
+        sys.path.insert(0, str(_SRV_DIR))
+    from storage import normalize_device_hw
+    # 合法
+    assert normalize_device_hw("win|x86_64|16to32|9to16") == "win|x86_64|16to32|9to16"
+    assert normalize_device_hw("mac|arm64|ge32|le4") == "mac|arm64|ge32|le4"
+    # 非法：段数不符（5 段，旧格式）/ 越界 tag / 任意串 / 非 str / 空
+    assert normalize_device_hw("win|x86_64|16to32|avx2|9to16") == ""   # 5 段
+    assert normalize_device_hw("win|x86_64|99GB|9to16") == ""          # ram 越界
+    assert normalize_device_hw("evil; DROP TABLE; or PII username") == ""
+    assert normalize_device_hw("a" * 64) == ""
+    assert normalize_device_hw(None) == ""
+    assert normalize_device_hw("") == ""
+
+
 # device_hw 的 server preserve-known：空 string 不覆写历史已知值
 def test_device_hw_preserve_known(tmp_path):
     import json

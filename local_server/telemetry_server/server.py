@@ -33,7 +33,7 @@ from fastapi.responses import PlainTextResponse
 
 from models import TelemetrySubmission, SubmitResponse, model_to_dict, model_to_json, model_from_json
 from security import verify_signature, verify_timestamp, RateLimiter, DEFAULT_HMAC_SECRET
-from storage import TelemetryStorage, normalize_steam_id
+from storage import TelemetryStorage, normalize_steam_id, normalize_device_hw
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -170,6 +170,9 @@ async def submit_telemetry(request: Request):
     # 拆成两个 device↔account 维度。规则细节见该函数 docstring（u64 范围 / 去前导零 /
     # 排哨兵 / 类型守卫）。HMAC secret 在开源客户端可读，伪造请求是有概率事件，故必校验。
     steam_user_id = normalize_steam_id(submission.payload.steam_user_id)
+    # device_hw 同样在 ingest 边界白名单化：客户端串不可信，非法/伪造一律归 ''，
+    # 守"设备画像"低基数 + 零 PII 契约（见 normalize_device_hw）。
+    device_hw = normalize_device_hw(submission.payload.device_hw)
 
     # 存储
     try:
@@ -192,7 +195,7 @@ async def submit_telemetry(request: Request):
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
             steam_user_id=steam_user_id,
-            device_hw=submission.payload.device_hw,
+            device_hw=device_hw,
             instruments=instruments_dict,
         )
     except Exception as e:
