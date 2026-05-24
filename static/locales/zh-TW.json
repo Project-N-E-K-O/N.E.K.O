@@ -1163,7 +1163,7 @@
             "modelDataNotReady": "模型內部數據未準備好",
             "managerNotFound": "Live2DManager 未找到",
             "select": "選擇",
-            "defaultClickAnim": "默認點擊動畫",
+            "defaultClickAnim": "預設點擊動畫",
             "customAreaButton": "自訂區域",
             "customAreaTitle": "自訂區域：{{name}}",
             "newCustomAreaTitle": "新增自訂區域",

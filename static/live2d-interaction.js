@@ -2365,8 +2365,8 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
             let foundGroupName = null;
             const normalizeMotionFileName = (file) => {
                 const normalized = String(file || '').replace(/\\/g, '/');
-                const baseName = normalized.split('/').pop() || normalized;
-                return baseName.replace(/\.motion3$/i, '').replace(/\.motion3\.json$/i, '').replace(/\.json$/i, '');
+                const relativePath = normalized.replace(/^motions\//i, '');
+                return relativePath.replace(/\.motion3\.json$/i, '').replace(/\.motion3$/i, '').replace(/\.json$/i, '');
             };
 
             outerLoop:
@@ -2375,7 +2375,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId) {
                     if (Array.isArray(motionList)) {
                         const motion = motionList.find(m => {
                             if (!m || !m.File) return false;
-                            return normalizeMotionFileName(m.File) === randomMotion;
+                            return normalizeMotionFileName(m.File) === normalizeMotionFileName(randomMotion);
                         });
                         if (motion) {
                             foundMotion = motion;

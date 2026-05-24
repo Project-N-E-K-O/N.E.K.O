@@ -488,11 +488,11 @@
     max-width: 760px;
     width: 94%;
     max-height: 96vh;
-    overflow: visible;
+    overflow: hidden;
 }
 
 .touch-custom-window .touch-config-content {
-    overflow: visible;
+    overflow-y: auto;
 }
 
 .touch-custom-name-row {
