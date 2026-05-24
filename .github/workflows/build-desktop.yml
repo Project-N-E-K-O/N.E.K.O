@@ -318,6 +318,12 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=app"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=config"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
+          # Built-in plugins are imported at runtime via their dotted entry path
+          # (plugin.plugins.<name>:Class in each plugin.toml), so they must be
+          # compiled into the binary. Shipping them only via --include-data-dir
+          # drops the .py (Nuitka treats it as code) and every built-in plugin
+          # fails to import. Kept in sync with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin.plugins"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
@@ -331,6 +337,23 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
+          # bilibili_dm/bilibili_danmaku plugins import bilibili_api; compile the
+          # package itself (CI previously only carried its package-data).
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=bilibili_api"
+          # galgame_plugin native OCR/vision cohort. Installed on every platform by
+          # `uv sync --group galgame` (rapidocr-onnxruntime + opencv-python-headless,
+          # which pulls shapely/pyclipper). Nuitka's auto-follow misses their data
+          # files, so include package + data explicitly. Synced with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=cv2"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=cv2"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=rapidocr_onnxruntime"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=rapidocr_onnxruntime"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=shapely"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=shapely"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=pyclipper"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=mss"
+          # dxcam is Windows-only (win32 marker); it's handled in the Windows cmd
+          # build step and is never installed here, so it's intentionally omitted.
 
           # Package data
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
@@ -344,7 +367,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
 
           # Exclusions
-          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"
+          # galgame_plugin/training/ is offline model-training code (torch /
+          # torchvision / albumentations) — not declared deps, not installed, and
+          # runtime inference uses the exported .onnx via onnxruntime instead.
+          # Carve it out so --include-package=plugin.plugins doesn't recurse into it.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins.galgame_plugin.training"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
@@ -438,11 +465,16 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=app
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=config
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
+          rem Built-in plugins are imported at runtime via their dotted entry path
+          rem (plugin.plugins.<name>:Class in plugin.toml), so they must be compiled
+          rem into the binary; --include-data-dir alone drops the .py. Synced with
+          rem build_nuitka.bat. training/ is offline-only (torch) so carve it out.
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin.plugins
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins.galgame_plugin.training
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=memory
-          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=utils
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=steamworks
           rem PR #1264 moved native libs into steamworks/; runtime still loads them
@@ -472,7 +504,21 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tokenizers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=bilibili_api
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
+          rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
+          rem rapidocr-onnxruntime + opencv-python-headless, pulling shapely/pyclipper;
+          rem mss/dxcam from main deps). Nuitka auto-follow misses their data files,
+          rem so include package + data explicitly. Synced with build_nuitka.bat.
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=rapidocr_onnxruntime
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=rapidocr_onnxruntime
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=cv2
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=cv2
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=pyclipper
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=shapely
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=shapely
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=mss
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=dxcam
           set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=matplotlib
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
