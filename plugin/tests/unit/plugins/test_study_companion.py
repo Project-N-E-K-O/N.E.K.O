@@ -55,6 +55,11 @@ from plugin.plugins.study_companion.models import (
 )
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
+from plugin.plugins.study_companion import study_capture_backends as study_capture_backends_module
+from plugin.plugins.study_companion.study_capture_backends import (
+    PrintWindowCaptureBackend,
+    PyAutoGuiCaptureBackend,
+)
 from plugin.plugins.study_companion.study_ocr_pipeline import (
     StudyCaptureProfile,
     StudyOcrPipeline,
@@ -1376,11 +1381,125 @@ def test_study_ocr_pipeline_uses_local_capture_profile() -> None:
     assert profile.bottom_inset_ratio == 0.14
 
 
-def test_study_companion_does_not_import_galgame_ocr_reader_directly() -> None:
+def test_study_companion_does_not_import_galgame_namespace_directly() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
-    for path in plugin_dir.glob("*.py"):
+    for path in plugin_dir.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        assert "plugin.plugins.galgame_plugin.ocr_reader" not in source
+        assert "plugin.plugins.galgame_plugin" not in source
+
+
+def test_printwindow_capture_uses_hwnd_capture_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image
+
+    calls: list[tuple[int, tuple[int, int, int, int]]] = []
+
+    def _capture_full_window(hwnd: int, rect: tuple[int, int, int, int]):
+        calls.append((hwnd, rect))
+        return Image.new("RGB", (rect[2] - rect[0], rect[3] - rect[1]))
+
+    monkeypatch.setattr(
+        PrintWindowCaptureBackend,
+        "_capture_full_window",
+        staticmethod(_capture_full_window),
+    )
+    target = SimpleNamespace(
+        hwnd=1234,
+        left=10,
+        top=20,
+        width=100,
+        height=80,
+        is_minimized=False,
+        eligible=True,
+    )
+
+    image = PrintWindowCaptureBackend().capture_frame(
+        target,
+        StudyCaptureProfile(left_inset_ratio=0.0, right_inset_ratio=0.0),
+    )
+
+    assert image.size == (100, 80)
+    assert calls == [(1234, (10, 20, 110, 100))]
+
+
+def test_printwindow_capture_requires_hwnd() -> None:
+    target = SimpleNamespace(
+        hwnd=0,
+        left=10,
+        top=20,
+        width=100,
+        height=80,
+        is_minimized=False,
+        eligible=True,
+    )
+
+    with pytest.raises(RuntimeError, match="target hwnd"):
+        PrintWindowCaptureBackend().capture_frame(target, StudyCaptureProfile())
+
+
+def test_win32_target_window_rect_reads_under_dpi_aware_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    class _User32:
+        def SetThreadDpiAwarenessContext(self, context):
+            value = getattr(context, "value", context)
+            calls.append(value)
+            return 99
+
+    monkeypatch.setattr(study_capture_backends_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        study_capture_backends_module.ctypes,
+        "windll",
+        SimpleNamespace(user32=_User32()),
+        raising=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            GetWindowRect=lambda _hwnd: calls.append("get_window_rect")
+            or (10, 20, 110, 100)
+        ),
+    )
+
+    rect = study_capture_backends_module._target_window_rect(
+        SimpleNamespace(hwnd=1234)
+    )
+
+    assert rect == (10, 20, 110, 100)
+    per_monitor_v2 = study_capture_backends_module.ctypes.c_void_p(-4).value
+    assert calls == [per_monitor_v2, "get_window_rect", 99]
+
+
+def test_pyautogui_capture_rejects_secondary_monitor_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screenshot_calls = 0
+
+    def _screenshot(**_kwargs):
+        nonlocal screenshot_calls
+        screenshot_calls += 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pyautogui",
+        SimpleNamespace(size=lambda: (1920, 1080), screenshot=_screenshot),
+    )
+    monkeypatch.setattr(study_capture_backends_module.sys, "platform", "win32")
+    target = SimpleNamespace(
+        hwnd=0,
+        left=2000,
+        top=100,
+        width=400,
+        height=300,
+        is_minimized=False,
+        eligible=True,
+    )
+
+    with pytest.raises(RuntimeError, match="secondary_monitor|spans_across"):
+        PyAutoGuiCaptureBackend().capture_frame(target, StudyCaptureProfile())
+    assert screenshot_calls == 0
 
 
 def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:

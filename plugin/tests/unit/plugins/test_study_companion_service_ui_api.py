@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin.plugins._shared.rapidocr import rapidocr_support as shared_rapidocr_support
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.plugins.study_companion.service import (
     _available_tesseract_languages,
@@ -83,6 +84,35 @@ def test_dependency_status_uses_installability_and_tesseract_language_fallbacks(
 
     assert status["missing_installable"] == ["rapidocr", "dxcam"]
     assert languages == {"eng"}
+
+
+def test_study_rapidocr_resolve_uses_galgame_runtime_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_docs_dir = tmp_path / "AppDocs"
+    galgame_target = app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
+    (galgame_target / "models").mkdir(parents=True)
+    (galgame_target / "models" / "japan_PP-OCRv4_rec_infer.onnx").write_bytes(
+        b"model"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "EmptyLocalAppData"))
+    monkeypatch.setattr(shared_rapidocr_support, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        shared_rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
+    )
+
+    raw_target = shared_rapidocr_support.default_rapidocr_install_target_raw()
+    resolved = shared_rapidocr_support.resolve_rapidocr_install_target("")
+
+    assert raw_target == str(
+        app_docs_dir / "runtimes" / "study_companion" / "RapidOCR"
+    )
+    assert resolved == galgame_target
+    assert shared_rapidocr_support.resolve_rapidocr_model_cache_dir("") == (
+        galgame_target / "models"
+    )
 
 
 def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:
