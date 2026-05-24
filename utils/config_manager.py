@@ -2986,6 +2986,8 @@ class ConfigManager:
             if not self._check_non_mainland():
                 url = url.replace('www.lanlan.app', 'lanlan.app')
         except Exception:
+            # 仅 _check_non_mainland 可能抛（GeoIP 探测）。探测失败时不剥 www，
+            # 保留国际形态作安全默认；线路探测不该阻断 URL 推导。
             pass
         return url
 
