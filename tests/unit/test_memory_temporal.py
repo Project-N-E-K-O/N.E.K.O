@@ -52,6 +52,17 @@ def test_cooldown_elapsed_respects_now_arg():
     assert cooldown_elapsed(last, 3 * 3600, now=base) is True
 
 
+def test_cooldown_elapsed_handles_aware_timestamp():
+    """aware ISO（+00:00 / Z）不应让相减抛 TypeError（迁移/import 数据防御，
+    CodeRabbit）。aware 与 naive now 经 to_naive_local 归一后正常比较。"""
+    from datetime import timezone
+    from memory.temporal import cooldown_elapsed
+    last_aware_old = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    assert cooldown_elapsed(last_aware_old, 5 * 3600) is True
+    last_aware_recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    assert cooldown_elapsed(last_aware_recent, 5 * 3600) is False
+
+
 # ── memory.temporal helpers ─────────────────────────────────────────
 
 

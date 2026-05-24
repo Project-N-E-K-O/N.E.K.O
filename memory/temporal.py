@@ -82,6 +82,11 @@ def cooldown_elapsed(
         return True
     if now is None:
         now = datetime.now()
+    # aware/naive 归一：写入路径都用 datetime.now()（naive），但迁移 / import
+    # 数据可能塞进 +00:00 / Z 的 aware ISO，直接和 naive now 相减会抛
+    # TypeError 中断冷却判定。复用全项目 tz 归一口径 to_naive_local（保瞬时）。
+    last = to_naive_local(last)
+    now = to_naive_local(now)
     return (now - last).total_seconds() >= cooldown_seconds
 
 
