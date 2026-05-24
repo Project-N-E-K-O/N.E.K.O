@@ -683,7 +683,7 @@ def _get_device_hw() -> str:
         ram_tag = ("lt8" if gb < 8 else "8to16" if gb < 16
                    else "16to32" if gb < 32 else "ge32")
     except Exception:
-        pass
+        ram_tag = "unknown"  # psutil 缺失/异常：保留 'unknown'，埋点不能挡上报
 
     cpu_tag = "unknown"
     try:
@@ -692,7 +692,7 @@ def _get_device_hw() -> str:
             cpu_tag = ("le4" if n <= 4 else "5to8" if n <= 8
                        else "9to16" if n <= 16 else "gt16")
     except Exception:
-        pass
+        cpu_tag = "unknown"  # cpu_count 异常：保留 'unknown'，不抛
 
     _DEVICE_HW_CACHE = f"{os_tag}|{arch}|{ram_tag}|{cpu_tag}"
     return _DEVICE_HW_CACHE

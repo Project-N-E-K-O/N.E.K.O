@@ -3535,7 +3535,7 @@ class LLMSessionManager:
             from utils.instrument import counter as _instr_counter
             _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
         except Exception:
-            pass
+            pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
         error_str = str(e)
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(

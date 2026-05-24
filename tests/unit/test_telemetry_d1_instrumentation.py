@@ -7,8 +7,6 @@ tests/test_instrument.py 已覆盖，这里只验 token_tracker 的 wiring。
 import types
 from pathlib import Path
 
-import pytest
-
 _SRV_DIR = Path(__file__).resolve().parents[2] / "local_server" / "telemetry_server"
 
 
@@ -107,8 +105,8 @@ def test_has_completed_core_loop(tmp_path, monkeypatch):
 
 def test_device_hw_format_low_cardinality():
     """device_hw 是 4 段低基数 enum 复合串（os|arch|ram|cpu），绝不含原始值。"""
-    from utils.token_tracker import _get_device_hw
-    hw = _get_device_hw()
+    import utils.token_tracker as tk
+    hw = tk._get_device_hw()
     parts = hw.split("|")
     assert len(parts) == 4, f"device_hw 应为 4 段 os|arch|ram|cpu，实得 {hw!r}"
     os_tag, arch, ram, cpu = parts
