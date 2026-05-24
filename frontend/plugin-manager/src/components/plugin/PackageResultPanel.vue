@@ -11,14 +11,16 @@
     <template #header>
       <div class="dialog-header">
         <div>
-          <div class="dialog-title">包管理执行记录</div>
-          <div class="dialog-subtitle">保留最近 {{ resultHistory.length }} 条执行结果</div>
+          <div class="dialog-title">{{ t('package.dialog.title') }}</div>
+          <div class="dialog-subtitle">
+            {{ t('package.dialog.subtitle', { count: resultHistory.length }) }}
+          </div>
         </div>
       </div>
     </template>
 
     <div v-if="resultHistory.length === 0" class="dialog-empty">
-      <el-empty description="执行包管理操作后，这里会显示记录" />
+      <el-empty :description="t('package.empty')" />
     </div>
 
     <div v-else class="dialog-layout">
@@ -32,11 +34,11 @@
           @click="$emit('select', record.id)"
         >
           <div class="history-item__top">
-            <el-tag size="small" effect="dark" type="info">{{ record.kind }}</el-tag>
+            <el-tag size="small" effect="dark" type="info">{{ kindLabel(record.kind) }}</el-tag>
             <span class="history-item__time">{{ record.createdAt }}</span>
           </div>
           <div class="history-item__summary">
-            {{ record.summaryHighlights[0]?.value || record.summaryWarnings[0] || '查看详情' }}
+            {{ record.summaryHighlights[0]?.value || record.summaryWarnings[0] || t('package.viewDetail') }}
           </div>
         </button>
       </aside>
@@ -45,10 +47,10 @@
         <template v-if="activeResultRecord">
           <div class="detail-header">
             <div>
-              <div class="detail-title">结果详情</div>
+              <div class="detail-title">{{ t('package.detail.title') }}</div>
               <div class="detail-meta">{{ activeResultRecord.createdAt }}</div>
             </div>
-            <el-tag type="primary" effect="plain">{{ activeResultRecord.kind }}</el-tag>
+            <el-tag type="primary" effect="plain">{{ kindLabel(activeResultRecord.kind) }}</el-tag>
           </div>
 
           <div v-if="activeResultRecord.summaryMetrics.length > 0" class="summary-grid">
@@ -64,18 +66,24 @@
 
           <div v-if="activeResultRecord.inspectResult" class="inspect-panel">
             <el-descriptions :column="2" border class="inspect-summary">
-              <el-descriptions-item label="包 ID">{{ activeResultRecord.inspectResult.package_id }}</el-descriptions-item>
-              <el-descriptions-item label="类型">{{ activeResultRecord.inspectResult.package_type }}</el-descriptions-item>
-              <el-descriptions-item label="版本">{{ activeResultRecord.inspectResult.version || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="Schema">{{ activeResultRecord.inspectResult.schema_version || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="Hash 校验">
+              <el-descriptions-item :label="t('package.detail.field.packageId')">{{ activeResultRecord.inspectResult.package_id }}</el-descriptions-item>
+              <el-descriptions-item :label="t('package.detail.field.kind')">{{ activeResultRecord.inspectResult.package_type }}</el-descriptions-item>
+              <el-descriptions-item :label="t('package.detail.field.version')">{{ activeResultRecord.inspectResult.version || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('package.detail.field.schema')">{{ activeResultRecord.inspectResult.schema_version || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="t('package.detail.field.hashCheck')">
                 <el-tag
                   :type="activeResultRecord.inspectResult.payload_hash_verified === true ? 'success' : activeResultRecord.inspectResult.payload_hash_verified === false ? 'danger' : 'info'"
                 >
-                  {{ activeResultRecord.inspectResult.payload_hash_verified === null ? '未校验' : activeResultRecord.inspectResult.payload_hash_verified ? '通过' : '失败' }}
+                  {{
+                    activeResultRecord.inspectResult.payload_hash_verified === null
+                      ? t('package.hash.notVerified')
+                      : activeResultRecord.inspectResult.payload_hash_verified
+                        ? t('package.hash.passed')
+                        : t('package.hash.failed')
+                  }}
                 </el-tag>
               </el-descriptions-item>
-              <el-descriptions-item label="Profiles">
+              <el-descriptions-item :label="t('package.detail.field.profiles')">
                 {{ activeResultRecord.inspectResult.profile_names.join(', ') || '-' }}
               </el-descriptions-item>
             </el-descriptions>
@@ -93,7 +101,7 @@
           </div>
 
           <div v-if="activeResultRecord.summaryListItems.length > 0" class="summary-section">
-            <div class="summary-section__title">明细</div>
+            <div class="summary-section__title">{{ t('package.detail.list') }}</div>
             <div class="summary-chip-list">
               <el-tag
                 v-for="item in activeResultRecord.summaryListItems"
@@ -107,7 +115,7 @@
           </div>
 
           <div v-if="activeResultRecord.summaryWarnings.length > 0" class="summary-section">
-            <div class="summary-section__title">注意</div>
+            <div class="summary-section__title">{{ t('package.detail.warning') }}</div>
             <div class="summary-warning-list">
               <div
                 v-for="warning in activeResultRecord.summaryWarnings"
@@ -120,7 +128,7 @@
           </div>
 
           <div class="summary-section">
-            <div class="summary-section__title">原始结果 JSON</div>
+            <div class="summary-section__title">{{ t('package.detail.rawJson') }}</div>
             <pre class="result-block">{{ activeResultRecord.resultText }}</pre>
           </div>
         </template>
@@ -130,6 +138,7 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import type { PackageResultRecord } from '@/composables/usePackageManager'
 
 defineProps<{
@@ -143,6 +152,30 @@ defineEmits<{
   'update:visible': [value: boolean]
   select: [recordId: string]
 }>()
+
+const { t } = useI18n()
+
+/**
+ * Map a ``PackageResultRecord.kind`` enum value to its localized label.
+ *
+ * Bug 1.7 (PR #1480 review-fix): the previous implementation rendered
+ * ``record.kind`` directly, exposing the raw enum literal (e.g.
+ * ``"build"``) to non-zh-CN users. We translate via ``package.kind.*``
+ * keys; the ``t(key, default)`` second argument falls back to the raw
+ * kind string so that:
+ *   - any future enum addition (e.g. ``"publish"``) doesn't render an
+ *     empty string until a translator catches up;
+ *   - test fixtures that stub the i18n layer continue to work without
+ *     needing every key registered.
+ *
+ * The set of known kinds is kept in sync with
+ * ``usePackageManager.ts::PackageResultKind``. Adding a new kind
+ * requires extending both this function and every locale's
+ * ``package.kind.*`` block.
+ */
+function kindLabel(kind: PackageResultRecord['kind']): string {
+  return t(`package.kind.${kind}`, kind)
+}
 </script>
 
 <style scoped>

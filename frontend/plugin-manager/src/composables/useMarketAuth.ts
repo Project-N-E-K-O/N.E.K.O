@@ -20,6 +20,10 @@ export function useMarketAuth() {
   const marketAuthBusy = ref(false)
   const bridgeToken = ref(localStorage.getItem('neko_bridge_token') || '')
   let marketAuthPollTimer: number | null = null
+  // Sticky stop flag for the recursive setTimeout poll loop. Read by
+  // ``tick`` and ``schedule`` inside ``startMarketAuthPolling`` so a
+  // pending timer that fires after ``stopMarketAuthPolling`` exits early.
+  let pollingStopped = false
 
   const marketAuthDisplayName = computed(() => {
     const user = marketAuth.value.user
@@ -63,25 +67,66 @@ export function useMarketAuth() {
   }
 
   function stopMarketAuthPolling(): void {
+    pollingStopped = true
     if (marketAuthPollTimer !== null) {
-      clearInterval(marketAuthPollTimer)
+      clearTimeout(marketAuthPollTimer)
       marketAuthPollTimer = null
     }
   }
 
+  /**
+   * Poll ``/market/oauth/complete`` until the user finishes the OAuth flow.
+   *
+   * Implementation notes:
+   *
+   * - **Recursive setTimeout instead of setInterval**: ``setInterval`` fires
+   *   every 2s independent of how long the previous request took; if the
+   *   network round-trip exceeds 2s the next interval starts a *parallel*
+   *   request, and both ``then`` branches race to call
+   *   ``stopMarketAuthPolling`` / ``ElMessage.success`` / ``loginFailed``.
+   *   With recursive setTimeout we only schedule the next tick after the
+   *   previous one finishes (or is skipped because ``inFlight``).
+   * - ``inFlight`` belt-and-suspenders: if a tick is somehow scheduled
+   *   while the previous fetch is still in flight (race with manual
+   *   ``startMarketAuthPolling`` re-entry), the new tick exits early and
+   *   schedules the next one.
+   * - ``pollingStopped`` is module-private (set by
+   *   ``stopMarketAuthPolling``) and re-checked inside ``tick`` so that a
+   *   scheduled tick still pending when the user navigates away exits
+   *   without firing any UI side effect.
+   * - The ``finally`` block resets ``inFlight`` even on thrown errors so
+   *   the very next ``stopMarketAuthPolling`` (called inside the catch
+   *   branch) doesn't leave the flag pinned to ``true`` and block any
+   *   future ``startMarketAuthPolling`` call from polling.
+   */
   function startMarketAuthPolling(): void {
     stopMarketAuthPolling()
+    pollingStopped = false
+    let inFlight = false
     const deadline = Date.now() + 5 * 60 * 1000
-    marketAuthPollTimer = window.setInterval(async () => {
+
+    const tick = async () => {
+      if (pollingStopped) return
       if (Date.now() > deadline) {
         stopMarketAuthPolling()
         marketAuthBusy.value = false
         ElMessage.warning(t('market.loginPending'))
         return
       }
+      if (inFlight) {
+        // Defensive: should never happen with recursive setTimeout, but
+        // keeps the contract explicit for future maintainers.
+        schedule()
+        return
+      }
 
       const token = await ensureBridgeToken()
-      if (!token) return
+      if (!token) {
+        schedule()
+        return
+      }
+
+      inFlight = true
       try {
         const res = await fetch(`/market/oauth/complete?token=${encodeURIComponent(token)}`, {
           method: 'POST',
@@ -96,13 +141,29 @@ export function useMarketAuth() {
           marketAuthBusy.value = false
           await loadMarketAuthStatus()
           ElMessage.success(t('market.loginSuccess'))
+          return
         }
       } catch (error) {
         stopMarketAuthPolling()
         marketAuthBusy.value = false
         ElMessage.error(error instanceof Error ? error.message : t('market.loginFailed'))
+        return
+      } finally {
+        // Reset BEFORE schedule() so a re-entrant
+        // ``startMarketAuthPolling`` call (e.g. user clicks "log in" again
+        // after an error) doesn't see a stale ``true``.
+        inFlight = false
       }
-    }, 2000)
+
+      schedule()
+    }
+
+    const schedule = () => {
+      if (pollingStopped) return
+      marketAuthPollTimer = window.setTimeout(tick, 2000)
+    }
+
+    schedule()
   }
 
   async function startMarketLogin(retried = false): Promise<void> {

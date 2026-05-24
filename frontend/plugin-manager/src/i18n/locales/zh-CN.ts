@@ -383,6 +383,40 @@ export default {
       hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
     }
   },
+  package: {
+    dialog: {
+      title: '包管理执行记录',
+      subtitle: '保留最近 {count} 条执行结果'
+    },
+    empty: '执行包管理操作后，这里会显示记录',
+    viewDetail: '查看详情',
+    detail: {
+      title: '结果详情',
+      field: {
+        packageId: '包 ID',
+        kind: '类型',
+        version: '版本',
+        schema: 'Schema',
+        hashCheck: 'Hash 校验',
+        profiles: 'Profiles'
+      },
+      list: '明细',
+      warning: '注意',
+      rawJson: '原始结果 JSON'
+    },
+    hash: {
+      notVerified: '未校验',
+      passed: '通过',
+      failed: '失败'
+    },
+    kind: {
+      build: '构建',
+      inspect: '检查',
+      verify: '校验',
+      install: '安装',
+      analyze: '分析'
+    }
+  },
   metrics: {
     title: '性能指标',
     pluginMetrics: '插件性能指标',

@@ -56,18 +56,31 @@ export function resolveLocalizedText(
   locale: string,
   fallback: string = '',
 ): string {
-  if (value == null || value === '') return fallback
-  if (typeof value === 'string') return value
+  if (value == null) return fallback
+  if (typeof value === 'string') return value.length > 0 ? value : fallback
   if (typeof value !== 'object') return fallback
 
   const dict = value as Record<string, string>
   const primary = String(locale).split(/[-_]/)[0]
-  return (
-    dict[locale]
-    ?? (primary && primary !== locale ? dict[primary] : undefined)
-    ?? dict['en-US']
-    ?? dict['en']
-    ?? Object.values(dict).find((v): v is string => typeof v === 'string' && v.length > 0)
-    ?? fallback
-  )
+  const candidates = [
+    locale,
+    primary && primary !== locale ? primary : undefined,
+    'en-US',
+    'en',
+  ]
+  // Treat empty strings as missing — historically the ?? chain below
+  // short-circuited on `''` (because `'' ?? x === ''`), which silently
+  // returned an empty label whenever the current locale was registered
+  // with a blank value. Aligning with `resolvePluginI18nMessage`, we
+  // require ``length > 0`` for every locale candidate before accepting
+  // it, then fall through to the first non-empty value in the dict.
+  for (const c of candidates) {
+    if (typeof c !== 'string' || c.length === 0) continue
+    const v = dict[c]
+    if (typeof v === 'string' && v.length > 0) return v
+  }
+  for (const v of Object.values(dict)) {
+    if (typeof v === 'string' && v.length > 0) return v
+  }
+  return fallback
 }

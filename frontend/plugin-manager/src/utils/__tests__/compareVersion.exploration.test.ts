@@ -67,12 +67,13 @@ describe('Phase 2 exploration · compareVersion prerelease ordering (1.9)', () =
     expect(compareVersion('1.0.0-rc1', '1.0.0')).toBeLessThan(0)
   })
 
-  it('buggy-state baseline: compareVersion("1.0.0-rc1", "1.0.0") currently returns 0 (THE BUG)', () => {
-    // This test passes on the CURRENT (unfixed) implementation and
-    // documents the contradiction with version.ts's own docstring
-    // ("1.0.0-rc1 < 1.0.0"). Once Requirement 2.9 lands this assertion
-    // will start failing — that is the expected positive signal that
-    // the fix is in place.
-    expect(compareVersion('1.0.0-rc1', '1.0.0')).toBe(0)
+  it('post-fix baseline: compareVersion("1.0.0-rc1", "1.0.0") now returns < 0', () => {
+    // Once Requirement 2.9 / Task 2.2.6 lands the new core/pre two-segment
+    // comparator, ``1.0.0-rc1 < 1.0.0`` must hold strictly. We re-assert the
+    // counterexample one more time at the file's exit so a future
+    // regression that brings the bug back (e.g. by reverting the
+    // splitVersion change) is caught even if the property test gets
+    // skipped or thinned out.
+    expect(compareVersion('1.0.0-rc1', '1.0.0')).toBeLessThan(0)
   })
 })

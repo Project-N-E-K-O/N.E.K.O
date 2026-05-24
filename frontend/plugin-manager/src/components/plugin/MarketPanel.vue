@@ -655,6 +655,10 @@ async function yankSweep() {
     }
   }
   installedByPid.value = newIndex
+  // 每轮 sweep 重置：旧 yanked=true 的插件如果已被卸载或市场撤回 yank 标记，
+  // 不重置就会让旧标志一直挂在 UI 上。代价是扫描期间徽章可能短暂消失，可
+  // 接受（sweep 通常 < 1s 且仅在 channel 切换 / 安装/升级完成后触发）。
+  yankedMap.value = {}
 
   const channel = userPref.channel
   for (const entry of uniqueEntries.values()) {

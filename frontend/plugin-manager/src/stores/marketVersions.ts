@@ -27,7 +27,16 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
   const loadError = ref<string | null>(null)
   let inflight: Promise<void> | null = null
 
-  /** Merge a page of market plugins into the cache. */
+  /** Merge a page of market plugins into the cache.
+   *
+   * Used by external callers that want to seed the cache from an
+   * already-fetched page (e.g. ``MarketPanel`` after its own list
+   * load). ``_fetchAll`` does NOT use this anymore — it accumulates
+   * into a local map and swaps atomically on success — because merging
+   * incrementally during a paginated fetch leaves stale keys for
+   * plugins that disappeared from the market between fetches. See
+   * ``_fetchAll`` for the swap-on-success pattern.
+   */
   function ingestPage(items: MarketPlugin[]): void {
     const next = { ...latestBySlug.value }
     for (const p of items) {
@@ -42,10 +51,19 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
   }
 
   /** Fetch all pages of the market's plugin list. Paginates until we've
-   *  seen every item or hit a safety cap. */
+   *  seen every item or hit a safety cap.
+   *
+   *  Swap-on-success semantics: pages accumulate into a local map and
+   *  ``latestBySlug`` is replaced atomically only after every page
+   *  arrives. Any thrown exception (network drop mid-fetch, malformed
+   *  response, ...) leaves the previous successful snapshot intact —
+   *  partial coverage that could mark a plugin as "no longer in market"
+   *  just because we failed before reaching its page would be worse
+   *  than serving a slightly stale snapshot. */
   async function _fetchAll(): Promise<void> {
     loading.value = true
     loadError.value = null
+    const accumulator: Record<string, string> = {}
     try {
       let page = 1
       const pageSize = 100
@@ -54,7 +72,11 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
       while (page <= maxPages) {
         const result = await fetchMarketPlugins({ page, page_size: pageSize })
         if (!result?.items?.length) break
-        ingestPage(result.items)
+        for (const p of result.items) {
+          const key = p.slug ?? String(p.id)
+          if (!key) continue
+          accumulator[key] = p.version
+        }
         // Use reported total when available to short-circuit; otherwise
         // stop once we get back a partial page.
         const total = result.total ?? 0
@@ -62,9 +84,18 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
         if (result.items.length < pageSize) break
         page += 1
       }
+      // Atomic swap. After this point any plugin whose slug isn't in
+      // ``accumulator`` (because it was unpublished / yanked from the
+      // market) will correctly disappear from ``latest()`` lookups.
+      latestBySlug.value = accumulator
       lastFetchedAt.value = Date.now()
     } catch (err: any) {
       loadError.value = err?.message ?? String(err)
+      // Intentionally do NOT touch ``latestBySlug.value`` — the previous
+      // successful snapshot stays live so ``latest()`` callers still get
+      // an answer for plugins they care about. ``isReady`` likewise
+      // stays based on ``lastFetchedAt`` so the UI doesn't flip into a
+      // "never loaded" state on transient network errors.
     } finally {
       loading.value = false
     }

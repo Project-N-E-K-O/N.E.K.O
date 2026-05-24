@@ -247,11 +247,26 @@ function onDocumentMouseDown(event: MouseEvent) {
 function startListeners() {
   document.addEventListener('mousemove', onDocumentMouseMove)
   document.addEventListener('mousedown', onDocumentMouseDown, true)
+  // The rules panel is ``position: fixed`` and only computes its top/left
+  // once at open time. Without these listeners, scrolling any ancestor
+  // (sidebar list, page main, dropdown's own container) or resizing the
+  // window leaves the panel anchored to the viewport while the trigger
+  // button moves underneath — visually the panel "drifts" off the
+  // anchor. Re-running ``updateDropdownPos`` keeps them aligned.
+  //
+  // ``capture: true`` on scroll so we catch scrolls inside any scrollable
+  // ancestor, not just window-level scrolls. ``passive`` is implicit (we
+  // don't preventDefault) and would only matter for touch perf budgets,
+  // which a single getBoundingClientRect doesn't strain.
+  window.addEventListener('scroll', updateDropdownPos, true)
+  window.addEventListener('resize', updateDropdownPos)
 }
 
 function stopListeners() {
   document.removeEventListener('mousemove', onDocumentMouseMove)
   document.removeEventListener('mousedown', onDocumentMouseDown, true)
+  window.removeEventListener('scroll', updateDropdownPos, true)
+  window.removeEventListener('resize', updateDropdownPos)
   clearHideTimer()
 }
 

@@ -383,6 +383,40 @@ export default {
       hostedRuntimePending: 'The Vue container recognized this surface. TSX, Markdown, and Auto renderers will be connected in a later phase.'
     }
   },
+  package: {
+    dialog: {
+      title: 'Package operation history',
+      subtitle: 'Showing the latest {count} result(s)'
+    },
+    empty: 'Run a package operation to see records here.',
+    viewDetail: 'View details',
+    detail: {
+      title: 'Result detail',
+      field: {
+        packageId: 'Package ID',
+        kind: 'Type',
+        version: 'Version',
+        schema: 'Schema',
+        hashCheck: 'Hash check',
+        profiles: 'Profiles'
+      },
+      list: 'Items',
+      warning: 'Notes',
+      rawJson: 'Raw result JSON'
+    },
+    hash: {
+      notVerified: 'Not verified',
+      passed: 'Passed',
+      failed: 'Failed'
+    },
+    kind: {
+      build: 'Build',
+      inspect: 'Inspect',
+      verify: 'Verify',
+      install: 'Install',
+      analyze: 'Analyze'
+    }
+  },
   metrics: {
     title: 'Metrics',
     pluginMetrics: 'Plugin Performance Metrics',
