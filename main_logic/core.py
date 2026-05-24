@@ -3529,13 +3529,15 @@ class LLMSessionManager:
         self.session_start_last_failure_time = datetime.now()
         logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - diag_start:.2f}秒): {e}")
         # Telemetry：语音会话启动失败 —— 语音优先桌宠，voice 在用户开口前就坏掉
-        # = 静默 D1 流失（现在完全看不到）。reason 用异常类名（低基数 enum），
-        # best-effort 不阻塞失败收口流程。
-        try:
-            from utils.instrument import counter as _instr_counter
-            _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
-        except Exception:
-            pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
+        # = 静默 D1 流失（现在完全看不到）。reason 用异常类名（低基数 enum）。
+        # **仅 audio 模式计**：本收口对 text/audio 两种 start_session 都用，text
+        # 启动失败不该误标成 voice_setup_failed 污染该信号。best-effort 不阻塞收口。
+        if input_mode == 'audio':
+            try:
+                from utils.instrument import counter as _instr_counter
+                _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
+            except Exception:
+                pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
         error_str = str(e)
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(
