@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "Unidade",
     "ui.memory.goal_saved":  "Meta salva",
     "ui.memory.focus_started":  "Foco iniciado",
+    "ui.memory.focus_not_started":  "O foco já está em andamento",
     "ui.memory.review_goal_updated":  "Progresso da meta atualizado",
     "ui.memory.rating.again":  "Novamente",
     "ui.memory.rating.hard":  "Difícil",

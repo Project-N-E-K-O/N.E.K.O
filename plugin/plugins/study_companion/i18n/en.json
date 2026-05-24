@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "Unit",
     "ui.memory.goal_saved":  "Goal saved",
     "ui.memory.focus_started":  "Focus started",
+    "ui.memory.focus_not_started":  "Focus is already running",
     "ui.memory.review_goal_updated":  "Goal updated",
     "ui.memory.rating.again":  "Again",
     "ui.memory.rating.hard":  "Hard",

@@ -3,8 +3,10 @@ import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
 import {
   getMemoryHabitStatus,
+  getPomodoroStatus,
   habitBridgeAvailable,
   normalizePositiveInteger,
+  startedNewFocusSession,
   startDeckFocus,
   type MemoryHabitStatus,
 } from './memory_habit_bridge';
@@ -47,8 +49,13 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
   async function handleStartFocus(deckId: string) {
     setBusy(true);
     try {
-      await startDeckFocus(deckId, normalizePositiveInteger(focusMinutes, 1));
-      setStatus(text(props, 'ui.memory.focus_started', 'Focus started'));
+      const before = await getPomodoroStatus();
+      const after = await startDeckFocus(deckId, normalizePositiveInteger(focusMinutes, 1));
+      setStatus(
+        startedNewFocusSession(before, after)
+          ? text(props, 'ui.memory.focus_started', 'Focus started')
+          : text(props, 'ui.memory.focus_not_started', 'Focus is already running'),
+      );
     } catch (error) {
       setStatus(errorMessage(error));
     } finally {

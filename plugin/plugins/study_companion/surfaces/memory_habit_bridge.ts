@@ -16,8 +16,19 @@ export type MemoryDeckGoalPayload = {
   created?: boolean;
 };
 
+export type PomodoroStatus = {
+  state?: string;
+  current_focus_session?: {
+    id?: string;
+  };
+};
+
 export async function getMemoryHabitStatus(signal?: AbortSignal): Promise<MemoryHabitStatus> {
   return await callPlugin<MemoryHabitStatus>('study_memory_habit_status', {}, signal);
+}
+
+export async function getPomodoroStatus(): Promise<PomodoroStatus> {
+  return await callPlugin<PomodoroStatus>('study_pomodoro_status', {});
 }
 
 export async function setDeckGoal(
@@ -32,8 +43,8 @@ export async function setDeckGoal(
   });
 }
 
-export async function startDeckFocus(deckId: string, focusMinutes: number) {
-  return await callPlugin('study_pomodoro_start', {
+export async function startDeckFocus(deckId: string, focusMinutes: number): Promise<PomodoroStatus> {
+  return await callPlugin<PomodoroStatus>('study_pomodoro_start', {
     deck_id: deckId,
     focus_minutes: normalizePositiveInteger(focusMinutes, 1),
   });
@@ -46,6 +57,16 @@ export function habitBridgeAvailable(status: MemoryHabitStatus): boolean {
 export function normalizePositiveInteger(value: unknown, fallback = 1): number {
   const parsed = Math.floor(Number(value));
   return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+export function focusSessionId(status: PomodoroStatus): string {
+  return String((status.current_focus_session || {}).id || '');
+}
+
+export function startedNewFocusSession(before: PomodoroStatus, after: PomodoroStatus): boolean {
+  const beforeId = focusSessionId(before);
+  const afterId = focusSessionId(after);
+  return String(after.state || '') === 'focusing' && Boolean(afterId) && afterId !== beforeId;
 }
 
 export function deckGoalUnitLabel(props: PluginSurfaceProps, unit: unknown): string {

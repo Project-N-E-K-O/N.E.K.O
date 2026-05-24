@@ -346,3 +346,61 @@ def test_memory_habit_bridge_summary_uses_configured_local_day(
         assert previous["due_remaining"] == 0
     finally:
         store.close()
+
+
+def test_memory_habit_bridge_summary_includes_due_only_decks(tmp_path: Path) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        memory = MemoryDeckStore(store)
+        bridge = MemoryHabitBridge(
+            store=store,
+            memory=memory,
+            habits=habits,
+            checkin_timezone="Asia/Shanghai",
+        )
+        due_deck = memory.create_deck(name="Due Only", deck_type="word")
+        future_deck = memory.create_deck(name="Future", deck_type="word")
+        due_word = memory.add_word(
+            deck_id=due_deck["id"],
+            word="due",
+            meaning="ready",
+        )["item"]
+        future_word = memory.add_word(
+            deck_id=future_deck["id"],
+            word="later",
+            meaning="not ready",
+        )["item"]
+
+        with store._lock:  # noqa: SLF001 - test fixture controls FSRS due dates.
+            conn = store._require_conn()
+            for item_id, due_at in (
+                (due_word["id"], "2026-05-24T08:00:00Z"),
+                (future_word["id"], "2026-05-25T08:00:00Z"),
+            ):
+                card_row = conn.execute(
+                    "SELECT card_data FROM memory_fsrs_cards WHERE item_id = ?",
+                    (item_id,),
+                ).fetchone()
+                card = store._json_loads(card_row["card_data"], {})  # noqa: SLF001
+                card["due"] = due_at
+                card["created_at"] = due_at
+                conn.execute(
+                    """
+                    UPDATE memory_fsrs_cards
+                    SET card_data = ?, next_due = ?
+                    WHERE item_id = ?
+                    """,
+                    (store._json_dumps(card), due_at, item_id),  # noqa: SLF001
+                )
+            conn.commit()
+
+        summary = bridge.memory_summary(date="2026-05-24")
+
+        assert summary["deck_count"] == 1
+        assert summary["due_remaining"] == 1
+        assert summary["reviewed_items"] == 0
+        assert summary["decks"][0]["deck_id"] == due_deck["id"]
+        assert summary["decks"][0]["due_remaining"] == 1
+    finally:
+        store.close()

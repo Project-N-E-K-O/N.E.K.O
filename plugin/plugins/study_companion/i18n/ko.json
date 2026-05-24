@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "단위",
     "ui.memory.goal_saved":  "목표가 저장되었습니다",
     "ui.memory.focus_started":  "집중이 시작되었습니다",
+    "ui.memory.focus_not_started":  "이미 집중이 진행 중입니다",
     "ui.memory.review_goal_updated":  "목표 진행률이 업데이트되었습니다",
     "ui.memory.rating.again":  "다시",
     "ui.memory.rating.hard":  "어려움",

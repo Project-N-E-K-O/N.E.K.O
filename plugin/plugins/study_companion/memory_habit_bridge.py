@@ -210,11 +210,16 @@ class MemoryHabitBridge:
                 str(row["deck_id"] or ""),
                 str(row["deck_name"] or ""),
             )
-        for deck in decks.values():
-            deck["due_remaining"] = self._count_due_reviews(
-                deck_id=str(deck["deck_id"]),
-                date=target_date,
+        due_counts = self._due_review_counts(date=target_date)
+        for due in due_counts.values():
+            self._deck_summary_item(
+                decks,
+                str(due["deck_id"]),
+                str(due["deck_name"]),
             )
+        for deck in decks.values():
+            due = due_counts.get(str(deck["deck_id"]), {})
+            deck["due_remaining"] = int(due.get("due_remaining") or 0)
             deck["correct_rate"] = (
                 deck["correct_items"] / deck["reviewed_items"]
                 if deck["reviewed_items"]
@@ -423,20 +428,34 @@ class MemoryHabitBridge:
                 .fetchall()
             )
 
-    def _count_due_reviews(self, *, deck_id: str, date: str) -> int:
+    def _due_review_counts(self, *, date: str) -> dict[str, dict[str, Any]]:
         _, end_utc = _date_utc_bounds(date, self._checkin_timezone)
         target_now = datetime.strptime(end_utc, "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=timezone.utc
         )
         with self._store._lock:  # noqa: SLF001
-            rows = active_item_card_rows(
-                self._store._require_conn(), deck_id=str(deck_id)
-            )
-            cards = [
-                self._store._json_loads(row["card_data"], {})  # noqa: SLF001
-                for row in rows
-            ]
-        return len(self._memory.fsrs.get_due_reviews(cards, now=target_now))
+            rows = active_item_card_rows(self._store._require_conn())
+            deck_cards: dict[str, list[dict[str, Any]]] = {}
+            deck_names: dict[str, str] = {}
+            for row in rows:
+                deck_id = str(row["deck_id"] or "")
+                if not deck_id:
+                    continue
+                deck_cards.setdefault(deck_id, []).append(
+                    self._store._json_loads(row["card_data"], {})  # noqa: SLF001
+                )
+                deck_names[deck_id] = str(row["deck_name"] or deck_id)
+        counts: dict[str, dict[str, Any]] = {}
+        for deck_id, cards in deck_cards.items():
+            due_count = len(self._memory.fsrs.get_due_reviews(cards, now=target_now))
+            if due_count <= 0:
+                continue
+            counts[deck_id] = {
+                "deck_id": deck_id,
+                "deck_name": deck_names.get(deck_id, deck_id),
+                "due_remaining": due_count,
+            }
+        return counts
 
     @staticmethod
     def _deck_summary_item(

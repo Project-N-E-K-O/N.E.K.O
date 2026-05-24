@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "Unidad",
     "ui.memory.goal_saved":  "Objetivo guardado",
     "ui.memory.focus_started":  "Enfoque iniciado",
+    "ui.memory.focus_not_started":  "El enfoque ya está en curso",
     "ui.memory.review_goal_updated":  "Progreso actualizado",
     "ui.memory.rating.again":  "Repetir",
     "ui.memory.rating.hard":  "Difícil",

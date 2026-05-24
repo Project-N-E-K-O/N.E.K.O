@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "単位",
     "ui.memory.goal_saved":  "目標を保存しました",
     "ui.memory.focus_started":  "集中を開始しました",
+    "ui.memory.focus_not_started":  "集中はすでに実行中です",
     "ui.memory.review_goal_updated":  "目標進捗を更新しました",
     "ui.memory.rating.again":  "もう一度",
     "ui.memory.rating.hard":  "難しい",

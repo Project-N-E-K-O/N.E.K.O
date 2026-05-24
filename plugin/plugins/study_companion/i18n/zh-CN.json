@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "单位",
     "ui.memory.goal_saved":  "目标已保存",
     "ui.memory.focus_started":  "专注已开始",
+    "ui.memory.focus_not_started":  "已有专注正在进行",
     "ui.memory.review_goal_updated":  "目标进度已更新",
     "ui.memory.rating.again":  "重来",
     "ui.memory.rating.hard":  "困难",

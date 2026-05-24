@@ -159,6 +159,7 @@
     "ui.memory.deck_goal_unit":  "Единица",
     "ui.memory.goal_saved":  "Цель сохранена",
     "ui.memory.focus_started":  "Фокус начат",
+    "ui.memory.focus_not_started":  "Фокус уже выполняется",
     "ui.memory.review_goal_updated":  "Прогресс цели обновлен",
     "ui.memory.rating.again":  "Снова",
     "ui.memory.rating.hard":  "Трудно",
