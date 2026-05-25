@@ -5088,6 +5088,42 @@ async def sync_workshop_character_cards(
             logger.info(message)
             return _write_fence_blocked_result()
 
+        async def _clear_restored_existing_tombstones():
+            nonlocal error_count
+            restored_existing_candidates = [
+                name for name in pending_restore_tombstone_names
+                if name in existing_character_names and name not in restored_deleted_names
+            ]
+            if not restored_existing_candidates:
+                return None
+
+            blocked_result = _abort_if_write_fence_active(
+                "sync_workshop_character_cards: 移除已存在恢复角色 tombstone 前检测到维护态写围栏，跳过本轮同步并等待后续重试"
+            )
+            if blocked_result is not None:
+                return blocked_result
+
+            try:
+                removed_names = await asyncio.to_thread(
+                    _remove_deleted_character_tombstones,
+                    config_mgr,
+                    restored_existing_candidates,
+                )
+                for removed_name in removed_names:
+                    _append_unique(restored_deleted_names, removed_name)
+                if removed_names:
+                    logger.info(
+                        "sync_workshop_character_cards: 已移除已存在恢复角色的 tombstone: %s",
+                        ", ".join(removed_names),
+                    )
+            except Exception as tombstone_err:
+                error_count += 1
+                logger.warning(
+                    "sync_workshop_character_cards: 移除已存在恢复角色 tombstone 失败: %s",
+                    tombstone_err,
+                )
+            return None
+
         blocked_result = _abort_if_write_fence_active(
             "sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试"
         )
@@ -5447,6 +5483,10 @@ async def sync_workshop_character_cards(
                                 write_item_id,
                                 face_meta_err,
                             )
+
+                blocked_result = await _clear_restored_existing_tombstones()
+                if blocked_result is not None:
+                    return blocked_result
                 
                 try:
                     initialize_character_data = get_initialize_character_data()
@@ -5456,6 +5496,9 @@ async def sync_workshop_character_cards(
                 except Exception as e:
                     logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
             else:
+                blocked_result = await _clear_restored_existing_tombstones()
+                if blocked_result is not None:
+                    return blocked_result
                 if backfilled_face_count > 0:
                     logger.info(f"sync_workshop_character_cards: 无新增角色卡，但已回填 {backfilled_face_count} 个封面")
                 else:
@@ -5563,16 +5606,24 @@ async def api_sync_single_workshop_character_card(item_id: str):
                 },
             )
 
-        if result.get("added", 0) > 0:
+        restored_names = result.get("restored_deleted_names") or []
+        if result.get("added", 0) > 0 or restored_names:
             added_names = result.get("added_character_names") or []
-            names_text = "、".join(added_names) if added_names else "角色卡"
+            successful_names = []
+            for name in [*added_names, *restored_names]:
+                if name and name not in successful_names:
+                    successful_names.append(name)
+            names_text = "、".join(successful_names) if successful_names else "角色卡"
             return {
                 "success": True,
                 "message": f"已加入角色卡：{names_text}",
                 **result,
             }
 
-        existing_names = result.get("existing_character_names") or []
+        existing_names = [
+            name for name in (result.get("existing_character_names") or [])
+            if name not in restored_names
+        ]
         if existing_names:
             return JSONResponse(
                 status_code=409,

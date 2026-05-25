@@ -740,10 +740,113 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_sync_single_workshop_character_card_uses_error_status_codes():
-    workshop_router_module = reload_module("main_routers.workshop_router")
+async def test_manual_workshop_character_sync_clears_tombstone_for_existing_character():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
 
-    cases = [
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "已存在但有墓碑角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {"昵称": "已存在"}
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_existing_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == [restored_name]
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_single_workshop_character_card_treats_restored_existing_as_success():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 1,
+        "errors": 0,
+        "target_found": True,
+        "found_character_names": ["恢复角色"],
+        "existing_character_names": ["恢复角色"],
+        "restored_deleted_names": ["恢复角色"],
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+
+    assert response["success"] is True
+    assert response["restored_deleted_names"] == ["恢复角色"]
+    assert response["message"] == "已加入角色卡：恢复角色"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sync_result", "expected_status", "expected_code"),
+    [
         (
             {
                 "added": 0,
@@ -795,21 +898,27 @@ async def test_sync_single_workshop_character_card_uses_error_status_codes():
             422,
             "WORKSHOP_CHARACTER_NOT_ADDED",
         ),
-    ]
+    ],
+)
+async def test_sync_single_workshop_character_card_uses_error_status_codes(
+    sync_result,
+    expected_status,
+    expected_code,
+):
+    workshop_router_module = reload_module("main_routers.workshop_router")
 
-    for sync_result, expected_status, expected_code in cases:
-        with patch.object(
-            workshop_router_module,
-            "sync_workshop_character_cards",
-            AsyncMock(return_value=sync_result),
-        ):
-            response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
 
-        payload = json.loads(response.body.decode("utf-8"))
-        assert response.status_code == expected_status
-        assert payload["success"] is False
-        assert payload["code"] == expected_code
-        assert "error" in payload
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == expected_status
+    assert payload["success"] is False
+    assert payload["code"] == expected_code
+    assert "error" in payload
 
 
 @pytest.mark.unit
