@@ -747,11 +747,19 @@ class UserActivityTracker:
         # None，于是当前状态重新算作一次「进入」。为 None（首启 / 不安全 delta 重置 /
         # 新 session）都算「进入」，前端按 app 会话去重兜住重复。
         ctx_prev = self._context_prompt_last_state
+        _CONTEXT_PROMPT_TARGET_STATES = ('gaming', 'casual_browsing', 'focused_work')
         if state != ctx_prev:
             if state in ('gaming', 'casual_browsing'):
                 self._context_prompt_pending = {'context': 'play', 'set_at': now}
             elif state == 'focused_work':
                 self._context_prompt_pending = {'context': 'work', 'set_at': now}
+        # 离开目标状态（进 idle/away/chatting/transitioning/private 等非目标态）时，清掉
+        # 还没 drain 的过期 pending：pending 可能是 get_snapshot 路径（实验组 kick）置的、
+        # 还没等到 loop drain，用户就离开了游戏/工作；若不清，loop 会把「已经离开的场景」
+        # 推成过期弹窗，甚至据此翻错设置。目标态之间切换（gaming↔casual_browsing↔
+        # focused_work）由上面的 overwrite 处理，不受影响。
+        if state not in _CONTEXT_PROMPT_TARGET_STATES:
+            self._context_prompt_pending = None
         self._context_prompt_last_state = state
 
         self._last_known_state = state

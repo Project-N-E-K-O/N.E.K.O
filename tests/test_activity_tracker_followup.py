@@ -1063,6 +1063,24 @@ def test_context_prompt_reemits_after_session_baseline_reset():
     assert tracker._context_prompt_pending['context'] == 'play'
 
 
+@pytest.mark.unit
+def test_context_prompt_pending_cleared_on_leaving_target_state():
+    """进游戏置 pending 后、还没 drain 就切到非目标态(idle) → 过期 pending 应被清掉。
+
+    回归保护 Codex P2：pending 可能由 get_snapshot 路径（实验组 kick）置、还没等 loop
+    drain，用户就离开了游戏/工作；不清就会把已离开的场景推成过期弹窗。
+    """
+    tracker = _make_tracker_for_break_tests()
+
+    # 进 gaming → 置 play pending（模拟 get_snapshot 置、未 drain）
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1000.0)
+    assert tracker._context_prompt_pending is not None
+
+    # 切到 idle（非目标态）→ 过期 pending 被清
+    tracker._tick_break_reminders(_snap_for_state('idle', app=None), now=1020.0)
+    assert tracker._context_prompt_pending is None
+
+
 def test_break_acc_advances_during_focused_work():
     """Accumulator credits real time spent in focused_work."""
     tracker = _make_tracker_for_break_tests()
