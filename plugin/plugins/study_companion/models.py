@@ -208,6 +208,8 @@ class StudyConfig:
     rapidocr_model_type: str = "mobile"
     rapidocr_ocr_version: str = "PP-OCRv4"
     llm_call_timeout_seconds: float = 30.0
+    llm_vision_enabled: bool = False
+    llm_vision_max_image_px: int = 768
     fsrs_retention_target: float = 0.90
     fsrs_auto_optimize_interval_days: int = 30
     knowledge_contribution_opt_in: bool = False
@@ -238,6 +240,10 @@ class StudyConfig:
         )
         self.llm_call_timeout_seconds = self._clamp_float(
             self.llm_call_timeout_seconds, 1.0, 3600.0, 30.0
+        )
+        self.llm_vision_enabled = bool(self.llm_vision_enabled)
+        self.llm_vision_max_image_px = max(
+            64, min(4096, self._coerce_int(self.llm_vision_max_image_px, 768))
         )
         self.fsrs_retention_target = self._clamp_float(
             self.fsrs_retention_target, 0.1, 0.99, 0.90
@@ -316,6 +322,7 @@ class StudyState:
     last_error: str = ""
     last_started_at: str = ""
     last_ocr_text: str = ""
+    last_vision_image_base64: str = ""
     last_ocr_at: str = ""
     last_screen_classification: dict[str, Any] = field(default_factory=dict)
     recent_screen_classifications: list[dict[str, Any]] = field(default_factory=list)
@@ -333,7 +340,9 @@ class StudyState:
     dependency_status: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("last_vision_image_base64", None)
+        return payload
 
 
 @dataclass(slots=True)
@@ -540,6 +549,16 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
             1.0,
             3600.0,
             30.0,
+        ),
+        llm_vision_enabled=_bool(
+            llm, "llm_vision_enabled", False, "llm_vision_enabled"
+        ),
+        llm_vision_max_image_px=max(
+            64,
+            min(
+                4096,
+                _int(llm, "llm_vision_max_image_px", 768, "llm_vision_max_image_px"),
+            ),
         ),
         fsrs_retention_target=_clamp(
             _float(fsrs, "retention_target", 0.90, "fsrs_retention_target"),

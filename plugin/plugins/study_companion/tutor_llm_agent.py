@@ -176,7 +176,7 @@ class _JSONCorrector:
         self,
         *,
         operation: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         call_model: Callable[..., Awaitable[str]],
     ) -> str:
         raw_text = await call_model(messages, operation=operation)
@@ -204,12 +204,12 @@ class _JSONCorrector:
         self,
         *,
         operation: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         bad_output: object,
         parse_error: object,
         attempt: int,
         max_attempts: int,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         correction_messages = list(messages)
         correction_messages.append(
             {
@@ -389,6 +389,9 @@ class TutorLLMAgent:
             mode=selected_mode,
             context=context,
         )
+        vision_image_base64 = str(context.get("vision_image_base64") or "") if context else ""
+        if vision_image_base64:
+            messages = self._attach_vision_image(messages, vision_image_base64)
         try:
             content = await self._call_model(messages)
             reply = content.strip()
@@ -498,6 +501,9 @@ class TutorLLMAgent:
     async def _invoke_structured_operation(self, operation: str, context: dict[str, Any]) -> TutorReply:
         try:
             messages = build_operation_messages(operation, context)
+            vision_image_base64 = str(context.get("vision_image_base64") or "")
+            if vision_image_base64:
+                messages = self._attach_vision_image(messages, vision_image_base64)
             raw_text = await self._json_corrector.invoke_with_correction(
                 operation=operation,
                 messages=messages,
@@ -789,9 +795,98 @@ class TutorLLMAgent:
             return "general"
         return first_line[:48]
 
+    @staticmethod
+    def _model_supports_vision(model: str) -> bool:
+        normalized = str(model or "").strip().lower()
+        if not normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "gpt-4o",
+                "gpt-4.1",
+                "gpt-4.5",
+                "gpt-5",
+                "vision",
+                "vl",
+                "qwen2.5-vl",
+                "qwen-vl",
+                "gemini",
+                "claude-3",
+                "claude-4",
+            )
+        )
+
+    @staticmethod
+    def _message_has_image_content(message: dict[str, Any]) -> bool:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(
+            isinstance(block, dict) and block.get("type") == "image_url"
+            for block in content
+        )
+
+    @staticmethod
+    def _strip_image_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                result.append(dict(message))
+                continue
+            text_parts = [
+                str(block.get("text") or "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            next_message = dict(message)
+            next_message["content"] = "\n".join(part for part in text_parts if part)
+            result.append(next_message)
+        return result
+
+    @staticmethod
+    def _attach_vision_image(
+        messages: list[dict[str, Any]],
+        image_base64: str,
+        *,
+        detail: str = "auto",
+    ) -> list[dict[str, Any]]:
+        if not image_base64:
+            return messages
+        image_url = (
+            image_base64
+            if image_base64.startswith(("data:image/jpeg", "data:image/png"))
+            else f"data:image/jpeg;base64,{image_base64}"
+        )
+        if detail not in {"low", "high", "auto"}:
+            detail = "auto"
+        result = [dict(message) for message in messages]
+        for index in range(len(result) - 1, -1, -1):
+            if str(result[index].get("role") or "") != "user":
+                continue
+            content = result[index].get("content")
+            if isinstance(content, list):
+                text = "\n".join(
+                    str(block.get("text") or "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            else:
+                text = str(content or "")
+            result[index]["content"] = [
+                {"type": "text", "text": text},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url, "detail": detail},
+                },
+            ]
+            return result
+        return result
+
     async def _call_model(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
     ) -> str:
@@ -811,14 +906,20 @@ class TutorLLMAgent:
             details = ", ".join(missing_runtime_deps)
             raise SdkError(f"missing runtime dependency: {details}")
 
-        api_config = get_config_manager().get_model_api_config("summary")
+        api_config = get_config_manager().get_model_api_config("agent")
         base_url = str(api_config.get("base_url") or "").strip()
         model = str(api_config.get("model") or "").strip()
         api_key = str(api_config.get("api_key") or "").strip()
         if not base_url or not model:
-            raise SdkError("missing configured summary model")
+            raise SdkError("missing configured agent model")
+        has_image = any(self._message_has_image_content(message) for message in messages)
+        if has_image and not self._model_supports_vision(model):
+            self._logger.warning(
+                "vision stripped: model {} not in vision allowlist", model
+            )
+            messages = self._strip_image_content(messages)
         key = (
-            "summary",
+            "agent",
             operation,
             base_url,
             model,
@@ -835,8 +936,8 @@ class TutorLLMAgent:
             ),
         )
         if llm is None:
-            raise SdkError("failed to initialize summary model")
-        set_call_type("summary")
+            raise SdkError("failed to initialize agent model")
+        set_call_type("agent")
         ainvoke = getattr(llm, "ainvoke", None)
         if callable(ainvoke):
             response = await asyncio.wait_for(ainvoke(messages), timeout=timeout_seconds)

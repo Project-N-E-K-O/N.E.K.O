@@ -57,6 +57,8 @@ enabled = true
 
 [llm]
 llm_call_timeout_seconds = 30
+llm_vision_enabled = false
+llm_vision_max_image_px = 768
 
 [ocr_reader]
 enabled = true

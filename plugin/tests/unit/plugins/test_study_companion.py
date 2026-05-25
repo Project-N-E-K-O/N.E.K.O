@@ -598,6 +598,20 @@ def test_study_config_and_state_legacy_mode_migration(tmp_path: Path) -> None:
 
     llm_timeout = build_config({"llm": {"call_timeout_seconds": 42}})
     assert llm_timeout.llm_call_timeout_seconds == 42
+    assert llm_timeout.llm_vision_enabled is False
+    assert llm_timeout.llm_vision_max_image_px == 768
+    llm_vision = build_config(
+        {"llm": {"llm_vision_enabled": True, "llm_vision_max_image_px": 128}}
+    )
+    assert llm_vision.llm_vision_enabled is True
+    assert llm_vision.llm_vision_max_image_px == 128
+    flat_llm_vision = build_config(
+        {"llm_vision_enabled": True, "llm_vision_max_image_px": 256}
+    )
+    assert flat_llm_vision.llm_vision_enabled is True
+    assert flat_llm_vision.llm_vision_max_image_px == 256
+    direct_vision = StudyConfig(llm_vision_max_image_px=99999)
+    assert direct_vision.llm_vision_max_image_px == 4096
     fsrs_config = build_config(
         {"fsrs": {"retention_target": 0.88, "auto_optimize_interval_days": 14}}
     )
@@ -2730,13 +2744,17 @@ async def test_tutor_agent_structured_operations_degrade_with_generic_diagnostic
 async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from utils import config_manager, llm_client
+    from utils import config_manager, llm_client, token_tracker
+
+    config_groups: list[str] = []
+    call_types: list[str] = []
 
     class _ConfigManager:
         def __init__(self) -> None:
             self.api_key = "old-key"
 
-        def get_model_api_config(self, _group: str):
+        def get_model_api_config(self, group: str):
+            config_groups.append(group)
             return {
                 "base_url": "https://llm.example.test/v1",
                 "model": "study-model",
@@ -2761,6 +2779,7 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: cfg_mgr)
     monkeypatch.setattr(llm_client, "create_chat_llm", _create_chat_llm)
+    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
 
     agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
     first = await agent._call_model([{"role": "user", "content": "one"}])
@@ -2769,6 +2788,8 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
 
     assert first == "reply from old-key"
     assert second == "reply from new-key"
+    assert config_groups == ["agent", "agent"]
+    assert call_types == ["agent", "agent"]
     assert created_keys == ["old-key", "new-key"]
     assert create_kwargs
     assert all("temperature" not in item for item in create_kwargs)

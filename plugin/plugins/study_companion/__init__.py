@@ -112,6 +112,9 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
     )
 
 
+_MAX_SUBMITTED_IMAGE_BASE64_LENGTH = 10 * 1024 * 1024
+
+
 def _validated_pomodoro_focus_minutes(
     config: StudyConfig, focus_minutes: Any | None
 ) -> int:
@@ -761,6 +764,25 @@ class StudyCompanionPlugin(NekoPluginBase):
                 self._knowledge_tracker.get_status_summary,
                 limit=5,
             )
+        if bool(self._cfg.llm_vision_enabled):
+            user_image = ""
+            with self._lock:
+                user_image = str(self._state.last_vision_image_base64 or "").strip()
+            if user_image:
+                context["vision_enabled"] = True
+                context["vision_image_base64"] = user_image
+            elif self._ocr_pipeline is not None:
+                vision_snapshot = self._ocr_pipeline.latest_vision_snapshot()
+                if vision_snapshot:
+                    context["vision_enabled"] = True
+                    context["vision_image_base64"] = str(
+                        vision_snapshot.get("vision_image_base64") or ""
+                    )
+                    context["vision_snapshot"] = {
+                        key: value
+                        for key, value in vision_snapshot.items()
+                        if key != "vision_image_base64"
+                    }
         if extra:
             context.update(extra)
         return context
@@ -2691,6 +2713,45 @@ class StudyCompanionPlugin(NekoPluginBase):
             )
         await self._persist_state()
         return Ok(payload)
+
+    @plugin_entry(
+        id="study_submit_image",
+        name=tr("entries.submit_image.name", default="Submit Study Image"),
+        description=tr(
+            "entries.submit_image.description",
+            default="Accept a user image and explain it with the configured vision model.",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "image_base64": {"type": "string"},
+                "text": {"type": "string", "default": ""},
+            },
+            "required": ["image_base64"],
+        },
+        timeout=60.0,
+        llm_result_fields=["summary", "reply", "diagnostic"],
+    )
+    async def study_submit_image(self, image_base64: str, text: str = "", **_):
+        image_payload = str(image_base64 or "").strip()
+        if not image_payload:
+            return Err(SdkError("image_base64 is required"))
+        if len(image_payload) > _MAX_SUBMITTED_IMAGE_BASE64_LENGTH:
+            return Err(SdkError("image_base64 is too large (max 10MB)"))
+        if not bool(self._cfg.llm_vision_enabled):
+            return Err(SdkError("llm_vision_enabled is not enabled"))
+        normalized_text = str(text or "").strip()
+        with self._lock:
+            self._state.last_ocr_text = normalized_text
+            self._state.last_vision_image_base64 = image_payload
+        source_text = normalized_text or "请查看这张图片的内容"
+        result = await self.study_explain_text(text=source_text)
+        if isinstance(result, Ok):
+            with self._lock:
+                if self._state.last_vision_image_base64 == image_payload:
+                    self._state.last_vision_image_base64 = ""
+            await self._persist_state()
+        return result
 
     @plugin_entry(
         id="study_explain_text",
