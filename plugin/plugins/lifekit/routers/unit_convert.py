@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
+from .._coerce import finite_float
 
 # 换算表: (from_unit, to_unit) → (multiplier, from_label, to_label)
 # value_to = value_from * multiplier
@@ -144,7 +145,11 @@ class UnitConvertRouter(PluginRouter):
         if fk == tk:
             return Ok({"summary": f"{value} {from_unit} = {value} {to_unit}（相同单位）", "conversion": {"value": value, "result": value}})
 
-        result = _convert(float(value), fk, tk)
+        numeric_value = finite_float(value)
+        if numeric_value is None:
+            return Err(SdkError("Invalid value"))
+
+        result = _convert(numeric_value, fk, tk)
         if result is None:
             return Err(SdkError(f"不支持 {from_unit} → {to_unit} 的换算"))
 

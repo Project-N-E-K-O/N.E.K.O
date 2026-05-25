@@ -10,6 +10,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 from .._poi import POIService
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
+from .._coerce import clamp_int, clean_text
 from .._routing import format_distance
 
 # 天气 → 推荐关键词映射
@@ -84,16 +85,17 @@ class FoodRecommendRouter(PluginRouter):
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        radius = max(500, min(int(radius), 50000))
+        radius = clamp_int(radius, 3000, 500, 50000)
 
         # 确定搜索关键词
         query = cuisine.strip() if cuisine.strip() else None
+        query = clean_text(cuisine) or None
         weather_reason = ""
 
         if not query:
             # 根据天气 + 场景推荐
             weather_data, _ = await plugin._get_weather_data(loc)
-            query, weather_reason = self._pick_query(weather_data, scene)
+            query, weather_reason = self._pick_query(weather_data, clean_text(scene))
 
         # POI 搜索
         svc = POIService(plugin._cfg)
@@ -154,7 +156,7 @@ class FoodRecommendRouter(PluginRouter):
         import random
 
         # 场景优先
-        scene_key = scene.strip()
+        scene_key = clean_text(scene)
         if scene_key and scene_key in _SCENE_KEYWORDS:
             kw = random.choice(_SCENE_KEYWORDS[scene_key])
             return kw, f"🎯 {scene_key}场景"

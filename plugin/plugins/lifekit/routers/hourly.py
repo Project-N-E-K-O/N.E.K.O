@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
 from .._chat import push_lifekit_content
+from .._coerce import clamp_int
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -53,7 +54,7 @@ class HourlyForecastRouter(PluginRouter):
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        hours = max(1, min(int(hours), 168))
+        hours = clamp_int(hours, 48, 1, 168)
         tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
 
         try:

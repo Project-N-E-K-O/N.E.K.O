@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._poi import POIService
 from .._api import RAIN_CODES
+from .._coerce import clamp_int, clean_text
 from .._routing import format_distance
 
 
@@ -53,7 +54,8 @@ class NearbyRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        if not query.strip():
+        clean_query = clean_text(query)
+        if not clean_query:
             return Err(SdkError(i18n.t("nearby.no_query")))
 
         # 解析搜索中心
@@ -61,15 +63,15 @@ class NearbyRouter(PluginRouter):
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        radius = max(500, min(int(radius), 50000))
+        radius = clamp_int(radius, 3000, 500, 50000)
 
         # POI 搜索
         svc = POIService(plugin._cfg)
-        poi_result = await svc.search(query.strip(), loc["lat"], loc["lon"], radius=radius, limit=10)
+        poi_result = await svc.search(clean_query, loc["lat"], loc["lon"], radius=radius, limit=10)
 
         if not poi_result.items:
             return Ok({
-                "summary": i18n.t("nearby.no_results", query=query, location=loc["city"]),
+                "summary": i18n.t("nearby.no_results", query=clean_query, location=loc["city"]),
                 "results": [],
                 "count": 0,
             })
@@ -100,7 +102,7 @@ class NearbyRouter(PluginRouter):
 
         # 摘要
         top3 = ", ".join(r["name"] for r in results[:3])
-        summary = i18n.t("nearby.summary", query=query, location=loc["city"], count=len(results), top=top3)
+        summary = i18n.t("nearby.summary", query=clean_query, location=loc["city"], count=len(results), top=top3)
         if weather_tip:
             summary += f" | {weather_tip}"
 

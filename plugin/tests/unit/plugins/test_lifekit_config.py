@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 
 import pytest
 
@@ -195,3 +196,48 @@ async def test_lifekit_startup_uses_host_global_locale(monkeypatch) -> None:
     assert result.is_ok()
     assert result.value == {"status": "ready"}
     assert plugin._i18n.locale == "en"
+
+
+class _MemoryStore:
+    enabled = True
+
+    def __init__(self):
+        self._data = {}
+
+    async def get(self, key, default=None):
+        await asyncio.sleep(0.01)
+        value = self._data.get(key, default)
+        return [dict(item) for item in value] if isinstance(value, list) else value
+
+    async def set(self, key, value):
+        await asyncio.sleep(0.01)
+        self._data[key] = [dict(item) for item in value]
+        from plugin.sdk.shared.models import Ok
+
+        return Ok(None)
+
+
+@pytest.mark.asyncio
+async def test_lifekit_add_location_serializes_store_updates(monkeypatch) -> None:
+    from plugin.plugins.lifekit import LifeKitPlugin
+    from plugin.plugins.lifekit import routers
+
+    async def fake_geocode(city: str, **_kwargs):
+        return {"city": city, "lat": 1.0, "lon": 2.0, "country": "ZZ"}
+
+    monkeypatch.setattr(routers.locations, "geocode_city", fake_geocode)
+
+    plugin = LifeKitPlugin(_DummyLifeKitContext())
+    plugin.store = _MemoryStore()
+    router = next(item for item in plugin._routers if item.name() == "locations")
+
+    first, second = await asyncio.gather(
+        router.add_location(label="Home", city="Tokyo"),
+        router.add_location(label="Office", city="Osaka"),
+    )
+
+    assert first.is_ok()
+    assert second.is_ok()
+    locations = plugin.store._data["saved_locations"]
+    assert {item["label"] for item in locations} == {"Home", "Office"}
+    assert sum(1 for item in locations if item.get("is_default")) == 1
