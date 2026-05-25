@@ -915,16 +915,25 @@
         lastMusicPlayedThroughKey = trackKey;
         lastMusicPlayedThroughAt = now;
         const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-        try {
-            fetch('/api/proactive/music_played_through', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    lanlan_name: lanlanName,
-                    track: track ? { name: track.name, artist: track.artist, url: track.url } : null
-                })
-            }).catch(() => { /* 后端不可达不影响播放体验 */ });
-        } catch (e) { /* fetch 不可用：忽略 */ }
+        // fire-and-forget：用 async IIFE 包一层，让 getMutationHeaders 能 await
+        // 但不阻塞外层调用方（aplayer 'ended' 回调本身不关心后端是否成功）。
+        (async () => {
+            const playedHeaders = { 'Content-Type': 'application/json' };
+            const sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                try { Object.assign(playedHeaders, await sec.getMutationHeaders()); } catch (_) { }
+            }
+            try {
+                await fetch('/api/proactive/music_played_through', {
+                    method: 'POST',
+                    headers: playedHeaders,
+                    body: JSON.stringify({
+                        lanlan_name: lanlanName,
+                        track: track ? { name: track.name, artist: track.artist, url: track.url } : null
+                    })
+                });
+            } catch (_) { /* 后端不可达不影响播放体验 */ }
+        })();
     }
 
     // 全局监听管理

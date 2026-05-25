@@ -542,9 +542,14 @@
     mod.analyzeEmotion = async function analyzeEmotion(text) {
         console.log(window.t('console.analyzeEmotionCalled'), text);
         try {
+            var emotionHeaders = { 'Content-Type': 'application/json' };
+            var sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                try { Object.assign(emotionHeaders, await sec.getMutationHeaders()); } catch (_) { }
+            }
             var response = await fetch('/api/emotion/analysis', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: emotionHeaders,
                 body: JSON.stringify({
                     text: text,
                     lanlan_name: window.lanlan_config.lanlan_name

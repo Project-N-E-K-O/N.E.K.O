@@ -784,9 +784,14 @@
                 // 在 propensity / restricted_screen_only / 抖动 sleep 这一整套门
                 // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
                 // 既然两边都不读，发了也是冗余字段。
+                var voiceProactiveHeaders = { 'Content-Type': 'application/json' };
+                var voiceProactiveSec = window.nekoLocalMutationSecurity;
+                if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
+                    try { Object.assign(voiceProactiveHeaders, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
+                }
                 var resp = await fetch('/api/proactive_chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: voiceProactiveHeaders,
                     body: JSON.stringify({
                         lanlan_name: lanlanName,
                         enabled_modes: voiceModes,
@@ -1057,11 +1062,14 @@
                 return;
             }
 
+            var proactiveHeaders = { 'Content-Type': 'application/json' };
+            var proactiveSec = window.nekoLocalMutationSecurity;
+            if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
+                try { Object.assign(proactiveHeaders, await proactiveSec.getMutationHeaders()); } catch (_) { }
+            }
             var response = await fetch('/api/proactive_chat', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: proactiveHeaders,
                 body: JSON.stringify(requestBody)
             });
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /

@@ -356,9 +356,14 @@ window.addEventListener('load', async () => {
                 // 先全部入队（不 await），让 UI 能感知队列长度以显示"下一个"按钮
                 const promises = notices.filter(Boolean).map(n => window.showProminentNotice(n));
                 await Promise.all(promises);
+                const ackHeaders = { 'Content-Type': 'application/json' };
+                const sec = window.nekoLocalMutationSecurity;
+                if (sec && typeof sec.getMutationHeaders === 'function') {
+                    try { Object.assign(ackHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                }
                 await fetch('/api/pending-notices/ack', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: ackHeaders,
                     body: JSON.stringify({ cursor }),
                 }).catch(() => { });
             }

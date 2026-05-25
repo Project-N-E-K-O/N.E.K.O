@@ -1060,6 +1060,10 @@ async def get_pending_notices():
 @router.post("/pending-notices/ack")
 async def ack_pending_notices(request: Request):
     """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     from main_logic.core import drain_prominent_notices
     try:
         body = await _read_json_object(request)
@@ -3093,6 +3097,10 @@ async def emotion_analysis(request: Request):
     - 根据置信度自动调整情绪类别，当置信度较低时将情绪设置为 neutral，提升结果可靠性
     - 将分析结果推送到监控系统（如果提供了 lanlan_name），实现与前端的实时交互和展示
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         _config_manager = get_config_manager()
         data = await request.json()
@@ -3238,7 +3246,7 @@ async def emotion_analysis(request: Request):
 
 
 @router.post('/steam/set-achievement-status/{name}')
-async def set_achievement_status(name: str):
+async def set_achievement_status(name: str, request: Request):
     """
     设置Steam成就状态接口
     func:
@@ -3248,6 +3256,10 @@ async def set_achievement_status(name: str):
     - 若未解锁，尝试设置成就，若成功则返回成功，否则等待1秒后重试一次
     - 最多重试10次，若仍失败则返回错误，提示可能的配置问题
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -3296,6 +3308,10 @@ async def update_playtime(request: Request):
     """
     更新游戏时长统计（PLAY_TIME_SECONDS）
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -4519,6 +4535,10 @@ async def proactive_chat(request: Request):
     """
     主动搭话：两阶段架构 — Phase 1 合并 LLM（web筛选+music/meme关键词，1次调用），Phase 2 结合人设生成搭话
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -7267,6 +7287,10 @@ async def proactive_music_played_through(request: Request):
     通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
     继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         data = await request.json()
     except Exception:
@@ -7291,14 +7315,14 @@ async def proactive_music_played_through(request: Request):
 async def translate_text_api(request: Request):
     """
     翻译文本API（供前端字幕模块使用）
-    
+
     请求格式:
     {
         "text": "要翻译的文本",
         "target_lang": "目标语言代码 ('zh', 'en', 'ja', 'ko')",
         "source_lang": "源语言代码 (可选，为null时自动检测)"
     }
-    
+
     响应格式:
     {
         "success": true/false,
@@ -7307,6 +7331,10 @@ async def translate_text_api(request: Request):
         "target_lang": "目标语言代码"
     }
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         data = await request.json()
         text = data.get('text', '').strip()
@@ -7387,9 +7415,13 @@ async def get_personal_dynamics(request: Request):
     """
     获取个性化内容数据
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
     try:
-        
+
         data = await request.json()
         limit = data.get('limit', 10)
         
