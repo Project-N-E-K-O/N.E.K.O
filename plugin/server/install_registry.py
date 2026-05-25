@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,10 @@ def _plugins_root() -> Path:
     return Path(__file__).resolve().parents[1] / "plugins"
 
 
+def _plugin_module_available(plugin_id: str) -> bool:
+    return importlib.util.find_spec(f"plugin.plugins.{plugin_id}") is not None
+
+
 def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
     try:
         from plugin.plugins.galgame_plugin._tutorial_migration import (
@@ -78,9 +83,12 @@ def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
         )
     except ModuleNotFoundError as exc:
         missing_name = str(getattr(exc, "name", "") or "")
-        if missing_name == "plugin.plugins" or missing_name.startswith(
+        optional_missing = {
+            "plugin.plugins",
             "plugin.plugins.galgame_plugin",
-        ):
+            "plugin.plugins.galgame_plugin._tutorial_migration",
+        }
+        if missing_name in optional_missing:
             logger.warning(
                 "galgame tutorial migration module unavailable; skipping legacy migration: {}",
                 exc,
@@ -94,7 +102,10 @@ def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
 def bootstrap_builtin_install_plugins() -> None:
     with _builtin_install_registry_lock:
         plugins_root = _plugins_root()
-        if "galgame_plugin" not in _install_plugin_registry:
+        if (
+            "galgame_plugin" not in _install_plugin_registry
+            and _plugin_module_available("galgame_plugin")
+        ):
             register_install_plugin(
                 "galgame_plugin",
                 install_kinds={
@@ -112,7 +123,10 @@ def bootstrap_builtin_install_plugins() -> None:
                 ui_i18n_dir=plugins_root / "galgame_plugin" / "i18n" / "ui",
                 tutorial_enabled=True,
             )
-        if "study_companion" not in _install_plugin_registry:
+        if (
+            "study_companion" not in _install_plugin_registry
+            and _plugin_module_available("study_companion")
+        ):
             register_install_plugin(
                 "study_companion",
                 install_kinds={
@@ -130,10 +144,11 @@ def bootstrap_builtin_install_plugins() -> None:
                 ui_i18n_dir=plugins_root / "study_companion" / "i18n",
                 tutorial_enabled=True,
             )
-        register_tutorial_migration_hook(
-            _copy_legacy_galgame_tutorial_progress_if_missing,
-            plugin_id="galgame_plugin",
-        )
+        if _plugin_module_available("galgame_plugin"):
+            register_tutorial_migration_hook(
+                _copy_legacy_galgame_tutorial_progress_if_missing,
+                plugin_id="galgame_plugin",
+            )
 
 
 def get_install_plugin_registration(plugin_id: str) -> InstallPluginRegistration | None:
