@@ -294,6 +294,15 @@
                 return;
             }
 
+            // Non-403 response (4xx-business / 5xx / 429 / etc) — the
+            // server is reachable and the CSRF guard let us past, so
+            // the *consecutive* 403 streak is broken. Without this,
+            // an alternating sequence like 403, 500, 403, 500, ...
+            // would accumulate 6 lifetime 403s and trip the
+            // stop-the-heartbeat threshold even though none of them
+            // were truly consecutive (Codex P2 on PR #1532).
+            consecutiveCsrfFailures = 0;
+
             // 429 = rate-limited (we're heartbeating too fast somehow — shouldn't
             // happen with the 5s interval, but if it does we just skip).
             // 404 = lanlan_name not registered yet (boot race) — silent.
@@ -308,6 +317,11 @@
                 }
             }
         } catch (e) {
+            // Network error / fetch threw — we never heard back from
+            // the server, so this is NOT a CSRF rejection. Don't let
+            // network blips contribute to the 403 streak (Codex P2 on
+            // PR #1532).
+            consecutiveCsrfFailures = 0;
             consecutiveFailures++;
             if (consecutiveFailures <= LOG_FAILURE_QUIET_THRESHOLD) {
                 console.warn('[activity-signal] push exception:', e);
