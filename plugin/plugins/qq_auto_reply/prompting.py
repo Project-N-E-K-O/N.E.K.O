@@ -298,7 +298,7 @@ class QQAutoReplyPromptingMixin:
                 "permission_level": str(user_data.get("permission_level") or "trusted"),
                 "is_group": bool(user_data.get("is_group")),
                 "group_id": user_data.get("group_id"),
-                "user_title": str(user_data.get("user_title") or f"QQ用户{user_data.get('sender_id') or ''}"),
+                "user_title": str(user_data.get("user_title") or self.i18n.t("prompts.default_qq_user", default="QQ用户{sender_id}", sender_id=user_data.get('sender_id') or "")),
                 "user_nickname": user_data.get("user_nickname"),
                 "lock": asyncio.Lock(),
                 "last_proactive_at": 0.0,

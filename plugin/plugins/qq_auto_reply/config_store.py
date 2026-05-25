@@ -72,7 +72,6 @@ class QQAutoReplyConfigStore:
             "open_reply_probability": 0.1,
             "show_onboarding": True,
             "guide_step_config_done": False,
-            "guide_step_settings_done": False,
             "guide_step_runtime_done": False,
             "max_concurrent_messages": 3,
             "ai_connect_timeout_seconds": 10.0,

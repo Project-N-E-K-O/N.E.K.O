@@ -43,7 +43,6 @@ const pluginId = 'qq_auto_reply';
                 path: '',
                 showOnboarding: false,
                 guideStepConfigDone: false,
-                guideStepSettingsDone: false,
                 guideStepRuntimeDone: false,
                 normalRelayProbability: 0.1,
                 truthReplyProbability: 0.1,
@@ -173,7 +172,6 @@ const pluginId = 'qq_auto_reply';
             state.config.path = String(settings.napcat_directory || '');
             state.config.showOnboarding = Boolean(settings.show_onboarding ?? true);
             state.config.guideStepConfigDone = Boolean(settings.guide_step_config_done ?? false);
-            state.config.guideStepSettingsDone = Boolean(settings.guide_step_settings_done ?? false);
             state.config.guideStepRuntimeDone = Boolean(settings.guide_step_runtime_done ?? false);
             state.config.normalRelayProbability = Number(settings.normal_relay_probability ?? 0.1);
             state.config.truthReplyProbability = Number(settings.truth_reply_probability ?? 0.1);
@@ -646,10 +644,14 @@ const pluginId = 'qq_auto_reply';
                     source_type: String(item.source_type || ''),
                     target_id: String(item.target_id || ''),
                     sender_id: String(item.sender_id || ''),
+                    message_id: String(item.message_id || ''),
                     original_message: String(item.original_message || ''),
                     reply_text: replyText,
                 });
-                await reloadDashboard();
+                await loadBacklogSummary();
+                if (state.selectedBacklogGroupId && String(item.target_id || '') === state.selectedBacklogGroupId) {
+                    await openBacklogGroupDetail(state.selectedBacklogGroupId, { silent: true });
+                }
                 closeBacklogReplyModal();
                 showToast(t('ui.backlog.reply.sent', '回复已发送'));
             } catch (error) {
@@ -771,6 +773,7 @@ const pluginId = 'qq_auto_reply';
                 highlights.push({
                     sender,
                     sender_id: String(message.sender_id || ''),
+                    message_id: String(message.message_id || ''),
                     category,
                     categoryLabel: labelMap[category] || category,
                     text,
@@ -787,14 +790,16 @@ const pluginId = 'qq_auto_reply';
                 const text = String(message.text || '').trim() || t('ui.backlog.empty_message', '（空消息）');
                 const dateText = timestamp ? new Date(timestamp * 1000).toLocaleString() : t('ui.backlog.unknown_time', '未知时间');
                 const meta = message._conversationName ? `${sender} · ${message._conversationName}` : sender;
+                const replyPayload = encodeURIComponent(JSON.stringify({
+                    source_type: 'group',
+                    target_id: groupId,
+                    sender_id: String(message.sender_id || ''),
+                    message_id: String(message.message_id || ''),
+                    target_label: displayName,
+                    original_message: text,
+                }));
                 return `
-                    <button class="backlog-message-item reply-action" type="button" onclick="openBacklogDetailReply(${escapeHtml(JSON.stringify({
-                        source_type: 'group',
-                        target_id: groupId,
-                        sender_id: String(message.sender_id || ''),
-                        target_label: displayName,
-                        original_message: text,
-                    }).replace(/"/g, '&quot;'))})">
+                    <button class="backlog-message-item reply-action" type="button" onclick="openBacklogDetailReply(decodeURIComponent('${replyPayload}'))">
                         <div class="backlog-message-top">
                             <span>${escapeHtml(meta)}</span>
                             <span>${escapeHtml(dateText)}</span>
@@ -807,13 +812,17 @@ const pluginId = 'qq_auto_reply';
                 `;
             }).join('') : `<div class="empty-state">${t('ui.backlog.no_messages', '这个群当前没有待审阅消息。')}</div>`;
             const highlightsHtml = topHighlights.length
-                ? `<div class="backlog-highlight-list">${topHighlights.map((item) => `<button class="backlog-highlight-item reply-action" type="button" onclick="openBacklogDetailReply(${escapeHtml(JSON.stringify({
-                    source_type: 'group',
-                    target_id: item.target_id,
-                    sender_id: item.sender_id,
-                    target_label: item.target_label,
-                    original_message: item.text,
-                }).replace(/"/g, '&quot;'))})">${escapeHtml(`${item.sender}（${item.categoryLabel}）：${item.text}`)}</button>`).join('')}</div>`
+                ? `<div class="backlog-highlight-list">${topHighlights.map((item) => {
+                    const replyPayload = encodeURIComponent(JSON.stringify({
+                        source_type: 'group',
+                        target_id: item.target_id,
+                        sender_id: item.sender_id,
+                        message_id: item.message_id,
+                        target_label: item.target_label,
+                        original_message: item.text,
+                    }));
+                    return `<button class="backlog-highlight-item reply-action" type="button" onclick="openBacklogDetailReply(decodeURIComponent('${replyPayload}'))">${escapeHtml(`${item.sender}（${item.categoryLabel}）：${item.text}`)}</button>`;
+                }).join('')}</div>`
                 : `<div class="empty-state">${t('ui.backlog.no_highlights', '暂时没有提炼出的重点摘要。')}</div>`;
             container.innerHTML = `
                 <div class="backlog-detail-header">
@@ -944,7 +953,6 @@ const pluginId = 'qq_auto_reply';
                         token: document.getElementById('cfg-token').value,
                         napcat_directory: document.getElementById('cfg-path').value.trim(),
                         show_napcat_window: document.getElementById('cfg-show-napcat-window').checked,
-                        guide_step_settings_done: true,
                         normal_relay_probability: normalRelayProbability,
                         truth_reply_probability: truthReplyProbability,
                         backlog_labels: buildBacklogLabelsPayload(),

@@ -337,7 +337,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "show_napcat_window": bool(settings.get("show_napcat_window", True)),
                 "show_onboarding": bool(settings.get("show_onboarding", True)),
                 "guide_step_config_done": bool(settings.get("guide_step_config_done", False)),
-                "guide_step_settings_done": bool(settings.get("onebot_url")) and bool(settings.get("token")),
                 "guide_step_runtime_done": bool(settings.get("guide_step_runtime_done", False)),
                 "normal_relay_probability": float(self._normal_relay_probability),
                 "truth_reply_probability": float(self._truth_reply_probability),
@@ -391,8 +390,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @ui.action(label=tr("ui.onboarding.step3.init"), refresh_context=True)
     @plugin_entry(
         id="init_config",
-        name=tr("entries.init_config.name", default="初始化 QQ 配置"),
-        description=tr("entries.init_config.description", default="完成引导后创建空的 QQ JSON 配置。"),
+        name=tr("entries.init_config.name", default="新建 QQ 配置"),
+        description=tr("entries.init_config.description", default="在第一次使用 QQ 插件、完成引导或缺少配置文件时，创建一份新的 QQ 配置。"),
         input_schema={"type": "object", "properties": {"guide_step_config_done": {"type": "boolean"}}, "additionalProperties": False},
     )
     async def init_config(self, guide_step_config_done: Optional[bool] = None, **_):
@@ -409,12 +408,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._refresh_admin_qq()
         return Ok(await self._build_dashboard_state())
 
-    @plugin_entry(id="get_dashboard_state", name=tr("entries.get_dashboard_state.name", default="获取控制面板状态"), description=tr("entries.get_dashboard_state.description", default="返回 QQ 自动回复前端控制面板所需的完整状态。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="get_dashboard_state", name=tr("entries.get_dashboard_state.name", default="获取控制面板状态"), description=tr("entries.get_dashboard_state.description", default="读取 QQ 插件当前的运行状态、登录状态、联系人数量、配置项和引导进度。"), input_schema={"type": "object", "properties": {}})
     async def get_dashboard_state(self, **_):
         return Ok(await self._build_dashboard_state())
 
     @ui.action(id="refresh_actual_contacts", label=tr("entries.refresh_actual_contacts.name", default="刷新实际联系人列表"), refresh_context=True)
-    @plugin_entry(id="refresh_actual_contacts", name=tr("entries.refresh_actual_contacts.name", default="刷新实际联系人列表"), description=tr("entries.refresh_actual_contacts.description", default="从 OneBot 拉取好友列表和群聊列表并刷新缓存。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="refresh_actual_contacts", name=tr("entries.refresh_actual_contacts.name", default="刷新实际联系人列表"), description=tr("entries.refresh_actual_contacts.description", default="重新从 OneBot 拉取 QQ 好友和群聊列表，用于更新联系人显示。"), input_schema={"type": "object", "properties": {}})
     async def refresh_actual_contacts(self, **_):
         try:
             contacts = await self._refresh_actual_contacts_cache()
@@ -434,8 +433,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(f"REFRESH_FAILED: {self.i18n.t('errors.refresh_failed', default='{error}', error=str(e))}"))
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 OneBot、NapCat 与 UI 相关设置到 JSON 配置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_settings_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
-    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_settings_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "show_onboarding": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": False})
+    async def save_settings(self, onebot_url: Optional[str] = None, token: Optional[str] = None, napcat_directory: Optional[str] = None, show_napcat_window: Optional[bool] = None, show_onboarding: Optional[bool] = None, guide_step_config_done: Optional[bool] = None, guide_step_runtime_done: Optional[bool] = None, normal_relay_probability: Optional[float] = None, truth_reply_probability: Optional[float] = None, backlog_labels: Optional[list[dict[str, Any]]] = None, **_):
         if onebot_url is not None:
             self._qq_settings["onebot_url"] = str(onebot_url or "").strip()
         if token is not None:
@@ -448,8 +447,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._qq_settings["show_onboarding"] = bool(show_onboarding)
         if guide_step_config_done is not None:
             self._qq_settings["guide_step_config_done"] = bool(guide_step_config_done)
-        if guide_step_settings_done is not None:
-            self._qq_settings["guide_step_settings_done"] = bool(guide_step_settings_done)
         if guide_step_runtime_done is not None:
             self._qq_settings["guide_step_runtime_done"] = bool(guide_step_runtime_done)
         if normal_relay_probability is not None:
@@ -467,6 +464,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._truth_reply_probability = value
         if backlog_labels is not None:
             self._qq_settings["backlog_labels"] = self.config_store.normalize_backlog_labels(backlog_labels)
+        self._qq_settings.pop("guide_step_settings_done", None)
         success = await self._persist_business_config()
         if self.qq_client:
             self.qq_client.onebot_url = self._qq_settings.get("onebot_url", self.qq_client.onebot_url)
@@ -480,7 +478,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="add_trusted_user", label=tr("entries.add_trusted_user.name", default="添加信任用户"), refresh_context=True)
-    @plugin_entry(id="add_trusted_user", name=tr("entries.add_trusted_user.name", default="添加信任用户"), description=tr("entries.add_trusted_user.description", default="添加一个信任的 QQ 号到白名单。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "level": {"type": "string", "default": "trusted"}, "nickname": {"type": "string", "default": ""}, "normal_relay_probability": {"type": "number"}}, "required": ["qq_number"]})
+    @plugin_entry(id="add_trusted_user", name=tr("entries.add_trusted_user.name", default="添加信任用户"), description=tr("entries.add_trusted_user.description", default="把一个 QQ 号加入信任用户列表，并可设置权限、昵称和转发概率。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "level": {"type": "string", "default": "trusted"}, "nickname": {"type": "string", "default": ""}, "normal_relay_probability": {"type": "number"}}, "required": ["qq_number"]})
     async def add_trusted_user(self, qq_number: str, level: str = "trusted", nickname: str = "", normal_relay_probability: Optional[float] = None, **_):
         if not self.permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.permission_manager_not_initialized', default='权限管理器未初始化')}"))
@@ -498,7 +496,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="remove_trusted_user", label=tr("entries.remove_trusted_user.name", default="移除信任用户"), refresh_context=True)
-    @plugin_entry(id="remove_trusted_user", name=tr("entries.remove_trusted_user.name", default="移除信任用户"), description=tr("entries.remove_trusted_user.description", default="从白名单中移除一个 QQ 号。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}}, "required": ["qq_number"]})
+    @plugin_entry(id="remove_trusted_user", name=tr("entries.remove_trusted_user.name", default="移除信任用户"), description=tr("entries.remove_trusted_user.description", default="把一个 QQ 号从信任用户列表中移除，不再按信任用户处理。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}}, "required": ["qq_number"]})
     async def remove_trusted_user(self, qq_number: str, **_):
         if not self.permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.permission_manager_not_initialized', default='权限管理器未初始化')}"))
@@ -511,7 +509,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="set_user_nickname", label=tr("entries.set_user_nickname.name", default="设置用户昵称"), refresh_context=True)
-    @plugin_entry(id="set_user_nickname", name=tr("entries.set_user_nickname.name", default="设置用户昵称"), description=tr("entries.set_user_nickname.description", default="为信任用户设置专属称呼。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "nickname": {"type": "string", "default": ""}}, "required": ["qq_number"]})
+    @plugin_entry(id="set_user_nickname", name=tr("entries.set_user_nickname.name", default="设置用户昵称"), description=tr("entries.set_user_nickname.description", default="修改这个信任用户在回复里显示的昵称或称呼。"), input_schema={"type": "object", "properties": {"qq_number": {"type": "string"}, "nickname": {"type": "string", "default": ""}}, "required": ["qq_number"]})
     async def set_user_nickname(self, qq_number: str, nickname: str = "", **_):
         if not self.permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.permission_manager_not_initialized', default='权限管理器未初始化')}"))
@@ -529,7 +527,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="add_trusted_group", label=tr("entries.add_trusted_group.name", default="添加信任群聊"), refresh_context=True)
-    @plugin_entry(id="add_trusted_group", name=tr("entries.add_trusted_group.name", default="添加信任群聊"), description=tr("entries.add_trusted_group.description", default="添加一个信任的 QQ 群到白名单。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "level": {"type": "string", "default": "normal"}, "normal_relay_probability": {"type": "number"}, "open_reply_probability": {"type": "number"}}, "required": ["group_id"]})
+    @plugin_entry(id="add_trusted_group", name=tr("entries.add_trusted_group.name", default="添加信任群聊"), description=tr("entries.add_trusted_group.description", default="把一个 QQ 群加入信任群聊列表，并可设置群等级和回复概率。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "level": {"type": "string", "default": "normal"}, "normal_relay_probability": {"type": "number"}, "open_reply_probability": {"type": "number"}}, "required": ["group_id"]})
     async def add_trusted_group(self, group_id: str, level: str = "normal", normal_relay_probability: Optional[float] = None, open_reply_probability: Optional[float] = None, **_):
         if not self.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
@@ -549,7 +547,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok(payload)
 
     @ui.action(id="remove_trusted_group", label=tr("entries.remove_trusted_group.name", default="移除信任群聊"), refresh_context=True)
-    @plugin_entry(id="remove_trusted_group", name=tr("entries.remove_trusted_group.name", default="移除信任群聊"), description=tr("entries.remove_trusted_group.description", default="从白名单中移除一个 QQ 群。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
+    @plugin_entry(id="remove_trusted_group", name=tr("entries.remove_trusted_group.name", default="移除信任群聊"), description=tr("entries.remove_trusted_group.description", default="把一个 QQ 群从信任群聊列表中移除，不再按信任群聊处理。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
     async def remove_trusted_group(self, group_id: str, **_):
         if not self.group_permission_mgr:
             return Err(SdkError(f"NOT_INITIALIZED: {self.i18n.t('errors.group_permission_manager_not_initialized', default='群聊权限管理器未初始化')}"))
@@ -560,23 +558,39 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         payload["persisted"] = success
         return Ok(payload)
 
-    @plugin_entry(id="send_backlog_reply_direct", name=tr("entries.send_backlog_reply_direct.name", default="直发 backlog 回复"), description=tr("entries.send_backlog_reply_direct.description", default="直接发送 backlog 回复消息，不经过 AI 生成。"), input_schema={"type": "object", "properties": {"source_type": {"type": "string"}, "target_id": {"type": "string"}, "sender_id": {"type": "string"}, "original_message": {"type": "string"}, "reply_text": {"type": "string"}}, "required": ["source_type", "target_id", "original_message", "reply_text"], "additionalProperties": False})
-    async def send_backlog_reply_direct(self, source_type: str, target_id: str, original_message: str, reply_text: str, sender_id: str = "", **_):
+    @plugin_entry(id="send_backlog_reply_direct", name=tr("entries.send_backlog_reply_direct.name", default="发送这条回复"), description=tr("entries.send_backlog_reply_direct.description", default="把你填写的内容直接回复到这条 QQ 消息，并在发送后把对应群聊标记为已处理。"), input_schema={"type": "object", "properties": {"source_type": {"type": "string"}, "target_id": {"type": "string"}, "sender_id": {"type": "string"}, "message_id": {"type": "string"}, "original_message": {"type": "string"}, "reply_text": {"type": "string"}}, "required": ["source_type", "target_id", "original_message", "reply_text"], "additionalProperties": False})
+    async def send_backlog_reply_direct(self, source_type: str, target_id: str, original_message: str, reply_text: str, sender_id: str = "", message_id: str = "", **_):
         try:
             self._ensure_qq_client_connected()
             normalized_source_type = str(source_type or "").strip().lower()
             normalized_target_id = str(target_id or "").strip()
             normalized_original_message = self._validate_outbound_message(original_message)
             normalized_reply_text = self._validate_outbound_message(reply_text)
+            normalized_message_id = str(message_id or "").strip()
             if normalized_source_type not in {"group", "private"}:
                 return Err(SdkError("INVALID_SOURCE_TYPE: source_type 必须是 group 或 private"))
             if not normalized_target_id:
                 return Err(SdkError("INVALID_TARGET: target_id 不能为空"))
-            outbound_message = f"回复原句：{normalized_original_message}\n发送内容：{normalized_reply_text}"
             if normalized_source_type == "group":
-                await self.qq_client.send_group_message(normalized_target_id, outbound_message)
+                segments = []
+                if normalized_message_id:
+                    segments.append({"type": "reply", "data": {"id": normalized_message_id}})
+                if sender_id:
+                    segments.append({"type": "at", "data": {"qq": str(sender_id)}})
+                segments.append({"type": "text", "data": {"text": f" {normalized_reply_text}" if sender_id else normalized_reply_text}})
+                await self.qq_client.send_group_message_segments(normalized_target_id, segments)
+                self._relay_backlog_items = [
+                    item for item in self._relay_backlog_items
+                    if not (
+                        str(item.get("source_type") or "") == normalized_source_type
+                        and str(item.get("target_id") or "") == normalized_target_id
+                        and str(item.get("sender_id") or "") == str(sender_id or "")
+                        and str(item.get("original_message") or "") == normalized_original_message
+                    )
+                ]
+                await self.backlog_store.mark_group_reviewed(normalized_target_id)
             else:
-                await self.qq_client.send_message(normalized_target_id, outbound_message)
+                await self.qq_client.send_message(normalized_target_id, normalized_reply_text)
             self._relay_backlog_items = [
                 item for item in self._relay_backlog_items
                 if not (
@@ -595,12 +609,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self.logger.exception("Failed to send direct backlog reply")
             return Err(SdkError(f"SEND_FAILED: {self.i18n.t('errors.proactive_send_failed', default='{error}', error=str(e))}"))
 
-    @plugin_entry(id="sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新二维码"), description=tr("entries.sync_qrcode.description", default="重新复制 NapCat 登录二维码到插件静态目录并返回最新状态。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="sync_qrcode", name=tr("entries.sync_qrcode.name", default="刷新登录二维码"), description=tr("entries.sync_qrcode.description", default="重新读取 NapCat 当前生成的 QQ 登录二维码，并更新到插件界面。"), input_schema={"type": "object", "properties": {}})
     async def sync_qrcode(self, **_):
         await self._sync_napcat_qrcode_into_static()
         return Ok(await self._build_dashboard_state())
 
-    @plugin_entry(id="start_auto_reply", name=tr("entries.start_auto_reply.name", default="启动自动回复"), description=tr("entries.start_auto_reply.description", default="开始监听 QQ 消息并自动回复。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="start_auto_reply", name=tr("entries.start_auto_reply.name", default="开始自动回复"), description=tr("entries.start_auto_reply.description", default="开始监听 QQ 消息，并按当前配置自动回复或转发。"), input_schema={"type": "object", "properties": {}})
     async def start_auto_reply(self, **_):
         if self._running:
             return Ok({"status": "already_running"})
@@ -615,14 +629,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self.logger.exception("Failed to start auto reply")
             return Err(SdkError(f"START_ERROR: {self.i18n.t('errors.start_connect_failed', default='无法连接到 OneBot 服务 {url}，请先启动外部 NapCat/OneBot: {error}', url=self.qq_client.onebot_url, error=str(e))}"))
 
-    @plugin_entry(id="stop_auto_reply", name=tr("entries.stop_auto_reply.name", default="停止自动回复"), description=tr("entries.stop_auto_reply.description", default="停止监听 QQ 消息。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="stop_auto_reply", name=tr("entries.stop_auto_reply.name", default="停止自动回复"), description=tr("entries.stop_auto_reply.description", default="停止监听 QQ 消息，不再继续自动回复或转发。"), input_schema={"type": "object", "properties": {}})
     async def stop_auto_reply(self, **_):
         if not self._running and not self._message_task:
             return Ok({"status": "not_running"})
         await self._stop_auto_reply_runtime(stop_napcat=False)
         return Ok({"status": "stopped"})
 
-    @plugin_entry(id="send_private_proactive_message", name=tr("entries.send_private_proactive_message.name", default="主动发送私聊消息"), description=tr("entries.send_private_proactive_message.description", default="让 AI 生成一条私聊消息并主动发送给指定 QQ 用户。"), input_schema={"type": "object", "properties": {"target": {"type": "string"}, "message": {"type": "string"}}, "required": ["target", "message"], "additionalProperties": False}, metadata={"timeout": 90})
+    @plugin_entry(id="send_private_proactive_message", name=tr("entries.send_private_proactive_message.name", default="发送私聊消息"), description=tr("entries.send_private_proactive_message.description", default="根据你提供的内容生成一条新的 QQ 私聊消息，并直接发送给指定用户。"), input_schema={"type": "object", "properties": {"target": {"type": "string"}, "message": {"type": "string"}}, "required": ["target", "message"], "additionalProperties": False}, metadata={"timeout": 90})
     async def send_private_proactive_message(self, target: str, message: str, **_):
         try:
             self._ensure_qq_client_connected()
@@ -668,7 +682,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self.logger.exception("Failed to send proactive private QQ message")
             return Err(SdkError(f"SEND_FAILED: {self.i18n.t('errors.proactive_send_failed', default='{error}', error=str(e))}"))
 
-    @plugin_entry(id="send_group_proactive_message", name=tr("entries.send_group_proactive_message.name", default="主动发送群聊消息"), description=tr("entries.send_group_proactive_message.description", default="让 AI 生成一条群聊消息并主动发送给指定 QQ 群。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "message": {"type": "string"}}, "required": ["group_id", "message"], "additionalProperties": False}, metadata={"timeout": 90})
+    @plugin_entry(id="send_group_proactive_message", name=tr("entries.send_group_proactive_message.name", default="发送群消息"), description=tr("entries.send_group_proactive_message.description", default="根据你提供的内容生成一条新的 QQ 群消息，并直接发送到指定群聊。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}, "message": {"type": "string"}}, "required": ["group_id", "message"], "additionalProperties": False}, metadata={"timeout": 90})
     async def send_group_proactive_message(self, group_id: str, message: str, **_):
         try:
             self._ensure_qq_client_connected()
@@ -815,7 +829,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             group_display_name=f"QQ群 {group_id}",
         )
 
-    @plugin_entry(id="get_backlog_summary", name=tr("entries.get_backlog_summary.name", default="获取 QQ backlog 摘要"), description=tr("entries.get_backlog_summary.description", default="返回当前按群聚合的未审阅消息与重点反馈摘要。"), input_schema={"type": "object", "properties": {}})
+    @plugin_entry(id="get_backlog_summary", name=tr("entries.get_backlog_summary.name", default="读取待审阅摘要"), description=tr("entries.get_backlog_summary.description", default="查看当前哪些群还有待处理消息，以及每个群的大致积压情况。"), input_schema={"type": "object", "properties": {}})
     async def get_backlog_summary(self, **_):
         state = await self.backlog_store.load()
         label_defs = list((self._qq_settings or {}).get("backlog_labels") or [])
@@ -841,7 +855,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             } for item in label_defs if isinstance(item, dict) and str(item.get("id") or "").strip()],
         })
 
-    @plugin_entry(id="get_group_backlog_detail", name=tr("entries.get_group_backlog_detail.name", default="获取群 backlog 详情"), description=tr("entries.get_group_backlog_detail.description", default="返回指定群当前未审阅 backlog 明细。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
+    @plugin_entry(id="get_group_backlog_detail", name=tr("entries.get_group_backlog_detail.name", default="读取群聊待审阅详情"), description=tr("entries.get_group_backlog_detail.description", default="查看这个群当前每条待处理消息的详细内容，方便逐条回复或处理。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
     async def get_group_backlog_detail(self, group_id: str, **_):
         normalized_group_id = self._validate_group_id(group_id)
         detail = await self.backlog_store.get_group_detail(normalized_group_id)
@@ -853,7 +867,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         } for item in label_defs if isinstance(item, dict) and str(item.get("id") or "").strip()]
         return Ok(detail)
 
-    @plugin_entry(id="mark_group_backlog_reviewed", name=tr("entries.mark_group_backlog_reviewed.name", default="标记群 backlog 已审阅"), description=tr("entries.mark_group_backlog_reviewed.description", default="将指定群当前 backlog 标记为已审阅。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
+    @plugin_entry(id="mark_group_backlog_reviewed", name=tr("entries.mark_group_backlog_reviewed.name", default="标记群聊已处理"), description=tr("entries.mark_group_backlog_reviewed.description", default="把这个群当前所有待处理消息标记为已处理，不再继续显示为未审阅。"), input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]})
     async def mark_group_backlog_reviewed(self, group_id: str, **_):
         normalized_group_id = self._validate_group_id(group_id)
         state = await self.backlog_store.mark_group_reviewed(normalized_group_id)
@@ -866,7 +880,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         })
 
     async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
-        if not self.qq_client or not self._admin_qq:
+        if not self._admin_qq:
             return
         state = await self.backlog_store.load()
         groups = dict(state.get("groups") or {})
@@ -877,27 +891,44 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         unread_count = int(group.get("unread_count") or 0)
         label_counts = dict(group.get("label_counts") or {})
         issue_count = int(label_counts.get("issue") or 0)
-        feedback_count = int(label_counts.get("feedback") or 0)
-        mention_count = int(label_counts.get("mention") or 0)
+        label_map = {
+            str(item.get("id") or "").strip(): str(item.get("label") or item.get("id") or "").strip()
+            for item in list((self._qq_settings or {}).get("backlog_labels") or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
         if unread_count < self._backlog_summary_threshold and issue_count < self._backlog_issue_notify_threshold:
             return
         last_notified_at = int(group.get("last_notified_at") or 0)
         now = int(time.time())
         if now - last_notified_at < self._backlog_notify_cooldown_seconds:
             return
-        summary = QQSummaryBuilder.build_group_summary(group, conversations, label_map={
-            str(item.get("id") or "").strip(): str(item.get("label") or item.get("id") or "").strip()
-            for item in list((self._qq_settings or {}).get("backlog_labels") or [])
-            if isinstance(item, dict) and str(item.get("id") or "").strip()
-        })
+        summary = QQSummaryBuilder.build_group_summary(group, conversations, label_map=label_map)
         highlights = list(summary.get("highlights") or [])[:3]
         highlight_text = "；".join(highlights) if highlights else "暂无具体摘要"
+        label_summary_parts = [
+            f"{label_map.get(label_id, label_id)} {int(count or 0)} 条"
+            for label_id, count in label_counts.items()
+            if int(count or 0) > 0
+        ]
+        label_summary_text = "，".join(label_summary_parts) if label_summary_parts else "已分类消息 0 条"
         notify_text = (
             f"[QQ backlog 提醒] {summary.get('display_name') or ('QQ群 ' + group_id)}："
-            f"未审阅 {unread_count} 条，问题 {issue_count} 条，反馈 {feedback_count} 条，点名 {mention_count} 条。"
+            f"未审阅 {unread_count} 条，{label_summary_text}。"
             f"重点：{highlight_text}"
         )
-        await self.qq_client.send_message(self._admin_qq, notify_text)
+        self.push_message(
+            visibility=[],
+            ai_behavior="respond",
+            parts=[{"type": "text", "text": notify_text}],
+            source=self.plugin_id,
+            metadata={
+                "delivery_semantics": "passive",
+                "kind": "qq_backlog_summary",
+                "group_id": group_id,
+                "unread_count": unread_count,
+                "label_counts": label_counts,
+            },
+        )
         group["last_notified_at"] = now
         groups[group_id] = group
         state["groups"] = groups
