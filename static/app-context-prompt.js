@@ -187,11 +187,15 @@
         _pendingContexts.clear();
         (async function () {
             for (const ctx of pend) {
-                await handle(ctx);
+                // 按单个 ctx 隔离异常：play/work 是一次性事件，前一个意外抛错不能连累
+                // 后一个不被消费（否则那类本会话就丢了）。
+                try {
+                    await handle(ctx);
+                } catch (e) {
+                    console.warn('[context-prompt] 重放暂存事件失败:', ctx, e);
+                }
             }
-        })().catch(function (e) {
-            console.warn('[context-prompt] 重放暂存事件失败:', e);
-        });
+        })();
     }
 
     // branch 决议后重放暂存的事件（app-settings.js 在拿到 telemetryBranch 后广播）。
