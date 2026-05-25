@@ -61,6 +61,20 @@
         "enableFailed": "Auto launch couldn't be enabled right now. Please try again later.",
         "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "Want me to watch along with you?",
+            "message": "You're gaming / watching something — I can turn on the screen-sharing source for proactive chat and riff along with what's on your screen. Turn it on?",
+            "accept": "Sure, turn it on",
+            "decline": "Not now"
+        },
+        "work": {
+            "title": "Want me to keep quiet and stop watching?",
+            "message": "Looks like you're focused on work. I can turn off the screen-sharing source for proactive chat, so I won't distract you or seem to be peeking. Turn it off?",
+            "accept": "Yes, turn off screen sharing",
+            "decline": "No, keep it on"
+        }
+    },
     "tutorialPrompt": {
         "title": "Want to start the home tutorial?",
         "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",

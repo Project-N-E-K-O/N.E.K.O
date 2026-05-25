@@ -2805,6 +2805,17 @@
                         });
                     }
 
+                // -------- activity_context_prompt --------
+                // 后端活动 tracker 检测到用户「进入」游戏/娱乐（context='play'）或
+                // 「进入」专注工作（context='work'）时推这条。前端（仅 A/B 实验组
+                // vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动
+                // 搭话里的屏幕分享来源。分组判定 + 去重都在 app-context-prompt.js。
+                } else if (response.type === 'activity_context_prompt') {
+                    if (window.appContextPrompt
+                            && typeof window.appContextPrompt.handle === 'function') {
+                        window.appContextPrompt.handle(response.context || '');
+                    }
+
                 // -------- game_window_state_change --------
                 // 后端 game_route_start 激活后推 'opened'，_finalize 翻 inactive
                 // 后推 'closed'。前端把它转成 DOM 自定义事件让 chat.html / pet

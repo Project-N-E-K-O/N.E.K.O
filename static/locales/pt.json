@@ -61,6 +61,20 @@
         "enableFailed": "Não foi possível ativar a inicialização automática no momento. Por favor, tente novamente mais tarde.",
         "requiresApproval": "Aprove primeiro o início automático nas configurações do sistema. Entrará em vigor após aprovação."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "Quer que eu veja a tela junto com você?",
+            "message": "Você está jogando / assistindo algo. Posso ligar a fonte de compartilhamento de tela do bate-papo proativo e comentar junto com o que está na sua tela. Ligar?",
+            "accept": "Pode ligar",
+            "decline": "Agora não"
+        },
+        "work": {
+            "title": "Quer que eu fique quieta e não olhe a tela?",
+            "message": "Parece que você está focado no trabalho. Posso desligar a fonte de compartilhamento de tela do bate-papo proativo, assim não atrapalho nem pareço estar espiando. Desligar?",
+            "accept": "Sim, desliga o compartilhamento de tela",
+            "decline": "Não, deixa ligado"
+        }
+    },
     "tutorialPrompt": {
         "title": "Quer começar o tutorial em casa?",
         "message": "Posso mostrar rapidamente os principais pontos de entrada na tela inicial para que você possa começar a usar o N.E.K.O imediatamente.",

@@ -61,6 +61,20 @@
         "enableFailed": "El inicio automático no se pudo habilitar en este momento. Inténtelo de nuevo más tarde.",
         "requiresApproval": "Primero apruebe el inicio automático en la configuración de su sistema. Entrará en vigor después de la aprobación."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "¿Quieres que mire la pantalla contigo?",
+            "message": "Estás jugando / viendo algo. Puedo activar la fuente de pantalla compartida de la charla proactiva y comentar contigo lo que tienes en pantalla. ¿La activo?",
+            "accept": "Sí, actívala",
+            "decline": "Ahora no"
+        },
+        "work": {
+            "title": "¿Me quedo callada y dejo de mirar la pantalla?",
+            "message": "Parece que estás concentrado en el trabajo. Puedo desactivar la fuente de pantalla compartida de la charla proactiva, así no te distraigo ni parece que espío. ¿La desactivo?",
+            "accept": "Sí, desactiva la pantalla compartida",
+            "decline": "No, déjala"
+        }
+    },
     "tutorialPrompt": {
         "title": "¿Quieres empezar el tutorial en casa?",
         "message": "Puedo mostrarte rápidamente los principales puntos de entrada en la pantalla de inicio para que puedas comenzar con N.E.K.O de inmediato.",
