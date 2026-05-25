@@ -2938,7 +2938,12 @@ class LLMSessionManager:
                 # 占位语音被粘在正文前一起播、失去"填补空窗"的意义。所以这里
                 # 主动把管线（worker 线程 + response handler 任务）拉起来，让 worker
                 # 在检索这几秒内就绪，filler 一就绪即被 handler flush 合成播放。
-                await self.ensure_tts_pipeline_alive()
+                # 但 NO_RETRY_TTS_CODES（API_ARREARS / API_KEY_REJECTED 等不可恢复态）下
+                # 不要拉起：ensure_tts_pipeline_alive 直接调 _start_tts_thread，会绕过
+                # _respawn_tts_worker 的 no-retry 闸，等于同轮每次 recall 都重启一次注定
+                # 失败的 worker。此时跳过，直接走下面的早退放弃 filler。
+                if getattr(self, "_last_tts_error_code", None) not in NO_RETRY_TTS_CODES:
+                    await self.ensure_tts_pipeline_alive()
                 # 冷启动有界等待：ensure_tts_pipeline_alive 只拉起 worker/handler，
                 # 不等 __ready__。首轮 recall 紧接着 emit 时 tts_ready 可能还是 False，
                 # 导致 _emit_recall_filler_tts 直接返回 False、首轮空窗依旧。TTS 通常
