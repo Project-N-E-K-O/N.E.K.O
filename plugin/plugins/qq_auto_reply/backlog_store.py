@@ -188,6 +188,22 @@ class QQBacklogStore:
             await atomic_write_json_async(self._path, state)
             return state
 
+    async def update_group_last_notified_at(self, group_id: str, timestamp: int) -> dict[str, Any]:
+        async with self._lock:
+            state = await self.load()
+            groups = state["groups"]
+            normalized_group_id = str(group_id or "").strip()
+            if not normalized_group_id:
+                return state
+            group = groups.get(normalized_group_id)
+            if not isinstance(group, dict):
+                return state
+            group["last_notified_at"] = int(timestamp or 0)
+            groups[normalized_group_id] = group
+            state["groups"] = groups
+            await atomic_write_json_async(self._path, state)
+            return state
+
     async def get_group_detail(self, group_id: str) -> dict[str, Any]:
         state = await self.load()
         groups = state["groups"]

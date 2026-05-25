@@ -41,7 +41,18 @@ class QQFeedbackClassifier:
             keywords = label.get("keywords") or []
             if not label_id or not isinstance(keywords, list):
                 continue
-            if any(re.search(str(pattern), normalized, re.IGNORECASE) for pattern in keywords if str(pattern).strip()):
+            matched_label = False
+            for pattern in keywords:
+                pattern_text = str(pattern).strip()
+                if not pattern_text:
+                    continue
+                try:
+                    if re.search(pattern_text, normalized, re.IGNORECASE):
+                        matched_label = True
+                        break
+                except re.error:
+                    continue
+            if matched_label:
                 matched.append((priority, label_id))
         if not matched:
             return "chat"

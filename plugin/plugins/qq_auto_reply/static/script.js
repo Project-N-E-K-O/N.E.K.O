@@ -350,7 +350,10 @@ const pluginId = 'qq_auto_reply';
                     probabilityParts.push(`回复 ${item.open_reply_probability}`);
                 }
                 const sub = probabilityParts.length ? `${baseSub} · ${probabilityParts.join(' · ')}` : baseSub;
-                return `<button class="entity-item" type="button" onclick="editEntity(${index})"><div class="avatar-circle">${String(name).charAt(0).toUpperCase()}</div><div class="item-meta"><span class="item-name">${name}</span><span class="item-sub">${sub}</span></div><span class="btn-del" onclick="event.stopPropagation();deleteItem(${index})">✕</span></button>`;
+                const displayName = escapeHtml(String(name));
+                const displaySub = escapeHtml(String(sub));
+                const avatarText = escapeHtml(String(name).charAt(0).toUpperCase());
+                return `<button class="entity-item" type="button" onclick="editEntity(${index})"><div class="avatar-circle">${avatarText}</div><div class="item-meta"><span class="item-name">${displayName}</span><span class="item-sub">${displaySub}</span></div><span class="btn-del" onclick="event.stopPropagation();deleteItem(${index})">✕</span></button>`;
             }).join('');
         }
         function renderBacklogLabelEditor() {

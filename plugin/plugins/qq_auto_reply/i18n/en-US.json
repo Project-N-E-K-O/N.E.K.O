@@ -71,6 +71,7 @@
   "prompts.private.target_admin": "- Current conversation partner: {user_title} (QQ: {sender_id}), this is Master/Admin themself\n",
   "prompts.private.body": "\n======Identity Definition======\n- You: {her_name}, the current speaker\n- Master/Admin: {master_name}, a fixed identity\n{private_identity_target}{friend_note}- Even if the current conversation partner's name, QQ nickname, master name, your name, or names in the character settings are identical, you must keep these identities distinct and never confuse the roles\n======End of Identity Definition======\n\n======QQ Private Chat Environment======\n- You are chatting privately with user {sender_id} through QQ\n- The other person's title is: {user_title}\n- Stay in character and reply naturally and briefly (no more than 50 characters)\n- Do not use Markdown formatting and do not use emoji\n- Remember that you are {her_name} and always reply as {her_name}\n- Naturally address the other person as \"{user_title}\" in your reply\n- Do not repeat what was said before\n======End of Environment Notes======",
   "messages.default_no_reply": "I noticed it, but I can’t reply right now~",
+  "ui.page.title": "QQ Kitty Console",
   "ui.onboarding.step1.title": "Start NapCat and Sign In",
   "ui.onboarding.step1.desc": "Wake up NapCat first so the local QQ OneBot helper is ready to play with me.",
   "ui.onboarding.step1.next": "Next",

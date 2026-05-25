@@ -890,13 +890,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return
         unread_count = int(group.get("unread_count") or 0)
         label_counts = dict(group.get("label_counts") or {})
-        issue_count = int(label_counts.get("issue") or 0)
         label_map = {
             str(item.get("id") or "").strip(): str(item.get("label") or item.get("id") or "").strip()
             for item in list((self._qq_settings or {}).get("backlog_labels") or [])
             if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
-        if unread_count < self._backlog_summary_threshold and issue_count < self._backlog_issue_notify_threshold:
+        if unread_count < self._backlog_summary_threshold:
             return
         last_notified_at = int(group.get("last_notified_at") or 0)
         now = int(time.time())
@@ -929,10 +928,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "label_counts": label_counts,
             },
         )
-        group["last_notified_at"] = now
-        groups[group_id] = group
-        state["groups"] = groups
-        await self.backlog_store.save(state)
+        await self.backlog_store.update_group_last_notified_at(group_id, now)
 
     async def _process_messages(self):
         while self._running:

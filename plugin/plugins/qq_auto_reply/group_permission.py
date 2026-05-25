@@ -58,7 +58,9 @@ class GroupPermissionManager:
         Args:
             group_id: 群号
             level: 权限等级 (trusted, open, normal)
-        """
+            normal_relay_probability: normal 群命中后转发给主人时使用的概率
+            open_reply_probability: open 群主动回复时使用的概率
+"""
         normalized_group_id = str(group_id or "").strip()
         if not normalized_group_id:
             return

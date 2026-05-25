@@ -65,6 +65,18 @@ https://github.com/NapNeko/NapCatQQ/releases
 | `normal_relay_probability` | float | 普通用户/普通群聊消息转述给管理员的概率 |
 | `truth_reply_probability` | float | `open` 群聊在未 @ 机器人的情况下触发直接回复的概率 |
 
+### 群聊里的概率字段
+
+`trusted_groups` 里的每个群除了 `group_id` 和 `level` 之外，还可以带两个可选概率字段：
+
+- `normal_relay_probability`：只对 `level = normal` 的群生效。群消息命中“转述给主人”路径时，会用这个值覆盖全局默认转述概率。
+- `open_reply_probability`：只对 `level = open` 的群生效。开放群里在没有 @ 机器人的情况下，会用这个值覆盖全局默认主动回复概率。
+
+说明：
+- 这两个字段都是 `0 ~ 1` 之间的小数。
+- 留空时会沿用全局配置里的默认值。
+- `trusted` 群不会使用这两个字段，因为 `trusted` 群只在 @ 机器人时直接进入正常回复逻辑。
+
 ## 权限等级
 
 ### 用户权限
