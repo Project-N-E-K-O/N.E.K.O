@@ -7354,6 +7354,50 @@ async def translate_text_api(request: Request):
             "target_lang": "zh"
         }
 
+# ========== 个性化内容接口 ==========
+
+@router.post('/personal_dynamics')
+async def get_personal_dynamics(request: Request):
+    """
+    获取个性化内容数据
+    """
+    from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
+    try:
+
+        data = await request.json()
+        limit = data.get('limit', 10)
+
+        # 获取个性化内容
+        personal_content = await fetch_personal_dynamics(limit=limit)
+
+        if not personal_content['success']:
+            return JSONResponse({
+                "success": False,
+                "error": "无法获取个性化内容",
+                "detail": personal_content.get('error', '未知错误')
+            }, status_code=500)
+
+        # 格式化内容用于前端显示
+        formatted_content = format_personal_dynamics(personal_content)
+
+        return JSONResponse({
+            "success": True,
+            "data": {
+                "raw": personal_content,
+                "formatted": formatted_content,
+                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"获取个性化内容失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": "服务器内部错误",
+            "detail": str(e)
+        }, status_code=500)
+
+
 # Self-register the mini-game-invite keyword matcher with main_logic's
 # event bus. Same rationale as plugin/core/state.py: ``main_logic.core``
 # previously imported this function directly (a layering inversion);
