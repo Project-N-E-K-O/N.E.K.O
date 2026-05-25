@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
 from .._coerce import finite_float
+from .._contracts import UnitConvertParams, UnitConvertResult
 
 # 换算表: (from_unit, to_unit) → (multiplier, from_label, to_label)
 # value_to = value_from * multiplier
@@ -113,28 +114,23 @@ class UnitConvertRouter(PluginRouter):
             "适合回答「180cm多少英尺」「30度是多少华氏度」「500g几盎司」。"
             "菜谱中的外国单位也可以用这个换算。"
         ),
-        llm_result_fields=["summary", "conversion"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "value": {
-                    "type": "number",
-                    "description": "要换算的数值",
-                },
-                "from_unit": {
-                    "type": "string",
-                    "description": "源单位（如 cm, kg, °C, cup, ml）",
-                },
-                "to_unit": {
-                    "type": "string",
-                    "description": "目标单位（如 inch, lb, °F, ml, g）",
-                },
-            },
-            "required": ["value", "from_unit", "to_unit"],
-        },
+        params=UnitConvertParams,
+        llm_result_model=UnitConvertResult,
     )
     @quick_action(icon="📐", priority=3)
-    async def unit_convert(self, value: float = 0, from_unit: str = "", to_unit: str = "", **_):
+    async def unit_convert(
+        self,
+        params: UnitConvertParams | None = None,
+        value: float = 0,
+        from_unit: str = "",
+        to_unit: str = "",
+        **_,
+    ):
+        if params is not None:
+            value = params.value
+            from_unit = params.from_unit
+            to_unit = params.to_unit
+
         fk = _resolve_unit(from_unit)
         tk = _resolve_unit(to_unit)
 

@@ -12,6 +12,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _recipe as recipe_api
 from .._chat import push_lifekit_content
+from .._contracts import RandomRecipeResult, SearchRecipeParams, SearchRecipeResult
 
 
 def _format_recipe_summary(r: recipe_api.Recipe) -> str:
@@ -73,25 +74,21 @@ class RecipeRouter(PluginRouter):
             "支持中英文菜名。搜不到时 LLM 可自行补充。"
             "如果用户不想自己做，可用 food_recommend 推荐附近餐厅。"
         ),
-        llm_result_fields=["summary", "recipes", "next_actions"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "菜名或食材（如：红烧肉、chicken curry、tomato）",
-                },
-                "by_ingredient": {
-                    "type": "boolean",
-                    "description": "是否按食材搜索（默认按菜名）",
-                    "default": False,
-                },
-            },
-            "required": ["query"],
-        },
+        params=SearchRecipeParams,
+        llm_result_model=SearchRecipeResult,
     )
     @quick_action(icon="📖", priority=5)
-    async def search_recipe(self, query: str = "", by_ingredient: bool = False, **_):
+    async def search_recipe(
+        self,
+        params: SearchRecipeParams | None = None,
+        query: str = "",
+        by_ingredient: bool = False,
+        **_,
+    ):
+        if params is not None:
+            query = params.query
+            by_ingredient = params.by_ingredient
+
         if not query.strip():
             return Err(SdkError("请输入菜名或食材"))
 
@@ -154,7 +151,7 @@ class RecipeRouter(PluginRouter):
         id="random_recipe",
         name="随机菜谱",
         description="随机推荐一道菜，适合回答「今天吃什么」「不知道做什么菜」。不想自己做可以用 food_recommend 找附近餐厅。",
-        llm_result_fields=["summary", "recipe", "next_actions"],
+        llm_result_model=RandomRecipeResult,
     )
     @quick_action(icon="🎲", priority=4)
     async def random_recipe(self, **_):

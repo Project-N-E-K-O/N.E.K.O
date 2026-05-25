@@ -10,6 +10,14 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import GeocodeError, geocode_city
 from .._coerce import clean_text
+from .._contracts import (
+    AddLocationParams,
+    AddLocationResult,
+    ListLocationsResult,
+    LocationIdParams,
+    MessageResult,
+    RemoveLocationResult,
+)
 
 _STORE_KEY = "saved_locations"
 
@@ -61,7 +69,7 @@ class LocationsRouter(PluginRouter):
         id="list_locations",
         name=tr("entries.listLocations.name", default="List saved locations"),
         description=tr("entries.listLocations.description", default="List all saved LifeKit locations."),
-        llm_result_fields=["count", "locations"],
+        llm_result_model=ListLocationsResult,
     )
     async def list_locations(self, **_):
         locations = await self._load()
@@ -82,19 +90,24 @@ class LocationsRouter(PluginRouter):
             "entries.addLocation.description",
             default="Add a saved location by label and city, geocoding coordinates automatically.",
         ),
-        llm_result_fields=["message"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "label": {"type": "string", "description": tr("fields.locationLabel.description", default="Location label")},
-                "city": {"type": "string", "description": tr("fields.city.description", default="City name")},
-                "address": {"type": "string", "description": tr("fields.address.description", default="Optional address"), "default": ""},
-                "set_default": {"type": "boolean", "description": tr("fields.setDefault.description", default="Set as default"), "default": False},
-            },
-            "required": ["label", "city"],
-        },
+        params=AddLocationParams,
+        llm_result_model=AddLocationResult,
     )
-    async def add_location(self, label: str, city: str, address: str = "", set_default: bool = False, **_):
+    async def add_location(
+        self,
+        params: AddLocationParams | None = None,
+        label: str = "",
+        city: str = "",
+        address: str = "",
+        set_default: bool = False,
+        **_,
+    ):
+        if params is not None:
+            label = params.label
+            city = params.city
+            address = params.address
+            set_default = params.set_default
+
         clean_label = clean_text(label)
         clean_city = clean_text(city)
         if not clean_label:
@@ -158,16 +171,13 @@ class LocationsRouter(PluginRouter):
         id="remove_location",
         name=tr("entries.removeLocation.name", default="Remove saved location"),
         description=tr("entries.removeLocation.description", default="Remove a saved location by ID or label."),
-        llm_result_fields=["message"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "location_id": {"type": "string", "description": tr("fields.locationId.description", default="Location ID or label")},
-            },
-            "required": ["location_id"],
-        },
+        params=LocationIdParams,
+        llm_result_model=RemoveLocationResult,
     )
-    async def remove_location(self, location_id: str, **_):
+    async def remove_location(self, params: LocationIdParams | None = None, location_id: str = "", **_):
+        if params is not None:
+            location_id = params.location_id
+
         plugin = self.main_plugin
         key = clean_text(location_id)
         async with plugin._locations_lock:
@@ -196,16 +206,13 @@ class LocationsRouter(PluginRouter):
         id="set_default_location",
         name=tr("entries.setDefaultLocation.name", default="Set default location"),
         description=tr("entries.setDefaultLocation.description", default="Set the location preferred by weather and travel tools."),
-        llm_result_fields=["message"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "location_id": {"type": "string", "description": tr("fields.locationId.description", default="Location ID or label")},
-            },
-            "required": ["location_id"],
-        },
+        params=LocationIdParams,
+        llm_result_model=MessageResult,
     )
-    async def set_default_location(self, location_id: str, **_):
+    async def set_default_location(self, params: LocationIdParams | None = None, location_id: str = "", **_):
+        if params is not None:
+            location_id = params.location_id
+
         plugin = self.main_plugin
         key = clean_text(location_id)
         async with plugin._locations_lock:

@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import daily_val
 from .._chat import push_lifekit_content
+from .._contracts import CityParams, GetWeatherResult
 
 
 class CurrentWeatherRouter(PluginRouter):
@@ -24,20 +25,14 @@ class CurrentWeatherRouter(PluginRouter):
             "查询指定城市（或自动定位）的当前天气和未来预报。"
             "可配合 travel_advice 获取出行建议，或 food_recommend 获取天气适合的美食推荐。"
         ),
-        llm_result_fields=["summary", "current", "forecast", "next_actions"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "city": {
-                    "type": "string",
-                    "description": "城市名（中文/英文均可），留空则自动定位",
-                    "default": "",
-                },
-            },
-        },
+        params=CityParams,
+        llm_result_model=GetWeatherResult,
     )
     @quick_action(icon="🌤️", priority=10)
-    async def get_weather(self, city: str = "", **_):
+    async def get_weather(self, params: CityParams | None = None, city: str = "", **_):
+        if params is not None:
+            city = params.city
+
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n

@@ -9,6 +9,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .. import _currency as currency_api
 from .._chat import push_lifekit_content
+from .._contracts import CurrencyConvertParams, CurrencyConvertResult
 
 
 class CurrencyRouter(PluginRouter):
@@ -25,32 +26,19 @@ class CurrencyRouter(PluginRouter):
             "适合回答「100美元多少人民币」「日元兑欧元汇率」。"
             "出国旅行时可配合 trip_advice 使用。"
         ),
-        llm_result_fields=["summary", "conversion", "next_actions"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "amount": {
-                    "type": "number",
-                    "description": "金额（默认 1）",
-                    "default": 1,
-                },
-                "from_currency": {
-                    "type": "string",
-                    "description": "源货币代码（如 USD, CNY, EUR, JPY）",
-                },
-                "to_currency": {
-                    "type": "string",
-                    "description": "目标货币代码（如 CNY, USD, EUR）",
-                },
-            },
-            "required": ["from_currency", "to_currency"],
-        },
+        params=CurrencyConvertParams,
+        llm_result_model=CurrencyConvertResult,
     )
     @quick_action(icon="💱", priority=5)
     async def currency_convert(
-        self, amount: float = 1,
+        self, params: CurrencyConvertParams | None = None, amount: float = 1,
         from_currency: str = "", to_currency: str = "", **_,
     ):
+        if params is not None:
+            amount = params.amount
+            from_currency = params.from_currency
+            to_currency = params.to_currency
+
         if not from_currency.strip() or not to_currency.strip():
             return Err(SdkError("请指定源货币和目标货币（如 USD → CNY）"))
 

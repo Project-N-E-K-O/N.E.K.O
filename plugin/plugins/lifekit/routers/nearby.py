@@ -10,6 +10,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 from .._poi import POIService
 from .._api import RAIN_CODES
 from .._coerce import clamp_int, clean_text
+from .._contracts import NearbyParams, NearbyResult
 from .._routing import format_distance
 
 
@@ -26,30 +27,23 @@ class NearbyRouter(PluginRouter):
             "搜索附近的餐厅、咖啡店、景点、超市等。"
             "支持保存的地点标签或城市名作为搜索中心。"
         ),
-        llm_result_fields=["summary", "results"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索关键词（如：火锅、咖啡、超市、景点）",
-                },
-                "location": {
-                    "type": "string",
-                    "description": "搜索中心（地点标签或城市名，留空用默认位置）",
-                    "default": "",
-                },
-                "radius": {
-                    "type": "integer",
-                    "description": "搜索半径（米，默认 3000）",
-                    "default": 3000,
-                },
-            },
-            "required": ["query"],
-        },
+        params=NearbyParams,
+        llm_result_model=NearbyResult,
     )
     @quick_action(icon="🔍", priority=6)
-    async def search_nearby(self, query: str = "", location: str = "", radius: int = 3000, **_):
+    async def search_nearby(
+        self,
+        params: NearbyParams | None = None,
+        query: str = "",
+        location: str = "",
+        radius: int = 3000,
+        **_,
+    ):
+        if params is not None:
+            query = params.query
+            location = params.location
+            radius = params.radius
+
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n

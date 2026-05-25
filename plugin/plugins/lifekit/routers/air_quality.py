@@ -10,6 +10,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 from .._api import AirQualityError, fetch_air_quality
 from .._chat import push_lifekit_content
 from .._coerce import finite_float
+from .._contracts import AirQualityResult, CityParams
 
 
 def _aqi_level(aqi: int) -> tuple[str, str]:
@@ -51,20 +52,14 @@ class AirQualityRouter(PluginRouter):
         id="air_quality",
         name="Air quality",
         description="Query current air quality, PM2.5, PM10, UV, and related advice for a city or saved/default location.",
-        llm_result_fields=["summary", "aqi", "advice", "next_actions"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "city": {
-                    "type": "string",
-                    "description": "City name. Leave empty to use the default location.",
-                    "default": "",
-                },
-            },
-        },
+        params=CityParams,
+        llm_result_model=AirQualityResult,
     )
     @quick_action(icon="air", priority=6)
-    async def air_quality(self, city: str = "", **_):
+    async def air_quality(self, params: CityParams | None = None, city: str = "", **_):
+        if params is not None:
+            city = params.city
+
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
