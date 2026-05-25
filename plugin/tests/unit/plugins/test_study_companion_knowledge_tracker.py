@@ -4,6 +4,9 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from plugin.plugins.study_companion.fsrs_bridge import StudyFsrsRating
 from plugin.plugins.study_companion.knowledge_tracker import (
@@ -13,6 +16,8 @@ from plugin.plugins.study_companion.knowledge_tracker import (
     _difficulty_to_level,
 )
 from plugin.plugins.study_companion.store import StudyStore
+
+pytestmark = pytest.mark.unit
 
 
 class _Logger:
@@ -275,6 +280,30 @@ def test_memory_deck_summary_provider_overrides_legacy_memory_cards(
         assert session["memory_deck"]["item_count"] == 7
         assert session["memory_deck"]["decks"][0]["name"] == "Real Deck"
         assert status["memory_card_count"] == 7
+    finally:
+        store.close()
+
+
+def test_memory_deck_summary_provider_falls_back_on_error(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        tracker.upsert_memory_card(
+            topic_id="fallback_topic",
+            front="Front",
+            back="Back",
+        )
+
+        def failing_provider(*, limit: int = 8) -> dict[str, Any]:
+            raise RuntimeError("provider unavailable")
+
+        tracker.set_memory_deck_summary_provider(failing_provider)
+
+        status = tracker.get_memory_deck_status(limit=4)
+
+        assert status["card_count"] == 1
+        assert status["due_count"] == 1
+        assert status["cards"][0]["topic_id"] == "fallback_topic"
     finally:
         store.close()
 

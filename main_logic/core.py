@@ -73,6 +73,7 @@ from config.prompts.prompts_sys import (
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
+    RECALL_MEMORY_TOOL_TIME_DESCRIPTION,
     RECALL_MEMORY_TOOL_NO_RESULT,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
@@ -2763,8 +2764,15 @@ class LLMSessionManager:
                         "type": "string",
                         "description": _loc(RECALL_MEMORY_TOOL_QUERY_DESCRIPTION, _lang),
                     },
+                    "time": {
+                        "type": "string",
+                        "description": _loc(RECALL_MEMORY_TOOL_TIME_DESCRIPTION, _lang),
+                    },
                 },
-                "required": ["query"],
+                # query / time 至少给一个：只给 time 就按时间回溯（不依赖
+                # 内容），只给 query 就语义检索。两者都空时 handler 早退回
+                # "没有找到相关记忆"。故 required 留空，靠 handler 兜底。
+                "required": [],
             },
             handler=self._handle_recall_memory_call,
             metadata={"source": "builtin"},
@@ -2794,10 +2802,15 @@ class LLMSessionManager:
         raw_query = args_dict.get("query")
         if isinstance(raw_query, str):
             query = raw_query.strip()
+        time_arg = ""
+        raw_time = args_dict.get("time")
+        if isinstance(raw_time, str):
+            time_arg = raw_time.strip()
         session_kind = type(self.session).__name__ if self.session is not None else "no-session"
 
-        # 空 query 早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次 HTTP。
-        if not query:
+        # 空入参早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次
+        # HTTP。但只要带了 time（按时间回溯，不依赖 query），就不算空入参。
+        if not query and not time_arg:
             logger.info(
                 "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
                 "→ empty query, no fetch",
@@ -2806,14 +2819,20 @@ class LLMSessionManager:
             logger.debug("[recall_memory] empty-query args=%s", args_dict)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # POST 到 memory_server
+        # POST 到 memory_server。query 始终原样下传，不能因为带了 time 就清空
+        # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
+        # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
+        # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
+        post_body = {"query": query}
+        if time_arg:
+            post_body["time"] = time_arg
         result_payload: dict = {}
         try:
             from utils.internal_http_client import get_internal_http_client
             client = get_internal_http_client()
             resp = await client.post(
                 f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
-                json={"query": query},
+                json=post_body,
                 timeout=5.0,
             )
             if not resp.is_success:
@@ -2842,15 +2861,18 @@ class LLMSessionManager:
         results = results if isinstance(results, list) else []
         elapsed_ms = result_payload.get("elapsed_ms", 0) if isinstance(result_payload, dict) else 0
 
+        # INFO 只记 has_time（布尔），不落 time_arg 原值——time_arg 是用户
+        # 原始输入，按本函数 docstring 立的隐私分层规矩（INFO 可能被打包外送）
+        # 原文只进下面的 DEBUG。
         logger.info(
             "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
-            "→ hits=%d elapsed=%.0fms",
+            "has_time=%s → hits=%d elapsed=%.0fms",
             self.lanlan_name, self.input_mode, session_kind, _lang,
-            len(results), elapsed_ms,
+            bool(time_arg), len(results), elapsed_ms,
         )
         logger.debug(
-            "[recall_memory] args=%s query=%r ids=%s",
-            args_dict, query,
+            "[recall_memory] args=%s query=%r time=%r ids=%s",
+            args_dict, query, time_arg,
             [r.get("id") for r in results],
         )
 
@@ -2858,23 +2880,52 @@ class LLMSessionManager:
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
         # 渲染：首行 i18n 总览 + 每条 markdown bullet
-        # 格式: ``1. [tier/entity] text  (created_at)``
+        # 格式: ``1. [tier/entity] text  (2026-05-01, 23 天前)``
         # tier/entity 是英文 enum 不翻译；text 是原始记忆原文不翻译
-        # （按用户拍板）。created_at 取首 10 位日期部分省噪音。
+        # （按用户拍板）。时间锚点优先取事件真正发生时间 event_end_at →
+        # event_start_at → created_at（与 persona 过时 block / temporal
+        # _past_anchor 同口径），让模型看到的是"事件什么时候发生"而不是
+        # "记忆什么时候写下"；再附一个本地化相对标签（X 天/周/月前）。
+        from memory.temporal import (
+            time_since_label as _time_label,
+            _parse_iso_safe,
+            to_naive_local,
+        )
         lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
         for i, r in enumerate(results, start=1):
             tier = r.get("tier") or "?"
             entity = r.get("entity") or "-"
             # str() coerce 防 malformed memory entry：facts/reflections.json
-            # 走 JSON 序列化往返，理论上 text/created_at 应是 str，但 manual
+            # 走 JSON 序列化往返，理论上 text / 时间字段应是 str，但 manual
             # edit / 老格式残留 / 迁移 bug 都可能让它们变 list / int 等
-            # truthy non-string（created_at 尤其常见，老数据可能存 epoch int）。
+            # truthy non-string（时间戳尤其常见，老数据可能存 epoch int）。
             # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
             # tool call 翻 is_error，模型反而不能正常走。
             text = str(r.get("text") or "").strip()
-            created_at = str(r.get("created_at") or "")[:10]  # YYYY-MM-DD
-            date_suffix = f"  ({created_at})" if created_at else ""
-            lines.append(f"{i}. [{tier}/{entity}] {text}{date_suffix}")
+            # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
+            # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
+            # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
+            # 把本可用的低优先级字段挡掉，渲染出乱码日期（Codex）。
+            # _parse_iso_safe 对 None / int / list 等都安全返回 None。
+            # date_part 和 rel 都从同一个归一后的 datetime 出，口径一致。
+            anchor_dt = None
+            for _cand in (
+                r.get("event_end_at"),
+                r.get("event_start_at"),
+                r.get("created_at"),
+            ):
+                anchor_dt = to_naive_local(_parse_iso_safe(_cand))
+                if anchor_dt is not None:
+                    break
+            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else ""
+            rel = _time_label(anchor_dt.isoformat(), lang=_lang) if anchor_dt else ""
+            if date_part and rel:
+                time_suffix = f"  ({date_part}, {rel})"
+            elif date_part:
+                time_suffix = f"  ({date_part})"
+            else:
+                time_suffix = ""
+            lines.append(f"{i}. [{tier}/{entity}] {text}{time_suffix}")
         return "\n".join(lines)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:

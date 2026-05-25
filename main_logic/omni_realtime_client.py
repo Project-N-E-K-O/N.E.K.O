@@ -34,17 +34,48 @@ from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
 from utils.stepfun_tts_voices import get_stepfun_tts_default_voice
 
-# Gemini Live API SDK (startup-time import)
-try:
-    from google import genai
-    from google.genai import types
-    GEMINI_AVAILABLE = True
-    _GEMINI_IMPORT_ERROR = None
-except Exception as e:
-    GEMINI_AVAILABLE = False
-    _GEMINI_IMPORT_ERROR = e
-    genai = None
-    types = None
+# Gemini Live API SDK 懒加载。该 SDK import 很重（~0.6s）且捎带 mcp（~0.5s），
+# 但只有用户真的用 Gemini Live 语音会话时才需要。改成首次连接时再 import，并由
+# utils.module_warmup 在 ready 后预热，让常规启动（含 greeting）不付这笔钱。
+genai = None
+types = None
+GEMINI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+_GEMINI_IMPORT_ERROR = None
+
+
+def _ensure_gemini_sdk() -> bool:
+    """首次调用时 import google-genai，缓存结果；失败时落一份 SSL 诊断。
+
+    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次（Python 模块缓存幂等）。
+    """
+    global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
+    # 显式强制不可用优先级最高 → 即便对象已塞进全局也降级。
+    if GEMINI_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if genai is not None and types is not None:
+        GEMINI_AVAILABLE = True
+        return True
+    try:
+        from google import genai as genai_mod
+        from google.genai import types as types_mod
+        # 只补缺失的，保住测试可能注入的 genai mock。
+        if genai is None:
+            genai = genai_mod
+        if types is None:
+            types = types_mod
+        GEMINI_AVAILABLE = True
+        _GEMINI_IMPORT_ERROR = None
+    except Exception as e:
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 genai/types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
+        if GEMINI_AVAILABLE is None:
+            GEMINI_AVAILABLE = False
+            _GEMINI_IMPORT_ERROR = e
+            _emit_gemini_import_diagnostic(e)
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让 _connect_gemini 在 None 上解引用 genai/types。
+    return bool(GEMINI_AVAILABLE) and genai is not None and types is not None
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -82,7 +113,8 @@ class TurnDetectionMode(Enum):
 
 _config_manager = get_config_manager()
 
-if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
+def _emit_gemini_import_diagnostic(import_error) -> None:
+    """genai SDK 首次 import 失败时落一份 SSL 诊断（带 24h 节流去重）。"""
     diagnostics_dir = Path(_config_manager.app_docs_dir) / "logs" / "diagnostics"
     sentinel_path = diagnostics_dir / "gemini_sdk_import_failed.last.json"
     throttle_window_seconds = 24 * 60 * 60
@@ -134,8 +166,8 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
             diag_path = write_ssl_diagnostic(
                 event="gemini_sdk_import_failed",
                 output_dir=str(diagnostics_dir),
-                error=_GEMINI_IMPORT_ERROR,
-                extra={"stage": "module_import"},
+                error=import_error,
+                extra={"stage": "first_use_import"},
             )
             if diag_path:
                 logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
@@ -384,12 +416,21 @@ class OmniRealtimeClient:
             and not bool(livestream_mode)
         )
 
+        # free 经 Gemini 代理（OpenAI-realtime 协议，发图走 input_image_buffer.append、
+        # 服务端 VAD 由代理吞掉）：lanlan.app 海外节点，或 livestream 主播自建 server_prefix。
+        # 二者上游同为 Gemini 系，原生视觉与发图协议一致；lanlan.tech free 上游是
+        # StepFun（无原生视觉，走 VISION_MODEL 分析通道），不在此列。
+        self._is_free_proxy = 'free' in self._model_lower and (
+            'lanlan.app' in (base_url or '')
+            or bool(livestream_mode)
+        )
+
         # Whether this client supports native image input
-        # qwen/glm/gpt/gemini have native vision; lanlan.app replacement server (free, non-mainland) also does
+        # qwen/glm/gpt/gemini have native vision; free Gemini-proxy (lanlan.app / livestream) also does
         self._supports_native_image = (
             any(m in self._model_lower for m in ['qwen', 'glm', 'gpt'])
             or self._is_gemini
-            or ('lanlan.app' in (base_url or '') and 'free' in self._model_lower)
+            or self._is_free_proxy
         )
         self._gemini_client = None  # genai.Client instance
         self._gemini_session = None  # Live session from SDK
@@ -863,7 +904,7 @@ class OmniRealtimeClient:
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
-        if not GEMINI_AVAILABLE or genai is None or types is None:
+        if not _ensure_gemini_sdk() or genai is None or types is None:
             detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
             raise RuntimeError(
                 "google-genai SDK unavailable. "
@@ -1340,7 +1381,7 @@ class OmniRealtimeClient:
                             self._fatal_error_occurred = True
                 return
 
-            if ('lanlan.app' in self.base_url and 'free' in self._model_lower):
+            if self._is_free_proxy:
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
@@ -1755,7 +1796,7 @@ class OmniRealtimeClient:
                                 }],
                             },
                         })
-                    elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
+                    elif "qwen" in self._model_lower or self._is_free_proxy:
                         await self.send_event({
                             "type": "input_image_buffer.append",
                             "image": snapshot_image_b64,

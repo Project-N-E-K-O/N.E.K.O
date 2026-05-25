@@ -1,6 +1,14 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import {
+  deckGoalSavedMessage,
+  getMemoryHabitStatus,
+  habitBridgeAvailable,
+  normalizePositiveInteger,
+  setDeckGoal,
+  type MemoryHabitStatus,
+} from './memory_habit_bridge';
 
 type MemoryDeck = {
   id: string;
@@ -13,6 +21,9 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   const [decks, setDecks] = useState<MemoryDeck[]>([]);
   const [name, setName] = useState('');
   const [deckType, setDeckType] = useState('word');
+  const [goalAmount, setGoalAmount] = useState(10);
+  const [goalUnit, setGoalUnit] = useState('cards');
+  const [habitStatus, setHabitStatus] = useState<MemoryHabitStatus>({});
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -22,13 +33,14 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
   }
 
   async function createDeck() {
-    if (!name.trim()) {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
       setStatus(text(props, 'ui.memory.error_missing_deck_name', 'Deck name is required'));
       return;
     }
     setBusy(true);
     try {
-      await callPlugin('study_memory_create_deck', { name, deck_type: deckType });
+      await callPlugin('study_memory_create_deck', { name: trimmedName, deck_type: deckType });
       setName('');
       await refresh();
       setStatus(text(props, 'ui.status.reply_ready', 'Reply ready'));
@@ -51,8 +63,26 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
     }
   }
 
+  async function saveDeckGoal(deckId: string) {
+    setBusy(true);
+    try {
+      const amount = normalizePositiveInteger(goalAmount, 1);
+      setGoalAmount(amount);
+      const payload = await setDeckGoal(deckId, amount, goalUnit);
+      setStatus(deckGoalSavedMessage(props, payload));
+      await refresh();
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
+    getMemoryHabitStatus(controller.signal)
+      .then(setHabitStatus)
+      .catch(() => setHabitStatus({ available: false }));
     refresh(controller.signal).catch((error) => {
       if (!controller.signal.aborted) {
         setStatus(errorMessage(error));
@@ -83,15 +113,39 @@ export default function MemoryDeckList(props: PluginSurfaceProps) {
             <option value="custom">custom</option>
           </select>
         </label>
+        {habitBridgeAvailable(habitStatus) ? (
+          <>
+            <label>
+              <span>{text(props, 'ui.daily_goal.set_for_deck', 'Deck goal')}</span>
+              <input type="number" value={goalAmount} disabled={busy} min={1} step={1} onChange={(event) => setGoalAmount(normalizePositiveInteger(event.target.value, 1))} />
+            </label>
+            <label>
+              <span>{text(props, 'ui.memory.deck_goal_unit', 'Unit')}</span>
+              <select value={goalUnit} disabled={busy} onChange={(event) => setGoalUnit(event.target.value)}>
+                <option value="cards">{text(props, 'ui.daily_goal.deck_unit_cards', 'cards')}</option>
+                <option value="minutes">{text(props, 'ui.daily_goal.deck_unit_minutes', 'minutes')}</option>
+                <option value="attempts">{text(props, 'ui.daily_goal.deck_unit_attempts', 'attempts')}</option>
+              </select>
+            </label>
+          </>
+        ) : null}
         <button type="button" disabled={busy} onClick={createDeck}>
           {text(props, 'ui.button.create', 'Create')}
         </button>
       </section>
       <div className="study-panel__actions">
         {decks.map((deck) => (
-          <button key={deck.id} type="button" disabled={busy} onClick={() => deleteDeck(deck.id)}>
-            {deck.name} / {deck.deck_type} / {deck.item_count || 0}
-          </button>
+          <div key={deck.id} className="study-panel__row">
+            <span>{deck.name} / {deck.deck_type} / {deck.item_count || 0}</span>
+            {habitBridgeAvailable(habitStatus) ? (
+              <button type="button" disabled={busy} onClick={() => saveDeckGoal(deck.id)}>
+                {text(props, 'ui.daily_goal.set_for_deck', 'Set Goal')}
+              </button>
+            ) : null}
+            <button type="button" disabled={busy} onClick={() => deleteDeck(deck.id)}>
+              {text(props, 'ui.button.delete', 'Delete')}
+            </button>
+          </div>
         ))}
       </div>
     </div>

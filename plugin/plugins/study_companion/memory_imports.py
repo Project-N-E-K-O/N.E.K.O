@@ -10,7 +10,7 @@ AddWord = Callable[..., dict[str, Any]]
 def normalize_csv_fieldnames(fieldnames: list[str] | None) -> list[str] | None:
     if not fieldnames:
         return fieldnames
-    return [str(name or "").strip().lstrip("\ufeff").lower() for name in fieldnames]
+    return [str(name or "").lstrip("\ufeff").strip().lower() for name in fieldnames]
 
 
 def import_word_rows(

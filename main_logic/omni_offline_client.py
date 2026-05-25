@@ -18,17 +18,46 @@ from main_logic.tool_calling import (
     parse_arguments_json,
 )
 
-# Lazy-import flag for google-genai (offline Gemini path). The SDK is already
-# imported by omni_realtime_client at module load; we duplicate the guard
-# here so the offline client can degrade gracefully if it isn't available.
-try:
-    from google import genai as _genai
-    from google.genai import types as _genai_types
-    _GENAI_AVAILABLE = True
-except Exception:  # pragma: no cover — environment-specific
-    _genai = None
-    _genai_types = None
-    _GENAI_AVAILABLE = False
+# google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
+# （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
+# 时再 import，并由 utils.module_warmup 在 ready 后用后台线程提前预热，所以常规
+# 启动（OpenAI-compat 端点 / greeting）完全不付这笔钱。
+_genai = None
+_genai_types = None
+_GENAI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+
+
+def _ensure_genai() -> bool:
+    """首次调用时 import google-genai，并缓存结果（成功或失败）。
+
+    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次，Python 的模块缓存
+    让其幂等，无副作用。
+    """
+    global _genai, _genai_types, _GENAI_AVAILABLE
+    # 显式强制不可用优先级最高（测试用它当强制降级开关）→ 即便对象已塞进全局也降级。
+    if _GENAI_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if _genai is not None and _genai_types is not None:
+        _GENAI_AVAILABLE = True
+        return True
+    try:
+        from google import genai as genai_mod
+        from google.genai import types as genai_types_mod
+        # 只补缺失的，保住测试可能注入的 _genai mock。
+        if _genai is None:
+            _genai = genai_mod
+        if _genai_types is None:
+            _genai_types = genai_types_mod
+        _GENAI_AVAILABLE = True
+    except Exception:  # pragma: no cover — environment-specific
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 _genai/_genai_types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
+        if _GENAI_AVAILABLE is None:
+            _GENAI_AVAILABLE = False
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让调用点在 None 上解引用 _genai_types。
+    return bool(_GENAI_AVAILABLE) and _genai is not None and _genai_types is not None
 
 
 # Hostname / model fragments that indicate the request should go through
@@ -253,7 +282,7 @@ def _genai_messages_to_contents(
     ``Content(role="model", parts=[Part(function_call=...)])``; role=tool
     becomes ``Content(role="user", parts=[Part(function_response=...)])``.
     """
-    if not _GENAI_AVAILABLE:
+    if not _ensure_genai():
         raise _GenaiToolsUnsupported("google-genai SDK not importable")
     types = _genai_types
     system_instruction: Optional[str] = None
@@ -422,15 +451,22 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     its base_url ('lanlan.app') stays on the OpenAI path. Tools won't
     work there until the proxy is upgraded — see TODO in core.py.
     """
-    if not _GENAI_AVAILABLE:
-        return False
+    # 先做便宜的字符串判断：只有路由确实指向 native Gemini 时才去 import SDK。
+    # 这样常规 OpenAI-compat 端点（含 greeting）构造 client 时不会触发 genai
+    # 这条重 import；而真要走 genai 的用户，本来下一步就得用到它。
     bl = (base_url or "").lower()
     ml = (model or "").lower()
-    if any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS):
-        return True
-    if not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS):
-        return True
-    return False
+    native = (
+        any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS)
+        or (not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS))
+    )
+    if not native:
+        return False
+    # 路由判断只需"是否可用"这个布尔；尊重已知/被强制的标志（测试会 force
+    # _GENAI_AVAILABLE 而不装 google-genai），只有真未知时才去付 lazy import。
+    if _GENAI_AVAILABLE is None:
+        return _ensure_genai()
+    return bool(_GENAI_AVAILABLE)
 
 class OmniOfflineClient:
     """
@@ -888,7 +924,7 @@ class OmniOfflineClient:
         Raises ``_GenaiToolsUnsupported`` if the SDK or this model
         cannot handle tools — caller falls back to OpenAI-compat."""
         from utils.llm_client import LLMStreamChunk
-        if not _GENAI_AVAILABLE:
+        if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
 

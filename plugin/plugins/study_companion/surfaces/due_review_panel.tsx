@@ -1,6 +1,15 @@
 import { useEffect, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 import { callPlugin, errorMessage, text } from './memory_shared';
+import {
+  getMemoryHabitStatus,
+  getPomodoroStatus,
+  habitBridgeAvailable,
+  normalizePositiveInteger,
+  startedNewFocusSession,
+  startDeckFocus,
+  type MemoryHabitStatus,
+} from './memory_habit_bridge';
 
 type DueReview = {
   item_id: string;
@@ -11,12 +20,16 @@ type DueReview = {
     item_type?: string;
   };
   deck?: {
+    id?: string;
     name?: string;
   };
 };
 
 export default function DueReviewPanel(props: PluginSurfaceProps) {
   const [reviews, setReviews] = useState<DueReview[]>([]);
+  const [habitStatus, setHabitStatus] = useState<MemoryHabitStatus>({});
+  const [focusMinutes, setFocusMinutes] = useState(25);
+  const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
 
   async function refresh(signal?: AbortSignal) {
@@ -33,8 +46,28 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
     }
   }
 
+  async function handleStartFocus(deckId: string) {
+    setBusy(true);
+    try {
+      const before = await getPomodoroStatus();
+      const after = await startDeckFocus(deckId, normalizePositiveInteger(focusMinutes, 1));
+      setStatus(
+        startedNewFocusSession(before, after)
+          ? text(props, 'ui.memory.focus_started', 'Focus started')
+          : text(props, 'ui.memory.focus_not_started', 'Focus is already running'),
+      );
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
+    getMemoryHabitStatus(controller.signal)
+      .then(setHabitStatus)
+      .catch(() => setHabitStatus({ available: false }));
     refresh(controller.signal).catch((error) => {
       if (!controller.signal.aborted) {
         setStatus(errorMessage(error));
@@ -53,11 +86,29 @@ export default function DueReviewPanel(props: PluginSurfaceProps) {
       </header>
       <div className="study-panel__actions">
         <button type="button" onClick={handleRefresh}>{text(props, 'ui.button.refresh', 'Refresh')}</button>
+        {habitBridgeAvailable(habitStatus) ? (
+          <label>
+            <span>{text(props, 'ui.summary.memory_focus_minutes', 'Focus minutes')}</span>
+            <input type="number" min={1} step={1} value={focusMinutes} disabled={busy} onChange={(event) => setFocusMinutes(normalizePositiveInteger(event.target.value, 1))} />
+          </label>
+        ) : null}
       </div>
-      <pre>{reviews.map((review) => {
-        const r = Number.isFinite(Number(review.retrievability)) ? `${Math.round(Number(review.retrievability) * 100)}%` : '-';
-        return `${review.deck?.name || ''} / ${review.item?.item_type || ''} / ${r}\n${review.item?.prompt || review.item_id}`;
-      }).join('\n\n')}</pre>
+      <div className="study-panel__actions">
+        {reviews.map((review) => {
+          const r = Number.isFinite(Number(review.retrievability)) ? `${Math.round(Number(review.retrievability) * 100)}%` : '-';
+          return (
+            <div key={review.item_id} className="study-panel__row">
+              <span>{review.deck?.name || ''} / {review.item?.item_type || ''} / {r}</span>
+              <span>{review.item?.prompt || review.item_id}</span>
+              {habitBridgeAvailable(habitStatus) && review.deck?.id ? (
+                <button type="button" disabled={busy} onClick={() => handleStartFocus(String(review.deck?.id || ''))}>
+                  {text(props, 'ui.focus.start_with_deck', 'Start Focus')}
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

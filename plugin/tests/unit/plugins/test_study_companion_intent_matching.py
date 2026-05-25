@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from plugin.plugins.study_companion.constants import MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING
 from plugin.plugins.study_companion.mode_manager import handle_user_intent
+
+pytestmark = pytest.mark.unit
 
 
 def test_handle_user_intent_ignores_plain_learning_text_with_mode_words() -> None:

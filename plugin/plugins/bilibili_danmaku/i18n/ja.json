@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Bilibili 弾幕モニター",
+  "plugin.description": "Bilibili のライブ配信の弾幕をリアルタイムで監視し、フィルタリングして AI に渡し、分析と返信を行います",
   "account.already_logged_in": "ログイン済み",
   "account.check_cred": "資格情報を確認",
   "account.check_cred_failed": "資格情報確認失敗：",

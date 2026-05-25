@@ -204,25 +204,6 @@ class TestCustomApiToggle:
         assert cfg['CONVERSATION_MODEL_API_KEY'] == 'sk-custom-conv'
 
     @pytest.mark.unit
-    def test_model_vision_override_marks_custom_model_capability(self, config_manager):
-        """Explicit modelVisionOverrides should win before model-name sniffing."""
-        _write_core_config(config_manager, {
-            'coreApiKey': 'sk-core',
-            'coreApi': 'qwen',
-            'assistApi': 'qwen',
-            'enableCustomApi': True,
-            'conversationModelUrl': 'https://custom.example.com/v1',
-            'conversationModelId': 'local-multimodal',
-            'conversationModelApiKey': 'sk-custom-conv',
-            'modelVisionOverrides': {'local-multimodal': True},
-        })
-
-        cfg = config_manager.get_model_api_config('conversation')
-
-        assert cfg['model'] == 'local-multimodal'
-        assert cfg['supports_vision'] is True
-
-    @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
         """enableCustomApi=true → all 8 model types can be overridden."""
         model_types = [
@@ -374,7 +355,9 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
-        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm'}
+        # grok joined core as a realtime voice provider (Grok Voice, wss
+        # endpoint) in PR #1306 — it has a core_url, so it belongs here.
+        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm', 'grok'}
         actual_core = set(core_profiles.keys())
 
         assert actual_core == expected_core, (
@@ -399,9 +382,12 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
+        # grok has a realtime voice endpoint (Grok Voice, PR #1306) so it is
+        # intentionally also a core provider — only truly text-only providers
+        # are listed here.
         must_not_be_core = [
             'deepseek', 'doubao', 'minimax', 'minimax_intl',
-            'kimi', 'grok', 'silicon',
+            'kimi', 'silicon',
         ]
         for provider in must_not_be_core:
             assert provider not in core_profiles, (

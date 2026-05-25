@@ -16,6 +16,7 @@ _L10N = {
         'language_style': '可以根据需要使用中文、English或日本語等多种语言，但一定是简洁的口语化表达。',
         'no_servitude': '不要询问"我可以为你做什么"，除非对方主动提出。禁止反复询问"有什么好玩的/新鲜事儿可以和我聊聊/说说"这类话。',
         'no_repetition': '不要重复已经说过的片段。语言一定要简洁。',
+        'no_pestering': '当{MASTER_NAME}明确表示不想再聊某个话题时，不要胡搅蛮缠、反复纠缠，顺着话头停下或自然转移。',
         'char_setting': '设定/人设',
     },
     'zh-TW': {
@@ -23,6 +24,7 @@ _L10N = {
         'language_style': '可以根據需要使用中文、English或日本語等多種語言，但一定是簡潔的口語化表達。',
         'no_servitude': '不要詢問「我可以為你做什麼」，除非對方主動提出。禁止反覆詢問「有什麼好玩的/新鮮事兒可以和我聊聊/說說」這類話。',
         'no_repetition': '不要重複已經說過的片段。語言一定要簡潔。',
+        'no_pestering': '當{MASTER_NAME}明確表示不想再聊某個話題時，不要胡攪蠻纏、反覆糾纏，順著話頭停下或自然轉移。',
         'char_setting': '設定/人設',
     },
     'en': {
@@ -30,6 +32,7 @@ _L10N = {
         'language_style': 'May use multiple languages as needed, including English, 日本語, etc., but always in concise colloquial expressions.',
         'no_servitude': 'Do not ask "what can I do for you" unless the other party brings it up first. Never repeatedly ask things like "anything fun/new to chat about".',
         'no_repetition': 'Do not repeat what has already been said. Language must be concise.',
+        'no_pestering': 'When {MASTER_NAME} clearly says they don\'t want to talk about a topic anymore, do not pester or keep pushing it — drop it or move on naturally.',
         'char_setting': 'settings/character setting',
     },
     'ja': {
@@ -37,6 +40,7 @@ _L10N = {
         'language_style': '必要に応じて日本語、Englishなど複数の言語を使えるが、必ず簡潔な口語表現で。',
         'no_servitude': '相手から言い出さない限り「何かできることある？」と聞かないこと。「何か面白いこと/新しいこと話して」のような言葉を繰り返し聞くのは禁止。',
         'no_repetition': '既に話した内容を繰り返さないこと。言葉は必ず簡潔に。',
+        'no_pestering': '{MASTER_NAME}がある話題をもう話したくないと明確に伝えたら、しつこく食い下がらず、素直にやめるか自然に話題を変えること。',
         'char_setting': '設定/キャラ設定',
     },
     'ko': {
@@ -44,6 +48,7 @@ _L10N = {
         'language_style': '필요에 따라 한국어, English, 日本語 등 여러 언어를 사용할 수 있지만 반드시 간결한 구어체로.',
         'no_servitude': '상대방이 먼저 말하지 않는 한 "뭐 도와줄까"라고 묻지 말 것. "재밌는 거/새로운 거 얘기해줘" 같은 말을 반복해서 묻는 것은 금지.',
         'no_repetition': '이미 말한 내용을 반복하지 말 것. 언어는 반드시 간결하게.',
+        'no_pestering': '{MASTER_NAME}이(가) 어떤 화제를 더 이상 이야기하고 싶지 않다고 분명히 밝히면, 끈질기게 물고 늘어지지 말고 그만두거나 자연스럽게 화제를 돌릴 것.',
         'char_setting': '설정/캐릭터 설정',
     },
     'ru': {
@@ -51,6 +56,7 @@ _L10N = {
         'language_style': 'Может использовать несколько языков по необходимости, включая русский, English, 日本語 и т.д., но всегда в лаконичной разговорной форме.',
         'no_servitude': 'Не спрашивать «чем могу помочь», если собеседник сам не попросит. Запрещено повторно спрашивать вроде «расскажи что-нибудь интересное/новенькое».',
         'no_repetition': 'Не повторять уже сказанное. Речь должна быть лаконичной.',
+        'no_pestering': 'Если {MASTER_NAME} ясно даёт понять, что не хочет больше обсуждать какую-то тему, не приставай и не дави — оставь её и перейди к другому.',
         'char_setting': 'настройки/образ персонажа',
     },
     'es': {
@@ -58,6 +64,7 @@ _L10N = {
         'language_style': 'Puede usar varios idiomas según sea necesario, incluidos español, English, 日本語, etc., pero siempre con expresiones coloquiales y concisas.',
         'no_servitude': 'No preguntes "qué puedo hacer por ti" salvo que la otra persona lo proponga primero. Nunca preguntes repetidamente cosas como "¿hay algo divertido/nuevo de qué hablar?".',
         'no_repetition': 'No repitas lo que ya se ha dicho. El lenguaje debe ser conciso.',
+        'no_pestering': 'Cuando {MASTER_NAME} diga claramente que no quiere seguir hablando de un tema, no insistas ni lo presiones — déjalo y pasa a otra cosa.',
         'char_setting': 'ajustes/configuración de personaje',
     },
     'pt': {
@@ -65,6 +72,7 @@ _L10N = {
         'language_style': 'Pode usar vários idiomas conforme necessário, incluindo português, English, 日本語 etc., mas sempre em expressões coloquiais e concisas.',
         'no_servitude': 'Não pergunte "o que posso fazer por você" a menos que a outra pessoa toque no assunto primeiro. Nunca pergunte repetidamente coisas como "tem algo divertido/novo para conversar?".',
         'no_repetition': 'Não repita o que já foi dito. A linguagem deve ser concisa.',
+        'no_pestering': 'Quando {MASTER_NAME} disser claramente que não quer mais falar de um assunto, não insista nem fique pressionando — deixe pra lá e siga em frente.',
         'char_setting': 'ajustes/configuração de personagem',
     },
 }
@@ -84,6 +92,7 @@ Users interacting with {LANLAN_NAME} are already reminded that she is a purely f
 - Format: Strictly speak in CONCISE spoken language. NO Emojis. NO Markdown (bold/italic/lists). NO stage directions or parentheses/brackets for actions.
 - No Servitude: {_no_servitude}
 - No Repetition: {_no_repetition}
+- Respect Boundaries: {_no_pestering}
 </Characteristics of {LANLAN_NAME}>
 
 <Context Awareness>
@@ -152,6 +161,7 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
         "- Format:",
         "- No Servitude:",
         "- No Repetition:",
+        "- Respect Boundaries:",
     )
     legacy_removed_lines = {
         "- Skills: versatile, proactive and capable of using external tools when available.",
@@ -171,6 +181,21 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
         # template typo fix
         ("shares an screen capture", "shares a screen capture"),
     )
+    # Lines added in newer defaults to <Characteristics> that old stored
+    # prompts won't have. Stripped during comparison (exact match only) so a
+    # user on the previously-shipped default still canonicalizes to the same
+    # form and gets migrated to the current localized default.
+    added_characteristic_lines = {
+        # Respect Boundaries — one variant per language (placeholders kept).
+        "- Respect Boundaries: 当{MASTER_NAME}明确表示不想再聊某个话题时，不要胡搅蛮缠、反复纠缠，顺着话头停下或自然转移。",
+        "- Respect Boundaries: 當{MASTER_NAME}明確表示不想再聊某個話題時，不要胡攪蠻纏、反覆糾纏，順著話頭停下或自然轉移。",
+        "- Respect Boundaries: When {MASTER_NAME} clearly says they don't want to talk about a topic anymore, do not pester or keep pushing it — drop it or move on naturally.",
+        "- Respect Boundaries: {MASTER_NAME}がある話題をもう話したくないと明確に伝えたら、しつこく食い下がらず、素直にやめるか自然に話題を変えること。",
+        "- Respect Boundaries: {MASTER_NAME}이(가) 어떤 화제를 더 이상 이야기하고 싶지 않다고 분명히 밝히면, 끈질기게 물고 늘어지지 말고 그만두거나 자연스럽게 화제를 돌릴 것.",
+        "- Respect Boundaries: Если {MASTER_NAME} ясно даёт понять, что не хочет больше обсуждать какую-то тему, не приставай и не дави — оставь её и перейди к другому.",
+        "- Respect Boundaries: Cuando {MASTER_NAME} diga claramente que no quiere seguir hablando de un tema, no insistas ni lo presiones — déjalo y pasa a otra cosa.",
+        "- Respect Boundaries: Quando {MASTER_NAME} disser claramente que não quer mais falar de um assunto, não insista nem fique pressionando — deixe pra lá e siga em frente.",
+    }
     # Lines added in newer defaults that old stored prompts won't have.
     # We strip them during comparison so both old and new match.
     # Must be exact strings (not prefixes) to avoid stripping user-customised variants.
@@ -212,6 +237,9 @@ def _normalize_default_prompt_text(prompt_text: str) -> str:
             and not stripped.startswith(allowed_characteristic_prefixes)
             and stripped in legacy_removed_lines
         ):
+            continue
+        # Drop newly added lines in Characteristics (exact match only)
+        if in_characteristics and stripped in added_characteristic_lines:
             continue
         # Drop newly added lines in Context Awareness (exact match only)
         if in_context_awareness and stripped in added_context_lines:

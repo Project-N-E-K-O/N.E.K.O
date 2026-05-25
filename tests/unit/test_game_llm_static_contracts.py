@@ -35,7 +35,8 @@ def test_soccer_game_prompts_follow_user_language():
     assert "Output only the spoken line" in en_prompt
     assert en_prompt != zh_prompt
     assert ja_prompt != en_prompt
-    assert es_prompt == en_prompt  # es falls back to en until its own i18n is added
+    assert es_prompt != en_prompt  # es now ships its own Spanish localization
+    assert es_prompt.startswith("Eres Lan")
 
 
 @pytest.mark.unit
