@@ -13,6 +13,7 @@ from typing import Any, Iterator
 from ._model_registry import (
     RAPIDOCR_PACKAGE_NAME,
     _resolve_rapidocr_model_paths,
+    rapidocr_selection_requires_downloaded_models,
     rapidocr_selected_model_name,
 )
 from ._paths import (
@@ -151,6 +152,17 @@ def _build_runtime_constructor_kwargs(
             model_type=model_type,
         )
         kwargs: dict[str, Any] = {}
+        requires_downloaded_models = rapidocr_selection_requires_downloaded_models(
+            ocr_version=ocr_version,
+            lang_type=lang_type,
+        )
+        if requires_downloaded_models and (not det_path or not rec_path):
+            selected_model = rapidocr_selected_model_name(
+                ocr_version=ocr_version,
+                lang_type=lang_type,
+                model_type=model_type,
+            )
+            raise RuntimeError(f"RapidOCR model files are incomplete for {selected_model}")
         if det_path and rec_path:
             kwargs["det_model_path"] = det_path
             kwargs["rec_model_path"] = rec_path
