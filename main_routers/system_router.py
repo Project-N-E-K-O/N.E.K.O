@@ -4249,20 +4249,24 @@ async def push_activity_signal(request: Request):
 
     Auth:
 
-    * Origin-present same-origin gate (zero-frontend-cost defence,
-      suggested by CodeRabbit on PR #1477): when the request carries an
-      ``Origin`` / ``Referer`` header AND that origin isn't in
-      ``_get_allowed_local_origins`` (which always includes the current
-      ``request.base_url``), reject with 403. Browser-mediated requests
-      always carry ``Origin`` for POST, so this single check blocks
-      cross-site drive-by JS without breaking ``curl`` / Electron's
-      same-origin renderer / native scripts (no Origin → allowed).
+    * Unified ``_validate_local_mutation_request`` guard (issue #1479
+      Step 2): same Origin + ``X-CSRF-Token`` contract every other
+      browser-facing mutation endpoint uses (tutorial-prompt,
+      screenshot, autostart-prompt, …). Replaces PR #1477's interim
+      Origin-only gate. Same-origin Electron renderers and browser
+      tabs send ``X-CSRF-Token`` via
+      ``window.nekoLocalMutationSecurity`` (token is exposed by
+      ``GET /api/config/page_config``); curl / Electron main-process /
+      native scripts that don't run the token bootstrap are now
+      rejected because *CSRF ≠ authentication* — pushing activity
+      from outside the same browsing context isn't a supported path
+      (see ``docs/design/security/local-mutation-auth.md`` for the
+      threat model). The guard already rejects ``Origin: null`` /
+      opaque origins because ``_normalize_origin_value`` returns
+      ``""`` for them, which then fails the membership check.
     * Per-lanlan 5s rate limit below + the tracker's per-character
-      lookup raise spam cost and bound the impact even if Origin
-      validation passes.
-    * A stricter CSRF token mechanism (parity with screenshot endpoints)
-      is tracked for a follow-up security-hardening PR; the threat
-      model write-up lives in issue #1023.
+      lookup raise spam cost and bound the impact even if the guard
+      somehow passes.
 
     Body fields (all optional except ``lanlan_name``):
       * ``lanlan_name`` (required) — which character's tracker to update
@@ -4272,44 +4276,14 @@ async def push_activity_signal(request: Request):
       * ``cpu_avg_30s`` — float in ``[0, 100]``, rolling CPU average
       * ``gpu_utilization`` — float in ``[0, 100]``, primary GPU utilisation
 
-    Returns 200 on success, 400 on malformed payload, 404 if
-    ``lanlan_name`` isn't registered, 429 if pushed faster than
-    ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
-    tracker hasn't initialised yet.
+    Returns 200 on success, 400 on malformed payload, 403 on
+    Origin/CSRF rejection, 404 if ``lanlan_name`` isn't registered,
+    429 if pushed faster than ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s),
+    503 if the character's tracker hasn't initialised yet.
     """
-    # ── Origin-present same-origin gate ────────────────────────────
-    # When the request carries an Origin (or Referer fallback) but it's
-    # not in our allowed-origins set, refuse — that's the drive-by CSRF
-    # signature. Missing Origin means a non-browser caller (curl, Node,
-    # native script) which we explicitly allow because there's no
-    # mandatory CSRF token yet. Same-origin browser requests pass
-    # naturally because their Origin matches ``request.base_url``,
-    # which ``_get_allowed_local_origins`` always includes.
-    #
-    # Opaque-origin guard (Codex F5 on PR #1477): browsers send the
-    # literal string ``"null"`` as Origin for sandboxed iframes,
-    # ``file://`` pages, and certain extension contexts. ``urlsplit``
-    # parses "null" into an empty scheme/netloc which
-    # ``_normalize_origin_value`` turns into ``""`` — without this
-    # check that bypasses to the no-Origin "allowed" branch. We
-    # explicitly reject the raw "null" string before normalisation, on
-    # both Origin and Referer (the latter is our fallback).
-    raw_origin = (request.headers.get("origin") or "").strip().lower()
-    raw_referer = (request.headers.get("referer") or "").strip().lower()
-    if raw_origin == "null" or raw_referer == "null":
-        return _json_no_store_response(
-            {"success": False, "error": "origin not allowed"},
-            status_code=403,
-        )
-
-    request_origin = _get_request_origin(request)
-    if request_origin:
-        allowed = _get_allowed_local_origins(request)
-        if request_origin not in allowed:
-            return _json_no_store_response(
-                {"success": False, "error": "origin not allowed"},
-                status_code=403,
-            )
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
 
     try:
         data = await request.json()
@@ -7379,50 +7353,6 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-
-# ========== 个性化内容接口 ==========
-
-@router.post('/personal_dynamics')
-async def get_personal_dynamics(request: Request):
-    """
-    获取个性化内容数据
-    """
-    from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
-    try:
-        
-        data = await request.json()
-        limit = data.get('limit', 10)
-        
-        # 获取个性化内容
-        personal_content = await fetch_personal_dynamics(limit=limit)
-        
-        if not personal_content['success']:
-            return JSONResponse({
-                "success": False,
-                "error": "无法获取个性化内容",
-                "detail": personal_content.get('error', '未知错误')
-            }, status_code=500)
-        
-        # 格式化内容用于前端显示
-        formatted_content = format_personal_dynamics(personal_content)
-        
-        return JSONResponse({
-            "success": True,
-            "data": {
-                "raw": personal_content,
-                "formatted": formatted_content,
-                "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"获取个性化内容失败: {e}")
-        return JSONResponse({
-            "success": False,
-            "error": "服务器内部错误",
-            "detail": str(e)
-        }, status_code=500)
-
 
 # Self-register the mini-game-invite keyword matcher with main_logic's
 # event bus. Same rationale as plugin/core/state.py: ``main_logic.core``
