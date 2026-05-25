@@ -419,6 +419,7 @@
         "loadingItemDetailsById": "Загрузка деталей предмета ID: {{id}}...",
         "characterCardsRefreshed": "Список карточек обновлён, всего {{count}} карточек",
         "characterCardsRefreshedEmpty": "Список карточек обновлён, карточки отсутствуют",
+        "characterCardsRefreshFailed": "Не удалось обновить список: {{error}}",
         "requiredFieldsMissing": "Заполните следующие обязательные поля: {{fields}}",
         "refreshLive2DPreview": "Обновить предпросмотр Live2D",
         "removeTag": "Удалить тег",

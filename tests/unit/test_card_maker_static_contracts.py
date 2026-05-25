@@ -167,11 +167,22 @@ def test_workshop_add_character_card_messages_exist_in_all_locales():
         "workshopCharacterNotFound",
         "workshopCharacterAddFailed",
     ]
+    placeholder_checks = {
+        "characterCardAlreadyExistsMessage": "{{names}}",
+        "workshopCharacterAdded": "{{names}}",
+        "workshopCharacterAddFailed": "{{error}}",
+    }
     missing = []
     for locale_path in sorted(LOCALE_DIR.glob("*.json")):
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
         steam = payload.get("steam")
         if not isinstance(steam, dict) or any(key not in steam for key in required_keys):
+            missing.append(locale_path.name)
+            continue
+        if any(
+            placeholder not in str(steam.get(key, ""))
+            for key, placeholder in placeholder_checks.items()
+        ):
             missing.append(locale_path.name)
 
     assert missing == [], f"Missing workshop add-card keys in locale files: {', '.join(missing)}"

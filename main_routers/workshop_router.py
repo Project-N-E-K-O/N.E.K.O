@@ -5038,8 +5038,8 @@ async def sync_workshop_character_cards(
                 "deleted_character_names": deleted_character_names_seen,
                 "restored_deleted_names": restored_deleted_names,
             })
-            if code:
-                payload["code"] = code
+        if code:
+            payload["code"] = code
         return payload
     
     try:
@@ -5489,6 +5489,16 @@ async def api_sync_workshop_character_cards():
                     "errors": result.get("errors", 0),
                 },
             )
+        if result.get("code") == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+                    "error": "获取订阅物品失败，请确认 Steam 客户端已运行并已登录。",
+                    **result,
+                },
+            )
         return {
             "success": True,
             "added": result["added"],
@@ -5543,12 +5553,15 @@ async def api_sync_single_workshop_character_card(item_id: str):
             )
 
         if not result.get("target_found"):
-            return {
-                "success": False,
-                "code": result.get("code") or "WORKSHOP_ITEM_NOT_FOUND",
-                "error": "未找到对应的订阅物品，请刷新订阅列表后重试。",
-                **result,
-            }
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "code": result.get("code") or "WORKSHOP_ITEM_NOT_FOUND",
+                    "error": "未找到对应的订阅物品，请刷新订阅列表后重试。",
+                    **result,
+                },
+            )
 
         if result.get("added", 0) > 0:
             added_names = result.get("added_character_names") or []
@@ -5561,27 +5574,36 @@ async def api_sync_single_workshop_character_card(item_id: str):
 
         existing_names = result.get("existing_character_names") or []
         if existing_names:
-            return {
-                "success": False,
-                "code": "WORKSHOP_CHARACTER_ALREADY_EXISTS",
-                "error": "角色卡已存在。",
-                **result,
-            }
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_CHARACTER_ALREADY_EXISTS",
+                    "error": "角色卡已存在。",
+                    **result,
+                },
+            )
 
         if not result.get("found_character_names"):
-            return {
-                "success": False,
-                "code": "WORKSHOP_CHARACTER_NOT_FOUND",
-                "error": "此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。",
-                **result,
-            }
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_CHARACTER_NOT_FOUND",
+                    "error": "此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。",
+                    **result,
+                },
+            )
 
-        return {
-            "success": False,
-            "code": "WORKSHOP_CHARACTER_NOT_ADDED",
-            "error": "未加入新的角色卡。",
-            **result,
-        }
+        return JSONResponse(
+            status_code=422,
+            content={
+                "success": False,
+                "code": "WORKSHOP_CHARACTER_NOT_ADDED",
+                "error": "未加入新的角色卡。",
+                **result,
+            },
+        )
     except Exception as e:
         logger.error(f"API sync-character 失败: {e}")
         return JSONResponse({

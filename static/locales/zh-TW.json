@@ -419,6 +419,7 @@
         "loadingItemDetailsById": "正在加載物品ID: {{id}} 的詳細信息...",
         "characterCardsRefreshed": "已刷新角色卡列錶，共 {{count}} 個角色卡",
         "characterCardsRefreshedEmpty": "已刷新角色卡列錶，暫無角色卡",
+        "characterCardsRefreshFailed": "刷新列錶失敗: {{error}}",
         "requiredFieldsMissing": "請先填寫以下必填字段：{{fields}}",
         "refreshLive2DPreview": "刷新Live2D預覽",
         "removeTag": "刪除標簽",

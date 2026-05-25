@@ -419,6 +419,7 @@
         "loadingItemDetailsById": "Carregando detalhes do ID do item: {{id}}...",
         "characterCardsRefreshed": "Lista de cartas de personagem atualizada, {{count}} cartas de personagem no total",
         "characterCardsRefreshedEmpty": "Lista de cartas de personagem atualizada, nenhuma carta de personagem disponível",
+        "characterCardsRefreshFailed": "Falha ao atualizar a lista: {{error}}",
         "requiredFieldsMissing": "Preencha os seguintes campos obrigatórios: {{fields}}",
         "refreshLive2DPreview": "Atualizar visualização do Live2D",
         "removeTag": "Remover etiqueta",

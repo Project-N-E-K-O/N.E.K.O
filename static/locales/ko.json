@@ -419,6 +419,7 @@
         "loadingItemDetailsById": "항목 ID: {{id}}에 대한 세부정보 로드 중...",
         "characterCardsRefreshed": "캐릭터 카드 목록이 새로 고쳐졌습니다. 총 {{count}} 캐릭터 카드입니다.",
         "characterCardsRefreshedEmpty": "캐릭터 카드 목록이 새로 고쳐졌고 사용 가능한 캐릭터 카드가 없습니다.",
+        "characterCardsRefreshFailed": "목록 새로 고침 실패: {{error}}",
         "requiredFieldsMissing": "다음 필수 필드를 작성하십시오: {{fields}}",
         "refreshLive2DPreview": "Live2D 미리보기 새로 고침",
         "removeTag": "태그 제거",

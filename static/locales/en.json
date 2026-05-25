@@ -419,6 +419,7 @@
         "loadingItemDetailsById": "Loading details for item ID: {{id}}...",
         "characterCardsRefreshed": "Character cards list refreshed, {{count}} character cards in total",
         "characterCardsRefreshedEmpty": "Character cards list refreshed, no character cards available",
+        "characterCardsRefreshFailed": "Failed to refresh list: {{error}}",
         "requiredFieldsMissing": "Please fill in the following required fields: {{fields}}",
         "refreshLive2DPreview": "Refresh Live2D Preview",
         "removeTag": "Remove Tag",

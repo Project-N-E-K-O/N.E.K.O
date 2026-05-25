@@ -419,6 +419,7 @@
         "loadingItemDetailsById": "アイテムID: {{id}} の詳細を読み込み中...",
         "characterCardsRefreshed": "キャラクターカードリストを更新しました。合計 {{count}} 枚",
         "characterCardsRefreshedEmpty": "キャラクターカードリストを更新しました。利用可能なカードはありません",
+        "characterCardsRefreshFailed": "リストの更新に失敗しました: {{error}}",
         "requiredFieldsMissing": "以下の必須項目を入力してください: {{fields}}",
         "refreshLive2DPreview": "Live2Dプレビューを更新",
         "removeTag": "タグを削除",

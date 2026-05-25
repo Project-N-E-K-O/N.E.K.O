@@ -2141,7 +2141,15 @@ async function addWorkshopCharacterCardFromSubscription(button) {
             ? window.t('steam.workshopCharacterAdded', { names: namesText })
             : `已加入角色卡：${namesText}`;
         showMessage(successMessage, 'success');
-        await loadCharacterCards();
+        try {
+            await loadCharacterCards();
+        } catch (refreshError) {
+            console.warn('刷新角色卡列表失败:', refreshError);
+            const refreshMessage = window.t
+                ? window.t('steam.characterCardsRefreshFailed', { error: refreshError.message })
+                : `刷新列表失败: ${refreshError.message}`;
+            showMessage(refreshMessage, 'warning');
+        }
     } catch (error) {
         const message = window.t
             ? window.t('steam.workshopCharacterAddFailed', { error: error.message })

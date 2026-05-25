@@ -740,6 +740,106 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_sync_single_workshop_character_card_uses_error_status_codes():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+
+    cases = [
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": False,
+                "code": "WORKSHOP_ITEM_NOT_FOUND",
+            },
+            404,
+            "WORKSHOP_ITEM_NOT_FOUND",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 1,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": ["已存在角色"],
+                "existing_character_names": ["已存在角色"],
+            },
+            409,
+            "WORKSHOP_CHARACTER_ALREADY_EXISTS",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": [],
+                "existing_character_names": [],
+            },
+            404,
+            "WORKSHOP_CHARACTER_NOT_FOUND",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": ["未加入角色"],
+                "existing_character_names": [],
+            },
+            422,
+            "WORKSHOP_CHARACTER_NOT_ADDED",
+        ),
+    ]
+
+    for sync_result, expected_status, expected_code in cases:
+        with patch.object(
+            workshop_router_module,
+            "sync_workshop_character_cards",
+            AsyncMock(return_value=sync_result),
+        ):
+            response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+
+        payload = json.loads(response.body.decode("utf-8"))
+        assert response.status_code == expected_status
+        assert payload["success"] is False
+        assert payload["code"] == expected_code
+        assert "error" in payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_batch_workshop_character_sync_reports_subscription_unavailable():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 0,
+        "errors": 1,
+        "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_workshop_character_cards()
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == 503
+    assert payload["success"] is False
+    assert payload["code"] == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE"
+    assert payload["errors"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_turns_on():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
