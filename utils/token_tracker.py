@@ -394,13 +394,21 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #       地区分流（仅中国地区默认隐私关），海外默认隐私开 → 对本实验天然 no-op。抽签
 #       全地区随机，海外也会落实验组但首启覆写 / 弹窗都不生效；分析时按 locale 过滤，
 #       A/B 差异主要体现在国内。
+#   - "proactive_interval_20s"：海外专属实验组，把「主动搭话间隔」
+#     （proactiveChatInterval）首启默认从控制组 15s 拉长到 20s，看更慢的搭话节奏对
+#     海外用户的影响。**不动**隐私模式 / 屏幕分享来源默认值，也没有弹窗。
+#       地区交互：与 vision_chat_default_off 方向相反——只在海外（前端
+#       _isUserRegionChina() 为 false）才覆写间隔默认值；国内落到本组天然 no-op。抽签
+#       全地区随机、三组互斥（同设备只落一个 branch），但 vision 实验差异在国内、本组
+#       只影响海外，目标地区不重叠，可同时在线观测。注意 _bucket_proactive_interval
+#       把 15s / 20s 都归进「10-30s」桶，所以 cohort 命中靠 branch 维度区分，不靠间隔桶。
 #
 # 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main 或
 # vision_chat_default_off。都是已过首启的用户，重抽只改 telemetry 标签、不动已落盘的
 # 用户偏好，对「默认值」实验无影响，故不为其单独做确定性迁移）：
 #   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线。
 #   - "privacy_default_off_v2"（试国内隐私默认开）：改方向去测屏幕分享来源，已下线。
-_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off")
+_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off", "proactive_interval_20s")
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
 # 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和
