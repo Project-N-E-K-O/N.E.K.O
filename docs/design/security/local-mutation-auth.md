@@ -106,10 +106,12 @@ curl -X POST http://127.0.0.1:48911/api/<endpoint> \
   -d '{...}'
 ```
 
-合同**没有**给"loopback + 正确 token 但缺 Origin"留 escape hatch。理由：
+**通用契约层**（`_validate_local_mutation_request`）**没有**给"loopback + 正确 token 但缺 Origin"留 escape hatch。理由：
 - 真正的非浏览器场景按上面模板手动加 Origin header 就行，成本几乎为零
 - 加 escape hatch 实际上扩大了 trusted callers 的边界——但 trusted callers 的定义本来就是"能读到 token 的本地进程"，而能读到 token 的进程在我们的威胁模型里跟"Electron 主进程 / 本机 root"是一个等级（见 2.2 节），不需要再用 HTTP 路径把这个集合扩大
 - 误开 escape hatch 会让威胁模型变模糊：一个能拿到 token 但被 Origin policy 挡掉的攻击进程（例如恶意浏览器扩展通过 DevTools 协议读到 page_config 缓存）会绕过 Origin 这一层防护
+
+**但个别端点可以并且确实定义了自己的 bypass**：例如 [`POST /api/screenshot/interactive`](main_routers/system_router.py:4056) 在 4072-4085 行先用 `_is_loopback_request` 限制只能从 loopback 访问，再判断「请求是否带 `Origin` 或 `Referer`」——**只在 header 缺失时**跳过 `_validate_local_mutation_request`，专门保留给 curl / 本地脚本 / 测试 这类无浏览器调用方。这种端点级 bypass 不破坏通用契约（因为带 Origin 的浏览器请求仍然走守卫），但用文档化的方式标在 handler 里，写新端点时**不要默认抄这个模式**——如果你的端点不像 screenshot/interactive 那样有明确的"本地脚本调用"业务需求，就坚持走通用契约（无 Origin → 403）。
 
 ---
 
