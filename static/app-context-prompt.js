@@ -174,7 +174,14 @@
         if (_pendingContexts.size === 0) return;
         const pend = Array.from(_pendingContexts);
         _pendingContexts.clear();
-        pend.forEach(function (ctx) { handle(ctx); });
+        // 必须串行 await：handle() 开窗时置 _promptOpen=true 并在 modal 上挂起，若并发
+        // 调用第二个 ctx 会撞 _promptOpen 早退被永久丢弃。逐个 await 让第二个弹窗等第
+        // 一个关掉再弹。
+        (async function () {
+            for (const ctx of pend) {
+                await handle(ctx);
+            }
+        })();
     });
 
     window.appContextPrompt = { handle };
