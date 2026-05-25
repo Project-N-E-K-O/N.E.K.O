@@ -2924,10 +2924,19 @@ class LLMSessionManager:
                 # 导致 _emit_recall_filler_tts 直接返回 False、首轮空窗依旧。TTS 通常
                 # ~0.1s 就绪，这里给 ~1s 有界等待；超时则优雅放弃 filler（不阻塞回忆
                 # 检索主流程），由后续 recall 调用或正文兜底。
+                # 提前退出：sid 变化（用户打断）、worker 没起来/已挂、或已进入
+                # NO_RETRY_TTS_CODES 这类不可恢复错误时，TTS 不可能再 ready，别白等
+                # 满 1s——否则 TTS 确定失败时同轮每次 recall 都会吃满这段延迟。
                 if not self.tts_ready:
                     for _ in range(20):
+                        if (
+                            self.current_speech_id != cur_sid
+                            or not (self.tts_thread and self.tts_thread.is_alive())
+                            or getattr(self, "_last_tts_error_code", None) in NO_RETRY_TTS_CODES
+                        ):
+                            break
                         await asyncio.sleep(0.05)
-                        if self.tts_ready or self.current_speech_id != cur_sid:
+                        if self.tts_ready:
                             break
                 # 用独立 worker-sid 把 filler 作为一段完整 utterance 立即合成出声，
                 # 既能在检索空窗里马上播，又不会让正文（同 turn sid）被 worker 当成

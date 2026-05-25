@@ -915,13 +915,14 @@ class OmniOfflineClient:
             k: v for k, v in overrides.items() if k not in ("tools", "tool_choice")
         }
         final_finish_reason: Optional[str] = None
+        final_prompt_tokens: Optional[int] = None
         async for chunk in self.llm.astream(messages, **final_overrides):
             if chunk.finish_reason:
                 final_finish_reason = chunk.finish_reason
             if chunk.usage_metadata:
                 pt = chunk.usage_metadata.get("prompt_tokens")
                 if pt:
-                    self._last_prompt_tokens = pt
+                    final_prompt_tokens = pt
             # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
             # reasoning chunk（有 reasoning_content、无 content / tool delta /
             # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
@@ -935,7 +936,11 @@ class OmniOfflineClient:
             ):
                 continue
             yield chunk
+        # prompt_tokens 走局部变量、流结束后无条件回填（与 genai 路径同口径）：这次
+        # forced-finalize 没给 usage 时写回 None，而非沿用上一轮 tool-iteration 的旧
+        # 值，避免上层 empty-completion 诊断串台。
         self._last_finish_reason = final_finish_reason
+        self._last_prompt_tokens = final_prompt_tokens
 
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
