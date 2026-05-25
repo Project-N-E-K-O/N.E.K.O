@@ -82,7 +82,7 @@ def _rapidocr_runtime_cache_key(
     lang_type: str,
     model_type: str,
     ocr_version: str,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> tuple[str, str, str, str, str, str]:
     return (
         str(plugin_id or "").strip().lower(),

@@ -54,7 +54,15 @@ def copy_legacy_tutorial_progress_if_missing(store_path: Path) -> None:
     for legacy_store_path in _legacy_store_paths():
         if not legacy_store_path.is_file():
             continue
-        legacy_progress = GalgameStore(legacy_store_path, logger).load_tutorial_progress()
+        try:
+            legacy_progress = GalgameStore(legacy_store_path, logger).load_tutorial_progress()
+        except Exception:  # noqa: BLE001 - corrupted legacy stores should not abort migration.
+            logger.warning(
+                "failed to load legacy tutorial progress from {}, skipping",
+                legacy_store_path,
+                exc_info=True,
+            )
+            continue
         if isinstance(legacy_progress, dict):
             _write_flat_progress(store_path, legacy_progress)
             logger.info(

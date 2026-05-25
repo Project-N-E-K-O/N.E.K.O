@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import time
@@ -764,13 +765,20 @@ async def test_galgame_plugin_install_stream_emits_failed_event_when_state_read_
         "/plugin/galgame_plugin/ui-api/textractor/install/run-stream-crash/stream",
     ) as response:
         assert response.status_code == 200
-        body = ""
-        async for line in response.aiter_lines():
-            if line.startswith("data: "):
-                body = line[len("data: "):]
-                break
+        payload = None
+        async with asyncio.timeout(3.0):
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    candidate = json.loads(line[len("data: "):])
+                except json.JSONDecodeError:
+                    continue
+                if candidate.get("status") == "failed":
+                    payload = candidate
+                    break
 
-    payload = json.loads(body)
+    assert payload is not None
     assert payload["task_id"] == "run-stream-crash"
     assert payload["status"] == "failed"
     assert payload["stream_error"] is True

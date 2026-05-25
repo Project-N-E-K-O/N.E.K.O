@@ -262,6 +262,43 @@ def test_galgame_tutorial_migration_copies_runtime_store_progress(
     }
 
 
+def test_galgame_tutorial_migration_skips_unreadable_legacy_store(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin import _tutorial_migration
+
+    corrupt_store = tmp_path / "corrupt_galgame_store.json"
+    valid_store = tmp_path / "valid_galgame_store.json"
+    new_store = tmp_path / "tutorial_progress.json"
+    corrupt_store.write_text("not json", encoding="utf-8")
+    valid_store.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _tutorial_migration,
+        "_legacy_store_paths",
+        lambda: (corrupt_store, valid_store),
+    )
+
+    class _Store:
+        def __init__(self, store_path: Path, _logger) -> None:
+            self.store_path = store_path
+
+        def load_tutorial_progress(self) -> dict[str, object] | None:
+            if self.store_path == corrupt_store:
+                raise ValueError("legacy store is corrupt")
+            return {"completed": True, "last_step_index": 2}
+
+    monkeypatch.setattr(_tutorial_migration, "GalgameStore", _Store)
+
+    _tutorial_migration.copy_legacy_tutorial_progress_if_missing(new_store)
+
+    assert json.loads(new_store.read_text(encoding="utf-8")) == {
+        "completed": True,
+        "last_step_index": 2,
+    }
+
+
 def test_galgame_ui_i18n_zh_tw_is_traditional_chinese_not_zh_cn_copy() -> None:
     zh_cn = json.loads((UI_I18N_DIR / "zh-CN.json").read_text(encoding="utf-8"))
     zh_tw = json.loads((UI_I18N_DIR / "zh-TW.json").read_text(encoding="utf-8"))
