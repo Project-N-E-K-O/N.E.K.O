@@ -1454,14 +1454,13 @@ class LLMSessionManager:
         # summary epilogue 触发的 TTS-only 注入 is_first_chunk=False，不会
         # 误清掉本轮已经播放/排队的 prefix 音频。
         #
-        # 例外：若本轮已被 recall 占位语音（filler）预热过同一 speech_id，则
-        # 跳过这个 barge-in 清理——否则会把同轮 filler 的 pending/已合成音频一起
-        # 冲掉，使"让我回忆一下"被正文首 chunk 抹掉或粘到正文上。上一轮音频已在
-        # turn 起点（handle_new_message / _clear_tts_pipeline）清过，这里跳过安全。
-        _filler_primed_this_turn = (
-            getattr(self, "_recall_filler_spoken_sid", None) == self.current_speech_id
-        )
-        if is_first_chunk and self.use_tts and tts_enabled and not _filler_primed_this_turn:
+        # 注意：这里**不**为 recall 占位语音（filler）开例外。filler 走独立 worker
+        # sid 并在检索期间就立即 flush + 经 tts_response_handler 发往前端，正文首
+        # chunk 到达时 filler 早已送达，pending / response_queue 里不再有它，清理碰
+        # 不到。反过来，这个首包清理在某些路径（如 no-server-VAD 的 response.done
+        # 只 rotate sid、不清 TTS）是下一个唯一的打断点，若为 filler 跳过会让上一轮
+        # 残留音频漏清、与新轮重叠，破坏 barge-in（Codex P1）。故保持无条件清理。
+        if is_first_chunk and self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
                 self._discard_pending_ai_voice_echo()
