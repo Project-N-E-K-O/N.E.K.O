@@ -137,9 +137,17 @@ pyncm-async = { path = "./deps/pyncm_async-1.8.1-py3-none-any.whl" }
 # headless variant (declared in [dependency-groups] galgame) ends up in .venv.
 # Both wheels expose the same `cv2` module name, so rapidocr's `import cv2`
 # works against either.
+#
+# python3-xlib (0.15, a stale 2016 py3 fork that pyautogui/mouseinfo pin) and
+# python-xlib (0.33, the maintained fork we depend on directly for galgame_plugin
+# X11 enumeration) both install into the same `Xlib` import namespace — having
+# both means whichever lands last wins, a latent Linux import hazard. We block
+# python3-xlib so the single, modern python-xlib provides `Xlib` for everyone;
+# its API is a strict superset, so pyautogui's `from Xlib...` resolves fine.
 [tool.uv]
 override-dependencies = [
     "opencv-python ; sys_platform == 'never'",
+    "python3-xlib ; sys_platform == 'never'",
 ]
 
 [dependency-groups]

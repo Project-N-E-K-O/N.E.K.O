@@ -318,6 +318,7 @@ portalocker==2.10.1
     # via
     #   browser-use
     #   bubus
+    #   n-e-k-o
 posthog==7.8.6
     # via browser-use
 prompt-toolkit==3.0.52
@@ -1128,7 +1129,11 @@ python-multipart==0.0.20
     # via
     #   mcp
     #   n-e-k-o
-python3-xlib==0.15 ; sys_platform == 'linux'
+python-xlib==0.33 ; sys_platform == 'linux'
+    # via
+    #   n-e-k-o
+    #   pywinauto
+python3-xlib==0.15 ; sys_platform == 'never'
     # via
     #   mouseinfo
     #   pyautogui
@@ -1148,6 +1153,7 @@ pyyaml==6.0.2
     # via
     #   bilibili-api-python
     #   huggingface-hub
+    #   n-e-k-o
 pyzmq==27.1.0
     # via n-e-k-o
 qrcode==8.2
@@ -1208,6 +1214,7 @@ six==1.17.0
     #   markdownify
     #   posthog
     #   python-dateutil
+    #   python-xlib
     #   pywinauto
 smart-open==7.5.0
     # via audiolab
