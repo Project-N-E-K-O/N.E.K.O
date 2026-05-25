@@ -170,6 +170,35 @@
         return {};
     }
 
+    /**
+     * Read a 403 response body and decide whether the rejection came
+     * from ``_validate_local_mutation_request`` (i.e. CSRF/Origin
+     * guard) vs. any other 403 — business rule, downstream service,
+     * future role-based check, etc. Mirrors the contract in
+     * ``static/app-prompt-shared.js`` 436-541 and
+     * ``static/universal-tutorial-manager.js`` 120-134: only
+     * ``error_code === "csrf_validation_failed"`` triggers the
+     * refresh / retry / stop-the-heartbeat path (CodeRabbit Major on
+     * PR #1532).
+     *
+     * ``resp.clone()`` so the caller can still read the original body
+     * if they need to (and so the original ``Response.bodyUsed`` flag
+     * doesn't trip on a second consumer).
+     */
+    async function isCsrfValidationFailure(resp) {
+        if (!resp || resp.status !== 403) return false;
+        try {
+            var cloned = typeof resp.clone === 'function' ? resp.clone() : resp;
+            var body = await cloned.json();
+            return Boolean(body && body.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            // Non-JSON 403 body / parse failure → not a unified-guard
+            // rejection; treat as a generic 403 (could be a reverse
+            // proxy / WAF / future business rule).
+            return false;
+        }
+    }
+
     async function pushOnce(lanlanName) {
         // Set the in-flight latch BEFORE the bridge read so two ticks
         // can't both clear the ``if (inFlight)`` check while one is
@@ -227,21 +256,32 @@
             }
 
             var resp = await sendOnce();
+            // CodeRabbit Major on PR #1532: only the unified-guard's
+            // ``csrf_validation_failed`` rejection should drive the
+            // refresh / retry / stop-the-heartbeat path. Other 403s
+            // (future business rules, reverse proxy, WAF, …) need to
+            // go through the generic-failure branch instead.
+            var isCsrf403 = await isCsrfValidationFailure(resp);
 
-            // 403 retry-once: the page_config token bootstrap might not
-            // have completed on the very first heartbeat tick. Try
-            // refreshing the cached token and resending before
-            // counting this toward the stop-the-heartbeat threshold.
-            // Do NOT retry on the *second* 403 of the same call —
-            // that means the token's genuinely unavailable, not a
-            // race, and a tight retry loop would just double the
+            // CSRF-403 retry-once: the page_config token bootstrap
+            // might not have completed on the very first heartbeat
+            // tick. Try refreshing the cached token and resending
+            // before counting this toward the stop-the-heartbeat
+            // threshold. Do NOT retry on the *second* 403 of the same
+            // call — that means the token's genuinely unavailable,
+            // not a race, and a tight retry loop would just double the
             // 403 rate.
-            if (resp.status === 403) {
+            if (isCsrf403) {
                 var sec = window.nekoLocalMutationSecurity;
                 if (sec && typeof sec.refreshToken === 'function') {
                     try {
                         await sec.refreshToken();
                         resp = await sendOnce();
+                        // Re-classify after retry — a successful retry
+                        // turns this from a CSRF-403 into 200 / 4xx /
+                        // 5xx, and we want the rest of this function
+                        // to treat it that way.
+                        isCsrf403 = await isCsrfValidationFailure(resp);
                     } catch (_) { /* fall through to 403 handling below */ }
                 }
             }
@@ -257,21 +297,29 @@
                 return;
             }
 
-            if (resp.status === 403) {
+            // Any non-CSRF response (any 200/4xx/5xx that isn't
+            // ``csrf_validation_failed``) breaks the *consecutive*
+            // CSRF streak — without this, alternating CSRF-403 / 500
+            // / non-CSRF-403 sequences would still trip the
+            // stop-the-heartbeat threshold (Codex P2 on PR #1532).
+            if (!isCsrf403) {
+                consecutiveCsrfFailures = 0;
+            }
+
+            if (isCsrf403) {
                 // CSRF/Origin gate rejected us — different failure
                 // mode from 5xx (transient backend issue, retry) or
-                // 4xx-business (skip). 403 means our request shape
-                // can't make it past the guard; spinning forever just
-                // burns cycles. Track separately and stop the
-                // heartbeat after MAX_CONSECUTIVE_CSRF_FAILURES so the
-                // tracker degrades cleanly to its local collector
-                // instead of looking up at silent 403s forever.
+                // 4xx-business (skip). Spinning forever just burns
+                // cycles. Track separately and stop the heartbeat
+                // after MAX_CONSECUTIVE_CSRF_FAILURES so the tracker
+                // degrades cleanly to its local collector instead of
+                // looking up at silent 403s forever.
                 consecutiveCsrfFailures++;
                 if (consecutiveCsrfFailures <= LOG_FAILURE_QUIET_THRESHOLD) {
                     console.warn(
-                        '[activity-signal] push rejected with 403 '
-                        + '(CSRF/Origin); token may not be granted '
-                        + 'yet — will retry.',
+                        '[activity-signal] push rejected with '
+                        + 'csrf_validation_failed; token may not be '
+                        + 'granted yet — will retry.',
                     );
                 }
                 if (consecutiveCsrfFailures >= MAX_CONSECUTIVE_CSRF_FAILURES
@@ -280,9 +328,10 @@
                     console.error(
                         '[activity-signal] '
                         + consecutiveCsrfFailures
-                        + ' consecutive 403s — heartbeat stopped to '
-                        + 'avoid silent spin. Tracker will fall back '
-                        + 'to its local collector (degraded mode on '
+                        + ' consecutive csrf_validation_failed '
+                        + 'rejections — heartbeat stopped to avoid '
+                        + 'silent spin. Tracker will fall back to its '
+                        + 'local collector (degraded mode on '
                         + 'non-Windows / remote backends). To '
                         + 'diagnose: verify '
                         + '``window.nekoLocalMutationSecurity`` is '
@@ -294,20 +343,13 @@
                 return;
             }
 
-            // Non-403 response (4xx-business / 5xx / 429 / etc) — the
-            // server is reachable and the CSRF guard let us past, so
-            // the *consecutive* 403 streak is broken. Without this,
-            // an alternating sequence like 403, 500, 403, 500, ...
-            // would accumulate 6 lifetime 403s and trip the
-            // stop-the-heartbeat threshold even though none of them
-            // were truly consecutive (Codex P2 on PR #1532).
-            consecutiveCsrfFailures = 0;
-
-            // 429 = rate-limited (we're heartbeating too fast somehow — shouldn't
-            // happen with the 5s interval, but if it does we just skip).
-            // 404 = lanlan_name not registered yet (boot race) — silent.
-            // 503 = tracker not yet initialised (boot race) — silent.
-            // Anything else: count toward failure log throttle.
+            // Generic failure path:
+            //   429 = rate-limited (we're heartbeating too fast somehow — shouldn't
+            //       happen with the 5s interval, but if it does we just skip).
+            //   404 = lanlan_name not registered yet (boot race) — silent.
+            //   503 = tracker not yet initialised (boot race) — silent.
+            //   Other 4xx (including non-CSRF 403s like reverse-proxy rejects)
+            //       and 5xx → count toward generic failure log throttle.
             if (resp.status !== 429 && resp.status !== 404 && resp.status !== 503) {
                 consecutiveFailures++;
                 if (consecutiveFailures <= LOG_FAILURE_QUIET_THRESHOLD) {

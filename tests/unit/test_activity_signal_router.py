@@ -354,6 +354,13 @@ def test_no_origin_no_csrf_blocked_with_403(monkeypatch):
     same browsing context isn't a supported deployment shape (see the
     threat model in ``docs/design/security/local-mutation-auth.md``).
     Same shape as every other browser-facing mutation endpoint now.
+
+    Body contract (CodeRabbit Minor on PR #1532): the 403 must carry
+    both ``ok: false`` + ``error_code`` (unified guard shape) AND
+    ``success: false`` (this endpoint's historical shape). Cache must
+    be ``no-store`` to match the rest of activity_signal's responses,
+    or a transient bootstrap-window 403 could get cached and mask a
+    later post-bootstrap success.
     """
     mgr, tracker = _build_mgr()
     client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
@@ -364,7 +371,13 @@ def test_no_origin_no_csrf_blocked_with_403(monkeypatch):
     )
 
     assert resp.status_code == 403, resp.text
-    assert resp.json().get("error_code") == "csrf_validation_failed"
+    body = resp.json()
+    assert body.get("error_code") == "csrf_validation_failed"
+    assert body.get("success") is False, (
+        "activity_signal 403 must keep success:false for backward "
+        f"compatibility with the rest of this endpoint's contract; got {body!r}"
+    )
+    assert "no-store" in resp.headers.get("Cache-Control", "").lower()
     tracker.push_external_system_signal.assert_not_called()
 
 

@@ -4281,8 +4281,19 @@ async def push_activity_signal(request: Request):
     429 if pushed faster than ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s),
     503 if the character's tracker hasn't initialised yet.
     """
-    validation_error = _validate_local_mutation_request(request)
+    # ``error_defaults`` so the 403 body includes ``success: false``
+    # alongside the unified guard's ``ok/error_code`` fields — keeps
+    # the contract consistent with this endpoint's other error
+    # branches (existing frontend / tests grep ``success``). Also
+    # apply ``_set_no_store_headers`` since the rest of this handler's
+    # responses use that and a cached 403 would mask post-bootstrap
+    # success on the next tick (CodeRabbit Minor on PR #1532).
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"success": False},
+    )
     if validation_error is not None:
+        _set_no_store_headers(validation_error)
         return validation_error
 
     try:
