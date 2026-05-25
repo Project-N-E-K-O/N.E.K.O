@@ -147,7 +147,6 @@ class RapidOcrBackend:
                 bottom=box.bottom / scale_y,
                 score=float(score),
             )
-            for _text, _score, box in lines
-            for score in (_score,)
+            for _text, score, box in lines
         ]
         return "\n".join(text for text, _score, _box in lines), boxes

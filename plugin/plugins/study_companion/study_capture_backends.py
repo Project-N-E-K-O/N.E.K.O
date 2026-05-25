@@ -215,7 +215,16 @@ class PrintWindowCaptureBackend(_BaseCaptureBackend):
     kind = CAPTURE_BACKEND_PRINTWINDOW
 
     def is_available(self) -> bool:
-        return sys.platform == "win32"
+        if sys.platform != "win32":
+            return False
+        try:
+            import win32con
+            import win32gui
+            import win32ui
+
+            return bool(win32con and win32gui and win32ui)
+        except ImportError:
+            return False
 
     def capture_frame(self, target: Any, profile: Any) -> Any:
         _require_visible_capture_target(target, backend_kind=self.kind)
@@ -243,13 +252,14 @@ class PrintWindowCaptureBackend(_BaseCaptureBackend):
         bmp = None
         mem_dc = None
         hdc_mem = None
+        previous_bitmap = None
         try:
             hdc_mem = win32ui.CreateDCFromHandle(hdc)
             mem_dc = hdc_mem.CreateCompatibleDC()
 
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(hdc_mem, width, height)
-            mem_dc.SelectObject(bmp)
+            previous_bitmap = mem_dc.SelectObject(bmp)
 
             success = False
             try:
@@ -280,9 +290,12 @@ class PrintWindowCaptureBackend(_BaseCaptureBackend):
             )
         finally:
             if mem_dc is not None:
+                if previous_bitmap is not None:
+                    try:
+                        mem_dc.SelectObject(previous_bitmap)
+                    except Exception:
+                        pass
                 mem_dc.DeleteDC()
-            if hdc_mem is not None:
-                hdc_mem.DeleteDC()
             if bmp is not None:
                 win32gui.DeleteObject(bmp.GetHandle())
             win32gui.ReleaseDC(hwnd, hdc)
@@ -317,7 +330,8 @@ class DxcamCaptureBackend(_BaseCaptureBackend):
 
         _require_visible_capture_target(target, backend_kind=self.kind)
         rect = _target_window_rect(target)
-        frame = self._camera_instance().grab(region=rect)
+        with self._camera_lock:
+            frame = self._camera_instance().grab(region=rect)
         if frame is None:
             raise RuntimeError("dxcam returned no frame")
         image = Image.fromarray(frame)

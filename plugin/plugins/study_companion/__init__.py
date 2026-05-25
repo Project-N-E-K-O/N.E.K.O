@@ -2681,6 +2681,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
                 ocr_version=self._cfg.rapidocr_ocr_version,
                 lang_type=self._cfg.rapidocr_lang_type,
+                model_type=self._cfg.rapidocr_model_type,
                 timeout_seconds=float(self._cfg.ocr_install_timeout_seconds or 180.0),
                 force=bool(force),
                 task_id=run_id or None,

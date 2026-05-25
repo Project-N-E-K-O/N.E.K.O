@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import shutil
@@ -57,6 +58,7 @@ from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion import study_capture_backends as study_capture_backends_module
 from plugin.plugins.study_companion.study_capture_backends import (
+    DxcamCaptureBackend,
     PrintWindowCaptureBackend,
     PyAutoGuiCaptureBackend,
 )
@@ -1436,6 +1438,106 @@ def test_printwindow_capture_requires_hwnd() -> None:
         PrintWindowCaptureBackend().capture_frame(target, StudyCaptureProfile())
 
 
+def test_printwindow_capture_unavailable_when_pywin32_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"win32con", "win32gui", "win32ui"}:
+            raise ImportError(name)
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(study_capture_backends_module.sys, "platform", "win32")
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+
+    assert PrintWindowCaptureBackend().is_available() is False
+
+
+def test_printwindow_capture_releases_window_dc_without_deleting_wrapped_hdc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    previous_bitmap = object()
+
+    class _Bitmap:
+        def CreateCompatibleBitmap(self, _source_dc, width: int, height: int) -> None:
+            calls.append(f"create_bitmap:{width}x{height}")
+
+        def GetInfo(self) -> dict[str, int]:
+            return {"bmWidth": 2, "bmHeight": 2}
+
+        def GetBitmapBits(self, _as_bytes: bool) -> bytes:
+            return b"\x00" * 16
+
+        def GetHandle(self) -> int:
+            return 123
+
+    bitmap = _Bitmap()
+
+    class _MemDc:
+        def SelectObject(self, obj):
+            calls.append("restore_bitmap" if obj is previous_bitmap else "select_bitmap")
+            return previous_bitmap
+
+        def GetSafeHdc(self) -> int:
+            return 456
+
+        def BitBlt(self, *_args) -> None:
+            calls.append("bitblt")
+
+        def DeleteDC(self) -> None:
+            calls.append("mem_delete")
+
+    mem_dc = _MemDc()
+
+    class _SourceDc:
+        def CreateCompatibleDC(self):
+            return mem_dc
+
+        def DeleteDC(self) -> None:
+            calls.append("source_delete")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            GetWindowDC=lambda _hwnd: 789,
+            DeleteObject=lambda _handle: calls.append("delete_object"),
+            ReleaseDC=lambda _hwnd, _hdc: calls.append("release_dc"),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32ui",
+        SimpleNamespace(
+            CreateDCFromHandle=lambda _hdc: _SourceDc(),
+            CreateBitmap=lambda: bitmap,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SRCCOPY=1))
+    monkeypatch.setattr(
+        study_capture_backends_module.ctypes,
+        "windll",
+        SimpleNamespace(user32=SimpleNamespace(PrintWindow=lambda *_args: 0)),
+        raising=False,
+    )
+
+    image = PrintWindowCaptureBackend._capture_full_window(1234, (0, 0, 2, 2))
+
+    assert image.size == (2, 2)
+    assert calls == [
+        "create_bitmap:2x2",
+        "select_bitmap",
+        "bitblt",
+        "restore_bitmap",
+        "mem_delete",
+        "delete_object",
+        "release_dc",
+    ]
+    assert "source_delete" not in calls
+
+
 def test_win32_target_window_rect_reads_under_dpi_aware_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1500,6 +1602,52 @@ def test_pyautogui_capture_rejects_secondary_monitor_target(
     with pytest.raises(RuntimeError, match="secondary_monitor|spans_across"):
         PyAutoGuiCaptureBackend().capture_frame(target, StudyCaptureProfile())
     assert screenshot_calls == 0
+
+
+def test_dxcam_capture_serializes_grab_with_camera_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from PIL import Image
+
+    calls: list[str] = []
+
+    class _Lock:
+        def __enter__(self):
+            calls.append("lock_enter")
+
+        def __exit__(self, *_exc):
+            calls.append("lock_exit")
+
+    class _Camera:
+        def grab(self, *, region):
+            calls.append(f"grab:{region}")
+            return object()
+
+    backend = DxcamCaptureBackend()
+    backend._camera = _Camera()
+    backend._camera_lock = _Lock()
+    monkeypatch.setattr(
+        study_capture_backends_module,
+        "_target_window_rect",
+        lambda _target: (1, 2, 3, 4),
+    )
+    monkeypatch.setattr(
+        study_capture_backends_module,
+        "_require_visible_capture_target",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(Image, "fromarray", lambda _frame: Image.new("RGB", (2, 2)))
+
+    image = backend.capture_frame(object(), StudyCaptureProfile())
+
+    assert image.size == (2, 2)
+    assert calls == [
+        "lock_enter",
+        "lock_enter",
+        "lock_exit",
+        "grab:(1, 2, 3, 4)",
+        "lock_exit",
+    ]
 
 
 def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:

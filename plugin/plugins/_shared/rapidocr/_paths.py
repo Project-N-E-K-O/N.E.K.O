@@ -55,18 +55,18 @@ def resolve_rapidocr_install_target(raw_target_dir: str) -> Path:
         return _expand_candidate_path(normalized)
 
     target = _app_runtimes_root() / "RapidOCR"
-    if not target.exists():
-        galgame_target = _legacy_galgame_rapidocr_target()
-        if _rapidocr_target_has_assets(galgame_target, RAPIDOCR_PACKAGE_NAME):
-            return galgame_target
-        legacy_raw = default_rapidocr_install_target_raw_legacy()
-        if legacy_raw:
-            legacy_target = _expand_candidate_path(legacy_raw)
-            legacy_package_dir = (
-                legacy_target / "runtime" / "site-packages" / RAPIDOCR_PACKAGE_NAME
-            )
-            if legacy_package_dir.exists():
-                return legacy_target
+    if _rapidocr_target_has_assets(target, RAPIDOCR_PACKAGE_NAME):
+        return target
+
+    galgame_target = _legacy_galgame_rapidocr_target()
+    if _rapidocr_target_has_assets(galgame_target, RAPIDOCR_PACKAGE_NAME):
+        return galgame_target
+
+    legacy_raw = default_rapidocr_install_target_raw_legacy()
+    if legacy_raw:
+        legacy_target = _expand_candidate_path(legacy_raw)
+        if _rapidocr_target_has_assets(legacy_target, RAPIDOCR_PACKAGE_NAME):
+            return legacy_target
     return target
 
 

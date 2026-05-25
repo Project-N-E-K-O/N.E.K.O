@@ -144,14 +144,20 @@ def _build_runtime_constructor_kwargs(
             model_type=model_type,
         )
         kwargs: dict[str, Any] = {}
-        if det_path and rec_path:
-            kwargs["det_model_path"] = det_path
-            kwargs["rec_model_path"] = rec_path
-            if cls_path:
-                kwargs["cls_model_path"] = cls_path
-                cls_image_shape = _rapidocr_cls_image_shape_for_model(cls_path)
-                if cls_image_shape is not None:
-                    kwargs["cls_image_shape"] = cls_image_shape
+        if not det_path or not rec_path:
+            selected_model = rapidocr_selected_model_name(
+                ocr_version=ocr_version,
+                lang_type=lang_type,
+                model_type=model_type,
+            )
+            raise RuntimeError(f"RapidOCR model files are incomplete for {selected_model}")
+        kwargs["det_model_path"] = det_path
+        kwargs["rec_model_path"] = rec_path
+        if cls_path:
+            kwargs["cls_model_path"] = cls_path
+            cls_image_shape = _rapidocr_cls_image_shape_for_model(cls_path)
+            if cls_image_shape is not None:
+                kwargs["cls_image_shape"] = cls_image_shape
         if engine_type:
             kwargs["engine_type"] = engine_type
         return kwargs

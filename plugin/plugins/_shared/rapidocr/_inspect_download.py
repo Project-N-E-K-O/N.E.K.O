@@ -170,6 +170,7 @@ def inspect_rapidocr_installation(
         "ocr_version": ocr_version,
         "detail": detail,
         "runtime_error": runtime_error,
+        "install_state": install_state,
         "missing_model_files": missing_files,
         "missing_model_total_size": total_size_estimate,
         "model_download_source": _RAPIDOCR_MODELSCOPE_BASE,
@@ -332,8 +333,14 @@ async def download_rapidocr_models(
     downloaded_bytes = 0
     downloaded: list[str] = []
     downloaded_sources: dict[str, str] = {}
+    http_timeout = httpx.Timeout(
+        connect=min(max(float(timeout_seconds), 1.0), 30.0),
+        read=None,
+        write=max(float(timeout_seconds), 1.0),
+        pool=min(max(float(timeout_seconds), 1.0), 30.0),
+    )
     async with httpx.AsyncClient(
-        timeout=timeout_seconds,
+        timeout=http_timeout,
         trust_env=True,
         follow_redirects=True,
     ) as client:
