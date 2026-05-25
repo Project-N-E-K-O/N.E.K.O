@@ -84,8 +84,8 @@ NEKO-PC 拿 token 的路径：跟纯浏览器完全一样——同源 fetch `GET
 
 | 环境变量 | 默认值 | 用途 |
 |---|---|---|
-| `NEKO_AUTOSTART_CSRF_TOKEN` / `AUTOSTART_CSRF_TOKEN` | `INSTANCE_ID`（每次启动随机 UUID4 hex） | CSRF token 值。生产环境通常不设——默认值已经足够，且重启即失效 |
-| `NEKO_AUTOSTART_ALLOWED_ORIGINS` / `AUTOSTART_ALLOWED_ORIGINS` | 自动生成 `http://127.0.0.1:<MAIN_SERVER_PORT>` / `http://localhost:<MAIN_SERVER_PORT>` / `http://[::1]:<MAIN_SERVER_PORT>` | 允许的 Origin 集合（逗号分隔追加）。`request.base_url` 总是自动加入，确保 reverse-proxy 部署不需要手配 |
+| `NEKO_AUTOSTART_CSRF_TOKEN` | `INSTANCE_ID`（每次启动随机 UUID4 hex） | CSRF token 值。生产环境通常不设——默认值已经足够，且重启即失效。**只接受加 `NEKO_` 前缀的形式**（`config/__init__.py:284` 直接 `os.getenv("NEKO_AUTOSTART_CSRF_TOKEN")`，没有裸名 fallback）|
+| `NEKO_AUTOSTART_ALLOWED_ORIGINS` / `AUTOSTART_ALLOWED_ORIGINS` | 自动生成 `http://127.0.0.1:<MAIN_SERVER_PORT>` / `http://localhost:<MAIN_SERVER_PORT>` / `http://[::1]:<MAIN_SERVER_PORT>` | 允许的 Origin 集合（逗号分隔追加）。`request.base_url` 总是自动加入，确保 reverse-proxy 部署不需要手配。**两种键名都支持**（走 `_read_list_env` 的 `NEKO_<NAME>` → `<NAME>` 双键 fallback）|
 | `NEKO_INSTANCE_ID` | （由 launcher 注入）| INSTANCE_ID 来源，间接影响默认 CSRF token |
 
 ### 4.1 故意没引入的配置
@@ -272,7 +272,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 
 - 撤回后端 PR：所有端点退回到「无守卫」状态，前端 `getMutationHeaders()` 会照常注入 header（被后端忽略）—— 不破坏前端
 - 撤回前端 PR：所有调用退回到「不带 token」状态，后端会 403 拒绝所有 mutation —— **破坏前端**，所以前后端解耦回滚不建议
-- 紧急情况下临时绕过：在 server 启动时设 `NEKO_AUTOSTART_ALLOWED_ORIGINS="*"` —— 这只放宽 Origin 检查，CSRF 还是要求；如果连 CSRF 也想绕，目前唯一办法是改 `_validate_local_mutation_request` 让它直接 return None，需要重发版
+- **没有运行时绕过开关**：`AUTOSTART_ALLOWED_ORIGINS` 走的是 *字面字符串相等* 比较（`_get_allowed_local_origins` 把每个值过 `_normalize_origin_value`，只接受 `http/https` scheme + 非空 netloc，然后跟 `request_origin` 做 set 包含检查），所以**没有** `*` / `<any>` 这种 wildcard。同理 `NEKO_AUTOSTART_CSRF_TOKEN` 也只能设成具体 token 字符串，不能开关式禁用。如果守卫真的卡死，唯一应急路径是改源码（让 `_validate_local_mutation_request` 直接 return None）+ 重发版 —— 这就是为什么这一项叫"没有"而不是"如何"。
 
 ---
 
