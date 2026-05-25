@@ -895,7 +895,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             for item in list((self._qq_settings or {}).get("backlog_labels") or [])
             if isinstance(item, dict) and str(item.get("id") or "").strip()
         }
-        if unread_count < self._backlog_summary_threshold:
+        issue_count = sum(
+            int(count or 0)
+            for label_id, count in label_counts.items()
+            if str(label_id or "").strip() and str(label_id or "").strip() != "chat"
+        )
+        if unread_count < self._backlog_summary_threshold and issue_count < self._backlog_issue_notify_threshold:
             return
         last_notified_at = int(group.get("last_notified_at") or 0)
         now = int(time.time())

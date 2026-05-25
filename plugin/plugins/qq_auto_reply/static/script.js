@@ -802,7 +802,7 @@ const pluginId = 'qq_auto_reply';
                     original_message: text,
                 }));
                 return `
-                    <button class="backlog-message-item reply-action" type="button" onclick="openBacklogDetailReply(decodeURIComponent('${replyPayload}'))">
+                    <button class="backlog-message-item reply-action" type="button" data-reply-payload="${escapeHtml(replyPayload)}">
                         <div class="backlog-message-top">
                             <span>${escapeHtml(meta)}</span>
                             <span>${escapeHtml(dateText)}</span>
@@ -824,7 +824,7 @@ const pluginId = 'qq_auto_reply';
                         target_label: item.target_label,
                         original_message: item.text,
                     }));
-                    return `<button class="backlog-highlight-item reply-action" type="button" onclick="openBacklogDetailReply(decodeURIComponent('${replyPayload}'))">${escapeHtml(`${item.sender}（${item.categoryLabel}）：${item.text}`)}</button>`;
+                    return `<button class="backlog-highlight-item reply-action" type="button" data-reply-payload="${escapeHtml(replyPayload)}">${escapeHtml(`${item.sender}（${item.categoryLabel}）：${item.text}`)}</button>`;
                 }).join('')}</div>`
                 : `<div class="empty-state">${t('ui.backlog.no_highlights', '暂时没有提炼出的重点摘要。')}</div>`;
             container.innerHTML = `
@@ -839,6 +839,12 @@ const pluginId = 'qq_auto_reply';
                 <div class="backlog-section-title">${t('ui.backlog.messages_title', '待审阅消息')}</div>
                 <div class="backlog-message-list">${messageItems}</div>
             `;
+            container.querySelectorAll('.reply-action').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const replyPayload = button.dataset.replyPayload || '';
+                    openBacklogDetailReply(decodeURIComponent(replyPayload));
+                });
+            });
         }
 
         function escapeHtml(value) {
