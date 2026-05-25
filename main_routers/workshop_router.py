@@ -251,6 +251,38 @@ def _load_deleted_character_names(config_mgr) -> set[str]:
     return deleted_names
 
 
+def _remove_deleted_character_tombstones(config_mgr, character_names: list[str]) -> list[str]:
+    """移除手动恢复角色对应的 tombstone，避免后续同步继续把它当作已删除。"""
+    target_names = {str(name or "").strip() for name in character_names}
+    target_names.discard("")
+    if not target_names:
+        return []
+
+    tombstone_state = config_mgr.load_character_tombstones_state()
+    original_entries = tombstone_state.get("tombstones") or []
+    remaining_entries = []
+    removed_names: list[str] = []
+
+    for entry in original_entries:
+        if not isinstance(entry, dict):
+            remaining_entries.append(entry)
+            continue
+        character_name = str(entry.get("character_name") or "").strip()
+        if character_name in target_names:
+            removed_names.append(character_name)
+            continue
+        remaining_entries.append(entry)
+
+    if not removed_names:
+        return []
+
+    config_mgr.save_character_tombstones_state({
+        "version": getattr(config_mgr, "CHARACTER_TOMBSTONES_STATE_VERSION", 1),
+        "tombstones": remaining_entries,
+    })
+    return removed_names
+
+
 def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str) -> str:
     normalized_name = str(raw_model_name or "").strip().replace("\\", "/")
     if not normalized_name:
@@ -4952,7 +4984,10 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
 
-async def sync_workshop_character_cards() -> dict:
+async def sync_workshop_character_cards(
+    target_item_id: str | int | None = None,
+    restore_deleted: bool = False,
+) -> dict:
     """
     服务端自动扫描所有已订阅且已安装的创意工坊物品，
     将其中的 .chara.json 角色卡同步到系统 characters.json。
@@ -4967,6 +5002,45 @@ async def sync_workshop_character_cards() -> dict:
     backfilled_face_count = 0
     skipped_count = 0
     error_count = 0
+    target_item_id_str = str(target_item_id).strip() if target_item_id is not None else ""
+    target_found = not bool(target_item_id_str)
+    scanned_item_count = 0
+    installed_item_count = 0
+    found_character_names: list[str] = []
+    added_character_names: list[str] = []
+    existing_character_names: list[str] = []
+    deleted_character_names_seen: list[str] = []
+    restored_deleted_names: list[str] = []
+
+    def _append_unique(bucket: list[str], name: str) -> None:
+        normalized_name = str(name or "").strip()
+        if normalized_name and normalized_name not in bucket:
+            bucket.append(normalized_name)
+
+    def _sync_result(*, blocked_by_write_fence: bool = False, code: str | None = None) -> dict:
+        payload = {
+            "added": added_count,
+            "backfilled_faces": backfilled_face_count,
+            "skipped": skipped_count,
+            "errors": error_count,
+        }
+        if blocked_by_write_fence:
+            payload["blocked_by_write_fence"] = True
+        if target_item_id_str:
+            payload.update({
+                "target_item_id": target_item_id_str,
+                "target_found": target_found,
+                "scanned_items": scanned_item_count,
+                "installed_items": installed_item_count,
+                "found_character_names": found_character_names,
+                "added_character_names": added_character_names,
+                "existing_character_names": existing_character_names,
+                "deleted_character_names": deleted_character_names_seen,
+                "restored_deleted_names": restored_deleted_names,
+            })
+            if code:
+                payload["code"] = code
+        return payload
     
     try:
         # 1. 获取所有订阅的创意工坊物品
@@ -4976,27 +5050,37 @@ async def sync_workshop_character_cards() -> dict:
         if isinstance(items_result, JSONResponse):
             # JSONResponse — 说明出错了，直接返回
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败（返回了 JSONResponse）")
-            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 1}
+            error_count += 1
+            return _sync_result(code="WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE")
         
         if not isinstance(items_result, dict) or not items_result.get('success'):
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败")
-            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 1}
+            error_count += 1
+            return _sync_result(code="WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE")
         
         subscribed_items = items_result.get('items', [])
-        if not subscribed_items:
+        if target_item_id_str:
+            subscribed_items = [
+                item for item in subscribed_items
+                if str(item.get('publishedFileId', '')).strip() == target_item_id_str
+            ]
+            target_found = bool(subscribed_items)
+            if not subscribed_items:
+                logger.info(
+                    "sync_workshop_character_cards: 未找到目标订阅物品 %s",
+                    target_item_id_str,
+                )
+                return _sync_result(code="WORKSHOP_ITEM_NOT_FOUND")
+        elif not subscribed_items:
             logger.info("sync_workshop_character_cards: 没有订阅物品，跳过同步")
-            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 0}
+            return _sync_result()
         
         config_mgr = get_config_manager()
 
         def _write_fence_blocked_result() -> dict:
-            return {
-                "added": 0,
-                "backfilled_faces": backfilled_face_count,
-                "skipped": skipped_count,
-                "errors": error_count,
-                "blocked_by_write_fence": True,
-            }
+            payload = _sync_result(blocked_by_write_fence=True)
+            payload["added"] = 0
+            return payload
 
         def _abort_if_write_fence_active(message: str):
             if not is_write_fence_active(config_mgr):
@@ -5020,12 +5104,15 @@ async def sync_workshop_character_cards() -> dict:
             need_save = False
             pending_added_catgirls = {}
             pending_card_face_writes = {}
+            pending_restore_tombstone_names: set[str] = set()
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
+                scanned_item_count += 1
                 installed_folder = item.get('installedFolder')
                 if not installed_folder or not os.path.isdir(installed_folder):
                     continue
+                installed_item_count += 1
                 
                 item_id = item.get('publishedFileId', '')
                 
@@ -5048,15 +5135,20 @@ async def sync_workshop_character_cards() -> dict:
                             if not chara_name or '/' in chara_name or '\\' in chara_name or '..' in chara_name or len(chara_name) > 120:
                                 logger.warning(f"sync_workshop_character_cards: 跳过非法角色名 '{chara_name_raw}' (物品 {item_id})")
                                 continue
+                            _append_unique(found_character_names, chara_name)
 
                             if chara_name in deleted_character_names:
-                                skipped_count += 1
-                                logger.info(
-                                    "sync_workshop_character_cards: 跳过已删除角色 '%s'（tombstone 生效，物品 %s）",
-                                    chara_name,
-                                    item_id,
-                                )
-                                continue
+                                _append_unique(deleted_character_names_seen, chara_name)
+                                if restore_deleted:
+                                    pending_restore_tombstone_names.add(chara_name)
+                                else:
+                                    skipped_count += 1
+                                    logger.info(
+                                        "sync_workshop_character_cards: 跳过已删除角色 '%s'（tombstone 生效，物品 %s）",
+                                        chara_name,
+                                        item_id,
+                                    )
+                                    continue
                             chara_file_stem = Path(chara_file_path).name[:-11]
                             preview_image_path = find_preview_image_in_folder(
                                 installed_folder,
@@ -5077,6 +5169,7 @@ async def sync_workshop_character_cards() -> dict:
                                         item_id,
                                     )
                                     continue
+                                _append_unique(existing_character_names, chara_name)
                                 existing_data = characters['猫娘'].get(chara_name) or {}
                                 if _is_matching_workshop_character(existing_data, item_id):
                                     try:
@@ -5234,12 +5327,7 @@ async def sync_workshop_character_cards() -> dict:
                         )
                         added_count = 0
                         error_count += 1
-                        return {
-                            "added": added_count,
-                            "backfilled_faces": backfilled_face_count,
-                            "skipped": skipped_count,
-                            "errors": error_count,
-                        }
+                        return _sync_result()
                     latest_catgirls = latest_characters.get('猫娘')
                     if not isinstance(latest_catgirls, dict):
                         logger.warning(
@@ -5248,19 +5336,20 @@ async def sync_workshop_character_cards() -> dict:
                         )
                         added_count = 0
                         error_count += 1
-                        return {
-                            "added": added_count,
-                            "backfilled_faces": backfilled_face_count,
-                            "skipped": skipped_count,
-                            "errors": error_count,
-                        }
+                        return _sync_result()
 
                     latest_deleted_character_names = _load_deleted_character_names(config_mgr)
                     actually_added_count = 0
                     skipped_due_to_race_count = 0
                     for pending_name, pending_payload in pending_added_catgirls.items():
-                        if pending_name in latest_deleted_character_names or pending_name in latest_catgirls:
+                        pending_name_is_deleted = pending_name in latest_deleted_character_names
+                        if (
+                            (pending_name_is_deleted and not restore_deleted)
+                            or pending_name in latest_catgirls
+                        ):
                             skipped_due_to_race_count += 1
+                            if pending_name in latest_catgirls:
+                                _append_unique(existing_character_names, pending_name)
                             continue
                         latest_catgirls[pending_name] = pending_payload
                         actually_added_count += 1
@@ -5283,6 +5372,35 @@ async def sync_workshop_character_cards() -> dict:
                         return _write_fence_blocked_result()
 
                     logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
+
+                    for added_name in actually_added_names:
+                        _append_unique(added_character_names, added_name)
+
+                    if restore_deleted and actually_added_names:
+                        restored_candidates = [
+                            name for name in actually_added_names
+                            if name in pending_restore_tombstone_names
+                        ]
+                        if restored_candidates:
+                            try:
+                                removed_names = await asyncio.to_thread(
+                                    _remove_deleted_character_tombstones,
+                                    config_mgr,
+                                    restored_candidates,
+                                )
+                                for removed_name in removed_names:
+                                    _append_unique(restored_deleted_names, removed_name)
+                                if removed_names:
+                                    logger.info(
+                                        "sync_workshop_character_cards: 已移除手动恢复角色的 tombstone: %s",
+                                        ", ".join(removed_names),
+                                    )
+                            except Exception as tombstone_err:
+                                error_count += 1
+                                logger.warning(
+                                    "sync_workshop_character_cards: 移除手动恢复角色 tombstone 失败: %s",
+                                    tombstone_err,
+                                )
 
                     for added_name in actually_added_names:
                         write_info = pending_card_face_writes.get(added_name) or {}
@@ -5347,7 +5465,7 @@ async def sync_workshop_character_cards() -> dict:
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
         error_count += 1
     
-    return {"added": added_count, "backfilled_faces": backfilled_face_count, "skipped": skipped_count, "errors": error_count}
+    return _sync_result()
 
 
 @router.post('/sync-characters')
@@ -5385,6 +5503,87 @@ async def api_sync_workshop_character_cards():
         }
     except Exception as e:
         logger.error(f"API sync-characters 失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+@router.post('/sync-character/{item_id}')
+async def api_sync_single_workshop_character_card(item_id: str):
+    """
+    手动从指定订阅物品加入角色卡。
+    与启动自动同步不同，这个入口会允许用户恢复之前手动删除过的工坊角色卡。
+    """
+    try:
+        result = await sync_workshop_character_cards(
+            target_item_id=item_id,
+            restore_deleted=True,
+        )
+        if result.get("blocked_by_write_fence"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WRITE_FENCE_ACTIVE",
+                    "error": "当前处于存储维护态，暂时不能同步创意工坊角色卡，请稍后重试。",
+                    **result,
+                },
+            )
+
+        if result.get("code") == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+                    "error": "获取订阅物品失败，请确认 Steam 客户端已运行并已登录。",
+                    **result,
+                },
+            )
+
+        if not result.get("target_found"):
+            return {
+                "success": False,
+                "code": result.get("code") or "WORKSHOP_ITEM_NOT_FOUND",
+                "error": "未找到对应的订阅物品，请刷新订阅列表后重试。",
+                **result,
+            }
+
+        if result.get("added", 0) > 0:
+            added_names = result.get("added_character_names") or []
+            names_text = "、".join(added_names) if added_names else "角色卡"
+            return {
+                "success": True,
+                "message": f"已加入角色卡：{names_text}",
+                **result,
+            }
+
+        existing_names = result.get("existing_character_names") or []
+        if existing_names:
+            return {
+                "success": False,
+                "code": "WORKSHOP_CHARACTER_ALREADY_EXISTS",
+                "error": "角色卡已存在。",
+                **result,
+            }
+
+        if not result.get("found_character_names"):
+            return {
+                "success": False,
+                "code": "WORKSHOP_CHARACTER_NOT_FOUND",
+                "error": "此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。",
+                **result,
+            }
+
+        return {
+            "success": False,
+            "code": "WORKSHOP_CHARACTER_NOT_ADDED",
+            "error": "未加入新的角色卡。",
+            **result,
+        }
+    except Exception as e:
+        logger.error(f"API sync-character 失败: {e}")
         return JSONResponse({
             "success": False,
             "error": str(e)

@@ -656,6 +656,90 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_manual_workshop_character_sync_restores_deleted_character_and_clears_tombstone():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            deleted_name = "手动恢复工坊角色"
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": deleted_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_manual_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": deleted_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            subscribed_items_mock = AsyncMock(
+                return_value={
+                    "success": True,
+                    "items": [
+                        {
+                            "publishedFileId": "123456",
+                            "installedFolder": str(installed_folder),
+                        }
+                    ],
+                }
+            )
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                subscribed_items_mock,
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+                second_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["added_character_names"] == [deleted_name]
+            assert sync_result["restored_deleted_names"] == [deleted_name]
+            current_characters = cm.load_characters()
+            assert deleted_name in current_characters.get("猫娘", {})
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == deleted_name for entry in tombstones)
+
+            assert second_result["added"] == 0
+            assert second_result["existing_character_names"] == [deleted_name]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_turns_on():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
