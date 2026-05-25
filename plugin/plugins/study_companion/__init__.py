@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 from datetime import datetime
 import math
 from pathlib import Path
@@ -113,6 +114,57 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 
 
 _MAX_SUBMITTED_IMAGE_BASE64_LENGTH = 10 * 1024 * 1024
+_MAX_SUBMITTED_IMAGE_BASE64_ENCODED_LENGTH = (
+    ((_MAX_SUBMITTED_IMAGE_BASE64_LENGTH + 2) // 3) * 4 + 64
+)
+_SUPPORTED_SUBMITTED_IMAGE_MIME_BY_DATA_URL_PREFIX = {
+    "data:image/jpeg;base64": "image/jpeg",
+    "data:image/png;base64": "image/png",
+}
+
+
+def _detect_submitted_image_mime(raw: bytes) -> str:
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return ""
+
+
+def _normalize_submitted_image_payload(image_base64: str) -> str:
+    image_payload = str(image_base64 or "").strip()
+    if not image_payload:
+        raise ValueError("image_base64 is required")
+
+    expected_mime = ""
+    encoded_payload = image_payload
+    if image_payload.lower().startswith("data:"):
+        header, separator, encoded_payload = image_payload.partition(",")
+        expected_mime = _SUPPORTED_SUBMITTED_IMAGE_MIME_BY_DATA_URL_PREFIX.get(
+            header.strip().lower(),
+            "",
+        )
+        if not separator or not encoded_payload.strip():
+            raise ValueError("image_base64 data URL is malformed")
+        if not expected_mime:
+            raise ValueError("only JPEG/PNG data URLs are supported")
+    encoded_payload = encoded_payload.strip()
+    if len(encoded_payload) > _MAX_SUBMITTED_IMAGE_BASE64_ENCODED_LENGTH:
+        raise ValueError("image_base64 is too large (max 10MB)")
+    try:
+        raw = base64.b64decode(encoded_payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("image_base64 is not valid base64") from exc
+    if not raw:
+        raise ValueError("image_base64 is not valid base64")
+    if len(raw) > _MAX_SUBMITTED_IMAGE_BASE64_LENGTH:
+        raise ValueError("image_base64 is too large (max 10MB)")
+    actual_mime = _detect_submitted_image_mime(raw)
+    if not actual_mime:
+        raise ValueError("only JPEG/PNG images are supported")
+    if expected_mime and actual_mime != expected_mime:
+        raise ValueError("image_base64 MIME does not match image data")
+    return f"data:{actual_mime};base64,{encoded_payload}"
 
 
 def _validated_pomodoro_focus_minutes(
@@ -2733,25 +2785,20 @@ class StudyCompanionPlugin(NekoPluginBase):
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
     async def study_submit_image(self, image_base64: str, text: str = "", **_):
-        image_payload = str(image_base64 or "").strip()
-        if not image_payload:
-            return Err(SdkError("image_base64 is required"))
-        if len(image_payload) > _MAX_SUBMITTED_IMAGE_BASE64_LENGTH:
-            return Err(SdkError("image_base64 is too large (max 10MB)"))
+        try:
+            image_payload = _normalize_submitted_image_payload(image_base64)
+        except ValueError as exc:
+            return Err(SdkError(str(exc)))
         if not bool(self._cfg.llm_vision_enabled):
             return Err(SdkError("llm_vision_enabled is not enabled"))
         normalized_text = str(text or "").strip()
         with self._lock:
             self._state.last_ocr_text = normalized_text
-            self._state.last_vision_image_base64 = image_payload
         source_text = normalized_text or "请查看这张图片的内容"
-        result = await self.study_explain_text(text=source_text)
-        if isinstance(result, Ok):
-            with self._lock:
-                if self._state.last_vision_image_base64 == image_payload:
-                    self._state.last_vision_image_base64 = ""
-            await self._persist_state()
-        return result
+        return await self.study_explain_text(
+            text=source_text,
+            vision_image_base64=image_payload,
+        )
 
     @plugin_entry(
         id="study_explain_text",
@@ -2769,7 +2816,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         timeout=45.0,
         llm_result_fields=["summary", "reply", "diagnostic"],
     )
-    async def study_explain_text(self, text: str = "", **_):
+    async def study_explain_text(self, text: str = "", vision_image_base64: str = "", **_):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         raw_text = str(text or "").strip()
@@ -2824,17 +2871,20 @@ class StudyCompanionPlugin(NekoPluginBase):
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         # Phase 3: explain with the active mode selected above.
+        extra_context: dict[str, Any] = {
+            "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
+            "mode": active_mode,
+            "mode_switch": bool(mode_switch.get("changed")),
+            "source_text": source_text,
+        }
+        vision_image_payload = str(vision_image_base64 or "").strip()
+        if vision_image_payload:
+            extra_context["vision_enabled"] = True
+            extra_context["vision_image_base64"] = vision_image_payload
         tutor_context = await self._build_learning_context(
             LLM_OPERATION_CONCEPT_EXPLAIN,
             input_text=source_text,
-            extra={
-                "source": "ocr_snapshot"
-                if used_ocr_fallback or not raw_text
-                else "manual",
-                "mode": active_mode,
-                "mode_switch": bool(mode_switch.get("changed")),
-                "source_text": source_text,
-            },
+            extra=extra_context,
         )
         reply = await self._agent.concept_explain(
             source_text,

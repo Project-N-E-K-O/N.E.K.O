@@ -854,11 +854,14 @@ class TutorLLMAgent:
     ) -> list[dict[str, Any]]:
         if not image_base64:
             return messages
-        image_url = (
-            image_base64
-            if image_base64.startswith(("data:image/jpeg", "data:image/png"))
-            else f"data:image/jpeg;base64,{image_base64}"
-        )
+        if image_base64.lower().startswith("data:"):
+            if not image_base64.lower().startswith(
+                ("data:image/jpeg;base64,", "data:image/png;base64,")
+            ):
+                return messages
+            image_url = image_base64
+        else:
+            image_url = f"data:image/jpeg;base64,{image_base64}"
         if detail not in {"low", "high", "auto"}:
             detail = "auto"
         result = [dict(message) for message in messages]

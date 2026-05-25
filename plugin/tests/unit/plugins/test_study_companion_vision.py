@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import threading
@@ -57,6 +58,10 @@ class _VisionPipeline:
         return dict(self.payload)
 
 
+JPEG_IMAGE_BASE64 = base64.b64encode(b"\xff\xd8\xff\xe0fake-jpeg").decode("ascii")
+PNG_IMAGE_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake-png").decode("ascii")
+
+
 @pytest.mark.parametrize(
     "model, expected",
     [
@@ -105,9 +110,7 @@ def test_attach_vision_image_only_allows_jpeg_and_png_data_urls() -> None:
     )
 
     assert png[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,abc"
-    assert svg[0]["content"][1]["image_url"]["url"] == (
-        "data:image/jpeg;base64,data:image/svg+xml;base64,abc"
-    )
+    assert svg is messages
 
 
 def test_strip_image_content_removes_image_blocks() -> None:
@@ -314,6 +317,28 @@ def test_remember_vision_snapshot_logs_empty_return_paths() -> None:
     assert any("empty encoded buffer" in message for message in messages)
 
 
+def test_remember_vision_snapshot_clears_stale_snapshot_on_abort() -> None:
+    class _InvalidImage:
+        size = (0, 10)
+
+        def save(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("invalid image must not be encoded")
+
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(llm_vision_enabled=True),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    image = Image.new("RGB", (16, 16), color="white")
+
+    pipeline._remember_vision_snapshot(image)
+    assert pipeline.latest_vision_snapshot()
+
+    pipeline._remember_vision_snapshot(_InvalidImage())
+
+    assert pipeline.latest_vision_snapshot() == {}
+
+
 def test_remember_vision_snapshot_warns_on_memory_error() -> None:
     class _MemoryErrorImage:
         size = (16, 16)
@@ -367,11 +392,11 @@ async def test_study_submit_image_stores_base64_and_delegates() -> None:
     plugin._state = build_initial_state()
     plugin._lock = threading.RLock()
     plugin._persist_state_calls = 0
-    calls: list[str] = []
+    calls: list[tuple[str, str]] = []
 
-    async def _study_explain_text(self: StudyCompanionPlugin, text: str = "", **_: Any):
-        calls.append(text)
-        assert self._state.last_vision_image_base64 == "image-payload"
+    async def _study_explain_text(self: StudyCompanionPlugin, text: str = "", **kwargs: Any):
+        calls.append((text, str(kwargs.get("vision_image_base64") or "")))
+        assert self._state.last_vision_image_base64 == ""
         return Ok({"reply": "done"})
 
     async def _persist_state(self: StudyCompanionPlugin) -> None:
@@ -380,12 +405,41 @@ async def test_study_submit_image_stores_base64_and_delegates() -> None:
     plugin.study_explain_text = MethodType(_study_explain_text, plugin)
     plugin._persist_state = MethodType(_persist_state, plugin)
 
-    result = await plugin.study_submit_image("image-payload", text="solve this")
+    result = await plugin.study_submit_image(JPEG_IMAGE_BASE64, text="solve this")
 
     assert isinstance(result, Ok)
-    assert calls == ["solve this"]
+    assert calls == [("solve this", f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}")]
     assert plugin._state.last_vision_image_base64 == ""
-    assert plugin._persist_state_calls == 1
+    assert plugin._persist_state_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_study_submit_image_uses_call_local_image_for_overlap() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=True)
+    plugin._state = build_initial_state()
+    plugin._lock = threading.RLock()
+    seen: list[tuple[str, str]] = []
+
+    async def _study_explain_text(self: StudyCompanionPlugin, text: str = "", **kwargs: Any):
+        await asyncio.sleep(0)
+        seen.append((text, str(kwargs.get("vision_image_base64") or "")))
+        assert self._state.last_vision_image_base64 == ""
+        return Ok({"reply": text})
+
+    plugin.study_explain_text = MethodType(_study_explain_text, plugin)
+
+    results = await asyncio.gather(
+        plugin.study_submit_image(JPEG_IMAGE_BASE64, text="first"),
+        plugin.study_submit_image(f"data:image/png;base64,{PNG_IMAGE_BASE64}", text="second"),
+    )
+
+    assert all(isinstance(result, Ok) for result in results)
+    assert sorted(seen) == [
+        ("first", f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"),
+        ("second", f"data:image/png;base64,{PNG_IMAGE_BASE64}"),
+    ]
+    assert plugin._state.last_vision_image_base64 == ""
 
 
 @pytest.mark.asyncio
@@ -395,10 +449,30 @@ async def test_study_submit_image_rejects_oversized_base64() -> None:
     plugin._state = build_initial_state()
     plugin._lock = threading.RLock()
 
-    result = await plugin.study_submit_image("a" * (10 * 1024 * 1024 + 1))
+    oversized = base64.b64encode(b"\xff\xd8\xff" + b"x" * (10 * 1024 * 1024 + 1)).decode(
+        "ascii"
+    )
+
+    result = await plugin.study_submit_image(oversized)
 
     assert isinstance(result, Err)
     assert "too large" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_submit_image_rejects_invalid_mime_and_base64() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=True)
+    plugin._state = build_initial_state()
+    plugin._lock = threading.RLock()
+
+    bad_mime = await plugin.study_submit_image("data:image/webp;base64,abc")
+    bad_base64 = await plugin.study_submit_image("data:image/png;base64,not base64")
+
+    assert isinstance(bad_mime, Err)
+    assert "JPEG/PNG" in str(bad_mime.error)
+    assert isinstance(bad_base64, Err)
+    assert "valid base64" in str(bad_base64.error)
 
 
 @pytest.mark.asyncio
@@ -414,10 +488,13 @@ async def test_study_submit_image_keeps_base64_when_delegate_fails() -> None:
 
     plugin.study_explain_text = MethodType(_study_explain_text, plugin)
 
-    result = await plugin.study_submit_image("image-payload", text="solve this")
+    result = await plugin.study_submit_image(
+        f"data:image/png;base64,{PNG_IMAGE_BASE64}",
+        text="solve this",
+    )
 
     assert isinstance(result, Err)
-    assert plugin._state.last_vision_image_base64 == "image-payload"
+    assert plugin._state.last_vision_image_base64 == ""
 
 
 @pytest.mark.asyncio
@@ -427,7 +504,7 @@ async def test_study_submit_image_requires_enabled_config() -> None:
     plugin._state = build_initial_state()
     plugin._lock = threading.RLock()
 
-    result = await plugin.study_submit_image("image-payload")
+    result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Err)
     assert "llm_vision_enabled" in str(result.error)

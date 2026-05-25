@@ -130,8 +130,8 @@ class StudyOcrPipeline:
     def _remember_vision_snapshot(
         self, image: Any, *, now: float | None = None
     ) -> None:
+        self._clear_vision_snapshot()
         if not bool(self._config.llm_vision_enabled):
-            self._clear_vision_snapshot()
             return
         if image is None or not hasattr(image, "save"):
             return
