@@ -1320,15 +1320,36 @@ def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
         return False
 
     try:
-        source = str(get_reserved(catgirl_data, 'character_origin', 'source', default='') or '').strip()
-        if source != 'steam_workshop':
+        current_item_id = str(item_id or '').strip()
+        if not current_item_id:
             return False
 
-        current_item_id = str(item_id or '').strip()
-        source_id = str(get_reserved(catgirl_data, 'character_origin', 'source_id', default='') or '').strip()
-        if not current_item_id or not source_id:
-            return False
-        return source_id == current_item_id
+        # 归属判定与退订确认路径（_is_confirmed_workshop_character）保持一致：
+        #   - character_origin.source_id 表示角色最初来自哪个 Workshop 物品
+        #   - avatar.asset_source_id 表示当前实际绑定的模型来源
+        # 旧数据 / 半迁移数据可能只有 avatar 绑定（例如 live2d_item_id 迁移只写
+        # avatar.asset_source_id，或用户在模型设置里手动绑定 Workshop 模型时只写
+        # avatar.*）。若这里只看 character_origin，这类角色会被退订路径按 avatar
+        # 命中删除并打上 tombstone，却无法被恢复路径识别，导致 tombstone 永远清不掉、
+        # /sync-character/{item_id} 一直回 409。两边判定必须对偶。
+        origin_source = str(
+            get_reserved(catgirl_data, 'character_origin', 'source', default='') or ''
+        ).strip()
+        origin_source_id = str(
+            get_reserved(catgirl_data, 'character_origin', 'source_id', default='') or ''
+        ).strip()
+        avatar_source = str(
+            get_reserved(catgirl_data, 'avatar', 'asset_source', default='') or ''
+        ).strip()
+        avatar_source_id = str(
+            get_reserved(catgirl_data, 'avatar', 'asset_source_id', default='') or ''
+        ).strip()
+
+        return (
+            origin_source == 'steam_workshop' and origin_source_id == current_item_id
+        ) or (
+            avatar_source == 'steam_workshop' and avatar_source_id == current_item_id
+        )
     except Exception:
         return False
 
