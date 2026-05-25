@@ -177,13 +177,15 @@ def _proactive_chat_enabled() -> bool:
     LLM 部分——这样「实验组为弹窗 kick 起 loop、但用户没开主动搭话」时只剩廉价
     规则轮询 + 情境弹窗检测，零 LLM 开销。
 
-    fail-open（读不出来返回 True）：宁可多算一次叙述，也不要因为读取异常把
-    proactive-on 用户该有的活动上下文给吞了。proactive 真正在跑时设置里
-    ``proactiveChatEnabled`` 必为 True，所以默认 False 不会误伤他们。
+    fail-open：key 缺失 *或* 读取异常都返回 True。误判「关」会把 proactive-on 用户该有
+    的活动叙述吞掉（伤用户可见功能），误判「开」只是多算一次叙述（小成本），两害相权
+    取「宁可多算」。真正明确关掉主动搭话的用户 key=false（前端总会同步这个键），照样
+    走 skip 分支，成本修复对主流场景依旧生效；只有从没同步过设置的全新会话才落到缺失→
+    True 这条窄路径，可忽略。
     """
     try:
         from utils.preferences import load_global_conversation_settings
-        return bool(load_global_conversation_settings().get('proactiveChatEnabled', False))
+        return bool(load_global_conversation_settings().get('proactiveChatEnabled', True))
     except Exception as e:
         logger.debug('proactive_chat_enabled check failed, defaulting to True: %s', e)
         return True
