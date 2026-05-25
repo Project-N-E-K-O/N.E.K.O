@@ -10,12 +10,12 @@
     const RESET_HISTORY_LIMIT = 20;
     const DAY_TUTORIALS = {
         2: {
-            title: '第 2 天：屏幕分享、语音与通话上下文',
+            title: '第 2 天：屏幕分享、声音与小窗约定',
             steps: [
                 {
                     id: 'day2_intro_context',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '今天先看屏幕分享和通话上下文。我会先说明，再把光标带到真实按钮旁边。',
+                    text: '第二天会先承接昨天是否用过声音聊天，再把你带到屏幕分享入口旁边。',
                     voiceKey: 'avatar_floating_day2_intro',
                     cursorAction: 'wobble',
                     operation: 'none',
@@ -24,7 +24,7 @@
                 {
                     id: 'day2_screen_entry',
                     selector: '#${prefix}-btn-screen',
-                    text: '屏幕分享从这里开始。想让我看屏幕或窗口时，先记住这个入口。',
+                    text: '在跟悠怡通语音电话的时候，再点亮这个小按钮，就能把屏幕分享给她。',
                     voiceKey: 'avatar_floating_day2_screen_entry',
                     cursorAction: 'show',
                     operation: 'none',
@@ -33,7 +33,7 @@
                 {
                     id: 'day2_screen_source_popup',
                     selector: '.${prefix}-trigger-icon-screen',
-                    text: '小三角会打开屏幕来源列表。后续正式教程会在这里展示屏幕和窗口分组。',
+                    text: '小三角会打开来源列表，可以选整个屏幕，也可以只选某个窗口。',
                     voiceKey: 'avatar_floating_day2_screen_source_popup',
                     cursorAction: 'click',
                     operation: 'safe-click',
@@ -43,7 +43,7 @@
                 {
                     id: 'day2_mic_recap',
                     selector: '#${prefix}-btn-mic',
-                    text: '屏幕分享通常要和语音通话一起使用，所以它会回到这个语音入口。',
+                    text: '声音入口和屏幕分享会一起出现，方便用户边说边看。',
                     voiceKey: 'avatar_floating_day2_mic_recap',
                     cursorAction: 'show',
                     operation: 'none',
@@ -52,7 +52,7 @@
                 {
                     id: 'day2_mic_popup',
                     selector: '.${prefix}-trigger-icon-mic',
-                    text: '麦克风弹窗会放设备、音量、降噪、增益和实时输入状态。',
+                    text: '麦克风弹窗会展示音量、空间音频、降噪、增益、实时输入状态和设备列表。',
                     voiceKey: 'avatar_floating_day2_mic_popup',
                     cursorAction: 'click',
                     operation: 'safe-click',
@@ -62,7 +62,7 @@
                 {
                     id: 'day2_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '这一轮结束后，我会关掉临时弹窗，把界面还给你。屏幕分享按钮本身没有被真正启动。',
+                    text: '这一轮结束后会关掉临时弹窗，把界面还给用户；屏幕分享按钮本身不会被强行启动。',
                     voiceKey: 'avatar_floating_day2_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
@@ -71,12 +71,12 @@
             ],
         },
         3: {
-            title: '第 3 天：Agent、插件与管理入口',
+            title: '第 3 天：猫爪、插件与任务小看板',
             steps: [
                 {
                     id: 'day3_agent_entry',
                     selector: '#${prefix}-btn-agent',
-                    text: 'Agent 入口负责更主动的电脑协助能力，包括键鼠控制、浏览器控制和插件能力。',
+                    text: '猫爪入口负责更主动的电脑协助能力，会展示状态灯、总开关和不同小爪子。',
                     voiceKey: 'avatar_floating_day3_agent_entry',
                     cursorAction: 'click',
                     operation: 'safe-click',
@@ -86,7 +86,7 @@
                 {
                     id: 'day3_task_hud',
                     selector: '#agent-task-hud',
-                    text: '任务 HUD 会显示运行和排队状态，也能终止任务。没有任务时，这一步会先用文字说明。',
+                    text: '任务小看板会显示运行和排队状态，也能终止任务。没有任务时，会展示空状态或说明。',
                     voiceKey: 'avatar_floating_day3_task_hud',
                     cursorAction: 'show',
                     operation: 'none',
@@ -95,7 +95,7 @@
                 {
                     id: 'day3_settings_entry',
                     selector: '#${prefix}-btn-settings',
-                    text: '设置入口里会连接角色、API、记忆和模型管理这些更深的管理页面。',
+                    text: '插件段落会尝试打开用户插件管理面板，设置入口则轻扫角色、API、记忆等长期入口。',
                     voiceKey: 'avatar_floating_day3_settings_entry',
                     cursorAction: 'click',
                     operation: 'safe-click',
@@ -105,7 +105,7 @@
                 {
                     id: 'day3_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '这一轮先只预览入口，不跨窗口打开管理页面。正式教程会把插件和任务状态拆得更细。',
+                    text: '这一轮会把猫爪、插件入口和任务小看板收起来，让用户继续正常使用。',
                     voiceKey: 'avatar_floating_day3_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
@@ -114,12 +114,12 @@
             ],
         },
         4: {
-            title: '第 4 天：猫娘互动体验',
+            title: '第 4 天：相处距离、主动陪伴与模型行为',
             steps: [
                 {
                     id: 'day4_settings_entry',
                     selector: '#${prefix}-btn-settings',
-                    text: '最后一天讲相处方式：对话设置、主动搭话、隐私模式和动画表现都在设置里。',
+                    text: '第四天讲相处方式：对话节奏、动画表现、锁定、离开/回来和主动陪伴距离。',
                     voiceKey: 'avatar_floating_day4_settings_entry',
                     cursorAction: 'click',
                     operation: 'safe-click',
@@ -129,7 +129,7 @@
                 {
                     id: 'day4_lock_interaction',
                     selector: '#${prefix}-lock-icon',
-                    text: '这个小锁会控制模型交互。需要避免误触或想固定她的位置时，可以用它。',
+                    text: '小锁会控制模型交互。需要避免误触或想固定她的位置时，可以用它。',
                     voiceKey: 'avatar_floating_day4_lock_interaction',
                     cursorAction: 'show',
                     operation: 'none',
@@ -138,7 +138,7 @@
                 {
                     id: 'day4_goodbye_return',
                     selector: '#${prefix}-btn-goodbye',
-                    text: '想安静一会儿时，可以请她先离开；想她回来，再点返回按钮。',
+                    text: '想安静一会儿时，可以请她先回小猫窝；需要她时，再点返回按钮。',
                     voiceKey: 'avatar_floating_day4_goodbye_return',
                     cursorAction: 'show',
                     operation: 'none',
@@ -147,7 +147,7 @@
                 {
                     id: 'day4_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '四天的教程到这里收尾。之后这些按钮都在模型旁边，想用的时候再叫我就好。',
+                    text: '四天的教程到这里收尾。之后这些按钮都在模型旁边，想用的时候再叫她就好。',
                     voiceKey: 'avatar_floating_day4_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',

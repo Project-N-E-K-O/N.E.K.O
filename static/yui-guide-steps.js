@@ -80,7 +80,7 @@
     steps.intro_basic = createBaseStep('intro_basic', 'home', '#text-input-area');
     steps.intro_basic.tutorial.title = '语音控制入口';
     steps.intro_basic.tutorial.description = '点击输入框解锁首句旁白后，介绍对话窗里的语音控制按钮。';
-    steps.intro_basic.performance.bubbleText = '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！';
+    steps.intro_basic.performance.bubbleText = '这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！';
     steps.intro_basic.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introBasic';
     steps.intro_basic.performance.voiceKey = 'intro_basic';
     steps.intro_basic.performance.emotion = 'happy';
@@ -131,7 +131,7 @@
     steps.takeover_settings_peek = createBaseStep('takeover_settings_peek', 'home', '#${p}-btn-settings');
     steps.takeover_settings_peek.tutorial.title = '设置一瞥';
     steps.takeover_settings_peek.tutorial.description = '只浏览首页真实设置弹层及真实菜单项。';
-    steps.takeover_settings_peek.performance.bubbleText = '当然啦，如果你想让本喵多和你聊聊天也不是不行啦，给我多准备点小鱼干吧，嘿嘿，好了不逗你啦，设置都在这个齿轮里。';
+    steps.takeover_settings_peek.performance.bubbleText = '在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。';
     steps.takeover_settings_peek.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverSettingsPeekIntro';
     steps.takeover_settings_peek.performance.voiceKey = 'takeover_settings_peek_intro';
     steps.takeover_settings_peek.performance.emotion = 'surprised';
@@ -149,7 +149,7 @@
     steps.takeover_return_control = createBaseStep('takeover_return_control', 'home', '#${p}-container');
     steps.takeover_return_control.tutorial.title = '归还控制权';
     steps.takeover_return_control.tutorial.description = '收掉临时演出层并把控制权完整交还给用户。';
-    steps.takeover_return_control.performance.bubbleText = '好啦好啦，不霸占你的电脑啦～控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵～';
+    steps.takeover_return_control.performance.bubbleText = '好啦好啦，不霸占你的电脑啦！控制权还给你了喵！之后的日子，也请你多多关照啦！';
     steps.takeover_return_control.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverReturnControl';
     steps.takeover_return_control.performance.voiceKey = 'takeover_return_control';
     steps.takeover_return_control.performance.emotion = 'happy';
