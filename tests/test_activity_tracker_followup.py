@@ -454,7 +454,9 @@ def _witty_snapshot() -> ActivitySnapshot:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('lang', ['zh', 'en', 'ja', 'ko', 'ru'])
+# zh/ja/ko/ru/en 是 _normalize_lang 能区分出的全部语言；es/pt 经 _normalize_lang
+# 回退 en，这里一并断言它们至少拿到 en 质量闸（而非什么都没有）。
+@pytest.mark.parametrize('lang', ['zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
 def test_witty_quality_bar_renders(lang):
     """``witty`` 渲染时必须带上「没梗就 [PASS]」质量闸（区别于其它语气）。
 
