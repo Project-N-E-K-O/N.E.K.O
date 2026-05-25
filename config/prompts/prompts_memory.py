@@ -3029,6 +3029,31 @@ RECALL_MEMORY_TOOL_NO_RESULT = {
     "pt": "Nenhuma memória relevante encontrada.",
 }
 
+# 同时给了 query 和 time 却 0 命中时返回这条——提示模型放宽过滤条件，
+# 用「只带时间」或「只带 query」再查一次，而不是直接当作没有记忆放弃。
+RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN = {
+    "zh": "在该时间范围内没有找到匹配「{query}」的记忆。建议放宽过滤条件重试一次：要么只用 time（按时间回溯该时段的记忆），要么只用 query（不限时间地语义检索）。",
+    "en": "No memory matched \"{query}\" within that time range. Try loosening the filter and querying once more: either with time only (recall memories from that period) or with query only (semantic search without a time limit).",
+    "ja": "その時間範囲で「{query}」に一致する記憶は見つかりませんでした。フィルタを緩めてもう一度試してください：time だけ（その期間の記憶を回想）か、query だけ（時間制限なしの意味検索）のどちらかで。",
+    "ko": "해당 시간 범위에서 \"{query}\"에 일치하는 기억을 찾지 못했습니다. 필터를 완화해 다시 시도해 보세요: time만 사용(해당 기간의 기억 회상)하거나 query만 사용(시간 제한 없는 의미 검색)하세요.",
+    "ru": "В этом диапазоне времени не нашлось воспоминаний по запросу «{query}». Попробуйте ослабить фильтр и запросить ещё раз: либо только time (вспомнить воспоминания за тот период), либо только query (семантический поиск без ограничения по времени).",
+    "es": "No se encontró ninguna memoria que coincidiera con \"{query}\" en ese rango de tiempo. Prueba a aflojar el filtro y consultar de nuevo: con solo time (recordar memorias de ese período) o con solo query (búsqueda semántica sin límite de tiempo).",
+    "pt": "Nenhuma memória correspondeu a \"{query}\" nesse intervalo de tempo. Tente afrouxar o filtro e consultar novamente: apenas com time (recordar memórias daquele período) ou apenas com query (busca semântica sem limite de tempo).",
+}
+
+# 本轮首次调用 recall_memory 时立即喂给 TTS 的占位语音，填补检索 + 多轮
+# 工具调用的空窗，避免冷场。只进 TTS，不进前端气泡 / 不进对话历史。带省略号
+# 让 http_sentence normalizer 当作完整句子立即 flush 合成，不与随后的正文黏连。
+RECALL_MEMORY_TOOL_FILLER = {
+    "zh": "让我回忆一下哦……",
+    "en": "Let me recall that for a moment...",
+    "ja": "ちょっと思い出してみるね……",
+    "ko": "잠깐 떠올려 볼게……",
+    "ru": "Дай-ка вспомню…",
+    "es": "Déjame recordar un momento...",
+    "pt": "Deixa eu lembrar um pouquinho...",
+}
+
 # 召回到 N 条记忆时的总览首句；后面接渲染条目，每条按
 # ``[tier/entity] text  (事件日期, 相对标签)`` 格式（tier/entity 是英文
 # enum，不翻译；text 是原始记忆内容，按用户拍板"不翻译"；时间锚点优先
