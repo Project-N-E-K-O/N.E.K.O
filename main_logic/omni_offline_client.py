@@ -1198,17 +1198,49 @@ class OmniOfflineClient:
             contents=final_contents,
             config=final_config,
         )
+        final_finish_reason: Optional[str] = None
+        final_block_reason: Optional[str] = None
+        final_had_text = False
         async for chunk in final_stream:
+            # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
+            # prompt_tokens。否则若 forced-finalize 也被 safety / recitation /
+            # max-tokens 挡住而无文本，上层只能引用上一轮 tool-iteration 的过期
+            # finish_reason，诊断失真。
+            pf = getattr(chunk, "prompt_feedback", None)
+            if pf is not None:
+                br = getattr(pf, "block_reason", None)
+                if br:
+                    final_block_reason = str(br)
+            usage_meta = getattr(chunk, "usage_metadata", None)
+            if usage_meta is not None:
+                pt = getattr(usage_meta, "prompt_token_count", 0) or 0
+                if pt:
+                    self._last_prompt_tokens = pt
             candidates = getattr(chunk, "candidates", None) or []
             if not candidates:
                 continue
-            cand_content = getattr(candidates[0], "content", None)
+            cand = candidates[0]
+            fr = getattr(cand, "finish_reason", None)
+            if fr:
+                final_finish_reason = str(fr)
+            cand_content = getattr(cand, "content", None)
             for part in (getattr(cand_content, "parts", None) or []):
                 if getattr(part, "thought", False):
                     continue
                 text = getattr(part, "text", None) or ""
                 if text:
+                    final_had_text = True
                     yield LLMStreamChunk(content=text)
+        self._last_finish_reason = final_finish_reason
+        self._last_block_reason = final_block_reason
+        if not final_had_text:
+            logger.info(
+                "OmniOfflineClient(genai): forced-finalize empty completion "
+                "finish_reason=%s block_reason=%s model=%s prompt_tokens=%s",
+                final_finish_reason, final_block_reason,
+                getattr(self, "model", None),
+                getattr(self, "_last_prompt_tokens", None),
+            )
 
     def update_max_response_length(self, max_length: int) -> None:
         """更新回复 token 上限（用户可能在对话期间修改设置）。
