@@ -4175,7 +4175,10 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置卡面';
+        const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+        placeholderSpan.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+            ? translatedNoCardImage
+            : '暂未设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -4446,7 +4449,10 @@ function openCatgirlPanel(card, originEl) {
     cardImage.className = 'catgirl-panel-card-image';
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '暂未设置卡面';
+    const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+    imgPlaceholder.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+        ? translatedNoCardImage
+        : '暂未设置卡面';
     cardImage.appendChild(imgPlaceholder);
 
     const cardActionOverlay = document.createElement('div');
