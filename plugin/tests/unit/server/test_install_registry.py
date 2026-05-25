@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 
 import pytest
@@ -49,3 +50,32 @@ def test_builtin_install_registration_does_not_overwrite_existing_registration(
     assert study is not None
     assert study.install_kinds == {}
     assert study.ui_i18n_dir == tmp_path.resolve()
+
+
+@pytest.mark.parametrize(
+    "missing_module",
+    [
+        "plugin.plugins",
+        "plugin.plugins.galgame_plugin._tutorial_migration",
+    ],
+)
+def test_builtin_galgame_migration_hook_ignores_missing_optional_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    missing_module: str,
+) -> None:
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "plugin.plugins.galgame_plugin._tutorial_migration":
+            raise ModuleNotFoundError(
+                f"No module named {missing_module!r}",
+                name=missing_module,
+            )
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    install_registry._copy_legacy_galgame_tutorial_progress_if_missing(
+        tmp_path / "tutorial_progress.json",
+    )

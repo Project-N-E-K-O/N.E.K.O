@@ -6,6 +6,11 @@ from pathlib import Path
 import threading
 from types import MappingProxyType
 
+from plugin.logging_config import get_logger
+
+
+logger = get_logger("server.install_registry")
+
 
 @dataclass(frozen=True)
 class InstallKindRegistration:
@@ -67,9 +72,21 @@ def _plugins_root() -> Path:
 
 
 def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
-    from plugin.plugins.galgame_plugin._tutorial_migration import (
-        copy_legacy_tutorial_progress_if_missing,
-    )
+    try:
+        from plugin.plugins.galgame_plugin._tutorial_migration import (
+            copy_legacy_tutorial_progress_if_missing,
+        )
+    except ModuleNotFoundError as exc:
+        missing_name = str(getattr(exc, "name", "") or "")
+        if missing_name == "plugin.plugins" or missing_name.startswith(
+            "plugin.plugins.galgame_plugin",
+        ):
+            logger.warning(
+                "galgame tutorial migration module unavailable; skipping legacy migration: {}",
+                exc,
+            )
+            return
+        raise
 
     copy_legacy_tutorial_progress_if_missing(store_path)
 

@@ -142,6 +142,25 @@ def test_plugin_ui_i18n_route_uses_registered_i18n_dir(monkeypatch, tmp_path: Pa
     assert Path(response.path) == expected_file
 
 
+def test_plugin_ui_i18n_route_bootstraps_builtin_registration(monkeypatch) -> None:
+    from plugin.server import install_registry
+    from plugin.server.routes import plugin_install
+
+    expected_file = (
+        Path(plugin_install.__file__).resolve().parents[2]
+        / "plugins"
+        / "study_companion"
+        / "i18n"
+        / "en.json"
+    )
+    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
+    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
+
+    response = asyncio.run(plugin_install.get_plugin_ui_i18n("study_companion", "en"))
+
+    assert Path(response.path) == expected_file
+
+
 def test_tutorial_store_uses_runtime_data_root(monkeypatch, tmp_path: Path) -> None:
     from plugin.server.routes import plugin_install
 
