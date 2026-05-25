@@ -1211,6 +1211,26 @@ class LLMSessionManager:
                 return False
             if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
                 return False
+            # 切到 filler 的 worker-sid 之前，先处理本轮 turn_sid 可能还在管线里的
+            # pre-tool 正文（provider 先吐 content 再进 tool_calls 时会有，见
+            # _astream_openai_with_tools 的 streamed_text_buffer）。直接 _enqueue
+            # filler_sid 会让 _enqueue_tts_text_chunk 因 sid 变化 reset stripper、丢掉
+            # turn_sid 仍 pending 的文本，且 worker 换连接也会丢 server 端缓冲，造成同轮
+            # 正文缺字（Codex P2）。所以先把 stripper pending flush 出去、并用 (None,None)
+            # 把 turn_sid utterance commit 掉（worker 发 text.done 后才换 sid，不丢内容）。
+            # 仅当本轮确有 turn_sid 文本入过队（_tts_norm_speech_id == turn_sid）才触发；
+            # 模型首动作即调 recall（无 pre-tool 文本）时跳过，行为不变。
+            if self._tts_norm_speech_id == turn_sid:
+                pre_tool = self._tts_markdown_stripper.flush()
+                if pre_tool:
+                    pre_tool = self._tts_bracket_stripper.feed(pre_tool)
+                self._tts_bracket_stripper.flush()
+                if pre_tool:
+                    self.tts_request_queue.put((turn_sid, pre_tool))
+                    self._remember_pending_ai_voice_echo(turn_sid, pre_tool)
+                # 直接放 (None,None)，不走 _request_tts_done_locked，故不置
+                # _tts_done_queued_for_turn——正文/收尾仍各自正常 flush。
+                self.tts_request_queue.put((None, None))
             filler_sid = f"{turn_sid}{_RECALL_FILLER_SID_SUFFIX}"
             self._enqueue_tts_text_chunk(filler_sid, text)
             # flush 这段独立 utterance。用 filler_sid 而非 turn sid，所以**不**触碰
