@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from plugin.plugins._shared.rapidocr import rapidocr_support
+from plugin.plugins._shared.rapidocr.ocr_runtime_types import _rapidocr_runtime_cache_key
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -50,6 +51,35 @@ def test_rapidocr_kwargs_resolve_configured_model_paths(tmp_path: Path) -> None:
         "rec_model_path": str(rec_path),
         "engine_type": "onnxruntime",
     }
+
+
+def test_shared_rapidocr_runtime_cache_key_includes_plugin_id() -> None:
+    study_key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=" C:/RapidOCR ",
+        engine_type="ONNXRUNTIME",
+        lang_type="CH",
+        model_type="Mobile",
+        ocr_version=" PP-OCRv5 ",
+        plugin_id="study_companion",
+    )
+    other_key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=" C:/RapidOCR ",
+        engine_type="ONNXRUNTIME",
+        lang_type="CH",
+        model_type="Mobile",
+        ocr_version=" PP-OCRv5 ",
+        plugin_id="other_plugin",
+    )
+
+    assert study_key == (
+        "study_companion",
+        "C:/RapidOCR",
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    assert other_key != study_key
 
 
 def test_default_rapidocr_install_target_rejects_path_traversal_plugin_id(
@@ -315,6 +345,35 @@ async def test_download_rapidocr_models_warns_when_task_id_has_no_state_updater(
 
     assert result["skipped_bundled"] is True
     assert any("no install state updater" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_download_rapidocr_models_keeps_going_when_state_updater_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    monkeypatch.setattr(
+        rapidocr_support,
+        "required_rapidocr_model_files",
+        lambda **_kwargs: [],
+    )
+    warnings: list[str] = []
+
+    def _failing_state_updater(*_args, **_kwargs):
+        raise RuntimeError("state store unavailable")
+
+    result = await rapidocr_support.download_rapidocr_models(
+        logger=SimpleNamespace(warning=lambda message, *args, **kwargs: warnings.append(str(message))),
+        install_target_dir_raw=str(install_target),
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
+        task_id="run-with-failing-state-updater",
+        install_state_updater=_failing_state_updater,
+    )
+
+    assert result["skipped_bundled"] is True
+    assert any("install state update failed" in message for message in warnings)
 
 
 @pytest.mark.asyncio

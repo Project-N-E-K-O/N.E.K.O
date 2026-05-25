@@ -263,7 +263,19 @@ async def download_rapidocr_models(
         logger.warning(
             "rapidocr model download has task_id but no install state updater; progress will not persist"
         )
-    update_install_task_state = install_state_updater or _noop_install_state_updater
+    raw_update_install_task_state = install_state_updater or _noop_install_state_updater
+
+    def update_install_task_state(*args: Any, **kwargs: Any) -> dict[str, object]:
+        try:
+            return raw_update_install_task_state(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - progress persistence must not break downloads.
+            logger.warning(
+                "rapidocr model download install state update failed for task_id=%s plugin_id=%s",
+                args[0] if args else kwargs.get("task_id", ""),
+                plugin_id,
+                exc_info=True,
+            )
+            return {}
 
     async def _before_completed() -> None:
         if before_completed_callback is None:

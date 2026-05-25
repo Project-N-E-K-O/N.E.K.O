@@ -33,7 +33,7 @@ class OcrBackend(Protocol):
 
 
 def _shared_rapidocr_runtime(
-    _key: tuple[str, str, str, str, str],
+    _key: tuple[str, str, str, str, str, str],
     *,
     now: float,
 ) -> Any | None:
@@ -43,7 +43,7 @@ def _shared_rapidocr_runtime(
 
 
 def _store_shared_rapidocr_runtime(
-    _key: tuple[str, str, str, str, str],
+    _key: tuple[str, str, str, str, str, str],
     runtime: Any,
     *,
     now: float,

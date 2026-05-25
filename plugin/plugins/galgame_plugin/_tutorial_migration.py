@@ -24,7 +24,7 @@ def _write_flat_progress(store_path: Path, progress: dict[str, Any]) -> None:
     store_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = store_path.with_suffix(store_path.suffix + ".tmp")
     tmp_path.write_text(
-        json.dumps(dict(progress), ensure_ascii=False, sort_keys=True, indent=2),
+        json.dumps(progress, ensure_ascii=False, sort_keys=True, indent=2),
         encoding="utf-8",
     )
     tmp_path.replace(store_path)
@@ -45,6 +45,10 @@ def _legacy_store_paths() -> tuple[Path, Path]:
 
 def copy_legacy_tutorial_progress_if_missing(store_path: Path) -> None:
     if _read_flat_progress(store_path) is not None:
+        logger.info(
+            "galgame tutorial progress migration skipped; target store already exists: {}",
+            store_path,
+        )
         return
 
     for legacy_store_path in _legacy_store_paths():
@@ -53,4 +57,13 @@ def copy_legacy_tutorial_progress_if_missing(store_path: Path) -> None:
         legacy_progress = GalgameStore(legacy_store_path, logger).load_tutorial_progress()
         if isinstance(legacy_progress, dict):
             _write_flat_progress(store_path, legacy_progress)
+            logger.info(
+                "galgame tutorial progress migrated from legacy store: {} -> {}",
+                legacy_store_path,
+                store_path,
+            )
             return
+    logger.info(
+        "galgame tutorial progress migration skipped; no legacy progress found for {}",
+        store_path,
+    )

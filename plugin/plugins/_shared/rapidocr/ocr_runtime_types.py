@@ -11,7 +11,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS = 300.0
 _RAPIDOCR_RUNTIME_CACHE_LOCK = threading.RLock()
-_RAPIDOCR_RUNTIME_CACHE: dict[tuple[str, str, str, str, str], tuple[Any, float]] = {}
+_RAPIDOCR_RUNTIME_CACHE: dict[tuple[str, str, str, str, str, str], tuple[Any, float]] = {}
 _RAPIDOCR_INFERENCE_LOCK = threading.Lock()
 
 _OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE = 900
@@ -82,8 +82,10 @@ def _rapidocr_runtime_cache_key(
     lang_type: str,
     model_type: str,
     ocr_version: str,
-) -> tuple[str, str, str, str, str]:
+    plugin_id: str = "study_companion",
+) -> tuple[str, str, str, str, str, str]:
     return (
+        str(plugin_id or "").strip().lower(),
         str(install_target_dir_raw or "").strip(),
         str(engine_type or "").strip().lower(),
         str(lang_type or "").strip().lower(),
@@ -104,7 +106,7 @@ def _prune_rapidocr_runtime_cache(now: float) -> None:
 
 
 def _get_rapidocr_runtime_cache(
-    key: tuple[str, str, str, str, str],
+    key: tuple[str, str, str, str, str, str],
     *,
     now: float,
 ) -> Any | None:
@@ -121,7 +123,7 @@ def _get_rapidocr_runtime_cache(
 
 
 def _store_rapidocr_runtime_cache(
-    key: tuple[str, str, str, str, str],
+    key: tuple[str, str, str, str, str, str],
     runtime: Any,
     *,
     now: float,

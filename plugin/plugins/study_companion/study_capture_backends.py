@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import sys
 import threading
 from collections.abc import Callable
 from typing import Any
 
+
+_LOGGER = logging.getLogger(__name__)
 
 CAPTURE_BACKEND_DXCAM = "dxcam"
 CAPTURE_BACKEND_MSS = "mss"
@@ -23,6 +26,7 @@ def _target_window_rect(target: Any) -> tuple[int, int, int, int]:
     hwnd = int(_target_value(target, "hwnd", 0) or 0)
     if hwnd and sys.platform == "win32":
         try:
+            import pywintypes
             import win32gui
 
             def _read_rect() -> tuple[int, int, int, int]:
@@ -30,8 +34,10 @@ def _target_window_rect(target: Any) -> tuple[int, int, int, int]:
                 return int(left), int(top), int(right), int(bottom)
 
             return _run_with_thread_dpi_awareness(_read_rect)
-        except Exception:
-            pass
+        except ImportError:
+            _LOGGER.debug("win32gui unavailable while resolving study capture target rect", exc_info=True)
+        except (OSError, pywintypes.error):
+            _LOGGER.debug("win32gui.GetWindowRect failed for study capture target", exc_info=True)
 
     left = int(_target_value(target, "left", _target_value(target, "x", 0)) or 0)
     top = int(_target_value(target, "top", _target_value(target, "y", 0)) or 0)
@@ -243,13 +249,14 @@ class PrintWindowCaptureBackend(_BaseCaptureBackend):
         bmp = None
         mem_dc = None
         hdc_mem = None
+        previous_bitmap = None
         try:
             hdc_mem = win32ui.CreateDCFromHandle(hdc)
             mem_dc = hdc_mem.CreateCompatibleDC()
 
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(hdc_mem, width, height)
-            mem_dc.SelectObject(bmp)
+            previous_bitmap = mem_dc.SelectObject(bmp)
 
             success = False
             try:
@@ -280,9 +287,12 @@ class PrintWindowCaptureBackend(_BaseCaptureBackend):
             )
         finally:
             if mem_dc is not None:
+                if previous_bitmap is not None:
+                    try:
+                        mem_dc.SelectObject(previous_bitmap)
+                    except Exception:
+                        pass
                 mem_dc.DeleteDC()
-            if hdc_mem is not None:
-                hdc_mem.DeleteDC()
             if bmp is not None:
                 win32gui.DeleteObject(bmp.GetHandle())
             win32gui.ReleaseDC(hwnd, hdc)

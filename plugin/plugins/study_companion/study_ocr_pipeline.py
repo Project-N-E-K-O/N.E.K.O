@@ -172,6 +172,7 @@ class StudyOcrPipeline:
                 lang_type=self._config.rapidocr_lang_type,
                 model_type=self._config.rapidocr_model_type,
                 ocr_version=self._config.rapidocr_ocr_version,
+                plugin_id="study_companion",
             )
         return self._ocr_backend
 

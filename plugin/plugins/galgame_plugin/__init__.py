@@ -55,13 +55,25 @@ def _register_install_routes() -> None:
     )
 
 
+def _register_tutorial_migration_hook() -> None:
+    from plugin.server.routes.plugin_install import register_tutorial_migration_hook
+
+    from ._tutorial_migration import copy_legacy_tutorial_progress_if_missing
+
+    register_tutorial_migration_hook(
+        copy_legacy_tutorial_progress_if_missing,
+        plugin_id="galgame_plugin",
+    )
+
+
 try:
     _register_install_routes()
+    _register_tutorial_migration_hook()
 except Exception:  # noqa: BLE001 - route registration should not block package import.
     from plugin.logging_config import get_logger
 
     get_logger("galgame.install_routes").warning(
-        "galgame install route registration failed",
+        "galgame install route/migration registration failed",
         exc_info=True,
     )
 

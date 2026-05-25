@@ -185,6 +185,10 @@ def _normalize_ui_locale(locale: str) -> str:
         return "ru"
     if normalized.startswith("ko"):
         return "ko"
+    if normalized.startswith("es"):
+        return "es"
+    if normalized.startswith("pt"):
+        return "pt"
     return "zh-CN"
 
 
@@ -781,7 +785,7 @@ _TUTORIAL_DEFAULTS = {
 _tutorial_store_instance: Path | None = None
 _tutorial_store_instances: dict[str, Path] = {}
 _tutorial_store_lock = threading.RLock()
-_tutorial_migration_hooks: dict[str, list[Callable[[Path], None]]] = {}
+_tutorial_migration_hooks: dict[str, list[Callable[[Path], None]]] | list[Callable[[Path], None]] = {}
 _tutorial_migrated_paths: set[Path] = set()
 
 
@@ -791,6 +795,8 @@ def register_tutorial_migration_hook(
     plugin_id: str = "",
 ) -> None:
     normalized_plugin_id = _normalize_registered_plugin_id(plugin_id) if plugin_id else ""
+    # Some tests monkeypatch the pre-plugin registry shape; keep that compatibility
+    # path explicit while production code uses a plugin-id keyed hook map.
     if isinstance(_tutorial_migration_hooks, list):
         if hook not in _tutorial_migration_hooks:
             _tutorial_migration_hooks.append(hook)

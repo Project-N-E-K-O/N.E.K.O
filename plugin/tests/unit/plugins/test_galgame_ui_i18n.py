@@ -96,6 +96,8 @@ def test_galgame_ui_i18n_zh_tw_route_locale_normalization() -> None:
     assert _normalize_ui_locale("zh-HK") == "zh-TW"
     assert _normalize_ui_locale("zh-MO") == "zh-TW"
     assert _normalize_ui_locale("zh") == "zh-CN"
+    assert _normalize_ui_locale("es-ES") == "es"
+    assert _normalize_ui_locale("pt-BR") == "pt"
 
 
 def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monkeypatch) -> None:
@@ -110,11 +112,14 @@ def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monk
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
 
-    module = importlib.import_module(module_name)
-    _register_galgame_install_plugin(module)
-    response = asyncio.run(module.get_plugin_ui_locale("galgame_plugin"))
+    try:
+        module = importlib.import_module(module_name)
+        _register_galgame_install_plugin(module)
+        response = asyncio.run(module.get_plugin_ui_locale("galgame_plugin"))
 
-    assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
+        assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_plugin_ui_i18n_route_uses_registered_i18n_dir(monkeypatch, tmp_path: Path) -> None:
@@ -222,9 +227,7 @@ def test_galgame_tutorial_migration_copies_runtime_store_progress(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from plugin.plugins.galgame_plugin._tutorial_migration import (
-        copy_legacy_tutorial_progress_if_missing,
-    )
+    from plugin.plugins.galgame_plugin import _tutorial_migration
 
     runtime_root = tmp_path / "runtime"
     runtime_store = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
@@ -236,7 +239,17 @@ def test_galgame_tutorial_migration_copies_runtime_store_progress(
         encoding="utf-8",
     )
 
-    copy_legacy_tutorial_progress_if_missing(new_store)
+    class _Store:
+        def __init__(self, store_path: Path, _logger) -> None:
+            self.store_path = store_path
+
+        def load_tutorial_progress(self) -> dict[str, object] | None:
+            raw = json.loads(self.store_path.read_text(encoding="utf-8"))
+            return raw.get("tutorial_progress")
+
+    monkeypatch.setattr(_tutorial_migration, "GalgameStore", _Store)
+
+    _tutorial_migration.copy_legacy_tutorial_progress_if_missing(new_store)
 
     assert json.loads(new_store.read_text(encoding="utf-8")) == {
         "completed": True,
