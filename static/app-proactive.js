@@ -806,8 +806,15 @@
                 // 本次请求**根本没真正发起**一次 proactive，标 'pass' 走上游"不计数"
                 // 分支自行 schedule，否则 _voiceProactiveNoResponseCount 会被白白消耗
                 // 一格、最坏 5 次 server 忙就触发"连续 5 轮无回复，停止主动搭话"。
-                if (resp.status === 409) {
-                    console.log('[ProactiveChat] 语音模式 server 并发拒绝 (409)，不消耗 attempt');
+                //
+                // HTTP 403 = CSRF/Origin 守卫拒绝（CodeRabbit on PR #1530）。
+                // 启动竞速下 page_config token 可能还没注入，前端会被一次性
+                // 拒绝；和 409 同语义——server 没真正跑过 phase1/2 LLM、没消耗
+                // 上下文。当 attempt 算会让 _voiceProactiveNoResponseCount 在
+                // token bootstrap 完成前就消耗光，触发"5 轮无回复，停止主动搭话"。
+                if (resp.status === 409 || resp.status === 403) {
+                    console.log('[ProactiveChat] 语音模式 server 拒绝 ('
+                        + resp.status + ')，不消耗 attempt');
                     S._voiceProactiveLastResult = 'pass';
                     return false;
                 }
@@ -1081,8 +1088,15 @@
             // 节奏整体往后拉，跟 server 实际状态正交、用户体验上变成"server 越忙、AI
             // 越沉默"。这里 requestSent 故意不翻 true、return false 让上游识别为"没
             // 真发"、下一轮按 base interval 重排，不动 level。
-            if (response.status === 409) {
-                console.log('[ProactiveChat] server 并发拒绝 (409)，不消耗 backoff attempt');
+            //
+            // HTTP 403 = CSRF/Origin 守卫拒绝（CodeRabbit on PR #1530）。token
+            // bootstrap 还没完成前的启动竞速窗口会撞到这个；语义同 409——server
+            // 没跑业务逻辑、没消耗资源。当 attempt 计入 backoff 会让"刚开机
+            // 几秒里 token 没就位"被惩罚性升级，跟 server 实际负载/用户活动
+            // 状态正交。下一轮 token 通常已到位，按 base interval 重排即可。
+            if (response.status === 409 || response.status === 403) {
+                console.log('[ProactiveChat] server 拒绝 ('
+                    + response.status + ')，不消耗 backoff attempt');
                 return false;
             }
             requestSent = true;

@@ -361,11 +361,28 @@ window.addEventListener('load', async () => {
                 if (sec && typeof sec.getMutationHeaders === 'function') {
                     try { Object.assign(ackHeaders, await sec.getMutationHeaders()); } catch (_) { }
                 }
-                await fetch('/api/pending-notices/ack', {
-                    method: 'POST',
-                    headers: ackHeaders,
-                    body: JSON.stringify({ cursor }),
-                }).catch(() => { });
+                // 不能静默 .catch —— CodeRabbit on PR #1530 指出：如果 ACK
+                // 因为 token 还没注入返了 403，原来的 `.catch(() => {})` 会
+                // 当成成功，但后端没真正 drain cursor，下次启动还会再弹同一批。
+                // 显式检查 response.ok + 在失败时 console.warn，让"下次启动
+                // GET /api/pending-notices 仍带这批 → 再 ACK 一次"自然成为
+                // 重试路径，不在这里硬塞 retry/queue 复杂度。
+                try {
+                    const ackResp = await fetch('/api/pending-notices/ack', {
+                        method: 'POST',
+                        headers: ackHeaders,
+                        body: JSON.stringify({ cursor }),
+                    });
+                    if (!ackResp.ok) {
+                        console.warn(
+                            '[pending-notices/ack] backend rejected ack '
+                            + 'with HTTP ' + ackResp.status
+                            + '; notices will be re-shown on next page load',
+                        );
+                    }
+                } catch (e) {
+                    console.warn('[pending-notices/ack] ack request failed:', e);
+                }
             }
         } catch (_) { }
     })();
