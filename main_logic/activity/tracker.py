@@ -169,6 +169,26 @@ def _privacy_mode_active() -> bool:
         return True
 
 
+def _proactive_chat_enabled() -> bool:
+    """主动搭话总开关是否打开。
+
+    ``activity_guess`` 的 emotion-tier LLM 叙述只喂 proactive Phase 2 的
+    state_section，没有别的消费方；主动搭话关时算它纯属浪费。loop 用它跳过
+    LLM 部分——这样「实验组为弹窗 kick 起 loop、但用户没开主动搭话」时只剩廉价
+    规则轮询 + 情境弹窗检测，零 LLM 开销。
+
+    fail-open（读不出来返回 True）：宁可多算一次叙述，也不要因为读取异常把
+    proactive-on 用户该有的活动上下文给吞了。proactive 真正在跑时设置里
+    ``proactiveChatEnabled`` 必为 True，所以默认 False 不会误伤他们。
+    """
+    try:
+        from utils.preferences import load_global_conversation_settings
+        return bool(load_global_conversation_settings().get('proactiveChatEnabled', False))
+    except Exception as e:
+        logger.debug('proactive_chat_enabled check failed, defaulting to True: %s', e)
+        return True
+
+
 class UserActivityTracker:
     """Per-character activity inference engine.
 
@@ -983,6 +1003,13 @@ class UserActivityTracker:
                 # get_snapshot 路径也调 _tick_break_reminders 设 pending，但 _last_known_state
                 # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
                 await self._drain_context_prompt()
+
+                # 主动搭话关时跳过 activity_guess 的 LLM 叙述：它只喂 proactive Phase 2，
+                # 没开主动搭话就没有消费方。上面的 _tick_break_reminders + 情境弹窗 drain
+                # 是纯规则、已经跑过，所以「进游戏/工作」检测照常工作。这样实验组为弹窗
+                # kick 起的 loop 在用户没开主动搭话时只有廉价规则轮询、零 LLM 开销。
+                if not _proactive_chat_enabled():
+                    continue
 
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':
