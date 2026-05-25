@@ -237,11 +237,13 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 }
 ```
 
-### 7.2 fire-and-forget 调用
+### 7.2 fire-and-forget 调用（**PR #1530 引入**）
 
 参考 `static/music_ui.js` 的 `/api/proactive/music_played_through` 调用：用 async IIFE 包一层，让 `getMutationHeaders()` 能 await 但不阻塞外层事件回调。`.catch(() => {})` 仅适用于 *业务上确认失败可以丢弃* 的场景。
 
-### 7.3 长跑心跳
+> main 上 PR #1530 尚未合并；当前 `music_ui.js` 还在用 `Content-Type` only fetch。本节描述的是 #1530 落地后的目标实现。
+
+### 7.3 长跑心跳（**PR #1532 引入**）
 
 参考 `static/app-activity-signal.js` 的 5s 心跳：
 
@@ -250,13 +252,17 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 - `start()` early return：sticky `heartbeatStoppedDueToCsrf` 标志阻止 `visibilitychange` 自动重启；恢复需要 page reload（同时 token bootstrap 会重做）。
 - 网络异常 / 非 CSRF 响应 / 200 都会清零 csrf streak，避免间隔性失败累计触发误停。
 
-### 7.4 跟 attempt/backoff 状态机交互的调用
+> main 上 PR #1532 尚未合并；当前 `app-activity-signal.js` 还在 raw `Content-Type` fetch + 不区分 CSRF / 非 CSRF 失败的实现，**没有** stop-the-heartbeat 安全网。在 #1532 落地之前，混版本部署的 5s 403 自旋仍是 known issue。
+
+### 7.4 跟 attempt/backoff 状态机交互的调用（**PR #1530 引入**）
 
 参考 `static/app-proactive.js` 的 `/api/proactive_chat`：
 
 - 收到 403 + csrf_validation_failed → refreshToken() + 重试一次。
 - retry 仍是 csrf-403 / 其它 403 → 都归到「server 没真正跑业务」分支：不计入 `_voiceProactiveNoResponseCount` / backoffLevel，按 baseInterval 重排。
 - 这点跟 HTTP 409（`try_start_proactive` 并发拒绝）同语义——server 在 claim 阶段早退，没消耗任何上下文资源。
+
+> main 上 PR #1530 尚未合并；当前 `app-proactive.js` 还没有 `_proactiveIsCsrfValidationFailure` helper 也不区分 csrf vs 非 csrf 的 403。本节描述的是 #1530 落地后的目标实现。
 
 ---
 
@@ -318,7 +324,7 @@ assert resp.json().get("success") is False
 assert "no-store" in resp.headers.get("Cache-Control", "").lower()
 ```
 
-参考批量 canary 的写法：`tests/unit/test_uncovered_endpoints_csrf.py` parametrize 一次性覆盖 8 个端点。
+参考批量 canary 的写法：`tests/unit/test_uncovered_endpoints_csrf.py`（PR #1530 引入）parametrize 一次性覆盖 8 个端点。在 #1530 merge 之前，main 上还没有这个文件——可暂参考 `tests/unit/test_tutorial_prompt_router.py` 的 `unauthenticated_prompt_client` fixture 模式手写 canary，#1530 提取的就是这套模式。
 
 ---
 
@@ -330,16 +336,16 @@ assert "no-store" in resp.headers.get("Cache-Control", "").lower()
 - `main_routers/config_router.py` — `GET /api/config/page_config`
 
 ### 前端
-- `static/app-prompt-shared.js` — `createLocalMutationSecurity()` / `window.nekoLocalMutationSecurity.getMutationHeaders()` / `refreshToken()`
-- `static/universal-tutorial-manager.js` — 短期事件驱动调用 + CSRF-403 retry-once 的参考实现
-- `static/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现
-- `static/app-proactive.js` — 与 attempt/backoff 状态机协作的参考实现
+- `static/app-prompt-shared.js` — `createLocalMutationSecurity()` / `window.nekoLocalMutationSecurity.getMutationHeaders()` / `refreshToken()`（已合并）
+- `static/universal-tutorial-manager.js` — 短期事件驱动调用 + CSRF-403 retry-once 的参考实现（已合并）
+- `static/app-activity-signal.js` — 长跑心跳 + stop-the-heartbeat 退避的参考实现（PR #1532 完整版本；main 当前是 PR #1477 的临时版本）
+- `static/app-proactive.js` — 与 attempt/backoff 状态机协作的参考实现（PR #1530 引入）
 
 ### 测试
-- `tests/unit/test_tutorial_prompt_router.py` — 早期 canary 模式
-- `tests/unit/test_system_screenshot_router.py` — fixture 注入 token 的写法
-- `tests/unit/test_activity_signal_router.py` — `_build_client(authenticated=True/False)` + custom error_defaults 断言
-- `tests/unit/test_uncovered_endpoints_csrf.py` — 批量 parametrize canary
+- `tests/unit/test_tutorial_prompt_router.py` — 早期 canary 模式（已合并）
+- `tests/unit/test_system_screenshot_router.py` — fixture 注入 token 的写法（已合并）
+- `tests/unit/test_activity_signal_router.py` — `_build_client(authenticated=True/False)` + custom error_defaults 断言（PR #1532 完整版本；main 当前是 PR #1477 的版本，不区分 authenticated 模式）
+- `tests/unit/test_uncovered_endpoints_csrf.py` — 批量 parametrize canary（PR #1530 引入；merge 前在 main 上不存在）
 
 ---
 
