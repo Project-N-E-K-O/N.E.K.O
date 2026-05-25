@@ -19,8 +19,10 @@ import time
 import pytest
 
 from main_logic.activity.snapshot import (
+    ActivitySnapshot,
     derive_skip_probability,
     derive_tone,
+    format_activity_state_section,
 )
 from main_logic.activity.state_machine import (
     ActivityStateMachine,
@@ -440,6 +442,40 @@ def test_loader_drops_invalid_threshold_values():
 def test_tone_derivation_table(state, intensity, genre, expected):
     """Pin the (state, intensity, genre) → tone mapping."""
     assert derive_tone(state, game_intensity=intensity, game_genre=genre) == expected
+
+
+def _witty_snapshot() -> ActivitySnapshot:
+    """A minimal casual_browsing / witty snapshot for render assertions."""
+    return ActivitySnapshot(
+        state='casual_browsing', state_age_seconds=120.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='witty',
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('lang', ['zh', 'en', 'ja', 'ko', 'ru'])
+def test_witty_quality_bar_renders(lang):
+    """``witty`` 渲染时必须带上「没梗就 [PASS]」质量闸（区别于其它语气）。
+
+    回归保护：质量闸是 witty 专属的额外一行，靠 ACTIVITY_TONE_QUALITY_BARS +
+    formatter 的 .get(tone) 渲染。若任一环节回归（漏渲染 / 表里缺 lang），
+    entertainment 就退回「有啥说啥」，丢掉「没梗宁可不说」的产品意图。
+    """
+    out = format_activity_state_section(_witty_snapshot(), lang=lang)
+    assert '[PASS]' in out, f'{lang}: witty 质量闸（[PASS] 指令）未渲染'
+
+
+@pytest.mark.unit
+def test_non_witty_tone_has_no_quality_bar():
+    """非 witty 语气不应渲染质量闸——它是 witty 专属，别误伤其它语气。"""
+    snap = ActivitySnapshot(
+        state='idle', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='playful',
+    )
+    out = format_activity_state_section(snap, lang='zh')
+    assert '[PASS]' not in out
 
 
 # ── #1 / skip_probability ───────────────────────────────────────────
