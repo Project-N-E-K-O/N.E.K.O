@@ -84,6 +84,31 @@ class _DummyGetRequest:
 
 
 @pytest.mark.unit
+def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
+    from config.prompts.prompts_memory import (
+        PROFILE_RENAME_EVENT_FIELD,
+        PROFILE_RENAME_EVENT_TEXT,
+        render_profile_rename_event_context,
+    )
+
+    expected_langs = {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    assert set(PROFILE_RENAME_EVENT_FIELD) == expected_langs
+    assert set(PROFILE_RENAME_EVENT_TEXT) == expected_langs
+
+    zh_label, zh_text = render_profile_rename_event_context("zh-CN", "旧角色", "新角色")
+    assert zh_label == "我的改名记录"
+    assert "我以前的档案名" in zh_text
+    assert "旧角色" in zh_text
+    assert "新角色" in zh_text
+
+    en_label, en_text = render_profile_rename_event_context("en", "Old", "New")
+    assert en_label == "My Profile Rename Record"
+    assert "My previous profile name" in en_text
+    assert "Old" in en_text
+    assert "New" in en_text
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_character_management_and_recent_save_regression():
     with TemporaryDirectory() as td:
@@ -210,7 +235,8 @@ async def test_character_read_endpoints_disable_caching():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
+async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
@@ -284,8 +310,27 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
 
             assert rename_result["success"] is True
             assert rename_result["memory_renamed"] is True
-            assert "新角色" in cm.load_characters().get("猫娘", {})
-            assert "旧角色" not in cm.load_characters().get("猫娘", {})
+            saved_characters = cm.load_characters()
+            assert "新角色" in saved_characters.get("猫娘", {})
+            assert "旧角色" not in saved_characters.get("猫娘", {})
+            saved_profile = saved_characters["猫娘"]["新角色"]
+            assert "我的改名记录" not in saved_profile
+            rename_events = saved_profile["_reserved"]["ai_context"]["rename_events"]
+            assert rename_events[-1]["old_name"] == "旧角色"
+            assert rename_events[-1]["new_name"] == "新角色"
+            assert "text" not in rename_events[-1]
+
+            _, _, _, effective_character_data, _, _, _, _, _ = cm.get_character_data()
+            hidden_context = effective_character_data["新角色"]["我的改名记录"]
+            assert "我以前的档案名" in hidden_context
+            assert "旧角色" in hidden_context
+            assert "新角色" in hidden_context
+            from memory.persona import PersonaManager
+            persona_md = PersonaManager().render_persona_markdown("新角色")
+            assert "我的改名记录" in persona_md
+            assert "我以前的档案名" in persona_md
+            assert "旧角色" in persona_md
+            assert "新角色" in persona_md
             assert not (Path(cm.memory_dir) / "旧角色").exists()
             assert (Path(cm.memory_dir) / "新角色" / "persona.json").is_file()
             assert (Path(cm.memory_dir) / "新角色" / "facts.json").is_file()

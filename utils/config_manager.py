@@ -302,10 +302,14 @@ def _build_effective_character_payload(character_payload: dict) -> dict:
     effective_payload = deepcopy(character_payload)
     override = _get_persona_override(character_payload)
     if not isinstance(override, dict):
+        for field, value in _build_ai_context_fields(character_payload).items():
+            effective_payload[field] = value
         return effective_payload
 
     profile = _normalize_persona_override_profile(override.get("profile"))
     for field, value in profile.items():
+        effective_payload[field] = value
+    for field, value in _build_ai_context_fields(character_payload).items():
         effective_payload[field] = value
     return effective_payload
 
@@ -344,6 +348,61 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
         return guidance
 
     return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
+
+
+_AI_CONTEXT_RENAME_EVENT_FIELD = "内部改名事件"
+
+
+def _build_ai_context_fields(character_payload: dict) -> dict[str, str]:
+    """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。"""
+    if not isinstance(character_payload, dict):
+        return {}
+
+    rename_events = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    if not isinstance(rename_events, list):
+        return {}
+
+    try:
+        from utils.language_utils import get_global_language_full
+        lang = get_global_language_full()
+    except Exception:
+        lang = None
+
+    try:
+        from config.prompts.prompts_memory import render_profile_rename_event_context
+    except Exception:
+        render_profile_rename_event_context = None
+
+    field_name = _AI_CONTEXT_RENAME_EVENT_FIELD
+    lines: list[str] = []
+    for event in rename_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or "").strip() != "profile_rename":
+            continue
+        old_name = str(event.get("old_name") or "").strip()
+        new_name = str(event.get("new_name") or "").strip()
+        if old_name and new_name and render_profile_rename_event_context is not None:
+            field_name, text = render_profile_rename_event_context(lang, old_name, new_name)
+        elif old_name and new_name:
+            text = (
+                f"我以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。"
+                f"以后请把「{new_name}」当作我的当前名字；「{old_name}」只代表改名前的历史称呼。"
+            )
+        else:
+            text = str(event.get("text") or "").strip()
+            if not text:
+                continue
+        lines.append(text)
+
+    if not lines:
+        return {}
+    return {field_name: "\n".join(lines)}
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:

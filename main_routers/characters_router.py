@@ -408,6 +408,45 @@ async def _mark_new_character_greeting_pending_safe(config_manager, character_na
         return False, str(exc)
 
 
+def _build_profile_rename_event(old_name: str, new_name: str) -> dict:
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    return {
+        "type": "profile_rename",
+        "old_name": old_name,
+        "new_name": new_name,
+        "renamed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _append_profile_rename_event(character_payload: dict, old_name: str, new_name: str) -> None:
+    """把改名事件写入隐藏 AI 上下文；角色管理页不会把 `_reserved` 渲染成普通字段。"""
+    if not isinstance(character_payload, dict):
+        return
+
+    existing = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    events = [event for event in existing if isinstance(event, dict)] if isinstance(existing, list) else []
+    new_event = _build_profile_rename_event(old_name, new_name)
+
+    # 防止同一次请求重放时连续写入完全相同的改名事件。
+    if events:
+        last = events[-1]
+        if (
+            last.get("type") == new_event["type"]
+            and str(last.get("old_name") or "") == new_event["old_name"]
+            and str(last.get("new_name") or "") == new_event["new_name"]
+        ):
+            return
+
+    events.append(new_event)
+    set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
+
+
 def _json_no_store_response(content, *, status_code: int = 200):
     return JSONResponse(
         content=content,
@@ -2613,6 +2652,7 @@ async def rename_catgirl(old_name: str, request: Request):
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+            _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name

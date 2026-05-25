@@ -1081,6 +1081,64 @@ PERSONA_HEADER = {
     "pt": "\n======Memória de longo prazo de {name}======\n",
 }
 
+PROFILE_RENAME_EVENT_FIELD = {
+    "zh": "我的改名记录",
+    "zh-TW": "我的改名紀錄",
+    "en": "My Profile Rename Record",
+    "ja": "私の改名記録",
+    "ko": "내 프로필 이름 변경 기록",
+    "ru": "Моя запись о смене имени профиля",
+    "es": "Mi registro de cambio de nombre de perfil",
+    "pt": "Meu registro de mudança de nome do perfil",
+}
+
+PROFILE_RENAME_EVENT_TEXT = {
+    "zh": "我以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。以后请把「{new_name}」当作我的当前名字；「{old_name}」只代表改名前的历史称呼。",
+    "zh-TW": "我以前的檔案名是「{old_name}」，現在已經改名為「{new_name}」。以後請把「{new_name}」當作我的目前名字；「{old_name}」只代表改名前的歷史稱呼。",
+    "en": "My previous profile name was \"{old_name}\"; I have now changed it to \"{new_name}\". Treat \"{new_name}\" as my current name from now on; \"{old_name}\" only refers to my historical name before the rename.",
+    "ja": "以前の私のプロフィール名は「{old_name}」で、今は「{new_name}」に改名しました。これからは「{new_name}」を私の現在の名前として扱ってください。「{old_name}」は改名前の過去の呼び名だけを指します。",
+    "ko": "내 이전 프로필 이름은 \"{old_name}\"였고, 지금은 \"{new_name}\"으로 바뀌었습니다. 앞으로는 \"{new_name}\"을 내 현재 이름으로 여기고, \"{old_name}\"은 개명 전의 과거 이름으로만 이해하세요.",
+    "ru": "Раньше моё имя профиля было «{old_name}», теперь я сменила его на «{new_name}». С этого момента считай «{new_name}» моим текущим именем; «{old_name}» относится только к моему прежнему имени до переименования.",
+    "es": "Mi nombre de perfil anterior era \"{old_name}\"; ahora lo he cambiado a \"{new_name}\". A partir de ahora, trata \"{new_name}\" como mi nombre actual; \"{old_name}\" solo se refiere a mi nombre histórico antes del cambio.",
+    "pt": "Meu nome de perfil anterior era \"{old_name}\"; agora mudei para \"{new_name}\". A partir de agora, trate \"{new_name}\" como meu nome atual; \"{old_name}\" se refere apenas ao meu nome histórico antes da mudança.",
+}
+
+
+def _normalize_memory_prompt_lang(lang: str | None) -> str:
+    """归一化记忆 prompt 本地化 key，保留繁中分支。"""
+    raw = str(lang or "").strip().lower()
+    if raw.startswith("zh"):
+        if "tw" in raw or "hant" in raw or "hk" in raw:
+            return "zh-TW"
+        return "zh"
+    if raw.startswith("ja"):
+        return "ja"
+    if raw.startswith("ko"):
+        return "ko"
+    if raw.startswith("ru"):
+        return "ru"
+    if raw.startswith("es"):
+        return "es"
+    if raw.startswith("pt"):
+        return "pt"
+    return "en"
+
+
+def render_profile_rename_event_context(
+    lang: str | None,
+    old_name: str,
+    new_name: str,
+) -> tuple[str, str]:
+    """渲染给 AI 的一人称改名记录，返回 (字段名, 内容)。"""
+    lang_key = _normalize_memory_prompt_lang(lang)
+    return (
+        _loc(PROFILE_RENAME_EVENT_FIELD, lang_key),
+        _loc(PROFILE_RENAME_EVENT_TEXT, lang_key).format(
+            old_name=str(old_name or "").strip(),
+            new_name=str(new_name or "").strip(),
+        ),
+    )
+
 # ---------- Proactive chat followup header ----------
 # 文案故意"鼓励性"而非"可选性"——之前的"可以选择性地回顾"语气太弱，配合
 # Phase 2 prompt 的反复读警告，会让模型把回忆当成"高重复风险"绕开。新表述
