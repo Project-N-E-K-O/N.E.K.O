@@ -859,6 +859,31 @@ class LLMSessionManager:
         from main_logic.activity import UserActivityTracker
         self._activity_tracker = UserActivityTracker(lanlan_name)
 
+        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
+        # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
+        # 里的屏幕分享来源。后端只检测「进入」那一刻并推送，分组判定 + 去重都在前端。
+        # 屏幕分享来源只在隐私关（vision 开）时才有意义；隐私开时 tracker 心跳本就不
+        # tick（见 _activity_guess_loop 的 _privacy_mode_active 早退），自然不会触发。
+        async def _push_activity_context_prompt(context: str) -> None:
+            ws = self.websocket
+            if not (
+                ws
+                and hasattr(ws, 'client_state')
+                and ws.client_state == ws.client_state.CONNECTED
+            ):
+                return
+            try:
+                await ws.send_json({
+                    'type': 'activity_context_prompt',
+                    'context': context,
+                })
+            except Exception as e:
+                logger.debug(
+                    '[%s] activity_context_prompt WS send failed: %s',
+                    self.lanlan_name, e,
+                )
+        self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
+
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时连同 on_ai_message 一起喂给 tracker。后者用末尾文本判断是否问问号
         # → 触发 unfinished_thread 机制（5 分钟内允许至多 2 次跟进）。
@@ -3742,6 +3767,28 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
+    async def _maybe_kick_activity_loop_for_experiment(self) -> None:
+        """A/B 实验组（vision_chat_default_off）：启动活动 tracker 后台心跳。
+
+        情境弹窗（进游戏/娱乐 / 进专注工作）的检测挂在 tracker 的 20s 心跳上，而心跳
+        只在首次 get_snapshot 时懒启动；get_snapshot 又只被「主动搭话已开」的路径调用。
+        主动搭话首启默认是关的，所以实验组若不主动 kick，进游戏也检测不到、弹窗永远
+        不弹。这里在 session 起来时为实验组 kick 一次（get_snapshot 幂等，不会重复起
+        loop）。
+
+        只 kick 实验组：避免给没开主动搭话的普通用户平白加 activity_guess 的 LLM
+        开销。实验组里隐私开（海外默认）的用户，心跳本身会 _privacy_mode_active 早退，
+        同样零 LLM 成本。后端 branch 与前端同源（都来自 token_tracker），即便这里判断
+        失误，最终弹窗仍由前端按自己的 branch 把关，不会误弹给控制组。
+        """
+        try:
+            from utils.token_tracker import get_telemetry_branch
+            if get_telemetry_branch() != 'vision_chat_default_off':
+                return
+            await self._activity_tracker.get_snapshot()
+        except Exception as e:
+            logger.debug("[%s] 实验组活动心跳 kick 失败: %s", self.lanlan_name, e)
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
@@ -3796,6 +3843,11 @@ class LLMSessionManager:
             self.websocket = websocket
             self.input_mode = input_mode
             self._reset_voice_echo_suppression_cache()
+
+            # A/B 实验组：拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到
+            # （详见 _maybe_kick_activity_loop_for_experiment）。fire-and-forget，不阻塞
+            # 会话启动；非实验组直接早退、零成本。
+            self._fire_task(self._maybe_kick_activity_loop_for_experiment())
         
             # 立即通知前端系统正在准备（静默期开始）
             await self.send_session_preparing(input_mode)

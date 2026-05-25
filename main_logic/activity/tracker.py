@@ -38,6 +38,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import replace as dc_replace
 
 from main_logic.activity.snapshot import (
@@ -283,6 +284,19 @@ class UserActivityTracker:
         # these.
         self._work_break_pending: dict | None = None
         self._anti_slack_pending: dict | None = None
+
+        # ── 情境弹窗（A/B 实验组前端用）──────────────────────────
+        # 当用户「进入」游戏/娱乐 或「进入」专注工作时，给前端推一次性信号，让前端
+        # （仅实验组、每会话每类一次）弹窗问要不要开/关屏幕分享来源。后端只负责检测
+        # 「进入」这一刻并推送，分组判定 + 去重都在前端。
+        #   * ``_context_prompt_pending``：一次性槽位，由 ``_tick_break_reminders``
+        #     在检测到进入目标状态时 set（同步安全，只置 dict），由异步
+        #     ``_activity_guess_loop`` 心跳 drain 后 await 推送回调。后写覆盖前写
+        #     （两次 drain 间多次切换只推最新那次，够用）。
+        #   * ``_on_context_prompt``：core.py 注入的 async 回调，签名 ``(context: str)``
+        #     —— context 取 'play'（游戏/娱乐）或 'work'（专注工作）。未注入则不推。
+        self._context_prompt_pending: dict | None = None
+        self._on_context_prompt: Callable[[str], Awaitable[None]] | None = None
 
     # ── hooks (called from core.py and friends) ─────────────────
 
@@ -694,6 +708,19 @@ class UserActivityTracker:
         ):
             self._anti_slack_pending = None
 
+        # ── 情境弹窗一次性检测（A/B 实验组前端用）────────────────
+        # 只在「进入」目标状态那一刻置 pending（state != prev_known），状态保持期间
+        # 不重复触发，避免 20s 心跳刷屏。分组判定 + 每会话去重都在前端。
+        #   gaming / casual_browsing（=娱乐，进游戏/看番/视频）→ 'play'
+        #   focused_work（进专注工作）                       → 'work'
+        # prev_known 为 None（首个观测 / 不安全 delta 重置后）也算「进入」，前端的
+        # 每会话去重会兜住启动即在游戏里这类场景。
+        if state != prev_known:
+            if state in ('gaming', 'casual_browsing'):
+                self._context_prompt_pending = {'context': 'play', 'set_at': now}
+            elif state == 'focused_work':
+                self._context_prompt_pending = {'context': 'work', 'set_at': now}
+
         self._last_known_state = state
 
         # ── Water-break pending ─────────────────────────────────
@@ -786,6 +813,40 @@ class UserActivityTracker:
         ts = now if now is not None else time.time()
         self._anti_slack_last_fired_at = ts
         self._anti_slack_pending = None
+
+    # ── 情境弹窗（A/B 实验组前端用）──────────────────────────────
+
+    def set_context_prompt_callback(
+        self, callback: Callable[[str], Awaitable[None]] | None
+    ) -> None:
+        """注入「进入游戏/娱乐 或 进入专注工作」时往前端推送的 async 回调。
+
+        由 core.py 在建好 tracker 后调用，回调内部把信号经 WebSocket 发给前端。
+        ``callback(context)`` 的 context 取 'play'（游戏/娱乐）或 'work'（专注工作）。
+        传 None 解除注入（如会话结束）。
+        """
+        self._on_context_prompt = callback
+
+    async def _drain_context_prompt(self) -> None:
+        """把 ``_tick_break_reminders`` 攒下的一次性情境信号推给前端。
+
+        只在异步心跳里调用（async 上下文才能 await 回调）。一次消费一个槽位，
+        推送失败静默吞掉——埋点性质的提示，丢一次也不该把心跳搞崩。
+        """
+        pending = self._context_prompt_pending
+        if pending is None:
+            return
+        self._context_prompt_pending = None
+        callback = self._on_context_prompt
+        if callback is None:
+            return
+        try:
+            await callback(pending['context'])
+        except Exception as e:  # noqa: BLE001 — 推送失败不能让心跳挂掉
+            logger.debug(
+                '[%s] context prompt push failed (%s): %s',
+                self.lanlan_name, pending.get('context'), e,
+            )
 
     # ── enrichment kickoff ──────────────────────────────────────
 
@@ -914,6 +975,14 @@ class UserActivityTracker:
                 # weren't actually doing. This is the canonical heartbeat
                 # for the break-reminder timers.
                 self._tick_break_reminders(rule_snap, now=ts)
+
+                # Drain 情境弹窗 pending 并推送（必须在下面 away/private 的 bail 之前，
+                # 否则进 away/private 那一 tick 设的 pending 会被 continue 跳过永不推；
+                # 实际进游戏/娱乐/工作都不会是 away/private，这里只是防御性早 drain）。
+                # 这是唯一的 drain 点：心跳每 tick 都跑、且是 async 上下文，能 await 回调。
+                # get_snapshot 路径也调 _tick_break_reminders 设 pending，但 _last_known_state
+                # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
+                await self._drain_context_prompt()
 
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':

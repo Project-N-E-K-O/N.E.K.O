@@ -419,12 +419,14 @@ def test_loader_drops_invalid_threshold_values():
     ('stale_returning', None,           None,     'warm'),
     ('focused_work',    None,           None,     'concise'),
     # ``idle`` while desk-pet is up reads as 摸鱼 territory — pair with
-    # ``playful`` (matches casual_browsing) instead of the businesslike
-    # ``concise``. ``transitioning`` and ``away`` keep ``concise``:
-    # the former is mid-context-switch, the latter doesn't render.
+    # ``playful`` (light banter) instead of the businesslike ``concise``.
+    # ``transitioning`` and ``away`` keep ``concise``: the former is
+    # mid-context-switch, the latter doesn't render.
     ('idle',            None,           None,     'playful'),
     ('away',            None,           None,     'concise'),
-    ('casual_browsing', None,           None,     'playful'),
+    # casual_browsing == watching anime/video → snarky ``witty`` (with a
+    # [PASS]-if-not-funny quality bar rendered separately), not generic playful.
+    ('casual_browsing', None,           None,     'witty'),
     ('private',         None,           None,     'concise'),
     ('gaming',          'competitive',  'moba',   'terse'),
     ('gaming',          'competitive',  'fps',    'terse'),

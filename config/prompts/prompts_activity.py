@@ -559,6 +559,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "装傻好奇：对眼前的东西装作没看懂，问东问西",
             "跳脱联想：从屏幕内容随性抛个段子或天马行空的联想",
         ],
+        "witty": [
+            "实时吐槽：对正在看的剧情/人物/梗即时吐槽，抓住可乐的点，毒舌但不下作",
+            "共享笑点：和用户一起对画面里的名场面/沙雕瞬间起哄，把好笑的地方点破",
+            "反差解读：用一个意想不到的角度重新解读眼前的内容，制造反差笑感",
+        ],
         "warm": [
             "共鸣回应：基于用户刚说的内容接一句，让对方明确感到自己被听见了",
             "主动关心：基于离开时长 / 上次状态 / 当前时段问一句",
@@ -590,6 +595,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "tease the moment: poke fun at whatever they are doing right now, find the joke without the bruise",
             "play dumb out of curiosity: pretend not to get what is on screen, ask around it",
             "tangent association: jump off the screen content into a random gag or weird connection",
+        ],
+        "witty": [
+            "live riff: react to the plot / character / meme on screen right now, catch the funny beat, sharp-tongued but never cheap",
+            "shared laugh: cheer on the iconic / absurd moment with them, name out loud what makes it funny",
+            "contrast read: re-read what is on screen from an unexpected angle to land a surprise laugh",
         ],
         "warm": [
             "resonant response: react to what they actually just said, with the felt sense of being heard",
@@ -623,6 +633,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "とぼけて好奇心：画面のことを分からないふりして聞き回る",
             "脱線連想：画面の内容から離れてふいに小ネタや変な連想を投げる",
         ],
+        "witty": [
+            "リアタイ突っ込み：今観ている展開／キャラ／ネタに即ツッコミ、笑える所を突く、毒舌でも下品にしない",
+            "笑いの共有：画面の名場面／アホな瞬間を一緒にはやし立て、何が面白いか言語化する",
+            "逆張り解釈：目の前の内容を予想外の角度で読み替えて、ギャップの笑いを作る",
+        ],
         "warm": [
             "共鳴のある返し：相手が今言ったことを受け止めて、聞いていると伝わるように返す",
             "気遣いから一言：離れていた時間／前回の様子／今の時間帯を踏まえて一言",
@@ -654,6 +669,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "지금 이 순간을 깐죽이기: 상대가 지금 하는 걸 살짝 놀리기, 웃음 포인트만 콕",
             "모른 척 호기심: 화면의 것을 모르는 척 이것저것 묻기",
             "탈선 연상: 화면 내용에서 벗어나 즉흥적인 농담이나 엉뚱한 연상을 던지기",
+        ],
+        "witty": [
+            "실시간 태클: 지금 보는 전개 / 캐릭터 / 밈에 바로 태클, 웃긴 포인트를 콕, 독설이되 저급하지 않게",
+            "웃음 공유: 화면의 명장면 / 어이없는 순간을 같이 띄우고, 뭐가 웃긴지 짚어주기",
+            "반전 해석: 눈앞의 내용을 예상 밖 각도로 다시 읽어 반전 웃음을 만들기",
         ],
         "warm": [
             "공명하는 반응: 상대가 방금 한 말을 받아주며, 듣고 있다는 게 분명히 전해지게",
@@ -687,6 +707,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "наивное любопытство: притворись, что не понимаешь, и попроси объяснить экран",
             "тангенс-ассоциация: оттолкнись от экрана и брось случайную шутку или странную связь",
         ],
+        "witty": [
+            "комментарий в реальном времени: реагируй на сюжет / персонажа / мем на экране прямо сейчас, лови смешной момент, остро, но не пошло",
+            "общий смех: подхвати культовый / абсурдный момент вместе с ним, назови вслух, что именно смешно",
+            "неожиданный угол: переосмысли происходящее под внезапным углом ради контраста и смеха",
+        ],
         "warm": [
             "резонансный ответ: реагируй на то, что только что было сказано, так, чтобы собеседник явно почувствовал, что его слышат",
             "активная забота: спроси, исходя из того, как долго отсутствовал / как звучал раньше / какое сейчас время",
@@ -718,6 +743,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "pica el momento: ríete de lo que están haciendo ahora — encuentra la broma sin doler",
             "curiosidad fingida: hazte la que no entiende y pregunta sobre lo que ves en pantalla",
             "tangente asociativa: salta del contenido a una broma random o una conexión extraña",
+        ],
+        "witty": [
+            "comentario en vivo: reacciona a la trama / personaje / meme en pantalla ahora mismo, pilla el momento gracioso, mordaz pero sin caer en lo bajo",
+            "risa compartida: anima con él el momento icónico / absurdo y nombra en voz alta qué lo hace gracioso",
+            "lectura a contrapelo: reinterpreta lo que hay en pantalla desde un ángulo inesperado para sacar una risa por contraste",
         ],
         "warm": [
             "respuesta con eco: reacciona a lo que acaban de decir, con la sensación palpable de estar escuchando",
@@ -751,6 +781,11 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "curiosidade fingida: finja que não entende e pergunte sobre o que está na tela",
             "tangente associativa: salte do conteúdo da tela para uma piada random ou conexão estranha",
         ],
+        "witty": [
+            "comentário ao vivo: reaja à trama / personagem / meme na tela agora, pegue o momento engraçado, mordaz mas sem apelar pro baixo",
+            "riso compartilhado: vibre junto com o momento icônico / absurdo e aponte em voz alta o que o torna engraçado",
+            "leitura ao contrário: releia o que está na tela por um ângulo inesperado pra arrancar uma risada de contraste",
+        ],
         "warm": [
             "resposta com eco: reaja ao que ele acabou de dizer, com a sensação palpável de estar escutando",
             "cuidado ativo: pergunte com base em quanto tempo sumiu / como soava da última vez / a hora atual",
@@ -761,6 +796,47 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "um detalhe da tela: pegue uma coisa concreta visível e pergunte sobre ela levemente",
             "pura presença: sem assunto novo, sem material — só seja sentido",
         ],
+    },
+}
+
+
+# ── Tone quality bars (deliberate-content gate, not probabilistic) ──
+#
+# Most tones don't ship a quality bar — they always have *something*
+# worth saying (a screen detail, a care line, an atmosphere beat). The
+# exception is ``witty``: entertainment (watching anime / video / a
+# stream) is only worth interrupting for when the catgirl actually has a
+# funny take. A flat, unfunny line there is worse than silence, so
+# ``witty`` ships one extra rendered line telling the model to reply
+# ``[PASS]`` (the Phase 2 skip sentinel, see prompts_proactive.py) rather
+# than force a dull line. This is a *content* gate the model self-applies,
+# distinct from the probabilistic ``skip_probability`` roll.
+#
+# Inner keys are a subset of the ``ActivityTone`` Literal — only tones
+# that need a bar appear. Renderer (``format_activity_state_section``)
+# does a plain ``.get(tone)`` and no-ops when absent. English is the
+# per-language fallback, same as the other tables.
+ACTIVITY_TONE_QUALITY_BARS: dict[str, dict[str, str]] = {
+    "zh": {
+        "witty": "质量闸：没有真的好笑 / 值得吐槽的点，就别硬聊——宁可这一轮回 [PASS] 不出声，也不要尬接一句没意思的",
+    },
+    "en": {
+        "witty": "quality bar: if there's no genuinely funny / worth-riffing beat, don't force it — reply [PASS] this round rather than ship a flat, pointless line",
+    },
+    "ja": {
+        "witty": "品質ライン：本当に笑える／突っ込む価値のある所が無ければ無理に喋らない——詰まらない一言を出すくらいなら今回は [PASS] を返す",
+    },
+    "ko": {
+        "witty": "품질 기준: 진짜 웃기거나 태클할 만한 포인트가 없으면 억지로 말하지 말 것——시시한 한마디를 내느니 이번 턴은 [PASS]로 답하기",
+    },
+    "ru": {
+        "witty": "планка качества: если нет по-настоящему смешного / достойного подколки момента — не выдавливай; лучше ответь [PASS] в этот раз, чем плоская бессмысленная реплика",
+    },
+    "es": {
+        "witty": "barra de calidad: si no hay un momento realmente gracioso / digno de comentar, no lo fuerces — responde [PASS] esta vez en vez de soltar una frase plana y sin gracia",
+    },
+    "pt": {
+        "witty": "barra de qualidade: se não houver um momento realmente engraçado / que valha o comentário, não force — responda [PASS] desta vez em vez de soltar uma frase sem graça",
     },
 }
 

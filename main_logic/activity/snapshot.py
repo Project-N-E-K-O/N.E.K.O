@@ -65,23 +65,34 @@ Propensity = Literal[
 # it*. Phase 2 prompt renders the tone hint as a single line so the AI
 # can adapt voice without changing source filtering.
 #
-# Six tones, deliberately vivid (one-line prompt hint each, see
+# Seven tones, deliberately vivid (one-line prompt hint each, see
 # ``ACTIVITY_TONE_HINTS`` in ``config/prompts/prompts_activity.py``):
 #   * ``terse``   — competitive games, rhythm games: short, low-intrusion
 #   * ``hushed``  — horror games: deliberately quiet, atmospheric
 #   * ``mellow``  — immersive RPG / story-driven: relaxed in-the-moment
-#   * ``playful`` — casual gaming, casual_browsing: light, joke-friendly
+#   * ``playful`` — casual gaming, idle: light, joke-friendly
+#   * ``witty``   — casual_browsing (watching anime / video / streams):
+#                   snarky running commentary. Held to a quality bar —
+#                   only speak if there's a genuinely funny / worth-
+#                   riffing beat, else stay silent (see below).
 #   * ``warm``    — voice / chatting / stale_returning: conversational
-#   * ``concise`` — focused_work / idle / default: short, professional
+#   * ``concise`` — focused_work / default: short, professional
 #
-# ``silent`` is intentionally not a tone — silencing the AI is the
-# ``skip_probability`` mechanism's job (probabilistic gate before any
+# ``silent`` is intentionally not a tone — silencing the AI is normally
+# the ``skip_probability`` mechanism's job (probabilistic gate before any
 # tone matters), and conflating "voice" with "presence" muddies both.
+# The one exception is ``witty``: entertainment is only worth interrupting
+# for if the catgirl actually has a funny take, so ``witty`` ships a
+# *quality bar* (``ACTIVITY_TONE_QUALITY_BARS``) rendered as one extra
+# line telling the model to [PASS] rather than force a flat line. This is
+# a deliberate-content gate, not a probabilistic one — it rides the same
+# Phase 2 [PASS]/drop path, so it stays out of skip_probability.
 ActivityTone = Literal[
     'terse',
     'hushed',
     'mellow',
     'playful',
+    'witty',
     'warm',
     'concise',
 ]
@@ -384,11 +395,12 @@ def derive_propensity(
 #         genre=other               → 'mellow'
 #       intensity=casual            → 'playful'
 #       intensity=varied / None     → 'concise' (conservative fallback)
-#   4. state == 'casual_browsing'  → 'playful'
+#   4. state == 'casual_browsing'  → 'witty' (watching anime/video — snark + quality bar)
 #   5. state == 'chatting'         → 'warm'
 #   6. state == 'stale_returning'  → 'warm' (greeting moment)
 #   7. state == 'focused_work'     → 'concise'
-#   8. state in {idle, transitioning, away} → 'concise' (default)
+#   8. state == 'idle'             → 'playful' (around but not on a task — light banter)
+#   9. state in {transitioning, away} → 'concise' (default)
 def derive_tone(
     state: ActivityState,
     *,
@@ -417,13 +429,20 @@ def derive_tone(
             return 'playful'
         # game_intensity in {'varied', None}
         return 'concise'
-    if state in ('casual_browsing', 'idle'):
+    if state == 'casual_browsing':
+        # Watching anime / video / streams. Running snarky commentary is
+        # the whole appeal here — but a flat, unfunny line is worse than
+        # silence, so ``witty`` is quality-barred (see
+        # ``ACTIVITY_TONE_QUALITY_BARS``): the renderer appends a
+        # [PASS]-if-you-have-nothing-funny directive.
+        return 'witty'
+    if state == 'idle':
         # Idle while the desk pet is foreground = the user is around but
         # not driving any task. Pairing it with ``concise`` reads as
-        # businesslike when the natural register is light banter — same
-        # as casual_browsing. ``transitioning`` and ``away`` stay on
-        # ``concise`` deliberately: the former is mid-context-switch
-        # (short reactive lines fit), the latter doesn't render anyway.
+        # businesslike when the natural register is light banter.
+        # ``transitioning`` and ``away`` stay on ``concise`` deliberately:
+        # the former is mid-context-switch (short reactive lines fit), the
+        # latter doesn't render anyway.
         return 'playful'
     if state in ('chatting', 'stale_returning'):
         return 'warm'
@@ -506,6 +525,7 @@ from config.prompts.prompts_activity import (
     ACTIVITY_STATE_LABELS,
     ACTIVITY_STATE_SECTION_LABELS,
     ACTIVITY_TONE_HINTS,
+    ACTIVITY_TONE_QUALITY_BARS,
     OS_DEGRADED_MARKER,
 )
 
@@ -648,6 +668,16 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
             tone_label = labels.get('tone_menu_label') or labels.get('tone_label', 'tone')
             lines.append(f"{tone_label}:")
             lines.extend(f"- {v}" for v in tone_variants)
+
+    # Line 1.6: quality bar for tones that ship one (currently only
+    # ``witty``). Rendered as one extra line telling the model to [PASS]
+    # rather than force a flat, unfunny line — entertainment is only worth
+    # interrupting for when there's a genuinely good riff. Most tones have
+    # no bar (key absent) and this is a no-op.
+    quality_bars = ACTIVITY_TONE_QUALITY_BARS.get(L, ACTIVITY_TONE_QUALITY_BARS['en'])
+    quality_bar = quality_bars.get(snap.tone)
+    if quality_bar:
+        lines.append(quality_bar)
 
     # Line 2: rule reasons (skip if empty — happens for unknown states).
     if snap.propensity_reasons:
