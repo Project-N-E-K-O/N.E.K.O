@@ -189,7 +189,9 @@
             for (const ctx of pend) {
                 await handle(ctx);
             }
-        })();
+        })().catch(function (e) {
+            console.warn('[context-prompt] 重放暂存事件失败:', e);
+        });
     }
 
     // branch 决议后重放暂存的事件（app-settings.js 在拿到 telemetryBranch 后广播）。

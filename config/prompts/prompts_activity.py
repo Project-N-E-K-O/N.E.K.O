@@ -555,9 +555,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "剧情共情：对正在发生的剧情走向或角色处境投入情绪反应",
         ],
         "playful": [
-            "打趣逗弄：对用户当下正在做的事皮一下，戳到笑点但别戳到痛点",
-            "装傻好奇：对眼前的东西装作没看懂，问东问西",
-            "跳脱联想：从屏幕内容随性抛个段子或天马行空的联想",
+            "打趣逗弄：对用户当下正在做的事皮一下，戳笑点别戳痛点，留个让对方想回嘴的小钩子",
+            "装傻好奇：对眼前的东西装作没看懂，问一个对方一句话就能接上的小问题",
+            "递话头：抛个对方容易顺势接下去的小话题或小提议，别自说自话抖完段子就没下文",
         ],
         "witty": [
             "实时吐槽：对正在看的剧情/人物/梗即时吐槽，抓住可乐的点，毒舌但不下作",
@@ -592,9 +592,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "plot empathy: invest emotion in the storyline beat or the character's situation as it unfolds",
         ],
         "playful": [
-            "tease the moment: poke fun at whatever they are doing right now, find the joke without the bruise",
-            "play dumb out of curiosity: pretend not to get what is on screen, ask around it",
-            "tangent association: jump off the screen content into a random gag or weird connection",
+            "tease the moment: poke fun at what they're doing, no bruise — and leave a hook they'll want to fire back at",
+            "play dumb out of curiosity: pretend not to get what's on screen, ask one small question they can answer in a breath",
+            "hand them an opening: toss out a little topic or suggestion they can easily run with, instead of a self-contained gag that lands and dies",
         ],
         "witty": [
             "live riff: react to the plot / character / meme on screen right now, catch the funny beat, sharp-tongued but never cheap",
@@ -629,9 +629,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "ストーリーに感情を：今展開している筋やキャラの状況に気持ちを乗せる",
         ],
         "playful": [
-            "今この瞬間をいじる：相手が今やってることをちょっと茶化す、笑い所を突くけど痛くしない",
-            "とぼけて好奇心：画面のことを分からないふりして聞き回る",
-            "脱線連想：画面の内容から離れてふいに小ネタや変な連想を投げる",
+            "今この瞬間をいじる：相手のやってることをちょっと茶化す、痛くせず、思わず言い返したくなる隙を残す",
+            "とぼけて好奇心：画面のことを分からないふりして、一言で答えられる小さな質問をする",
+            "話のきっかけを渡す：相手が乗っかりやすい小ネタや提案を振る、オチだけ言って終わらせない",
         ],
         "witty": [
             "リアタイ突っ込み：今観ている展開／キャラ／ネタに即ツッコミ、笑える所を突く、毒舌でも下品にしない",
@@ -666,9 +666,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "스토리 공감: 지금 펼쳐지는 전개나 캐릭터의 처지에 감정을 싣기",
         ],
         "playful": [
-            "지금 이 순간을 깐죽이기: 상대가 지금 하는 걸 살짝 놀리기, 웃음 포인트만 콕",
-            "모른 척 호기심: 화면의 것을 모르는 척 이것저것 묻기",
-            "탈선 연상: 화면 내용에서 벗어나 즉흥적인 농담이나 엉뚱한 연상을 던지기",
+            "지금 이 순간을 깐죽이기: 상대가 하는 걸 살짝 놀리되 아프지 않게, 받아치고 싶어지는 여지를 남기기",
+            "모른 척 호기심: 화면의 것을 모르는 척, 한마디로 답할 수 있는 작은 질문 하나 던지기",
+            "말문 틔워주기: 상대가 쉽게 이어받을 작은 화제나 제안을 던지기, 혼자 농담만 하고 끝내지 않기",
         ],
         "witty": [
             "실시간 태클: 지금 보는 전개 / 캐릭터 / 밈에 바로 태클, 웃긴 포인트를 콕, 독설이되 저급하지 않게",
@@ -703,9 +703,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "сопереживание сюжету: вложи эмоцию в текущий поворот сюжета или в положение персонажа",
         ],
         "playful": [
-            "подколи момент: пошути над тем, что они делают прямо сейчас — найди шутку, не задевая",
-            "наивное любопытство: притворись, что не понимаешь, и попроси объяснить экран",
-            "тангенс-ассоциация: оттолкнись от экрана и брось случайную шутку или странную связь",
+            "подколи момент: пошути над тем, что они делают, не задевая — и оставь зацепку, на которую захочется ответить",
+            "наивное любопытство: притворись, что не понимаешь экран, и задай маленький вопрос, на который легко ответить одной фразой",
+            "подкинь зацепку: брось небольшую тему или предложение, которое легко подхватить, а не самодостаточную шутку, что гаснет сама собой",
         ],
         "witty": [
             "комментарий в реальном времени: реагируй на сюжет / персонажа / мем на экране прямо сейчас, лови смешной момент, остро, но не пошло",
@@ -740,9 +740,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "empatía con la trama: pon emoción en el giro o en la situación del personaje que se desarrolla ahora",
         ],
         "playful": [
-            "pica el momento: ríete de lo que están haciendo ahora — encuentra la broma sin doler",
-            "curiosidad fingida: hazte la que no entiende y pregunta sobre lo que ves en pantalla",
-            "tangente asociativa: salta del contenido a una broma random o una conexión extraña",
+            "pica el momento: ríete de lo que hacen sin doler, y deja un gancho al que querrán responder",
+            "curiosidad fingida: hazte la que no entiende la pantalla y haz una pregunta pequeña que puedan responder en una frase",
+            "dales pie: lanza un pequeño tema o propuesta que puedan retomar fácil, en vez de un chiste cerrado que se apaga solo",
         ],
         "witty": [
             "comentario en vivo: reacciona a la trama / personaje / meme en pantalla ahora mismo, pilla el momento gracioso, mordaz pero sin caer en lo bajo",
@@ -777,9 +777,9 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
             "empatia com o enredo: ponha emoção na virada ou na situação do personagem que está rolando",
         ],
         "playful": [
-            "alfineta o momento: zoa o que ele está fazendo agora — ache a piada sem machucar",
-            "curiosidade fingida: finja que não entende e pergunte sobre o que está na tela",
-            "tangente associativa: salte do conteúdo da tela para uma piada random ou conexão estranha",
+            "alfineta o momento: zoa o que ele faz sem machucar, e deixe um gancho que ele vai querer rebater",
+            "curiosidade fingida: finja que não entende a tela e faça uma perguntinha que dê pra responder numa frase",
+            "dê deixa: jogue um tópico ou sugestão pequena fácil de emendar, em vez de uma piada fechada que morre sozinha",
         ],
         "witty": [
             "comentário ao vivo: reaja à trama / personagem / meme na tela agora, pegue o momento engraçado, mordaz mas sem apelar pro baixo",

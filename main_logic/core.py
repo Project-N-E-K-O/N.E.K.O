@@ -861,10 +861,19 @@ class LLMSessionManager:
 
         # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
         # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
-        # 里的屏幕分享来源。后端只检测「进入」那一刻并推送，分组判定 + 去重都在前端。
+        # 里的屏幕分享来源。后端只检测「进入」那一刻并推送，去重在前端。
         # 屏幕分享来源只在隐私关（vision 开）时才有意义；隐私开时 tracker 心跳本就不
         # tick（见 _activity_guess_loop 的 _privacy_mode_active 早退），自然不会触发。
         async def _push_activity_context_prompt(context: str) -> None:
+            # 后端这里也按 branch 把关：非实验组（main）压根不推这条信号，连前端 drop
+            # 的开销都省，确保控制组完全无感（前端 _isExperimentBranch 是第二道闸）。
+            # 活动 loop 在「主动搭话已开」的 main 用户上也会跑，故这道后端 gate 必要。
+            try:
+                from utils.token_tracker import get_telemetry_branch
+                if get_telemetry_branch() != 'vision_chat_default_off':
+                    return
+            except Exception:
+                return
             ws = self.websocket
             if not (
                 ws
