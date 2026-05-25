@@ -2879,6 +2879,14 @@ class StudyCompanionPlugin(NekoPluginBase):
         }
         vision_image_payload = str(vision_image_base64 or "").strip()
         if vision_image_payload:
+            if not bool(self._cfg.llm_vision_enabled):
+                return Err(SdkError("llm_vision_enabled is not enabled"))
+            try:
+                vision_image_payload = _normalize_submitted_image_payload(
+                    vision_image_payload,
+                )
+            except ValueError as exc:
+                return Err(SdkError(str(exc)))
             extra_context["vision_enabled"] = True
             extra_context["vision_image_base64"] = vision_image_payload
         tutor_context = await self._build_learning_context(

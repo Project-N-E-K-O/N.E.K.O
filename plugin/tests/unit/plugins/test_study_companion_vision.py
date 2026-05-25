@@ -15,7 +15,7 @@ from plugin.plugins.study_companion.constants import LLM_OPERATION_CONCEPT_EXPLA
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
-from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent
+from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, TutorReply
 from plugin.sdk.plugin import Err, Ok
 
 pytestmark = pytest.mark.unit
@@ -43,6 +43,9 @@ class _FakeOcrBackend:
 class _Store:
     def list_interactions(self, _limit: int) -> list[dict[str, object]]:
         return []
+
+    def append_interaction(self, **_kwargs: object) -> None:
+        pass
 
 
 class _KnowledgeTracker:
@@ -508,3 +511,91 @@ async def test_study_submit_image_requires_enabled_config() -> None:
 
     assert isinstance(result, Err)
     assert "llm_vision_enabled" in str(result.error)
+
+
+class _FakeVisionTutorAgent:
+    async def concept_explain(
+        self,
+        text: str,
+        *,
+        mode: str = "companion",
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        return TutorReply(
+            operation="concept_explain",
+            input_text=text,
+            reply=f"explained: {text}",
+            created_at="2026-05-25T00:00:00Z",
+        )
+
+    async def shutdown(self) -> None:
+        pass
+
+
+def _make_plugin_for_explain(*, vision_enabled: bool) -> StudyCompanionPlugin:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled)
+    plugin._state = build_initial_state()
+    plugin._lock = threading.RLock()
+    plugin._agent = _FakeVisionTutorAgent()
+    plugin._store = _Store()
+    plugin._knowledge_tracker = _KnowledgeTracker()
+    plugin._ocr_pipeline = None
+    plugin._persist_state_calls = 0
+
+    async def _persist_state(self: StudyCompanionPlugin) -> None:
+        self._persist_state_calls += 1
+
+    plugin._persist_state = MethodType(_persist_state, plugin)
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_rejects_vision_when_disabled() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=False)
+
+    result = await plugin.study_explain_text(
+        text="hello",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Err)
+    assert "llm_vision_enabled" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_rejects_invalid_vision_mime() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+
+    result = await plugin.study_explain_text(
+        text="hello",
+        vision_image_base64="data:image/webp;base64,abc123",
+    )
+
+    assert isinstance(result, Err)
+    assert "JPEG/PNG" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_rejects_invalid_vision_base64() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+
+    result = await plugin.study_explain_text(
+        text="hello",
+        vision_image_base64="!!!not-base64!!!",
+    )
+
+    assert isinstance(result, Err)
+    assert "valid base64" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_accepts_valid_vision_image() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+
+    result = await plugin.study_explain_text(
+        text="describe this",
+        vision_image_base64=JPEG_IMAGE_BASE64,
+    )
+
+    assert isinstance(result, Ok)
