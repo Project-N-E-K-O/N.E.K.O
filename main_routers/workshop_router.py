@@ -5011,6 +5011,7 @@ async def sync_workshop_character_cards(
     existing_character_names: list[str] = []
     deleted_character_names_seen: list[str] = []
     restored_deleted_names: list[str] = []
+    tombstone_cleanup_deferred = False
 
     def _append_unique(bucket: list[str], name: str) -> None:
         normalized_name = str(name or "").strip()
@@ -5026,6 +5027,8 @@ async def sync_workshop_character_cards(
         }
         if blocked_by_write_fence:
             payload["blocked_by_write_fence"] = True
+        if tombstone_cleanup_deferred:
+            payload["tombstone_cleanup_deferred"] = True
         if target_item_id_str:
             payload.update({
                 "target_item_id": target_item_id_str,
@@ -5091,8 +5094,8 @@ async def sync_workshop_character_cards(
         async def _clear_restored_existing_tombstones():
             nonlocal error_count
             restored_existing_candidates = [
-                name for name in pending_restore_tombstone_names
-                if name in existing_character_names and name not in restored_deleted_names
+                name for name in confirmed_recoverable_existing_names
+                if name not in restored_deleted_names
             ]
             if not restored_existing_candidates:
                 return None
@@ -5140,7 +5143,9 @@ async def sync_workshop_character_cards(
             need_save = False
             pending_added_catgirls = {}
             pending_card_face_writes = {}
+            pending_item_ids = {}
             pending_restore_tombstone_names: set[str] = set()
+            confirmed_recoverable_existing_names: set[str] = set()
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
@@ -5207,7 +5212,10 @@ async def sync_workshop_character_cards(
                                     continue
                                 _append_unique(existing_character_names, chara_name)
                                 existing_data = characters['猫娘'].get(chara_name) or {}
-                                if _is_matching_workshop_character(existing_data, item_id):
+                                existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
+                                if existing_matches_item and restore_deleted and chara_name in pending_restore_tombstone_names:
+                                    confirmed_recoverable_existing_names.add(chara_name)
+                                if existing_matches_item:
                                     try:
                                         blocked_result = _abort_if_write_fence_active(
                                             f"sync_workshop_character_cards: 回填角色卡封面前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
@@ -5329,6 +5337,7 @@ async def sync_workshop_character_cards(
                                 'preview_image_path': preview_image_path,
                                 'item': item,
                             }
+                            pending_item_ids[chara_name] = item_id
                             need_save = True
                             added_count += 1
                             logger.info(f"sync_workshop_character_cards: 发现待添加角色卡 '{chara_name}' (来自物品 {item_id})")
@@ -5386,6 +5395,15 @@ async def sync_workshop_character_cards(
                             skipped_due_to_race_count += 1
                             if pending_name in latest_catgirls:
                                 _append_unique(existing_character_names, pending_name)
+                                if (
+                                    restore_deleted
+                                    and pending_name in pending_restore_tombstone_names
+                                    and _is_matching_workshop_character(
+                                        latest_catgirls.get(pending_name) or {},
+                                        pending_item_ids.get(pending_name, ""),
+                                    )
+                                ):
+                                    confirmed_recoverable_existing_names.add(pending_name)
                             continue
                         latest_catgirls[pending_name] = pending_payload
                         actually_added_count += 1
@@ -5486,7 +5504,10 @@ async def sync_workshop_character_cards(
 
                 blocked_result = await _clear_restored_existing_tombstones()
                 if blocked_result is not None:
-                    return blocked_result
+                    tombstone_cleanup_deferred = True
+                    logger.warning(
+                        "sync_workshop_character_cards: 角色已保存，但 tombstone 清理被维护态写围栏延后"
+                    )
                 
                 try:
                     initialize_character_data = get_initialize_character_data()

@@ -166,6 +166,7 @@ def test_workshop_add_character_card_messages_exist_in_all_locales():
         "workshopCharacterAdded",
         "workshopCharacterNotFound",
         "workshopCharacterAddFailed",
+        "characterCardsRefreshFailed",
     ]
     placeholder_checks = {
         "characterCardAlreadyExistsMessage": "{{names}}",
