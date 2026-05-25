@@ -1212,6 +1212,7 @@ class OmniOfflineClient:
         )
         final_finish_reason: Optional[str] = None
         final_block_reason: Optional[str] = None
+        final_prompt_tokens: Optional[int] = None
         final_had_text = False
         async for chunk in final_stream:
             # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
@@ -1227,7 +1228,7 @@ class OmniOfflineClient:
             if usage_meta is not None:
                 pt = getattr(usage_meta, "prompt_token_count", 0) or 0
                 if pt:
-                    self._last_prompt_tokens = pt
+                    final_prompt_tokens = pt
             candidates = getattr(chunk, "candidates", None) or []
             if not candidates:
                 continue
@@ -1243,15 +1244,19 @@ class OmniOfflineClient:
                 if text:
                     final_had_text = True
                     yield LLMStreamChunk(content=text)
+        # 统一回填本次 forced-finalize 自己的诊断值（含 prompt_tokens）。prompt_tokens
+        # 走局部变量、流结束后无条件回填：若这次被挡住/没给 usage，写回 None 而非沿用
+        # 上一轮 tool-iteration 的旧值，避免 INFO log / 上层 LLM_NO_RESPONSE 诊断串台。
         self._last_finish_reason = final_finish_reason
         self._last_block_reason = final_block_reason
+        self._last_prompt_tokens = final_prompt_tokens
         if not final_had_text:
             logger.info(
                 "OmniOfflineClient(genai): forced-finalize empty completion "
                 "finish_reason=%s block_reason=%s model=%s prompt_tokens=%s",
                 final_finish_reason, final_block_reason,
                 getattr(self, "model", None),
-                getattr(self, "_last_prompt_tokens", None),
+                final_prompt_tokens,
             )
 
     def update_max_response_length(self, max_length: int) -> None:
