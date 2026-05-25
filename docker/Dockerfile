@@ -42,7 +42,10 @@ ARG HTTPS_PROXY
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+# Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
+# build runs on US Azure runners while the package mirror is in China, so large
+# wheels are slow to transfer; 30s caused spurious "operation timed out" failures.
+ENV UV_HTTP_TIMEOUT=120
 
 # Set working directory
 WORKDIR /app
@@ -101,11 +104,20 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /usr/local/bin/uv
 RUN chmod +x /usr/local/bin/uv && \
     echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
 
-# 5. Configure uv to use Aliyun mirror
+# 5. Configure uv mirrors + fallback.
+# Two China mirrors are tried in order (aliyun -> tsinghua); neither is marked
+# default, so the implicit default (pypi.org) stays as the final fallback -- which
+# is actually fastest on the US runner. If any mirror is missing a package or
+# stalls, uv walks down the list instead of single-pointing at aliyun.
 RUN mkdir -p /root/.config/uv && \
-    echo '[[index]]' > /root/.config/uv/uv.toml && \
-    echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
-    echo 'default = true' >> /root/.config/uv/uv.toml
+    printf '%s\n' \
+      '[[index]]' \
+      'name = "aliyun"' \
+      'url = "https://mirrors.aliyun.com/pypi/simple/"' \
+      '[[index]]' \
+      'name = "tsinghua"' \
+      'url = "https://pypi.tuna.tsinghua.edu.cn/simple/"' \
+      > /root/.config/uv/uv.toml
 
 # 6. Copy N.E.K.O. project from local build context (with correct ownership)
 COPY --chown=neko:neko . /app
@@ -142,7 +154,7 @@ ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
 RUN cd /app && \
     if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    uv run python scripts/prepare_embedding_model.py \
+    uv run --no-sync python scripts/prepare_embedding_model.py \
         --repo "$EMBEDDING_MODEL_REPO" \
         --revision "$EMBEDDING_MODEL_REVISION" \
         --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
