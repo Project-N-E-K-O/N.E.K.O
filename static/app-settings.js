@@ -523,17 +523,6 @@
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
 
-                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）——弹窗只对实验组
-                // 生效。branch 决议成功后立即挂上并广播；GET 失败时 telemetryBranch 为
-                // null，不挂，弹窗模块拿不到实验组标识就默认不弹（fail-closed，宁可漏弹
-                // 也不要弹给控制组）
-                if (telemetryBranch) {
-                    window.nekoTelemetryBranch = telemetryBranch;
-                    window.dispatchEvent(new CustomEvent('neko:telemetry-branch-resolved', {
-                        detail: { branch: telemetryBranch },
-                    }));
-                }
-
                 // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
                 // 分支 = 实验组 + 服务器没有云端屏幕分享来源偏好 + 用户没在 fetch 间隙手动
                 // 切 toggle + 本地值仍等于控制组默认（即用户也没在之前的 offline session
@@ -616,6 +605,19 @@
                     } else if (typeof window.scheduleProactiveChat === 'function') {
                         window.scheduleProactiveChat();
                     }
+                }
+
+                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播——必须放在
+                // 所有设置合并（A/B 覆写 + server merge + saveSettings）之后。否则被缓存的
+                // context 在 branch-resolved 重放时，_isActionable 会读到覆写前的旧
+                // proactiveVisionChatEnabled，误判该不该弹（Codex P2）。GET 失败
+                // telemetryBranch 为 null 时不挂，弹窗模块拿不到实验组标识默认不弹
+                // （fail-closed，宁可漏弹也不要弹给控制组）。
+                if (telemetryBranch) {
+                    window.nekoTelemetryBranch = telemetryBranch;
+                    window.dispatchEvent(new CustomEvent('neko:telemetry-branch-resolved', {
+                        detail: { branch: telemetryBranch },
+                    }));
                 }
             }).finally(() => {
                 // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能

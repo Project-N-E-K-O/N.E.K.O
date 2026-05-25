@@ -3794,6 +3794,13 @@ class LLMSessionManager:
             from utils.token_tracker import get_telemetry_branch
             if get_telemetry_branch() != 'vision_chat_default_off':
                 return
+            # 隐私模式开（vision 关）时绝不 kick：get_snapshot 会起 SystemSignalCollector
+            # 并采集窗口/进程信号，绕过隐私模式（loop 只跳过 LLM、collector 仍在采）。
+            # privacy-on 的实验组本就是 no-op（屏幕分享来源开不了），不 kick 即可；隐私关
+            # 时才采集，符合 vision 开的预期。
+            from main_logic.activity.tracker import _privacy_mode_active
+            if _privacy_mode_active():
+                return
             await self._activity_tracker.get_snapshot()
         except Exception as e:
             logger.debug("[%s] 实验组活动心跳 kick 失败: %s", self.lanlan_name, e)
