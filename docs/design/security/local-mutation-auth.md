@@ -102,7 +102,7 @@ issue #1479 原文提议加 `NEKO_REQUIRE_CSRF_FOR_ORIGIN` / `NEKO_REQUIRE_CSRF_
 
 ## 5. Token 流转
 
-```
+```text
 [server boot]
   ↓
 AUTOSTART_CSRF_TOKEN = env('NEKO_AUTOSTART_CSRF_TOKEN') or INSTANCE_ID
