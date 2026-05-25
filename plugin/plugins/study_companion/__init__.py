@@ -892,12 +892,18 @@ class StudyCompanionPlugin(NekoPluginBase):
             ).strip()
             or "default"
         )
+        mastery_before: float | None = 0.0
+        if topic:
+            try:
+                mastery_before = await asyncio.to_thread(
+                    self._knowledge_tracker.get_mastery, topic
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "study knowledge tracker mastery-before read failed: {}", exc
+                )
+                mastery_before = None
         try:
-            mastery_before = (
-                await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
-                if topic
-                else 0.0
-            )
             tracking_result = await asyncio.to_thread(
                 self._knowledge_tracker.on_answer,
                 topic_id=topic,
@@ -907,35 +913,46 @@ class StudyCompanionPlugin(NekoPluginBase):
                 mode=str(context.get("mode") or self._state.active_mode),
                 session_id=session_id,
             )
-            tracked_topic = str(tracking_result.get("topic_id") or topic).strip()
-            mastery_after = (
-                await asyncio.to_thread(
-                    self._knowledge_tracker.get_mastery, tracked_topic
-                )
-                if tracked_topic
-                else 0.0
-            )
-            crossed = _detect_mastery_threshold_crossed(
-                mastery_before, mastery_after
-            )
-            if self._event_bus is not None and crossed is not None:
-                self._event_bus.schedule_emit(
-                    StudyEvent(
-                        name="mastery_updated",
-                        payload={
-                            "topic": tracked_topic,
-                            "mastery": mastery_after,
-                            "mastery_before": mastery_before,
-                            "direction": "up"
-                            if mastery_after > mastery_before
-                            else "down",
-                            "crossed_threshold": crossed,
-                            "evidence_count": 1,
-                        },
-                    )
-                )
         except Exception as exc:
             self.logger.warning("study knowledge tracker persistence failed: {}", exc)
+            return
+        tracked_topic = str(tracking_result.get("topic_id") or topic).strip()
+        mastery_after: float | None = None
+        if tracked_topic:
+            try:
+                mastery_after = await asyncio.to_thread(
+                    self._knowledge_tracker.get_mastery, tracked_topic
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "study knowledge tracker mastery-after read failed: {}", exc
+                )
+        crossed = (
+            _detect_mastery_threshold_crossed(mastery_before, mastery_after)
+            if mastery_before is not None and mastery_after is not None
+            else None
+        )
+        if (
+            self._event_bus is not None
+            and crossed is not None
+            and mastery_before is not None
+            and mastery_after is not None
+        ):
+            self._event_bus.schedule_emit(
+                StudyEvent(
+                    name="mastery_updated",
+                    payload={
+                        "topic": tracked_topic,
+                        "mastery": mastery_after,
+                        "mastery_before": mastery_before,
+                        "direction": "up"
+                        if mastery_after > mastery_before
+                        else "down",
+                        "crossed_threshold": crossed,
+                        "evidence_count": 1,
+                    },
+                )
+            )
 
     @staticmethod
     def _guess_track_topic(reply: TutorReply) -> str:
@@ -1202,7 +1219,6 @@ class StudyCompanionPlugin(NekoPluginBase):
         with self._lock:
             seed = dict(self._state.session_summary_seed)
         answer_count = int(seed.get("answer_count") or 0)
-        question_count = int(seed.get("question_count") or 0)
         verdict_counts = dict(seed.get("verdict_counts") or {})
         correct = int(verdict_counts.get("correct") or 0)
         fallback_correct_rate = (correct / answer_count) if answer_count > 0 else 0.0
@@ -1213,8 +1229,8 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "duration_minutes": 0,
                     "questions_attempted": int(
                         payload.get("questions_attempted")
-                        or max(question_count, answer_count)
-                        or 0
+                        if payload.get("questions_attempted") is not None
+                        else answer_count
                     ),
                     "correct_rate": _event_ratio(
                         payload.get("correct_rate", fallback_correct_rate)

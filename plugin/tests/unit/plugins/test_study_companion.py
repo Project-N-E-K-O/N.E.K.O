@@ -3297,7 +3297,15 @@ async def test_evaluate_answer_mastery_lookup_failure_is_best_effort(
     def _fail_get_mastery(_topic: str) -> float:
         raise RuntimeError("mastery read failed")
 
+    original_on_answer = plugin._knowledge_tracker.on_answer
+    on_answer_topics: list[str] = []
+
+    def _record_on_answer(**kwargs):
+        on_answer_topics.append(str(kwargs.get("topic_id") or ""))
+        return original_on_answer(**kwargs)
+
     monkeypatch.setattr(plugin._knowledge_tracker, "get_mastery", _fail_get_mastery)
+    monkeypatch.setattr(plugin._knowledge_tracker, "on_answer", _record_on_answer)
     try:
         evaluated = await plugin.study_evaluate_answer(
             question="What is a derivative?",
@@ -3306,11 +3314,17 @@ async def test_evaluate_answer_mastery_lookup_failure_is_best_effort(
         )
 
         assert isinstance(evaluated, Ok)
+        assert on_answer_topics == ["derivatives"]
         await _drain_scheduled_events()
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
         warnings = [str(args[0]) for args, _kwargs in ctx.logger.warnings]
         assert any(
-            "study knowledge tracker persistence failed" in item for item in warnings
+            "study knowledge tracker mastery-before read failed" in item
+            for item in warnings
+        )
+        assert any(
+            "study knowledge tracker mastery-after read failed" in item
+            for item in warnings
         )
         assert any(
             "study answer mastery enrichment failed" in item for item in warnings
@@ -3569,7 +3583,7 @@ async def test_session_summarized_falls_back_to_answer_count(
         with plugin._lock:
             plugin._state.session_summary_seed = {
                 "answer_count": 3,
-                "question_count": 0,
+                "question_count": 5,
                 "verdict_counts": {"correct": 2},
                 "last_topic": "Derivatives",
             }
