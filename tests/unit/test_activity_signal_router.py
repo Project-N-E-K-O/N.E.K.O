@@ -382,6 +382,35 @@ def test_no_origin_no_csrf_blocked_with_403(monkeypatch):
 
 
 @pytest.mark.unit
+def test_no_origin_with_valid_csrf_still_blocked(monkeypatch):
+    """Valid CSRF token alone (no Origin) must not bypass the guard.
+
+    Distinguishes the *Origin AND CSRF* contract from a hypothetical
+    "token-only" relaxation: a non-browser caller that somehow obtained
+    the CSRF token (e.g., by reading the user's running browser's
+    DevTools) still can't push activity signals if it skips the Origin
+    header. Without this canary a future refactor could accidentally
+    weaken the guard to "token alone is enough" and the rest of the
+    suite would still pass (CodeRabbit Nitpick on PR #1532).
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
+
+    assert resp.status_code == 403, resp.text
+    body = resp.json()
+    assert body.get("error_code") == "csrf_validation_failed"
+    assert body.get("success") is False
+    assert "no-store" in resp.headers.get("Cache-Control", "").lower()
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
 def test_same_origin_with_valid_csrf_accepted(monkeypatch):
     """Matching Origin + valid CSRF token → push goes through.
 
