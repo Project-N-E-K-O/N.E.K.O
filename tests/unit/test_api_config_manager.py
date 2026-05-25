@@ -265,18 +265,6 @@ class TestCustomApiToggle:
 class TestAssistFollowsCore:
 
     @pytest.mark.unit
-    def test_missing_assist_defaults_to_free(self, config_manager):
-        """core_config 未写 assistApi 时默认使用 free。"""
-        _write_core_config(config_manager, {
-            'coreApiKey': 'sk-core',
-            'coreApi': 'qwen',
-        })
-        cfg = config_manager.get_core_config()
-
-        assert cfg['assistApi'] == 'free'
-        assert cfg['OPENROUTER_URL'] == 'https://www.lanlan.tech/text/v1'
-
-    @pytest.mark.unit
     def test_free_core_defaults_assist_to_free_when_empty(self, config_manager):
         """coreApi=free + assistApi='' → 空值兜底为 free（保持免费版一键到位体验）。"""
         _write_core_config(config_manager, {

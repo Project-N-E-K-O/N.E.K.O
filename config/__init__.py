@@ -666,7 +666,7 @@ def get_localized_default_characters(language: str | None = None) -> dict:
 DEFAULT_CORE_CONFIG = {
     "coreApiKey": "",
     "coreApi": "qwen",
-    "assistApi": "free",
+    "assistApi": "qwen",
     "assistApiKeyQwen": "",
     "assistApiKeyOpenai": "",
     "assistApiKeyGlm": "",

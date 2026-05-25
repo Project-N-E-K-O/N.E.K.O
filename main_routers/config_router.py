@@ -610,7 +610,7 @@ async def get_core_config_api():
         # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key or ''
         _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'free'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:
@@ -1611,9 +1611,8 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
         }
 
     core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
-    raw_assist_provider = str(core_cfg.get("assistApi") or "").strip()
-    assist_provider = raw_assist_provider or "free"
-    if core_provider == "free" and not raw_assist_provider:
+    assist_provider = str(core_cfg.get("assistApi") or "qwen").strip()
+    if core_provider == "free":
         assist_provider = "free"
 
     _add("core", core_provider)

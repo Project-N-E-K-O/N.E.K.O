@@ -3192,7 +3192,7 @@ class ConfigManager:
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
         _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'free'
+        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:
@@ -3286,17 +3286,18 @@ class ConfigManager:
         # 显式选择的 assistApi 一律被尊重，即使 coreApi=free。这样用户可以组合
         # 「免费实时（core=free）+ 付费文本/Agent（assist=qwen 等）」——免费 realtime
         # 端点和付费 assist 端点是独立的两条链路，没有理由把后者绑死在 free 上。
-        # 仅当用户没有显式选 assist 时，默认使用 free，保持新用户和旧版缺字段配置一致。
+        # 仅当用户没有显式选 assist 时，沿用 coreApi 的偏好做默认：core=free 默认 free，
+        # 其他默认 qwen。
         assist_api_value = core_cfg.get('assistApi')
         if not assist_api_value:
-            assist_api_value = 'free'
+            assist_api_value = 'free' if core_api_value == 'free' else 'qwen'
 
         config['assistApi'] = assist_api_value
 
         assist_profile = assist_api_profiles.get(assist_api_value)
-        if not assist_profile and assist_api_value != 'free':
-            logger.warning("未知的 assistApi '%s'，回退到 free。", assist_api_value)
-            assist_api_value = 'free'
+        if not assist_profile and assist_api_value != 'qwen':
+            logger.warning("未知的 assistApi '%s'，回退到 qwen。", assist_api_value)
+            assist_api_value = 'qwen'
             config['assistApi'] = assist_api_value
             assist_profile = assist_api_profiles.get(assist_api_value)
 
