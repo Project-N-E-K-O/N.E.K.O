@@ -1112,6 +1112,9 @@ async def test_sync_single_workshop_character_card_treats_restored_existing_as_s
     assert response["success"] is True
     assert response["restored_deleted_names"] == ["恢复角色"]
     assert response["message"] == "已加入角色卡：恢复角色"
+    # 前端成功提示只读 added_character_names，仅恢复场景也必须带上恢复角色名，
+    # 否则会被 formatWorkshopCharacterNameList 回退成“未知角色卡”。
+    assert response["added_character_names"] == ["恢复角色"]
 
 
 @pytest.mark.unit

@@ -5682,10 +5682,14 @@ async def api_sync_single_workshop_character_card(item_id: str):
                 if name and name not in successful_names:
                     successful_names.append(name)
             names_text = "、".join(successful_names) if successful_names else "角色卡"
+            # 前端成功提示只读 added_character_names；仅清 tombstone 的恢复成功路径
+            # 里它本来是空的，会把恢复角色名丢成“未知角色卡”。把去重后的成功名字
+            # 回写过去，同时保留 restored_deleted_names（来自 **result）。
             return {
                 "success": True,
                 "message": f"已加入角色卡：{names_text}",
                 **result,
+                "added_character_names": successful_names,
             }
 
         existing_names = [
