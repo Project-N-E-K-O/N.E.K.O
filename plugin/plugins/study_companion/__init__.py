@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import datetime
+import math
 from pathlib import Path
 import threading
 import time
@@ -104,9 +105,21 @@ def _event_ratio(value: Any, default: float = 0.0) -> float:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         number = default
+    if not math.isfinite(number):
+        number = default
     if number > 1.0:
         number /= 100.0
     return max(0.0, min(1.0, number))
+
+
+def _event_nonnegative_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    if not math.isfinite(number):
+        number = default
+    return max(0.0, number)
 
 
 @neko_plugin
@@ -1226,11 +1239,13 @@ class StudyCompanionPlugin(NekoPluginBase):
             StudyEvent(
                 name="session_summarized",
                 payload={
-                    "duration_minutes": 0,
+                    "duration_minutes": _event_nonnegative_float(
+                        payload.get("duration_minutes"), 0.0
+                    ),
                     "questions_attempted": int(
-                        payload.get("questions_attempted")
-                        if payload.get("questions_attempted") is not None
-                        else answer_count
+                        _event_nonnegative_float(
+                            payload.get("questions_attempted"), float(answer_count)
+                        )
                     ),
                     "correct_rate": _event_ratio(
                         payload.get("correct_rate", fallback_correct_rate)

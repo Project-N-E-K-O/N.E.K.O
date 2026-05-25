@@ -3589,11 +3589,16 @@ async def test_session_summarized_falls_back_to_answer_count(
             }
 
         await plugin._emit_session_summarized_event(
-            {"summary": "Answered supplied derivative questions."}
+            {
+                "duration_minutes": "12.5",
+                "questions_attempted": "two",
+                "summary": "Answered supplied derivative questions.",
+            }
         )
         await _drain_scheduled_events()
 
         texts = _study_push_texts(ctx)
+        assert any("12 min" in text for text in texts)
         assert any("3 question(s)" in text for text in texts)
         assert any("67%" in text for text in texts)
     finally:
