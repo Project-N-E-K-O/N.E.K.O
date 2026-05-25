@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from types import MappingProxyType
 
 
@@ -24,6 +25,7 @@ class InstallPluginRegistration:
 
 _install_plugin_registry: dict[str, InstallPluginRegistration] = {}
 _tutorial_migration_hooks: dict[str, list[Callable[[Path], None]]] | list[Callable[[Path], None]] = {}
+_builtin_install_registry_lock = threading.RLock()
 
 
 def normalize_registered_plugin_id(plugin_id: str) -> str:
@@ -60,8 +62,68 @@ def register_install_plugin(
     )
 
 
+def _plugins_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "plugins"
+
+
+def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
+    from plugin.plugins.galgame_plugin._tutorial_migration import (
+        copy_legacy_tutorial_progress_if_missing,
+    )
+
+    copy_legacy_tutorial_progress_if_missing(store_path)
+
+
+def bootstrap_builtin_install_plugins() -> None:
+    with _builtin_install_registry_lock:
+        plugins_root = _plugins_root()
+        if "galgame_plugin" not in _install_plugin_registry:
+            register_install_plugin(
+                "galgame_plugin",
+                install_kinds={
+                    "textractor": InstallKindRegistration(
+                        entry_id="galgame_install_textractor",
+                        label="Textractor",
+                        queued_message="Textractor install queued",
+                    ),
+                    "rapidocr_models": InstallKindRegistration(
+                        entry_id="galgame_download_rapidocr_models",
+                        label="RapidOCR Models",
+                        queued_message="RapidOCR model download queued",
+                    ),
+                },
+                ui_i18n_dir=plugins_root / "galgame_plugin" / "i18n" / "ui",
+                tutorial_enabled=True,
+            )
+        if "study_companion" not in _install_plugin_registry:
+            register_install_plugin(
+                "study_companion",
+                install_kinds={
+                    "rapidocr_models": InstallKindRegistration(
+                        entry_id="study_download_rapidocr_models",
+                        label="RapidOCR Models",
+                        queued_message="RapidOCR model download queued",
+                    ),
+                    "tesseract": InstallKindRegistration(
+                        entry_id="study_install_tesseract",
+                        label="Tesseract",
+                        queued_message="Tesseract install queued",
+                    ),
+                },
+                ui_i18n_dir=plugins_root / "study_companion" / "i18n",
+                tutorial_enabled=True,
+            )
+        register_tutorial_migration_hook(
+            _copy_legacy_galgame_tutorial_progress_if_missing,
+            plugin_id="galgame_plugin",
+        )
+
+
 def get_install_plugin_registration(plugin_id: str) -> InstallPluginRegistration | None:
-    return _install_plugin_registry.get(normalize_registered_plugin_id(plugin_id))
+    normalized_plugin_id = normalize_registered_plugin_id(plugin_id)
+    bootstrap_builtin_install_plugins()
+    return _install_plugin_registry.get(normalized_plugin_id)
+
 
 
 def register_tutorial_migration_hook(
