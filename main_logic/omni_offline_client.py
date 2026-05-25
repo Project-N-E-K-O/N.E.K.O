@@ -1184,32 +1184,31 @@ class OmniOfflineClient:
         )
         # Forced-finalize：与 OpenAI 路径对偶。去掉 tools 再生成一次，逼模型
         # 基于已积累的 tool 结果输出最终文本，避免封顶后整轮静默。
+        # 不吞异常：与 OpenAI 路径一致，让 SDK 调用失败原样向上抛，由 stream_text /
+        # prompt_ephemeral 现成的 retry / 状态上报 / response_discarded 清泡泡逻辑
+        # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
+        # 超限后反而可能重回静音态，与本兜底目标冲突。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
         final_system_instruction, final_contents = _genai_messages_to_contents(messages)
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
-        try:
-            final_config = types.GenerateContentConfig(**final_cfg_kw)
-            final_stream = await self._genai_client.aio.models.generate_content_stream(
-                model=self.model,
-                contents=final_contents,
-                config=final_config,
-            )
-            async for chunk in final_stream:
-                candidates = getattr(chunk, "candidates", None) or []
-                if not candidates:
+        final_config = types.GenerateContentConfig(**final_cfg_kw)
+        final_stream = await self._genai_client.aio.models.generate_content_stream(
+            model=self.model,
+            contents=final_contents,
+            config=final_config,
+        )
+        async for chunk in final_stream:
+            candidates = getattr(chunk, "candidates", None) or []
+            if not candidates:
+                continue
+            cand_content = getattr(candidates[0], "content", None)
+            for part in (getattr(cand_content, "parts", None) or []):
+                if getattr(part, "thought", False):
                     continue
-                cand_content = getattr(candidates[0], "content", None)
-                for part in (getattr(cand_content, "parts", None) or []):
-                    if getattr(part, "thought", False):
-                        continue
-                    text = getattr(part, "text", None) or ""
-                    if text:
-                        yield LLMStreamChunk(content=text)
-        except Exception as e:
-            # forced-finalize 失败不再 fallback / raise：已经是兜底的最后一步，
-            # 失败就只能让上游按空回复处理（与不加兜底前行为一致）。
-            logger.warning("OmniOfflineClient(genai): forced-finalize failed: %s", e)
+                text = getattr(part, "text", None) or ""
+                if text:
+                    yield LLMStreamChunk(content=text)
 
     def update_max_response_length(self, max_length: int) -> None:
         """更新回复 token 上限（用户可能在对话期间修改设置）。

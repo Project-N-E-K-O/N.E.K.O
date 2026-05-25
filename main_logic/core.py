@@ -2912,7 +2912,6 @@ class LLMSessionManager:
         # feed_tts_chunk 因 use_tts=False 自动 no-op。
         cur_sid = self.current_speech_id
         if cur_sid and self.use_tts and getattr(self, "_recall_filler_spoken_sid", None) != cur_sid:
-            self._recall_filler_spoken_sid = cur_sid
             try:
                 # 关键：这一轮的 TTS worker 通常在正文首个 chunk 才懒启动，而
                 # recall 发生在正文之前——若此时 worker 没起，filler 只会进
@@ -2927,6 +2926,11 @@ class LLMSessionManager:
                 _filler_ok = await self._emit_recall_filler_tts(
                     _loc(RECALL_MEMORY_TOOL_FILLER, _lang), cur_sid,
                 )
+                # 仅在真正入队成功后才标记"本轮已播过"：否则（worker 未 ready 等
+                # 返回 False）会误判已预热，本轮后续 recall 不再补发 filler，且
+                # handle_text_data 的 barge-in 守卫也会按"已预热"误跳过。
+                if _filler_ok:
+                    self._recall_filler_spoken_sid = cur_sid
                 logger.debug(
                     "[recall_memory] filler TTS emitted=%s (sid=%s tts_ready=%s)",
                     _filler_ok, cur_sid, self.tts_ready,
@@ -2942,6 +2946,7 @@ class LLMSessionManager:
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}
+        recall_request_ok = False  # 仅当 memory server 真正成功返回时才置真
         try:
             from utils.internal_http_client import get_internal_http_client
             client = get_internal_http_client()
@@ -2965,6 +2970,7 @@ class LLMSessionManager:
                 )
             else:
                 result_payload = resp.json()
+                recall_request_ok = True
         except Exception as exc:
             logger.warning(
                 "[recall_memory] memory_server call failed (%s: %s); "
@@ -2995,7 +3001,10 @@ class LLMSessionManager:
             # 同时带了 query 和 time 却 0 命中：八成是两个过滤条件叠加太窄
             # （时间窗口里没有语义匹配的条目）。别直接报"没有记忆"让模型放弃，
             # 提示它放宽——只留 time 或只留 query 再查一次。
-            if query and time_arg:
+            # 仅在请求**真正成功返回**时才给放宽提示：non-2xx / 异常也会落到
+            # results=[]，那是 memory server 临时故障，不该误导模型"换条件重试"
+            # 白烧刚收紧的工具迭代预算。
+            if recall_request_ok and query and time_arg:
                 return _loc(RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN, _lang).format(query=query)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
