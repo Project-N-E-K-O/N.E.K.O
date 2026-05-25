@@ -112,8 +112,9 @@ jobs:
         shell: bash
         run: |
           uv venv .venv
-          # Embedding runtime deps (onnxruntime, tokenizers, py-cpuinfo) are
-          # in [project.dependencies] now — plain `uv sync` covers both the
+          # Embedding runtime deps (onnxruntime, tokenizers; CPU SIMD detect
+          # reads numpy's __cpu_features__, no py-cpuinfo) are in
+          # [project.dependencies] now — plain `uv sync` covers both the
           # build-time prepare step and the bundled runtime.
           # `--group galgame` adds rapidocr-onnxruntime + opencv-python-headless
           # for the bundled OCR backend; pyproject's [tool.uv].override-dependencies

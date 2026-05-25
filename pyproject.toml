@@ -64,10 +64,12 @@ dependencies = [
   # utils/tokenize.py and wires render-time counting.
   "tiktoken>=0.7.0",
   "cachetools>=5.3",
-  # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer + CPU flags
+  # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer. CPU
+  # SIMD detection reads numpy's __cpu_features__ (compiled-C probe) — we do
+  # NOT use py-cpuinfo, whose CPUID probe runs VirtualAlloc+shellcode in a
+  # multiprocessing child that Huorong quarantines as Trojan.ShellLoader.
   "onnxruntime",
   "tokenizers",
-  "py-cpuinfo>=9.0.0",
   # Cross-platform screen capture used by galgame_plugin and potentially other
   # plugins (mss is also a candidate for brain/computer_use). Tiny (<1MB).
   "mss",
