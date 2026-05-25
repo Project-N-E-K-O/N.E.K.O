@@ -56,16 +56,19 @@ class StudyOcrPipeline:
 
     def snapshot_from_image(self, image: Any, *, backend_name: str = "") -> OcrSnapshot:
         if image is None:
+            self._clear_vision_snapshot()
             return OcrSnapshot(status="empty", captured_at=utc_now_iso(), diagnostic="no image supplied")
         return self._extract_image(image, backend_name=backend_name or self._config.ocr_backend_selection)
 
     def capture_snapshot(self, target: Any | None = None) -> OcrSnapshot:
         if not self._config.ocr_enabled:
+            self._clear_vision_snapshot()
             return OcrSnapshot(status="disabled", captured_at=utc_now_iso(), diagnostic="OCR is disabled")
         if target is None:
             try:
                 frame = self._capture_fullscreen()
             except Exception as exc:
+                self._clear_vision_snapshot()
                 return OcrSnapshot(
                     status="capture_failed",
                     captured_at=utc_now_iso(),
@@ -81,6 +84,7 @@ class StudyOcrPipeline:
             )
             frame = self._resolve_capture_backend().capture_frame(target, profile)
         except Exception as exc:
+            self._clear_vision_snapshot()
             return OcrSnapshot(
                 status="capture_failed",
                 captured_at=utc_now_iso(),

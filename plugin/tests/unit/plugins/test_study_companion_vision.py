@@ -356,6 +356,46 @@ def test_remember_vision_snapshot_clears_stale_snapshot_on_abort() -> None:
     assert pipeline.latest_vision_snapshot() == {}
 
 
+def test_capture_snapshot_clears_stale_vision_snapshot_on_early_failure() -> None:
+    class _FailingCaptureBackend:
+        def capture_frame(self, *_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("capture boom")
+
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(llm_vision_enabled=True),
+        ocr_backend=_FakeOcrBackend(),
+        capture_backend=_FailingCaptureBackend(),
+    )
+    image = Image.new("RGB", (16, 16), color="white")
+
+    pipeline._remember_vision_snapshot(image)
+    assert pipeline.latest_vision_snapshot()
+
+    failed = pipeline.capture_snapshot(target=object())
+
+    assert failed.status == "capture_failed"
+    assert pipeline.latest_vision_snapshot() == {}
+
+
+def test_capture_snapshot_clears_stale_vision_snapshot_when_ocr_disabled() -> None:
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(llm_vision_enabled=True),
+        ocr_backend=_FakeOcrBackend(),
+    )
+    image = Image.new("RGB", (16, 16), color="white")
+
+    pipeline._remember_vision_snapshot(image)
+    assert pipeline.latest_vision_snapshot()
+
+    pipeline._config = StudyConfig(ocr_enabled=False, llm_vision_enabled=True)
+    disabled = pipeline.capture_snapshot()
+
+    assert disabled.status == "disabled"
+    assert pipeline.latest_vision_snapshot() == {}
+
+
 def test_remember_vision_snapshot_warns_on_memory_error() -> None:
     class _MemoryErrorImage:
         size = (16, 16)
