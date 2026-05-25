@@ -205,6 +205,7 @@ def test_tutorial_progress_routes_use_blocking_runner(monkeypatch, tmp_path: Pat
 
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
+    monkeypatch.setattr(plugin_install, "_tutorial_store_instances", {})
     monkeypatch.setattr(plugin_install, "_install_plugin_registry", {})
     monkeypatch.setattr(plugin_install, "_run_blocking", _fake_run_blocking)
     _register_galgame_install_plugin(plugin_install)

@@ -289,6 +289,32 @@ def _persist_install_payload(
     )
 
 
+def _persist_terminal_install_payload(
+    task_id: str,
+    *,
+    plugin_id: str,
+    kind: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    try:
+        return _persist_install_payload(
+            task_id,
+            plugin_id=plugin_id,
+            kind=kind,
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001 - terminal run state should still reach clients.
+        logger.warning(
+            "failed to persist terminal {} install task state: task_id={}",
+            kind,
+            task_id,
+            exc_info=True,
+        )
+        fallback_payload = dict(payload)
+        fallback_payload["local_save_failed"] = True
+        return fallback_payload
+
+
 def _mark_stale_install_task(
     task_id: str,
     *,
@@ -409,7 +435,12 @@ def _resolve_install_task_payload(
     if state_payload is None and run_record is not None:
         run_payload = _install_state_from_run(run_record, plugin_id=plugin_id, kind=kind)
         if str(run_payload.get("status") or "") in INSTALL_TERMINAL_STATUSES:
-            return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=run_payload)
+            return _persist_terminal_install_payload(
+                task_id,
+                plugin_id=plugin_id,
+                kind=kind,
+                payload=run_payload,
+            )
         return run_payload
 
     payload = dict(state_payload or {})
@@ -445,7 +476,12 @@ def _resolve_install_task_payload(
         payload["detected_path"] = str(run_payload.get("detected_path") or payload.get("detected_path") or "")
         payload["updated_at"] = run_payload.get("updated_at")
         payload["completed_at"] = run_payload.get("completed_at")
-        return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=payload)
+        return _persist_terminal_install_payload(
+            task_id,
+            plugin_id=plugin_id,
+            kind=kind,
+            payload=payload,
+        )
 
     payload["status"] = run_status or state_status
     if run_payload.get("phase"):

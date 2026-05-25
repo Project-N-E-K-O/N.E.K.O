@@ -174,6 +174,32 @@ def _running_install_run(
     )
 
 
+def _terminal_install_run(
+    run_id: str,
+    *,
+    entry_id: str,
+    status: str = "succeeded",
+    stage: str = "completed",
+    message: str = "Install completed",
+    now: float | None = None,
+) -> RunRecord:
+    now = time.time() if now is None else now
+    return RunRecord(
+        run_id=run_id,
+        plugin_id="galgame_plugin",
+        entry_id=entry_id,
+        status=status,
+        created_at=now - 5,
+        updated_at=now,
+        started_at=now - 4,
+        finished_at=now,
+        stage=stage,
+        message=message,
+        error=None,
+        metrics={},
+    )
+
+
 @pytest.mark.asyncio
 async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     plugin_ui_async_client: AsyncClient,
@@ -778,6 +804,80 @@ def test_mark_stale_install_task_returns_failed_payload_when_persist_fails(
     assert result["phase"] == "failed"
     assert result["local_save_failed"] is True
     assert "install task was interrupted" in result["message"]
+
+
+def test_terminal_run_payload_returns_memory_state_when_first_persist_fails(
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del galgame_install_runtime_root
+
+    def _fake_get_run(run_id: str) -> RunRecord:
+        assert run_id == "run-terminal-write-fails"
+        return _terminal_install_run(
+            run_id,
+            entry_id="galgame_install_textractor",
+            message="Textractor installation completed",
+        )
+
+    def _raise_persist_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module, "_persist_install_payload", _raise_persist_failure)
+
+    result = galgame_install_route_module._resolve_install_task_payload(
+        "run-terminal-write-fails",
+        plugin_id="galgame_plugin",
+        kind="textractor",
+        label="Textractor",
+    )
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "completed"
+    assert result["message"] == "Textractor installation completed"
+    assert result["local_save_failed"] is True
+
+
+def test_terminal_run_payload_with_existing_state_returns_memory_state_when_persist_fails(
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del galgame_install_runtime_root
+    install_task_module.update_install_task_state(
+        "run-terminal-existing-state-write-fails",
+        plugin_id="galgame_plugin",
+        status="running",
+        phase="downloading",
+        message="Downloading",
+        progress=0.42,
+    )
+
+    def _fake_get_run(run_id: str) -> RunRecord:
+        assert run_id == "run-terminal-existing-state-write-fails"
+        return _terminal_install_run(
+            run_id,
+            entry_id="galgame_install_textractor",
+            message="Textractor installation completed",
+        )
+
+    def _raise_persist_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module, "_persist_install_payload", _raise_persist_failure)
+
+    result = galgame_install_route_module._resolve_install_task_payload(
+        "run-terminal-existing-state-write-fails",
+        plugin_id="galgame_plugin",
+        kind="textractor",
+        label="Textractor",
+    )
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "completed"
+    assert result["message"] == "Textractor installation completed"
+    assert result["local_save_failed"] is True
 
 
 def test_install_task_store_logs_corrupt_state_json(

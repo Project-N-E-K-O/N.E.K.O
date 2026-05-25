@@ -1697,6 +1697,7 @@ async def test_install_textractor_records_preflight_state_before_request(
         await client.aclose()
 
     assert recorded
+    assert recorded[0]["plugin_id"] == "galgame_plugin"
     assert recorded[0]["status"] == "running"
     assert recorded[0]["phase"] == "preflight"
     assert recorded[0]["message"] == "Checking Textractor installation"
