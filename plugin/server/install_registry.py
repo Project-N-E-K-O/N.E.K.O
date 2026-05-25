@@ -73,7 +73,10 @@ def _plugins_root() -> Path:
 
 
 def _plugin_module_available(plugin_id: str) -> bool:
-    return importlib.util.find_spec(f"plugin.plugins.{plugin_id}") is not None
+    try:
+        return importlib.util.find_spec(f"plugin.plugins.{plugin_id}") is not None
+    except ImportError:
+        return False
 
 
 def _copy_legacy_galgame_tutorial_progress_if_missing(store_path: Path) -> None:
@@ -176,9 +179,10 @@ def register_tutorial_migration_hook(
 
 
 def tutorial_migration_hooks_for(plugin_id: str) -> list[Callable[[Path], None]]:
+    normalized_plugin_id = normalize_registered_plugin_id(plugin_id) if plugin_id else ""
     if isinstance(_tutorial_migration_hooks, list):
         return list(_tutorial_migration_hooks)
     return [
         *_tutorial_migration_hooks.get("", []),
-        *_tutorial_migration_hooks.get(plugin_id, []),
+        *_tutorial_migration_hooks.get(normalized_plugin_id, []),
     ]
