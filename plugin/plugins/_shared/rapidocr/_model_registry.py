@@ -209,6 +209,16 @@ def _registry_lookup(ocr_version: str, lang_type: str) -> dict[str, dict[str, An
     return _RAPIDOCR_MODEL_REGISTRY.get(_normalize_model_key(ocr_version, lang_type))
 
 
+def rapidocr_selection_requires_downloaded_models(
+    *,
+    ocr_version: str,
+    lang_type: str,
+) -> bool:
+    """Return True when the local registry expects explicit downloaded model files."""
+    key = _normalize_model_key(ocr_version, lang_type)
+    return key != _BUNDLED_KEY and key in _RAPIDOCR_MODEL_REGISTRY
+
+
 def _registry_spec_for_model_type(
     spec: dict[str, Any],
     *,

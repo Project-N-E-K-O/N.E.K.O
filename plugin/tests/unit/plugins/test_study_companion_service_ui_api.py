@@ -184,6 +184,28 @@ def test_shared_rapidocr_kwargs_fail_when_configured_model_is_missing(
         )
 
 
+def test_shared_rapidocr_kwargs_allows_unregistered_model_fallback(
+    tmp_path: Path,
+) -> None:
+    model_cache_dir = tmp_path / "RapidOCR" / "models"
+    package_models_dir = tmp_path / "package" / "models"
+    package_models_dir.mkdir(parents=True)
+    (package_models_dir / "ch_PP-OCRv4_det_infer.onnx").write_text("", encoding="utf-8")
+    (package_models_dir / "ch_PP-OCRv4_rec_infer.onnx").write_text("", encoding="utf-8")
+
+    kwargs = shared_rapidocr_runtime._build_runtime_constructor_kwargs(
+        _RapidOcrWithKwargs,
+        engine_type="onnxruntime",
+        lang_type="multi",
+        model_type="mobile",
+        ocr_version="PP-OCRv4",
+        model_cache_dir=model_cache_dir,
+        package_models_dir=package_models_dir,
+    )
+
+    assert kwargs == {"engine_type": "onnxruntime"}
+
+
 def test_shared_rapidocr_inspection_returns_install_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
