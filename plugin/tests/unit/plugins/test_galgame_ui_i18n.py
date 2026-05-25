@@ -123,13 +123,14 @@ def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monk
 
 
 def test_plugin_ui_i18n_route_uses_registered_i18n_dir(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
     from plugin.server.routes import plugin_install
 
     i18n_dir = tmp_path / "custom_i18n"
     i18n_dir.mkdir()
     expected_file = i18n_dir / "en.json"
     expected_file.write_text('{"custom":"ok"}', encoding="utf-8")
-    monkeypatch.setattr(plugin_install, "_install_plugin_registry", {})
+    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
     plugin_install.register_install_plugin(
         "custom_plugin",
         install_kinds={},
@@ -156,13 +157,14 @@ def test_tutorial_store_uses_runtime_data_root(monkeypatch, tmp_path: Path) -> N
 
 
 def test_tutorial_store_runs_registered_migration_hook(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
     from plugin.server.routes import plugin_install
 
     runtime_root = tmp_path / "runtime"
     expected_store = runtime_root / "server" / "plugin_install" / "tutorial_progress.json"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
-    monkeypatch.setattr(plugin_install, "_tutorial_migration_hooks", [])
+    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", [])
     monkeypatch.setattr(plugin_install, "_tutorial_migrated_paths", set())
 
     def migrate(store_path: Path) -> None:
@@ -176,12 +178,13 @@ def test_tutorial_store_runs_registered_migration_hook(monkeypatch, tmp_path: Pa
 
 
 def test_tutorial_store_raises_when_migration_hook_fails(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
     from plugin.server.routes import plugin_install
 
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
-    monkeypatch.setattr(plugin_install, "_tutorial_migration_hooks", [])
+    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", [])
     monkeypatch.setattr(plugin_install, "_tutorial_migrated_paths", set())
 
     def migrate(_store_path: Path) -> None:
@@ -194,6 +197,7 @@ def test_tutorial_store_raises_when_migration_hook_fails(monkeypatch, tmp_path: 
 
 
 def test_tutorial_progress_routes_use_blocking_runner(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
     from plugin.server.routes import plugin_install
 
     runtime_root = tmp_path / "runtime"
@@ -206,7 +210,7 @@ def test_tutorial_progress_routes_use_blocking_runner(monkeypatch, tmp_path: Pat
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
     monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
     monkeypatch.setattr(plugin_install, "_tutorial_store_instances", {})
-    monkeypatch.setattr(plugin_install, "_install_plugin_registry", {})
+    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
     monkeypatch.setattr(plugin_install, "_run_blocking", _fake_run_blocking)
     _register_galgame_install_plugin(plugin_install)
 

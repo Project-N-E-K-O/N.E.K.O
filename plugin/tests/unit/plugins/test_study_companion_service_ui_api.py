@@ -110,16 +110,22 @@ def test_study_rapidocr_resolve_uses_galgame_runtime_fallback(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    raw_target = shared_rapidocr_support.default_rapidocr_install_target_raw()
-    resolved = shared_rapidocr_support.resolve_rapidocr_install_target("")
+    raw_target = shared_rapidocr_support.default_rapidocr_install_target_raw(
+        plugin_id="study_companion"
+    )
+    resolved = shared_rapidocr_support.resolve_rapidocr_install_target(
+        "",
+        plugin_id="study_companion",
+    )
 
     assert raw_target == str(
         app_docs_dir / "runtimes" / "study_companion" / "RapidOCR"
     )
     assert resolved == galgame_target
-    assert shared_rapidocr_support.resolve_rapidocr_model_cache_dir("") == (
-        galgame_target / "models"
-    )
+    assert shared_rapidocr_support.resolve_rapidocr_model_cache_dir(
+        "",
+        plugin_id="study_companion",
+    ) == (galgame_target / "models")
 
 
 def test_study_rapidocr_resolve_uses_galgame_fallback_when_new_target_is_empty(
@@ -141,7 +147,10 @@ def test_study_rapidocr_resolve_uses_galgame_fallback_when_new_target_is_empty(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert shared_rapidocr_support.resolve_rapidocr_install_target("") == galgame_target
+    assert shared_rapidocr_support.resolve_rapidocr_install_target(
+        "",
+        plugin_id="study_companion",
+    ) == galgame_target
 
 
 def test_study_rapidocr_resolve_uses_legacy_models_only_fallback(
@@ -160,7 +169,10 @@ def test_study_rapidocr_resolve_uses_legacy_models_only_fallback(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert shared_rapidocr_support.resolve_rapidocr_install_target("") == legacy_target
+    assert shared_rapidocr_support.resolve_rapidocr_install_target(
+        "",
+        plugin_id="study_companion",
+    ) == legacy_target
 
 
 def test_shared_rapidocr_kwargs_fail_when_configured_model_is_missing(
@@ -228,6 +240,7 @@ def test_shared_rapidocr_inspection_returns_install_state(
         install_target_dir_raw=str(install_target),
         lang_type="ch",
         ocr_version="PP-OCRv4",
+        plugin_id="study_companion",
         platform_fn=lambda: True,
     )
 

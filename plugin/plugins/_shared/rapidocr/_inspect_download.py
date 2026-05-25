@@ -39,7 +39,7 @@ def inspect_rapidocr_installation(
     lang_type: str = DEFAULT_RAPIDOCR_LANG_TYPE,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
     ocr_version: str = DEFAULT_RAPIDOCR_OCR_VERSION,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
     platform_fn: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     checker = platform_fn or is_windows_platform
@@ -193,6 +193,7 @@ def inspect_rapidocr_installation(
         "ocr_version": ocr_version,
         "detail": detail,
         "runtime_error": runtime_error,
+        "install_state": install_state,
         "missing_model_files": missing_files,
         "missing_model_total_size": total_size_estimate,
         "model_download_source": _RAPIDOCR_MODELSCOPE_BASE,
@@ -245,7 +246,7 @@ async def download_rapidocr_models(
     timeout_seconds: float = 180.0,
     force: bool = False,
     task_id: str | None = None,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
     progress_callback: ProgressCallback | None = None,
     before_completed_callback: Callable[[], Awaitable[None] | None] | None = None,
     install_state_updater: InstallStateUpdater | None = None,

@@ -19,8 +19,10 @@ def is_windows_platform() -> bool:
     return sys.platform == "win32"
 
 
-def _normalize_plugin_id(plugin_id: str = "study_companion") -> str:
-    normalized = str(plugin_id or "").strip() or "study_companion"
+def _normalize_plugin_id(plugin_id: str) -> str:
+    normalized = str(plugin_id or "").strip()
+    if not normalized:
+        raise ValueError("plugin_id is required")
     if ".." in normalized or "/" in normalized or "\\" in normalized:
         raise ValueError("invalid plugin_id")
     if not all(char.isalnum() or char in {"_", "-"} for char in normalized):
@@ -28,7 +30,7 @@ def _normalize_plugin_id(plugin_id: str = "study_companion") -> str:
     return normalized
 
 
-def _app_runtimes_root(plugin_id: str = "study_companion") -> Path:
+def _app_runtimes_root(plugin_id: str) -> Path:
     normalized = _normalize_plugin_id(plugin_id)
     return get_config_manager().app_docs_dir / "runtimes" / normalized
 
@@ -46,7 +48,7 @@ def _rapidocr_target_has_assets(target: Path, package_name: str) -> bool:
 
 
 def default_rapidocr_install_target_raw(
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> str:
     if is_windows_platform():
         return str(_app_runtimes_root(plugin_id) / "RapidOCR")
@@ -62,7 +64,7 @@ def default_rapidocr_install_target_raw_legacy() -> str:
 def resolve_rapidocr_install_target(
     raw_target_dir: str,
     *,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> Path:
     from ._model_registry import RAPIDOCR_PACKAGE_NAME
 
@@ -72,7 +74,7 @@ def resolve_rapidocr_install_target(
         return _expand_candidate_path(normalized)
 
     target = _app_runtimes_root(normalized_plugin_id) / "RapidOCR"
-    if not target.exists():
+    if not _rapidocr_target_has_assets(target, RAPIDOCR_PACKAGE_NAME):
         galgame_target = _legacy_galgame_rapidocr_target()
         if (
             normalized_plugin_id != "galgame_plugin"
@@ -82,10 +84,7 @@ def resolve_rapidocr_install_target(
         legacy_raw = default_rapidocr_install_target_raw_legacy()
         if legacy_raw:
             legacy_target = _expand_candidate_path(legacy_raw)
-            legacy_package_dir = (
-                legacy_target / "runtime" / "site-packages" / RAPIDOCR_PACKAGE_NAME
-            )
-            if legacy_package_dir.exists():
+            if _rapidocr_target_has_assets(legacy_target, RAPIDOCR_PACKAGE_NAME):
                 return legacy_target
     return target
 
@@ -93,7 +92,7 @@ def resolve_rapidocr_install_target(
 def resolve_rapidocr_runtime_dir(
     raw_target_dir: str,
     *,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> Path:
     target_dir = resolve_rapidocr_install_target(raw_target_dir, plugin_id=plugin_id)
     return target_dir / "runtime" if target_dir else Path()
@@ -102,7 +101,7 @@ def resolve_rapidocr_runtime_dir(
 def resolve_rapidocr_site_packages_dir(
     raw_target_dir: str,
     *,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> Path:
     runtime_dir = resolve_rapidocr_runtime_dir(raw_target_dir, plugin_id=plugin_id)
     return runtime_dir / "site-packages" if runtime_dir else Path()
@@ -111,7 +110,7 @@ def resolve_rapidocr_site_packages_dir(
 def resolve_rapidocr_model_cache_dir(
     raw_target_dir: str,
     *,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> Path:
     target_dir = resolve_rapidocr_install_target(raw_target_dir, plugin_id=plugin_id)
     return target_dir / "models" if target_dir else Path()
@@ -120,7 +119,7 @@ def resolve_rapidocr_model_cache_dir(
 def _rapidocr_install_state_path(
     raw_target_dir: str,
     *,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> Path:
     target_dir = resolve_rapidocr_install_target(raw_target_dir, plugin_id=plugin_id)
     return target_dir / _INSTALL_STATE_NAME if target_dir else Path()

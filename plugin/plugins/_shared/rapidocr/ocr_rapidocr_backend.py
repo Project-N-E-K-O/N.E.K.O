@@ -32,7 +32,7 @@ class RapidOcrBackend:
         lang_type: str,
         model_type: str,
         ocr_version: str,
-        plugin_id: str = "study_companion",
+        plugin_id: str,
     ) -> None:
         self._install_target_dir_raw = install_target_dir_raw
         self._engine_type = engine_type

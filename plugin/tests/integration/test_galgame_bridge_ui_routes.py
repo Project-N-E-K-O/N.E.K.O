@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from plugin._types.models import RunCreateResponse
 from plugin.core.state import state
+from plugin.server import install_registry as install_registry_module
 from plugin.server.routes import _install_task_store as install_task_module
 from plugin.server.routes import plugin_install as galgame_install_route_module
 from plugin.runs.manager import RunError, RunRecord
@@ -34,7 +35,7 @@ def registered_install_plugins(
     monkeypatch: pytest.MonkeyPatch,
     galgame_plugin_dir: Path,
 ) -> None:
-    monkeypatch.setattr(galgame_install_route_module, "_install_plugin_registry", {})
+    monkeypatch.setattr(install_registry_module, "_install_plugin_registry", {})
     galgame_install_route_module.register_install_plugin(
         "galgame_plugin",
         install_kinds={
@@ -106,10 +107,10 @@ def tutorial_runtime_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Pa
         "resolve_runtime_data_root",
         lambda: runtime_root,
     )
-    if isinstance(getattr(galgame_install_route_module, "_tutorial_migration_hooks", None), dict):
-        monkeypatch.setattr(galgame_install_route_module, "_tutorial_migration_hooks", {})
+    if isinstance(getattr(install_registry_module, "_tutorial_migration_hooks", None), dict):
+        monkeypatch.setattr(install_registry_module, "_tutorial_migration_hooks", {})
     else:
-        monkeypatch.setattr(galgame_install_route_module, "_tutorial_migration_hooks", [])
+        monkeypatch.setattr(install_registry_module, "_tutorial_migration_hooks", [])
     monkeypatch.setattr(galgame_install_route_module, "_tutorial_migrated_paths", set(), raising=False)
     monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instance", None, raising=False)
     monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instances", {}, raising=False)
@@ -352,7 +353,7 @@ async def test_unregistered_plugin_install_route_returns_404(
     plugin_ui_async_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(galgame_install_route_module, "_install_plugin_registry", {})
+    monkeypatch.setattr(install_registry_module, "_install_plugin_registry", {})
 
     response = await plugin_ui_async_client.post(
         "/plugin/unknown_plugin/ui-api/rapidocr-models",
@@ -990,15 +991,15 @@ async def test_tutorial_migration_failure_returns_500(
     def _fail_migration(_store_path: Path) -> None:
         raise ValueError("bad migration")
 
-    if isinstance(getattr(galgame_install_route_module, "_tutorial_migration_hooks", None), dict):
+    if isinstance(getattr(install_registry_module, "_tutorial_migration_hooks", None), dict):
         monkeypatch.setattr(
-            galgame_install_route_module,
+            install_registry_module,
             "_tutorial_migration_hooks",
             {"galgame_plugin": [_fail_migration]},
         )
     else:
         monkeypatch.setattr(
-            galgame_install_route_module,
+            install_registry_module,
             "_tutorial_migration_hooks",
             [_fail_migration],
         )

@@ -248,7 +248,7 @@ def required_rapidocr_model_files(
     ocr_version: str,
     lang_type: str,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> list[dict[str, Any]]:
     """Files that must exist on disk for a given selection. Empty for the bundled combo."""
     key = _normalize_model_key(ocr_version, lang_type)
@@ -284,7 +284,7 @@ def missing_rapidocr_model_files(
     ocr_version: str,
     lang_type: str,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> list[dict[str, Any]]:
     """Required files that the resolver can't locate on disk.
 

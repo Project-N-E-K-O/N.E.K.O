@@ -175,24 +175,23 @@ def test_rapidocr_kwargs_sets_ppocrv5_cls_image_shape(tmp_path: Path) -> None:
     }
 
 
-def test_rapidocr_kwargs_omits_model_paths_when_configured_model_is_missing(tmp_path: Path) -> None:
+def test_rapidocr_kwargs_fails_when_registered_model_is_missing(tmp_path: Path) -> None:
     model_cache_dir = tmp_path / "RapidOCR" / "models"
     package_models_dir = tmp_path / "package" / "models"
     _touch(package_models_dir / "ch_PP-OCRv4_det_infer.onnx")
     _touch(package_models_dir / "ch_ppocr_mobile_v2.0_cls_infer.onnx")
     _touch(package_models_dir / "ch_PP-OCRv4_rec_infer.onnx")
 
-    kwargs = rapidocr_support._build_runtime_constructor_kwargs(
-        _RapidOcrWithKwargs,
-        engine_type="onnxruntime",
-        lang_type="ch",
-        model_type="mobile",
-        ocr_version="PP-OCRv5",
-        model_cache_dir=model_cache_dir,
-        package_models_dir=package_models_dir,
-    )
-
-    assert kwargs == {"engine_type": "onnxruntime"}
+    with pytest.raises(RuntimeError, match="PP-OCRv5/ch/mobile"):
+        rapidocr_support._build_runtime_constructor_kwargs(
+            _RapidOcrWithKwargs,
+            engine_type="onnxruntime",
+            lang_type="ch",
+            model_type="mobile",
+            ocr_version="PP-OCRv5",
+            model_cache_dir=model_cache_dir,
+            package_models_dir=package_models_dir,
+        )
 
 
 def test_required_rapidocr_model_files_defaults_to_bundled_ch(tmp_path: Path) -> None:
@@ -200,6 +199,7 @@ def test_required_rapidocr_model_files_defaults_to_bundled_ch(tmp_path: Path) ->
         install_target_dir_raw=str(tmp_path / "RapidOCR"),
         lang_type="",
         ocr_version="",
+        plugin_id="galgame_plugin",
     )
 
     assert files == []
@@ -219,6 +219,7 @@ def test_inspect_rapidocr_installation_reports_modelscope_download_source(
         install_target_dir_raw=str(tmp_path / "RapidOCR"),
         lang_type="en",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -256,6 +257,7 @@ def test_load_rapidocr_runtime_uses_imported_package_models_dir(
         lang_type="ch",
         model_type="mobile",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
 
     assert isinstance(runtime, _RapidOcrWithKwargs)
@@ -279,6 +281,7 @@ async def test_download_rapidocr_models_uses_modelscope_urls(
         install_target_dir_raw=str(install_target),
         lang_type="en",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
     file_bytes = {spec["name"]: spec["name"].encode("utf-8") for spec in expected_files}
     for spec in expected_files:
@@ -310,6 +313,7 @@ async def test_download_rapidocr_models_uses_modelscope_urls(
         install_target_dir_raw=str(install_target),
         lang_type="en",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
 
     assert sorted(result["downloaded"]) == sorted(file_bytes)
@@ -340,6 +344,7 @@ async def test_download_rapidocr_models_warns_when_task_id_has_no_state_updater(
         install_target_dir_raw=str(install_target),
         lang_type="ch",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
         task_id="run-without-state-updater",
     )
 
@@ -368,6 +373,7 @@ async def test_download_rapidocr_models_keeps_going_when_state_updater_fails(
         install_target_dir_raw=str(install_target),
         lang_type="ch",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
         task_id="run-with-failing-state-updater",
         install_state_updater=_failing_state_updater,
     )
@@ -386,6 +392,7 @@ async def test_download_rapidocr_models_reports_modelscope_failure(
         install_target_dir_raw=str(install_target),
         lang_type="en",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
     file_bytes = {spec["name"]: f"modelscope:{spec['name']}".encode("utf-8") for spec in expected_files}
     for spec in expected_files:
@@ -419,6 +426,7 @@ async def test_download_rapidocr_models_reports_modelscope_failure(
             install_target_dir_raw=str(install_target),
             lang_type="en",
             ocr_version="PP-OCRv4",
+            plugin_id="galgame_plugin",
         )
 
     assert "ModelScope" in str(exc_info.value)

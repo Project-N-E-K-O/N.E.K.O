@@ -75,7 +75,7 @@ from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 
 
 def _register_install_routes() -> None:
-    from plugin.server.routes.plugin_install import (
+    from plugin.server.install_registry import (
         InstallKindRegistration,
         register_install_plugin,
     )

@@ -96,7 +96,7 @@ def _rapidocr_import_context(
 def _rapidocr_package_dir(
     raw_target_dir: str,
     *,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> Path:
     site_packages_dir = resolve_rapidocr_site_packages_dir(
         raw_target_dir,
@@ -267,7 +267,7 @@ def load_rapidocr_runtime(
     lang_type: str,
     model_type: str,
     ocr_version: str,
-    plugin_id: str = "study_companion",
+    plugin_id: str,
 ) -> tuple[Any, dict[str, str]]:
     site_packages_dir = resolve_rapidocr_site_packages_dir(
         install_target_dir_raw,

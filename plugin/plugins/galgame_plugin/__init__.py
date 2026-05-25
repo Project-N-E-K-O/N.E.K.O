@@ -31,7 +31,7 @@ from .plugin_core import (  # explicit: star-import skips underscore names
 
 
 def _register_install_routes() -> None:
-    from plugin.server.routes.plugin_install import (
+    from plugin.server.install_registry import (
         InstallKindRegistration,
         register_install_plugin,
     )
@@ -56,7 +56,7 @@ def _register_install_routes() -> None:
 
 
 def _register_tutorial_migration_hook() -> None:
-    from plugin.server.routes.plugin_install import register_tutorial_migration_hook
+    from plugin.server.install_registry import register_tutorial_migration_hook
 
     from ._tutorial_migration import copy_legacy_tutorial_progress_if_missing
 

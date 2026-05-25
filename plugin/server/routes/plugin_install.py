@@ -5,9 +5,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -16,6 +14,14 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.server import install_registry
+from plugin.server.install_registry import (
+    InstallKindRegistration,
+    InstallPluginRegistration,
+    normalize_registered_plugin_id as _normalize_registered_plugin_id,
+    register_install_plugin,
+    register_tutorial_migration_hook,
+)
 from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 from ._install_task_store import (
     INSTALL_TERMINAL_STATUSES,
@@ -52,23 +58,6 @@ _INSTALL_KIND_LABELS = {
     "rapidocr_models": "RapidOCR Models",
     "tesseract": "Tesseract",
 }
-_install_plugin_registry: dict[str, "InstallPluginRegistration"] = {}
-
-
-@dataclass(frozen=True)
-class InstallKindRegistration:
-    entry_id: str
-    label: str
-    queued_message: str
-    entry_timeout: float = 600.0
-
-
-@dataclass(frozen=True)
-class InstallPluginRegistration:
-    plugin_id: str
-    install_kinds: Mapping[str, InstallKindRegistration]
-    ui_i18n_dir: Path | None = None
-    tutorial_enabled: bool = False
 
 
 async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -78,48 +67,13 @@ async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> 
     )
 
 
-def register_install_plugin(
-    plugin_id: str,
-    *,
-    install_kinds: Mapping[str, InstallKindRegistration],
-    ui_i18n_dir: Path | str | None = None,
-    tutorial_enabled: bool = False,
-) -> None:
-    normalized_plugin_id = _normalize_registered_plugin_id(plugin_id)
-    normalized_kinds: dict[str, InstallKindRegistration] = {}
-    for raw_kind, registration in install_kinds.items():
-        normalized_kind = str(raw_kind or "").strip().lower()
-        if not normalized_kind:
-            raise ValueError("install kind must not be empty")
-        if not isinstance(registration, InstallKindRegistration):
-            raise TypeError("install kind registrations must use InstallKindRegistration")
-        if not str(registration.entry_id or "").strip():
-            raise ValueError(f"install entry_id for kind {normalized_kind!r} must not be empty")
-        normalized_kinds[normalized_kind] = registration
-
-    _install_plugin_registry[normalized_plugin_id] = InstallPluginRegistration(
-        plugin_id=normalized_plugin_id,
-        install_kinds=MappingProxyType(normalized_kinds),
-        ui_i18n_dir=Path(ui_i18n_dir).resolve() if ui_i18n_dir is not None else None,
-        tutorial_enabled=bool(tutorial_enabled),
-    )
-
-
-def _normalize_registered_plugin_id(plugin_id: str) -> str:
-    normalized = str(plugin_id or "").strip()
-    if not normalized or ".." in normalized or "/" in normalized or "\\" in normalized:
-        raise ValueError(f"invalid plugin id: {plugin_id!r}")
-    return normalized
-
-
 def _get_plugin_registration(plugin_id: str) -> InstallPluginRegistration:
     try:
-        normalized_plugin_id = _normalize_registered_plugin_id(plugin_id)
+        registration = install_registry.get_install_plugin_registration(plugin_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Plugin has no install API") from exc
-    registration = _install_plugin_registry.get(normalized_plugin_id)
     if registration is None:
-        raise HTTPException(status_code=404, detail=f"Plugin '{normalized_plugin_id}' has no install API")
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' has no install API")
     return registration
 
 
@@ -821,38 +775,13 @@ _TUTORIAL_DEFAULTS = {
 _tutorial_store_instance: Path | None = None
 _tutorial_store_instances: dict[str, Path] = {}
 _tutorial_store_lock = threading.RLock()
-_tutorial_migration_hooks: dict[str, list[Callable[[Path], None]]] | list[Callable[[Path], None]] = {}
 _tutorial_migrated_paths: set[Path] = set()
-
-
-def register_tutorial_migration_hook(
-    hook: Callable[[Path], None],
-    *,
-    plugin_id: str = "",
-) -> None:
-    normalized_plugin_id = _normalize_registered_plugin_id(plugin_id) if plugin_id else ""
-    # Some tests monkeypatch the pre-plugin registry shape; keep that compatibility
-    # path explicit while production code uses a plugin-id keyed hook map.
-    if isinstance(_tutorial_migration_hooks, list):
-        if hook not in _tutorial_migration_hooks:
-            _tutorial_migration_hooks.append(hook)
-        return
-    hooks = _tutorial_migration_hooks.setdefault(normalized_plugin_id, [])
-    if hook not in hooks:
-        hooks.append(hook)
 
 
 def _run_tutorial_migrations(store_path: Path, *, plugin_id: str) -> None:
     if store_path in _tutorial_migrated_paths:
         return
-    if isinstance(_tutorial_migration_hooks, list):
-        hooks = list(_tutorial_migration_hooks)
-    else:
-        hooks = [
-            *_tutorial_migration_hooks.get("", []),
-            *_tutorial_migration_hooks.get(plugin_id, []),
-        ]
-    for hook in hooks:
+    for hook in install_registry.tutorial_migration_hooks_for(plugin_id):
         hook(store_path)
     _tutorial_migrated_paths.add(store_path)
 

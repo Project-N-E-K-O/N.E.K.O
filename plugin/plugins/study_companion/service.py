@@ -102,6 +102,7 @@ def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
         lang_type=config.rapidocr_lang_type,
         model_type=config.rapidocr_model_type,
         ocr_version=config.rapidocr_ocr_version,
+        plugin_id="study_companion",
     )
 
 
