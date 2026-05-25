@@ -855,8 +855,13 @@ class UserActivityTracker:
         在每个 session 开始时调用（core.py 的实验组 kick 里）。tracker 跨 session 长存，
         若不清，「上个 session 结束时在游戏、新 session 仍在游戏」就检测不到进入、漏弹。
         只动情境弹窗专属基线，不碰 break/anti-slack 的 _last_known_state。
+
+        同时清掉可能遗留的 pending：上个 session 置了 pending 但没来得及 drain（loop 没
+        tick 到就 end_session）时，残留会被新 session 的首个 tick 推成过期弹窗。清掉后
+        紧跟的 kick get_snapshot 会按新 session 的当前状态重新置 pending。
         """
         self._context_prompt_last_state = None
+        self._context_prompt_pending = None
 
     def set_context_prompt_callback(
         self, callback: Callable[[str], Awaitable[None]] | None
