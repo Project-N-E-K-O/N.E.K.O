@@ -1131,7 +1131,7 @@ python-xlib==0.33 ; sys_platform == 'linux'
     # via
     #   n-e-k-o
     #   pywinauto
-python3-xlib==0.15 ; sys_platform == 'linux'
+python3-xlib==0.15 ; sys_platform == 'never'
     # via
     #   mouseinfo
     #   pyautogui
