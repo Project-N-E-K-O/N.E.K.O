@@ -12,7 +12,22 @@ COMPACT_EXPORT_HISTORY_PANEL_PATH = (
 
 
 def css_block(styles: str, selector: str, next_selector: str) -> str:
-    return styles.split(selector, 1)[1].split(next_selector, 1)[0]
+    start = styles.find(selector)
+    if start < 0:
+        snippet = styles[:240].replace("\n", "\\n")
+        raise AssertionError(
+            f"css_block could not find selector {selector!r}; "
+            f"next_selector={next_selector!r}; styles snippet={snippet!r}"
+        )
+    content_start = start + len(selector)
+    end = styles.find(next_selector, content_start)
+    if end < 0:
+        snippet = styles[content_start : content_start + 240].replace("\n", "\\n")
+        raise AssertionError(
+            f"css_block could not find next_selector {next_selector!r} "
+            f"after selector {selector!r}; styles snippet={snippet!r}"
+        )
+    return styles[content_start:end]
 
 
 def assert_no_layout_transition(block: str) -> None:
@@ -192,8 +207,8 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
 
     assert "position: absolute;" in fan_block
-    assert "left: calc(100% - 30px);" in fan_block
-    assert "top: 31px;" in fan_block
+    assert "left: calc(100% - 30px - var(--compact-tool-fan-hit-outset));" in fan_block
+    assert "top: calc(31px - var(--compact-tool-fan-hit-outset));" in fan_block
     assert "position: fixed;" not in fan_block
     assert "--compact-input-tool-fan-origin-left" not in fan_block
     assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="false"]' in styles

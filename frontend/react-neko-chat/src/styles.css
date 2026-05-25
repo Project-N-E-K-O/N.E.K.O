@@ -2999,6 +2999,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   pointer-events: none !important;
 }
 
+.compact-input-tool-fan[data-compact-input-tool-fan-interactive="false"] .compact-input-tool-item {
+  pointer-events: none !important;
+}
+
 .compact-chat-surface-shell *,
 .compact-input-tool-fan * {
   -webkit-app-region: no-drag;

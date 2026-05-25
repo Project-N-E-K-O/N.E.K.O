@@ -241,9 +241,14 @@ export default function CompactExportHistoryPanel({
     const intent = pointerIntentRef.current;
     if (!intent || intent.id !== event.pointerId || intent.messageId !== message.id) return;
     pointerIntentRef.current = null;
-    suppressClickMessageIdRef.current = message.id;
     if (!intent.cancelled && selectable && !isSelectionIgnoredTarget(event.target, event.currentTarget)) {
       event.preventDefault();
+      suppressClickMessageIdRef.current = message.id;
+      window.setTimeout(() => {
+        if (suppressClickMessageIdRef.current === message.id) {
+          suppressClickMessageIdRef.current = null;
+        }
+      }, 120);
       onToggleMessage(message.id);
     }
   }

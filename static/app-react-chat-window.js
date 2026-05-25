@@ -355,6 +355,7 @@
         for (var i = 0; i < managers.length; i += 1) {
             var manager = managers[i];
             if (!manager || !manager.currentModel || typeof manager.getModelScreenBounds !== 'function') continue;
+            if (manager === window.mmdManager && !manager.currentModel.mesh) continue;
             try {
                 var bounds = normalizeCompactDesktopRect(manager.getModelScreenBounds());
                 if (bounds) return bounds;

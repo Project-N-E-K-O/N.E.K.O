@@ -1,5 +1,5 @@
 import SmartTextBlock from './SmartTextBlock';
-import { openExternalUrl } from './openExternal';
+import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
   type MessageAction,
@@ -45,12 +45,13 @@ export default function MessageBlockView({
   }
 
   if (block.type === 'link') {
+    const safeHref = normalizeExternalUrlHref(block.url);
     return (
       <a
         className="message-block message-block-link"
-        href={block.url}
-        target="_blank"
-        rel="noreferrer"
+        href={safeHref || undefined}
+        target={safeHref ? '_blank' : undefined}
+        rel={safeHref ? 'noreferrer' : undefined}
         onClick={(event) => {
           event.preventDefault();
           openExternalUrl(block.url);
